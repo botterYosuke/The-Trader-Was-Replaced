@@ -4,5 +4,7 @@ version = "0.1.0"
 edition = "2024"
 
 [dependencies]
-iced = { version = "0.14.0", features = ["canvas", "tokio", "image", "advanced", "highlighter", "markdown"] }
+bevy = { version = "0.15", features = ["default", "bevy_picking", "bevy_sprite_picking_backend"] }
+bevy_pancam = "0.16"
+bevy_prototype_lyon = "0.13"
 rand = "0.8"
