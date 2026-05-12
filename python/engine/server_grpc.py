@@ -23,29 +23,49 @@ class GrpcDataEngineServer(engine_pb2_grpc.HealthServicer, engine_pb2_grpc.DataE
         state = self.engine.get_current_state()
         return engine_pb2.GetStateResponse(json_data=state.model_dump_json())
 
+    def Start(self, request, context):
+        if request.token != self.token:
+            context.abort(grpc.StatusCode.UNAUTHENTICATED, "Invalid token")
+        self.engine.start()
+        logging.info("Engine start requested via gRPC")
+        return engine_pb2.StartResponse(success=True)
+
+    def Stop(self, request, context):
+        if request.token != self.token:
+            context.abort(grpc.StatusCode.UNAUTHENTICATED, "Invalid token")
+        self.engine.stop()
+        logging.info("Engine stop requested via gRPC")
+        return engine_pb2.StopResponse(success=True)
+
 def advance_loop(engine: DataEngine, interval: float = 1.0):
-    """エンジンを定期的に進行させるバックグラウンドループ"""
+    """
+    エンジンを定期的に進行させるバックグラウンドループ。
+    e-station の設計思想に基づき、1回待機してから進行させる。
+    """
     logging.info(f"Starting advance loop with interval {interval}s")
-    while engine.is_running:
-        engine.advance()
+    while True:
+        # まず待機することで、初期状態 (Primed state) を取得する猶予を与える
         time.sleep(interval)
+        # engine.is_running は thread-safe property になった
+        if engine.is_running:
+            engine.advance()
     logging.info("Advance loop stopped")
 
-def serve(port: int, token: str, replay_provider: Optional[BaseReplayProvider] = None):
+def serve(port: int, token: str, replay_provider: Optional[BaseReplayProvider] = None, auto_start: bool = False):
     engine = DataEngine(replay_provider=replay_provider)
-    engine.start()
-
-    # Replay モードの場合のみ自動進行させる。
-    # Static モードは Phase 1/2 の固定価格契約を維持するため自動進行しない。
-    if engine.mode == "replay":
-        ticker_thread = threading.Thread(
-            target=advance_loop, 
-            args=(engine, 1.0), 
-            daemon=True
-        )
-        ticker_thread.start()
+    
+    # サーバー起動時点ではエンジンを一時停止状態にしておく（auto_start が False の場合）
+    if auto_start:
+        engine.start()
     else:
-        logging.info("Static mode: Automatic advance disabled")
+        logging.info("Engine initialized in paused state.")
+
+    ticker_thread = threading.Thread(
+        target=advance_loop, 
+        args=(engine, 1.0), 
+        daemon=True
+    )
+    ticker_thread.start()
 
     server = grpc.server(futures.ThreadPoolExecutor(max_workers=10))
     servicer = GrpcDataEngineServer(token, engine)

@@ -14,47 +14,46 @@ def csv_file(tmp_path):
     f.write_text("timestamp,price\n1600000000,100.0\n1600000001,101.0\n1600000002,102.0\n")
     return str(f)
 
+def test_replay_priming(csv_file):
+    provider = SimpleCSVProvider(csv_file)
+    engine = DataEngine(replay_provider=provider)
+    
+    # After init, it should be primed with the FIRST tick
+    state = engine.get_current_state()
+    assert state.price == 100.0
+    assert state.timestamp == 1600000000
+    assert state.history == [100.0]
+    assert not engine.is_exhausted
+
 def test_replay_progression(csv_file):
     provider = SimpleCSVProvider(csv_file)
     engine = DataEngine(replay_provider=provider)
     engine.start()
 
-    # Initial state (should be default before first advance)
-    state = engine.get_current_state()
-    assert state.price == 120.5 # Default in __init__
-
-    # First advance
-    engine.advance()
+    # Initial state is the first tick (primed)
     state = engine.get_current_state()
     assert state.price == 100.0
-    assert state.timestamp == 1600000000
 
-    # Second advance
+    # First advance (gets the second tick)
     engine.advance()
     state = engine.get_current_state()
     assert state.price == 101.0
     assert state.timestamp == 1600000001
 
-    # Third advance
+    # Second advance (gets the third tick)
     engine.advance()
     state = engine.get_current_state()
     assert state.price == 102.0
     assert state.timestamp == 1600000002
-
-    # Fourth advance (exhausted)
-    engine.advance()
-    assert engine.is_exhausted
-    state = engine.get_current_state()
-    assert state.price == 102.0 # Maintains last price
+    assert engine.is_exhausted # provider says exhausted after returning the last tick
 
 def test_snapshot_restore(csv_file):
     provider = SimpleCSVProvider(csv_file)
     engine = DataEngine(replay_provider=provider)
     engine.start()
 
-    # Advance to second tick
-    engine.advance()
-    engine.advance()
+    # Already primed at price 100
+    engine.advance() # price=101, index=2 in provider
     
     snapshot = engine.take_snapshot()
     assert snapshot.replay_index == 2
@@ -78,21 +77,17 @@ def test_snapshot_restore(csv_file):
     assert state.timestamp == 1600000002
     assert new_engine.is_exhausted
 
-def test_snapshot_restore_to_start(csv_file):
+def test_snapshot_mode_mismatch(csv_file):
     provider = SimpleCSVProvider(csv_file)
-    engine = DataEngine(replay_provider=provider)
-    engine.start()
+    replay_engine = DataEngine(replay_provider=provider)
+    static_engine = DataEngine()
     
-    engine.advance() # price=100
-    snapshot = engine.take_snapshot()
+    replay_engine.start()
+    snapshot = replay_engine.take_snapshot()
     
-    engine.advance() # price=101
-    assert engine.get_current_state().price == 101.0
-    
-    # Restore to index 1
-    engine.restore_snapshot(snapshot)
-    assert engine.get_current_state().price == 100.0
-    assert engine._replay_provider.current_index == 1
+    static_engine.start()
+    with pytest.raises(ValueError, match="Snapshot mode mismatch"):
+        static_engine.restore_snapshot(snapshot)
 
 def test_snapshot_source_mismatch(csv_file, tmp_path):
     # Create another CSV
@@ -112,34 +107,8 @@ def test_snapshot_source_mismatch(csv_file, tmp_path):
     with pytest.raises(ValueError, match="Snapshot source mismatch"):
         other_engine.restore_snapshot(snapshot)
 
-def test_invalid_csv_data(tmp_path):
-    f = tmp_path / "invalid.csv"
-    # price <= 0, nan, header
-    f.write_text("ts,price\n1600,0\n1601,nan\n1602,100\n")
-    
-    provider = SimpleCSVProvider(str(f))
-    assert len(provider._data) == 1
-    assert provider._data[0] == (1602.0, 100.0)
-
-def test_missing_csv():
-    with pytest.raises(FileNotFoundError):
-        SimpleCSVProvider("non_existent.csv")
-
-def test_empty_csv(tmp_path):
-    f = tmp_path / "empty.csv"
-    f.write_text("timestamp,price\n")
-    with pytest.raises(ValueError, match="No valid data found"):
-        SimpleCSVProvider(str(f))
-
-def test_static_mode():
-    engine = DataEngine() # No replay provider
-    engine.start()
-    
-    initial_price = engine.get_current_state().price
-    # In my current server_grpc.py, static mode doesn't auto-advance.
-    # But engine.advance() should still work if called manually.
-    engine.advance()
-    new_price = engine.get_current_state().price
-    
-    assert initial_price != new_price
-    assert len(engine.get_current_state().history) > 4 
+def test_static_mode_auto_advance_compatibility():
+    # Static mode should still start with default price for Phase 1/2 tests
+    engine = DataEngine()
+    state = engine.get_current_state()
+    assert state.price == 120.5

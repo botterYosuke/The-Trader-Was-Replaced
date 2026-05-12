@@ -13,6 +13,7 @@ def main():
     # Phase 3 Replay Options
     parser.add_argument("--mode", type=str, default="static", choices=["static", "replay"], help="Execution mode")
     parser.add_argument("--replay-path", type=str, help="Path to simple CSV for replay")
+    parser.add_argument("--auto-start", action="store_true", help="Start engine progression immediately")
 
     args = parser.parse_args()
     
@@ -37,7 +38,10 @@ def main():
             sys.exit(1)
     
     if args.transport == "grpc":
-        serve(args.port, args.token, replay_provider=replay_provider)
+        # Static モードは常に自動進行させる（既存の互換性のため）
+        # Replay モードは --auto-start に従う
+        auto_start = args.auto_start if args.mode == "replay" else True
+        serve(args.port, args.token, replay_provider=replay_provider, auto_start=auto_start)
     else:
         logging.error(f"Unsupported transport: {args.transport}")
         sys.exit(1)

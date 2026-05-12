@@ -3,7 +3,7 @@
 import grpc
 import warnings
 
-from . import engine_pb2 as engine__pb2
+import engine.proto.engine_pb2 as engine__pb2
 
 GRPC_GENERATED_VERSION = '1.80.0'
 GRPC_VERSION = grpc.__version__
@@ -111,12 +111,34 @@ class DataEngineStub(object):
                 request_serializer=engine__pb2.GetStateRequest.SerializeToString,
                 response_deserializer=engine__pb2.GetStateResponse.FromString,
                 _registered_method=True)
+        self.Start = channel.unary_unary(
+                '/engine.DataEngine/Start',
+                request_serializer=engine__pb2.StartRequest.SerializeToString,
+                response_deserializer=engine__pb2.StartResponse.FromString,
+                _registered_method=True)
+        self.Stop = channel.unary_unary(
+                '/engine.DataEngine/Stop',
+                request_serializer=engine__pb2.StopRequest.SerializeToString,
+                response_deserializer=engine__pb2.StopResponse.FromString,
+                _registered_method=True)
 
 
 class DataEngineServicer(object):
     """Missing associated documentation comment in .proto file."""
 
     def GetState(self, request, context):
+        """Missing associated documentation comment in .proto file."""
+        context.set_code(grpc.StatusCode.UNIMPLEMENTED)
+        context.set_details('Method not implemented!')
+        raise NotImplementedError('Method not implemented!')
+
+    def Start(self, request, context):
+        """Missing associated documentation comment in .proto file."""
+        context.set_code(grpc.StatusCode.UNIMPLEMENTED)
+        context.set_details('Method not implemented!')
+        raise NotImplementedError('Method not implemented!')
+
+    def Stop(self, request, context):
         """Missing associated documentation comment in .proto file."""
         context.set_code(grpc.StatusCode.UNIMPLEMENTED)
         context.set_details('Method not implemented!')
@@ -129,6 +151,16 @@ def add_DataEngineServicer_to_server(servicer, server):
                     servicer.GetState,
                     request_deserializer=engine__pb2.GetStateRequest.FromString,
                     response_serializer=engine__pb2.GetStateResponse.SerializeToString,
+            ),
+            'Start': grpc.unary_unary_rpc_method_handler(
+                    servicer.Start,
+                    request_deserializer=engine__pb2.StartRequest.FromString,
+                    response_serializer=engine__pb2.StartResponse.SerializeToString,
+            ),
+            'Stop': grpc.unary_unary_rpc_method_handler(
+                    servicer.Stop,
+                    request_deserializer=engine__pb2.StopRequest.FromString,
+                    response_serializer=engine__pb2.StopResponse.SerializeToString,
             ),
     }
     generic_handler = grpc.method_handlers_generic_handler(
@@ -158,6 +190,60 @@ class DataEngine(object):
             '/engine.DataEngine/GetState',
             engine__pb2.GetStateRequest.SerializeToString,
             engine__pb2.GetStateResponse.FromString,
+            options,
+            channel_credentials,
+            insecure,
+            call_credentials,
+            compression,
+            wait_for_ready,
+            timeout,
+            metadata,
+            _registered_method=True)
+
+    @staticmethod
+    def Start(request,
+            target,
+            options=(),
+            channel_credentials=None,
+            call_credentials=None,
+            insecure=False,
+            compression=None,
+            wait_for_ready=None,
+            timeout=None,
+            metadata=None):
+        return grpc.experimental.unary_unary(
+            request,
+            target,
+            '/engine.DataEngine/Start',
+            engine__pb2.StartRequest.SerializeToString,
+            engine__pb2.StartResponse.FromString,
+            options,
+            channel_credentials,
+            insecure,
+            call_credentials,
+            compression,
+            wait_for_ready,
+            timeout,
+            metadata,
+            _registered_method=True)
+
+    @staticmethod
+    def Stop(request,
+            target,
+            options=(),
+            channel_credentials=None,
+            call_credentials=None,
+            insecure=False,
+            compression=None,
+            wait_for_ready=None,
+            timeout=None,
+            metadata=None):
+        return grpc.experimental.unary_unary(
+            request,
+            target,
+            '/engine.DataEngine/Stop',
+            engine__pb2.StopRequest.SerializeToString,
+            engine__pb2.StopResponse.FromString,
             options,
             channel_credentials,
             insecure,

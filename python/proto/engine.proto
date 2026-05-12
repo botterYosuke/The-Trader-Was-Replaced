@@ -21,6 +21,8 @@ message HealthCheckResponse {
 
 service DataEngine {
   rpc GetState(GetStateRequest) returns (GetStateResponse);
+  rpc Start(StartRequest) returns (StartResponse);
+  rpc Stop(StopRequest) returns (StopResponse);
 }
 
 message GetStateRequest {
@@ -29,4 +31,20 @@ message GetStateRequest {
 
 message GetStateResponse {
   string json_data = 1;
+}
+
+message StartRequest {
+  string token = 1;
+}
+
+message StartResponse {
+  bool success = 1;
+}
+
+message StopRequest {
+  string token = 1;
+}
+
+message StopResponse {
+  bool success = 1;
 }

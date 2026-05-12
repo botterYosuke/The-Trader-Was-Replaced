@@ -1,5 +1,5 @@
 from pydantic import BaseModel, Field, ConfigDict, field_validator
-from typing import List, Optional
+from typing import List, Optional, Literal
 import time
 import math
 
@@ -32,4 +32,4 @@ class EngineSnapshot(_BoundaryModel):
     state: TradingState = Field(..., description="現在のトレーディング状態")
     replay_index: int = Field(0, description="リプレイの現在インデックス", ge=0)
     source_path: Optional[str] = Field(None, description="データのソースパス")
-    mode: str = Field("static", description="実行モード (static | replay)")
+    mode: Literal["static", "replay"] = Field("static", description="実行モード")

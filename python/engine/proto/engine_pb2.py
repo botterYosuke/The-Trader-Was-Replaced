@@ -24,7 +24,7 @@ _sym_db = _symbol_database.Default()
 
 
 
-DESCRIPTOR = _descriptor_pool.Default().AddSerializedFile(b'\n\x0c\x65ngine.proto\x12\x06\x65ngine\"%\n\x12HealthCheckRequest\x12\x0f\n\x07service\x18\x01 \x01(\t\"\x8c\x01\n\x13HealthCheckResponse\x12\x39\n\x06status\x18\x01 \x01(\x0e\x32).engine.HealthCheckResponse.ServingStatus\":\n\rServingStatus\x12\x0b\n\x07UNKNOWN\x10\x00\x12\x0b\n\x07SERVING\x10\x01\x12\x0f\n\x0bNOT_SERVING\x10\x02\" \n\x0fGetStateRequest\x12\r\n\x05token\x18\x01 \x01(\t\"%\n\x10GetStateResponse\x12\x11\n\tjson_data\x18\x01 \x01(\t2J\n\x06Health\x12@\n\x05\x43heck\x12\x1a.engine.HealthCheckRequest\x1a\x1b.engine.HealthCheckResponse2K\n\nDataEngine\x12=\n\x08GetState\x12\x17.engine.GetStateRequest\x1a\x18.engine.GetStateResponseb\x06proto3')
+DESCRIPTOR = _descriptor_pool.Default().AddSerializedFile(b'\n\x0c\x65ngine.proto\x12\x06\x65ngine\"%\n\x12HealthCheckRequest\x12\x0f\n\x07service\x18\x01 \x01(\t\"\x8c\x01\n\x13HealthCheckResponse\x12\x39\n\x06status\x18\x01 \x01(\x0e\x32).engine.HealthCheckResponse.ServingStatus\":\n\rServingStatus\x12\x0b\n\x07UNKNOWN\x10\x00\x12\x0b\n\x07SERVING\x10\x01\x12\x0f\n\x0bNOT_SERVING\x10\x02\" \n\x0fGetStateRequest\x12\r\n\x05token\x18\x01 \x01(\t\"%\n\x10GetStateResponse\x12\x11\n\tjson_data\x18\x01 \x01(\t\"\x1d\n\x0cStartRequest\x12\r\n\x05token\x18\x01 \x01(\t\" \n\rStartResponse\x12\x0f\n\x07success\x18\x01 \x01(\x08\"\x1c\n\x0bStopRequest\x12\r\n\x05token\x18\x01 \x01(\t\"\x1f\n\x0cStopResponse\x12\x0f\n\x07success\x18\x01 \x01(\x08\x32J\n\x06Health\x12@\n\x05\x43heck\x12\x1a.engine.HealthCheckRequest\x1a\x1b.engine.HealthCheckResponse2\xb4\x01\n\nDataEngine\x12=\n\x08GetState\x12\x17.engine.GetStateRequest\x1a\x18.engine.GetStateResponse\x12\x34\n\x05Start\x12\x14.engine.StartRequest\x1a\x15.engine.StartResponse\x12\x31\n\x04Stop\x12\x13.engine.StopRequest\x1a\x14.engine.StopResponseb\x06proto3')
 
 _globals = globals()
 _builder.BuildMessageAndEnumDescriptors(DESCRIPTOR, _globals)
@@ -41,8 +41,16 @@ if not _descriptor._USE_C_DESCRIPTORS:
   _globals['_GETSTATEREQUEST']._serialized_end=238
   _globals['_GETSTATERESPONSE']._serialized_start=240
   _globals['_GETSTATERESPONSE']._serialized_end=277
-  _globals['_HEALTH']._serialized_start=279
-  _globals['_HEALTH']._serialized_end=353
-  _globals['_DATAENGINE']._serialized_start=355
-  _globals['_DATAENGINE']._serialized_end=430
+  _globals['_STARTREQUEST']._serialized_start=279
+  _globals['_STARTREQUEST']._serialized_end=308
+  _globals['_STARTRESPONSE']._serialized_start=310
+  _globals['_STARTRESPONSE']._serialized_end=342
+  _globals['_STOPREQUEST']._serialized_start=344
+  _globals['_STOPREQUEST']._serialized_end=372
+  _globals['_STOPRESPONSE']._serialized_start=374
+  _globals['_STOPRESPONSE']._serialized_end=405
+  _globals['_HEALTH']._serialized_start=407
+  _globals['_HEALTH']._serialized_end=481
+  _globals['_DATAENGINE']._serialized_start=484
+  _globals['_DATAENGINE']._serialized_end=664
 # @@protoc_insertion_point(module_scope)
