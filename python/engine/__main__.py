@@ -13,13 +13,6 @@ def main():
     # Phase 3 Replay Options
     parser.add_argument("--mode", type=str, default="static", choices=["static", "replay"], help="Execution mode")
     parser.add_argument("--replay-path", type=str, help="Path to simple CSV for replay")
-    
-    # Reserved for future use (e-station compatibility)
-    parser.add_argument("--instrument-id", type=str, help="Reserved: Instrument ID")
-    parser.add_argument("--start", type=str, help="Reserved: Start time")
-    parser.add_argument("--end", type=str, help="Reserved: End time")
-    parser.add_argument("--granularity", type=str, help="Reserved: Data granularity")
-    parser.add_argument("--data-dir", type=str, help="Reserved: Data directory")
 
     args = parser.parse_args()
     
@@ -37,7 +30,11 @@ def main():
         if not args.replay_path:
             logging.error("--replay-path is required when --mode is 'replay'")
             sys.exit(1)
-        replay_provider = SimpleCSVProvider(args.replay_path)
+        try:
+            replay_provider = SimpleCSVProvider(args.replay_path)
+        except Exception as e:
+            logging.error(f"Failed to initialize ReplayProvider: {e}")
+            sys.exit(1)
     
     if args.transport == "grpc":
         serve(args.port, args.token, replay_provider=replay_provider)

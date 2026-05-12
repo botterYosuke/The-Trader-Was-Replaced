@@ -1,8 +1,8 @@
 import csv
 import logging
+import math
 from abc import ABC, abstractmethod
 from typing import List, Optional, Tuple
-from .models import TradingState
 
 class BaseReplayProvider(ABC):
     """リプレイデータの読み込みとイテレーションの抽象ベースクラス"""
@@ -30,23 +30,39 @@ class SimpleCSVProvider(BaseReplayProvider):
         self._load_csv()
 
     def _load_csv(self):
+        """
+        CSVを読み込み、内部バッファに格納する。
+        読み込みに失敗した場合や有効なデータがない場合は例外を投げる。
+        """
         try:
             with open(self.file_path, mode='r', encoding='utf-8') as f:
                 reader = csv.reader(f)
-                # ヘッダーをスキップする場合を考慮（数値でない場合はスキップ）
                 for row in reader:
                     if not row:
                         continue
                     try:
                         ts = float(row[0])
                         price = float(row[1])
+                        
+                        # Validation: Phase 2 の TradingState 契約に合わせる
+                        if ts <= 0 or price <= 0 or not math.isfinite(ts) or not math.isfinite(price):
+                            logging.debug(f"Skipping invalid data in CSV: {row}")
+                            continue
+                            
                         self._data.append((ts, price))
                     except (ValueError, IndexError):
-                        logging.debug(f"Skipping invalid row in CSV: {row}")
+                        logging.debug(f"Skipping non-numeric row in CSV: {row}")
+            
+            if not self._data:
+                raise ValueError(f"No valid data found in CSV: {self.file_path}")
+                
             logging.info(f"Loaded {len(self._data)} ticks from {self.file_path}")
+        except FileNotFoundError:
+            logging.error(f"CSV file not found: {self.file_path}")
+            raise
         except Exception as e:
             logging.error(f"Failed to load CSV {self.file_path}: {e}")
-            self._data = []
+            raise
 
     def get_next_tick(self) -> Optional[Tuple[float, float]]:
         if self._index < len(self._data):

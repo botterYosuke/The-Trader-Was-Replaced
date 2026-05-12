@@ -35,14 +35,17 @@ def serve(port: int, token: str, replay_provider: Optional[BaseReplayProvider] =
     engine = DataEngine(replay_provider=replay_provider)
     engine.start()
 
-    # バックグラウンドで進行させる（Phase 3 では自律進行を基本とする）
-    # 将来的に gRPC で Advance() を叩くようにする場合はここを調整する
-    ticker_thread = threading.Thread(
-        target=advance_loop, 
-        args=(engine, 1.0), 
-        daemon=True
-    )
-    ticker_thread.start()
+    # Replay モードの場合のみ自動進行させる。
+    # Static モードは Phase 1/2 の固定価格契約を維持するため自動進行しない。
+    if engine.mode == "replay":
+        ticker_thread = threading.Thread(
+            target=advance_loop, 
+            args=(engine, 1.0), 
+            daemon=True
+        )
+        ticker_thread.start()
+    else:
+        logging.info("Static mode: Automatic advance disabled")
 
     server = grpc.server(futures.ThreadPoolExecutor(max_workers=10))
     servicer = GrpcDataEngineServer(token, engine)

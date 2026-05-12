@@ -39,6 +39,7 @@ class DataEngine:
                 self._history.append(self._price)
                 if len(self._history) > 1000:
                     self._history.pop(0)
+                self._is_exhausted = self._replay_provider.is_exhausted()
             else:
                 self._is_exhausted = True
                 logging.info("Replay data exhausted")
@@ -75,17 +76,32 @@ class DataEngine:
 
     def restore_snapshot(self, snapshot: EngineSnapshot):
         """スナップショットからエンジン状態を復元する"""
+        # Source mismatch check (Replay mode only)
+        if self._mode == "replay" and self._replay_provider:
+            current_path = getattr(self._replay_provider, 'file_path', None)
+            if snapshot.source_path and snapshot.source_path != current_path:
+                logging.warning(f"Snapshot source mismatch: snapshot={snapshot.source_path}, current={current_path}")
+                # e-station 的にはエラーにするべきだが、Phase 3 では一旦警告に留めるか、
+                # または厳密に弾く。ここでは厳密に弾くようにする。
+                raise ValueError(f"Snapshot source mismatch. Expected {current_path}, got {snapshot.source_path}")
+
         self._price = snapshot.state.price
         self._history = list(snapshot.state.history)
         self._timestamp = snapshot.state.timestamp
         self._mode = snapshot.mode
         
-        if self._replay_provider and snapshot.replay_index > 0:
+        if self._replay_provider:
             if hasattr(self._replay_provider, 'current_index'):
                 self._replay_provider.current_index = snapshot.replay_index
+                # Exhausted status must be re-evaluated
+                self._is_exhausted = self._replay_provider.is_exhausted()
         
         logging.info(f"Restored snapshot (mode: {self._mode}, index: {snapshot.replay_index})")
 
     @property
     def is_exhausted(self) -> bool:
         return self._is_exhausted
+
+    @property
+    def mode(self) -> str:
+        return self._mode
