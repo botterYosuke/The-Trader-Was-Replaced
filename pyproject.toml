@@ -2,7 +2,7 @@
 name = "python"
 version = "0.1.0"
 description = "Add your description here"
-readme = "README.md"
+readme = "python/README.md"
 requires-python = ">=3.13"
 dependencies = [
     "grpcio>=1.80.0",
@@ -18,5 +18,5 @@ dev = [
 ]
 
 [tool.pytest.ini_options]
-pythonpath = ["."]
-testpaths = ["tests"]
+pythonpath = ["python", "."]
+testpaths = ["python/tests"]
