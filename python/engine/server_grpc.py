@@ -2,8 +2,11 @@ import grpc
 from concurrent import futures
 import time
 import logging
+import threading
+from typing import Optional
 from .proto import engine_pb2, engine_pb2_grpc
 from .core import DataEngine
+from .replay import BaseReplayProvider
 
 class GrpcDataEngineServer(engine_pb2_grpc.HealthServicer, engine_pb2_grpc.DataEngineServicer):
     def __init__(self, token: str, engine: DataEngine):
@@ -20,9 +23,26 @@ class GrpcDataEngineServer(engine_pb2_grpc.HealthServicer, engine_pb2_grpc.DataE
         state = self.engine.get_current_state()
         return engine_pb2.GetStateResponse(json_data=state.model_dump_json())
 
-def serve(port: int, token: str):
-    engine = DataEngine()
+def advance_loop(engine: DataEngine, interval: float = 1.0):
+    """エンジンを定期的に進行させるバックグラウンドループ"""
+    logging.info(f"Starting advance loop with interval {interval}s")
+    while engine.is_running:
+        engine.advance()
+        time.sleep(interval)
+    logging.info("Advance loop stopped")
+
+def serve(port: int, token: str, replay_provider: Optional[BaseReplayProvider] = None):
+    engine = DataEngine(replay_provider=replay_provider)
     engine.start()
+
+    # バックグラウンドで進行させる（Phase 3 では自律進行を基本とする）
+    # 将来的に gRPC で Advance() を叩くようにする場合はここを調整する
+    ticker_thread = threading.Thread(
+        target=advance_loop, 
+        args=(engine, 1.0), 
+        daemon=True
+    )
+    ticker_thread.start()
 
     server = grpc.server(futures.ThreadPoolExecutor(max_workers=10))
     servicer = GrpcDataEngineServer(token, engine)

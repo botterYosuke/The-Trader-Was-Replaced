@@ -65,6 +65,7 @@
 
 ### Phase 3: replay / snapshot 対応
 
+- Status: 計画済み（詳細は [Phase 3 - Replay and Snapshot.md](./Phase%203%20-%20Replay%20and%20Snapshot.md) を参照）。
 - headless backend が replay データから state を生成できるようにする。
 - snapshot の読み込みだけでも state を復元できるようにする。
 - 復元結果は Phase 2 の `TradingState` schema を必ず通す。

@@ -1,5 +1,5 @@
 from pydantic import BaseModel, Field, ConfigDict, field_validator
-from typing import List
+from typing import List, Optional
 import time
 import math
 
@@ -26,3 +26,10 @@ class TradingState(_BoundaryModel):
         if any(not math.isfinite(x) for x in v):
             raise ValueError("History contains non-finite values")
         return v
+
+class EngineSnapshot(_BoundaryModel):
+    """エンジンの実行コンテキストの保存・復元用スナップショット"""
+    state: TradingState = Field(..., description="現在のトレーディング状態")
+    replay_index: int = Field(0, description="リプレイの現在インデックス", ge=0)
+    source_path: Optional[str] = Field(None, description="データのソースパス")
+    mode: str = Field("static", description="実行モード (static | replay)")
