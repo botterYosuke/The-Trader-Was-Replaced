@@ -44,64 +44,47 @@
 
 ### Phase 2: データモデル移植
 
-- Status: 計画済み（詳細は [Phase 2 - Data Model Migration.md](./Phase%202%20-%20Data%20Model%20Migration.md) を参照）。
+- Status: 完了（詳細は [Phase 2 - Data Model Migration.md](./Phase%202%20-%20Data%20Model%20Migration.md) を参照）。
 - Rust 側の `TradingData` と整合する最小データモデルを Python に置く。
 - `pydantic` で `TradingState` などの明示的な schema を定義し、backend の外部契約を固定する。
-- まずは次を定義する。
-  - `price`
-  - `history`
-  - `timestamp`
-- Rust 側の `timer` は Bevy 内部の更新制御なので、Python API の外部契約には出さない。
-- sample state は dict の直書きではなく、schema を通した値として返す。
-- 変換ロジックは UI ではなく backend の責務として持つ。
-
-#### Test
-
-- schema の妥当性を検証できる
-- sample state が schema validation を通る
-- 既存の sample JSON が正しい形で読める
-- Rust 側が期待する最小項目を出せる
-- 不正な price / history / timestamp を拒否できる
 
 ### Phase 3: replay / snapshot 対応
 
-- Status: 計画済み（詳細は [Phase 3 - Replay and Snapshot.md](./Phase%203%20-%20Replay%20and%20Snapshot.md) を参照）。
+- Status: 完了（詳細は [Phase 3 - Replay and Snapshot.md](./Phase%203%20-%20Replay%20and%20Snapshot.md) を参照）。
 - headless backend が replay データから state を生成できるようにする。
 - snapshot の読み込みだけでも state を復元できるようにする。
-- 復元結果は Phase 2 の `TradingState` schema を必ず通す。
-- この段階では live trading は扱わず、決定論的な入力だけを使う。
-
-#### Test
-
-- replay データから同じ state が再現される
-- snapshot の読み込みが成功する
-- 異常時に backend が落ちず、エラーを返す
 
 ### Phase 4: Rust 接続
 
+- Status: 計画済み（詳細は [Phase 4 - Rust Integration.md](./Phase%204%20-%20Rust%20Integration.md) を参照）。
 - Rust 側に backend 接続層を追加する。
-- まずは poll ベースの gRPC `GetState` 経由でつなぐ。
-- 認証 token、port、backend 起動失敗時の扱いを Rust 側の設定に入れる。
-- Rust の既存シミュレーションは、この段階で Python backend データに置き換える。
+- `tonic` + `tokio` による非同期通信を実装し、Bevy の描画ループをブロックしないようにする。
+- 認証 token、port、接続設定を Rust 側の Resource として管理する。
+- 既存の Rust 側シミュレーションはトグル可能にし、Python backend データへの切り替えをサポートする。
 
 #### Test
 
-- Rust が Python backend の gRPC API に接続できる
-- price / history を取得して画面更新できる
-- backend 停止時に Rust が適切に失敗する
-- token 不一致時に Rust 側が認証失敗として扱える
+- Rust が Python backend の gRPC API に非同期で接続できる
+- price / history を取得して UI がスムーズに更新される
+- backend 停止時や認証失敗時に Rust 側が適切にハンドルできる
+- 設定によりシミュレーションとバックエンドを切り替えられる
 
 ### Phase 5: chart 用データ供給の強化
 
-- chart 表示に必要な更新頻度とバッファを backend 側で扱う。
-- 必要なら stream 化するが、最初は snapshot ベースを優先する。
-- headless でも再利用できるデータ形に保つ。
+- Phase 4 の gRPC `GetState` 接続を前提に、まずは snapshot / poll ベースのまま chart 用データを強化する。
+- backend 側で history の保持件数、間引き、更新頻度を設定できるようにする。
+- Rust UI 側の chart 表示に必要な最大件数を決め、`TradingState.history` がその要求を満たすようにする。
+- `GetState` の JSON 契約は維持し、`price` / `history` / `timestamp` を中心にした headless でも再利用できるデータ形に保つ。
+- 長時間実行や replay の進行で history が肥大化しないよう、backend 側で上限と変換責務を持つ。
+- stream 化はこの段階では必須にせず、poll ベースで負荷や表示品質に問題が出た場合の後続対応として判断する。
 
 #### Test
 
-- 長時間実行で state が壊れない
-- history が十分に保持される
-- 更新頻度の変更で backend が壊れない
+- 長時間実行で state が壊れず、history が上限内に保たれる
+- chart 表示に必要な件数の history が取得できる
+- history の保持件数、間引き、更新頻度の設定変更で backend が壊れない
+- `GetState` の JSON 契約が Phase 4 と互換のまま維持される
+- Rust UI が取得した `price` / `history` / `timestamp` で chart を更新できる
 
 ## Test Plan
 
