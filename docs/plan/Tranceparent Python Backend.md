@@ -1,6 +1,6 @@
 # Python Backend Migration Plan
 
-`e-station/python` で持っていた Python 実装を、このリポジトリの `python/` ディレクトリへ移植するための段階的な計画です。  
+[e-station/python](C:\Users\sasai\Documents\e-station\python) で持っていた Python 実装を、このリポジトリの `python/` ディレクトリへ移植するための段階的な計画です。  
 最初のゴールは UI 連携ではなく、Rust 側から独立して動く headless な Python バックエンドを先に用意することです。
 
 ## Summary
