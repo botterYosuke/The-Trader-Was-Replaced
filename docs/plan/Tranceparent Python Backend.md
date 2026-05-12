@@ -44,6 +44,7 @@
 
 ### Phase 2: データモデル移植
 
+- Status: 計画済み（詳細は [Phase 2 - Data Model Migration.md](./Phase%202%20-%20Data%20Model%20Migration.md) を参照）。
 - Rust 側の `TradingData` と整合する最小データモデルを Python に置く。
 - `pydantic` で `TradingState` などの明示的な schema を定義し、backend の外部契約を固定する。
 - まずは次を定義する。
