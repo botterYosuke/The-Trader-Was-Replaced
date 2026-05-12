@@ -1,0 +1,18 @@
+[project]
+name = "python"
+version = "0.1.0"
+description = "Add your description here"
+readme = "README.md"
+requires-python = ">=3.13"
+dependencies = [
+    "grpcio>=1.80.0",
+    "grpcio-tools>=1.80.0",
+    "nautilus-trader>=1.226.0",
+    "orjson>=3.11.9",
+    "pydantic>=2.13.4",
+]
+
+[dependency-groups]
+dev = [
+    "pytest>=9.0.3",
+]
