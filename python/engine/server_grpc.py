@@ -2,7 +2,6 @@ import grpc
 from concurrent import futures
 import time
 import logging
-import json
 from .proto import engine_pb2, engine_pb2_grpc
 from .core import DataEngine
 
@@ -19,7 +18,7 @@ class GrpcDataEngineServer(engine_pb2_grpc.HealthServicer, engine_pb2_grpc.DataE
             context.abort(grpc.StatusCode.UNAUTHENTICATED, "Invalid token")
 
         state = self.engine.get_current_state()
-        return engine_pb2.GetStateResponse(json_data=json.dumps(state))
+        return engine_pb2.GetStateResponse(json_data=state.model_dump_json())
 
 def serve(port: int, token: str):
     engine = DataEngine()
@@ -40,4 +39,3 @@ def serve(port: int, token: str):
     except KeyboardInterrupt:
         engine.stop()
         server.stop(0)
-

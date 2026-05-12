@@ -35,6 +35,10 @@ def grpc_server():
             pass
         time.sleep(retry_interval)
     else:
+        # Get stdout/stderr for debugging
+        stdout, stderr = process.communicate(timeout=1.0)
+        print(f"STDOUT: {stdout}")
+        print(f"STDERR: {stderr}")
         process.terminate()
         process.wait()
         pytest.fail("gRPC server failed to start or health check timed out")
@@ -66,8 +70,11 @@ def test_get_state_success(grpc_server):
         assert isinstance(data["history"], list)
         assert all(isinstance(x, (int, float)) for x in data["history"])
         assert data["history"] == [118.0, 119.0, 121.0, 120.5]
-        assert isinstance(data["timer"], (int, float))
-        assert data["timer"] == 42.0
+        
+        # Phase 2 specific checks
+        assert "timestamp" in data
+        assert isinstance(data["timestamp"], float)
+        assert "timer" not in data  # timer should be excluded from DTO
 
 def test_get_state_unauthenticated(grpc_server):
     port, _ = grpc_server

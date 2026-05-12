@@ -1,13 +1,13 @@
 import logging
+import time
+from .models import TradingState
 
 class DataEngine:
-    """
-    Main engine logic to be implemented.
-    In Phase 1, this is a placeholder.
-    """
     def __init__(self):
         logging.info("Initializing DataEngine core")
         self.is_running = False
+        self._price = 120.5
+        self._history = [118.0, 119.0, 121.0, 120.5]
 
     def start(self):
         logging.info("Starting DataEngine core")
@@ -17,10 +17,9 @@ class DataEngine:
         logging.info("Stopping DataEngine core")
         self.is_running = False
 
-    def get_current_state(self):
-        # Placeholder for actual data retrieval
-        return {
-            "price": 120.5,
-            "history": [118.0, 119.0, 121.0, 120.5],
-            "timer": 42.0
-        }
+    def get_current_state(self) -> TradingState:
+        return TradingState(
+            price=self._price,
+            history=self._history,
+            timestamp=time.time()
+        )
