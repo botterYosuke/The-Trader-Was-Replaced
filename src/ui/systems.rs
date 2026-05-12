@@ -1,4 +1,5 @@
 use bevy::prelude::*;
+use bevy_vector_shapes::prelude::*;
 use crate::trading::TradingData;
 use crate::ui::components::{PriceDisplay, WindowRoot};
 
@@ -17,14 +18,17 @@ pub fn ui_update_system(
 }
 
 pub fn chart_rendering_system(
-    mut gizmos: Gizmos,
+    mut painter: ShapePainter,
     data: Res<TradingData>,
     window_query: Query<&Transform, With<WindowRoot>>,
 ) {
+    painter.set_2d();
     if data.history.len() < 2 { return; }
 
     for transform in &window_query {
+        painter.set_translation(Vec3::ZERO);
         let base_pos = transform.translation.truncate() + Vec2::new(-180.0, -50.0);
+        let z = transform.translation.z + 0.1;
 
         let max_price = data.history.iter().cloned().fold(f32::NEG_INFINITY, f32::max).max(105.0);
         let min_price = data.history.iter().cloned().fold(f32::INFINITY, f32::min).min(95.0);
@@ -39,15 +43,25 @@ pub fn chart_rendering_system(
             points.push(base_pos + Vec2::new(x, y));
         }
 
-        // Draw line segments with Gizmos
+        // Draw smooth lines with ShapePainter
+        painter.thickness = 3.0;
+        painter.color = Color::srgb(0.0, 0.8, 1.0);
+        
         for window in points.windows(2) {
-            gizmos.line_2d(window[0], window[1], Color::srgb(0.0, 0.8, 1.0));
+            painter.line(
+                Vec3::new(window[0].x, window[0].y, z),
+                Vec3::new(window[1].x, window[1].y, z),
+            );
         }
         
-        // Add some "Wow" factor: Glowing end point
+        // Add "Wow" factor: Glowing end point
         if let Some(&last) = points.last() {
-            gizmos.circle_2d(last, 4.0, Color::srgb(1.0, 1.0, 1.0));
-            gizmos.circle_2d(last, 8.0, Color::srgba(0.0, 0.8, 1.0, 0.4));
+            painter.set_translation(Vec3::new(last.x, last.y, z + 0.1));
+            painter.color = Color::WHITE;
+            painter.circle(4.0);
+            
+            painter.color = Color::srgba(0.0, 0.8, 1.0, 0.4);
+            painter.circle(8.0);
         }
     }
 }
