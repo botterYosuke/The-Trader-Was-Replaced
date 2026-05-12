@@ -6,19 +6,19 @@
 ## Summary
 
 - Python 実装を `The-Trader-Was-Replaced/python` に新設する。
-- まずは headless で起動できる最小バックエンドを作る。
-- その後、Rust 側は Python バックエンドの API を読む構成に寄せていく。
+- Phase 1 では、gRPC で起動できる headless バックエンドを用意した。
+- その後、Rust 側は Python バックエンドの gRPC API を読む構成に寄せていく。
 - 最後に、replay / snapshot / chart 用データの供給を Python 側へ段階的に移す。
 
 ## Key Changes
 
 - `python/` を新しい Python 実装のルートにする。
-- まずは headless 起動を優先し、UI は後回しにする。
+- まずは headless 起動と gRPC API を優先し、UI は後回しにする。
 - backend の責務を次の順で移す。
   - 基本のマーケットデータ
   - replay / session / buffer
   - データ変換と永続化
-  - Rust から読むチャート用 API
+  - Rust から読むチャート用 gRPC API
 - Rust 側は当面、既存の擬似価格生成を残しつつ、Python backend 接続の土台を作る。
 - その後、`src/trading.rs` の責務を Python 由来のデータに置き換える。
 
@@ -26,9 +26,10 @@
 
 ### Phase 1: headless Python backend の最小起動
 
+- Status: 完了。
 - `python/` 配下に最小の Python backend を作る。
 - CLI で headless モードを起動できるようにする。
-- 起動時に次を確認できるようにする。
+- gRPC transport で起動し、起動時に次を確認できるようにする。
   - 設定読み込み
   - モデル初期化
   - 簡単な健康状態レスポンス
@@ -38,28 +39,34 @@
 #### Test
 
 - backend が CLI で起動できる
-- health endpoint が応答する
+- gRPC health endpoint が応答する
 - sample state が返る
 
 ### Phase 2: データモデル移植
 
 - Rust 側の `TradingData` と整合する最小データモデルを Python に置く。
+- `pydantic` で `TradingState` などの明示的な schema を定義し、backend の外部契約を固定する。
 - まずは次を定義する。
   - `price`
   - `history`
   - `timestamp`
+- Rust 側の `timer` は Bevy 内部の更新制御なので、Python API の外部契約には出さない。
+- sample state は dict の直書きではなく、schema を通した値として返す。
 - 変換ロジックは UI ではなく backend の責務として持つ。
 
 #### Test
 
 - schema の妥当性を検証できる
+- sample state が schema validation を通る
 - 既存の sample JSON が正しい形で読める
 - Rust 側が期待する最小項目を出せる
+- 不正な price / history / timestamp を拒否できる
 
 ### Phase 3: replay / snapshot 対応
 
 - headless backend が replay データから state を生成できるようにする。
 - snapshot の読み込みだけでも state を復元できるようにする。
+- 復元結果は Phase 2 の `TradingState` schema を必ず通す。
 - この段階では live trading は扱わず、決定論的な入力だけを使う。
 
 #### Test
@@ -71,14 +78,16 @@
 ### Phase 4: Rust 接続
 
 - Rust 側に backend 接続層を追加する。
-- まずは poll ベースの local HTTP 経由でつなぐ。
+- まずは poll ベースの gRPC `GetState` 経由でつなぐ。
+- 認証 token、port、backend 起動失敗時の扱いを Rust 側の設定に入れる。
 - Rust の既存シミュレーションは、この段階で Python backend データに置き換える。
 
 #### Test
 
-- Rust が Python backend に接続できる
+- Rust が Python backend の gRPC API に接続できる
 - price / history を取得して画面更新できる
 - backend 停止時に Rust が適切に失敗する
+- token 不一致時に Rust 側が認証失敗として扱える
 
 ### Phase 5: chart 用データ供給の強化
 
@@ -98,7 +107,7 @@
 - 最低限、次を通す。
   1. Python backend 単体起動
   2. Python の replay / snapshot 生成
-  3. Rust からの接続
+  3. Rust からの gRPC 接続
   4. Rust UI での表示更新
 - 追加で次の失敗系も確認する。
   - backend 起動失敗
@@ -111,4 +120,5 @@
 - live trading は当面扱わず、headless replay / snapshot を先に固める。
 - UI 全面移植は後回しにし、まずは chart に必要な backend データだけを優先する。
 - Rust 側の既存シミュレーションは、一旦残して段階的に Python へ寄せる。
-- 通信は最初、コストの低い local HTTP ベースで進める。
+- 通信は Phase 1 で入れた gRPC ベースで進める。
+- Python API の外部契約は `price` / `history` / `timestamp` を中心にし、Rust 側固有の `Timer` などは backend schema に持ち込まない。
