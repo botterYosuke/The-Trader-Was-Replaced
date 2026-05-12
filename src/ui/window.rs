@@ -1,5 +1,5 @@
 use bevy::prelude::*;
-use crate::ui::components::{WindowRoot, TitleBar, PriceDisplay, WindowManager};
+use crate::ui::components::{WindowRoot, TitleBar, PriceDisplay, WindowManager, StatusIndicator};
 use crate::ui::button::spawn_button;
 use crate::ui::components::TradeButton;
 
@@ -12,7 +12,7 @@ pub fn spawn_trader_window(commands: &mut Commands, position: Vec2) {
     // Window Root
     let window_id = commands.spawn((
         Sprite {
-            color: Color::srgba(0.07, 0.07, 0.12, 0.85), // Darker, slightly more transparent
+            color: Color::srgba(0.07, 0.07, 0.12, 0.85),
             custom_size: Some(Vec2::new(400.0, 500.0)),
             ..default()
         },
@@ -20,15 +20,14 @@ pub fn spawn_trader_window(commands: &mut Commands, position: Vec2) {
         WindowRoot,
     ))
     .observe(|trigger: Trigger<Pointer<Down>>, mut query: Query<&mut Transform, With<WindowRoot>>, mut wm: ResMut<WindowManager>| {
-        // Bring to front
-        wm.max_z += 2.0; // Increment by 2 to account for children
+        wm.max_z += 2.0;
         if let Ok(mut transform) = query.get_mut(trigger.entity()) {
             transform.translation.z = 10.0 + wm.max_z;
         }
     })
     .id();
 
-    // Inner Glow / Highlight
+    // Inner Glow
     commands.spawn((
         Sprite {
             color: Color::srgba(1.0, 1.0, 1.0, 0.05),
@@ -38,7 +37,7 @@ pub fn spawn_trader_window(commands: &mut Commands, position: Vec2) {
         Transform::from_xyz(0.0, 0.0, 0.01),
     )).set_parent(window_id);
 
-    // Rim Light / Outer Border
+    // Rim Light
     commands.spawn((
         Sprite {
             color: Color::srgba(0.0, 0.8, 1.0, 0.4),
@@ -48,7 +47,7 @@ pub fn spawn_trader_window(commands: &mut Commands, position: Vec2) {
         Transform::from_xyz(0.0, 0.0, -0.01),
     )).set_parent(window_id);
 
-    // Title Bar (Draggable area)
+    // Title Bar
     let title_bar = commands.spawn((
         Sprite {
             color: Color::srgba(0.1, 0.1, 0.2, 1.0),
@@ -68,6 +67,17 @@ pub fn spawn_trader_window(commands: &mut Commands, position: Vec2) {
         }
     })
     .id();
+
+    // Status Indicator
+    commands.spawn((
+        Sprite {
+            color: Color::srgb(0.5, 0.5, 0.5), // Initial gray
+            custom_size: Some(Vec2::new(10.0, 10.0)),
+            ..default()
+        },
+        Transform::from_xyz(-180.0, 0.0, 0.1),
+        StatusIndicator,
+    )).set_parent(title_bar);
 
     // Title Text
     let title_text = commands.spawn((

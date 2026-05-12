@@ -1,19 +1,23 @@
-use bevy::prelude::*;
-
 pub mod components;
+pub mod systems;
 pub mod window;
 pub mod button;
-pub mod systems;
+
+use bevy::prelude::*;
+use crate::ui::systems::{update_price_display, button_system, update_status_indicator};
+use crate::ui::window::setup_ui;
+use crate::ui::components::WindowManager;
 
 pub struct UiPlugin;
 
 impl Plugin for UiPlugin {
     fn build(&self, app: &mut App) {
-        app.init_resource::<components::WindowManager>()
-            .add_systems(Startup, window::setup_ui)
+        app.init_resource::<WindowManager>()
+            .add_systems(Startup, setup_ui)
             .add_systems(Update, (
-                systems::ui_update_system,
-                systems::chart_rendering_system,
+                update_price_display,
+                button_system,
+                update_status_indicator,
             ));
     }
 }

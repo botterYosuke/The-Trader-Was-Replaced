@@ -14,6 +14,9 @@ pub struct TitleBar;
 #[derive(Component)]
 pub struct PriceDisplay;
 
+#[derive(Component)]
+pub struct StatusIndicator;
+
 #[derive(Component, Clone, Copy)]
 pub enum TradeButton {
     Buy,

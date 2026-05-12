@@ -7,11 +7,20 @@ pub mod engine {
     tonic::include_proto!("engine");
 }
 
+pub use engine::{StartRequest, StopRequest};
+
 #[derive(Debug, Serialize, Deserialize, Clone)]
 pub struct BackendTradingState {
     pub price: f32,
     pub history: Vec<f32>,
     pub timestamp: f64,
+}
+
+#[derive(Resource, Default)]
+pub struct BackendStatus {
+    pub connected: bool,
+    pub running: bool,
+    pub last_error: Option<String>,
 }
 
 #[derive(Resource)]
@@ -108,8 +117,10 @@ pub fn backend_update_system(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use serial_test::serial;
 
     #[test]
+    #[serial]
     fn test_settings_from_env_defaults() {
         unsafe {
             std::env::remove_var("BACKEND_ENABLED");
@@ -121,6 +132,7 @@ mod tests {
     }
 
     #[test]
+    #[serial]
     fn test_settings_from_env_custom() {
         unsafe {
             std::env::set_var("BACKEND_ENABLED", "true");

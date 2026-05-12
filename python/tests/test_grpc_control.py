@@ -23,9 +23,9 @@ def grpc_server(csv_file):
     server = grpc.server(futures.ThreadPoolExecutor(max_workers=2))
     servicer = GrpcDataEngineServer(token, engine)
     engine_pb2_grpc.add_DataEngineServicer_to_server(servicer, server)
+    engine_pb2_grpc.add_HealthServicer_to_server(servicer, server)
     
-    port = 50051
-    server.add_insecure_port(f'[::]:{port}')
+    port = server.add_insecure_port('[::]:0')
     server.start()
     
     ticker_thread = threading.Thread(
@@ -38,6 +38,14 @@ def grpc_server(csv_file):
     yield (port, token, engine)
     
     server.stop(0)
+
+def test_grpc_health_check(grpc_server):
+    port, _, _ = grpc_server
+    channel = grpc.insecure_channel(f'localhost:{port}')
+    health_stub = engine_pb2_grpc.HealthStub(channel)
+    
+    response = health_stub.Check(engine_pb2.HealthCheckRequest())
+    assert response.status == engine_pb2.HealthCheckResponse.SERVING
 
 def test_grpc_control_flow(grpc_server):
     port, token, engine = grpc_server

@@ -1,67 +1,67 @@
 use bevy::prelude::*;
-use bevy_vector_shapes::prelude::*;
-use crate::trading::TradingData;
-use crate::ui::components::{PriceDisplay, WindowRoot};
+use crate::trading::{TradingData, TradingSettings, BackendStatus};
+use crate::ui::components::{PriceDisplay, StatusIndicator};
 
-pub fn ui_update_system(
+pub fn update_price_display(
     data: Res<TradingData>,
-    mut query: Query<(&mut Text2d, &mut TextColor), With<PriceDisplay>>,
+    mut query: Query<&mut Text2d, With<PriceDisplay>>,
 ) {
-    for (mut text, mut color) in &mut query {
+    for mut text in query.iter_mut() {
         text.0 = format!("${:.2}", data.price);
-        color.0 = if data.price >= 100.0 {
-            Color::srgb(0.0, 1.0, 0.5)
-        } else {
-            Color::srgb(1.0, 0.2, 0.2)
-        };
     }
 }
 
-pub fn chart_rendering_system(
-    mut painter: ShapePainter,
-    data: Res<TradingData>,
-    window_query: Query<&Transform, With<WindowRoot>>,
+pub fn update_status_indicator(
+    status: Res<BackendStatus>,
+    settings: Res<TradingSettings>,
+    mut query: Query<&mut Sprite, With<StatusIndicator>>,
 ) {
-    painter.set_2d();
-    if data.history.len() < 2 { return; }
-
-    for transform in &window_query {
-        painter.set_translation(Vec3::ZERO);
-        let base_pos = transform.translation.truncate() + Vec2::new(-180.0, -50.0);
-        let z = transform.translation.z + 0.1;
-
-        let max_price = data.history.iter().cloned().fold(f32::NEG_INFINITY, f32::max).max(105.0);
-        let min_price = data.history.iter().cloned().fold(f32::INFINITY, f32::min).min(95.0);
-        let range = (max_price - min_price).max(1.0);
-
-        let x_step = 360.0 / (data.history.len() - 1) as f32;
-        let mut points = Vec::new();
-
-        for (i, &p) in data.history.iter().enumerate() {
-            let x = i as f32 * x_step;
-            let y = (p - min_price) / range * 150.0;
-            points.push(base_pos + Vec2::new(x, y));
+    if !settings.backend_enabled {
+        for mut sprite in query.iter_mut() {
+            sprite.color = Color::srgb(0.3, 0.3, 0.3); // Disabled: Dark Gray
         }
+        return;
+    }
 
-        // Draw smooth lines with ShapePainter
-        painter.thickness = 3.0;
-        painter.color = Color::srgb(0.0, 0.8, 1.0);
-        
-        for window in points.windows(2) {
-            painter.line(
-                Vec3::new(window[0].x, window[0].y, z),
-                Vec3::new(window[1].x, window[1].y, z),
-            );
+    let color = if status.connected {
+        if status.running {
+            Color::srgb(0.0, 1.0, 0.0) // Connected & Running: Green
+        } else {
+            Color::srgb(1.0, 1.0, 0.0) // Connected but Paused: Yellow
         }
-        
-        // Add "Wow" factor: Glowing end point
-        if let Some(&last) = points.last() {
-            painter.set_translation(Vec3::new(last.x, last.y, z + 0.1));
-            painter.color = Color::WHITE;
-            painter.circle(4.0);
-            
-            painter.color = Color::srgba(0.0, 0.8, 1.0, 0.4);
-            painter.circle(8.0);
+    } else {
+        Color::srgb(1.0, 0.0, 0.0) // Error/Disconnected: Red
+    };
+
+    for mut sprite in query.iter_mut() {
+        sprite.color = color;
+    }
+}
+
+pub fn button_system(
+    mut interaction_query: Query<
+        (&Interaction, &mut Sprite, &crate::ui::components::TradeButton),
+        (Changed<Interaction>, With<Button>),
+    >,
+) {
+    for (interaction, mut sprite, button_type) in interaction_query.iter_mut() {
+        match *interaction {
+            Interaction::Pressed => {
+                sprite.color = Color::srgb(1.0, 1.0, 1.0);
+                match button_type {
+                    crate::ui::components::TradeButton::Buy => info!("BUY pressed!"),
+                    crate::ui::components::TradeButton::Sell => info!("SELL pressed!"),
+                }
+            }
+            Interaction::Hovered => {
+                sprite.color = Color::srgb(0.5, 0.5, 0.5);
+            }
+            Interaction::None => {
+                sprite.color = match button_type {
+                    crate::ui::components::TradeButton::Buy => Color::srgb(0.0, 0.8, 0.4),
+                    crate::ui::components::TradeButton::Sell => Color::srgb(0.8, 0.2, 0.2),
+                };
+            }
         }
     }
 }
