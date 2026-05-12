@@ -39,14 +39,27 @@ pub struct TradingSettings {
     pub poll_interval_ms: u64,
 }
 
+impl TradingSettings {
+    pub fn from_env() -> Self {
+        Self {
+            backend_enabled: std::env::var("BACKEND_ENABLED")
+                .map(|v| v.to_lowercase() == "true")
+                .unwrap_or(false),
+            backend_url: std::env::var("BACKEND_URL")
+                .unwrap_or_else(|_| "http://127.0.0.1:19876".to_string()),
+            token: std::env::var("BACKEND_TOKEN")
+                .unwrap_or_else(|_| "dev-token".to_string()),
+            poll_interval_ms: std::env::var("BACKEND_POLL_INTERVAL_MS")
+                .ok()
+                .and_then(|v| v.parse().ok())
+                .unwrap_or(500),
+        }
+    }
+}
+
 impl Default for TradingSettings {
     fn default() -> Self {
-        Self {
-            backend_enabled: false,
-            backend_url: "http://127.0.0.1:50051".to_string(),
-            token: "dev-token".to_string(),
-            poll_interval_ms: 500,
-        }
+        Self::from_env()
     }
 }
 
@@ -78,11 +91,98 @@ pub fn price_simulation_system(
 }
 
 pub fn backend_update_system(
+    settings: Res<TradingSettings>,
     mut data: ResMut<TradingData>,
     mut channel: ResMut<BackendChannel>,
 ) {
+    if !settings.backend_enabled {
+        return;
+    }
+
     while let Ok(state) = channel.rx.try_recv() {
         data.price = state.price;
         data.history = state.history;
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_settings_from_env_defaults() {
+        unsafe {
+            std::env::remove_var("BACKEND_ENABLED");
+            std::env::remove_var("BACKEND_URL");
+        }
+        let settings = TradingSettings::from_env();
+        assert_eq!(settings.backend_enabled, false);
+        assert_eq!(settings.backend_url, "http://127.0.0.1:19876");
+    }
+
+    #[test]
+    fn test_settings_from_env_custom() {
+        unsafe {
+            std::env::set_var("BACKEND_ENABLED", "true");
+            std::env::set_var("BACKEND_URL", "http://localhost:1234");
+        }
+        let settings = TradingSettings::from_env();
+        assert_eq!(settings.backend_enabled, true);
+        assert_eq!(settings.backend_url, "http://localhost:1234");
+    }
+
+    #[test]
+    fn test_backend_update_logic() {
+        let mut world = World::new();
+        let (tx, rx) = mpsc::unbounded_channel();
+        
+        world.insert_resource(TradingData::default());
+        world.insert_resource(TradingSettings {
+            backend_enabled: true,
+            ..TradingSettings::from_env()
+        });
+        world.insert_resource(BackendChannel { rx });
+
+        let new_state = BackendTradingState {
+            price: 150.0,
+            history: vec![140.0, 150.0],
+            timestamp: 12345.67,
+        };
+        tx.send(new_state).unwrap();
+
+        let mut schedule = Schedule::default();
+        schedule.add_systems(backend_update_system);
+        schedule.run(&mut world);
+
+        let data = world.resource::<TradingData>();
+        assert_eq!(data.price, 150.0);
+        assert_eq!(data.history, vec![140.0, 150.0]);
+    }
+
+    #[test]
+    fn test_backend_update_disabled_skips() {
+        let mut world = World::new();
+        let (tx, rx) = mpsc::unbounded_channel();
+        
+        world.insert_resource(TradingData::default());
+        world.insert_resource(TradingSettings {
+            backend_enabled: false,
+            ..TradingSettings::from_env()
+        });
+        world.insert_resource(BackendChannel { rx });
+
+        let new_state = BackendTradingState {
+            price: 150.0,
+            history: vec![140.0, 150.0],
+            timestamp: 12345.67,
+        };
+        tx.send(new_state).unwrap();
+
+        let mut schedule = Schedule::default();
+        schedule.add_systems(backend_update_system);
+        schedule.run(&mut world);
+
+        let data = world.resource::<TradingData>();
+        assert_ne!(data.price, 150.0); // Should not be updated
     }
 }

@@ -42,6 +42,13 @@ fn setup_backend_connection(mut commands: Commands, settings: Res<TradingSetting
     let (tx, rx) = mpsc::unbounded_channel();
     commands.insert_resource(BackendChannel { rx });
 
+    if !settings.backend_enabled {
+        info!("Backend connection is disabled. Running in simulation mode.");
+        return;
+    }
+
+    info!("Backend connection is enabled. Connecting to {}...", settings.backend_url);
+
     let url = settings.backend_url.clone();
     let token = settings.token.clone();
     let interval = settings.poll_interval_ms;
