@@ -69,8 +69,10 @@
 - backend 停止時や認証失敗時に Rust 側が適切にハンドルできる
 - 設定によりシミュレーションとバックエンドを切り替えられる
 
-### Phase 5: chart 用データ供給の強化
+### Phase 5: chart 用データ供給の強化 / Chart & History Contract Alignment
 
+- Status: 実装計画策定済み（詳細は [Phase 5 - Chart Data and Enhanced Backend.md](./Phase%205%20-%20Chart%20Data%20and%20Enhanced%20Backend.md) を参照）。
+- **Goal**: Bevy chart と backend history の契約を固め、Rust 側でも replay / history の時刻を Unix milliseconds ベースで扱えるようにする。
 - Phase 4 の gRPC `GetState` 接続を前提に、まずは snapshot / poll ベースのまま chart 用データを強化する。
 - 着手前に `C:\Users\sasai\Documents\e-station` を詳細に確認し、chart / backend 設定 / timestamp の扱いをこのリポジトリへ移植する。
   - chart 表示: `e-station/src/chart.rs`, `e-station/src/chart/kline.rs`, `e-station/src/widget/chart.rs`, `e-station/src/screen/dashboard/pane.rs`

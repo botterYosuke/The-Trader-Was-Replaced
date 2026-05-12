@@ -1,6 +1,6 @@
 # Transparent Headless Replay Plan
 
-[Tranceparent Python Backend](./Tranceparent%20Python%20Backend.md) の Phase 5 以降を具体化し、`nautilus_trader` を基盤とした本格的な headless replay engine の構築と、その後の実取引（live）連携を目指す計画です。
+[Tranceparent Python Backend](./Tranceparent%20Python%20Backend.md) の Phase 6 以降を具体化し、`nautilus_trader` を基盤とした本格的な headless replay engine の構築と、その後の実取引（live）連携を目指す計画です。
 
 ## Summary
 
@@ -11,15 +11,7 @@
 
 ## Phased Implementation
 
-### Phase 5: Chart & History Contract Alignment
-
-- **Goal**: Bevy chart と backend history の契約（contract）を固め、Rust 側でも時刻を扱えるようにする。
-- **Tasks**:
-  - `e-station` の `chart` / `timestamp` / `history` 管理ロジックを確認。
-  - **Rust Data Alignment**: `TradingData` リソースに `timestamp_ms` (または `replay_time`) を追加し、`backend_update_system` で同期。
-  - Bevy 側の chart system で timestamp ベースの x 軸描画をサポート。
-- **Success Criteria**:
-  - Bevy 側で backend 由来の history データが正確な時間軸（ms単位）で描画・更新されること。
+Phase 5 の chart / history / timestamp 契約は [Tranceparent Python Backend](./Tranceparent%20Python%20Backend.md) に統合済み。この計画では、その後続となる headless replay engine と live 連携を扱う。
 
 ### Phase 6: Nautilus Replay Slice & Engine Control
 
