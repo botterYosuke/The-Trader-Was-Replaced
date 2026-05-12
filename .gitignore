@@ -1,1 +1,9 @@
-/target
+manifest.json
+__pycache__/
+.playwright-mcp/
+.pytest_cache/
+.env
+.cocoindex_code/
+# wandb local artifact dirs created by wandb.init() (publish_run.py / resume scripts)
+wandb/
+target/
