@@ -48,7 +48,13 @@
       "Bash(Get-ChildItem -Path . -Name)",
       "Bash(echo \"Exit code: $?\")",
       "Bash(rm -rf artifacts/jquants-catalog)",
-      "Bash(powershell -ExecutionPolicy Bypass -File scripts/run_replay.ps1 -Strategy python/tests/data/test_strategy_daily.py -RunBufferDir tmp/run-buffer)"
+      "Bash(powershell -ExecutionPolicy Bypass -File scripts/run_replay.ps1 -Strategy python/tests/data/test_strategy_daily.py -RunBufferDir tmp/run-buffer)",
+      "Bash(git checkout *)",
+      "PowerShell(Get-ChildItem -Path \"c:\\\\Users\\\\sasai\\\\Documents\\\\The-Trader-Was-Replaced\" -Recurse -Depth 2 | Where-Object { $_.PSIsContainer } | Select-Object -First 20 FullName)",
+      "Bash(Get-ChildItem -Path \"C:\\\\Users\\\\sasai\\\\Documents\\\\The-Trader-Was-Replaced\\\\scripts\" -Recurse -ErrorAction SilentlyContinue)",
+      "Bash(Select-Object -First 20)",
+      "Bash(grep -E \"\\\\.\\(ps1|sh\\)$\")",
+      "Bash(Remove-Item \"c:\\\\Users\\\\sasai\\\\Documents\\\\The-Trader-Was-Replaced\\\\python\\\\tests\\\\test_phase3.py\", \"c:\\\\Users\\\\sasai\\\\Documents\\\\The-Trader-Was-Replaced\\\\python\\\\tests\\\\test_phase5.py\")"
     ],
     "additionalDirectories": [
       "\\tmp",
