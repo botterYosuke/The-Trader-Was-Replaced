@@ -1,6 +1,11 @@
 import pytest
 
-from engine.jquants_loader import JQuantsLoader, daily_rows_to_ticks, instrument_id_to_jquants_code
+from engine.jquants_loader import (
+    JQuantsLoader,
+    daily_rows_to_ticks,
+    instrument_id_to_jquants_code,
+    minute_rows_to_ticks,
+)
 
 from pathlib import Path
 
@@ -157,7 +162,7 @@ def test_daily_rows_to_ticks_uses_date_and_close():
     assert ticks[0][0] < ticks[1][0]
 
 
-def test_daily_rows_to_ticks_timestamps_are_jst_midnight():
+def test_daily_rows_to_ticks_timestamps_are_jst_1530():
     from zoneinfo import ZoneInfo
     from datetime import datetime
 
@@ -166,8 +171,8 @@ def test_daily_rows_to_ticks_timestamps_are_jst_midnight():
 
     ts = ticks[0][0]
     dt = datetime.fromtimestamp(ts, tz=ZoneInfo("Asia/Tokyo"))
-    assert dt.hour == 0
-    assert dt.minute == 0
+    assert dt.hour == 15
+    assert dt.minute == 30
     assert dt.date().isoformat() == "2024-07-01"
 
 
@@ -186,3 +191,58 @@ def test_load_daily_rows_excludes_other_instruments():
 
     codes = {row["Code"] for row in rows}
     assert codes == {"72030"}
+
+
+@pytest.mark.slow
+def test_load_minute_rows_filters_by_instrument_and_date():
+    loader = JQuantsLoader(str(SAMPLE_DATA))
+
+    rows = loader.load_minute_rows(
+        instrument_id="7203.TSE",
+        start_date="2024-07-01",
+        end_date="2024-07-01",
+    )
+
+    assert len(rows) == 302
+    assert {row["Code"] for row in rows} == {"72030"}
+    assert rows[0]["Time"] == "09:00"
+    assert rows[0]["C"] == "3308"
+    assert rows[1]["Time"] == "09:01"
+    assert rows[1]["C"] == "3301"
+
+
+def test_load_minute_rows_returns_empty_when_no_file(tmp_path):
+    loader = JQuantsLoader(str(tmp_path))
+
+    rows = loader.load_minute_rows(
+        instrument_id="7203.TSE",
+        start_date="2024-07-01",
+        end_date="2024-07-31",
+    )
+
+    assert rows == []
+
+
+def test_minute_rows_to_ticks_uses_close_time_jst():
+    from datetime import datetime
+    from zoneinfo import ZoneInfo
+
+    rows = [
+        {"Date": "2024-07-01", "Time": "09:00", "Code": "72030", "C": "3308"},
+        {"Date": "2024-07-01", "Time": "09:01", "Code": "72030", "C": "3301"},
+    ]
+
+    ticks = minute_rows_to_ticks(rows)
+
+    assert [price for _, price in ticks] == [3308.0, 3301.0]
+    assert ticks[0][0] < ticks[1][0]
+
+    dt = datetime.fromtimestamp(ticks[0][0], tz=ZoneInfo("Asia/Tokyo"))
+    assert dt.hour == 9
+    assert dt.minute == 0
+    assert dt.second == 59
+    assert dt.microsecond == 999999
+
+
+def test_minute_rows_to_ticks_returns_empty_for_empty_input():
+    assert minute_rows_to_ticks([]) == []

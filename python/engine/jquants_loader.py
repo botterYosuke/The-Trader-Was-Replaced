@@ -1,6 +1,6 @@
 import csv
 import gzip
-from datetime import date, datetime
+from datetime import date, datetime, time as dt_time
 from pathlib import Path
 from zoneinfo import ZoneInfo
 
@@ -10,9 +10,18 @@ _JST = ZoneInfo("Asia/Tokyo")
 def daily_rows_to_ticks(rows: list[dict[str, str]]) -> list[tuple[float, float]]:
     ticks = []
     for row in rows:
-        ts = datetime(
-            *date.fromisoformat(row["Date"]).timetuple()[:3], tzinfo=_JST
-        ).timestamp()
+        d = date.fromisoformat(row["Date"])
+        ts = datetime.combine(d, dt_time(15, 30), tzinfo=_JST).timestamp()
+        ticks.append((ts, float(row["C"])))
+    return ticks
+
+
+def minute_rows_to_ticks(rows: list[dict[str, str]]) -> list[tuple[float, float]]:
+    ticks = []
+    for row in rows:
+        d = date.fromisoformat(row["Date"])
+        h, m = map(int, row["Time"].split(":"))
+        ts = datetime.combine(d, dt_time(h, m, 59, 999999), tzinfo=_JST).timestamp()
         ticks.append((ts, float(row["C"])))
     return ticks
 
@@ -70,6 +79,31 @@ class JQuantsLoader:
         rows = []
         for yyyymm in self._iter_yyyymm(start_date, end_date):
             path = self.base_dir / f"equities_bars_daily_{yyyymm}.csv.gz"
+            if not path.exists():
+                continue
+
+            with gzip.open(path, mode="rt", encoding="utf-8", newline="") as f:
+                reader = csv.DictReader(f)
+                for row in reader:
+                    row_date = date.fromisoformat(row["Date"])
+                    if start <= row_date <= end and row["Code"] == code:
+                        rows.append(row)
+
+        return rows
+
+    def load_minute_rows(
+        self,
+        instrument_id: str,
+        start_date: str,
+        end_date: str,
+    ) -> list[dict[str, str]]:
+        code = instrument_id_to_jquants_code(instrument_id)
+        start = date.fromisoformat(start_date)
+        end = date.fromisoformat(end_date)
+
+        rows = []
+        for yyyymm in self._iter_yyyymm(start_date, end_date):
+            path = self.base_dir / f"equities_bars_minute_{yyyymm}.csv.gz"
             if not path.exists():
                 continue
 

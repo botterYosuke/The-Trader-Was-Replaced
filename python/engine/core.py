@@ -5,7 +5,8 @@ import time
 from typing import Literal, Optional
 
 from .models import EngineSnapshot, HistoryPoint, TradingState
-from .replay import BaseReplayProvider
+from .reducer import KlineUpdate, ReducerState, apply_event
+from .replay import BaseReplayProvider, JQuantsDailyReplayProvider, JQuantsMinuteReplayProvider
 
 
 class DataEngine:
@@ -31,32 +32,22 @@ class DataEngine:
 
         # Initialize the first visible state.
         if self._mode == "replay" and self._replay_provider:
-            # Prime replay mode with the first tick so GetState has data immediately.
-            tick = self._replay_provider.get_next_tick()
-            if tick:
-                self._timestamp, self._price = tick
-                self._timestamp_ms = int(self._timestamp * 1000)
-                self._history = [self._price]
-                self._history_points = [
-                    HistoryPoint(timestamp_ms=self._timestamp_ms, price=self._price)
-                ]
-                self._is_exhausted = self._replay_provider.is_exhausted()
-                logging.info(f"Primed replay engine with first tick: {tick}")
-            else:
-                raise ValueError("Replay provider returned no data for priming")
+            self._prime_provider_locked(self._replay_provider)
         else:
             # Static mode fallback kept for Phase 1-5 compatibility.
-            self._price = 120.5
-            self._history = [118.0, 119.0, 121.0, 120.5]
-            self._timestamp = time.time()
-            self._timestamp_ms = int(self._timestamp * 1000)
-            # Assign simple 1-second spaced timestamps for the static history.
-            self._history_points = [
-                HistoryPoint(timestamp_ms=self._timestamp_ms - 3000, price=118.0),
-                HistoryPoint(timestamp_ms=self._timestamp_ms - 2000, price=119.0),
-                HistoryPoint(timestamp_ms=self._timestamp_ms - 1000, price=121.0),
-                HistoryPoint(timestamp_ms=self._timestamp_ms, price=120.5),
-            ]
+            ts_ms = int(time.time() * 1000)
+            self._rs = ReducerState(
+                timestamp_ms=ts_ms,
+                price=120.5,
+                history=[118.0, 119.0, 121.0, 120.5],
+                history_points=[
+                    HistoryPoint(timestamp_ms=ts_ms - 3000, price=118.0),
+                    HistoryPoint(timestamp_ms=ts_ms - 2000, price=119.0),
+                    HistoryPoint(timestamp_ms=ts_ms - 1000, price=121.0),
+                    HistoryPoint(timestamp_ms=ts_ms, price=120.5),
+                ],
+                max_history_len=max_history_len,
+            )
 
     @property
     def is_running(self) -> bool:
@@ -67,6 +58,24 @@ class DataEngine:
     def replay_state(self) -> str:
         with self._lock:
             return self._replay_state
+
+    def _prime_provider_locked(self, provider: BaseReplayProvider) -> None:
+        tick = provider.get_next_tick()
+        if not tick:
+            raise ValueError("Replay provider returned no data for priming")
+        self._replay_provider = provider
+        self._mode = "replay"
+        ts, price = tick
+        ts_ms = int(ts * 1000)
+        self._rs = ReducerState(
+            timestamp_ms=ts_ms,
+            price=price,
+            history=[price],
+            history_points=[HistoryPoint(timestamp_ms=ts_ms, price=price)],
+            max_history_len=self._max_history_len,
+        )
+        self._is_exhausted = provider.is_exhausted()
+        logging.info(f"Primed replay engine with first tick: {tick}")
 
     def start(self):
         with self._lock:
@@ -104,6 +113,25 @@ class DataEngine:
                 return False, "At least one instrument_id is required"
 
             if self._jquants_loader is not None:
+                _PROVIDER_CLASS = {
+                    "Daily": JQuantsDailyReplayProvider,
+                    "Minute": JQuantsMinuteReplayProvider,
+                }
+                if granularity in _PROVIDER_CLASS:
+                    try:
+                        provider = _PROVIDER_CLASS[granularity](
+                            loader=self._jquants_loader,
+                            instrument_id=instrument_ids[0],
+                            start_date=start_date,
+                            end_date=end_date,
+                        )
+                    except ValueError as e:
+                        return False, str(e)
+
+                    self._prime_provider_locked(provider)
+                    self._replay_state = "LOADED"
+                    return True, None
+
                 if self._jquants_loader.check_data_exists(
                     instrument_ids, start_date, end_date, granularity
                 ):
@@ -184,33 +212,16 @@ class DataEngine:
         if self._replay_provider:
             tick = self._replay_provider.get_next_tick()
             if tick:
-                self._timestamp, self._price = tick
-                self._timestamp_ms = int(self._timestamp * 1000)
-                self._history.append(self._price)
-                self._history_points.append(
-                    HistoryPoint(timestamp_ms=self._timestamp_ms, price=self._price)
-                )
-
-                if len(self._history) > self._max_history_len:
-                    self._history.pop(0)
-                    self._history_points.pop(0)
-
+                ts, price = tick
+                apply_event(self._rs, KlineUpdate(timestamp_ms=int(ts * 1000), close=price))
                 self._is_exhausted = self._replay_provider.is_exhausted()
             else:
                 self._is_exhausted = True
                 logging.info("Replay data exhausted")
         else:
-            self._price += random.uniform(-0.5, 0.5)
-            self._timestamp = time.time()
-            self._timestamp_ms = int(self._timestamp * 1000)
-            self._history.append(self._price)
-            self._history_points.append(
-                HistoryPoint(timestamp_ms=self._timestamp_ms, price=self._price)
-            )
-
-            if len(self._history) > self._max_history_len:
-                self._history.pop(0)
-                self._history_points.pop(0)
+            price = self._rs.price + random.uniform(-0.5, 0.5)
+            ts_ms = int(time.time() * 1000)
+            apply_event(self._rs, KlineUpdate(timestamp_ms=ts_ms, close=price))
 
     def step_replay(self) -> tuple[bool, str | None]:
         """Advance one tick while paused, then remain in PAUSED."""
@@ -226,12 +237,13 @@ class DataEngine:
     def get_current_state(self) -> TradingState:
         """Return the current trading state as a read-only snapshot."""
         with self._lock:
+            rs = self._rs
             return TradingState(
-                price=self._price,
-                history=list(self._history),
-                timestamp=self._timestamp,
-                timestamp_ms=self._timestamp_ms,
-                history_points=list(self._history_points),
+                price=rs.price,
+                history=list(rs.history),
+                timestamp=rs.timestamp_ms / 1000.0,
+                timestamp_ms=rs.timestamp_ms,
+                history_points=list(rs.history_points),
             )
 
     def take_snapshot(self) -> EngineSnapshot:
@@ -243,13 +255,14 @@ class DataEngine:
                 source_path = self._replay_provider.file_path
                 replay_index = getattr(self._replay_provider, "current_index", 0)
 
+            rs = self._rs
             return EngineSnapshot(
                 state=TradingState(
-                    price=self._price,
-                    history=list(self._history),
-                    timestamp=self._timestamp,
-                    timestamp_ms=self._timestamp_ms,
-                    history_points=list(self._history_points),
+                    price=rs.price,
+                    history=list(rs.history),
+                    timestamp=rs.timestamp_ms / 1000.0,
+                    timestamp_ms=rs.timestamp_ms,
+                    history_points=list(rs.history_points),
                 ),
                 replay_index=replay_index,
                 source_path=source_path,
@@ -276,25 +289,25 @@ class DataEngine:
                         f"Snapshot source mismatch. Expected {current_path}, got {snapshot.source_path}"
                     )
 
-            self._price = snapshot.state.price
-            self._history = list(snapshot.state.history)
-            self._timestamp = snapshot.state.timestamp
-            self._timestamp_ms = snapshot.state.timestamp_ms or int(
-                self._timestamp * 1000
-            )
+            ts_ms = snapshot.state.timestamp_ms or int(snapshot.state.timestamp * 1000)
 
             if snapshot.state.history_points:
-                self._history_points = list(snapshot.state.history_points)
+                history_points = list(snapshot.state.history_points)
             else:
                 # Older snapshots may not have history_points; reconstruct them.
-                count = len(self._history)
-                self._history_points = [
+                count = len(snapshot.state.history)
+                history_points = [
                     HistoryPoint(
-                        timestamp_ms=self._timestamp_ms - (count - 1 - i) * 1000,
+                        timestamp_ms=ts_ms - (count - 1 - i) * 1000,
                         price=p,
                     )
-                    for i, p in enumerate(self._history)
+                    for i, p in enumerate(snapshot.state.history)
                 ]
+
+            self._rs.price = snapshot.state.price
+            self._rs.timestamp_ms = ts_ms
+            self._rs.history = list(snapshot.state.history)
+            self._rs.history_points = history_points
 
             if self._replay_provider:
                 if hasattr(self._replay_provider, "current_index"):
