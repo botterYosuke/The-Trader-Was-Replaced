@@ -21,7 +21,8 @@
       "Bash(.\\\\.venv\\\\Scripts\\\\python.exe -m pytest python\\\\tests\\\\test_jquants_loader.py -v)",
       "Bash(python -c \"import gzip; f=gzip.open\\('python/tests/test_data/equities_bars_daily_202407.csv.gz','rt'\\); import csv; r=csv.DictReader\\(f\\); print\\(r.fieldnames\\); row=next\\(r\\); print\\(row\\)\")",
       "Bash(python -c ' *)",
-      "Bash(python -c \"print\\(sum\\(1 for _ in open\\(r'c:\\\\Users\\\\sasai\\\\Documents\\\\The-Trader-Was-Replaced\\\\python\\\\tests\\\\strategy_runtime\\\\test_engine_runner.py'\\)\\)\\)\")"
+      "Bash(python -c \"print\\(sum\\(1 for _ in open\\(r'c:\\\\Users\\\\sasai\\\\Documents\\\\The-Trader-Was-Replaced\\\\python\\\\tests\\\\strategy_runtime\\\\test_engine_runner.py'\\)\\)\\)\")",
+      "PowerShell(cd \"c:\\\\Users\\\\sasai\\\\Documents\\\\The-Trader-Was-Replaced\"; $env:PYTHONPATH = \"python\"; uv run python -m engine.strategy_replay run --help)"
     ],
     "additionalDirectories": [
       "\\tmp",
