@@ -35,7 +35,11 @@
       "Bash(Out-Null)",
       "Bash(Write-Output \"ok\")",
       "PowerShell(New-Item -ItemType Directory -Force \"c:\\\\Users\\\\sasai\\\\Documents\\\\The-Trader-Was-Replaced\\\\python\\\\tests\\\\strategy_runtime\\\\fixtures\")",
-      "PowerShell(cd \"c:\\\\Users\\\\sasai\\\\Documents\\\\The-Trader-Was-Replaced\"; $size = \\(Get-ChildItem artifacts/ -Recurse -File | Measure-Object -Property Length -Sum\\).Sum; Write-Host \"Total: $\\([math]::Round\\($size/1KB, 1\\)\\) KB\"; Get-ChildItem artifacts/ -Recurse -File | Select-Object Name, @{N='KB';E={[math]::Round\\($_.Length/1KB,1\\)}} | Format-Table -AutoSize)"
+      "PowerShell(cd \"c:\\\\Users\\\\sasai\\\\Documents\\\\The-Trader-Was-Replaced\"; $size = \\(Get-ChildItem artifacts/ -Recurse -File | Measure-Object -Property Length -Sum\\).Sum; Write-Host \"Total: $\\([math]::Round\\($size/1KB, 1\\)\\) KB\"; Get-ChildItem artifacts/ -Recurse -File | Select-Object Name, @{N='KB';E={[math]::Round\\($_.Length/1KB,1\\)}} | Format-Table -AutoSize)",
+      "Bash(grep -E \"\\\\.py$|^d\")",
+      "Bash(python -m engine.strategy_replay --help)",
+      "Bash(python -m engine.strategy_replay run --help)",
+      "PowerShell($runId = \"1778684774-order_flow_06-1360_TSE\"; $BS = \"C:\\\\Users\\\\sasai\\\\Documents\\\\🐃_blacksheep\"; @\\(\"raw\\\\replay-runs\\\\$runId\\\\meta.json\", \"Silver\\\\runs\\\\$runId\\\\summary.json\", \"wiki\\\\runs\\\\order_flow_06-1778684774.md\"\\) | ForEach-Object { \"$_ : $\\(Test-Path \\(Join-Path $BS $_\\)\\)\" })"
     ],
     "additionalDirectories": [
       "\\tmp",

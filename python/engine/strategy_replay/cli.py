@@ -72,6 +72,18 @@ def _build_parser() -> argparse.ArgumentParser:
         ),
     )
     run_p.add_argument(
+        "--start",
+        default=None,
+        metavar="DATE",
+        help="Override SCENARIO start date (e.g. 2025-01-06). Useful for sweep scripts.",
+    )
+    run_p.add_argument(
+        "--end",
+        default=None,
+        metavar="DATE",
+        help="Override SCENARIO end date (e.g. 2025-01-10). Useful for sweep scripts.",
+    )
+    run_p.add_argument(
         "--verbose", "-v",
         action="store_true",
         help="Enable DEBUG logging.",
@@ -114,7 +126,7 @@ def _cmd_run(args: argparse.Namespace) -> int:
     log.info("loaded strategy: %s  scenario: %s", strategy_cls.__name__,
              scenario.get("instrument") or scenario.get("instruments"))
 
-    # ── Granularity override ──────────────────────────────────────────────────
+    # ── Granularity / start / end overrides ──────────────────────────────────
     if getattr(args, "granularity", None):
         from engine.strategy_runtime.catalog_data_loader import normalize_granularity
         try:
@@ -122,6 +134,10 @@ def _cmd_run(args: argparse.Namespace) -> int:
         except ValueError as exc:
             log.error("invalid --granularity: %s", exc)
             return 1
+    if getattr(args, "start", None):
+        scenario = dict(scenario, start=args.start)
+    if getattr(args, "end", None):
+        scenario = dict(scenario, end=args.end)
 
     # ── Load bars ─────────────────────────────────────────────────────────────
     if args.bars_json:
