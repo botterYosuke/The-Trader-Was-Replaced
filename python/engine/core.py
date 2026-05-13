@@ -4,14 +4,10 @@ import threading
 import time
 from typing import Literal, Optional
 
+from .jquants_to_catalog import ensure_jquants_catalog
 from .models import EngineSnapshot, HistoryPoint, TradingState
 from .reducer import KlineUpdate, ReducerState, ReplayEvent, ReplayTimeUpdated, apply_event
-from .replay import (
-    BaseReplayProvider,
-    JQuantsDailyReplayProvider,
-    JQuantsMinuteReplayProvider,
-    NautilusBarsReplayProvider,
-)
+from .replay import BaseReplayProvider, NautilusBarsReplayProvider
 
 
 class DataEngine:
@@ -21,6 +17,7 @@ class DataEngine:
         max_history_len: int = 1000,
         jquants_loader=None,
         nautilus_catalog_path: Optional[str] = None,
+        jquants_catalog_path: Optional[str] = None,
     ):
         logging.info(
             f"Initializing DataEngine core (max_history_len: {max_history_len})"
@@ -36,6 +33,7 @@ class DataEngine:
         self._max_history_len = max_history_len
         self._jquants_loader = jquants_loader
         self._nautilus_catalog_path = nautilus_catalog_path
+        self._jquants_catalog_path = jquants_catalog_path
         self._event_log: list[ReplayEvent] = []
 
         # Initialize the first visible state.
@@ -152,21 +150,28 @@ class DataEngine:
                 return True, None
 
             if self._jquants_loader is not None:
-                _PROVIDER_CLASS = {
-                    "Daily": JQuantsDailyReplayProvider,
-                    "Minute": JQuantsMinuteReplayProvider,
-                }
-                if granularity not in _PROVIDER_CLASS:
+                if granularity not in ("Daily", "Minute"):
                     return False, f"Unsupported granularity for replay: {granularity!r}"
 
+                if not self._jquants_catalog_path:
+                    return False, "J-Quants catalog path is not configured"
+
                 try:
-                    provider = _PROVIDER_CLASS[granularity](
-                        loader=self._jquants_loader,
+                    result = ensure_jquants_catalog(
+                        base_dir=self._jquants_loader.base_dir,
+                        catalog_path=self._jquants_catalog_path,
                         instrument_id=instrument_ids[0],
                         start_date=start_date,
                         end_date=end_date,
+                        granularity=granularity,
                     )
-                except ValueError as e:
+                    provider = NautilusBarsReplayProvider(
+                        catalog_path=result.catalog_path,
+                        bar_type=result.bar_type,
+                        start=None,
+                        end=None,
+                    )
+                except (ValueError, FileNotFoundError) as e:
                     return False, str(e)
 
                 self._prime_provider_locked(provider)

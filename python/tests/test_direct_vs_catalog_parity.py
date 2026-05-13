@@ -1,42 +1,46 @@
 """
-Parity tests: J-Quants direct route vs Nautilus catalog route.
+Parity tests: legacy JQuants direct provider vs Nautilus catalog route.
 
 Both routes must produce identical prime and step-one values.
-These tests are the safety net for the eventual migration from direct
-JQuantsReplayProvider to NautilusBarsReplayProvider.
+After the migration of DataEngine to catalog-only route, _run_direct uses the
+legacy JQuantsDailyReplayProvider / JQuantsMinuteReplayProvider directly (not
+through DataEngine) so the comparison remains meaningful.
 """
 
 import os
 
 import pytest
 
-from engine.core import DataEngine
 from engine.jquants_loader import JQuantsLoader
 from engine.jquants_to_catalog import convert_daily_to_catalog, convert_minute_to_catalog
+from engine.core import DataEngine
 
 DATA_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "data")
 
 
 def _run_direct(granularity: str, start: str, end: str) -> tuple[float, float]:
-    """Run direct JQuants route; return (prime_price, step_one_price)."""
-    loader = JQuantsLoader(DATA_DIR)
-    engine = DataEngine(jquants_loader=loader)
+    """Run legacy JQuants provider directly; return (prime_price, step_one_price)."""
+    from engine.replay import JQuantsDailyReplayProvider, JQuantsMinuteReplayProvider
 
-    ok, err = engine.load_replay_data(
-        instrument_ids=["7203.TSE"],
+    loader = JQuantsLoader(DATA_DIR)
+    ProviderCls = (
+        JQuantsDailyReplayProvider if granularity == "Daily" else JQuantsMinuteReplayProvider
+    )
+    provider = ProviderCls(
+        loader=loader,
+        instrument_id="7203.TSE",
         start_date=start,
         end_date=end,
-        granularity=granularity,
     )
-    assert ok, err
 
-    prime = engine.get_current_state().price
+    prime_tick = provider.get_next_tick()
+    assert prime_tick is not None
+    prime = prime_tick[4]  # close
 
-    engine.start_engine()
-    engine.pause_replay()
-    engine.step_replay()
+    step_tick = provider.get_next_tick()
+    assert step_tick is not None
+    step_one = step_tick[4]  # close
 
-    step_one = engine.get_current_state().price
     return prime, step_one
 
 

@@ -9,9 +9,10 @@ from engine.reducer import KlineUpdate, ReplayTimeUpdated
 DATA_DIR = Path(__file__).parent / "data"
 
 
-def test_data_engine_load_daily_jquants_primes_and_steps():
+@pytest.mark.slow
+def test_data_engine_load_daily_jquants_primes_and_steps(tmp_path):
     loader = JQuantsLoader(str(DATA_DIR))
-    engine = DataEngine(jquants_loader=loader)
+    engine = DataEngine(jquants_loader=loader, jquants_catalog_path=str(tmp_path / "cat"))
 
     success, error = engine.load_replay_data(
         instrument_ids=["7203.TSE"],
@@ -30,9 +31,10 @@ def test_data_engine_load_daily_jquants_primes_and_steps():
     assert engine.get_current_state().price == 3333.0
 
 
-def test_data_engine_load_daily_exhausts_after_all_ticks():
+@pytest.mark.slow
+def test_data_engine_load_daily_exhausts_after_all_ticks(tmp_path):
     loader = JQuantsLoader(str(DATA_DIR))
-    engine = DataEngine(jquants_loader=loader)
+    engine = DataEngine(jquants_loader=loader, jquants_catalog_path=str(tmp_path / "cat"))
 
     engine.load_replay_data(
         instrument_ids=["7203.TSE"],
@@ -47,9 +49,10 @@ def test_data_engine_load_daily_exhausts_after_all_ticks():
     assert engine.is_exhausted
 
 
-def test_data_engine_load_daily_rejects_second_load_while_loaded():
+@pytest.mark.slow
+def test_data_engine_load_daily_rejects_second_load_while_loaded(tmp_path):
     loader = JQuantsLoader(str(DATA_DIR))
-    engine = DataEngine(jquants_loader=loader)
+    engine = DataEngine(jquants_loader=loader, jquants_catalog_path=str(tmp_path / "cat"))
 
     engine.load_replay_data(
         instrument_ids=["7203.TSE"],
@@ -70,9 +73,10 @@ def test_data_engine_load_daily_rejects_second_load_while_loaded():
     assert "IDLE" in error
 
 
-def test_data_engine_load_minute_primes_and_steps(small_data_dir):
+@pytest.mark.slow
+def test_data_engine_load_minute_primes_and_steps(small_data_dir, tmp_path):
     loader = JQuantsLoader(str(small_data_dir))
-    engine = DataEngine(jquants_loader=loader)
+    engine = DataEngine(jquants_loader=loader, jquants_catalog_path=str(tmp_path / "cat"))
 
     success, error = engine.load_replay_data(
         instrument_ids=["7203.TSE"],
@@ -91,9 +95,10 @@ def test_data_engine_load_minute_primes_and_steps(small_data_dir):
     assert engine.get_current_state().price == 3301.0
 
 
-def test_data_engine_load_minute_exhausts_after_all_ticks(small_data_dir):
+@pytest.mark.slow
+def test_data_engine_load_minute_exhausts_after_all_ticks(small_data_dir, tmp_path):
     loader = JQuantsLoader(str(small_data_dir))
-    engine = DataEngine(jquants_loader=loader)
+    engine = DataEngine(jquants_loader=loader, jquants_catalog_path=str(tmp_path / "cat"))
 
     engine.load_replay_data(
         instrument_ids=["7203.TSE"],
@@ -112,7 +117,7 @@ def test_data_engine_load_minute_exhausts_after_all_ticks(small_data_dir):
 
 def test_data_engine_load_minute_rejects_missing_data(tmp_path):
     loader = JQuantsLoader(str(tmp_path))
-    engine = DataEngine(jquants_loader=loader)
+    engine = DataEngine(jquants_loader=loader, jquants_catalog_path=str(tmp_path / "cat"))
 
     success, error = engine.load_replay_data(
         instrument_ids=["7203.TSE"],
@@ -125,13 +130,14 @@ def test_data_engine_load_minute_rejects_missing_data(tmp_path):
     assert error is not None
 
 
-def test_step_replay_fires_time_updated_then_kline_update():
+@pytest.mark.slow
+def test_step_replay_fires_time_updated_then_kline_update(tmp_path):
     """
     StepReplay が ReplayTimeUpdated -> KlineUpdate の順でイベントを発火することを確認する。
     この順序は Phase 6 計画の「TimeUpdated -> DataUpdated」の契約を保証する。
     """
     loader = JQuantsLoader(str(DATA_DIR))
-    engine = DataEngine(jquants_loader=loader)
+    engine = DataEngine(jquants_loader=loader, jquants_catalog_path=str(tmp_path / "cat"))
 
     engine.load_replay_data(
         instrument_ids=["7203.TSE"],
@@ -152,9 +158,10 @@ def test_step_replay_fires_time_updated_then_kline_update():
     assert new_events[0].timestamp_ms == new_events[1].timestamp_ms
 
 
-def test_event_log_accumulates_across_steps():
+@pytest.mark.slow
+def test_event_log_accumulates_across_steps(tmp_path):
     loader = JQuantsLoader(str(DATA_DIR))
-    engine = DataEngine(jquants_loader=loader)
+    engine = DataEngine(jquants_loader=loader, jquants_catalog_path=str(tmp_path / "cat"))
 
     engine.load_replay_data(
         instrument_ids=["7203.TSE"],
@@ -172,10 +179,11 @@ def test_event_log_accumulates_across_steps():
     assert len(engine.get_event_log()) == 4  # 2 steps accumulated
 
 
-def test_get_current_state_includes_ohlc_after_step():
+@pytest.mark.slow
+def test_get_current_state_includes_ohlc_after_step(tmp_path):
     """StepReplay 後の get_current_state が OHLC フィールドを持つことを確認する。"""
     loader = JQuantsLoader(str(DATA_DIR))
-    engine = DataEngine(jquants_loader=loader)
+    engine = DataEngine(jquants_loader=loader, jquants_catalog_path=str(tmp_path / "cat"))
 
     engine.load_replay_data(
         instrument_ids=["7203.TSE"],
@@ -197,10 +205,11 @@ def test_get_current_state_includes_ohlc_after_step():
     assert state.low <= state.close
 
 
-def test_get_current_state_ohlc_exact_values_from_daily_data():
+@pytest.mark.slow
+def test_get_current_state_ohlc_exact_values_from_daily_data(tmp_path):
     """Daily データの OHLC exact 値を GetState から確認する。"""
     loader = JQuantsLoader(str(DATA_DIR))
-    engine = DataEngine(jquants_loader=loader)
+    engine = DataEngine(jquants_loader=loader, jquants_catalog_path=str(tmp_path / "cat"))
 
     # 2024-07-01 の J-Quants 実データ: O=3325.0 H=3326.0 L=3261.0 C=3284.0
     engine.load_replay_data(
@@ -225,6 +234,24 @@ def test_get_current_state_ohlc_none_in_static_mode():
     assert state.open is None
     assert state.high is None
     assert state.low is None
+
+
+def test_load_replay_data_rejects_missing_catalog_path():
+    """jquants_loader があっても jquants_catalog_path が None なら Daily/Minute は fail する。"""
+    loader = JQuantsLoader(str(DATA_DIR))
+    engine = DataEngine(jquants_loader=loader)  # no jquants_catalog_path
+
+    success, error = engine.load_replay_data(
+        instrument_ids=["7203.TSE"],
+        start_date="2024-07-01",
+        end_date="2024-07-31",
+        granularity="Daily",
+    )
+
+    assert not success
+    assert error is not None
+    assert "catalog path" in error.lower()
+    assert engine.replay_state == "IDLE"
 
 
 def test_load_replay_data_rejects_trade_granularity():
@@ -262,10 +289,11 @@ def test_load_replay_data_rejects_unknown_granularity():
     assert engine.replay_state == "IDLE"
 
 
-def test_prime_does_not_emit_replay_events():
+@pytest.mark.slow
+def test_prime_does_not_emit_replay_events(tmp_path):
     """_prime_provider_locked は event_log にイベントを追加しない。"""
     loader = JQuantsLoader(str(DATA_DIR))
-    engine = DataEngine(jquants_loader=loader)
+    engine = DataEngine(jquants_loader=loader, jquants_catalog_path=str(tmp_path / "cat"))
 
     engine.load_replay_data(
         instrument_ids=["7203.TSE"],
@@ -277,10 +305,11 @@ def test_prime_does_not_emit_replay_events():
     assert engine.get_event_log() == []
 
 
-def test_step_replay_kline_update_has_ohlc():
+@pytest.mark.slow
+def test_step_replay_kline_update_has_ohlc(tmp_path):
     """StepReplay で発火する KlineUpdate が OHLC フィールドを持つことを確認する。"""
     loader = JQuantsLoader(str(DATA_DIR))
-    engine = DataEngine(jquants_loader=loader)
+    engine = DataEngine(jquants_loader=loader, jquants_catalog_path=str(tmp_path / "cat"))
 
     engine.load_replay_data(
         instrument_ids=["7203.TSE"],

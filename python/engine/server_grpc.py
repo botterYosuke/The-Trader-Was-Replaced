@@ -222,6 +222,7 @@ def serve(
     max_history_len: int = 1000,
     advance_interval_sec: float = 1.0,
     jquants_dir: Optional[str] = None,
+    jquants_catalog_path: Optional[str] = None,
 ):
     jquants_loader = JQuantsLoader(jquants_dir) if jquants_dir else None
 
@@ -229,6 +230,7 @@ def serve(
         replay_provider=replay_provider,
         max_history_len=max_history_len,
         jquants_loader=jquants_loader,
+        jquants_catalog_path=jquants_catalog_path,
     )
 
     # Keep replay sessions paused at startup unless explicitly requested.

@@ -10,8 +10,10 @@ import pytest
 
 from engine.core import DataEngine
 from engine.jquants_to_catalog import (
+    JQuantsCatalogResult,
     convert_daily_to_catalog,
     convert_minute_to_catalog,
+    ensure_jquants_catalog,
     instrument_id_to_bar_type,
 )
 from engine.nautilus_catalog_loader import load_bars
@@ -188,3 +190,105 @@ def test_jquants_minute_csv_converted_then_replayed_via_grpc(
     # Step once → second bar closes at 3301.0
     stub.StepReplay(engine_pb2.StepReplayRequest(request_id="r4", token=token))
     assert engine.get_current_state().price == 3301.0
+
+
+# ---------------------------------------------------------------------------
+# ensure_jquants_catalog — fast pure-logic tests (no nautilus, no catalog I/O)
+# ---------------------------------------------------------------------------
+
+
+def test_ensure_jquants_catalog_rejects_trade_granularity(tmp_path):
+    with pytest.raises(ValueError, match="Unsupported granularity"):
+        ensure_jquants_catalog(
+            base_dir=DATA_DIR,
+            catalog_path=tmp_path / "catalog",
+            instrument_id="7203.TSE",
+            start_date="2024-07-01",
+            end_date="2024-07-01",
+            granularity="Trade",
+        )
+
+
+def test_ensure_jquants_catalog_rejects_missing_data(tmp_path):
+    with pytest.raises(ValueError, match="No daily rows"):
+        ensure_jquants_catalog(
+            base_dir=str(tmp_path),  # empty dir → no CSV files
+            catalog_path=tmp_path / "catalog",
+            instrument_id="7203.TSE",
+            start_date="2024-07-01",
+            end_date="2024-07-01",
+            granularity="Daily",
+        )
+
+
+# ---------------------------------------------------------------------------
+# Slow: ensure_jquants_catalog round-trips (Daily + Minute)
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.slow
+def test_ensure_jquants_catalog_daily_returns_result(tmp_path):
+    result = ensure_jquants_catalog(
+        base_dir=DATA_DIR,
+        catalog_path=tmp_path / "catalog",
+        instrument_id="7203.TSE",
+        start_date="2024-07-01",
+        end_date="2024-07-02",
+        granularity="Daily",
+    )
+
+    assert isinstance(result, JQuantsCatalogResult)
+    assert result.bar_type == "7203.TSE-1-DAY-LAST-EXTERNAL"
+    assert result.rows_written == 2
+    assert result.catalog_path  # non-empty resolved path
+
+    # catalog_path in result is ready to pass to load_replay_data
+    loaded = load_bars(result.catalog_path, instrument_ids=[result.bar_type])
+    assert loaded[0].close.as_double() == 3284.0
+
+
+@pytest.mark.slow
+def test_ensure_jquants_catalog_minute_returns_result(tmp_path):
+    result = ensure_jquants_catalog(
+        base_dir=DATA_DIR,
+        catalog_path=tmp_path / "catalog",
+        instrument_id="7203.TSE",
+        start_date="2024-07-01",
+        end_date="2024-07-01",
+        granularity="Minute",
+    )
+
+    assert isinstance(result, JQuantsCatalogResult)
+    assert result.bar_type == "7203.TSE-1-MINUTE-LAST-EXTERNAL"
+    assert result.rows_written >= 1
+    assert result.catalog_path
+
+    loaded = load_bars(result.catalog_path, instrument_ids=[result.bar_type])
+    assert loaded[0].close.as_double() == 3308.0
+
+
+@pytest.mark.slow
+def test_ensure_jquants_catalog_replayed_via_engine(tmp_path):
+    """ensure_jquants_catalog result plugs directly into DataEngine.load_replay_data."""
+    result = ensure_jquants_catalog(
+        base_dir=DATA_DIR,
+        catalog_path=tmp_path / "catalog",
+        instrument_id="7203.TSE",
+        start_date="2024-07-01",
+        end_date="2024-07-02",
+        granularity="Daily",
+    )
+
+    engine = DataEngine()
+    ok, err = engine.load_replay_data(
+        instrument_ids=[result.bar_type],
+        granularity="Daily",
+        catalog_path=result.catalog_path,
+    )
+    assert ok, err
+    assert engine.get_current_state().price == 3284.0
+
+    engine.start_engine()
+    engine.pause_replay()
+    engine.step_replay()
+    assert engine.get_current_state().price == 3333.0

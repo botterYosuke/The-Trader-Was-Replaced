@@ -32,10 +32,13 @@ def static_grpc_server():
 
 
 @pytest.fixture
-def jquants_grpc_server():
+def jquants_grpc_server(tmp_path):
     token = "test-token"
     loader = JQuantsLoader(DATA_DIR)
-    engine = DataEngine(jquants_loader=loader)
+    engine = DataEngine(
+        jquants_loader=loader,
+        jquants_catalog_path=str(tmp_path / "catalog"),
+    )
 
     server = grpc.server(futures.ThreadPoolExecutor(max_workers=2))
     servicer = GrpcDataEngineServer(token, engine)
@@ -69,6 +72,7 @@ def test_grpc_unauthenticated(static_grpc_server):
     assert e.value.code() == grpc.StatusCode.UNAUTHENTICATED
 
 
+@pytest.mark.slow
 def test_grpc_replay_control_flow(jquants_grpc_server):
     """
     Verifies the replay control happy path:
@@ -163,6 +167,7 @@ def test_grpc_step_replay_rejects_when_not_paused(static_grpc_server):
     assert "PAUSED" in resp.error_message
 
 
+@pytest.mark.slow
 def test_grpc_force_stop_replay_returns_to_idle(jquants_grpc_server):
     """ForceStopReplay should return the replay state to IDLE."""
     port, token, _ = jquants_grpc_server
@@ -280,6 +285,7 @@ def test_grpc_set_replay_speed_rejects_zero_multiplier(static_grpc_server):
     assert "multiplier" in resp.error_message
 
 
+@pytest.mark.slow
 def test_grpc_load_replay_data_succeeds_with_jquants_loader(jquants_grpc_server):
     port, token, _ = jquants_grpc_server
     channel = grpc.insecure_channel(f"localhost:{port}")
@@ -300,15 +306,15 @@ def test_grpc_load_replay_data_succeeds_with_jquants_loader(jquants_grpc_server)
     assert resp.current_state == engine_pb2.LOADED
 
 
+@pytest.mark.slow
 def test_grpc_load_replay_data_succeeds_with_daily_granularity(jquants_grpc_server):
     """
-    gRPC の DAILY granularity が equities_bars_daily_YYYYMM.csv.gz を正しく参照することを確認する。
+    gRPC の DAILY granularity が catalog 経由で LOADED になることを確認する。
 
     gRPC request の DAILY
       -> server_grpc.py で "Daily" に変換
-      -> core.py に渡る
-      -> JQuantsLoader が equities_bars_daily_202407.csv.gz を探す
-      -> 見つかるので LOADED
+      -> core.py が ensure_jquants_catalog -> NautilusBarsReplayProvider
+      -> LOADED
     """
     port, token, _ = jquants_grpc_server
     channel = grpc.insecure_channel(f"localhost:{port}")
@@ -376,6 +382,7 @@ def test_grpc_load_replay_data_rejects_second_granularity(jquants_grpc_server):
     assert "not supported" in resp.error_message
 
 
+@pytest.mark.slow
 def test_grpc_daily_replay_advances_with_real_prices(jquants_grpc_server):
     """
     LoadReplayData(DAILY) → StartEngine → PauseReplay → StepReplay で
@@ -409,6 +416,7 @@ def test_grpc_daily_replay_advances_with_real_prices(jquants_grpc_server):
     assert stepped["price"] == 3333.0
 
 
+@pytest.mark.slow
 def test_grpc_daily_step_timestamp_and_history_points_sync(jquants_grpc_server):
     """
     Daily step 後に timestamp_ms と history_points が一致することを確認する。
@@ -529,6 +537,7 @@ def test_grpc_minute_replay_advances_with_real_prices(jquants_grpc_server):
     assert stepped["price"] == 3301.0
 
 
+@pytest.mark.slow
 def test_grpc_stop_engine_aliases_stop_replay(jquants_grpc_server):
     port, token, _ = jquants_grpc_server
     channel = grpc.insecure_channel(f"localhost:{port}")
@@ -574,7 +583,10 @@ def test_grpc_stop_engine_rejects_from_idle(static_grpc_server):
 def test_grpc_load_replay_data_rejects_when_jquants_data_missing(tmp_path):
     token = "test-token"
     loader = JQuantsLoader(str(tmp_path / "missing-j-quants"))
-    engine = DataEngine(jquants_loader=loader)
+    engine = DataEngine(
+        jquants_loader=loader,
+        jquants_catalog_path=str(tmp_path / "catalog"),
+    )
 
     server = grpc.server(futures.ThreadPoolExecutor(max_workers=2))
     servicer = GrpcDataEngineServer(token, engine)
@@ -602,6 +614,7 @@ def test_grpc_load_replay_data_rejects_when_jquants_data_missing(tmp_path):
         assert not resp.success
         assert resp.current_state == engine_pb2.IDLE
         assert resp.error_code == "INVALID_STATE"
-        assert "replay data" in resp.error_message.lower()
+        # ensure_jquants_catalog raises "No daily rows for..." when CSV is missing
+        assert "rows" in resp.error_message.lower()
     finally:
         server.stop(0)
