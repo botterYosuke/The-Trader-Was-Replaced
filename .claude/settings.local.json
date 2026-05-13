@@ -22,7 +22,20 @@
       "Bash(python -c \"import gzip; f=gzip.open\\('python/tests/test_data/equities_bars_daily_202407.csv.gz','rt'\\); import csv; r=csv.DictReader\\(f\\); print\\(r.fieldnames\\); row=next\\(r\\); print\\(row\\)\")",
       "Bash(python -c ' *)",
       "Bash(python -c \"print\\(sum\\(1 for _ in open\\(r'c:\\\\Users\\\\sasai\\\\Documents\\\\The-Trader-Was-Replaced\\\\python\\\\tests\\\\strategy_runtime\\\\test_engine_runner.py'\\)\\)\\)\")",
-      "PowerShell(cd \"c:\\\\Users\\\\sasai\\\\Documents\\\\The-Trader-Was-Replaced\"; $env:PYTHONPATH = \"python\"; uv run python -m engine.strategy_replay run --help)"
+      "PowerShell(cd \"c:\\\\Users\\\\sasai\\\\Documents\\\\The-Trader-Was-Replaced\"; $env:PYTHONPATH = \"python\"; uv run python -m engine.strategy_replay run --help)",
+      "Bash(Get-ChildItem -Path \"c:\\\\Users\\\\sasai\\\\Documents\\\\🐃_blacksheep\")",
+      "Bash(Select-Object Name, PSIsContainer)",
+      "PowerShell(Get-ChildItem -Path \"c:\\\\Users\\\\sasai\\\\Documents\\\\🐃_blacksheep\" -Recurse -Directory | Where-Object {$_.Name -in @\\('tools', 'src', 'lib'\\)} | Select-Object FullName)",
+      "Bash(ls /s/j-quants 2>/dev/null | head -10; ls /s/ 2>/dev/null | head -5)",
+      "Read(//s/j-quants/**)",
+      "Read(//s//**)",
+      "PowerShell(cd \"c:\\\\Users\\\\sasai\\\\Documents\\\\The-Trader-Was-Replaced\"; $env:JQUANTS_CATALOG_PATH=\"C:\\\\Users\\\\sasai\\\\Documents\\\\The-Trader-Was-Replaced\\\\artifacts\\\\jquants-catalog\"; uv run python -m pytest python/tests/strategy_runtime/test_cli.py -v -m slow 2>&1 | Select-Object -Last 25)",
+      "PowerShell(cd \"c:\\\\Users\\\\sasai\\\\Documents\\\\The-Trader-Was-Replaced\"; $env:JQUANTS_CATALOG_PATH=\"C:\\\\Users\\\\sasai\\\\Documents\\\\The-Trader-Was-Replaced\\\\artifacts\\\\jquants-catalog\"; uv run python -m engine.strategy_replay run --strategy \"C:\\\\Users\\\\sasai\\\\Documents\\\\🐃_blacksheep\\\\strategies\\\\mean_reversion_01.py\" --catalog $env:JQUANTS_CATALOG_PATH --granularity Minute 2>&1)",
+      "Bash(New-Item -ItemType Directory -Force \"c:\\\\Users\\\\sasai\\\\Documents\\\\The-Trader-Was-Replaced\\\\python\\\\tests\\\\strategy_runtime\\\\fixtures\")",
+      "Bash(Out-Null)",
+      "Bash(Write-Output \"ok\")",
+      "PowerShell(New-Item -ItemType Directory -Force \"c:\\\\Users\\\\sasai\\\\Documents\\\\The-Trader-Was-Replaced\\\\python\\\\tests\\\\strategy_runtime\\\\fixtures\")",
+      "PowerShell(cd \"c:\\\\Users\\\\sasai\\\\Documents\\\\The-Trader-Was-Replaced\"; $size = \\(Get-ChildItem artifacts/ -Recurse -File | Measure-Object -Property Length -Sum\\).Sum; Write-Host \"Total: $\\([math]::Round\\($size/1KB, 1\\)\\) KB\"; Get-ChildItem artifacts/ -Recurse -File | Select-Object Name, @{N='KB';E={[math]::Round\\($_.Length/1KB,1\\)}} | Format-Table -AutoSize)"
     ],
     "additionalDirectories": [
       "\\tmp",

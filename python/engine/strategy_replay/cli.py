@@ -63,6 +63,15 @@ def _build_parser() -> argparse.ArgumentParser:
         help="Override a strategy parameter (e.g. --strategy-param window=10). Repeatable.",
     )
     run_p.add_argument(
+        "--granularity",
+        default=None,
+        metavar="GRANULARITY",
+        help=(
+            "Override SCENARIO granularity ('Daily' or 'Minute'). "
+            "When omitted, the strategy file's SCENARIO value is used."
+        ),
+    )
+    run_p.add_argument(
         "--verbose", "-v",
         action="store_true",
         help="Enable DEBUG logging.",
@@ -105,6 +114,15 @@ def _cmd_run(args: argparse.Namespace) -> int:
     log.info("loaded strategy: %s  scenario: %s", strategy_cls.__name__,
              scenario.get("instrument") or scenario.get("instruments"))
 
+    # ── Granularity override ──────────────────────────────────────────────────
+    if getattr(args, "granularity", None):
+        from engine.strategy_runtime.catalog_data_loader import normalize_granularity
+        try:
+            scenario = dict(scenario, granularity=normalize_granularity(args.granularity))
+        except ValueError as exc:
+            log.error("invalid --granularity: %s", exc)
+            return 1
+
     # ── Load bars ─────────────────────────────────────────────────────────────
     if args.bars_json:
         bars_by_instrument = _load_bars_from_json(args.bars_json)
@@ -128,6 +146,13 @@ def _cmd_run(args: argparse.Namespace) -> int:
     strategy_init_kwargs: dict = {}
     if extra_params:
         strategy_init_kwargs.update(extra_params)
+
+    _inject_blacksheep_kwargs(
+        strategy_cls=strategy_cls,
+        strategy_path=strategy_path,
+        catalog_path=args.catalog,
+        kwargs=strategy_init_kwargs,
+    )
 
     # ── RunBuffer ─────────────────────────────────────────────────────────────
     from engine.strategy_runtime.run_buffer import RunBuffer, make_run_id, get_run_buffer_base_dir
@@ -232,6 +257,73 @@ def _load_bars_from_json(json_path: str):
             ))
         result[iid] = bars
     return result
+
+
+def _inject_blacksheep_kwargs(
+    *,
+    strategy_cls,
+    strategy_path: Path,
+    catalog_path: str | None,
+    kwargs: dict,
+) -> None:
+    """Inspect strategy_cls.__init__ and inject warmup_loader / universe_json_path.
+
+    Mutates *kwargs* in-place.  Only injects if the parameter exists in the
+    signature AND it is not already set (by --strategy-param or env override).
+    """
+    import inspect
+
+    try:
+        sig = inspect.signature(strategy_cls.__init__)
+    except (ValueError, TypeError):
+        return
+
+    params = set(sig.parameters)
+
+    # ── warmup_loader ─────────────────────────────────────────────────────────
+    if "warmup_loader" in params and "warmup_loader" not in kwargs:
+        if catalog_path:
+            from engine.strategy_runtime.warmup import make_catalog_warmup_loader
+            kwargs["warmup_loader"] = make_catalog_warmup_loader(catalog_path)
+            log.debug("injected catalog warmup_loader from %s", catalog_path)
+        else:
+            # No catalog available: inject a no-op so the strategy won't call
+            # the default jquants_warmup_loader (unavailable in this repo).
+            kwargs["warmup_loader"] = lambda *_a: []
+            log.debug("injected no-op warmup_loader (no --catalog provided)")
+
+    # ── universe_json_path ────────────────────────────────────────────────────
+    if "universe_json_path" in params and "universe_json_path" not in kwargs:
+        # Honour env override first (strategy code does its own env check, but
+        # passing it as a kwarg makes the resolved value visible in logs).
+        import os
+        env_val = os.environ.get("STRATEGY_PARAM_UNIVERSE_JSON_PATH")
+        if env_val:
+            kwargs["universe_json_path"] = env_val
+            log.debug("universe_json_path from env: %s", env_val)
+        else:
+            # Resolve from UNIVERSE_JSON_PATH defined in the strategy module.
+            # strategy_loader already imported the module; get the attr.
+            # We resolve relative to the strategy file's parent.
+            try:
+                import importlib
+                mod_name = f"user_strategy_{strategy_path.stem}"
+                # Module is already in sys.modules from strategy_loader.load()
+                import sys as _sys
+                mod = _sys.modules.get(mod_name)
+                raw_path = getattr(mod, "UNIVERSE_JSON_PATH", None) if mod else None
+                if raw_path:
+                    from engine.strategy_runtime.universe import resolve_universe_json_path
+                    resolved = resolve_universe_json_path(strategy_path, raw_path)
+                    kwargs["universe_json_path"] = str(resolved)
+                    log.debug("universe_json_path resolved: %s", resolved)
+            except Exception as exc:
+                log.debug("could not resolve universe_json_path: %s", exc)
+
+
+def run_command(args: argparse.Namespace) -> int:
+    """Public entry point for direct invocation (e.g. from tests with monkeypatching)."""
+    return _cmd_run(args)
 
 
 def main(argv: list[str] | None = None) -> None:
