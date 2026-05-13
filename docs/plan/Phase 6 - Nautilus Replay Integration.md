@@ -108,21 +108,28 @@ message SetReplaySpeedRequest {
 
 ## 4. 実装ステップ
 
-### 4.1 Step 1: `PAUSED` 状態の定義と基盤
-- `engine.proto`, `schemas.py`, Rust Enum 全てに `PAUSED` を追加。
-- Rust の gRPC mock / integration test を Phase 6 RPC 追加後の `DataEngine` trait に追従させる。
-- MVP 段階では `SimpleCSVProvider` を replay provider として利用し、provider 必須の `LoadReplayData` ガードを先に固める。
-- `jquants_loader.py` 移植と `base_dir` 指定の徹底は、MVP の state machine / gRPC 制御が安定した後に行う。
+### 4.1 Step 1: `PAUSED` 状態の定義と基盤 — **Completed**
 
-### 4.2 Step 2: gRPC 制御 API の実装
-- `StartEngine`, `StopEngine`, `SetReplaySpeed` を含む全コマンドの実装。
-- `e-station` 由来の `request_id` 紐付けと、`ReplayControlResponse` への状態埋め込み。
-- Python `DataEngine` に replay state machine を実装し、Unary gRPC API から同じ状態遷移メソッドを呼ぶ。
-- `StepReplay` は `PAUSED` のみ受理し、1 tick 進めた後も `PAUSED` を維持する。
+- `engine.proto`, `schemas.py` 全てに `PAUSED` を追加済み。
+- Replay state machine (`IDLE / LOADED / RUNNING / PAUSED / STOPPING`) 実装済み。
+- `LoadReplayData`, `StartEngine`, `PauseReplay`, `StepReplay`, `ResumeReplay`, `StopReplay`, `ForceStopReplay` を実装し、provider 必須ガード確認済み。
+- `jquants_loader.py` 移植と `base_dir` 指定の徹底済み。
+- fast / slow テスト分離済み。
 
-### 4.3 Step 3: レースコンディションと順序の保証
-- `StopReplay` が確実に `IDLE` に戻してから応答を返すことを保証。
-- Reducer において `TimeUpdated` -> `DataUpdated` の順序で `TradingState` を更新。
+### 4.2 Step 2: gRPC 制御 API の実装 — **Completed**
+
+- `StartEngine`, `StopEngine`, `SetReplaySpeed`, `PauseReplay`, `ResumeReplay`, `StepReplay`, `StopReplay`, `ForceStopReplay` 全コマンド実装済み。
+- `request_id` 紐付けと `ReplayControlResponse.current_state` 返却済み。
+- Unary gRPC 経由で `DAILY` / `MINUTE` が実データ価格まで進行することを確認済み。
+- `StepReplay` は `PAUSED` のみ受理し、1 tick 進行後も `PAUSED` を維持する。
+
+### 4.3 Step 3: レースコンディションと順序の保証 — **Completed for MVP**
+
+- `StopReplay` が確実に `IDLE` に戻してから応答を返すことを保証済み。
+- `ReplayTimeUpdated -> KlineUpdate` の順序発火を `NautilusReplayRunner` で強制。
+- `ReducerState` を導入し、stale タイムスタンプを無視、同一タイムスタンプは後着優先で処理。
+- `event_log` を追加し、順序検証テストで利用。
+- `prime` は `event_log` に載せない規則を確立。
 
 ## 5. 検証（テスト計画）
 
@@ -136,14 +143,51 @@ message SetReplaySpeedRequest {
 - **StopReplay**: `RUNNING`/`PAUSED` のみ受理。応答前に `IDLE` 復帰。
 - **ForceStopReplay**: 全状態から `IDLE` 復帰。
 
-### 5.2 整合性・互換性テスト
-- **GetState 互換性**: Phase 5 の `price/history/timestamp/timestamp_ms/history_points` 契約が Nautilus モードでも維持されること。
-- **Reducer 堅牢性**: `ReplayTimeUpdated`、`KlineUpdate`、`Trades` の順序が入れ替わっても、最終的な `timestamp_ms` と `history_points` が破綻しないこと。
-- **Deterministic Step**: 1件ずつのデータ進行と `timestamp_ms` の同期。
-- **Auth/Token Test**: Unary 各リクエストのトークン検証。
-- **ForceStop Resilience**: どのような状態からも `IDLE` に復旧できることの確認。
+### 5.2 整合性・互換性テスト — **MVP Completed**
+
+- **GetState 互換性**: Phase 5 の `price/history/timestamp/timestamp_ms/history_points` 契約が Nautilus モードでも維持されること。✅
+- **OHLC fields**: `open/high/low/close` を reducer と `GetState` に追加済み。✅
+- **Reducer 堅牢性**: `ReplayTimeUpdated -> KlineUpdate` 順序の強制、stale event 無視を確認済み。✅
+- **Deterministic Step**: `timestamp_ms` / `history_points` の同期テスト通過済み。✅
+- **Auth/Token Test**: Unary 各リクエストのトークン検証済み。✅
+- **ForceStop Resilience**: 全状態から `IDLE` 復帰を確認済み。✅
+- **Nautilus adapter**: `Bar` / `TradeTick` → reducer event 変換を `nautilus_adapter.py` に実装済み。✅
+- **Nautilus catalog loader**: `ParquetDataCatalog.query(data_cls=Bar, identifiers=[bar_type])` 経由のローダーを `nautilus_catalog_loader.py` に実装済み。✅
+- **J-Quants → catalog 変換**: `jquants_to_catalog.py` の `convert_daily_to_catalog` / `convert_minute_to_catalog` / `ensure_jquants_catalog` 実装済み。✅
+- **DataEngine catalog route 完全置換**: `JQuantsDailyReplayProvider` / `JQuantsMinuteReplayProvider` を廃止し、全 J-Quants replay が catalog route を通ることを確認済み。✅
+- **gRPC catalog ingestion**: `LoadReplayData(catalog_path=..., instrument_ids=[bar_type])` で Nautilus catalog から replay 可能。✅
+- **Trade granularity**: Phase 6 MVP では意図的に対象外とし、`TICK` granularity は reject する。✅
 
 ## 6. 注意点
 
 - **J-Quants Path**: `S:/j-quants` は使用せず、テスト環境でも明示的なパス指定を行う。
 - **Schema Consistency**: `schemas.py` の `ReplayStateName` に `PAUSED` が欠落していた `e-station` の不備を本プロジェクトでは確実に解消する。
+- **catalog path**: `jquants_loader` が設定されている場合、`jquants_catalog_path` は必須。未設定なら `"J-Quants catalog path is not configured"` で fail する。
+- **catalog query**: `catalog.query(data_cls=Bar, identifiers=[str(bar_type)], start=None, end=None)`。日付フィルタは CSV 変換時点で実施済みなので query には渡さない。
+- **ns → ms 変換**: `Bar.ts_event` は nanoseconds。`nautilus_adapter.py` 内で `// 1_000_000` して ms に変換する。他の場所では変換しない。
+- **prime は event_log に載せない**: prime 時の tick は reducer 初期状態の構築に使うが、`event_log` への追記は行わない。
+
+## 7. Phase 6 MVP 到達状況
+
+### 現在の正式データ経路
+
+```text
+CLI / env (--jquants-catalog-path / JQUANTS_CATALOG_PATH)
+-> python -m engine
+-> serve(jquants_dir=..., jquants_catalog_path=...)
+-> DataEngine(jquants_loader=..., jquants_catalog_path=...)
+-> gRPC LoadReplayData(DAILY/MINUTE, instrument_ids=[bar_type])
+-> DataEngine.load_replay_data()
+-> ensure_jquants_catalog()       # CSV -> ParquetDataCatalog
+-> NautilusBarsReplayProvider     # catalog から Bar を読み込み
+-> prime / StepReplay
+-> ReplayTimeUpdated + KlineUpdate
+-> ReducerState
+-> GetState
+```
+
+### Remaining / Next
+
+- **Trade granularity の判断**: `TICK` をいつ、どのような形でサポートするか決定する。現時点では reject。
+- **Optional**: `event_log` を外部に公開する gRPC ストリーム / ポーリング API の追加。
+- **Optional**: catalog replay を本物の `BacktestDataEngine` / `LiveDataEngine` に置き換え（Phase 7 以降）。

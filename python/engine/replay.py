@@ -4,7 +4,6 @@ import math
 from abc import ABC, abstractmethod
 from typing import List, Optional, Tuple
 
-from .jquants_loader import JQuantsLoader, daily_rows_to_ticks, minute_rows_to_ticks
 
 class BaseReplayProvider(ABC):
     """リプレイデータの読み込みとイテレーションの抽象ベースクラス"""
@@ -94,46 +93,6 @@ class SimpleCSVProvider(BaseReplayProvider):
             logging.warning(f"Invalid index for replay provider: {value}")
 
 
-class JQuantsDailyReplayProvider(BaseReplayProvider):
-    def __init__(
-        self,
-        loader: JQuantsLoader,
-        instrument_id: str,
-        start_date: str,
-        end_date: str,
-    ):
-        self._data = daily_rows_to_ticks(
-            loader.load_daily_rows(instrument_id, start_date, end_date)
-        )
-        self._index = 0
-
-        if not self._data:
-            raise ValueError(
-                f"No daily replay data found for {instrument_id}: {start_date}..{end_date}"
-            )
-
-    def get_next_tick(self) -> Optional[Tuple[float, float, float, float, float]]:
-        if self._index < len(self._data):
-            tick = self._data[self._index]
-            self._index += 1
-            return tick
-        return None
-
-    def is_exhausted(self) -> bool:
-        return self._index >= len(self._data)
-
-    @property
-    def current_index(self) -> int:
-        return self._index
-
-    @current_index.setter
-    def current_index(self, value: int):
-        if 0 <= value <= len(self._data):
-            self._index = value
-        else:
-            logging.warning(f"Invalid index for JQuantsDailyReplayProvider: {value}")
-
-
 class NautilusBarsReplayProvider(BaseReplayProvider):
     """
     Replay provider backed by a ParquetDataCatalog.
@@ -199,43 +158,3 @@ class NautilusBarsReplayProvider(BaseReplayProvider):
             self._index = value
         else:
             logging.warning(f"Invalid index for NautilusBarsReplayProvider: {value}")
-
-
-class JQuantsMinuteReplayProvider(BaseReplayProvider):
-    def __init__(
-        self,
-        loader: JQuantsLoader,
-        instrument_id: str,
-        start_date: str,
-        end_date: str,
-    ):
-        self._data = minute_rows_to_ticks(
-            loader.load_minute_rows(instrument_id, start_date, end_date)
-        )
-        self._index = 0
-
-        if not self._data:
-            raise ValueError(
-                f"No minute replay data found for {instrument_id}: {start_date}..{end_date}"
-            )
-
-    def get_next_tick(self) -> Optional[Tuple[float, float, float, float, float]]:
-        if self._index < len(self._data):
-            tick = self._data[self._index]
-            self._index += 1
-            return tick
-        return None
-
-    def is_exhausted(self) -> bool:
-        return self._index >= len(self._data)
-
-    @property
-    def current_index(self) -> int:
-        return self._index
-
-    @current_index.setter
-    def current_index(self, value: int):
-        if 0 <= value <= len(self._data):
-            self._index = value
-        else:
-            logging.warning(f"Invalid index for JQuantsMinuteReplayProvider: {value}")

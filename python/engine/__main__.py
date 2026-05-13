@@ -1,11 +1,12 @@
 import argparse
 import logging
+import os
 import sys
 from .server_grpc import serve
 from .replay import SimpleCSVProvider
 
 
-def main():
+def parse_args(argv=None):
     parser = argparse.ArgumentParser(description="Headless Data Engine Backend")
     parser.add_argument("--port", type=int, default=19876, help="Port to listen on")
     parser.add_argument("--token", type=str, required=True, help="Authentication token")
@@ -48,8 +49,18 @@ def main():
     parser.add_argument(
         "--jquants-dir", type=str, help="Path to J-Quants data directory"
     )
+    parser.add_argument(
+        "--jquants-catalog-path",
+        type=str,
+        default=os.environ.get("JQUANTS_CATALOG_PATH"),
+        help="Path to Nautilus ParquetDataCatalog for J-Quants data (env: JQUANTS_CATALOG_PATH)",
+    )
 
-    args = parser.parse_args()
+    return parser.parse_args(argv)
+
+
+def main():
+    args = parse_args()
 
     logging.basicConfig(
         level=logging.INFO,
@@ -85,6 +96,7 @@ def main():
             max_history_len=args.max_history_len,
             advance_interval_sec=args.advance_interval_sec,
             jquants_dir=args.jquants_dir,
+            jquants_catalog_path=args.jquants_catalog_path,
         )
     else:
         logging.error(f"Unsupported transport: {args.transport}")
