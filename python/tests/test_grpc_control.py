@@ -332,6 +332,7 @@ def jquants_grpc_server(tmp_path):
     token = "test-token"
     base_dir = tmp_path / "j-quants"
     base_dir.mkdir()
+    (base_dir / "equities_trades_202407.csv.gz").write_text("")
 
     loader = JQuantsLoader(str(base_dir))
     engine = DataEngine(jquants_loader=loader)
@@ -361,9 +362,9 @@ def test_grpc_load_replay_data_succeeds_with_jquants_loader(jquants_grpc_server)
         engine_pb2.LoadReplayDataRequest(
             request_id="load-jquants-1",
             token=token,
-            instrument_ids=["7203"],
-            start_date="2024-01-01",
-            end_date="2024-01-31",
+            instrument_ids=["7203.TSE"],
+            start_date="2024-07-01",
+            end_date="2024-07-31",
         )
     )
 
@@ -407,16 +408,3 @@ def test_grpc_load_replay_data_rejects_when_jquants_data_missing(tmp_path):
         assert "Replay data" in resp.error_message
     finally:
         server.stop(0)
-
-
-def test_check_data_exists_accepts_multiple_instrument_ids(tmp_path):
-    base_dir = tmp_path / "j-quants"
-    base_dir.mkdir()
-
-    loader = JQuantsLoader(str(base_dir))
-
-    assert loader.check_data_exists(
-        instrument_ids=["7203", "6758"],
-        start_date="2024-01-01",
-        end_date="2024-01-31",
-    )

@@ -34,6 +34,13 @@ class GrpcDataEngineServer(
             return engine_pb2.STOPPING
         return engine_pb2.IDLE
 
+    def _replay_granularity_name(self, granularity):
+        if granularity == engine_pb2.MINUTE:
+            return "Minute"
+        if granularity == engine_pb2.DAILY:
+            return "Daily"
+        return "Trade"
+
     def Check(self, request, context):
         return engine_pb2.HealthCheckResponse(
             status=engine_pb2.HealthCheckResponse.SERVING
@@ -65,7 +72,10 @@ class GrpcDataEngineServer(
             context.abort(grpc.StatusCode.UNAUTHENTICATED, "Invalid token")
 
         success, error = self.engine.load_replay_data(
-            request.instrument_ids, request.start_date, request.end_date
+            request.instrument_ids,
+            request.start_date,
+            request.end_date,
+            self._replay_granularity_name(request.granularity),
         )
         return engine_pb2.ReplayControlResponse(
             success=success,

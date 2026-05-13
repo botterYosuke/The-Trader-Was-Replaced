@@ -36,6 +36,7 @@ enum ReplayGranularity {
   TICK = 0;
   SECOND = 1;
   MINUTE = 2;
+  DAILY = 3;
 }
 
 service DataEngine {
@@ -93,6 +94,7 @@ message LoadReplayDataRequest {
   repeated string instrument_ids = 2;
   string start_date = 3;
   string end_date = 4;
+  optional ReplayGranularity granularity = 5;
   string token = 10;
 }
 

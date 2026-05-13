@@ -85,6 +85,7 @@ class DataEngine:
         instrument_ids: list[str] | None = None,
         start_date: str = "",
         end_date: str = "",
+        granularity: str = "Trade",
     ) -> tuple[bool, str | None]:
         """
         Static mode uses legacy Start / Stop / GetState for Phase 1-5
@@ -104,7 +105,7 @@ class DataEngine:
 
             if self._jquants_loader is not None:
                 if self._jquants_loader.check_data_exists(
-                    instrument_ids, start_date, end_date
+                    instrument_ids, start_date, end_date, granularity
                 ):
                     self._replay_state = "LOADED"
                     return True, None

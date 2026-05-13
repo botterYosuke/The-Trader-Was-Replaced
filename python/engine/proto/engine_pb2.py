@@ -24,19 +24,19 @@ _sym_db = _symbol_database.Default()
 
 
 
-DESCRIPTOR = _descriptor_pool.Default().AddSerializedFile(b'\n\x0c\x65ngine.proto\x12\x06\x65ngine\"%\n\x12HealthCheckRequest\x12\x0f\n\x07service\x18\x01 \x01(\t\"\x8c\x01\n\x13HealthCheckResponse\x12\x39\n\x06status\x18\x01 \x01(\x0e\x32).engine.HealthCheckResponse.ServingStatus\":\n\rServingStatus\x12\x0b\n\x07UNKNOWN\x10\x00\x12\x0b\n\x07SERVING\x10\x01\x12\x0f\n\x0bNOT_SERVING\x10\x02\" \n\x0fGetStateRequest\x12\r\n\x05token\x18\x01 \x01(\t\"%\n\x10GetStateResponse\x12\x11\n\tjson_data\x18\x01 \x01(\t\"\x1d\n\x0cStartRequest\x12\r\n\x05token\x18\x01 \x01(\t\" \n\rStartResponse\x12\x0f\n\x07success\x18\x01 \x01(\x08\"\x1c\n\x0bStopRequest\x12\r\n\x05token\x18\x01 \x01(\t\"\x1f\n\x0cStopResponse\x12\x0f\n\x07success\x18\x01 \x01(\x08\"\x93\x01\n\x15ReplayControlResponse\x12\x0f\n\x07success\x18\x01 \x01(\x08\x12\x12\n\nrequest_id\x18\x02 \x01(\t\x12*\n\rcurrent_state\x18\x03 \x01(\x0e\x32\x13.engine.EngineState\x12\x12\n\nerror_code\x18\x04 \x01(\t\x12\x15\n\rerror_message\x18\x05 \x01(\t\"x\n\x15LoadReplayDataRequest\x12\x12\n\nrequest_id\x18\x01 \x01(\t\x12\x16\n\x0einstrument_ids\x18\x02 \x03(\t\x12\x12\n\nstart_date\x18\x03 \x01(\t\x12\x10\n\x08\x65nd_date\x18\x04 \x01(\t\x12\r\n\x05token\x18\n \x01(\t\"\xbf\x03\n\x11\x45ngineStartConfig\x12\x15\n\rinstrument_id\x18\x01 \x01(\t\x12\x16\n\x0einstrument_ids\x18\x02 \x03(\t\x12\x17\n\nstart_date\x18\x03 \x01(\tH\x00\x88\x01\x01\x12\x15\n\x08\x65nd_date\x18\x04 \x01(\tH\x01\x88\x01\x01\x12\x19\n\x0cinitial_cash\x18\x05 \x01(\tH\x02\x88\x01\x01\x12\x33\n\x0bgranularity\x18\x06 \x01(\x0e\x32\x19.engine.ReplayGranularityH\x03\x88\x01\x01\x12\x1a\n\rstrategy_file\x18\x07 \x01(\tH\x04\x88\x01\x01\x12!\n\x14strategy_init_kwargs\x18\x08 \x01(\tH\x05\x88\x01\x01\x12\x14\n\x07max_qty\x18\t \x01(\rH\x06\x88\x01\x01\x12\x1d\n\x10max_notional_jpy\x18\n \x01(\x04H\x07\x88\x01\x01\x42\r\n\x0b_start_dateB\x0b\n\t_end_dateB\x0f\n\r_initial_cashB\x0e\n\x0c_granularityB\x10\n\x0e_strategy_fileB\x17\n\x15_strategy_init_kwargsB\n\n\x08_max_qtyB\x13\n\x11_max_notional_jpy\"\x9b\x01\n\x12StartEngineRequest\x12\x12\n\nrequest_id\x18\x01 \x01(\t\x12\"\n\x06\x65ngine\x18\x02 \x01(\x0e\x32\x12.engine.EngineKind\x12\x13\n\x0bstrategy_id\x18\x03 \x01(\t\x12)\n\x06\x63onfig\x18\x04 \x01(\x0b\x32\x19.engine.EngineStartConfig\x12\r\n\x05token\x18\n \x01(\t\"6\n\x11StopEngineRequest\x12\x12\n\nrequest_id\x18\x01 \x01(\t\x12\r\n\x05token\x18\n \x01(\t\"N\n\x15SetReplaySpeedRequest\x12\x12\n\nrequest_id\x18\x01 \x01(\t\x12\x12\n\nmultiplier\x18\x02 \x01(\r\x12\r\n\x05token\x18\n \x01(\t\"7\n\x12PauseReplayRequest\x12\x12\n\nrequest_id\x18\x01 \x01(\t\x12\r\n\x05token\x18\n \x01(\t\"8\n\x13ResumeReplayRequest\x12\x12\n\nrequest_id\x18\x01 \x01(\t\x12\r\n\x05token\x18\n \x01(\t\"6\n\x11StepReplayRequest\x12\x12\n\nrequest_id\x18\x01 \x01(\t\x12\r\n\x05token\x18\n \x01(\t\"6\n\x11StopReplayRequest\x12\x12\n\nrequest_id\x18\x01 \x01(\t\x12\r\n\x05token\x18\n \x01(\t\";\n\x16\x46orceStopReplayRequest\x12\x12\n\nrequest_id\x18\x01 \x01(\t\x12\r\n\x05token\x18\n \x01(\t*J\n\x0b\x45ngineState\x12\x08\n\x04IDLE\x10\x00\x12\n\n\x06LOADED\x10\x01\x12\x0b\n\x07RUNNING\x10\x02\x12\n\n\x06PAUSED\x10\x03\x12\x0c\n\x08STOPPING\x10\x04*)\n\nEngineKind\x12\x0c\n\x08NAUTILUS\x10\x00\x12\r\n\tSIMULATED\x10\x01*5\n\x11ReplayGranularity\x12\x08\n\x04TICK\x10\x00\x12\n\n\x06SECOND\x10\x01\x12\n\n\x06MINUTE\x10\x02\x32J\n\x06Health\x12@\n\x05\x43heck\x12\x1a.engine.HealthCheckRequest\x1a\x1b.engine.HealthCheckResponse2\xde\x06\n\nDataEngine\x12=\n\x08GetState\x12\x17.engine.GetStateRequest\x1a\x18.engine.GetStateResponse\x12\x34\n\x05Start\x12\x14.engine.StartRequest\x1a\x15.engine.StartResponse\x12\x31\n\x04Stop\x12\x13.engine.StopRequest\x1a\x14.engine.StopResponse\x12N\n\x0eLoadReplayData\x12\x1d.engine.LoadReplayDataRequest\x1a\x1d.engine.ReplayControlResponse\x12H\n\x0bStartEngine\x12\x1a.engine.StartEngineRequest\x1a\x1d.engine.ReplayControlResponse\x12\x46\n\nStopEngine\x12\x19.engine.StopEngineRequest\x1a\x1d.engine.ReplayControlResponse\x12N\n\x0eSetReplaySpeed\x12\x1d.engine.SetReplaySpeedRequest\x1a\x1d.engine.ReplayControlResponse\x12H\n\x0bPauseReplay\x12\x1a.engine.PauseReplayRequest\x1a\x1d.engine.ReplayControlResponse\x12J\n\x0cResumeReplay\x12\x1b.engine.ResumeReplayRequest\x1a\x1d.engine.ReplayControlResponse\x12\x46\n\nStepReplay\x12\x19.engine.StepReplayRequest\x1a\x1d.engine.ReplayControlResponse\x12\x46\n\nStopReplay\x12\x19.engine.StopReplayRequest\x1a\x1d.engine.ReplayControlResponse\x12P\n\x0f\x46orceStopReplay\x12\x1e.engine.ForceStopReplayRequest\x1a\x1d.engine.ReplayControlResponseb\x06proto3')
+DESCRIPTOR = _descriptor_pool.Default().AddSerializedFile(b'\n\x0c\x65ngine.proto\x12\x06\x65ngine\"%\n\x12HealthCheckRequest\x12\x0f\n\x07service\x18\x01 \x01(\t\"\x8c\x01\n\x13HealthCheckResponse\x12\x39\n\x06status\x18\x01 \x01(\x0e\x32).engine.HealthCheckResponse.ServingStatus\":\n\rServingStatus\x12\x0b\n\x07UNKNOWN\x10\x00\x12\x0b\n\x07SERVING\x10\x01\x12\x0f\n\x0bNOT_SERVING\x10\x02\" \n\x0fGetStateRequest\x12\r\n\x05token\x18\x01 \x01(\t\"%\n\x10GetStateResponse\x12\x11\n\tjson_data\x18\x01 \x01(\t\"\x1d\n\x0cStartRequest\x12\r\n\x05token\x18\x01 \x01(\t\" \n\rStartResponse\x12\x0f\n\x07success\x18\x01 \x01(\x08\"\x1c\n\x0bStopRequest\x12\r\n\x05token\x18\x01 \x01(\t\"\x1f\n\x0cStopResponse\x12\x0f\n\x07success\x18\x01 \x01(\x08\"\x93\x01\n\x15ReplayControlResponse\x12\x0f\n\x07success\x18\x01 \x01(\x08\x12\x12\n\nrequest_id\x18\x02 \x01(\t\x12*\n\rcurrent_state\x18\x03 \x01(\x0e\x32\x13.engine.EngineState\x12\x12\n\nerror_code\x18\x04 \x01(\t\x12\x15\n\rerror_message\x18\x05 \x01(\t\"\xbd\x01\n\x15LoadReplayDataRequest\x12\x12\n\nrequest_id\x18\x01 \x01(\t\x12\x16\n\x0einstrument_ids\x18\x02 \x03(\t\x12\x12\n\nstart_date\x18\x03 \x01(\t\x12\x10\n\x08\x65nd_date\x18\x04 \x01(\t\x12\x33\n\x0bgranularity\x18\x05 \x01(\x0e\x32\x19.engine.ReplayGranularityH\x00\x88\x01\x01\x12\r\n\x05token\x18\n \x01(\tB\x0e\n\x0c_granularity\"\xbf\x03\n\x11\x45ngineStartConfig\x12\x15\n\rinstrument_id\x18\x01 \x01(\t\x12\x16\n\x0einstrument_ids\x18\x02 \x03(\t\x12\x17\n\nstart_date\x18\x03 \x01(\tH\x00\x88\x01\x01\x12\x15\n\x08\x65nd_date\x18\x04 \x01(\tH\x01\x88\x01\x01\x12\x19\n\x0cinitial_cash\x18\x05 \x01(\tH\x02\x88\x01\x01\x12\x33\n\x0bgranularity\x18\x06 \x01(\x0e\x32\x19.engine.ReplayGranularityH\x03\x88\x01\x01\x12\x1a\n\rstrategy_file\x18\x07 \x01(\tH\x04\x88\x01\x01\x12!\n\x14strategy_init_kwargs\x18\x08 \x01(\tH\x05\x88\x01\x01\x12\x14\n\x07max_qty\x18\t \x01(\rH\x06\x88\x01\x01\x12\x1d\n\x10max_notional_jpy\x18\n \x01(\x04H\x07\x88\x01\x01\x42\r\n\x0b_start_dateB\x0b\n\t_end_dateB\x0f\n\r_initial_cashB\x0e\n\x0c_granularityB\x10\n\x0e_strategy_fileB\x17\n\x15_strategy_init_kwargsB\n\n\x08_max_qtyB\x13\n\x11_max_notional_jpy\"\x9b\x01\n\x12StartEngineRequest\x12\x12\n\nrequest_id\x18\x01 \x01(\t\x12\"\n\x06\x65ngine\x18\x02 \x01(\x0e\x32\x12.engine.EngineKind\x12\x13\n\x0bstrategy_id\x18\x03 \x01(\t\x12)\n\x06\x63onfig\x18\x04 \x01(\x0b\x32\x19.engine.EngineStartConfig\x12\r\n\x05token\x18\n \x01(\t\"6\n\x11StopEngineRequest\x12\x12\n\nrequest_id\x18\x01 \x01(\t\x12\r\n\x05token\x18\n \x01(\t\"N\n\x15SetReplaySpeedRequest\x12\x12\n\nrequest_id\x18\x01 \x01(\t\x12\x12\n\nmultiplier\x18\x02 \x01(\r\x12\r\n\x05token\x18\n \x01(\t\"7\n\x12PauseReplayRequest\x12\x12\n\nrequest_id\x18\x01 \x01(\t\x12\r\n\x05token\x18\n \x01(\t\"8\n\x13ResumeReplayRequest\x12\x12\n\nrequest_id\x18\x01 \x01(\t\x12\r\n\x05token\x18\n \x01(\t\"6\n\x11StepReplayRequest\x12\x12\n\nrequest_id\x18\x01 \x01(\t\x12\r\n\x05token\x18\n \x01(\t\"6\n\x11StopReplayRequest\x12\x12\n\nrequest_id\x18\x01 \x01(\t\x12\r\n\x05token\x18\n \x01(\t\";\n\x16\x46orceStopReplayRequest\x12\x12\n\nrequest_id\x18\x01 \x01(\t\x12\r\n\x05token\x18\n \x01(\t*J\n\x0b\x45ngineState\x12\x08\n\x04IDLE\x10\x00\x12\n\n\x06LOADED\x10\x01\x12\x0b\n\x07RUNNING\x10\x02\x12\n\n\x06PAUSED\x10\x03\x12\x0c\n\x08STOPPING\x10\x04*)\n\nEngineKind\x12\x0c\n\x08NAUTILUS\x10\x00\x12\r\n\tSIMULATED\x10\x01*@\n\x11ReplayGranularity\x12\x08\n\x04TICK\x10\x00\x12\n\n\x06SECOND\x10\x01\x12\n\n\x06MINUTE\x10\x02\x12\t\n\x05\x44\x41ILY\x10\x03\x32J\n\x06Health\x12@\n\x05\x43heck\x12\x1a.engine.HealthCheckRequest\x1a\x1b.engine.HealthCheckResponse2\xde\x06\n\nDataEngine\x12=\n\x08GetState\x12\x17.engine.GetStateRequest\x1a\x18.engine.GetStateResponse\x12\x34\n\x05Start\x12\x14.engine.StartRequest\x1a\x15.engine.StartResponse\x12\x31\n\x04Stop\x12\x13.engine.StopRequest\x1a\x14.engine.StopResponse\x12N\n\x0eLoadReplayData\x12\x1d.engine.LoadReplayDataRequest\x1a\x1d.engine.ReplayControlResponse\x12H\n\x0bStartEngine\x12\x1a.engine.StartEngineRequest\x1a\x1d.engine.ReplayControlResponse\x12\x46\n\nStopEngine\x12\x19.engine.StopEngineRequest\x1a\x1d.engine.ReplayControlResponse\x12N\n\x0eSetReplaySpeed\x12\x1d.engine.SetReplaySpeedRequest\x1a\x1d.engine.ReplayControlResponse\x12H\n\x0bPauseReplay\x12\x1a.engine.PauseReplayRequest\x1a\x1d.engine.ReplayControlResponse\x12J\n\x0cResumeReplay\x12\x1b.engine.ResumeReplayRequest\x1a\x1d.engine.ReplayControlResponse\x12\x46\n\nStepReplay\x12\x19.engine.StepReplayRequest\x1a\x1d.engine.ReplayControlResponse\x12\x46\n\nStopReplay\x12\x19.engine.StopReplayRequest\x1a\x1d.engine.ReplayControlResponse\x12P\n\x0f\x46orceStopReplay\x12\x1e.engine.ForceStopReplayRequest\x1a\x1d.engine.ReplayControlResponseb\x06proto3')
 
 _globals = globals()
 _builder.BuildMessageAndEnumDescriptors(DESCRIPTOR, _globals)
 _builder.BuildTopDescriptorsAndMessages(DESCRIPTOR, 'engine_pb2', _globals)
 if not _descriptor._USE_C_DESCRIPTORS:
   DESCRIPTOR._loaded_options = None
-  _globals['_ENGINESTATE']._serialized_start=1711
-  _globals['_ENGINESTATE']._serialized_end=1785
-  _globals['_ENGINEKIND']._serialized_start=1787
-  _globals['_ENGINEKIND']._serialized_end=1828
-  _globals['_REPLAYGRANULARITY']._serialized_start=1830
-  _globals['_REPLAYGRANULARITY']._serialized_end=1883
+  _globals['_ENGINESTATE']._serialized_start=1781
+  _globals['_ENGINESTATE']._serialized_end=1855
+  _globals['_ENGINEKIND']._serialized_start=1857
+  _globals['_ENGINEKIND']._serialized_end=1898
+  _globals['_REPLAYGRANULARITY']._serialized_start=1900
+  _globals['_REPLAYGRANULARITY']._serialized_end=1964
   _globals['_HEALTHCHECKREQUEST']._serialized_start=24
   _globals['_HEALTHCHECKREQUEST']._serialized_end=61
   _globals['_HEALTHCHECKRESPONSE']._serialized_start=64
@@ -57,28 +57,28 @@ if not _descriptor._USE_C_DESCRIPTORS:
   _globals['_STOPRESPONSE']._serialized_end=405
   _globals['_REPLAYCONTROLRESPONSE']._serialized_start=408
   _globals['_REPLAYCONTROLRESPONSE']._serialized_end=555
-  _globals['_LOADREPLAYDATAREQUEST']._serialized_start=557
-  _globals['_LOADREPLAYDATAREQUEST']._serialized_end=677
-  _globals['_ENGINESTARTCONFIG']._serialized_start=680
-  _globals['_ENGINESTARTCONFIG']._serialized_end=1127
-  _globals['_STARTENGINEREQUEST']._serialized_start=1130
-  _globals['_STARTENGINEREQUEST']._serialized_end=1285
-  _globals['_STOPENGINEREQUEST']._serialized_start=1287
-  _globals['_STOPENGINEREQUEST']._serialized_end=1341
-  _globals['_SETREPLAYSPEEDREQUEST']._serialized_start=1343
-  _globals['_SETREPLAYSPEEDREQUEST']._serialized_end=1421
-  _globals['_PAUSEREPLAYREQUEST']._serialized_start=1423
-  _globals['_PAUSEREPLAYREQUEST']._serialized_end=1478
-  _globals['_RESUMEREPLAYREQUEST']._serialized_start=1480
-  _globals['_RESUMEREPLAYREQUEST']._serialized_end=1536
-  _globals['_STEPREPLAYREQUEST']._serialized_start=1538
-  _globals['_STEPREPLAYREQUEST']._serialized_end=1592
-  _globals['_STOPREPLAYREQUEST']._serialized_start=1594
-  _globals['_STOPREPLAYREQUEST']._serialized_end=1648
-  _globals['_FORCESTOPREPLAYREQUEST']._serialized_start=1650
-  _globals['_FORCESTOPREPLAYREQUEST']._serialized_end=1709
-  _globals['_HEALTH']._serialized_start=1885
-  _globals['_HEALTH']._serialized_end=1959
-  _globals['_DATAENGINE']._serialized_start=1962
-  _globals['_DATAENGINE']._serialized_end=2824
+  _globals['_LOADREPLAYDATAREQUEST']._serialized_start=558
+  _globals['_LOADREPLAYDATAREQUEST']._serialized_end=747
+  _globals['_ENGINESTARTCONFIG']._serialized_start=750
+  _globals['_ENGINESTARTCONFIG']._serialized_end=1197
+  _globals['_STARTENGINEREQUEST']._serialized_start=1200
+  _globals['_STARTENGINEREQUEST']._serialized_end=1355
+  _globals['_STOPENGINEREQUEST']._serialized_start=1357
+  _globals['_STOPENGINEREQUEST']._serialized_end=1411
+  _globals['_SETREPLAYSPEEDREQUEST']._serialized_start=1413
+  _globals['_SETREPLAYSPEEDREQUEST']._serialized_end=1491
+  _globals['_PAUSEREPLAYREQUEST']._serialized_start=1493
+  _globals['_PAUSEREPLAYREQUEST']._serialized_end=1548
+  _globals['_RESUMEREPLAYREQUEST']._serialized_start=1550
+  _globals['_RESUMEREPLAYREQUEST']._serialized_end=1606
+  _globals['_STEPREPLAYREQUEST']._serialized_start=1608
+  _globals['_STEPREPLAYREQUEST']._serialized_end=1662
+  _globals['_STOPREPLAYREQUEST']._serialized_start=1664
+  _globals['_STOPREPLAYREQUEST']._serialized_end=1718
+  _globals['_FORCESTOPREPLAYREQUEST']._serialized_start=1720
+  _globals['_FORCESTOPREPLAYREQUEST']._serialized_end=1779
+  _globals['_HEALTH']._serialized_start=1966
+  _globals['_HEALTH']._serialized_end=2040
+  _globals['_DATAENGINE']._serialized_start=2043
+  _globals['_DATAENGINE']._serialized_end=2905
 # @@protoc_insertion_point(module_scope)
