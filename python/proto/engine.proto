@@ -90,7 +90,7 @@ message ReplayControlResponse {
 
 message LoadReplayDataRequest {
   string request_id = 1;
-  string instrument_id = 2;
+  repeated string instrument_ids = 2;
   string start_date = 3;
   string end_date = 4;
   string token = 10;

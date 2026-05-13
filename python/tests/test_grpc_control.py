@@ -10,6 +10,7 @@ from engine.core import DataEngine
 from engine.proto import engine_pb2, engine_pb2_grpc
 from engine.replay import SimpleCSVProvider
 from engine.server_grpc import GrpcDataEngineServer, advance_loop
+from engine.jquants_loader import JQuantsLoader
 
 
 @pytest.fixture
@@ -129,7 +130,7 @@ def test_grpc_replay_control_flow(grpc_server):
         engine_pb2.LoadReplayDataRequest(
             request_id="load-1",
             token=token,
-            instrument_id="TEST",
+            instrument_ids=["TEST"],
             start_date="2024-01-01",
             end_date="2024-01-02",
         )
@@ -220,7 +221,7 @@ def test_grpc_force_stop_replay_returns_to_idle(grpc_server):
         engine_pb2.LoadReplayDataRequest(
             request_id="load-force-1",
             token=token,
-            instrument_id="TEST",
+            instrument_ids=["TEST"],
             start_date="2024-01-01",
             end_date="2024-01-02",
         )
@@ -256,7 +257,7 @@ def test_grpc_load_replay_data_rejects_without_replay_provider(static_grpc_serve
         engine_pb2.LoadReplayDataRequest(
             request_id="load-without-provider-1",
             token=token,
-            instrument_id="TEST",
+            instrument_ids=["TEST"],
             start_date="2024-01-01",
             end_date="2024-01-02",
         )
@@ -324,3 +325,98 @@ def test_grpc_set_replay_speed_rejects_zero_multiplier(grpc_server):
     assert resp.current_state == engine_pb2.IDLE
     assert resp.error_code == "INVALID_STATE"
     assert "multiplier" in resp.error_message
+
+
+@pytest.fixture
+def jquants_grpc_server(tmp_path):
+    token = "test-token"
+    base_dir = tmp_path / "j-quants"
+    base_dir.mkdir()
+
+    loader = JQuantsLoader(str(base_dir))
+    engine = DataEngine(jquants_loader=loader)
+
+    server = grpc.server(futures.ThreadPoolExecutor(max_workers=2))
+    servicer = GrpcDataEngineServer(token, engine)
+    engine_pb2_grpc.add_DataEngineServicer_to_server(servicer, server)
+    engine_pb2_grpc.add_HealthServicer_to_server(servicer, server)
+
+    port = server.add_insecure_port("[::]:0")
+    server.start()
+
+    yield (port, token, engine)
+
+    server.stop(0)
+
+
+def test_grpc_load_replay_data_succeeds_with_jquants_loader(jquants_grpc_server):
+    """
+    成功テスト
+    """
+    port, token, _ = jquants_grpc_server
+    channel = grpc.insecure_channel(f"localhost:{port}")
+    stub = engine_pb2_grpc.DataEngineStub(channel)
+
+    resp = stub.LoadReplayData(
+        engine_pb2.LoadReplayDataRequest(
+            request_id="load-jquants-1",
+            token=token,
+            instrument_ids=["7203"],
+            start_date="2024-01-01",
+            end_date="2024-01-31",
+        )
+    )
+
+    assert resp.success
+    assert resp.current_state == engine_pb2.LOADED
+
+
+def test_grpc_load_replay_data_rejects_when_jquants_data_missing(tmp_path):
+    """
+    失敗テスト
+    """
+    token = "test-token"
+    loader = JQuantsLoader(str(tmp_path / "missing-j-quants"))
+    engine = DataEngine(jquants_loader=loader)
+
+    server = grpc.server(futures.ThreadPoolExecutor(max_workers=2))
+    servicer = GrpcDataEngineServer(token, engine)
+    engine_pb2_grpc.add_DataEngineServicer_to_server(servicer, server)
+    engine_pb2_grpc.add_HealthServicer_to_server(servicer, server)
+
+    port = server.add_insecure_port("[::]:0")
+    server.start()
+
+    try:
+        channel = grpc.insecure_channel(f"localhost:{port}")
+        stub = engine_pb2_grpc.DataEngineStub(channel)
+
+        resp = stub.LoadReplayData(
+            engine_pb2.LoadReplayDataRequest(
+                request_id="load-jquants-missing-1",
+                token=token,
+                instrument_ids=["7203"],
+                start_date="2024-01-01",
+                end_date="2024-01-31",
+            )
+        )
+
+        assert not resp.success
+        assert resp.current_state == engine_pb2.IDLE
+        assert resp.error_code == "INVALID_STATE"
+        assert "Replay data" in resp.error_message
+    finally:
+        server.stop(0)
+
+
+def test_check_data_exists_accepts_multiple_instrument_ids(tmp_path):
+    base_dir = tmp_path / "j-quants"
+    base_dir.mkdir()
+
+    loader = JQuantsLoader(str(base_dir))
+
+    assert loader.check_data_exists(
+        instrument_ids=["7203", "6758"],
+        start_date="2024-01-01",
+        end_date="2024-01-31",
+    )

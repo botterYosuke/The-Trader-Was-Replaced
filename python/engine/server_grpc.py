@@ -9,6 +9,7 @@ import grpc
 from .core import DataEngine
 from .proto import engine_pb2, engine_pb2_grpc
 from .replay import BaseReplayProvider
+from .jquants_loader import JQuantsLoader
 
 
 class GrpcDataEngineServer(
@@ -63,7 +64,9 @@ class GrpcDataEngineServer(
         if request.token != self.token:
             context.abort(grpc.StatusCode.UNAUTHENTICATED, "Invalid token")
 
-        success, error = self.engine.load_replay_data()
+        success, error = self.engine.load_replay_data(
+            request.instrument_ids, request.start_date, request.end_date
+        )
         return engine_pb2.ReplayControlResponse(
             success=success,
             request_id=request.request_id,
@@ -181,9 +184,14 @@ def serve(
     auto_start: bool = False,
     max_history_len: int = 1000,
     advance_interval_sec: float = 1.0,
+    jquants_dir: Optional[str] = None,
 ):
+    jquants_loader = JQuantsLoader(jquants_dir) if jquants_dir else None
+
     engine = DataEngine(
-        replay_provider=replay_provider, max_history_len=max_history_len
+        replay_provider=replay_provider,
+        max_history_len=max_history_len,
+        jquants_loader=jquants_loader,
     )
 
     # Keep replay sessions paused at startup unless explicitly requested.

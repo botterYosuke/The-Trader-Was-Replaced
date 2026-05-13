@@ -13,6 +13,7 @@ class DataEngine:
         self,
         replay_provider: Optional[BaseReplayProvider] = None,
         max_history_len: int = 1000,
+        jquants_loader=None,
     ):
         logging.info(
             f"Initializing DataEngine core (max_history_len: {max_history_len})"
@@ -26,6 +27,7 @@ class DataEngine:
         )
         self._is_exhausted = False
         self._max_history_len = max_history_len
+        self._jquants_loader = jquants_loader
 
         # Initialize the first visible state.
         if self._mode == "replay" and self._replay_provider:
@@ -78,7 +80,12 @@ class DataEngine:
             self._is_running = False
             self._replay_state = "IDLE"
 
-    def load_replay_data(self) -> tuple[bool, str | None]:
+    def load_replay_data(
+        self,
+        instrument_ids: list[str] | None = None,
+        start_date: str = "",
+        end_date: str = "",
+    ) -> tuple[bool, str | None]:
         """
         Static mode uses legacy Start / Stop / GetState for Phase 1-5
         compatibility. Replay mode uses the Phase 6 replay controls.
@@ -87,11 +94,23 @@ class DataEngine:
             if self._replay_state != "IDLE":
                 return False, "LoadReplayData is only allowed from IDLE"
 
-            if self._replay_provider is None:
-                return False, "Replay provider is not configured"
+            if self._replay_provider is not None:
+                self._replay_state = "LOADED"
+                return True, None
 
-            self._replay_state = "LOADED"
-            return True, None
+            instrument_ids = instrument_ids or []
+            if not instrument_ids:
+                return False, "At least one instrument_id is required"
+
+            if self._jquants_loader is not None:
+                if self._jquants_loader.check_data_exists(
+                    instrument_ids, start_date, end_date
+                ):
+                    self._replay_state = "LOADED"
+                    return True, None
+                return False, "Replay data was not found"
+
+            return False, "Replay provider is not configured"
 
     def start_engine(self) -> tuple[bool, str | None]:
         with self._lock:
