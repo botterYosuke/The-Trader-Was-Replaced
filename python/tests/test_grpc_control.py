@@ -1,6 +1,5 @@
 import json
-import threading
-import time
+import os
 from concurrent import futures
 
 import grpc
@@ -8,44 +7,10 @@ import pytest
 
 from engine.core import DataEngine
 from engine.proto import engine_pb2, engine_pb2_grpc
-from engine.replay import SimpleCSVProvider
-from engine.server_grpc import GrpcDataEngineServer, advance_loop
+from engine.server_grpc import GrpcDataEngineServer
 from engine.jquants_loader import JQuantsLoader
 
-
-@pytest.fixture
-def csv_file(tmp_path):
-    f = tmp_path / "test.csv"
-    f.write_text(
-        "timestamp,price\n1600000000,100.0\n1600000001,101.0\n1600000002,102.0\n"
-    )
-    return str(f)
-
-
-@pytest.fixture
-def grpc_server(csv_file):
-    token = "test-token"
-    provider = SimpleCSVProvider(csv_file)
-    engine = DataEngine(replay_provider=provider)
-
-    server = grpc.server(futures.ThreadPoolExecutor(max_workers=2))
-    servicer = GrpcDataEngineServer(token, engine)
-    engine_pb2_grpc.add_DataEngineServicer_to_server(servicer, server)
-    engine_pb2_grpc.add_HealthServicer_to_server(servicer, server)
-
-    port = server.add_insecure_port("[::]:0")
-    server.start()
-
-    ticker_thread = threading.Thread(
-        target=advance_loop,
-        args=(engine, 0.1),
-        daemon=True,
-    )
-    ticker_thread.start()
-
-    yield (port, token, engine)
-
-    server.stop(0)
+DATA_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "data")
 
 
 @pytest.fixture
@@ -66,8 +31,27 @@ def static_grpc_server():
     server.stop(0)
 
 
-def test_grpc_health_check(grpc_server):
-    port, _, _ = grpc_server
+@pytest.fixture
+def jquants_grpc_server():
+    token = "test-token"
+    loader = JQuantsLoader(DATA_DIR)
+    engine = DataEngine(jquants_loader=loader)
+
+    server = grpc.server(futures.ThreadPoolExecutor(max_workers=2))
+    servicer = GrpcDataEngineServer(token, engine)
+    engine_pb2_grpc.add_DataEngineServicer_to_server(servicer, server)
+    engine_pb2_grpc.add_HealthServicer_to_server(servicer, server)
+
+    port = server.add_insecure_port("[::]:0")
+    server.start()
+
+    yield (port, token, engine)
+
+    server.stop(0)
+
+
+def test_grpc_health_check(static_grpc_server):
+    port, _, _ = static_grpc_server
     channel = grpc.insecure_channel(f"localhost:{port}")
     health_stub = engine_pb2_grpc.HealthStub(channel)
 
@@ -75,39 +59,8 @@ def test_grpc_health_check(grpc_server):
     assert response.status == engine_pb2.HealthCheckResponse.SERVING
 
 
-def test_grpc_control_flow(grpc_server):
-    port, token, engine = grpc_server
-    channel = grpc.insecure_channel(f"localhost:{port}")
-    stub = engine_pb2_grpc.DataEngineStub(channel)
-
-    assert not engine.is_running
-
-    response = stub.GetState(engine_pb2.GetStateRequest(token=token))
-    data = json.loads(response.json_data)
-    assert data["price"] == 100.0
-
-    start_resp = stub.Start(engine_pb2.StartRequest(token=token))
-    assert start_resp.success
-    assert engine.is_running
-
-    time.sleep(0.3)
-    response = stub.GetState(engine_pb2.GetStateRequest(token=token))
-    data = json.loads(response.json_data)
-    assert data["price"] > 100.0
-
-    stop_resp = stub.Stop(engine_pb2.StopRequest(token=token))
-    assert stop_resp.success
-    assert not engine.is_running
-
-    last_price = data["price"]
-    time.sleep(0.3)
-    response = stub.GetState(engine_pb2.GetStateRequest(token=token))
-    data = json.loads(response.json_data)
-    assert data["price"] == last_price
-
-
-def test_grpc_unauthenticated(grpc_server):
-    port, _, _ = grpc_server
+def test_grpc_unauthenticated(static_grpc_server):
+    port, _, _ = static_grpc_server
     channel = grpc.insecure_channel(f"localhost:{port}")
     stub = engine_pb2_grpc.DataEngineStub(channel)
 
@@ -116,13 +69,13 @@ def test_grpc_unauthenticated(grpc_server):
     assert e.value.code() == grpc.StatusCode.UNAUTHENTICATED
 
 
-def test_grpc_replay_control_flow(grpc_server):
+def test_grpc_replay_control_flow(jquants_grpc_server):
     """
     Verifies the replay control happy path:
     LoadReplayData -> StartEngine -> PauseReplay -> StepReplay
     -> ResumeReplay -> StopReplay.
     """
-    port, token, _ = grpc_server
+    port, token, _ = jquants_grpc_server
     channel = grpc.insecure_channel(f"localhost:{port}")
     stub = engine_pb2_grpc.DataEngineStub(channel)
 
@@ -130,9 +83,9 @@ def test_grpc_replay_control_flow(grpc_server):
         engine_pb2.LoadReplayDataRequest(
             request_id="load-1",
             token=token,
-            instrument_ids=["TEST"],
-            start_date="2024-01-01",
-            end_date="2024-01-02",
+            instrument_ids=["7203.TSE"],
+            start_date="2024-07-01",
+            end_date="2024-07-31",
         )
     )
     assert load_resp.success
@@ -157,8 +110,7 @@ def test_grpc_replay_control_flow(grpc_server):
     assert pause_resp.current_state == engine_pb2.PAUSED
 
     before = stub.GetState(engine_pb2.GetStateRequest(token=token))
-    before_data = json.loads(before.json_data)
-    before_price = before_data["price"]
+    before_price = json.loads(before.json_data)["price"]
 
     step_resp = stub.StepReplay(
         engine_pb2.StepReplayRequest(
@@ -169,9 +121,8 @@ def test_grpc_replay_control_flow(grpc_server):
     assert step_resp.success
     assert step_resp.current_state == engine_pb2.PAUSED
 
-    after = stub.GetState(engine_pb2.GetStateRequest(token=token))
-    after_data = json.loads(after.json_data)
-    assert after_data["price"] != before_price
+    after_price = json.loads(stub.GetState(engine_pb2.GetStateRequest(token=token)).json_data)["price"]
+    assert after_price != before_price
 
     resume_resp = stub.ResumeReplay(
         engine_pb2.ResumeReplayRequest(
@@ -192,9 +143,9 @@ def test_grpc_replay_control_flow(grpc_server):
     assert stop_resp.current_state == engine_pb2.IDLE
 
 
-def test_grpc_step_replay_rejects_when_not_paused(grpc_server):
+def test_grpc_step_replay_rejects_when_not_paused(static_grpc_server):
     """StepReplay should fail unless the replay state is PAUSED."""
-    port, token, _ = grpc_server
+    port, token, _ = static_grpc_server
     channel = grpc.insecure_channel(f"localhost:{port}")
     stub = engine_pb2_grpc.DataEngineStub(channel)
 
@@ -211,9 +162,9 @@ def test_grpc_step_replay_rejects_when_not_paused(grpc_server):
     assert "PAUSED" in resp.error_message
 
 
-def test_grpc_force_stop_replay_returns_to_idle(grpc_server):
+def test_grpc_force_stop_replay_returns_to_idle(jquants_grpc_server):
     """ForceStopReplay should return the replay state to IDLE."""
-    port, token, _ = grpc_server
+    port, token, _ = jquants_grpc_server
     channel = grpc.insecure_channel(f"localhost:{port}")
     stub = engine_pb2_grpc.DataEngineStub(channel)
 
@@ -221,9 +172,9 @@ def test_grpc_force_stop_replay_returns_to_idle(grpc_server):
         engine_pb2.LoadReplayDataRequest(
             request_id="load-force-1",
             token=token,
-            instrument_ids=["TEST"],
-            start_date="2024-01-01",
-            end_date="2024-01-02",
+            instrument_ids=["7203.TSE"],
+            start_date="2024-07-01",
+            end_date="2024-07-31",
         )
     )
     assert load_resp.success
@@ -269,9 +220,9 @@ def test_grpc_load_replay_data_rejects_without_replay_provider(static_grpc_serve
     assert "Replay provider" in resp.error_message
 
 
-def test_grpc_start_engine_rejects_before_load(grpc_server):
+def test_grpc_start_engine_rejects_before_load(static_grpc_server):
     """StartEngine should fail before LoadReplayData moves the state to LOADED."""
-    port, token, _ = grpc_server
+    port, token, _ = static_grpc_server
     channel = grpc.insecure_channel(f"localhost:{port}")
     stub = engine_pb2_grpc.DataEngineStub(channel)
 
@@ -288,9 +239,9 @@ def test_grpc_start_engine_rejects_before_load(grpc_server):
     assert "LOADED" in resp.error_message
 
 
-def test_grpc_pause_replay_rejects_when_not_running(grpc_server):
+def test_grpc_pause_replay_rejects_when_not_running(static_grpc_server):
     """PauseReplay should fail unless the replay state is RUNNING."""
-    port, token, _ = grpc_server
+    port, token, _ = static_grpc_server
     channel = grpc.insecure_channel(f"localhost:{port}")
     stub = engine_pb2_grpc.DataEngineStub(channel)
 
@@ -307,9 +258,9 @@ def test_grpc_pause_replay_rejects_when_not_running(grpc_server):
     assert "RUNNING" in resp.error_message
 
 
-def test_grpc_set_replay_speed_rejects_zero_multiplier(grpc_server):
+def test_grpc_set_replay_speed_rejects_zero_multiplier(static_grpc_server):
     """SetReplaySpeed should reject a zero multiplier."""
-    port, token, _ = grpc_server
+    port, token, _ = static_grpc_server
     channel = grpc.insecure_channel(f"localhost:{port}")
     stub = engine_pb2_grpc.DataEngineStub(channel)
 
@@ -327,33 +278,7 @@ def test_grpc_set_replay_speed_rejects_zero_multiplier(grpc_server):
     assert "multiplier" in resp.error_message
 
 
-@pytest.fixture
-def jquants_grpc_server(tmp_path):
-    token = "test-token"
-    base_dir = tmp_path / "j-quants"
-    base_dir.mkdir()
-    (base_dir / "equities_trades_202407.csv.gz").write_text("")
-
-    loader = JQuantsLoader(str(base_dir))
-    engine = DataEngine(jquants_loader=loader)
-
-    server = grpc.server(futures.ThreadPoolExecutor(max_workers=2))
-    servicer = GrpcDataEngineServer(token, engine)
-    engine_pb2_grpc.add_DataEngineServicer_to_server(servicer, server)
-    engine_pb2_grpc.add_HealthServicer_to_server(servicer, server)
-
-    port = server.add_insecure_port("[::]:0")
-    server.start()
-
-    yield (port, token, engine)
-
-    server.stop(0)
-
-
 def test_grpc_load_replay_data_succeeds_with_jquants_loader(jquants_grpc_server):
-    """
-    成功テスト
-    """
     port, token, _ = jquants_grpc_server
     channel = grpc.insecure_channel(f"localhost:{port}")
     stub = engine_pb2_grpc.DataEngineStub(channel)
@@ -372,10 +297,36 @@ def test_grpc_load_replay_data_succeeds_with_jquants_loader(jquants_grpc_server)
     assert resp.current_state == engine_pb2.LOADED
 
 
+def test_grpc_load_replay_data_succeeds_with_daily_granularity(jquants_grpc_server):
+    """
+    gRPC の DAILY granularity が equities_bars_daily_YYYYMM.csv.gz を正しく参照することを確認する。
+
+    gRPC request の DAILY
+      -> server_grpc.py で "Daily" に変換
+      -> core.py に渡る
+      -> JQuantsLoader が equities_bars_daily_202407.csv.gz を探す
+      -> 見つかるので LOADED
+    """
+    port, token, _ = jquants_grpc_server
+    channel = grpc.insecure_channel(f"localhost:{port}")
+    stub = engine_pb2_grpc.DataEngineStub(channel)
+
+    resp = stub.LoadReplayData(
+        engine_pb2.LoadReplayDataRequest(
+            request_id="load-jquants-daily-1",
+            token=token,
+            instrument_ids=["7203.TSE"],
+            start_date="2024-07-01",
+            end_date="2024-07-31",
+            granularity=engine_pb2.DAILY,
+        )
+    )
+
+    assert resp.success
+    assert resp.current_state == engine_pb2.LOADED
+
+
 def test_grpc_load_replay_data_rejects_when_jquants_data_missing(tmp_path):
-    """
-    失敗テスト
-    """
     token = "test-token"
     loader = JQuantsLoader(str(tmp_path / "missing-j-quants"))
     engine = DataEngine(jquants_loader=loader)

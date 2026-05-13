@@ -1,0 +1,25 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(awk '{print $5, $9}')",
+      "Bash(git lfs *)",
+      "Bash(git ls-tree *)",
+      "Bash(awk '{print $4}')",
+      "Bash(xargs -I{} bash -c 'git cat-file -s $\\(git ls-tree -r origin/sasa/Phase-6---Nautilus-Replay-Integration | grep \"{}\" | awk \"{print \\\\$3}\"\\) 2>/dev/null || echo \"N/A\"')",
+      "Bash(git reset *)",
+      "PowerShell(Get-Volume | Where-Object {$_.DriveLetter -eq 'C'} | Select-Object DriveLetter, Size, SizeRemaining | Format-Table -AutoSize)",
+      "Bash(grep -v \"^$\")",
+      "Bash(git show *)",
+      "Read(//tmp/**)",
+      "Bash(git add *)",
+      "Bash(git commit *)",
+      "Bash(ls -la python/data/ && mkdir -p python/tests/data && ls -la python/tests/data/)",
+      "Bash(cp python/data/*.csv.gz python/tests/data/)"
+    ],
+    "additionalDirectories": [
+      "\\tmp",
+      "C:\\Users\\sasai\\Documents\\The-Trader-Was-Replaced\\python\\tests",
+      "C:\\Users\\sasai\\Documents\\The-Trader-Was-Replaced\\python\\data"
+    ]
+  }
+}
