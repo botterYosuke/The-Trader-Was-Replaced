@@ -16,8 +16,8 @@ def test_jquants_daily_replay_provider_returns_ticks():
         end_date="2024-07-02",
     )
 
-    assert provider.get_next_tick()[1] == 3284.0
-    assert provider.get_next_tick()[1] == 3333.0
+    assert provider.get_next_tick()[4] == 3284.0  # close is index 4
+    assert provider.get_next_tick()[4] == 3333.0
     assert provider.get_next_tick() is None
     assert provider.is_exhausted()
 

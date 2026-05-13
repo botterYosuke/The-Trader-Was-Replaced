@@ -86,6 +86,7 @@ def test_grpc_replay_control_flow(jquants_grpc_server):
             instrument_ids=["7203.TSE"],
             start_date="2024-07-01",
             end_date="2024-07-31",
+            granularity=engine_pb2.DAILY,
         )
     )
     assert load_resp.success
@@ -175,6 +176,7 @@ def test_grpc_force_stop_replay_returns_to_idle(jquants_grpc_server):
             instrument_ids=["7203.TSE"],
             start_date="2024-07-01",
             end_date="2024-07-31",
+            granularity=engine_pb2.DAILY,
         )
     )
     assert load_resp.success
@@ -290,6 +292,7 @@ def test_grpc_load_replay_data_succeeds_with_jquants_loader(jquants_grpc_server)
             instrument_ids=["7203.TSE"],
             start_date="2024-07-01",
             end_date="2024-07-31",
+            granularity=engine_pb2.DAILY,
         )
     )
 
@@ -526,6 +529,48 @@ def test_grpc_minute_replay_advances_with_real_prices(jquants_grpc_server):
     assert stepped["price"] == 3301.0
 
 
+def test_grpc_stop_engine_aliases_stop_replay(jquants_grpc_server):
+    port, token, _ = jquants_grpc_server
+    channel = grpc.insecure_channel(f"localhost:{port}")
+    stub = engine_pb2_grpc.DataEngineStub(channel)
+
+    assert stub.LoadReplayData(
+        engine_pb2.LoadReplayDataRequest(
+            request_id="load-stop-engine-1",
+            token=token,
+            instrument_ids=["7203.TSE"],
+            start_date="2024-07-01",
+            end_date="2024-07-02",
+            granularity=engine_pb2.DAILY,
+        )
+    ).success
+
+    assert stub.StartEngine(
+        engine_pb2.StartEngineRequest(request_id="start-stop-engine-1", token=token)
+    ).success
+
+    resp = stub.StopEngine(
+        engine_pb2.StopEngineRequest(request_id="stop-engine-1", token=token)
+    )
+
+    assert resp.success
+    assert resp.current_state == engine_pb2.IDLE
+
+
+def test_grpc_stop_engine_rejects_from_idle(static_grpc_server):
+    port, token, _ = static_grpc_server
+    channel = grpc.insecure_channel(f"localhost:{port}")
+    stub = engine_pb2_grpc.DataEngineStub(channel)
+
+    resp = stub.StopEngine(
+        engine_pb2.StopEngineRequest(request_id="stop-engine-idle-1", token=token)
+    )
+
+    assert not resp.success
+    assert resp.current_state == engine_pb2.IDLE
+    assert resp.error_code == "INVALID_STATE"
+
+
 def test_grpc_load_replay_data_rejects_when_jquants_data_missing(tmp_path):
     token = "test-token"
     loader = JQuantsLoader(str(tmp_path / "missing-j-quants"))
@@ -550,12 +595,13 @@ def test_grpc_load_replay_data_rejects_when_jquants_data_missing(tmp_path):
                 instrument_ids=["7203"],
                 start_date="2024-01-01",
                 end_date="2024-01-31",
+                granularity=engine_pb2.DAILY,
             )
         )
 
         assert not resp.success
         assert resp.current_state == engine_pb2.IDLE
         assert resp.error_code == "INVALID_STATE"
-        assert "Replay data" in resp.error_message
+        assert "replay data" in resp.error_message.lower()
     finally:
         server.stop(0)

@@ -152,13 +152,16 @@ def test_load_daily_rows_returns_empty_when_no_file(tmp_path):
 
 def test_daily_rows_to_ticks_uses_date_and_close():
     rows = [
-        {"Date": "2024-07-01", "Code": "72030", "C": "3284.0"},
-        {"Date": "2024-07-02", "Code": "72030", "C": "3333.0"},
+        {"Date": "2024-07-01", "Code": "72030", "O": "3280.0", "H": "3290.0", "L": "3275.0", "C": "3284.0"},
+        {"Date": "2024-07-02", "Code": "72030", "O": "3330.0", "H": "3340.0", "L": "3320.0", "C": "3333.0"},
     ]
 
     ticks = daily_rows_to_ticks(rows)
 
-    assert [price for _, price in ticks] == [3284.0, 3333.0]
+    assert [t[4] for t in ticks] == [3284.0, 3333.0]  # close is index 4
+    assert ticks[0][1] == 3280.0  # open
+    assert ticks[0][2] == 3290.0  # high
+    assert ticks[0][3] == 3275.0  # low
     assert ticks[0][0] < ticks[1][0]
 
 
@@ -166,7 +169,7 @@ def test_daily_rows_to_ticks_timestamps_are_jst_1530():
     from zoneinfo import ZoneInfo
     from datetime import datetime
 
-    rows = [{"Date": "2024-07-01", "Code": "72030", "C": "3284.0"}]
+    rows = [{"Date": "2024-07-01", "Code": "72030", "O": "3280.0", "H": "3290.0", "L": "3275.0", "C": "3284.0"}]
     ticks = daily_rows_to_ticks(rows)
 
     ts = ticks[0][0]
@@ -228,13 +231,16 @@ def test_minute_rows_to_ticks_uses_close_time_jst():
     from zoneinfo import ZoneInfo
 
     rows = [
-        {"Date": "2024-07-01", "Time": "09:00", "Code": "72030", "C": "3308"},
-        {"Date": "2024-07-01", "Time": "09:01", "Code": "72030", "C": "3301"},
+        {"Date": "2024-07-01", "Time": "09:00", "Code": "72030", "O": "3310", "H": "3315", "L": "3305", "C": "3308"},
+        {"Date": "2024-07-01", "Time": "09:01", "Code": "72030", "O": "3305", "H": "3310", "L": "3298", "C": "3301"},
     ]
 
     ticks = minute_rows_to_ticks(rows)
 
-    assert [price for _, price in ticks] == [3308.0, 3301.0]
+    assert [t[4] for t in ticks] == [3308.0, 3301.0]  # close is index 4
+    assert ticks[0][1] == 3310.0  # open
+    assert ticks[0][2] == 3315.0  # high
+    assert ticks[0][3] == 3305.0  # low
     assert ticks[0][0] < ticks[1][0]
 
     dt = datetime.fromtimestamp(ticks[0][0], tz=ZoneInfo("Asia/Tokyo"))

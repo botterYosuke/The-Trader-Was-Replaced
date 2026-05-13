@@ -18,7 +18,9 @@
       "mcp__linksee__recall",
       "mcp__linksee__recall_file",
       "Bash(python -c \"import gzip; f=gzip.open\\('equities_bars_daily_202407.csv.gz','rt'\\); print\\(f.readline\\(\\)\\); print\\(f.readline\\(\\)\\); print\\(f.readline\\(\\)\\)\")",
-      "Bash(.\\\\.venv\\\\Scripts\\\\python.exe -m pytest python\\\\tests\\\\test_jquants_loader.py -v)"
+      "Bash(.\\\\.venv\\\\Scripts\\\\python.exe -m pytest python\\\\tests\\\\test_jquants_loader.py -v)",
+      "Bash(python -c \"import gzip; f=gzip.open\\('python/tests/test_data/equities_bars_daily_202407.csv.gz','rt'\\); import csv; r=csv.DictReader\\(f\\); print\\(r.fieldnames\\); row=next\\(r\\); print\\(row\\)\")",
+      "Bash(python -c ' *)"
     ],
     "additionalDirectories": [
       "\\tmp",

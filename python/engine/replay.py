@@ -8,11 +8,11 @@ from .jquants_loader import JQuantsLoader, daily_rows_to_ticks, minute_rows_to_t
 
 class BaseReplayProvider(ABC):
     """リプレイデータの読み込みとイテレーションの抽象ベースクラス"""
-    
+
     @abstractmethod
-    def get_next_tick(self) -> Optional[Tuple[float, float]]:
+    def get_next_tick(self) -> Optional[Tuple[float, float, float, float, float]]:
         """
-        次のティック（timestamp, price）を返す。
+        次のティック (timestamp, open, high, low, close) を返す。
         データが終了した場合は None を返す。
         """
         pass
@@ -66,11 +66,11 @@ class SimpleCSVProvider(BaseReplayProvider):
             logging.error(f"Failed to load CSV {self.file_path}: {e}")
             raise
 
-    def get_next_tick(self) -> Optional[Tuple[float, float]]:
+    def get_next_tick(self) -> Optional[Tuple[float, float, float, float, float]]:
         if self._index < len(self._data):
-            tick = self._data[self._index]
+            ts, price = self._data[self._index]
             self._index += 1
-            return tick
+            return (ts, price, price, price, price)
         return None
 
     def is_exhausted(self) -> bool:
@@ -112,7 +112,7 @@ class JQuantsDailyReplayProvider(BaseReplayProvider):
                 f"No daily replay data found for {instrument_id}: {start_date}..{end_date}"
             )
 
-    def get_next_tick(self) -> Optional[Tuple[float, float]]:
+    def get_next_tick(self) -> Optional[Tuple[float, float, float, float, float]]:
         if self._index < len(self._data):
             tick = self._data[self._index]
             self._index += 1
@@ -152,7 +152,7 @@ class JQuantsMinuteReplayProvider(BaseReplayProvider):
                 f"No minute replay data found for {instrument_id}: {start_date}..{end_date}"
             )
 
-    def get_next_tick(self) -> Optional[Tuple[float, float]]:
+    def get_next_tick(self) -> Optional[Tuple[float, float, float, float, float]]:
         if self._index < len(self._data):
             tick = self._data[self._index]
             self._index += 1

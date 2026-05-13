@@ -7,22 +7,22 @@ from zoneinfo import ZoneInfo
 _JST = ZoneInfo("Asia/Tokyo")
 
 
-def daily_rows_to_ticks(rows: list[dict[str, str]]) -> list[tuple[float, float]]:
+def daily_rows_to_ticks(rows: list[dict[str, str]]) -> list[tuple[float, float, float, float, float]]:
     ticks = []
     for row in rows:
         d = date.fromisoformat(row["Date"])
         ts = datetime.combine(d, dt_time(15, 30), tzinfo=_JST).timestamp()
-        ticks.append((ts, float(row["C"])))
+        ticks.append((ts, float(row["O"]), float(row["H"]), float(row["L"]), float(row["C"])))
     return ticks
 
 
-def minute_rows_to_ticks(rows: list[dict[str, str]]) -> list[tuple[float, float]]:
+def minute_rows_to_ticks(rows: list[dict[str, str]]) -> list[tuple[float, float, float, float, float]]:
     ticks = []
     for row in rows:
         d = date.fromisoformat(row["Date"])
         h, m = map(int, row["Time"].split(":"))
         ts = datetime.combine(d, dt_time(h, m, 59, 999999), tzinfo=_JST).timestamp()
-        ticks.append((ts, float(row["C"])))
+        ticks.append((ts, float(row["O"]), float(row["H"]), float(row["L"]), float(row["C"])))
     return ticks
 
 

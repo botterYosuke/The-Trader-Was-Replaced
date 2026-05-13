@@ -25,12 +25,17 @@ class TradingState(_BoundaryModel):
     price: float = Field(..., description="現在の市場価格", gt=0)
     history: List[float] = Field(default_factory=list, description="過去の価格履歴")
     timestamp: float = Field(
-        default_factory=time.time, 
+        default_factory=time.time,
         description="データ生成時の Unix タイムスタンプ (秒)",
         gt=0
     )
     timestamp_ms: Optional[int] = Field(None, description="Source of Truth (ms)")
     history_points: List[HistoryPoint] = Field(default_factory=list, description="詳細な履歴ポイント")
+    open: Optional[float] = Field(None, description="バー始値")
+    high: Optional[float] = Field(None, description="バー高値")
+    low: Optional[float] = Field(None, description="バー安値")
+    close: Optional[float] = Field(None, description="バー終値 (price と同値)")
+    open_time_ms: Optional[int] = Field(None, description="バー開始時刻 (ms)")
 
     @field_validator("history")
     @classmethod

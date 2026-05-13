@@ -4,6 +4,7 @@ import pytest
 
 from engine.core import DataEngine
 from engine.jquants_loader import JQuantsLoader
+from engine.reducer import KlineUpdate, ReplayTimeUpdated
 
 DATA_DIR = Path(__file__).parent / "data"
 
@@ -122,3 +123,178 @@ def test_data_engine_load_minute_rejects_missing_data(tmp_path):
 
     assert not success
     assert error is not None
+
+
+def test_step_replay_fires_time_updated_then_kline_update():
+    """
+    StepReplay が ReplayTimeUpdated -> KlineUpdate の順でイベントを発火することを確認する。
+    この順序は Phase 6 計画の「TimeUpdated -> DataUpdated」の契約を保証する。
+    """
+    loader = JQuantsLoader(str(DATA_DIR))
+    engine = DataEngine(jquants_loader=loader)
+
+    engine.load_replay_data(
+        instrument_ids=["7203.TSE"],
+        start_date="2024-07-01",
+        end_date="2024-07-02",
+        granularity="Daily",
+    )
+    engine.start_engine()
+    engine.pause_replay()
+
+    log_before = len(engine.get_event_log())
+    engine.step_replay()
+
+    new_events = engine.get_event_log()[log_before:]
+    assert len(new_events) == 2
+    assert isinstance(new_events[0], ReplayTimeUpdated)
+    assert isinstance(new_events[1], KlineUpdate)
+    assert new_events[0].timestamp_ms == new_events[1].timestamp_ms
+
+
+def test_event_log_accumulates_across_steps():
+    loader = JQuantsLoader(str(DATA_DIR))
+    engine = DataEngine(jquants_loader=loader)
+
+    engine.load_replay_data(
+        instrument_ids=["7203.TSE"],
+        start_date="2024-07-01",
+        end_date="2024-07-31",
+        granularity="Daily",
+    )
+    engine.start_engine()
+    engine.pause_replay()
+
+    engine.step_replay()
+    assert len(engine.get_event_log()) == 2  # 1 step = ReplayTimeUpdated + KlineUpdate
+
+    engine.step_replay()
+    assert len(engine.get_event_log()) == 4  # 2 steps accumulated
+
+
+def test_get_current_state_includes_ohlc_after_step():
+    """StepReplay 後の get_current_state が OHLC フィールドを持つことを確認する。"""
+    loader = JQuantsLoader(str(DATA_DIR))
+    engine = DataEngine(jquants_loader=loader)
+
+    engine.load_replay_data(
+        instrument_ids=["7203.TSE"],
+        start_date="2024-07-01",
+        end_date="2024-07-02",
+        granularity="Daily",
+    )
+    engine.start_engine()
+    engine.pause_replay()
+    engine.step_replay()
+
+    state = engine.get_current_state()
+    assert state.close == state.price
+    assert state.open is not None
+    assert state.high is not None
+    assert state.low is not None
+    assert state.high >= state.low
+    assert state.high >= state.close
+    assert state.low <= state.close
+
+
+def test_get_current_state_ohlc_exact_values_from_daily_data():
+    """Daily データの OHLC exact 値を GetState から確認する。"""
+    loader = JQuantsLoader(str(DATA_DIR))
+    engine = DataEngine(jquants_loader=loader)
+
+    # 2024-07-01 の J-Quants 実データ: O=3325.0 H=3326.0 L=3261.0 C=3284.0
+    engine.load_replay_data(
+        instrument_ids=["7203.TSE"],
+        start_date="2024-07-01",
+        end_date="2024-07-01",
+        granularity="Daily",
+    )
+
+    state = engine.get_current_state()
+    assert state.price == 3284.0
+    assert state.close == 3284.0
+    assert state.open == 3325.0
+    assert state.high == 3326.0
+    assert state.low == 3261.0
+
+
+def test_get_current_state_ohlc_none_in_static_mode():
+    """Static モードでは OHLC は None になる。"""
+    engine = DataEngine()
+    state = engine.get_current_state()
+    assert state.open is None
+    assert state.high is None
+    assert state.low is None
+
+
+def test_load_replay_data_rejects_trade_granularity():
+    """Trade granularity は Phase 6 MVP 未対応として明示 reject される。"""
+    loader = JQuantsLoader(str(DATA_DIR))
+    engine = DataEngine(jquants_loader=loader)
+
+    success, error = engine.load_replay_data(
+        instrument_ids=["7203.TSE"],
+        start_date="2024-07-01",
+        end_date="2024-07-31",
+        granularity="Trade",
+    )
+
+    assert not success
+    assert error is not None
+    assert "Trade" in error
+    assert engine.replay_state == "IDLE"
+
+
+def test_load_replay_data_rejects_unknown_granularity():
+    """未知の granularity も reject される。"""
+    loader = JQuantsLoader(str(DATA_DIR))
+    engine = DataEngine(jquants_loader=loader)
+
+    success, error = engine.load_replay_data(
+        instrument_ids=["7203.TSE"],
+        start_date="2024-07-01",
+        end_date="2024-07-31",
+        granularity="Tick",
+    )
+
+    assert not success
+    assert error is not None
+    assert engine.replay_state == "IDLE"
+
+
+def test_prime_does_not_emit_replay_events():
+    """_prime_provider_locked は event_log にイベントを追加しない。"""
+    loader = JQuantsLoader(str(DATA_DIR))
+    engine = DataEngine(jquants_loader=loader)
+
+    engine.load_replay_data(
+        instrument_ids=["7203.TSE"],
+        start_date="2024-07-01",
+        end_date="2024-07-02",
+        granularity="Daily",
+    )
+
+    assert engine.get_event_log() == []
+
+
+def test_step_replay_kline_update_has_ohlc():
+    """StepReplay で発火する KlineUpdate が OHLC フィールドを持つことを確認する。"""
+    loader = JQuantsLoader(str(DATA_DIR))
+    engine = DataEngine(jquants_loader=loader)
+
+    engine.load_replay_data(
+        instrument_ids=["7203.TSE"],
+        start_date="2024-07-01",
+        end_date="2024-07-02",
+        granularity="Daily",
+    )
+    engine.start_engine()
+    engine.pause_replay()
+    engine.step_replay()
+
+    kline = next(e for e in engine.get_event_log() if isinstance(e, KlineUpdate))
+    assert kline.close > 0
+    assert kline.open > 0
+    assert kline.high >= kline.low
+    assert kline.high >= kline.close
+    assert kline.low <= kline.close

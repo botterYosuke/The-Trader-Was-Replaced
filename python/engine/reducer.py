@@ -13,6 +13,10 @@ class ReplayTimeUpdated:
 class KlineUpdate:
     timestamp_ms: int
     close: float
+    open: float = 0.0
+    high: float = 0.0
+    low: float = 0.0
+    open_time_ms: int = 0
 
 
 @dataclass(frozen=True)
@@ -28,6 +32,10 @@ ReplayEvent = Union[ReplayTimeUpdated, KlineUpdate, TradeUpdate]
 class ReducerState:
     timestamp_ms: int
     price: float
+    open: float = 0.0
+    high: float = 0.0
+    low: float = 0.0
+    open_time_ms: int = 0
     history: list = field(default_factory=list)
     history_points: list = field(default_factory=list)
     max_history_len: int = 1000
@@ -48,6 +56,11 @@ def apply_event(state: ReducerState, event: ReplayEvent) -> None:
         price = event.close if isinstance(event, KlineUpdate) else event.price
         state.timestamp_ms = ts
         state.price = price
+        if isinstance(event, KlineUpdate):
+            state.open = event.open
+            state.high = event.high
+            state.low = event.low
+            state.open_time_ms = event.open_time_ms
         state.history.append(price)
         state.history_points.append(HistoryPoint(timestamp_ms=ts, price=price))
 

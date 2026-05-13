@@ -5,7 +5,7 @@ import time
 from typing import Literal, Optional
 
 from .models import EngineSnapshot, HistoryPoint, TradingState
-from .reducer import KlineUpdate, ReducerState, apply_event
+from .reducer import KlineUpdate, ReducerState, ReplayEvent, ReplayTimeUpdated, apply_event
 from .replay import BaseReplayProvider, JQuantsDailyReplayProvider, JQuantsMinuteReplayProvider
 
 
@@ -29,6 +29,7 @@ class DataEngine:
         self._is_exhausted = False
         self._max_history_len = max_history_len
         self._jquants_loader = jquants_loader
+        self._event_log: list[ReplayEvent] = []
 
         # Initialize the first visible state.
         if self._mode == "replay" and self._replay_provider:
@@ -59,19 +60,26 @@ class DataEngine:
         with self._lock:
             return self._replay_state
 
+    def _apply_event_locked(self, event: ReplayEvent) -> None:
+        self._event_log.append(event)
+        apply_event(self._rs, event)
+
     def _prime_provider_locked(self, provider: BaseReplayProvider) -> None:
         tick = provider.get_next_tick()
         if not tick:
             raise ValueError("Replay provider returned no data for priming")
         self._replay_provider = provider
         self._mode = "replay"
-        ts, price = tick
+        ts, o, h, l, c = tick
         ts_ms = int(ts * 1000)
         self._rs = ReducerState(
             timestamp_ms=ts_ms,
-            price=price,
-            history=[price],
-            history_points=[HistoryPoint(timestamp_ms=ts_ms, price=price)],
+            price=c,
+            open=o,
+            high=h,
+            low=l,
+            history=[c],
+            history_points=[HistoryPoint(timestamp_ms=ts_ms, price=c)],
             max_history_len=self._max_history_len,
         )
         self._is_exhausted = provider.is_exhausted()
@@ -117,27 +125,22 @@ class DataEngine:
                     "Daily": JQuantsDailyReplayProvider,
                     "Minute": JQuantsMinuteReplayProvider,
                 }
-                if granularity in _PROVIDER_CLASS:
-                    try:
-                        provider = _PROVIDER_CLASS[granularity](
-                            loader=self._jquants_loader,
-                            instrument_id=instrument_ids[0],
-                            start_date=start_date,
-                            end_date=end_date,
-                        )
-                    except ValueError as e:
-                        return False, str(e)
+                if granularity not in _PROVIDER_CLASS:
+                    return False, f"Unsupported granularity for replay: {granularity!r}"
 
-                    self._prime_provider_locked(provider)
-                    self._replay_state = "LOADED"
-                    return True, None
+                try:
+                    provider = _PROVIDER_CLASS[granularity](
+                        loader=self._jquants_loader,
+                        instrument_id=instrument_ids[0],
+                        start_date=start_date,
+                        end_date=end_date,
+                    )
+                except ValueError as e:
+                    return False, str(e)
 
-                if self._jquants_loader.check_data_exists(
-                    instrument_ids, start_date, end_date, granularity
-                ):
-                    self._replay_state = "LOADED"
-                    return True, None
-                return False, "Replay data was not found"
+                self._prime_provider_locked(provider)
+                self._replay_state = "LOADED"
+                return True, None
 
             return False, "Replay provider is not configured"
 
@@ -212,8 +215,10 @@ class DataEngine:
         if self._replay_provider:
             tick = self._replay_provider.get_next_tick()
             if tick:
-                ts, price = tick
-                apply_event(self._rs, KlineUpdate(timestamp_ms=int(ts * 1000), close=price))
+                ts, o, h, l, c = tick
+                ts_ms = int(ts * 1000)
+                self._apply_event_locked(ReplayTimeUpdated(timestamp_ms=ts_ms))
+                self._apply_event_locked(KlineUpdate(timestamp_ms=ts_ms, close=c, open=o, high=h, low=l))
                 self._is_exhausted = self._replay_provider.is_exhausted()
             else:
                 self._is_exhausted = True
@@ -221,7 +226,7 @@ class DataEngine:
         else:
             price = self._rs.price + random.uniform(-0.5, 0.5)
             ts_ms = int(time.time() * 1000)
-            apply_event(self._rs, KlineUpdate(timestamp_ms=ts_ms, close=price))
+            self._apply_event_locked(KlineUpdate(timestamp_ms=ts_ms, close=price, open=price, high=price, low=price))
 
     def step_replay(self) -> tuple[bool, str | None]:
         """Advance one tick while paused, then remain in PAUSED."""
@@ -244,6 +249,11 @@ class DataEngine:
                 timestamp=rs.timestamp_ms / 1000.0,
                 timestamp_ms=rs.timestamp_ms,
                 history_points=list(rs.history_points),
+                open=rs.open or None,
+                high=rs.high or None,
+                low=rs.low or None,
+                close=rs.price,
+                open_time_ms=rs.open_time_ms or None,
             )
 
     def take_snapshot(self) -> EngineSnapshot:
@@ -251,9 +261,11 @@ class DataEngine:
         with self._lock:
             source_path = None
             replay_index = 0
-            if self._replay_provider and hasattr(self._replay_provider, "file_path"):
-                source_path = self._replay_provider.file_path
-                replay_index = getattr(self._replay_provider, "current_index", 0)
+            if self._replay_provider:
+                if hasattr(self._replay_provider, "file_path"):
+                    source_path = self._replay_provider.file_path
+                if hasattr(self._replay_provider, "current_index"):
+                    replay_index = self._replay_provider.current_index
 
             rs = self._rs
             return EngineSnapshot(
@@ -263,6 +275,11 @@ class DataEngine:
                     timestamp=rs.timestamp_ms / 1000.0,
                     timestamp_ms=rs.timestamp_ms,
                     history_points=list(rs.history_points),
+                    open=rs.open or None,
+                    high=rs.high or None,
+                    low=rs.low or None,
+                    close=rs.price,
+                    open_time_ms=rs.open_time_ms or None,
                 ),
                 replay_index=replay_index,
                 source_path=source_path,
@@ -308,6 +325,10 @@ class DataEngine:
             self._rs.timestamp_ms = ts_ms
             self._rs.history = list(snapshot.state.history)
             self._rs.history_points = history_points
+            self._rs.open = snapshot.state.open or snapshot.state.price
+            self._rs.high = snapshot.state.high or snapshot.state.price
+            self._rs.low = snapshot.state.low or snapshot.state.price
+            self._rs.open_time_ms = snapshot.state.open_time_ms or ts_ms
 
             if self._replay_provider:
                 if hasattr(self._replay_provider, "current_index"):
@@ -317,6 +338,10 @@ class DataEngine:
             logging.info(
                 f"Restored snapshot (mode: {self._mode}, index: {snapshot.replay_index})"
             )
+
+    def get_event_log(self) -> list[ReplayEvent]:
+        with self._lock:
+            return list(self._event_log)
 
     @property
     def is_exhausted(self) -> bool:

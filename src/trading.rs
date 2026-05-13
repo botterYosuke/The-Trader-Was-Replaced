@@ -25,6 +25,16 @@ pub struct BackendTradingState {
     pub timestamp_ms: Option<i64>,
     #[serde(default)]
     pub history_points: Vec<HistoryPoint>,
+    #[serde(default)]
+    pub open: Option<f32>,
+    #[serde(default)]
+    pub high: Option<f32>,
+    #[serde(default)]
+    pub low: Option<f32>,
+    #[serde(default)]
+    pub close: Option<f32>,
+    #[serde(default)]
+    pub open_time_ms: Option<i64>,
 }
 
 #[derive(Resource, Default)]
@@ -41,6 +51,11 @@ pub struct TradingData {
     pub timestamp_ms: i64,
     pub history_points: Vec<HistoryPoint>,
     pub timer: Timer,
+    pub open: Option<f32>,
+    pub high: Option<f32>,
+    pub low: Option<f32>,
+    pub close: Option<f32>,
+    pub open_time_ms: Option<i64>,
 }
 
 impl Default for TradingData {
@@ -51,6 +66,11 @@ impl Default for TradingData {
             timestamp_ms: 0,
             history_points: Vec::new(),
             timer: Timer::from_seconds(0.5, TimerMode::Repeating),
+            open: None,
+            high: None,
+            low: None,
+            close: None,
+            open_time_ms: None,
         }
     }
 }
@@ -147,10 +167,17 @@ pub fn backend_update_system(
     while let Ok(state) = channel.rx.try_recv() {
         data.price = state.price;
         data.history = state.history;
-        
+
         // Phase 5: timestamp_ms と history_points の同期
         data.timestamp_ms = state.timestamp_ms.unwrap_or((state.timestamp * 1000.0) as i64);
         data.history_points = state.history_points;
+
+        // Phase 6: OHLC
+        data.open = state.open;
+        data.high = state.high;
+        data.low = state.low;
+        data.close = state.close;
+        data.open_time_ms = state.open_time_ms;
         
         // もし history_points が空で history がある場合は補完
         if data.history_points.is_empty() && !data.history.is_empty() {
@@ -225,6 +252,11 @@ mod tests {
                 HistoryPoint { timestamp_ms: 12344670, price: 140.0 },
                 HistoryPoint { timestamp_ms: 12345670, price: 150.0 },
             ],
+            open: Some(145.0),
+            high: Some(155.0),
+            low: Some(143.0),
+            close: Some(150.0),
+            open_time_ms: Some(12344000),
         };
         tx.send(new_state).unwrap();
 
@@ -237,6 +269,11 @@ mod tests {
         assert_eq!(data.history, vec![140.0, 150.0]);
         assert_eq!(data.timestamp_ms, 12345670);
         assert_eq!(data.history_points.len(), 2);
+        assert_eq!(data.open, Some(145.0));
+        assert_eq!(data.high, Some(155.0));
+        assert_eq!(data.low, Some(143.0));
+        assert_eq!(data.close, Some(150.0));
+        assert_eq!(data.open_time_ms, Some(12344000));
     }
 
     #[test]
@@ -258,6 +295,11 @@ mod tests {
             timestamp: 1600000000.0,
             timestamp_ms: None,
             history_points: vec![],
+            open: None,
+            high: None,
+            low: None,
+            close: None,
+            open_time_ms: None,
         };
         tx.send(new_state).unwrap();
 
@@ -292,6 +334,11 @@ mod tests {
             timestamp: 100.0,
             timestamp_ms: Some(100000),
             history_points: (0..5).map(|i| HistoryPoint { timestamp_ms: i * 1000, price: i as f32 }).collect(),
+            open: None,
+            high: None,
+            low: None,
+            close: None,
+            open_time_ms: None,
         };
         tx.send(new_state).unwrap();
 

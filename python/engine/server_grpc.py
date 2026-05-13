@@ -110,6 +110,19 @@ class GrpcDataEngineServer(
             error_message="" if success else error,
         )
 
+    def StopEngine(self, request, context):
+        if request.token != self.token:
+            context.abort(grpc.StatusCode.UNAUTHENTICATED, "Invalid token")
+
+        success, error = self.engine.stop_replay()
+        return engine_pb2.ReplayControlResponse(
+            success=success,
+            request_id=request.request_id,
+            current_state=self._current_engine_state(),
+            error_code="" if success else "INVALID_STATE",
+            error_message="" if success else error,
+        )
+
     def PauseReplay(self, request, context):
         if request.token != self.token:
             context.abort(grpc.StatusCode.UNAUTHENTICATED, "Invalid token")
