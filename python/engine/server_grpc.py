@@ -1,20 +1,42 @@
-import grpc
-from concurrent import futures
-import time
 import logging
 import threading
+import time
+from concurrent import futures
 from typing import Optional
-from .proto import engine_pb2, engine_pb2_grpc
+
+import grpc
+
 from .core import DataEngine
+from .proto import engine_pb2, engine_pb2_grpc
 from .replay import BaseReplayProvider
 
-class GrpcDataEngineServer(engine_pb2_grpc.HealthServicer, engine_pb2_grpc.DataEngineServicer):
+
+class GrpcDataEngineServer(
+    engine_pb2_grpc.HealthServicer, engine_pb2_grpc.DataEngineServicer
+):
     def __init__(self, token: str, engine: DataEngine):
         self.token = token
         self.engine = engine
 
+    def _current_engine_state(self):
+        """Map the core replay state string to the gRPC EngineState enum."""
+        state = self.engine.replay_state
+        if state == "IDLE":
+            return engine_pb2.IDLE
+        if state == "LOADED":
+            return engine_pb2.LOADED
+        if state == "RUNNING":
+            return engine_pb2.RUNNING
+        if state == "PAUSED":
+            return engine_pb2.PAUSED
+        if state == "STOPPING":
+            return engine_pb2.STOPPING
+        return engine_pb2.IDLE
+
     def Check(self, request, context):
-        return engine_pb2.HealthCheckResponse(status=engine_pb2.HealthCheckResponse.SERVING)
+        return engine_pb2.HealthCheckResponse(
+            status=engine_pb2.HealthCheckResponse.SERVING
+        )
 
     def GetState(self, request, context):
         if request.token != self.token:
@@ -37,34 +59,141 @@ class GrpcDataEngineServer(engine_pb2_grpc.HealthServicer, engine_pb2_grpc.DataE
         logging.info("Engine stop requested via gRPC")
         return engine_pb2.StopResponse(success=True)
 
+    def LoadReplayData(self, request, context):
+        if request.token != self.token:
+            context.abort(grpc.StatusCode.UNAUTHENTICATED, "Invalid token")
+
+        success, error = self.engine.load_replay_data()
+        return engine_pb2.ReplayControlResponse(
+            success=success,
+            request_id=request.request_id,
+            current_state=self._current_engine_state(),
+            error_code="" if success else "INVALID_STATE",
+            error_message="" if success else error,
+        )
+
+    def StartEngine(self, request, context):
+        if request.token != self.token:
+            context.abort(grpc.StatusCode.UNAUTHENTICATED, "Invalid token")
+
+        success, error = self.engine.start_engine()
+        return engine_pb2.ReplayControlResponse(
+            success=success,
+            request_id=request.request_id,
+            current_state=self._current_engine_state(),
+            error_code="" if success else "INVALID_STATE",
+            error_message="" if success else error,
+        )
+
+    def PauseReplay(self, request, context):
+        if request.token != self.token:
+            context.abort(grpc.StatusCode.UNAUTHENTICATED, "Invalid token")
+
+        success, error = self.engine.pause_replay()
+        return engine_pb2.ReplayControlResponse(
+            success=success,
+            request_id=request.request_id,
+            current_state=self._current_engine_state(),
+            error_code="" if success else "INVALID_STATE",
+            error_message="" if success else error,
+        )
+
+    def ResumeReplay(self, request, context):
+        if request.token != self.token:
+            context.abort(grpc.StatusCode.UNAUTHENTICATED, "Invalid token")
+
+        success, error = self.engine.resume_replay()
+        return engine_pb2.ReplayControlResponse(
+            success=success,
+            request_id=request.request_id,
+            current_state=self._current_engine_state(),
+            error_code="" if success else "INVALID_STATE",
+            error_message="" if success else error,
+        )
+
+    def StepReplay(self, request, context):
+        if request.token != self.token:
+            context.abort(grpc.StatusCode.UNAUTHENTICATED, "Invalid token")
+
+        success, error = self.engine.step_replay()
+        return engine_pb2.ReplayControlResponse(
+            success=success,
+            request_id=request.request_id,
+            current_state=self._current_engine_state(),
+            error_code="" if success else "INVALID_STATE",
+            error_message="" if success else error,
+        )
+
+    def StopReplay(self, request, context):
+        if request.token != self.token:
+            context.abort(grpc.StatusCode.UNAUTHENTICATED, "Invalid token")
+
+        success, error = self.engine.stop_replay()
+        return engine_pb2.ReplayControlResponse(
+            success=success,
+            request_id=request.request_id,
+            current_state=self._current_engine_state(),
+            error_code="" if success else "INVALID_STATE",
+            error_message="" if success else error,
+        )
+
+    def ForceStopReplay(self, request, context):
+        if request.token != self.token:
+            context.abort(grpc.StatusCode.UNAUTHENTICATED, "Invalid token")
+
+        success, error = self.engine.force_stop_replay()
+        return engine_pb2.ReplayControlResponse(
+            success=success,
+            request_id=request.request_id,
+            current_state=self._current_engine_state(),
+            error_code="" if success else "INVALID_STATE",
+            error_message="" if success else error,
+        )
+
+    def SetReplaySpeed(self, request, context):
+        if request.token != self.token:
+            context.abort(grpc.StatusCode.UNAUTHENTICATED, "Invalid token")
+
+        success, error = self.engine.set_replay_speed(request.multiplier)
+        return engine_pb2.ReplayControlResponse(
+            success=success,
+            request_id=request.request_id,
+            current_state=self._current_engine_state(),
+            error_code="" if success else "INVALID_STATE",
+            error_message="" if success else error,
+        )
+
+
 def advance_loop(engine: DataEngine, interval: float = 1.0):
-    """
-    エンジンを定期的に進行させるバックグラウンドループ。
-    e-station の設計思想に基づき、1回待機してから進行させる。
-    """
+    """Advance the engine on a fixed background interval while it is running."""
     logging.info(f"Starting advance loop with interval {interval}s")
     while True:
-        # まず待機することで、初期状態 (Primed state) を取得する猶予を与える
         time.sleep(interval)
-        # engine.is_running は thread-safe property になった
         if engine.is_running:
             engine.advance()
     logging.info("Advance loop stopped")
 
-def serve(port: int, token: str, replay_provider: Optional[BaseReplayProvider] = None, 
-          auto_start: bool = False, max_history_len: int = 1000, advance_interval_sec: float = 1.0):
-    engine = DataEngine(replay_provider=replay_provider, max_history_len=max_history_len)
-    
-    # サーバー起動時点ではエンジンを一時停止状態にしておく（auto_start が False の場合）
+
+def serve(
+    port: int,
+    token: str,
+    replay_provider: Optional[BaseReplayProvider] = None,
+    auto_start: bool = False,
+    max_history_len: int = 1000,
+    advance_interval_sec: float = 1.0,
+):
+    engine = DataEngine(
+        replay_provider=replay_provider, max_history_len=max_history_len
+    )
+
+    # Keep replay sessions paused at startup unless explicitly requested.
     if auto_start:
         engine.start()
     else:
         logging.info("Engine initialized in paused state.")
 
     ticker_thread = threading.Thread(
-        target=advance_loop, 
-        args=(engine, advance_interval_sec), 
-        daemon=True
+        target=advance_loop, args=(engine, advance_interval_sec), daemon=True
     )
     ticker_thread.start()
 
@@ -74,7 +203,7 @@ def serve(port: int, token: str, replay_provider: Optional[BaseReplayProvider] =
     engine_pb2_grpc.add_HealthServicer_to_server(servicer, server)
     engine_pb2_grpc.add_DataEngineServicer_to_server(servicer, server)
 
-    server.add_insecure_port(f'[::]:{port}')
+    server.add_insecure_port(f"[::]:{port}")
     logging.info(f"Starting gRPC server on port {port}")
     server.start()
     try:

@@ -19,10 +19,41 @@ message HealthCheckResponse {
   ServingStatus status = 1;
 }
 
+enum EngineState {
+  IDLE = 0;
+  LOADED = 1;
+  RUNNING = 2;
+  PAUSED = 3;
+  STOPPING = 4;
+}
+
+enum EngineKind {
+  NAUTILUS = 0;
+  SIMULATED = 1;
+}
+
+enum ReplayGranularity {
+  TICK = 0;
+  SECOND = 1;
+  MINUTE = 2;
+}
+
 service DataEngine {
+  // Legacy/Static
   rpc GetState(GetStateRequest) returns (GetStateResponse);
   rpc Start(StartRequest) returns (StartResponse);
   rpc Stop(StopRequest) returns (StopResponse);
+
+  // Nautilus Replay Control
+  rpc LoadReplayData(LoadReplayDataRequest) returns (ReplayControlResponse);
+  rpc StartEngine(StartEngineRequest) returns (ReplayControlResponse);
+  rpc StopEngine(StopEngineRequest) returns (ReplayControlResponse);
+  rpc SetReplaySpeed(SetReplaySpeedRequest) returns (ReplayControlResponse);
+  rpc PauseReplay(PauseReplayRequest) returns (ReplayControlResponse);
+  rpc ResumeReplay(ResumeReplayRequest) returns (ReplayControlResponse);
+  rpc StepReplay(StepReplayRequest) returns (ReplayControlResponse);
+  rpc StopReplay(StopReplayRequest) returns (ReplayControlResponse);
+  rpc ForceStopReplay(ForceStopReplayRequest) returns (ReplayControlResponse);
 }
 
 message GetStateRequest {
@@ -47,4 +78,77 @@ message StopRequest {
 
 message StopResponse {
   bool success = 1;
+}
+
+message ReplayControlResponse {
+  bool success = 1;
+  string request_id = 2;
+  EngineState current_state = 3;
+  string error_code = 4;
+  string error_message = 5;
+}
+
+message LoadReplayDataRequest {
+  string request_id = 1;
+  string instrument_id = 2;
+  string start_date = 3;
+  string end_date = 4;
+  string token = 10;
+}
+
+message EngineStartConfig {
+  string instrument_id = 1;
+  repeated string instrument_ids = 2;
+  optional string start_date = 3;
+  optional string end_date = 4;
+  optional string initial_cash = 5;
+  optional ReplayGranularity granularity = 6;
+  optional string strategy_file = 7;
+  optional string strategy_init_kwargs = 8;
+  optional uint32 max_qty = 9;
+  optional uint64 max_notional_jpy = 10;
+}
+
+message StartEngineRequest {
+  string request_id = 1;
+  EngineKind engine = 2;
+  string strategy_id = 3;
+  EngineStartConfig config = 4;
+  string token = 10;
+}
+
+message StopEngineRequest {
+  string request_id = 1;
+  string token = 10;
+}
+
+message SetReplaySpeedRequest {
+  string request_id = 1;
+  uint32 multiplier = 2;
+  string token = 10;
+}
+
+message PauseReplayRequest {
+  string request_id = 1;
+  string token = 10;
+}
+
+message ResumeReplayRequest {
+  string request_id = 1;
+  string token = 10;
+}
+
+message StepReplayRequest {
+  string request_id = 1;
+  string token = 10;
+}
+
+message StopReplayRequest {
+  string request_id = 1;
+  string token = 10;
+}
+
+message ForceStopReplayRequest {
+  string request_id = 1;
+  string token = 10;
 }

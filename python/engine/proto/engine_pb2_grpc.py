@@ -3,7 +3,7 @@
 import grpc
 import warnings
 
-import engine.proto.engine_pb2 as engine__pb2
+from . import engine_pb2 as engine__pb2
 
 GRPC_GENERATED_VERSION = '1.80.0'
 GRPC_VERSION = grpc.__version__
@@ -121,13 +121,59 @@ class DataEngineStub(object):
                 request_serializer=engine__pb2.StopRequest.SerializeToString,
                 response_deserializer=engine__pb2.StopResponse.FromString,
                 _registered_method=True)
+        self.LoadReplayData = channel.unary_unary(
+                '/engine.DataEngine/LoadReplayData',
+                request_serializer=engine__pb2.LoadReplayDataRequest.SerializeToString,
+                response_deserializer=engine__pb2.ReplayControlResponse.FromString,
+                _registered_method=True)
+        self.StartEngine = channel.unary_unary(
+                '/engine.DataEngine/StartEngine',
+                request_serializer=engine__pb2.StartEngineRequest.SerializeToString,
+                response_deserializer=engine__pb2.ReplayControlResponse.FromString,
+                _registered_method=True)
+        self.StopEngine = channel.unary_unary(
+                '/engine.DataEngine/StopEngine',
+                request_serializer=engine__pb2.StopEngineRequest.SerializeToString,
+                response_deserializer=engine__pb2.ReplayControlResponse.FromString,
+                _registered_method=True)
+        self.SetReplaySpeed = channel.unary_unary(
+                '/engine.DataEngine/SetReplaySpeed',
+                request_serializer=engine__pb2.SetReplaySpeedRequest.SerializeToString,
+                response_deserializer=engine__pb2.ReplayControlResponse.FromString,
+                _registered_method=True)
+        self.PauseReplay = channel.unary_unary(
+                '/engine.DataEngine/PauseReplay',
+                request_serializer=engine__pb2.PauseReplayRequest.SerializeToString,
+                response_deserializer=engine__pb2.ReplayControlResponse.FromString,
+                _registered_method=True)
+        self.ResumeReplay = channel.unary_unary(
+                '/engine.DataEngine/ResumeReplay',
+                request_serializer=engine__pb2.ResumeReplayRequest.SerializeToString,
+                response_deserializer=engine__pb2.ReplayControlResponse.FromString,
+                _registered_method=True)
+        self.StepReplay = channel.unary_unary(
+                '/engine.DataEngine/StepReplay',
+                request_serializer=engine__pb2.StepReplayRequest.SerializeToString,
+                response_deserializer=engine__pb2.ReplayControlResponse.FromString,
+                _registered_method=True)
+        self.StopReplay = channel.unary_unary(
+                '/engine.DataEngine/StopReplay',
+                request_serializer=engine__pb2.StopReplayRequest.SerializeToString,
+                response_deserializer=engine__pb2.ReplayControlResponse.FromString,
+                _registered_method=True)
+        self.ForceStopReplay = channel.unary_unary(
+                '/engine.DataEngine/ForceStopReplay',
+                request_serializer=engine__pb2.ForceStopReplayRequest.SerializeToString,
+                response_deserializer=engine__pb2.ReplayControlResponse.FromString,
+                _registered_method=True)
 
 
 class DataEngineServicer(object):
     """Missing associated documentation comment in .proto file."""
 
     def GetState(self, request, context):
-        """Missing associated documentation comment in .proto file."""
+        """Legacy/Static
+        """
         context.set_code(grpc.StatusCode.UNIMPLEMENTED)
         context.set_details('Method not implemented!')
         raise NotImplementedError('Method not implemented!')
@@ -139,6 +185,61 @@ class DataEngineServicer(object):
         raise NotImplementedError('Method not implemented!')
 
     def Stop(self, request, context):
+        """Missing associated documentation comment in .proto file."""
+        context.set_code(grpc.StatusCode.UNIMPLEMENTED)
+        context.set_details('Method not implemented!')
+        raise NotImplementedError('Method not implemented!')
+
+    def LoadReplayData(self, request, context):
+        """Nautilus Replay Control
+        """
+        context.set_code(grpc.StatusCode.UNIMPLEMENTED)
+        context.set_details('Method not implemented!')
+        raise NotImplementedError('Method not implemented!')
+
+    def StartEngine(self, request, context):
+        """Missing associated documentation comment in .proto file."""
+        context.set_code(grpc.StatusCode.UNIMPLEMENTED)
+        context.set_details('Method not implemented!')
+        raise NotImplementedError('Method not implemented!')
+
+    def StopEngine(self, request, context):
+        """Missing associated documentation comment in .proto file."""
+        context.set_code(grpc.StatusCode.UNIMPLEMENTED)
+        context.set_details('Method not implemented!')
+        raise NotImplementedError('Method not implemented!')
+
+    def SetReplaySpeed(self, request, context):
+        """Missing associated documentation comment in .proto file."""
+        context.set_code(grpc.StatusCode.UNIMPLEMENTED)
+        context.set_details('Method not implemented!')
+        raise NotImplementedError('Method not implemented!')
+
+    def PauseReplay(self, request, context):
+        """Missing associated documentation comment in .proto file."""
+        context.set_code(grpc.StatusCode.UNIMPLEMENTED)
+        context.set_details('Method not implemented!')
+        raise NotImplementedError('Method not implemented!')
+
+    def ResumeReplay(self, request, context):
+        """Missing associated documentation comment in .proto file."""
+        context.set_code(grpc.StatusCode.UNIMPLEMENTED)
+        context.set_details('Method not implemented!')
+        raise NotImplementedError('Method not implemented!')
+
+    def StepReplay(self, request, context):
+        """Missing associated documentation comment in .proto file."""
+        context.set_code(grpc.StatusCode.UNIMPLEMENTED)
+        context.set_details('Method not implemented!')
+        raise NotImplementedError('Method not implemented!')
+
+    def StopReplay(self, request, context):
+        """Missing associated documentation comment in .proto file."""
+        context.set_code(grpc.StatusCode.UNIMPLEMENTED)
+        context.set_details('Method not implemented!')
+        raise NotImplementedError('Method not implemented!')
+
+    def ForceStopReplay(self, request, context):
         """Missing associated documentation comment in .proto file."""
         context.set_code(grpc.StatusCode.UNIMPLEMENTED)
         context.set_details('Method not implemented!')
@@ -161,6 +262,51 @@ def add_DataEngineServicer_to_server(servicer, server):
                     servicer.Stop,
                     request_deserializer=engine__pb2.StopRequest.FromString,
                     response_serializer=engine__pb2.StopResponse.SerializeToString,
+            ),
+            'LoadReplayData': grpc.unary_unary_rpc_method_handler(
+                    servicer.LoadReplayData,
+                    request_deserializer=engine__pb2.LoadReplayDataRequest.FromString,
+                    response_serializer=engine__pb2.ReplayControlResponse.SerializeToString,
+            ),
+            'StartEngine': grpc.unary_unary_rpc_method_handler(
+                    servicer.StartEngine,
+                    request_deserializer=engine__pb2.StartEngineRequest.FromString,
+                    response_serializer=engine__pb2.ReplayControlResponse.SerializeToString,
+            ),
+            'StopEngine': grpc.unary_unary_rpc_method_handler(
+                    servicer.StopEngine,
+                    request_deserializer=engine__pb2.StopEngineRequest.FromString,
+                    response_serializer=engine__pb2.ReplayControlResponse.SerializeToString,
+            ),
+            'SetReplaySpeed': grpc.unary_unary_rpc_method_handler(
+                    servicer.SetReplaySpeed,
+                    request_deserializer=engine__pb2.SetReplaySpeedRequest.FromString,
+                    response_serializer=engine__pb2.ReplayControlResponse.SerializeToString,
+            ),
+            'PauseReplay': grpc.unary_unary_rpc_method_handler(
+                    servicer.PauseReplay,
+                    request_deserializer=engine__pb2.PauseReplayRequest.FromString,
+                    response_serializer=engine__pb2.ReplayControlResponse.SerializeToString,
+            ),
+            'ResumeReplay': grpc.unary_unary_rpc_method_handler(
+                    servicer.ResumeReplay,
+                    request_deserializer=engine__pb2.ResumeReplayRequest.FromString,
+                    response_serializer=engine__pb2.ReplayControlResponse.SerializeToString,
+            ),
+            'StepReplay': grpc.unary_unary_rpc_method_handler(
+                    servicer.StepReplay,
+                    request_deserializer=engine__pb2.StepReplayRequest.FromString,
+                    response_serializer=engine__pb2.ReplayControlResponse.SerializeToString,
+            ),
+            'StopReplay': grpc.unary_unary_rpc_method_handler(
+                    servicer.StopReplay,
+                    request_deserializer=engine__pb2.StopReplayRequest.FromString,
+                    response_serializer=engine__pb2.ReplayControlResponse.SerializeToString,
+            ),
+            'ForceStopReplay': grpc.unary_unary_rpc_method_handler(
+                    servicer.ForceStopReplay,
+                    request_deserializer=engine__pb2.ForceStopReplayRequest.FromString,
+                    response_serializer=engine__pb2.ReplayControlResponse.SerializeToString,
             ),
     }
     generic_handler = grpc.method_handlers_generic_handler(
@@ -244,6 +390,249 @@ class DataEngine(object):
             '/engine.DataEngine/Stop',
             engine__pb2.StopRequest.SerializeToString,
             engine__pb2.StopResponse.FromString,
+            options,
+            channel_credentials,
+            insecure,
+            call_credentials,
+            compression,
+            wait_for_ready,
+            timeout,
+            metadata,
+            _registered_method=True)
+
+    @staticmethod
+    def LoadReplayData(request,
+            target,
+            options=(),
+            channel_credentials=None,
+            call_credentials=None,
+            insecure=False,
+            compression=None,
+            wait_for_ready=None,
+            timeout=None,
+            metadata=None):
+        return grpc.experimental.unary_unary(
+            request,
+            target,
+            '/engine.DataEngine/LoadReplayData',
+            engine__pb2.LoadReplayDataRequest.SerializeToString,
+            engine__pb2.ReplayControlResponse.FromString,
+            options,
+            channel_credentials,
+            insecure,
+            call_credentials,
+            compression,
+            wait_for_ready,
+            timeout,
+            metadata,
+            _registered_method=True)
+
+    @staticmethod
+    def StartEngine(request,
+            target,
+            options=(),
+            channel_credentials=None,
+            call_credentials=None,
+            insecure=False,
+            compression=None,
+            wait_for_ready=None,
+            timeout=None,
+            metadata=None):
+        return grpc.experimental.unary_unary(
+            request,
+            target,
+            '/engine.DataEngine/StartEngine',
+            engine__pb2.StartEngineRequest.SerializeToString,
+            engine__pb2.ReplayControlResponse.FromString,
+            options,
+            channel_credentials,
+            insecure,
+            call_credentials,
+            compression,
+            wait_for_ready,
+            timeout,
+            metadata,
+            _registered_method=True)
+
+    @staticmethod
+    def StopEngine(request,
+            target,
+            options=(),
+            channel_credentials=None,
+            call_credentials=None,
+            insecure=False,
+            compression=None,
+            wait_for_ready=None,
+            timeout=None,
+            metadata=None):
+        return grpc.experimental.unary_unary(
+            request,
+            target,
+            '/engine.DataEngine/StopEngine',
+            engine__pb2.StopEngineRequest.SerializeToString,
+            engine__pb2.ReplayControlResponse.FromString,
+            options,
+            channel_credentials,
+            insecure,
+            call_credentials,
+            compression,
+            wait_for_ready,
+            timeout,
+            metadata,
+            _registered_method=True)
+
+    @staticmethod
+    def SetReplaySpeed(request,
+            target,
+            options=(),
+            channel_credentials=None,
+            call_credentials=None,
+            insecure=False,
+            compression=None,
+            wait_for_ready=None,
+            timeout=None,
+            metadata=None):
+        return grpc.experimental.unary_unary(
+            request,
+            target,
+            '/engine.DataEngine/SetReplaySpeed',
+            engine__pb2.SetReplaySpeedRequest.SerializeToString,
+            engine__pb2.ReplayControlResponse.FromString,
+            options,
+            channel_credentials,
+            insecure,
+            call_credentials,
+            compression,
+            wait_for_ready,
+            timeout,
+            metadata,
+            _registered_method=True)
+
+    @staticmethod
+    def PauseReplay(request,
+            target,
+            options=(),
+            channel_credentials=None,
+            call_credentials=None,
+            insecure=False,
+            compression=None,
+            wait_for_ready=None,
+            timeout=None,
+            metadata=None):
+        return grpc.experimental.unary_unary(
+            request,
+            target,
+            '/engine.DataEngine/PauseReplay',
+            engine__pb2.PauseReplayRequest.SerializeToString,
+            engine__pb2.ReplayControlResponse.FromString,
+            options,
+            channel_credentials,
+            insecure,
+            call_credentials,
+            compression,
+            wait_for_ready,
+            timeout,
+            metadata,
+            _registered_method=True)
+
+    @staticmethod
+    def ResumeReplay(request,
+            target,
+            options=(),
+            channel_credentials=None,
+            call_credentials=None,
+            insecure=False,
+            compression=None,
+            wait_for_ready=None,
+            timeout=None,
+            metadata=None):
+        return grpc.experimental.unary_unary(
+            request,
+            target,
+            '/engine.DataEngine/ResumeReplay',
+            engine__pb2.ResumeReplayRequest.SerializeToString,
+            engine__pb2.ReplayControlResponse.FromString,
+            options,
+            channel_credentials,
+            insecure,
+            call_credentials,
+            compression,
+            wait_for_ready,
+            timeout,
+            metadata,
+            _registered_method=True)
+
+    @staticmethod
+    def StepReplay(request,
+            target,
+            options=(),
+            channel_credentials=None,
+            call_credentials=None,
+            insecure=False,
+            compression=None,
+            wait_for_ready=None,
+            timeout=None,
+            metadata=None):
+        return grpc.experimental.unary_unary(
+            request,
+            target,
+            '/engine.DataEngine/StepReplay',
+            engine__pb2.StepReplayRequest.SerializeToString,
+            engine__pb2.ReplayControlResponse.FromString,
+            options,
+            channel_credentials,
+            insecure,
+            call_credentials,
+            compression,
+            wait_for_ready,
+            timeout,
+            metadata,
+            _registered_method=True)
+
+    @staticmethod
+    def StopReplay(request,
+            target,
+            options=(),
+            channel_credentials=None,
+            call_credentials=None,
+            insecure=False,
+            compression=None,
+            wait_for_ready=None,
+            timeout=None,
+            metadata=None):
+        return grpc.experimental.unary_unary(
+            request,
+            target,
+            '/engine.DataEngine/StopReplay',
+            engine__pb2.StopReplayRequest.SerializeToString,
+            engine__pb2.ReplayControlResponse.FromString,
+            options,
+            channel_credentials,
+            insecure,
+            call_credentials,
+            compression,
+            wait_for_ready,
+            timeout,
+            metadata,
+            _registered_method=True)
+
+    @staticmethod
+    def ForceStopReplay(request,
+            target,
+            options=(),
+            channel_credentials=None,
+            call_credentials=None,
+            insecure=False,
+            compression=None,
+            wait_for_ready=None,
+            timeout=None,
+            metadata=None):
+        return grpc.experimental.unary_unary(
+            request,
+            target,
+            '/engine.DataEngine/ForceStopReplay',
+            engine__pb2.ForceStopReplayRequest.SerializeToString,
+            engine__pb2.ReplayControlResponse.FromString,
             options,
             channel_credentials,
             insecure,
