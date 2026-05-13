@@ -83,11 +83,13 @@ class GrpcDataEngineServer(
                 error_message=f"Granularity {request.granularity} is not supported",
             )
 
+        catalog_path = request.catalog_path if request.HasField("catalog_path") else None
         success, error = self.engine.load_replay_data(
             request.instrument_ids,
             request.start_date,
             request.end_date,
             granularity_name,
+            catalog_path=catalog_path,
         )
         return engine_pb2.ReplayControlResponse(
             success=success,

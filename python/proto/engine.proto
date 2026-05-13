@@ -96,6 +96,9 @@ message LoadReplayDataRequest {
   string end_date = 4;
   optional ReplayGranularity granularity = 5;
   string token = 10;
+  // When set, load data from a Nautilus ParquetDataCatalog at this path.
+  // instrument_ids[0] is used as the BarType identifier for the catalog query.
+  optional string catalog_path = 11;
 }
 
 message EngineStartConfig {

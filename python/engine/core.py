@@ -114,6 +114,7 @@ class DataEngine:
         start_date: str = "",
         end_date: str = "",
         granularity: str = "Trade",
+        catalog_path: str | None = None,
     ) -> tuple[bool, str | None]:
         """
         Static mode uses legacy Start / Stop / GetState for Phase 1-5
@@ -131,13 +132,14 @@ class DataEngine:
             if not instrument_ids:
                 return False, "At least one instrument_id is required"
 
-            if self._nautilus_catalog_path is not None:
+            effective_catalog_path = catalog_path or self._nautilus_catalog_path
+            if effective_catalog_path is not None:
                 if granularity not in ("Daily", "Minute"):
                     return False, f"Unsupported granularity for nautilus catalog: {granularity!r}"
 
                 try:
                     provider = NautilusBarsReplayProvider(
-                        catalog_path=self._nautilus_catalog_path,
+                        catalog_path=effective_catalog_path,
                         bar_type=instrument_ids[0],
                         start=start_date or None,
                         end=end_date or None,
