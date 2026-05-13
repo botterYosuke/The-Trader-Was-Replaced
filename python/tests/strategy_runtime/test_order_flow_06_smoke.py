@@ -64,7 +64,7 @@ def test_order_flow_06_smoke_1instrument(tmp_path):
         instruments=["1301.TSE"],
         start="2025-01-06",
         end="2025-01-10",
-        granularity="Minute",
+        granularity="Daily",
         initial_cash=1_000_000,
     )
     # Remove instruments_ref so downstream doesn't re-resolve
@@ -73,9 +73,10 @@ def test_order_flow_06_smoke_1instrument(tmp_path):
     # ── Load bars from real catalog ───────────────────────────────────────────
     from engine.strategy_runtime.catalog_data_loader import load_bars_for_scenario
     bars_by_instrument = load_bars_for_scenario(str(_CATALOG_PATH), scenario)
-    assert bars_by_instrument, "no bars loaded from catalog"
+    total_bars = sum(len(v) for v in bars_by_instrument.values())
+    assert total_bars > 0, "no bars loaded from catalog"
 
-    # ── Build warmup_loader (no Daily bars in Minute catalog → returns []) ────
+    # ── Build warmup_loader ───────────────────────────────────────────────────
     from engine.strategy_runtime.warmup import make_catalog_warmup_loader
     warmup_loader = make_catalog_warmup_loader(_CATALOG_PATH)
 

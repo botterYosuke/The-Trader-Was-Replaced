@@ -21,13 +21,15 @@ uv sync
 uv run python -m engine --token your-secret-token
 ```
 
-### Replay Mode
 
-```bash
-uv run python -m engine --token your-secret-token --mode replay --replay-path path/to/data.csv
+## Strategy Replay
+
+→ **[docs/strategy-replay.md](../docs/strategy-replay.md)**
+
+```powershell
+# 最速起動
+.\scripts\run_replay.ps1 -Strategy python\tests\data\test_strategy_daily.py
 ```
-
-The CSV should be in `timestamp,price` format (no header required, or non-numeric header will be skipped).
 
 ## Testing
 

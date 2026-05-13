@@ -21,7 +21,17 @@ _CATALOG_PATH = Path(
     )
 )
 
+_PYTHON_SRC = Path(__file__).parent.parent.parent  # → python/
+
 _DAY_NS = 86_400_000_000_000
+
+
+def _cli_env() -> dict:
+    import os
+    env = os.environ.copy()
+    existing = env.get("PYTHONPATH", "")
+    env["PYTHONPATH"] = str(_PYTHON_SRC) + (os.pathsep + existing if existing else "")
+    return env
 
 
 def _make_fake_bars_by_instrument():
@@ -60,6 +70,8 @@ def _default_run_args(tmp_path: Path, **overrides) -> argparse.Namespace:
         run_buffer_dir=str(tmp_path / "rb"),
         strategy_params=[],
         granularity=None,
+        start=None,
+        end=None,
         verbose=False,
     )
     defaults.update(overrides)
@@ -72,6 +84,7 @@ class TestCliHelp:
             [sys.executable, "-m", "engine.strategy_replay", "run", "--help"],
             capture_output=True,
             text=True,
+            env=_cli_env(),
         )
         assert result.returncode == 0
 
@@ -80,6 +93,7 @@ class TestCliHelp:
             [sys.executable, "-m", "engine.strategy_replay", "run", "--help"],
             capture_output=True,
             text=True,
+            env=_cli_env(),
         )
         assert "--strategy" in result.stdout
 
@@ -88,6 +102,7 @@ class TestCliHelp:
             [sys.executable, "-m", "engine.strategy_replay", "run", "--help"],
             capture_output=True,
             text=True,
+            env=_cli_env(),
         )
         assert "--catalog" in result.stdout
 
@@ -96,6 +111,7 @@ class TestCliHelp:
             [sys.executable, "-m", "engine.strategy_replay", "run", "--help"],
             capture_output=True,
             text=True,
+            env=_cli_env(),
         )
         assert "--bars-json" in result.stdout
 
@@ -104,6 +120,7 @@ class TestCliHelp:
             [sys.executable, "-m", "engine.strategy_replay", "--help"],
             capture_output=True,
             text=True,
+            env=_cli_env(),
         )
         assert result.returncode == 0
 
@@ -114,6 +131,7 @@ class TestCliMissingArgs:
             [sys.executable, "-m", "engine.strategy_replay", "run"],
             capture_output=True,
             text=True,
+            env=_cli_env(),
         )
         assert result.returncode != 0
 
@@ -124,6 +142,7 @@ class TestCliMissingArgs:
              "--bars-json", "no_such.json"],
             capture_output=True,
             text=True,
+            env=_cli_env(),
         )
         assert result.returncode == 1
 
@@ -187,6 +206,7 @@ class TestCliBarsJsonSmoke:
             ],
             capture_output=True,
             text=True,
+            env=_cli_env(),
         )
         assert result.returncode == 0, f"stderr: {result.stderr}"
 
@@ -201,6 +221,7 @@ class TestCliBarsJsonSmoke:
             ],
             capture_output=True,
             text=True,
+            env=_cli_env(),
         )
         assert result.returncode == 0
         out = json.loads(result.stdout)
@@ -220,6 +241,7 @@ class TestCliBarsJsonSmoke:
             ],
             capture_output=True,
             text=True,
+            env=_cli_env(),
             check=True,
         )
         run_dirs = [d for d in rb_dir.iterdir() if d.is_dir()]
@@ -350,6 +372,7 @@ class TestCliGranularityOverride:
         result = subprocess.run(
             [sys.executable, "-m", "engine.strategy_replay", "run", "--help"],
             capture_output=True, text=True,
+            env=_cli_env(),
         )
         assert "--granularity" in result.stdout
 
@@ -374,7 +397,7 @@ class TestCliCatalogSlow:
                 "--strategy", str(_MR01_PATH),
                 "--catalog", str(_CATALOG_PATH),
                 "--run-buffer-dir", str(rb_dir),
-                "--granularity", "Minute",
+                "--granularity", "Daily",
             ],
             capture_output=True,
             text=True,
@@ -391,7 +414,7 @@ class TestCliCatalogSlow:
                 "--strategy", str(_MR01_PATH),
                 "--catalog", str(_CATALOG_PATH),
                 "--run-buffer-dir", str(rb_dir),
-                "--granularity", "Minute",
+                "--granularity", "Daily",
             ],
             capture_output=True,
             text=True,
@@ -408,7 +431,7 @@ class TestCliCatalogSlow:
                 "--strategy", str(_MR01_PATH),
                 "--catalog", str(_CATALOG_PATH),
                 "--run-buffer-dir", str(rb_dir),
-                "--granularity", "Minute",
+                "--granularity", "Daily",
             ],
             capture_output=True,
             text=True,

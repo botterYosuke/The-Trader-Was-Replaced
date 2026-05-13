@@ -39,7 +39,16 @@
       "Bash(grep -E \"\\\\.py$|^d\")",
       "Bash(python -m engine.strategy_replay --help)",
       "Bash(python -m engine.strategy_replay run --help)",
-      "PowerShell($runId = \"1778684774-order_flow_06-1360_TSE\"; $BS = \"C:\\\\Users\\\\sasai\\\\Documents\\\\🐃_blacksheep\"; @\\(\"raw\\\\replay-runs\\\\$runId\\\\meta.json\", \"Silver\\\\runs\\\\$runId\\\\summary.json\", \"wiki\\\\runs\\\\order_flow_06-1778684774.md\"\\) | ForEach-Object { \"$_ : $\\(Test-Path \\(Join-Path $BS $_\\)\\)\" })"
+      "PowerShell($runId = \"1778684774-order_flow_06-1360_TSE\"; $BS = \"C:\\\\Users\\\\sasai\\\\Documents\\\\🐃_blacksheep\"; @\\(\"raw\\\\replay-runs\\\\$runId\\\\meta.json\", \"Silver\\\\runs\\\\$runId\\\\summary.json\", \"wiki\\\\runs\\\\order_flow_06-1778684774.md\"\\) | ForEach-Object { \"$_ : $\\(Test-Path \\(Join-Path $BS $_\\)\\)\" })",
+      "Bash(Get-ChildItem -Path \"c:\\\\Users\\\\sasai\\\\Documents\\\\The-Trader-Was-Replaced\\\\python\" -Recurse -Directory)",
+      "Bash(Select-Object -First 30)",
+      "Bash(Format-Table -AutoSize)",
+      "Bash(Find \"c:\\\\Users\\\\sasai\\\\Documents\\\\The-Trader-Was-Replaced\\\\python\\\\tests\" -name \"*.py\" -type f)",
+      "Bash(python -c \"import engine.strategy_replay.cli\")",
+      "Bash(Get-ChildItem -Path . -Name)",
+      "Bash(echo \"Exit code: $?\")",
+      "Bash(rm -rf artifacts/jquants-catalog)",
+      "Bash(powershell -ExecutionPolicy Bypass -File scripts/run_replay.ps1 -Strategy python/tests/data/test_strategy_daily.py -RunBufferDir tmp/run-buffer)"
     ],
     "additionalDirectories": [
       "\\tmp",
