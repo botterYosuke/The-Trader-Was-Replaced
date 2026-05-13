@@ -35,11 +35,13 @@ class GrpcDataEngineServer(
         return engine_pb2.IDLE
 
     def _replay_granularity_name(self, granularity):
+        if granularity == engine_pb2.TICK:
+            return "Trade"
         if granularity == engine_pb2.MINUTE:
             return "Minute"
         if granularity == engine_pb2.DAILY:
             return "Daily"
-        return "Trade"
+        return None
 
     def Check(self, request, context):
         return engine_pb2.HealthCheckResponse(
@@ -71,11 +73,21 @@ class GrpcDataEngineServer(
         if request.token != self.token:
             context.abort(grpc.StatusCode.UNAUTHENTICATED, "Invalid token")
 
+        granularity_name = self._replay_granularity_name(request.granularity)
+        if granularity_name is None:
+            return engine_pb2.ReplayControlResponse(
+                success=False,
+                request_id=request.request_id,
+                current_state=self._current_engine_state(),
+                error_code="INVALID_STATE",
+                error_message=f"Granularity {request.granularity} is not supported",
+            )
+
         success, error = self.engine.load_replay_data(
             request.instrument_ids,
             request.start_date,
             request.end_date,
-            self._replay_granularity_name(request.granularity),
+            granularity_name,
         )
         return engine_pb2.ReplayControlResponse(
             success=success,

@@ -326,6 +326,52 @@ def test_grpc_load_replay_data_succeeds_with_daily_granularity(jquants_grpc_serv
     assert resp.current_state == engine_pb2.LOADED
 
 
+def test_grpc_load_replay_data_succeeds_with_minute_granularity(jquants_grpc_server):
+    """
+    gRPC の MINUTE granularity が equities_bars_minute_YYYYMM.csv.gz を正しく参照することを確認する。
+    """
+    port, token, _ = jquants_grpc_server
+    channel = grpc.insecure_channel(f"localhost:{port}")
+    stub = engine_pb2_grpc.DataEngineStub(channel)
+
+    resp = stub.LoadReplayData(
+        engine_pb2.LoadReplayDataRequest(
+            request_id="load-jquants-minute-1",
+            token=token,
+            instrument_ids=["7203.TSE"],
+            start_date="2024-07-01",
+            end_date="2024-07-31",
+            granularity=engine_pb2.MINUTE,
+        )
+    )
+
+    assert resp.success
+    assert resp.current_state == engine_pb2.LOADED
+
+
+def test_grpc_load_replay_data_rejects_second_granularity(jquants_grpc_server):
+    """SECOND granularity は未サポートとして拒否される。"""
+    port, token, _ = jquants_grpc_server
+    channel = grpc.insecure_channel(f"localhost:{port}")
+    stub = engine_pb2_grpc.DataEngineStub(channel)
+
+    resp = stub.LoadReplayData(
+        engine_pb2.LoadReplayDataRequest(
+            request_id="load-second-1",
+            token=token,
+            instrument_ids=["7203.TSE"],
+            start_date="2024-07-01",
+            end_date="2024-07-31",
+            granularity=engine_pb2.SECOND,
+        )
+    )
+
+    assert not resp.success
+    assert resp.current_state == engine_pb2.IDLE
+    assert resp.error_code == "INVALID_STATE"
+    assert "not supported" in resp.error_message
+
+
 def test_grpc_load_replay_data_rejects_when_jquants_data_missing(tmp_path):
     token = "test-token"
     loader = JQuantsLoader(str(tmp_path / "missing-j-quants"))
