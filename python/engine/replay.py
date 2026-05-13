@@ -134,6 +134,73 @@ class JQuantsDailyReplayProvider(BaseReplayProvider):
             logging.warning(f"Invalid index for JQuantsDailyReplayProvider: {value}")
 
 
+class NautilusBarsReplayProvider(BaseReplayProvider):
+    """
+    Replay provider backed by a ParquetDataCatalog.
+
+    Eagerly loads Bars via the catalog loader, converts each to the 5-tuple shape
+    (ts_sec, open, high, low, close) that DataEngine._prime_provider_locked /
+    _advance_one_locked expect, and exposes them tick-by-tick.
+
+    `bar_type` is the full BarType string used as the catalog `identifier`
+    (e.g. "AAPL.NASDAQ-1-MINUTE-LAST-EXTERNAL").
+    """
+
+    def __init__(
+        self,
+        catalog_path: str,
+        bar_type: str,
+        start=None,
+        end=None,
+    ):
+        from .nautilus_catalog_loader import load_bars
+
+        bars = load_bars(
+            catalog_path,
+            instrument_ids=[bar_type],
+            start=start,
+            end=end,
+        )
+
+        self._data: List[Tuple[float, float, float, float, float]] = [
+            (
+                int(bar.ts_event) / 1e9,
+                bar.open.as_double(),
+                bar.high.as_double(),
+                bar.low.as_double(),
+                bar.close.as_double(),
+            )
+            for bar in bars
+        ]
+        self._index = 0
+
+        if not self._data:
+            raise ValueError(
+                f"No nautilus catalog bars found for {bar_type} at {catalog_path}"
+            )
+
+    def get_next_tick(self) -> Optional[Tuple[float, float, float, float, float]]:
+        if self._index < len(self._data):
+            tick = self._data[self._index]
+            self._index += 1
+            return tick
+        return None
+
+    def is_exhausted(self) -> bool:
+        return self._index >= len(self._data)
+
+    @property
+    def current_index(self) -> int:
+        return self._index
+
+    @current_index.setter
+    def current_index(self, value: int):
+        if 0 <= value <= len(self._data):
+            self._index = value
+        else:
+            logging.warning(f"Invalid index for NautilusBarsReplayProvider: {value}")
+
+
 class JQuantsMinuteReplayProvider(BaseReplayProvider):
     def __init__(
         self,

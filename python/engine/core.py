@@ -6,7 +6,12 @@ from typing import Literal, Optional
 
 from .models import EngineSnapshot, HistoryPoint, TradingState
 from .reducer import KlineUpdate, ReducerState, ReplayEvent, ReplayTimeUpdated, apply_event
-from .replay import BaseReplayProvider, JQuantsDailyReplayProvider, JQuantsMinuteReplayProvider
+from .replay import (
+    BaseReplayProvider,
+    JQuantsDailyReplayProvider,
+    JQuantsMinuteReplayProvider,
+    NautilusBarsReplayProvider,
+)
 
 
 class DataEngine:
@@ -15,6 +20,7 @@ class DataEngine:
         replay_provider: Optional[BaseReplayProvider] = None,
         max_history_len: int = 1000,
         jquants_loader=None,
+        nautilus_catalog_path: Optional[str] = None,
     ):
         logging.info(
             f"Initializing DataEngine core (max_history_len: {max_history_len})"
@@ -29,6 +35,7 @@ class DataEngine:
         self._is_exhausted = False
         self._max_history_len = max_history_len
         self._jquants_loader = jquants_loader
+        self._nautilus_catalog_path = nautilus_catalog_path
         self._event_log: list[ReplayEvent] = []
 
         # Initialize the first visible state.
@@ -59,6 +66,10 @@ class DataEngine:
     def replay_state(self) -> str:
         with self._lock:
             return self._replay_state
+
+    def apply_replay_event(self, event: ReplayEvent) -> None:
+        with self._lock:
+            self._apply_event_locked(event)
 
     def _apply_event_locked(self, event: ReplayEvent) -> None:
         self._event_log.append(event)
@@ -119,6 +130,24 @@ class DataEngine:
             instrument_ids = instrument_ids or []
             if not instrument_ids:
                 return False, "At least one instrument_id is required"
+
+            if self._nautilus_catalog_path is not None:
+                if granularity not in ("Daily", "Minute"):
+                    return False, f"Unsupported granularity for nautilus catalog: {granularity!r}"
+
+                try:
+                    provider = NautilusBarsReplayProvider(
+                        catalog_path=self._nautilus_catalog_path,
+                        bar_type=instrument_ids[0],
+                        start=start_date or None,
+                        end=end_date or None,
+                    )
+                except (ValueError, FileNotFoundError) as e:
+                    return False, str(e)
+
+                self._prime_provider_locked(provider)
+                self._replay_state = "LOADED"
+                return True, None
 
             if self._jquants_loader is not None:
                 _PROVIDER_CLASS = {
