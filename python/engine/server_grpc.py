@@ -51,8 +51,9 @@ def advance_loop(engine: DataEngine, interval: float = 1.0):
             engine.advance()
     logging.info("Advance loop stopped")
 
-def serve(port: int, token: str, replay_provider: Optional[BaseReplayProvider] = None, auto_start: bool = False):
-    engine = DataEngine(replay_provider=replay_provider)
+def serve(port: int, token: str, replay_provider: Optional[BaseReplayProvider] = None, 
+          auto_start: bool = False, max_history_len: int = 1000, advance_interval_sec: float = 1.0):
+    engine = DataEngine(replay_provider=replay_provider, max_history_len=max_history_len)
     
     # サーバー起動時点ではエンジンを一時停止状態にしておく（auto_start が False の場合）
     if auto_start:
@@ -62,7 +63,7 @@ def serve(port: int, token: str, replay_provider: Optional[BaseReplayProvider] =
 
     ticker_thread = threading.Thread(
         target=advance_loop, 
-        args=(engine, 1.0), 
+        args=(engine, advance_interval_sec), 
         daemon=True
     )
     ticker_thread.start()

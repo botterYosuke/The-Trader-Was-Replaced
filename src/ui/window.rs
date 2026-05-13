@@ -2,6 +2,7 @@ use bevy::prelude::*;
 use crate::ui::components::{WindowRoot, TitleBar, PriceDisplay, WindowManager, StatusIndicator};
 use crate::ui::button::spawn_button;
 use crate::ui::components::TradeButton;
+use crate::ui::chart::ChartViewState;
 
 pub fn setup_ui(mut commands: Commands) {
     spawn_trader_window(&mut commands, Vec2::new(0.0, 0.0));
@@ -97,12 +98,23 @@ pub fn spawn_trader_window(commands: &mut Commands, position: Vec2) {
         PriceDisplay,
     )).id();
 
+    // Chart
+    let chart = commands.spawn((
+        Transform::from_xyz(0.0, -10.0, 0.1),
+        ChartViewState {
+            width: 360.0,
+            height: 180.0,
+            ..default()
+        },
+    )).id();
+
     // Buttons
     let buy_button = spawn_button(commands, "BUY", Color::srgb(0.0, 0.8, 0.4), Vec2::new(-80.0, -180.0), TradeButton::Buy);
     let sell_button = spawn_button(commands, "SELL", Color::srgb(0.8, 0.2, 0.2), Vec2::new(80.0, -180.0), TradeButton::Sell);
 
     commands.entity(window_id).add_child(title_bar);
     commands.entity(window_id).add_child(price_text);
+    commands.entity(window_id).add_child(chart);
     commands.entity(window_id).add_child(buy_button);
     commands.entity(window_id).add_child(sell_button);
 }

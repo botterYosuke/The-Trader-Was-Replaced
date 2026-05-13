@@ -1,10 +1,9 @@
-use Backcast::trading::{TradingData, price_simulation_system, backend_update_system, TradingSettings, BackendChannel, engine, BackendStatus};
-use Backcast::ui::UiPlugin;
-use Backcast::grid::GridPlugin;
-use Backcast::camera::setup_camera;
+use backcast::trading::{TradingData, price_simulation_system, backend_update_system, TradingSettings, BackendChannel, engine, BackendStatus};
+use backcast::ui::UiPlugin;
+use backcast::grid::GridPlugin;
+use backcast::camera::setup_camera;
 use bevy::prelude::*;
 use bevy_pancam::PanCamPlugin;
-use bevy_vector_shapes::prelude::*;
 use tokio::sync::mpsc;
 use engine::data_engine_client::DataEngineClient;
 use engine::{GetStateRequest, StartRequest};
@@ -20,7 +19,6 @@ async fn main() {
             ..default()
         }))
         .add_plugins(PanCamPlugin)
-        .add_plugins(Shape2dPlugin::default())
         .add_plugins(UiPlugin)
         .add_plugins(GridPlugin)
         .insert_resource(TradingData::default())
@@ -118,7 +116,7 @@ fn setup_backend_connection(mut commands: Commands, settings: Res<TradingSetting
             match tokio::time::timeout(tokio::time::Duration::from_secs(2), client.get_state(request)).await {
                 Ok(Ok(response)) => {
                     let json_data = response.into_inner().json_data;
-                    match serde_json::from_str::<Backcast::trading::BackendTradingState>(&json_data) {
+                    match serde_json::from_str::<backcast::trading::BackendTradingState>(&json_data) {
                         Ok(state) => {
                             let _ = tx.send(state);
                             let _ = status_tx.send(BackendStatusUpdate::Connected(true));

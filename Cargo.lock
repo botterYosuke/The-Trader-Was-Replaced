@@ -3,24 +3,6 @@
 version = 4
 
 [[package]]
-name = "Backcast"
-version = "0.1.0"
-dependencies = [
- "bevy",
- "bevy_pancam",
- "bevy_vector_shapes",
- "prost",
- "protoc-bin-vendored",
- "rand",
- "serde",
- "serde_json",
- "serial_test",
- "tokio",
- "tonic",
- "tonic-build",
-]
-
-[[package]]
 name = "accesskit"
 version = "0.17.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -400,6 +382,24 @@ dependencies = [
  "sync_wrapper",
  "tower-layer",
  "tower-service",
+]
+
+[[package]]
+name = "backcast"
+version = "0.1.0"
+dependencies = [
+ "bevy",
+ "bevy_pancam",
+ "bevy_vector_shapes",
+ "prost",
+ "protoc-bin-vendored",
+ "rand",
+ "serde",
+ "serde_json",
+ "serial_test",
+ "tokio",
+ "tonic",
+ "tonic-build",
 ]
 
 [[package]]

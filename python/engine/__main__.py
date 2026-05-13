@@ -15,6 +15,10 @@ def main():
     parser.add_argument("--replay-path", type=str, help="Path to simple CSV for replay")
     parser.add_argument("--auto-start", action="store_true", help="Start engine progression immediately")
 
+    # Phase 5 Enhanced Backend Options
+    parser.add_argument("--max-history-len", type=int, default=1000, help="Maximum number of historical points to keep")
+    parser.add_argument("--advance-interval-sec", type=float, default=1.0, help="Interval between data points in seconds")
+
     args = parser.parse_args()
     
     logging.basicConfig(
@@ -41,7 +45,14 @@ def main():
         # Static モードは常に自動進行させる（既存の互換性のため）
         # Replay モードは --auto-start に従う
         auto_start = args.auto_start if args.mode == "replay" else True
-        serve(args.port, args.token, replay_provider=replay_provider, auto_start=auto_start)
+        serve(
+            args.port, 
+            args.token, 
+            replay_provider=replay_provider, 
+            auto_start=auto_start,
+            max_history_len=args.max_history_len,
+            advance_interval_sec=args.advance_interval_sec
+        )
     else:
         logging.error(f"Unsupported transport: {args.transport}")
         sys.exit(1)

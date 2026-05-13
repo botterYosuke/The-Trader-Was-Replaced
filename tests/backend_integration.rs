@@ -1,8 +1,8 @@
 use tokio::sync::oneshot;
 use tonic::{transport::Server, Request, Response, Status};
 use std::net::SocketAddr;
-use Backcast::trading::{BackendTradingState, StartRequest};
-use Backcast::trading::engine::{data_engine_server::{DataEngine, DataEngineServer}, GetStateRequest, GetStateResponse, StartResponse, StopResponse, StopRequest};
+use backcast::trading::{BackendTradingState, StartRequest};
+use backcast::trading::engine::{data_engine_server::{DataEngine, DataEngineServer}, GetStateRequest, GetStateResponse, StartResponse, StopResponse, StopRequest};
 use serde_json::json;
 
 // Mock gRPC server implementation
@@ -22,7 +22,12 @@ impl DataEngine for MyDataEngine {
         let state = json!({
             "price": 123.45,
             "history": [120.0, 123.45],
-            "timestamp": 1600000000.0
+            "timestamp": 1600000000.0,
+            "timestamp_ms": 1600000000000i64,
+            "history_points": [
+                {"timestamp_ms": 1599999999000i64, "price": 120.0},
+                {"timestamp_ms": 1600000000000i64, "price": 123.45}
+            ]
         });
 
         Ok(Response::new(GetStateResponse {
@@ -73,7 +78,7 @@ async fn test_backend_connection_flow() {
     tokio::time::sleep(tokio::time::Duration::from_millis(100)).await;
 
     let url = format!("http://{}", addr);
-    let mut client = Backcast::trading::engine::data_engine_client::DataEngineClient::connect(url.clone()).await.unwrap();
+    let mut client = backcast::trading::engine::data_engine_client::DataEngineClient::connect(url.clone()).await.unwrap();
     
     let start_resp = client.start(Request::new(StartRequest { token: token.clone() })).await.unwrap();
     assert!(start_resp.into_inner().success);
@@ -82,6 +87,8 @@ async fn test_backend_connection_flow() {
     let state_resp = client.get_state(Request::new(GetStateRequest { token: token.clone() })).await.unwrap();
     let state: BackendTradingState = serde_json::from_str(&state_resp.into_inner().json_data).unwrap();
     assert_eq!(state.price, 123.45);
+    assert_eq!(state.timestamp_ms, Some(1600000000000));
+    assert_eq!(state.history_points.len(), 2);
 
     let _ = tx_close.send(());
     server_handle.await.unwrap();
@@ -100,7 +107,7 @@ async fn test_reconnect_logic() {
     tokio::time::sleep(tokio::time::Duration::from_millis(100)).await;
 
     let url = format!("http://{}", addr);
-    let mut client = Backcast::trading::engine::data_engine_client::DataEngineClient::connect(url.clone()).await.unwrap();
+    let mut client = backcast::trading::engine::data_engine_client::DataEngineClient::connect(url.clone()).await.unwrap();
     
     let _ = tx_close1.send(());
     server_handle1.await.unwrap();
@@ -116,7 +123,7 @@ async fn test_reconnect_logic() {
     });
     tokio::time::sleep(tokio::time::Duration::from_millis(100)).await;
 
-    if let Ok(new_client) = Backcast::trading::engine::data_engine_client::DataEngineClient::connect(url.clone()).await {
+    if let Ok(new_client) = backcast::trading::engine::data_engine_client::DataEngineClient::connect(url.clone()).await {
         client = new_client;
     }
     

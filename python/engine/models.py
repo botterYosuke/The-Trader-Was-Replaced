@@ -11,6 +11,16 @@ class _BoundaryModel(BaseModel):
         allow_inf_nan=False
     )
 
+class HistoryPoint(_BoundaryModel):
+    timestamp_ms: int = Field(..., gt=0, description="Unix タイムスタンプ (ミリ秒)")
+    price: float = Field(..., gt=0, description="その時刻の価格")
+
+    @field_validator("price")
+    @classmethod
+    def check_finite(cls, v: float) -> float:
+        if not math.isfinite(v): raise ValueError("Price must be finite")
+        return v
+
 class TradingState(_BoundaryModel):
     price: float = Field(..., description="現在の市場価格", gt=0)
     history: List[float] = Field(default_factory=list, description="過去の価格履歴")
@@ -19,6 +29,8 @@ class TradingState(_BoundaryModel):
         description="データ生成時の Unix タイムスタンプ (秒)",
         gt=0
     )
+    timestamp_ms: Optional[int] = Field(None, description="Source of Truth (ms)")
+    history_points: List[HistoryPoint] = Field(default_factory=list, description="詳細な履歴ポイント")
 
     @field_validator("history")
     @classmethod
