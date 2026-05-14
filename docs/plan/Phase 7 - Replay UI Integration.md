@@ -20,6 +20,60 @@
 
 ## Handoff Log / Phase 7 Replay UI Integration
 
+### Handoff Update 2026-05-14: Backend Contract Recon verified
+
+Latest checked commit:
+
+- `13fd0d3 Update Phase 7 plan: Strategy Run Backend Contract Recon`
+
+Codex verification after worker report:
+
+- `git status --short`: clean
+- `git log --oneline -12`: confirms `13fd0d3` is latest
+- Contract search reviewed in `python/proto/engine.proto`, `src/main.rs`, `src/trading.rs`, `src/ui/*`, `python/engine/server_grpc.py`, and related Python tests
+- `cargo check`: passed
+
+Confirmed findings:
+
+- Existing proto has `StartEngineRequest` and `EngineStartConfig.strategy_file`.
+- Rust UI/backend bridge currently uses legacy `StartRequest`; `StartEngineRequest` / `EngineStartConfig` are generated but not used by `src/main.rs`.
+- `TransportCommand` currently has Pause / Resume / StepForward only; no StartEngine variant yet.
+- Python `StartEngine` handler currently calls `engine.start_engine()` and does not inspect `request.config.strategy_file`.
+- `DataEngine.start_engine()` is a state transition from LOADED to RUNNING. A full Run flow requires LoadReplayData first, then StartEngine.
+
+ADR / Direction:
+
+- Do not create a new LoadStrategy RPC yet.
+- Do not attempt full Run execution in one jump.
+- Next step should be a narrow signal shell: prove `StrategyRunRequested.cache_path` can travel from Bevy UI into the existing Tokio command loop and into a `StartEngineRequest.config.strategy_file` call site.
+- Python should only log `strategy_file` in this next shell. It should not import or execute the strategy yet.
+- The original `.py` remains untouched; the cache file remains the candidate execution input.
+
+Next Task: TransportCommand::StartEngine Signal Shell
+
+Worker instructions:
+
+1. In `src/trading.rs`, add `TransportCommand::StartEngine { strategy_file: std::path::PathBuf }`.
+2. Add a Bevy system that reads `StrategyRunRequested`, sends `TransportCommand::StartEngine { strategy_file: event.cache_path.clone() }`, and logs the handoff.
+3. Register that system in `UiPlugin` or the appropriate update list.
+4. In `src/main.rs`, import generated `StartEngineRequest` and `EngineStartConfig`.
+5. Add a Tokio command-loop arm for `TransportCommand::StartEngine`.
+6. Build `StartEngineRequest` with `config.strategy_file = strategy_file.to_string_lossy().to_string()`, call existing generated `client.start_engine(...)`, and log success/failure.
+7. In `python/engine/server_grpc.py`, add logging in `StartEngine` for `request.config.strategy_file` only. Do not import, parse, instantiate, or run the strategy yet.
+8. Run `cargo check`.
+
+Acceptance criteria:
+
+- Pressing Strategy Editor `Run` sends `StrategyRunRequested`.
+- The event is converted to `TransportCommand::StartEngine { strategy_file: cache_path }`.
+- Rust logs the outgoing StartEngine attempt with the cache path.
+- Python `StartEngine` logs the received `strategy_file`.
+- If backend state is IDLE and StartEngine rejects because LoadReplayData has not run, that is acceptable and should be logged clearly.
+- No new RPC is added.
+- `LoadReplayData` sequencing is not implemented yet.
+- Original `.py` files are not modified.
+- `cargo check` passes.
+
 この節は 2026-05-14 時点の引き継ぎ用メモです。上の本文に文字化けが残っているため、作業者がクラッシュ後に復帰できるよう、最新状況・設計判断・次の一手をここへ逐次追記する方針にします。
 
 ### START HERE for New Worker
