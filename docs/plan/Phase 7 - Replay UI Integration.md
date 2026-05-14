@@ -691,4 +691,20 @@ StartEngine ok, state=RUNNING
 - commit: `9ef9f64`
 - **Next task**: Transport / Sidebar のどちらへ進むか決定
 
+### 2026-05-14 Run Result Panel (egui floating window)
+
+- `src/ui/run_result_panel.rs` 新規作成
+- `run_result_panel_system`: `LastRunResult` を読んで egui Window に表示
+  - `RunState::Idle`: "No run yet" (gray)
+  - `RunState::Running`: "Running…" (amber)
+  - `RunState::Completed`: "Completed" (green)
+  - `RunState::Failed { error }`: "Failed: …" (red)
+  - run_id / fills / equity_pts / total_pnl を同一パネルに表示
+- `collapsible(true)` / `resizable(true)` のフローティングウィンドウ
+- `src/ui/mod.rs` に module 登録 + Update system 追加
+- Strategy Editor 側の表示は保持（重複整理は次タスク判断）
+- `cargo check` OK / `cargo test scenario_parser` 4/4 / `cargo test parse_summary_json` 3/3
+- commit: `cf3107e`
+- **Next task**: Strategy Editor 側の重複表示を整理するか、Transport 制御の実装へ進むか
+
 ---
