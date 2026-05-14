@@ -172,6 +172,18 @@ class GrpcDataEngineServer(
                 error_message=str(exc),
             )
 
+        import json as _json
+        # Transition LOADED → RUNNING before engine_run so PauseReplay can work mid-run.
+        se_ok, se_err = self.engine.start_engine()
+        if not se_ok:
+            return engine_pb2.StartEngineResponse(
+                success=False,
+                request_id=request.request_id,
+                current_state=self._current_engine_state(),
+                error_code="INVALID_STATE",
+                error_message=se_err or "",
+            )
+
         try:
             from engine.strategy_runtime.run_buffer import (
                 RunBuffer,
@@ -199,6 +211,8 @@ class GrpcDataEngineServer(
                     bars_by_instrument=bars_by_instrument,
                     run_buffer=rb,
                     strategy_init_kwargs=None,
+                    run_event=self.engine.run_event,
+                    bar_interval_sec=0.01,
                 )
                 rb.finish()
 
@@ -213,6 +227,7 @@ class GrpcDataEngineServer(
                 )
             except Exception as exc:
                 rb.abort()
+                self.engine.force_stop_replay()
                 logging.exception("StartEngine: engine_runner failed")
                 return engine_pb2.StartEngineResponse(
                     success=False,
@@ -222,6 +237,7 @@ class GrpcDataEngineServer(
                     error_message=str(exc),
                 )
         except ImportError as exc:
+            self.engine.force_stop_replay()
             logging.error("StartEngine: RunBuffer/engine_runner import failed: %s", exc)
             return engine_pb2.StartEngineResponse(
                 success=False,
@@ -231,19 +247,14 @@ class GrpcDataEngineServer(
                 error_message=str(exc),
             )
 
-        import json as _json
-        success, error = self.engine.start_engine()
+        self.engine.force_stop_replay()
         resp = engine_pb2.StartEngineResponse(
-            success=success,
+            success=True,
             request_id=request.request_id,
             current_state=self._current_engine_state(),
         )
-        if success:
-            resp.run_id = run_id
-            resp.summary_json = _json.dumps(summary, ensure_ascii=False)
-        else:
-            resp.error_code = "INVALID_STATE"
-            resp.error_message = error or ""
+        resp.run_id = run_id
+        resp.summary_json = _json.dumps(summary, ensure_ascii=False)
         return resp
 
     def StopEngine(self, request, context):

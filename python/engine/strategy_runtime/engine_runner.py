@@ -18,6 +18,7 @@ Step 3A の意図的な省略:
 from __future__ import annotations
 
 import logging
+import threading
 from typing import Protocol, runtime_checkable
 
 from nautilus_trader.backtest.engine import BacktestEngine
@@ -90,6 +91,8 @@ def run(
     bars_by_instrument: dict,
     run_buffer: RunBufferLike,
     strategy_init_kwargs: dict | None = None,
+    run_event: threading.Event | None = None,
+    bar_interval_sec: float = 0.0,
 ) -> None:
     """BacktestEngine を使って 1 bar ずつ streaming replay する (Step 3A)。
 
@@ -218,10 +221,15 @@ def run(
             len(items),
         )
 
+        import time as _time
         for item in items:
+            if run_event is not None:
+                run_event.wait()
             engine.add_data([item])
             engine.run(streaming=True)
             engine.clear_data()
+            if bar_interval_sec > 0:
+                _time.sleep(bar_interval_sec)
 
         log.info("[engine_runner] streaming complete: bars=%d", len(items))
 

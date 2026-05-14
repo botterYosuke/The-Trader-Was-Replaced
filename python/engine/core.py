@@ -25,6 +25,9 @@ class DataEngine:
         self._lock = threading.Lock()
         self._is_running = False
         self._replay_state = "IDLE"
+        # Gate for engine_runner: SET = running, CLEAR = paused.
+        self._run_event = threading.Event()
+        self._run_event.set()
         self._replay_provider = replay_provider
         self._mode: Literal["static", "replay"] = (
             "replay" if replay_provider else "static"
@@ -203,6 +206,7 @@ class DataEngine:
 
             self._is_running = False
             self._replay_state = "PAUSED"
+            self._run_event.clear()
             return True, None
 
     def resume_replay(self) -> tuple[bool, str | None]:
@@ -212,6 +216,7 @@ class DataEngine:
 
             self._is_running = True
             self._replay_state = "RUNNING"
+            self._run_event.set()
             return True, None
 
     def stop_replay(self) -> tuple[bool, str | None]:
@@ -221,13 +226,19 @@ class DataEngine:
 
             self._is_running = False
             self._replay_state = "IDLE"
+            self._run_event.set()
             return True, None
 
     def force_stop_replay(self) -> tuple[bool, str | None]:
         with self._lock:
             self._is_running = False
             self._replay_state = "IDLE"
+            self._run_event.set()
             return True, None
+
+    @property
+    def run_event(self) -> threading.Event:
+        return self._run_event
 
     def set_replay_speed(self, multiplier: int) -> tuple[bool, str | None]:
         with self._lock:

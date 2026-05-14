@@ -42,7 +42,7 @@ SCENARIO: Scenario = {
     "schema_version": 2,
     "instrument": ["1301.TSE"],
     "start": "2025-01-06",
-    "end": "2025-01-10",
+    "end": "2025-05-21",
     "granularity": "Minute",
     "initial_cash": 1_000_000,
 }

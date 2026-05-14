@@ -789,4 +789,20 @@ StartEngine ok, state=RUNNING
 - **gRPC タイムアウト**: LoadReplayData で 1 回タイムアウト後リトライ成功。デフォルトタイムアウト設定の見直しが必要
 - **Next tasks**: (1) LoadReplayData gRPC タイムアウト延長、(2) Jump-to-start / Step-back gRPC 接続、(3) Kline Chart 表示改善、(4) Sidebar 銘柄一覧
 
+### 2026-05-14 E2E 確認 (再試行): Pause/Resume RUNNING 中断 — **PASSED**
+
+- **根本原因 (旧バグ)**: `server_grpc.py::StartEngine` が `engine_run()` の後に `self.engine.start_engine()` を呼んでいたため、streaming 中は state=LOADED のまま → `pause_replay()` が `"PauseReplay is only allowed from RUNNING"` で常にリジェクトされていた
+- **Fix 1 — state 遷移順序**: `start_engine()` を `engine_run()` の前に移動。完了後は `force_stop_replay()` で IDLE に戻す
+- **Fix 2 — `threading.Event` ゲート**: `core.py` に `_run_event` を追加。`pause_replay()` で `clear()`、`resume_replay()`/`stop`/`force_stop` で `set()`。`engine_runner` の bar ループ先頭で `run_event.wait()` → PAUSED 中はブロック
+- **Fix 3 — `bar_interval_sec=0.01`**: 372本 × 10ms ≒ 3.7s。人間が `||` を押せる時間を確保
+- **Fix 4 — `test_strategy_minute.py` の end 延長**: `2025-01-10` → `2025-05-21`（カタログには 372本しかないが SCENARIO を合わせた）
+- **Rust ログ確認**:
+  ```
+  PauseReplay ok, state=3   ← PAUSED ✅
+  ResumeReplay ok, state=2  ← RUNNING 復帰 ✅
+  PauseReplay ok, state=3   ← 2回目 Pause も正常 ✅
+  ```
+- **UI 確認**: Run Result "Running..."・Footer `state: PAUSED grpc: OK`・`▶` ラベル表示
+- **Next tasks**: (1) gRPC GetState タイムアウト調整（LoadReplayData 中に GetState が 2s でタイムアウトする問題）、(2) Jump-to-start / Step-back 接続、(3) Kline Chart 改善
+
 ---
