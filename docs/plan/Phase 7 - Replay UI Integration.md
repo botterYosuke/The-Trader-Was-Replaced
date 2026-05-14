@@ -1039,5 +1039,5 @@ MVP コアの「Open Strategy → Run → Pause / Resume / StepForward / ForceSt
 - `SidebarRoot` / `SidebarListLabel` components added to `src/ui/components.rs`.
 - `bevy_egui` import removed from `sidebar.rs`; Strategy Editor / Run Result Panel egui usage unaffected.
 - Verification: `cargo check`: OK; `scenario_parser --lib`: 4/4; `chart --lib`: 8/8.
-- Pending manual E2E: left-fixed sidebar visible; `1301.TSE` shown on startup; egui Instruments window absent; Footer / Run Result / Kline unbroken.
-- Next task: manual E2E confirm → Footer ProgressBar or Phase 7 closeout decision.
+- Manual E2E verified: left-fixed Sidebar shows `1301.TSE` on startup; egui Instruments window absent; Open Strategy → test_strategy_daily.py → Run → Completed (fills: 2, eq_pts: 57, pnl: -410010); Kline candles / Footer SpeedSelector / Run Result unbroken; state: IDLE grpc: OK.
+- Next task: Footer ProgressBar or Phase 7 closeout decision.
