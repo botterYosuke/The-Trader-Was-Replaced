@@ -399,6 +399,96 @@ cargo test --no-fail-fast         # Don't stop on first failure
 cargo test -- --ignored           # Run ignored tests
 ```
 
+## Bevy ECS Testing
+
+This project uses Bevy. ECS code requires different patterns from plain Rust — components, resources, and systems can't always be tested with standard unit tests.
+
+### Testing Resources and Components via `World`
+
+The fastest way to test logic that reads/writes resources is to build a minimal `World` directly, without spinning up a full `App`.
+
+```rust
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use bevy::prelude::*;
+
+    #[test]
+    fn settings_default_values() {
+        let mut world = World::new();
+        world.insert_resource(BackcastSettings::default());
+
+        let settings = world.resource::<BackcastSettings>();
+        assert_eq!(settings.speed, 1);
+    }
+
+    #[test]
+    fn component_state_transitions() {
+        let mut world = World::new();
+        let entity = world.spawn(RunState::Idle).id();
+
+        world.entity_mut(entity).insert(RunState::Running);
+        assert_eq!(*world.get::<RunState>(entity).unwrap(), RunState::Running);
+    }
+}
+```
+
+### Testing Systems via `App`
+
+When you need to test a full system (including queries, events, and commands), use `App::new()` with only the plugins your system requires. Avoid `DefaultPlugins` — it pulls in windowing and rendering which don't work in headless tests.
+
+```rust
+#[test]
+fn update_system_processes_event() {
+    let mut app = App::new();
+    app.add_plugins(MinimalPlugins)
+       .add_event::<MyEvent>()
+       .insert_resource(MyResource::default())
+       .add_systems(Update, my_system);
+
+    // Trigger the system
+    app.world_mut().send_event(MyEvent { value: 42 });
+    app.update();
+
+    let resource = app.world().resource::<MyResource>();
+    assert_eq!(resource.last_value, 42);
+}
+```
+
+### Mocking Time
+
+Bevy's `Time` resource can be advanced manually for deterministic timing tests:
+
+```rust
+#[test]
+fn cooldown_expires_after_duration() {
+    let mut app = App::new();
+    app.add_plugins(MinimalPlugins)
+       .insert_resource(Cooldown::new(Duration::from_secs(1)))
+       .add_systems(Update, tick_cooldown);
+
+    // Advance time by 500ms — cooldown should NOT have expired
+    app.world_mut().resource_mut::<Time>().advance_by(Duration::from_millis(500));
+    app.update();
+    assert!(!app.world().resource::<Cooldown>().is_ready());
+
+    // Advance another 600ms — now it should expire
+    app.world_mut().resource_mut::<Time>().advance_by(Duration::from_millis(600));
+    app.update();
+    assert!(app.world().resource::<Cooldown>().is_ready());
+}
+```
+
+### Testing gRPC Backend Logic (Python side)
+
+The Python engine has its own pytest suite under `python/tests/`. Rust-side tests cover the Bevy GUI layer; integration between them is covered by E2E tests (see `e2e-testing` skill).
+
+### What NOT to test in unit tests
+
+- Bevy rendering systems — these require a GPU context
+- Systems that depend on `Window` or `AssetServer` — use E2E instead
+- Full plugin chains — test the systems directly, not the plugin wiring
+
 ## Best Practices
 
 **DO:**
