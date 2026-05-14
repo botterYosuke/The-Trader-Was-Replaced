@@ -17,6 +17,16 @@ pub struct HistoryPoint {
 }
 
 #[derive(Debug, Serialize, Deserialize, Clone)]
+pub struct OhlcPoint {
+    pub timestamp_ms: i64,
+    pub open_time_ms: i64,
+    pub open: f32,
+    pub high: f32,
+    pub low: f32,
+    pub close: f32,
+}
+
+#[derive(Debug, Serialize, Deserialize, Clone)]
 pub struct BackendTradingState {
     pub price: f32,
     pub history: Vec<f32>,
@@ -25,6 +35,8 @@ pub struct BackendTradingState {
     pub timestamp_ms: Option<i64>,
     #[serde(default)]
     pub history_points: Vec<HistoryPoint>,
+    #[serde(default)]
+    pub ohlc_points: Vec<OhlcPoint>,
     #[serde(default)]
     pub open: Option<f32>,
     #[serde(default)]
@@ -52,6 +64,7 @@ pub struct TradingData {
     pub history: Vec<f32>,
     pub timestamp_ms: i64,
     pub history_points: Vec<HistoryPoint>,
+    pub ohlc_points: Vec<OhlcPoint>,
     pub timer: Timer,
     pub open: Option<f32>,
     pub high: Option<f32>,
@@ -68,6 +81,7 @@ impl Default for TradingData {
             history: vec![100.0],
             timestamp_ms: 0,
             history_points: Vec::new(),
+            ohlc_points: Vec::new(),
             timer: Timer::from_seconds(0.5, TimerMode::Repeating),
             open: None,
             high: None,
@@ -239,7 +253,10 @@ pub fn backend_update_system(
 
         // Phase 7: replay_state
         data.replay_state = state.replay_state;
-        
+
+        // Phase 7: OHLC history for multi-candle chart
+        data.ohlc_points = state.ohlc_points;
+
         // もし history_points が空で history がある場合は補完
         if data.history_points.is_empty() && !data.history.is_empty() {
             let count = data.history.len();
@@ -259,6 +276,10 @@ pub fn backend_update_system(
         if data.history_points.len() > settings.max_history_points {
             let start = data.history_points.len() - settings.max_history_points;
             data.history_points = data.history_points[start..].to_vec();
+        }
+        if data.ohlc_points.len() > settings.max_history_points {
+            let start = data.ohlc_points.len() - settings.max_history_points;
+            data.ohlc_points = data.ohlc_points[start..].to_vec();
         }
     }
 }
@@ -387,6 +408,7 @@ mod tests {
                 HistoryPoint { timestamp_ms: 12344670, price: 140.0 },
                 HistoryPoint { timestamp_ms: 12345670, price: 150.0 },
             ],
+            ohlc_points: vec![],
             open: Some(145.0),
             high: Some(155.0),
             low: Some(143.0),
@@ -432,6 +454,7 @@ mod tests {
             timestamp: 1600000000.0,
             timestamp_ms: None,
             history_points: vec![],
+            ohlc_points: vec![],
             open: None,
             high: None,
             low: None,
@@ -472,6 +495,7 @@ mod tests {
             timestamp: 100.0,
             timestamp_ms: Some(100000),
             history_points: (0..5).map(|i| HistoryPoint { timestamp_ms: i * 1000, price: i as f32 }).collect(),
+            ohlc_points: vec![],
             open: None,
             high: None,
             low: None,

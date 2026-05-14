@@ -925,7 +925,7 @@ MVP コアの「Open Strategy → Run → Pause / Resume / StepForward / ForceSt
 | 項目 | 状態 | 推奨 |
 |---|---|---|
 | Sidebar: 銘柄一覧 (`ListInstruments` RPC) | E2E 実装済み（1301.TSE 表示確認済み） | Phase 7 継続 |
-| KlineChartWindow: ローソク足対応 (`chart.rs` 拡張) | Step 1 実装済み（最新バー 1 本のみ、複数本 candle は未実装） | Phase 7 継続 |
+| KlineChartWindow: ローソク足対応 (`chart.rs` 拡張) | 複数 candle 実装済み（ohlc_points 履歴から最大 50 本描画） | 完了 |
 | Footer: SpeedSelector UI (SetReplaySpeed は proto 済み) | E2E 実装済み（1x/2x/5x/10x/50x、選択ハイライト確認済み） | Phase 7 継続 |
 | Footer: ProgressBar + パーセント | 未実装 | Phase 8 でも可 |
 | BuyingPowerPanel / PositionsPanel / OrdersPanel | 未実装 | GetPortfolio RPC と同時に |
@@ -984,5 +984,27 @@ MVP コアの「Open Strategy → Run → Pause / Resume / StepForward / ForceSt
 - Manual E2E: speed buttons visible in footer; 5x click highlighted correctly; Run → Completed (fills: 2, eq_pts: 57, pnl: -410010); Sidebar / candle / Run Result unbroken; state: IDLE grpc: OK.
 - Note: `SetReplaySpeed` backend handler has no explicit log; RPC delivery confirmed via Rust-side `SetReplaySpeed 5x ok` log and UI highlight state.
 - Next task: KlineChart 複数本 candle（複数 bar 表示）。
+
+---
+
+### 2026-05-14 KlineChart multiple candles step
+
+- Added OHLC history propagation from backend state to Rust TradingData.
+  - `OhlcPoint` model added to `python/engine/models.py` and `src/trading.rs`.
+  - `ReducerState.ohlc_points` appended on each `KlineUpdate`; trimmed to `max_history_len`.
+  - `TradingState.ohlc_points` serialized through gRPC `GetState` JSON (no proto change needed).
+  - `BackendTradingState.ohlc_points` / `TradingData.ohlc_points` added in `src/trading.rs`.
+- KlineChart draws visible multiple candles (last 50) while keeping the existing line chart.
+  - x-axis: oldest candle → `x = -width/2`, newest → `x = 0` (independent of `time_window_ms`).
+  - body_half_width scales with candle count; minimum 1 px.
+  - autoscale extended to cover all visible candles' high/low range.
+  - Falls back to single-candle behavior when `ohlc_points.len() < 2`.
+- Deferred: e-station `Basis/PlotData/Footprint`, Sidebar chart selection linkage.
+- Verification:
+  - `cargo check`: OK; `scenario_parser --lib`: 4/4; `chart --lib`: 8/8 (+2 new multi-candle tests).
+  - `test_reducer.py`: 31/31 (+7 new ohlc_points tests).
+  - `strategy_runtime` pytest: 68/68.
+- Manual E2E: (ユーザーが実施)
+- Next task: Footer ProgressBar / Phase 8 scoping.
 
 ---

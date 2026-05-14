@@ -1,7 +1,7 @@
 from dataclasses import dataclass, field
 from typing import Union
 
-from .models import HistoryPoint
+from .models import HistoryPoint, OhlcPoint
 
 
 @dataclass(frozen=True)
@@ -38,6 +38,7 @@ class ReducerState:
     open_time_ms: int = 0
     history: list = field(default_factory=list)
     history_points: list = field(default_factory=list)
+    ohlc_points: list = field(default_factory=list)
     max_history_len: int = 1000
 
 
@@ -61,6 +62,17 @@ def apply_event(state: ReducerState, event: ReplayEvent) -> None:
             state.high = event.high
             state.low = event.low
             state.open_time_ms = event.open_time_ms
+            ohlc_open_time = event.open_time_ms if event.open_time_ms > 0 else ts
+            state.ohlc_points.append(OhlcPoint(
+                timestamp_ms=ts,
+                open_time_ms=ohlc_open_time,
+                open=event.open if event.open > 0 else price,
+                high=event.high if event.high > 0 else price,
+                low=event.low if event.low > 0 else price,
+                close=price,
+            ))
+            if len(state.ohlc_points) > state.max_history_len:
+                state.ohlc_points.pop(0)
         state.history.append(price)
         state.history_points.append(HistoryPoint(timestamp_ms=ts, price=price))
 

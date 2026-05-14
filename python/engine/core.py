@@ -5,7 +5,7 @@ import time
 from typing import Literal, Optional
 
 from .jquants_to_catalog import ensure_jquants_catalog
-from .models import EngineSnapshot, HistoryPoint, TradingState
+from .models import EngineSnapshot, HistoryPoint, OhlcPoint, TradingState
 from .reducer import KlineUpdate, ReducerState, ReplayEvent, ReplayTimeUpdated, apply_event
 from .replay import BaseReplayProvider, NautilusBarsReplayProvider
 
@@ -93,6 +93,7 @@ class DataEngine:
             low=l,
             history=[c],
             history_points=[HistoryPoint(timestamp_ms=ts_ms, price=c)],
+            ohlc_points=[OhlcPoint(timestamp_ms=ts_ms, open_time_ms=ts_ms, open=o, high=h, low=l, close=c)],
             max_history_len=self._max_history_len,
         )
         self._is_exhausted = provider.is_exhausted()
@@ -303,6 +304,7 @@ class DataEngine:
                 timestamp=rs.timestamp_ms / 1000.0,
                 timestamp_ms=rs.timestamp_ms,
                 history_points=list(rs.history_points),
+                ohlc_points=list(rs.ohlc_points),
                 open=rs.open or None,
                 high=rs.high or None,
                 low=rs.low or None,
@@ -330,6 +332,7 @@ class DataEngine:
                     timestamp=rs.timestamp_ms / 1000.0,
                     timestamp_ms=rs.timestamp_ms,
                     history_points=list(rs.history_points),
+                    ohlc_points=list(rs.ohlc_points),
                     open=rs.open or None,
                     high=rs.high or None,
                     low=rs.low or None,
@@ -381,6 +384,7 @@ class DataEngine:
             self._rs.timestamp_ms = ts_ms
             self._rs.history = list(snapshot.state.history)
             self._rs.history_points = history_points
+            self._rs.ohlc_points = list(snapshot.state.ohlc_points)
             self._rs.open = snapshot.state.open or snapshot.state.price
             self._rs.high = snapshot.state.high or snapshot.state.price
             self._rs.low = snapshot.state.low or snapshot.state.price

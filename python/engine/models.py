@@ -5,8 +5,8 @@ import math
 
 class _BoundaryModel(BaseModel):
     model_config = ConfigDict(
-        strict=True, 
-        extra="forbid", 
+        strict=True,
+        extra="forbid",
         frozen=True,
         allow_inf_nan=False
     )
@@ -16,6 +16,20 @@ class HistoryPoint(_BoundaryModel):
     price: float = Field(..., gt=0, description="その時刻の価格")
 
     @field_validator("price")
+    @classmethod
+    def check_finite(cls, v: float) -> float:
+        if not math.isfinite(v): raise ValueError("Price must be finite")
+        return v
+
+class OhlcPoint(_BoundaryModel):
+    timestamp_ms: int = Field(..., gt=0, description="バー終値時刻 (ms)")
+    open_time_ms: int = Field(..., ge=0, description="バー開始時刻 (ms)")
+    open: float = Field(..., gt=0, description="始値")
+    high: float = Field(..., gt=0, description="高値")
+    low: float = Field(..., gt=0, description="安値")
+    close: float = Field(..., gt=0, description="終値")
+
+    @field_validator("open", "high", "low", "close")
     @classmethod
     def check_finite(cls, v: float) -> float:
         if not math.isfinite(v): raise ValueError("Price must be finite")
@@ -31,6 +45,7 @@ class TradingState(_BoundaryModel):
     )
     timestamp_ms: Optional[int] = Field(None, description="Source of Truth (ms)")
     history_points: List[HistoryPoint] = Field(default_factory=list, description="詳細な履歴ポイント")
+    ohlc_points: List[OhlcPoint] = Field(default_factory=list, description="OHLC バー履歴")
     open: Optional[float] = Field(None, description="バー始値")
     high: Optional[float] = Field(None, description="バー高値")
     low: Optional[float] = Field(None, description="バー安値")

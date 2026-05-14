@@ -236,3 +236,53 @@ def test_replay_time_updated_then_stale_kline_ignored():
     assert state.price == 50.0
     assert state.timestamp_ms == 3000
     assert state.history == [50.0]
+
+
+# --- ohlc_points ---
+
+def test_kline_update_appends_ohlc_point():
+    state = _state(timestamp_ms=1000, price=100.0)
+    apply_event(state, KlineUpdate(timestamp_ms=2000, close=105.0, open=101.0, high=108.0, low=99.0, open_time_ms=1900))
+    assert len(state.ohlc_points) == 1
+    pt = state.ohlc_points[0]
+    assert pt.timestamp_ms == 2000
+    assert pt.open_time_ms == 1900
+    assert pt.open == 101.0
+    assert pt.high == 108.0
+    assert pt.low == 99.0
+    assert pt.close == 105.0
+
+
+def test_kline_update_uses_timestamp_ms_when_open_time_ms_zero():
+    state = _state(timestamp_ms=1000, price=100.0)
+    apply_event(state, KlineUpdate(timestamp_ms=2000, close=105.0, open=101.0, high=108.0, low=99.0, open_time_ms=0))
+    assert state.ohlc_points[0].open_time_ms == 2000
+
+
+def test_trade_update_does_not_append_ohlc_points():
+    state = _state(timestamp_ms=1000, price=100.0)
+    apply_event(state, TradeUpdate(timestamp_ms=2000, price=110.0))
+    assert state.ohlc_points == []
+
+
+def test_kline_update_trims_ohlc_points_at_max_len():
+    state = _state(timestamp_ms=0, price=100.0, max_history_len=3)
+    for i in range(1, 6):
+        apply_event(state, KlineUpdate(timestamp_ms=i * 1000, close=100.0 + i, open=100.0, high=101.0 + i, low=99.0, open_time_ms=i * 1000))
+    assert len(state.ohlc_points) == 3
+    assert state.ohlc_points[-1].close == 105.0
+
+
+def test_multiple_klines_build_ordered_ohlc_history():
+    state = _state(timestamp_ms=0, price=10.0)
+    bars = [(1000, 10.0, 9.5, 10.5, 9.0), (2000, 20.0, 19.0, 21.0, 18.0), (3000, 30.0, 29.0, 31.0, 28.0)]
+    for ts, close, open_, high, low in bars:
+        apply_event(state, KlineUpdate(timestamp_ms=ts, close=close, open=open_, high=high, low=low, open_time_ms=ts - 100))
+    assert len(state.ohlc_points) == 3
+    assert [pt.close for pt in state.ohlc_points] == [10.0, 20.0, 30.0]
+
+
+def test_stale_kline_does_not_append_ohlc_point():
+    state = _state(timestamp_ms=5000, price=100.0)
+    apply_event(state, KlineUpdate(timestamp_ms=4999, close=999.0, open=900.0, high=1000.0, low=800.0))
+    assert state.ohlc_points == []

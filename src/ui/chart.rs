@@ -99,6 +99,16 @@ pub fn chart_render_system(
             continue;
         }
 
+        // Determine visible OHLC candles (last MAX_VISIBLE bars)
+        const MAX_VISIBLE_CANDLES: usize = 50;
+        let ohlc_pts = &trading_data.ohlc_points;
+        let candle_start_idx = if ohlc_pts.len() > MAX_VISIBLE_CANDLES {
+            ohlc_pts.len() - MAX_VISIBLE_CANDLES
+        } else {
+            0
+        };
+        let visible_candles = &ohlc_pts[candle_start_idx..];
+
         if state.auto_scale {
             let mut min = f32::MAX;
             let mut max = f32::MIN;
@@ -112,8 +122,15 @@ pub fn chart_render_system(
                     has_visible_data = true;
                 }
             }
-            // Extend range to cover latest candle high/low
-            if let (Some(high), Some(low)) = (trading_data.high, trading_data.low) {
+            // Extend range to cover visible OHLC candles
+            if visible_candles.len() >= 2 {
+                for pt in visible_candles {
+                    if pt.high > max { max = pt.high; }
+                    if pt.low  < min { min = pt.low; }
+                    has_visible_data = true;
+                }
+            } else if let (Some(high), Some(low)) = (trading_data.high, trading_data.low) {
+                // Fallback: extend for latest single candle
                 if high > max { max = high; }
                 if low  < min { min = low; }
                 has_visible_data = true;
@@ -163,37 +180,63 @@ pub fn chart_render_system(
             prev_pos = Some(current_pos);
         }
 
-        // --- Latest candlestick (Step 1: single candle) ---
-        // open_time_ms is optional; fall back to latest_timestamp_ms so the
-        // candle lands at the right edge even when the backend omits it.
-        if let (Some(open), Some(high), Some(low), Some(close)) = (
-            trading_data.open,
-            trading_data.high,
-            trading_data.low,
-            trading_data.close,
-        ) {
-            let candle_ts = trading_data.open_time_ms
-                .unwrap_or(state.latest_timestamp_ms);
-            let x_rel = (candle_ts - state.latest_timestamp_ms) as f32
-                / state.time_window_ms as f32
-                * state.width;
-            let body_half_width = state.width / 40.0;
+        // --- Multiple candlesticks from OHLC history ---
+        if visible_candles.len() >= 2 {
+            let latest_ots = visible_candles.last().unwrap().open_time_ms;
+            let oldest_ots = visible_candles.first().unwrap().open_time_ms;
+            let span_ms = (latest_ots - oldest_ots).max(1) as f32;
+            let n = visible_candles.len() as f32;
+            let body_half_width = (state.width / 2.0 / (n * 2.5)).max(1.0);
 
-            draw_candle(
-                &mut painter,
-                start_pos,
-                x_rel,
-                open,
-                high,
-                low,
-                close,
-                body_half_width,
-                state.min_price,
-                price_range,
-                state.height,
-            );
+            for pt in visible_candles {
+                // Map open_time_ms so that oldest → x=-width/2, newest → x=0
+                let x_rel = (pt.open_time_ms - latest_ots) as f32 / span_ms * (state.width / 2.0);
+                draw_candle(
+                    &mut painter,
+                    start_pos,
+                    x_rel,
+                    pt.open,
+                    pt.high,
+                    pt.low,
+                    pt.close,
+                    body_half_width,
+                    state.min_price,
+                    price_range,
+                    state.height,
+                );
+                painter.set_translation(start_pos);
+            }
+        } else {
+            // --- Fallback: latest single candlestick (Step 1) ---
+            if let (Some(open), Some(high), Some(low), Some(close)) = (
+                trading_data.open,
+                trading_data.high,
+                trading_data.low,
+                trading_data.close,
+            ) {
+                let candle_ts = trading_data.open_time_ms
+                    .unwrap_or(state.latest_timestamp_ms);
+                let x_rel = (candle_ts - state.latest_timestamp_ms) as f32
+                    / state.time_window_ms as f32
+                    * state.width;
+                let body_half_width = state.width / 40.0;
 
-            painter.set_translation(start_pos);
+                draw_candle(
+                    &mut painter,
+                    start_pos,
+                    x_rel,
+                    open,
+                    high,
+                    low,
+                    close,
+                    body_half_width,
+                    state.min_price,
+                    price_range,
+                    state.height,
+                );
+
+                painter.set_translation(start_pos);
+            }
         }
     }
 }
@@ -299,14 +342,42 @@ mod tests {
 
     #[test]
     fn test_autoscale_extends_for_candle_high_low() {
-        // If candle high > close prices, autoscale should include it
         let high = 200.0_f32;
         let low  = 50.0_f32;
-        let mut max = 150.0_f32; // from close prices
+        let mut max = 150.0_f32;
         let mut min = 80.0_f32;
         if high > max { max = high; }
         if low  < min { min = low; }
         assert_eq!(max, 200.0);
         assert_eq!(min, 50.0);
+    }
+
+    #[test]
+    fn test_multi_candle_x_positions() {
+        // Oldest candle → x = -width/2, newest → x = 0
+        let width = 360.0_f32;
+        let oldest_ots: i64 = 1000;
+        let newest_ots: i64 = 3000;
+        let span_ms = (newest_ots - oldest_ots) as f32;
+
+        let x_oldest = (oldest_ots - newest_ots) as f32 / span_ms * (width / 2.0);
+        let x_newest = (newest_ots - newest_ots) as f32 / span_ms * (width / 2.0);
+        let x_mid    = (2000_i64 - newest_ots) as f32 / span_ms * (width / 2.0);
+
+        assert!((x_oldest - (-width / 2.0)).abs() < 0.001);
+        assert!((x_newest - 0.0).abs() < 0.001);
+        assert!((x_mid - (-width / 4.0)).abs() < 0.001);
+    }
+
+    #[test]
+    fn test_multi_candle_body_half_width() {
+        // body_half_width shrinks as candle count grows
+        let width = 360.0_f32;
+        let n10 = 10.0_f32;
+        let n50 = 50.0_f32;
+        let bw10 = (width / 2.0 / (n10 * 2.5)).max(1.0);
+        let bw50 = (width / 2.0 / (n50 * 2.5)).max(1.0);
+        assert!(bw10 > bw50, "wider candles for fewer bars");
+        assert!(bw50 >= 1.0, "minimum 1px body");
     }
 }
