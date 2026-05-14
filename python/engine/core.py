@@ -35,6 +35,7 @@ class DataEngine:
         self._nautilus_catalog_path = nautilus_catalog_path
         self._jquants_catalog_path = jquants_catalog_path
         self._event_log: list[ReplayEvent] = []
+        self._last_replay_catalog_path: Optional[str] = None
 
         # Initialize the first visible state.
         if self._mode == "replay" and self._replay_provider:
@@ -146,6 +147,7 @@ class DataEngine:
                     return False, str(e)
 
                 self._prime_provider_locked(provider)
+                self._last_replay_catalog_path = effective_catalog_path
                 self._replay_state = "LOADED"
                 return True, None
 
@@ -175,10 +177,15 @@ class DataEngine:
                     return False, str(e)
 
                 self._prime_provider_locked(provider)
+                self._last_replay_catalog_path = result.catalog_path
                 self._replay_state = "LOADED"
                 return True, None
 
             return False, "Replay provider is not configured"
+
+    @property
+    def last_replay_catalog_path(self) -> str | None:
+        return self._last_replay_catalog_path
 
     def start_engine(self) -> tuple[bool, str | None]:
         with self._lock:

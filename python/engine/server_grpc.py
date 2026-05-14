@@ -143,6 +143,35 @@ class GrpcDataEngineServer(
                 error_message=str(exc),
             )
 
+        catalog_path = self.engine.last_replay_catalog_path
+        if not catalog_path:
+            logging.error("StartEngine: catalog_path not available (LoadReplayData not called or no catalog configured)")
+            return engine_pb2.ReplayControlResponse(
+                success=False,
+                request_id=request.request_id,
+                current_state=self._current_engine_state(),
+                error_code="CATALOG_PATH_NOT_AVAILABLE",
+                error_message="No catalog_path available from prior LoadReplayData",
+            )
+
+        try:
+            from engine.strategy_runtime.catalog_data_loader import load_bars_for_scenario
+            bars_by_instrument = load_bars_for_scenario(catalog_path, scenario)
+            total_bars = sum(len(v) for v in bars_by_instrument.values())
+            per_instrument = {str(k): len(v) for k, v in bars_by_instrument.items()}
+            logging.info(
+                f"StartEngine: bars loaded total={total_bars} per_instrument={per_instrument}"
+            )
+        except Exception as exc:
+            logging.error(f"StartEngine: catalog bars load failed: {exc}")
+            return engine_pb2.ReplayControlResponse(
+                success=False,
+                request_id=request.request_id,
+                current_state=self._current_engine_state(),
+                error_code="CATALOG_BARS_LOAD_ERROR",
+                error_message=str(exc),
+            )
+
         success, error = self.engine.start_engine()
         return engine_pb2.ReplayControlResponse(
             success=success,
