@@ -57,7 +57,7 @@ Phase 7 の UI が担う役割を網羅的に列挙する。各項目は §3 以
 - **Floating Window 操作**: ドラッグ移動 / リサイズ / 前面化 (z-order) / 表示・非表示トグル
 - **Infinite Canvas 操作**: パン / ズーム（視点変更）
 - **Sidebar からの銘柄選択**（`SelectedSymbol` 更新 → Kline の対象銘柄が連動。Ladder は Phase 8 で連動）
-- **UI_LAYOUT の永続化** — floating window の位置・サイズ・z-order・可視性、canvas の pan/zoom、選択銘柄を戦略 `.py` 末尾の `UI_LAYOUT` センチネルブロックに保存（§3.4）
+- **UI_LAYOUT の永続化（Replay モード専用）** — floating window の位置・サイズ・z-order・可視性、canvas の pan/zoom、選択銘柄を戦略 `.py` 末尾の `UI_LAYOUT` センチネルブロックに保存（§3.4）。Live Manual モードでは戦略 `.py` への紐付けが無いため別ファイルに保存（Phase 8 で定義）。Live Auto モード（Phase 10）は Replay と同様に戦略 `.py` に保存する
 - **Settings**（Sidebar 下半分、stub OK）: Theme dropdown / Backend address field / Save Layout button
 
 ### 0.4 状態表示（Read-only）
@@ -316,7 +316,10 @@ StopReplay()         → * → STOPPING → IDLE
 - **StrategyEditorWindow** ([src/ui/floating/strategy_editor.rs]) — monaco-editor 相当のコードエディタ。File→Open でファイルパスを受け取り、ファイル内容を読み込んで表示・編集。
   - 機能: Python シンタックスハイライト / 行番号 / 行折りたたみ / Find & Replace / Undo-Redo / オートインデント
   - ヘッダ: ファイル名表示、`[Save]` / `[▶ Run]` / `[Revert]`、ダーティマーク（`●` 印）
-  - **UI 状態の保存場所（採用方針）**: floating window の位置・サイズ・z-order・可視性、infinite canvas の pan / zoom、選択銘柄などの **UI 状態は戦略 `.py` ファイル自体に埋め込む**（`SCENARIO` / `LIVE_SCENARIO` と同じ「戦略ファイル＝単一ソース」ポリシーに揃える）。
+  - **UI 状態の保存場所（採用方針、Replay モード専用）**: floating window の位置・サイズ・z-order・可視性、infinite canvas の pan / zoom、選択銘柄などの **UI 状態は戦略 `.py` ファイル自体に埋め込む**（`SCENARIO` / `LIVE_SCENARIO` と同じ「戦略ファイル＝単一ソース」ポリシーに揃える）。このアプリは **3 つの ExecutionMode** を持つ（§0.5.2 を参照）:
+    - **Replay モード**: 戦略 `.py` 末尾の `UI_LAYOUT` センチネルブロック（本 §3.4 の設計）
+    - **Live Manual モード** (Phase 8/9): 戦略ファイルの紐付けなし → `cache_dir/the-trader-was-replaced/live_manual_layout.json`（Phase 8 で実装）
+    - **Live Auto モード** (Phase 10): 戦略 `.py` にウィンドウ位置を保存（Replay と同じ方式。戦略＝設定ファイルのポリシーが再適用される）
     - 埋め込み形式: ファイル末尾に **センチネルブロック**を置く。Rust から安全に書き換えるため、AST 解析や dict literal の rewrite ではなく、行ベースで全置換できる単純なフォーマットにする。
       ```python
       # === UI_LAYOUT_BEGIN (auto-generated; do not edit by hand) ===

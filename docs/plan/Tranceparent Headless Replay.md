@@ -63,9 +63,10 @@ Phase 5 の chart / history / timestamp 契約は [Tranceparent Python Backend](
 
 - **Goal**: リプレイで作成・検証したストラテジーを、コード変更なしでそのままライブ環境で実行できるようにする。
 - **Tasks**:
-  - **Strategy Portability**: Replay と Live で同一の `Strategy` 定義 (Nautilus `Strategy` サブクラス) を共有する仕組みを確立。
+  - **Strategy Portability**: Replay と Live Auto で同一の `Strategy` 定義 (Nautilus `Strategy` サブクラス) を共有する仕組みを確立。
     - `replay_runner.py` と `live_runner.py` (Phase 8/9 で構築) の双方が、同じストラテジーモジュールをロードできるエントリポイントを提供。
     - Replay/Live 固有の依存（時刻ソース、データソース、Venue ID 等）はストラテジー外部から注入し、ストラテジー本体は環境非依存に保つ。
+    - **データソース非対称性への対応（重要制約）**: Replay では J-Quants OHLCV バー（分足含む）が既製品として存在するが、Live Auto では tick / board depth のみが流れ、**分足バーは存在しない**。`live_runner.py` に組み込まれた `live/aggregator.py`（Phase 8 で実装）が tick → 分足バーをリアルタイムで集約し、Replay 側と同じ `KlineUpdate` イベント形式で戦略に渡す。この集約レイヤが正確でないと、Replay では動いた分足戦略が Live Auto で違う挙動をする。逆に Replay では板情報が存在しないため、depth を参照する戦略は Replay 環境で動作検証できない（この制約は `Strategy` のドキュメントコメントに明示する）。
   - **Promote to Live API**: 現在 Strategy Editor で編集中のストラテジーを「ライブ実行」する制御 API を追加。
     - `StartLiveStrategy(strategy_id, instrument_id, venue, params)` / `StopLiveStrategy(run_id)`。
     - Replay の `StartEngine` と対称な State Machine を Live 側に持たせる。
