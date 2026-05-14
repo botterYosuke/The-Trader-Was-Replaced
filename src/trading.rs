@@ -35,6 +35,8 @@ pub struct BackendTradingState {
     pub close: Option<f32>,
     #[serde(default)]
     pub open_time_ms: Option<i64>,
+    #[serde(default)]
+    pub replay_state: Option<String>,
 }
 
 #[derive(Resource, Default)]
@@ -56,6 +58,7 @@ pub struct TradingData {
     pub low: Option<f32>,
     pub close: Option<f32>,
     pub open_time_ms: Option<i64>,
+    pub replay_state: Option<String>,
 }
 
 impl Default for TradingData {
@@ -71,6 +74,7 @@ impl Default for TradingData {
             low: None,
             close: None,
             open_time_ms: None,
+            replay_state: None,
         }
     }
 }
@@ -178,6 +182,9 @@ pub fn backend_update_system(
         data.low = state.low;
         data.close = state.close;
         data.open_time_ms = state.open_time_ms;
+
+        // Phase 7: replay_state
+        data.replay_state = state.replay_state;
         
         // もし history_points が空で history がある場合は補完
         if data.history_points.is_empty() && !data.history.is_empty() {
@@ -257,6 +264,7 @@ mod tests {
             low: Some(143.0),
             close: Some(150.0),
             open_time_ms: Some(12344000),
+            replay_state: Some("RUNNING".to_string()),
         };
         tx.send(new_state).unwrap();
 
@@ -274,6 +282,7 @@ mod tests {
         assert_eq!(data.low, Some(143.0));
         assert_eq!(data.close, Some(150.0));
         assert_eq!(data.open_time_ms, Some(12344000));
+        assert_eq!(data.replay_state, Some("RUNNING".to_string()));
     }
 
     #[test]
@@ -300,6 +309,7 @@ mod tests {
             low: None,
             close: None,
             open_time_ms: None,
+            replay_state: None,
         };
         tx.send(new_state).unwrap();
 
@@ -339,6 +349,7 @@ mod tests {
             low: None,
             close: None,
             open_time_ms: None,
+            replay_state: None,
         };
         tx.send(new_state).unwrap();
 

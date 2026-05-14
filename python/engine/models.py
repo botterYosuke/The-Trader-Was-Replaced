@@ -36,6 +36,7 @@ class TradingState(_BoundaryModel):
     low: Optional[float] = Field(None, description="バー安値")
     close: Optional[float] = Field(None, description="バー終値 (price と同値)")
     open_time_ms: Optional[int] = Field(None, description="バー開始時刻 (ms)")
+    replay_state: Optional[str] = Field(None, description="リプレイ状態 (IDLE/LOADED/RUNNING/PAUSED)")
 
     @field_validator("history")
     @classmethod

@@ -290,6 +290,7 @@ class DataEngine:
                 low=rs.low or None,
                 close=rs.price,
                 open_time_ms=rs.open_time_ms or None,
+                replay_state=self._replay_state,
             )
 
     def take_snapshot(self) -> EngineSnapshot:
@@ -316,6 +317,7 @@ class DataEngine:
                     low=rs.low or None,
                     close=rs.price,
                     open_time_ms=rs.open_time_ms or None,
+                    replay_state=self._replay_state,
                 ),
                 replay_index=replay_index,
                 source_path=source_path,
