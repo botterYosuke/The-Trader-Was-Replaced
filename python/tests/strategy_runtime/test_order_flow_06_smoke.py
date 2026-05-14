@@ -26,11 +26,10 @@ _CATALOG_PATH = _REPO_ROOT / "artifacts" / "jquants-catalog"
 _FIXTURE_UNIVERSE = Path(__file__).parent / "fixtures" / "universe_1301_jan0610.json"
 
 _STRATEGY_AVAILABLE = _STRATEGY_PATH.exists()
-_CATALOG_AVAILABLE = _CATALOG_PATH.exists()
 
 _SKIP_REASON = (
-    "Real strategy file or catalog not available. "
-    f"strategy={_STRATEGY_PATH.exists()} catalog={_CATALOG_PATH.exists()}"
+    "Real strategy file not available. "
+    f"strategy={_STRATEGY_PATH.exists()}"
 )
 
 
@@ -41,10 +40,10 @@ _SKIP_REASON = (
 
 @pytest.mark.slow
 @pytest.mark.skipif(
-    not (_STRATEGY_AVAILABLE and _CATALOG_AVAILABLE),
+    not _STRATEGY_AVAILABLE,
     reason=_SKIP_REASON,
 )
-def test_order_flow_06_smoke_1instrument(tmp_path):
+def test_order_flow_06_smoke_1instrument(tmp_path, ensure_slow_catalog):
     """order_flow_06 runs on 1301.TSE (Jan 06-10) without exception.
 
     Acceptance criteria:

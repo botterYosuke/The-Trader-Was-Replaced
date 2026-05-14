@@ -54,7 +54,12 @@
       "Bash(Get-ChildItem -Path \"C:\\\\Users\\\\sasai\\\\Documents\\\\The-Trader-Was-Replaced\\\\scripts\" -Recurse -ErrorAction SilentlyContinue)",
       "Bash(Select-Object -First 20)",
       "Bash(grep -E \"\\\\.\\(ps1|sh\\)$\")",
-      "Bash(Remove-Item \"c:\\\\Users\\\\sasai\\\\Documents\\\\The-Trader-Was-Replaced\\\\python\\\\tests\\\\test_phase3.py\", \"c:\\\\Users\\\\sasai\\\\Documents\\\\The-Trader-Was-Replaced\\\\python\\\\tests\\\\test_phase5.py\")"
+      "Bash(Remove-Item \"c:\\\\Users\\\\sasai\\\\Documents\\\\The-Trader-Was-Replaced\\\\python\\\\tests\\\\test_phase3.py\", \"c:\\\\Users\\\\sasai\\\\Documents\\\\The-Trader-Was-Replaced\\\\python\\\\tests\\\\test_phase5.py\")",
+      "Bash(python -c \"import sys; sys.path.insert\\(0, 'python'\\); from engine.strategy_runtime.catalog_data_loader import normalize_granularity; print\\(normalize_granularity\\('Daily'\\)\\)\")",
+      "Bash(python -c \"import sys; sys.path.insert\\(0, 'python'\\); from engine.strategy_replay.cli import _build_parser; p = _build_parser\\(\\); p.parse_args\\(['run', '--help']\\)\")",
+      "Bash(.venv\\\\Scripts\\\\python.exe -m pytest \"python/tests/strategy_runtime/test_cli.py::TestCliHelp::test_run_help_exits_zero\" \"python/tests/strategy_runtime/test_cli.py::TestCliHelp::test_run_help_contains_strategy_flag\" \"python/tests/strategy_runtime/test_cli.py::TestCliGranularityOverride::test_granularity_override_passed_to_loader\" -v)",
+      "PowerShell(cd \"c:\\\\Users\\\\sasai\\\\Documents\\\\The-Trader-Was-Replaced\"; .\\\\.venv\\\\Scripts\\\\python.exe -m pytest \"python/tests/strategy_runtime/test_cli.py::_default_run_args\" -v 2>&1; echo \"Exit: $LASTEXITCODE\")",
+      "WebSearch"
     ],
     "additionalDirectories": [
       "\\tmp",
