@@ -839,4 +839,61 @@ StartEngine ok, state=RUNNING
 - `cargo check` OK / `cargo test` 16/16
 - **Next tasks**: StepBack 実装（backend replay 経路確定後）、Sidebar 銘柄一覧、Kline Chart 改善
 
+### 2026-05-14 Phase 7 Closeout Checklist
+
+MVP コアの「Open Strategy → Run → Pause / Resume / StepForward / ForceStop / JumpToStart → 結果表示」は E2E 動作確認済み。以下で完了 / 持ち越し / 延期を確定する。
+
+#### ✅ 完了（E2E 確認済み）
+
+| 項目 | 実装場所 |
+|---|---|
+| Footer: 時刻・ReplayState バッジ・gRPC 状態 | `src/ui/footer.rs` |
+| Transport: Pause / Resume（ラベルトグル付き） | `footer.rs`, `main.rs` |
+| Transport: StepForward | `footer.rs`, `main.rs` |
+| Transport: ForceStop (■ ボタン) | `footer.rs`, `main.rs`, `trading.rs` |
+| Transport: JumpToStart (|< → ForceStop shortcut) | `footer.rs` |
+| MenuBar: File → Open Strategy (`.py` → キャッシュコピー) | `src/ui/menu_bar.rs` |
+| StrategyEditorWindow: egui コードエディタ / SCENARIO パース / Run ボタン | `src/ui/strategy_editor.rs` |
+| Run 2-step: LoadReplayData → StartEngine シーケンス | `src/main.rs` |
+| engine_runner.run → RunBuffer → summary → UI | `python/engine/server_grpc.py`, `src/trading.rs` |
+| StartEngineResponse (run_id / summary_json) | `python/proto/engine.proto` |
+| RunState enum (Idle/Running/Completed/Failed) | `src/trading.rs` |
+| RunSummary parse + unit test | `src/trading.rs` |
+| Run Result Panel (egui floating: run_id / fills / equity / pnl / state) | `src/ui/run_result_panel.rs` |
+| Pause-during-RUNNING 非ブロック化 (tokio::spawn) | `src/main.rs` |
+| GetState timeout: 2s → 5s / warn / reconnect 除去 | `src/main.rs` |
+| strategy_loader v2→v3 正規化 ("instrument"→"instruments") | `python/engine/strategy_loader.py` |
+| SetReplaySpeed RPC (proto + server_grpc.py) | `python/proto/engine.proto`, `server_grpc.py` |
+
+#### 🔜 Phase 7 継続候補（MVP には未到達）
+
+これらは Phase 7 計画書の Goals / Success Criteria に含まれるが未実装。Phase 7 をクローズせず継続するか、Phase 8 の優先度と比較して決める。
+
+| 項目 | 状態 | 推奨 |
+|---|---|---|
+| Sidebar: 銘柄一覧 (`ListInstruments` RPC) | 未実装 | Phase 7 継続 ← 最優先 |
+| KlineChartWindow: ローソク足対応 (`chart.rs` 拡張) | 未実装（line chart のみ） | Phase 7 継続 |
+| Footer: SpeedSelector UI (SetReplaySpeed は proto 済み) | 未実装 | Phase 7 継続 |
+| Footer: ProgressBar + パーセント | 未実装 | Phase 8 でも可 |
+| BuyingPowerPanel / PositionsPanel / OrdersPanel | 未実装 | GetPortfolio RPC と同時に |
+| GetPortfolio RPC (`python/engine/server_grpc.py`) | 未実装 | BuyingPower 等の前提 |
+| ListInstruments RPC | 未実装 | Sidebar の前提 |
+| UI_LAYOUT 永続化 (`.json` サイドカー) | 未実装 | Phase 8 でも可 |
+
+#### ➡️ 明示延期（変更なし）
+
+| 項目 | 延期先 | 理由 |
+|---|---|---|
+| StepBackward RPC | Phase 8 | backend replay 経路（engine_runner vs step_replay）が確定してから |
+| LadderWindow | Phase 8 | J-Quants Daily/Minute バーに depth データなし |
+| Live Venue 接続 | Phase 8/9 | Replay 専用フェーズ |
+| phase7-visual-reference.html | 任意 | 実装は egui ベースに落ち着いたため優先度低 |
+| SubscribeReplayEvents (streaming) | 任意 | Unary polling で十分機能している |
+
+#### 判断
+
+**Phase 7 MVP コアは達成。** Run E2E・Transport・結果表示が動いており、フィードバックループが回せる状態。
+
+残りの表示系（Sidebar / Kline candle / Speed UI / Portfolio panels）は **Phase 7 継続** か **Phase 8 序盤** のどちらでも進められる。次フェーズの計画書を先に書くより、表示品質を上げながら Phase 7 のまま継続し、Kline + Sidebar が動いた時点で Phase 7 完了とする判断を推奨する。
+
 ---
