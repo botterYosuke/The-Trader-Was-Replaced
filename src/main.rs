@@ -1,7 +1,7 @@
 use backcast::trading::{
     backend_update_system, engine, parse_summary_json, price_simulation_system, BackendChannel,
-    BackendStatus, InstrumentList, LastRunResult, RunState, TradingData, TradingSettings,
-    TransportCommand, TransportCommandSender,
+    BackendStatus, InstrumentList, LastRunResult, ReplaySpeed, RunState, TradingData,
+    TradingSettings, TransportCommand, TransportCommandSender,
 };
 use backcast::ui::UiPlugin;
 use backcast::grid::GridPlugin;
@@ -13,7 +13,7 @@ use engine::data_engine_client::DataEngineClient;
 use engine::{
     EngineStartConfig, EngineKind, ForceStopReplayRequest, GetStateRequest, ListInstrumentsRequest,
     LoadReplayDataRequest, PauseReplayRequest, ReplayGranularity, ResumeReplayRequest,
-    StartEngineRequest, StartEngineResponse, StepReplayRequest,
+    SetReplaySpeedRequest, StartEngineRequest, StartEngineResponse, StepReplayRequest,
 };
 
 // Bevy's compute task pool threads don't inherit the Tokio runtime context,
@@ -40,6 +40,7 @@ async fn main() {
         .insert_resource(BackendStatus::default())
         .insert_resource(LastRunResult::default())
         .insert_resource(InstrumentList::default())
+        .insert_resource(ReplaySpeed::default())
         .insert_resource(tokio_handle)
         .add_systems(Startup, (setup_camera, setup_backend_connection))
         .add_systems(Update, (
@@ -219,6 +220,17 @@ fn setup_backend_connection(
                         match client.force_stop_replay(req).await {
                             Ok(r) => info!("ForceStopReplay ok, state={:?}", r.into_inner().current_state),
                             Err(e) => error!("ForceStopReplay failed: {}", e),
+                        }
+                    }
+                    TransportCommand::SetSpeed(mult) => {
+                        let req = tonic::Request::new(SetReplaySpeedRequest {
+                            request_id: String::new(),
+                            multiplier: mult,
+                            token: token.clone(),
+                        });
+                        match client.set_replay_speed(req).await {
+                            Ok(r) => info!("SetReplaySpeed {}x ok, state={:?}", mult, r.into_inner().current_state),
+                            Err(e) => error!("SetReplaySpeed {}x failed: {}", mult, e),
                         }
                     }
                     TransportCommand::RunStrategy { strategy_file, config } => {

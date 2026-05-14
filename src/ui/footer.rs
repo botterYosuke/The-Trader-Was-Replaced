@@ -1,13 +1,16 @@
 use bevy::prelude::*;
-use crate::trading::{BackendStatus, TradingData, TradingSettings, TransportCommand, TransportCommandSender};
+use crate::trading::{BackendStatus, ReplaySpeed, TradingData, TradingSettings, TransportCommand, TransportCommandSender};
 use crate::ui::components::{
     FooterRoot, GrpcStatusLabel, PauseResumeLabel, ReplayStateBadge, ReplayTimeLabel,
-    TransportButton,
+    SpeedButton, TransportButton,
 };
 
 const BTN_NORMAL: Color = Color::srgba(0.12, 0.12, 0.18, 1.0);
 const BTN_HOVER: Color = Color::srgba(0.22, 0.22, 0.32, 1.0);
 const BTN_PRESSED: Color = Color::srgba(0.35, 0.35, 0.52, 1.0);
+const BTN_SPEED_SELECTED: Color = Color::srgba(0.18, 0.38, 0.58, 1.0);
+
+const SPEED_OPTIONS: &[u32] = &[1, 2, 5, 10, 50];
 
 fn spawn_transport_btn(parent: &mut ChildBuilder, label: &str, action: TransportButton) {
     parent
@@ -28,6 +31,29 @@ fn spawn_transport_btn(parent: &mut ChildBuilder, label: &str, action: Transport
                 Text::new(label),
                 TextFont { font_size: 11.0, ..default() },
                 TextColor(Color::srgb(0.85, 0.85, 0.85)),
+            ));
+        });
+}
+
+fn spawn_speed_btn(parent: &mut ChildBuilder, multiplier: u32, selected: bool) {
+    parent
+        .spawn((
+            Button,
+            Node {
+                width: Val::Px(30.0),
+                height: Val::Px(20.0),
+                justify_content: JustifyContent::Center,
+                align_items: AlignItems::Center,
+                ..default()
+            },
+            BackgroundColor(if selected { BTN_SPEED_SELECTED } else { BTN_NORMAL }),
+            SpeedButton(multiplier),
+        ))
+        .with_children(|p| {
+            p.spawn((
+                Text::new(format!("{}x", multiplier)),
+                TextFont { font_size: 10.0, ..default() },
+                TextColor(Color::srgb(0.75, 0.85, 1.0)),
             ));
         });
 }
@@ -76,6 +102,14 @@ pub fn spawn_footer(mut commands: Commands) {
             });
             spawn_transport_btn(p, ">",  TransportButton::StepForward);
             spawn_transport_btn(p, "■", TransportButton::ForceStop);
+
+            // Separator
+            p.spawn(Node { width: Val::Px(6.0), ..default() });
+
+            // Speed selector: 1x is selected by default
+            for &mult in SPEED_OPTIONS {
+                spawn_speed_btn(p, mult, mult == 1);
+            }
 
             // Flex spacer — pushes status labels to the right
             p.spawn(Node {
@@ -230,5 +264,45 @@ pub fn transport_button_system(
             Interaction::Hovered => bg.0 = BTN_HOVER,
             Interaction::None    => bg.0 = BTN_NORMAL,
         }
+    }
+}
+
+pub fn speed_button_system(
+    mut query: Query<
+        (&Interaction, &mut BackgroundColor, &SpeedButton),
+        (Changed<Interaction>, With<Button>),
+    >,
+    mut speed: ResMut<ReplaySpeed>,
+    sender: Res<TransportCommandSender>,
+) {
+    for (interaction, mut bg, SpeedButton(mult)) in &mut query {
+        match interaction {
+            Interaction::Pressed => {
+                speed.current = *mult;
+                let _ = sender.tx.send(TransportCommand::SetSpeed(*mult));
+                bg.0 = BTN_SPEED_SELECTED;
+            }
+            Interaction::Hovered => bg.0 = BTN_HOVER,
+            Interaction::None    => bg.0 = if speed.current == *mult { BTN_SPEED_SELECTED } else { BTN_NORMAL },
+        }
+    }
+}
+
+/// Refreshes speed button highlight whenever ReplaySpeed changes.
+pub fn update_speed_buttons_system(
+    speed: Res<ReplaySpeed>,
+    mut query: Query<(&mut BackgroundColor, &SpeedButton, &Interaction)>,
+) {
+    if !speed.is_changed() {
+        return;
+    }
+    for (mut bg, SpeedButton(mult), interaction) in &mut query {
+        bg.0 = if *mult == speed.current {
+            BTN_SPEED_SELECTED
+        } else if *interaction == Interaction::Hovered {
+            BTN_HOVER
+        } else {
+            BTN_NORMAL
+        };
     }
 }

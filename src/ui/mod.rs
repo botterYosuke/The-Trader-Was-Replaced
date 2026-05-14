@@ -12,7 +12,7 @@ pub mod strategy_editor;
 
 use bevy::prelude::*;
 use bevy_egui::EguiPlugin;
-use crate::ui::footer::{spawn_footer, transport_button_system, update_footer_system};
+use crate::ui::footer::{spawn_footer, speed_button_system, transport_button_system, update_footer_system, update_speed_buttons_system};
 use crate::ui::run_result_panel::run_result_panel_system;
 use crate::ui::strategy_editor::strategy_editor_window_system;
 use crate::ui::menu_bar::{
@@ -50,6 +50,8 @@ impl Plugin for UiPlugin {
                 chart_render_system,
                 update_footer_system,
                 transport_button_system,
+                speed_button_system,
+                update_speed_buttons_system,
                 menu_button_system,
                 log_open_strategy_requested_system,
                 open_strategy_buffer_system,

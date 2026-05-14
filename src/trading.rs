@@ -152,10 +152,22 @@ pub enum TransportCommand {
     Resume,
     StepForward,
     ForceStop,
+    SetSpeed(u32),
     RunStrategy {
         strategy_file: std::path::PathBuf,
         config: StrategyRunConfig,
     },
+}
+
+#[derive(Resource, Debug, Clone)]
+pub struct ReplaySpeed {
+    pub current: u32,
+}
+
+impl Default for ReplaySpeed {
+    fn default() -> Self {
+        Self { current: 1 }
+    }
 }
 
 #[derive(Resource)]

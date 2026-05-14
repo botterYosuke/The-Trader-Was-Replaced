@@ -47,6 +47,10 @@ pub enum TransportButton {
     ForceStop,
 }
 
+/// Marks a speed-selector button in the footer. Holds the multiplier value (1, 2, 5, 10, 50).
+#[derive(Component, Clone, Copy, Debug)]
+pub struct SpeedButton(pub u32);
+
 #[derive(Component)]
 pub struct MenuBarRoot;
 
