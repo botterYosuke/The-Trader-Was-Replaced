@@ -2,6 +2,7 @@ use bevy::prelude::*;
 use rfd::FileDialog;
 use sha2::{Digest, Sha256};
 use crate::ui::components::{MenuBarRoot, MenuButton, OpenStrategyRequested, StrategyBuffer, StrategyStatusLabel, StrategyRunRequested};
+use crate::trading::{TransportCommand, TransportCommandSender};
 
 const BTN_NORMAL: Color = Color::srgba(0.10, 0.10, 0.16, 1.0);
 const BTN_HOVER: Color = Color::srgba(0.20, 0.20, 0.30, 1.0);
@@ -200,5 +201,22 @@ pub fn log_strategy_run_requested_system(
 ) {
     for event in events.read() {
         info!("strategy run requested: {:?}", event.cache_path);
+    }
+}
+
+pub fn handle_strategy_run_system(
+    mut events: EventReader<StrategyRunRequested>,
+    sender: Option<Res<TransportCommandSender>>,
+) {
+    for event in events.read() {
+        let cmd = TransportCommand::StartEngine {
+            strategy_file: event.cache_path.clone(),
+        };
+        info!("strategy run: sending StartEngine command with strategy_file={:?}", event.cache_path);
+        if let Some(sender) = &sender {
+            if let Err(e) = sender.tx.send(cmd) {
+                error!("failed to send StartEngine command: {}", e);
+            }
+        }
     }
 }

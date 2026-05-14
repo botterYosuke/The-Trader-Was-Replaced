@@ -103,6 +103,9 @@ class GrpcDataEngineServer(
         if request.token != self.token:
             context.abort(grpc.StatusCode.UNAUTHENTICATED, "Invalid token")
 
+        strategy_file = request.config.strategy_file if request.HasField("config") and request.config.HasField("strategy_file") else None
+        logging.info(f"StartEngine: strategy_file={strategy_file!r}")
+
         success, error = self.engine.start_engine()
         return engine_pb2.ReplayControlResponse(
             success=success,

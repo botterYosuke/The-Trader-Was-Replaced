@@ -121,11 +121,14 @@ pub struct BackendChannel {
     pub rx: mpsc::UnboundedReceiver<BackendTradingState>,
 }
 
-#[derive(Debug, Clone, Copy)]
+#[derive(Debug, Clone)]
 pub enum TransportCommand {
     Pause,
     Resume,
     StepForward,
+    StartEngine {
+        strategy_file: std::path::PathBuf,
+    },
 }
 
 #[derive(Resource)]

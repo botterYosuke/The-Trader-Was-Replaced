@@ -82,7 +82,7 @@ Acceptance criteria:
 
 **現在地**:
 
-- 最新コミット: `14284fc Add Strategy Run Event Shell: StrategyRunRequested event and Run button`
+- 最新コミット: `(next) Add TransportCommand::StartEngine signal shell`
 - `cargo check` は成功済み。
 - `Open Strategy...` から `.py` を選ぶと、元ファイルを直接触らず OS cache 配下に作業コピーを作る。
 - `StrategyBuffer` resource が、元 path / cache path / editor source / dirty 状態を保持する。
@@ -123,7 +123,7 @@ cargo run
 
 **次にやること**:
 
-次は **TransportCommand::StartEngine Signal Shell**。`StrategyRunRequested` → `TransportCommand::StartEngine { strategy_file }` → Tokio loop の信号経路を作る。Python は `strategy_file` ログのみ追加。詳細は下の `ADR 2026-05-14: Strategy Run Backend Contract Recon` の「次の小タスク」を参照。
+次は **LoadReplayData + StartEngine 2-step sequencing**。`Run` 押下時に SCENARIO dict を parse して `LoadReplayData` → `StartEngine` を順番に呼ぶ。詳細は計画書内の次タスクノートを参照。
 
 ### Current Progress
 
@@ -142,7 +142,7 @@ cargo run
 | `74e90de` | `bevy_egui` の Strategy Editor Window shell を追加し、`StrategyBuffer.source` を編集可能にした | ✅ |
 | `e900cde` | Strategy Editor に `Save Cache` ボタンを追加し、cache file へ editor 内容を保存可能にした | ✅ |
 | `14284fc` | `StrategyRunRequested` event + `Run` ボタン shell を追加 | ✅ |
-| (next) | `TransportCommand::StartEngine` 信号経路 shell + Python strategy_file ログ | 🔲 |
+| (next) | `TransportCommand::StartEngine` 信号経路 shell + Python strategy_file ログ | ✅ |
 
 ### Verified State
 

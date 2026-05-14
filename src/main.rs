@@ -9,7 +9,10 @@ use bevy::prelude::*;
 use bevy_pancam::PanCamPlugin;
 use tokio::sync::mpsc;
 use engine::data_engine_client::DataEngineClient;
-use engine::{GetStateRequest, PauseReplayRequest, ResumeReplayRequest, StartRequest, StepReplayRequest};
+use engine::{
+    EngineStartConfig, EngineKind, GetStateRequest, PauseReplayRequest, ResumeReplayRequest,
+    StartEngineRequest, StartRequest, StepReplayRequest,
+};
 
 // Bevy's compute task pool threads don't inherit the Tokio runtime context,
 // so we capture the handle here (before App::run takes over) and pass it as a resource.
@@ -160,6 +163,42 @@ fn setup_backend_connection(
                         match client.step_replay(req).await {
                             Ok(r) => info!("StepReplay ok, state={:?}", r.into_inner().current_state),
                             Err(e) => error!("StepReplay failed: {}", e),
+                        }
+                    }
+                    TransportCommand::StartEngine { strategy_file } => {
+                        let strategy_file_str = strategy_file.to_string_lossy().to_string();
+                        info!("StartEngine: strategy_file={:?}", strategy_file_str);
+                        let req = tonic::Request::new(StartEngineRequest {
+                            request_id: String::new(),
+                            engine: EngineKind::Nautilus as i32,
+                            strategy_id: String::new(),
+                            config: Some(EngineStartConfig {
+                                instrument_id: String::new(),
+                                instrument_ids: vec![],
+                                start_date: None,
+                                end_date: None,
+                                initial_cash: None,
+                                granularity: None,
+                                strategy_file: Some(strategy_file_str),
+                                strategy_init_kwargs: None,
+                                max_qty: None,
+                                max_notional_jpy: None,
+                            }),
+                            token: token.clone(),
+                        });
+                        match client.start_engine(req).await {
+                            Ok(r) => {
+                                let inner = r.into_inner();
+                                if inner.success {
+                                    info!("StartEngine ok, state={:?}", inner.current_state);
+                                } else {
+                                    error!(
+                                        "StartEngine rejected: code={}, msg={}",
+                                        inner.error_code, inner.error_message
+                                    );
+                                }
+                            }
+                            Err(e) => error!("StartEngine gRPC error: {}", e),
                         }
                     }
                 }
