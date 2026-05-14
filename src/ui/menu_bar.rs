@@ -1,6 +1,6 @@
 use bevy::prelude::*;
 use rfd::FileDialog;
-use crate::ui::components::{MenuBarRoot, MenuButton, OpenStrategyRequested};
+use crate::ui::components::{MenuBarRoot, MenuButton, OpenStrategyRequested, StrategyBuffer};
 
 const BTN_NORMAL: Color = Color::srgba(0.10, 0.10, 0.16, 1.0);
 const BTN_HOVER: Color = Color::srgba(0.20, 0.20, 0.30, 1.0);
@@ -95,5 +95,25 @@ pub fn log_open_strategy_requested_system(
 ) {
     for event in events.read() {
         info!("open strategy selected: {:?}", event.path);
+    }
+}
+
+pub fn open_strategy_buffer_system(
+    mut events: EventReader<OpenStrategyRequested>,
+    mut buffer: ResMut<StrategyBuffer>,
+) {
+    for event in events.read() {
+        match std::fs::read_to_string(&event.path) {
+            Ok(source) => {
+                buffer.original_path = Some(event.path.clone());
+                buffer.cache_path = None;
+                buffer.source = source;
+                buffer.dirty = false;
+                info!("strategy buffer loaded: {:?}, bytes={}", event.path, buffer.source.len());
+            }
+            Err(err) => {
+                error!("failed to read strategy file {:?}: {}", event.path, err);
+            }
+        }
     }
 }

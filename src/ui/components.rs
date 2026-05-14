@@ -56,3 +56,11 @@ pub enum MenuButton {
 pub struct OpenStrategyRequested {
     pub path: std::path::PathBuf,
 }
+
+#[derive(Resource, Default, Debug, Clone)]
+pub struct StrategyBuffer {
+    pub original_path: Option<std::path::PathBuf>,
+    pub cache_path: Option<std::path::PathBuf>,
+    pub source: String,
+    pub dirty: bool,
+}
