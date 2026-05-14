@@ -74,6 +74,10 @@ def load(path: str | Path) -> tuple[ModuleType, dict, Any]:  # Any = type[Strate
     if scenario is None:
         raise ValueError(f"SCENARIO not found in {path}")
     scenario = resolve_refs(scenario, base_dir=path.parent)
+    # Normalize singular "instrument" → "instruments" for v2/v3 files before validation.
+    if scenario.get("schema_version") in (2, 3) and "instrument" in scenario and "instruments" not in scenario:
+        scenario = dict(scenario)
+        scenario["instruments"] = scenario.pop("instrument")
     validate(scenario)
 
     # Strategy サブクラス検索（このファイルで定義されたものだけ）

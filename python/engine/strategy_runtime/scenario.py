@@ -267,6 +267,10 @@ def validate(d: dict) -> None:  # type: ignore[type-arg]
         raise ScenarioValidationError(f"SCENARIO must be a dict, got {type(d).__name__}")
 
     sv = d.get("schema_version")
+    # Normalize singular "instrument" key to "instruments" for v2/v3 files that use the old key.
+    if sv in (2, 3) and "instrument" in d and "instruments" not in d:
+        d = dict(d)
+        d["instruments"] = d.pop("instrument")
     if sv == 1:
         _check_keys(d, frozenset(_V1_TYPES), frozenset())
         _check_types(d, _V1_TYPES)
