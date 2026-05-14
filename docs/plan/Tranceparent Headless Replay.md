@@ -59,6 +59,29 @@ Phase 5 の chart / history / timestamp 契約は [Tranceparent Python Backend](
 - **Success Criteria**:
   - UI からの注文が可能になり、実環境の口座状態と一致すること。
 
+### Phase 10: Replay-to-Live Strategy Execution
+
+- **Goal**: リプレイで作成・検証したストラテジーを、コード変更なしでそのままライブ環境で実行できるようにする。
+- **Tasks**:
+  - **Strategy Portability**: Replay と Live で同一の `Strategy` 定義 (Nautilus `Strategy` サブクラス) を共有する仕組みを確立。
+    - `replay_runner.py` と `live_runner.py` (Phase 8/9 で構築) の双方が、同じストラテジーモジュールをロードできるエントリポイントを提供。
+    - Replay/Live 固有の依存（時刻ソース、データソース、Venue ID 等）はストラテジー外部から注入し、ストラテジー本体は環境非依存に保つ。
+  - **Promote to Live API**: 現在 Strategy Editor で編集中のストラテジーを「ライブ実行」する制御 API を追加。
+    - `StartLiveStrategy(strategy_id, instrument_id, venue, params)` / `StopLiveStrategy(run_id)`。
+    - Replay の `StartEngine` と対称な State Machine を Live 側に持たせる。
+  - **Run Mode Switch (UI)**: Strategy Editor / Replay UI に Live 切替を追加。
+    - 明示的な確認ダイアログ（実発注の警告）と、Replay 結果サマリー（バックテスト KPI）を併記。
+    - Replay 中の run と Live run を `run_id` で並列管理し、UI で区別表示。
+  - **Safety Rails**: 誤発注防止のためのガード。
+    - Venue 未ログイン / Replay モード中 / 口座未同期時は Live 起動を拒否。
+    - 1 ストラテジーあたりの同時 Live インスタンスは 1 つに制限。
+    - Position size / 注文金額の事前上限チェック（ユーザ設定可能）。
+  - **Live Run Telemetry**: Live 実行中のイベント（fills, position, PnL）を Replay と同じ `TradingState` reducer 経由で UI に流す。
+- **Success Criteria**:
+  - Replay で動作確認したストラテジーを、ファイル編集なしに「Promote to Live」操作のみで実環境にデプロイできる。
+  - Live 実行中もチャート・ポートフォリオ・注文履歴が Replay と同等の粒度で UI に反映される。
+  - Safety Rails により、未認証 / モード不一致時の誤発注が構造的に防止される。
+
 ## Strategy & Principles
 
 1. **Strict Dependency Isolation**: `replay_runner.py` で Live 依存を構造的に排除。
