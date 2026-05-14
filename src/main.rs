@@ -304,7 +304,7 @@ fn setup_backend_connection(
                 token: token.clone(),
             });
 
-            match tokio::time::timeout(tokio::time::Duration::from_secs(2), client.get_state(request)).await {
+            match tokio::time::timeout(tokio::time::Duration::from_secs(5), client.get_state(request)).await {
                 Ok(Ok(response)) => {
                     let json_data = response.into_inner().json_data;
                     match serde_json::from_str::<backcast::trading::BackendTradingState>(&json_data) {
@@ -329,13 +329,9 @@ fn setup_backend_connection(
                     }
                 }
                 Err(_) => {
-                    let err_msg = "gRPC request timed out".to_string();
-                    error!("{}. Attempting to reconnect...", err_msg);
-                    let _ = status_tx.send(BackendStatusUpdate::Error(err_msg));
-                    if let Ok(c) = DataEngineClient::connect(url.clone()).await {
-                        client = c;
-                        let _ = status_tx.send(BackendStatusUpdate::Connected(true));
-                    }
+                    // Backend busy (e.g. during LoadReplayData / engine_runner.run).
+                    // Not a connection failure — skip reconnect to avoid noise.
+                    warn!("GetState timed out (backend busy), will retry next poll");
                 }
             }
             tokio::time::sleep(tokio::time::Duration::from_millis(interval)).await;
