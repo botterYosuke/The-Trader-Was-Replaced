@@ -287,6 +287,32 @@ mod tests {
     use serial_test::serial;
 
     #[test]
+    fn test_parse_summary_json_valid() {
+        let json = r#"{"fills_count":2,"equity_points":57,"total_pnl":-410010.0,"status":"ok"}"#;
+        let s = parse_summary_json(json).unwrap();
+        assert_eq!(s.fills_count, 2);
+        assert_eq!(s.equity_points, 57);
+        assert!((s.total_pnl - -410010.0).abs() < 1.0);
+        assert_eq!(s.status, "ok");
+    }
+
+    #[test]
+    fn test_parse_summary_json_invalid() {
+        let result = parse_summary_json("not json at all");
+        assert!(result.is_none());
+    }
+
+    #[test]
+    fn test_parse_summary_json_missing_fields() {
+        let json = r#"{"fills_count":5}"#;
+        let s = parse_summary_json(json).unwrap();
+        assert_eq!(s.fills_count, 5);
+        assert_eq!(s.equity_points, 0);
+        assert_eq!(s.total_pnl, 0.0);
+        assert_eq!(s.status, "unknown");
+    }
+
+    #[test]
     #[serial]
     fn test_settings_from_env_defaults() {
         unsafe {

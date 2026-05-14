@@ -646,4 +646,13 @@ StartEngine ok, state=RUNNING
 - `cargo test scenario_parser` 4/4 passed
 - **次タスク**: 次の実装候補 — `LastRunResult` の parsed fields 化、または Step-back / Transport 制御の実装
 
+### 2026-05-14 RunSummary parse helper
+
+- `trading.rs` に `RunSummary` 構造体と `parse_summary_json()` を追加
+- `LastRunResult` に `parsed_summary: Option<RunSummary>` フィールドを追加。`RunComplete` 受信時に一度だけパース（毎フレームのパースを除去）
+- `strategy_editor.rs` のインライン `serde_json` 呼び出しを除去。`status` フィールドも表示に追加
+- `parse_summary_json()` の unit test 3 件追加（valid / invalid / missing fields）
+- `cargo check` OK / `cargo test parse_summary_json` 3/3 / `cargo test scenario_parser` 4/4
+- **次タスク**: Step-back / Transport 制御の実装、または Sidebar 枠の追加
+
 ---
