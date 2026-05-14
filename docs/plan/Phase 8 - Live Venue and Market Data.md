@@ -188,11 +188,23 @@ class LiveVenueAdapter(Protocol):
   - `kabu_adapter.py` — kabu 実装（skill `.claude/skills/kabusapi/SKILL.md` 必読）
   - `instrument_mapping.py` — venue 固有マスタ → Nautilus `Instrument` 変換
   - `event_bus.py` — adapter からの asyncio Queue を `reducer` に橋渡し
-- 認証情報の解決順:
-  1. `credentials_source == "env"` ⇒ `TACHIBANA_USER` / `TACHIBANA_PASS` / `TACHIBANA_PASS2` / `KABU_API_PASSWORD` を環境変数から読む
+- 認証情報の解決順（**いずれの経路も Rust → Python に資格情報を渡さない**。`VenueLogin` RPC は「ログイン開始」のトリガのみで、ペイロードに password を含めない）:
+  1. `credentials_source == "env"` ⇒ `TACHIBANA_USER` / `TACHIBANA_PASS` / `TACHIBANA_PASS2` / `KABU_API_PASSWORD` を環境変数から読む（CI / 自動運転向け）
   2. `credentials_source == "keyring"` ⇒ `keyring` ライブラリで OS Credential Store から取得
   3. `credentials_source == "file"` ⇒ `~/.the-trader-was-replaced/credentials.toml` を読む（権限 0600 を強制）
+  4. `credentials_source == "prompt"` ⇒ **Python プロセスがローカルに資格情報入力ウィンドウを開く**（§3.2.1）。デフォルトはこれ。
 - 平文の資格情報は **絶対にログに出さない**。`logger` の `extra` フィルタで `password|token|api_key|p_pwd` を含むキーをマスクする helper を `live/logging.py` に置く。
+
+### 3.2.1 Python 側のログインウィンドウ
+
+- 実装: `tkinter`（Python 標準ライブラリ。追加依存ゼロ）でモーダルウィンドウを `python/engine/live/login_dialog.py` に置く。
+- 表示タイミング: `VenueLogin(credentials_source="prompt")` を受けた瞬間、`server_grpc` のハンドラが asyncio executor 経由で `Tk` ループを別スレッドで起動。RPC は dialog が閉じるまで `AUTHENTICATING` 状態を保ったまま戻らない（または "pending" を即返して `GetVenueState` で polling）。
+- 入力フィールド: venue ごとに異なる。
+  - Tachibana: ユーザー ID / パスワード / 第二暗証番号 / 環境（demo/prod 選択）
+  - kabu: APIパスワード / 環境（demo/prod 選択）。kabu 本体プロセスのポートも表示（読み取り専用）。
+- セッション内キャッシュ: 一度入力した資格情報は `live_runner` のメモリ内でのみ保持し、Logout で消す。ディスクには書かない（書きたい場合は別途 keyring へ昇格させる UX を `[ ] OS の Credential Store に保存` チェックボックスで提供）。
+- ウィンドウは Bevy UI のプロセスとは **完全に独立**。Bevy が落ちても認証フローは影響を受けず、逆も同様。
+- headless サーバ上で X11/Wayland/Win32 が無い環境では `tkinter` の import に失敗する。その場合は `credentials_source="prompt"` を `NO_DISPLAY_AVAILABLE` で reject し、`env` / `keyring` / `file` への切替をエラーメッセージで案内する。
 
 ### 3.3 Backend: live_runner.py
 
@@ -221,8 +233,10 @@ service Engine {
 
 message VenueLoginRequest {
   string venue_id = 1;                     // "TACHIBANA" / "KABU"
-  string credentials_source = 2;           // "env" / "keyring" / "file"
+  string credentials_source = 2;           // "prompt" (default) / "env" / "keyring" / "file"
   string environment = 3;                  // "production" / "demo"
+  // 注: password / api_key / 第二暗証番号 などの平文資格情報は本 RPC に含めない。
+  //     "prompt" 指定時は Python 側が tkinter のログインウィンドウを開く。
 }
 
 message VenueLoginResponse {
@@ -251,7 +265,8 @@ message SubscribeRequest {
   - File メニューの下に **Venue メニュー** を追加（枠は Phase 7 で予約済み）
   - `Connect → Tachibana (Demo) / Tachibana (Prod) / kabu Station` のサブ項目
   - `Disconnect` 項目
-  - クリックで `VenueConnectRequested(venue_id, env)` イベント発火 → backend へ `VenueLogin` RPC
+  - クリックで `VenueConnectRequested(venue_id, env)` イベント発火 → backend へ `VenueLogin(credentials_source="prompt")` RPC を投げる。
+  - **Rust 側にはログインフォームを実装しない**（資格情報を Rust プロセスに乗せないため）。クリック後は Python 側のログインウィンドウがフォーカスを取り、ユーザがそこで入力 → 結果が `VenueStateBadge` に反映されるのを待つだけ。
 - `src/ui/footer.rs`:
   - 既存の `ReplayStateBadge` の右隣に `VenueStateBadge` を追加（DISCONNECTED=gray / CONNECTED=cyan / SUBSCRIBED=green / ERROR=red）
   - mode が `LIVE` のときは `ReplayStateBadge` を `—` 表示にする
@@ -283,6 +298,7 @@ python/engine/
 │   ├── __init__.py
 │   ├── adapter.py                 # LiveVenueAdapter Protocol / LiveEvent
 │   ├── state_machine.py           # VenueStateMachine
+│   ├── login_dialog.py            # tkinter のログインウィンドウ（Python 側 UI 例外）
 │   ├── tachibana_adapter.py
 │   ├── kabu_adapter.py
 │   ├── instrument_mapping.py
@@ -326,7 +342,10 @@ docs/plan/assets/
 4. **Step 4 — Snapshot Reducer 接続**:
    - `MockVenueAdapter` の tick を `reducer` 経由で `TradingState` に流す
    - `KlineChartWindow` が Live モードで mock データを描画できることを確認
-5. **Step 5 — kabu ステーション実装**:
+5. **Step 4.5 — Python tkinter ログインウィンドウ**:
+   - `live/login_dialog.py` を実装。`credentials_source="prompt"` で Rust から RPC を叩くとダイアログが立ち上がり、入力 → 完了で `VenueState` が遷移するまでを mock adapter で確認
+   - headless 環境（DISPLAY 無し）で `NO_DISPLAY_AVAILABLE` が返ることを確認
+6. **Step 5 — kabu ステーション実装**:
    - `kabu_adapter.py` を `.claude/skills/kabusapi/` の skill に従って実装
    - 検証環境（`localhost:18081`）で `VenueLogin` → `ListInstruments` → `SubscribeMarketData(3 銘柄)` → 板更新が Ladder に反映、までの E2E
    - 50 銘柄上限・流量制限のレートリミッタ unit test
@@ -366,7 +385,17 @@ docs/plan/assets/
 `replay_runner.py` に live モードのフラグを足す案を採らず、`live_runner.py` を独立させる。理由: (1) Replay は決定論的なシミュレータでデバッグの中心。Live コードが混ざると再現性が壊れる。(2) `TradingNode` 由来の live execution を将来取り込むときも、Replay 系統に影響を与えないため。(3) `ModeManager` で排他を構造的に保証できる。
 
 ### ADR: 資格情報を Rust UI 側に持たせない
-平文の API key / パスワードを gRPC ペイロードに乗せないため、`VenueLoginRequest` には `credentials_source` だけを乗せる。Backend が env / keyring / file から自前で resolve する。理由: gRPC ログ・コアダンプ・OS の swap 経由で漏れる経路を構造的に塞ぐ。Rust 側に資格情報 UI を作る必要も無くなる。
+平文の API key / パスワードを gRPC ペイロードに乗せないため、`VenueLoginRequest` には `credentials_source` だけを乗せる。Backend が env / keyring / file / prompt から自前で resolve する。理由: gRPC ログ・コアダンプ・OS の swap 経由で漏れる経路を構造的に塞ぐ。Rust 側に資格情報 UI を作る必要も無くなる。
+
+### ADR: ログインウィンドウは Python 側で出す（プロジェクト唯一の UI 例外）
+本プロジェクトは原則「UI は Bevy (Rust) に一本化」だが、**ログインフォームに限り Python プロセスから tkinter で表示する**例外を設ける。
+
+理由:
+1. **資格情報を Rust → Python に受け渡したくない**。Rust 側で入力させると `VenueLoginRequest` に password を載せるか、別 RPC で平文を送る必要があり、gRPC 上の暗号化が無い localhost 通信ではコアダンプ / プロセスダンプ / メモリスキャンで漏れる経路が増える。Python プロセス内で完結させれば、資格情報はそのまま venue adapter のメモリにしか乗らない。
+2. **headless 運用でもユーザー対話によるログインが必要**。Rust UI を起動しない CI 検証や、別マシンの backend にリモートで `python -m engine` だけ走らせる構成でも、その場でログインダイアログを出したい。Rust UI に依存させると headless ではログインできなくなる。
+3. tkinter は Python 標準ライブラリで追加依存ゼロ。Bevy より遥かに小さなフォームウィンドウで十分なため、専用 UI フレームワークは不要。
+
+結果として Rust UI は「Venue メニューでログイン開始トリガを発火 → Python 側のダイアログ完了を待つ → `VenueStateBadge` に結果が反映される」という一方向の責務だけを持つ。ログインフォーム描画責務は Rust から完全に切り離される。
 
 ### ADR: 発注経路は Phase 8 で握らない
 `nautilus_trader` の `TradingNode` を Live でホストすると ExecEngine が venue に注文を発射できてしまう。Phase 8 では `DataEngine` のみホストし、`ExecEngine` は **インスタンス化しない**。これにより「読み取り専用」を型レベルで担保する。Phase 9 で発注経路を追加する際は、別途明示的なフラグと確認 UX を入れる。
