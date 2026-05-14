@@ -20,6 +20,75 @@
 
 ## Handoff Log / Phase 7 Replay UI Integration
 
+### Handoff Update 2026-05-14: StartEngine Signal Shell verified
+
+Latest checked implementation commit:
+
+- `2612df1 Add TransportCommand::StartEngine signal shell`
+
+Codex verification after worker report:
+
+- `git status --short`: clean before this handoff note
+- `git log --oneline -12`: confirms `2612df1` is latest
+- Reviewed signal-flow code in `src/trading.rs`, `src/ui/menu_bar.rs`, `src/ui/mod.rs`, `src/main.rs`, and `python/engine/server_grpc.py`
+- `cargo check`: passed
+
+Completed Task: TransportCommand::StartEngine Signal Shell
+
+- Added `TransportCommand::StartEngine { strategy_file: PathBuf }`.
+- Added `handle_strategy_run_system` to convert `StrategyRunRequested.cache_path` into `TransportCommand::StartEngine`.
+- Registered `handle_strategy_run_system` in the UI update schedule.
+- Added a Tokio command-loop arm that builds `StartEngineRequest` with `EngineStartConfig.strategy_file`.
+- Rust now logs the outgoing StartEngine attempt and logs either success or rejection.
+- Python `StartEngine` handler now logs the received `strategy_file`.
+- No new RPC was added.
+- Python still does not import, parse, instantiate, or run the strategy file.
+- `LoadReplayData` sequencing is still intentionally not implemented.
+- Original `.py` files remain untouched.
+
+Important current behavior:
+
+- With backend enabled and engine still in IDLE, pressing `Run` can reach Python `StartEngine`, but it is expected to return `success=false`, `error_code=INVALID_STATE`, `error_message="StartEngine is only allowed from LOADED"`.
+- This is the correct current failure mode. Full Run requires `LoadReplayData` first, then `StartEngine`.
+
+ADR / Direction:
+
+- Keep the StartEngine signal shell as a verified transport path.
+- The next task should not jump straight to strategy execution.
+- First implement or scaffold the data needed to call `LoadReplayData`: parse the selected cache strategy's `SCENARIO` dict into a Rust-side request model.
+- Prefer a small parser/recon step before wiring the full two-RPC sequence.
+
+Next Task: Strategy SCENARIO Parse Recon / Shell
+
+Worker instructions:
+
+1. Inspect the sample strategy files under `python/tests/data/`, especially `test_strategy_daily.py`, `test_strategy_minute.py`, and `pair_trade_minute.py`.
+2. Identify the exact `SCENARIO` shape used for:
+   - instrument or instrument_ids
+   - start date
+   - end date
+   - granularity
+   - initial cash
+   - any fields needed by `LoadReplayDataRequest`
+3. Inspect `python/proto/engine.proto` for `LoadReplayDataRequest` and enum values for `ReplayGranularity`.
+4. Decide the smallest Rust-side representation for parsed scenario metadata.
+5. Do not execute Python code from Rust.
+6. Do not write to original `.py` files.
+7. Prefer a read-only parse shell first:
+   - read from `StrategyBuffer.source` or cache file
+   - extract enough `SCENARIO` fields for `LoadReplayDataRequest`
+   - log parsed metadata
+   - do not call `LoadReplayData` yet unless the parse shell is already complete and reviewed
+8. Run `cargo check`.
+
+Acceptance criteria for the next worker:
+
+- The shape of `SCENARIO` is documented in this plan.
+- The chosen parsing approach is documented as an ADR or implementation note.
+- A minimal Rust data model for scenario metadata is proposed or added.
+- If code is added, it only parses/logs and does not call backend load/start yet.
+- `cargo check` passes.
+
 ### Handoff Update 2026-05-14: Backend Contract Recon verified
 
 Latest checked commit:
