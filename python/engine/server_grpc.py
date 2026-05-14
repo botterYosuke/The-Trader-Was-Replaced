@@ -362,6 +362,46 @@ class GrpcDataEngineServer(
             error_message="" if success else error,
         )
 
+    def ListInstruments(self, request, context):
+        if request.token != self.token:
+            context.abort(grpc.StatusCode.UNAUTHENTICATED, "Invalid token")
+
+        catalog_path = self.engine.last_replay_catalog_path or self.engine._jquants_catalog_path
+        if not catalog_path:
+            return engine_pb2.ListInstrumentsResponse(
+                success=False,
+                error_message="No catalog_path available",
+            )
+
+        try:
+            from pathlib import Path
+            import re
+
+            bar_dir = Path(catalog_path) / "data" / "bar"
+            if not bar_dir.exists():
+                return engine_pb2.ListInstrumentsResponse(
+                    success=True,
+                    instrument_ids=[],
+                )
+
+            seen: set[str] = set()
+            for entry in bar_dir.iterdir():
+                if not entry.is_dir() or entry.name == "backup":
+                    continue
+                m = re.match(r"^(.+?)-\d+-[A-Z]", entry.name)
+                if m:
+                    seen.add(m.group(1))
+
+            ids = sorted(seen)
+            logging.info("ListInstruments: found %d instruments: %s", len(ids), ids)
+            return engine_pb2.ListInstrumentsResponse(success=True, instrument_ids=ids)
+        except Exception as exc:
+            logging.error("ListInstruments: error: %s", exc)
+            return engine_pb2.ListInstrumentsResponse(
+                success=False,
+                error_message=str(exc),
+            )
+
 
 def advance_loop(engine: DataEngine, interval: float = 1.0):
     """Advance the engine on a fixed background interval while it is running."""

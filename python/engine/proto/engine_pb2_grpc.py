@@ -166,6 +166,11 @@ class DataEngineStub(object):
                 request_serializer=engine__pb2.ForceStopReplayRequest.SerializeToString,
                 response_deserializer=engine__pb2.ReplayControlResponse.FromString,
                 _registered_method=True)
+        self.ListInstruments = channel.unary_unary(
+                '/engine.DataEngine/ListInstruments',
+                request_serializer=engine__pb2.ListInstrumentsRequest.SerializeToString,
+                response_deserializer=engine__pb2.ListInstrumentsResponse.FromString,
+                _registered_method=True)
 
 
 class DataEngineServicer(object):
@@ -245,6 +250,13 @@ class DataEngineServicer(object):
         context.set_details('Method not implemented!')
         raise NotImplementedError('Method not implemented!')
 
+    def ListInstruments(self, request, context):
+        """Catalog
+        """
+        context.set_code(grpc.StatusCode.UNIMPLEMENTED)
+        context.set_details('Method not implemented!')
+        raise NotImplementedError('Method not implemented!')
+
 
 def add_DataEngineServicer_to_server(servicer, server):
     rpc_method_handlers = {
@@ -307,6 +319,11 @@ def add_DataEngineServicer_to_server(servicer, server):
                     servicer.ForceStopReplay,
                     request_deserializer=engine__pb2.ForceStopReplayRequest.FromString,
                     response_serializer=engine__pb2.ReplayControlResponse.SerializeToString,
+            ),
+            'ListInstruments': grpc.unary_unary_rpc_method_handler(
+                    servicer.ListInstruments,
+                    request_deserializer=engine__pb2.ListInstrumentsRequest.FromString,
+                    response_serializer=engine__pb2.ListInstrumentsResponse.SerializeToString,
             ),
     }
     generic_handler = grpc.method_handlers_generic_handler(
@@ -633,6 +650,33 @@ class DataEngine(object):
             '/engine.DataEngine/ForceStopReplay',
             engine__pb2.ForceStopReplayRequest.SerializeToString,
             engine__pb2.ReplayControlResponse.FromString,
+            options,
+            channel_credentials,
+            insecure,
+            call_credentials,
+            compression,
+            wait_for_ready,
+            timeout,
+            metadata,
+            _registered_method=True)
+
+    @staticmethod
+    def ListInstruments(request,
+            target,
+            options=(),
+            channel_credentials=None,
+            call_credentials=None,
+            insecure=False,
+            compression=None,
+            wait_for_ready=None,
+            timeout=None,
+            metadata=None):
+        return grpc.experimental.unary_unary(
+            request,
+            target,
+            '/engine.DataEngine/ListInstruments',
+            engine__pb2.ListInstrumentsRequest.SerializeToString,
+            engine__pb2.ListInstrumentsResponse.FromString,
             options,
             channel_credentials,
             insecure,

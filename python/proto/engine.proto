@@ -55,6 +55,9 @@ service DataEngine {
   rpc StepReplay(StepReplayRequest) returns (ReplayControlResponse);
   rpc StopReplay(StopReplayRequest) returns (ReplayControlResponse);
   rpc ForceStopReplay(ForceStopReplayRequest) returns (ReplayControlResponse);
+
+  // Catalog
+  rpc ListInstruments(ListInstrumentsRequest) returns (ListInstrumentsResponse);
 }
 
 message GetStateRequest {
@@ -166,4 +169,16 @@ message StopReplayRequest {
 message ForceStopReplayRequest {
   string request_id = 1;
   string token = 10;
+}
+
+message ListInstrumentsRequest {
+  string token = 1;
+  // "replay" is the only supported source for now
+  optional string source = 2;
+}
+
+message ListInstrumentsResponse {
+  bool success = 1;
+  repeated string instrument_ids = 2;
+  string error_message = 3;
 }

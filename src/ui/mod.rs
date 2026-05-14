@@ -7,6 +7,7 @@ pub mod footer;
 pub mod menu_bar;
 pub mod run_result_panel;
 pub mod scenario_parser;
+pub mod sidebar;
 pub mod strategy_editor;
 
 use bevy::prelude::*;
@@ -28,6 +29,7 @@ use crate::ui::window::setup_ui;
 use crate::ui::components::{OpenStrategyRequested, ScenarioMetadata, StrategyBuffer, StrategyRunRequested, WindowManager};
 use crate::ui::chart::chart_render_system;
 use crate::ui::scenario_parser::parse_scenario_system;
+use crate::ui::sidebar::sidebar_system;
 use bevy_vector_shapes::Shape2dPlugin;
 
 pub struct UiPlugin;
@@ -57,6 +59,7 @@ impl Plugin for UiPlugin {
                 log_strategy_run_requested_system,
                 handle_strategy_run_system,
                 parse_scenario_system,
+                sidebar_system,
             ));
     }
 }

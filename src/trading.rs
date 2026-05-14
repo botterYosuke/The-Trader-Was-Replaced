@@ -292,6 +292,13 @@ pub struct LastRunResult {
     pub state: RunState,
 }
 
+#[derive(Resource, Default, Debug, Clone)]
+pub struct InstrumentList {
+    pub ids: Vec<String>,
+    pub loaded: bool,
+    pub error: Option<String>,
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

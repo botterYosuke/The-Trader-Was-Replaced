@@ -1,7 +1,7 @@
 use backcast::trading::{
     backend_update_system, engine, parse_summary_json, price_simulation_system, BackendChannel,
-    BackendStatus, LastRunResult, RunState, TradingData, TradingSettings, TransportCommand,
-    TransportCommandSender,
+    BackendStatus, InstrumentList, LastRunResult, RunState, TradingData, TradingSettings,
+    TransportCommand, TransportCommandSender,
 };
 use backcast::ui::UiPlugin;
 use backcast::grid::GridPlugin;
@@ -11,9 +11,9 @@ use bevy_pancam::PanCamPlugin;
 use tokio::sync::mpsc;
 use engine::data_engine_client::DataEngineClient;
 use engine::{
-    EngineStartConfig, EngineKind, ForceStopReplayRequest, GetStateRequest, LoadReplayDataRequest,
-    PauseReplayRequest, ReplayGranularity, ResumeReplayRequest, StartEngineRequest,
-    StartEngineResponse, StepReplayRequest,
+    EngineStartConfig, EngineKind, ForceStopReplayRequest, GetStateRequest, ListInstrumentsRequest,
+    LoadReplayDataRequest, PauseReplayRequest, ReplayGranularity, ResumeReplayRequest,
+    StartEngineRequest, StartEngineResponse, StepReplayRequest,
 };
 
 // Bevy's compute task pool threads don't inherit the Tokio runtime context,
@@ -39,6 +39,7 @@ async fn main() {
         .insert_resource(TradingSettings::default())
         .insert_resource(BackendStatus::default())
         .insert_resource(LastRunResult::default())
+        .insert_resource(InstrumentList::default())
         .insert_resource(tokio_handle)
         .add_systems(Startup, (setup_camera, setup_backend_connection))
         .add_systems(Update, (
@@ -61,6 +62,8 @@ enum BackendStatusUpdate {
     RunStarted,
     RunComplete { run_id: String, summary_json: String },
     RunFailed { error: String },
+    InstrumentsLoaded { ids: Vec<String> },
+    InstrumentLoadFailed { error: String },
 }
 
 
@@ -68,6 +71,7 @@ fn status_update_system(
     mut status: ResMut<BackendStatus>,
     mut channel: ResMut<StatusUpdateChannel>,
     mut last_run: ResMut<LastRunResult>,
+    mut instrument_list: ResMut<InstrumentList>,
 ) {
     while let Ok(update) = channel.rx.try_recv() {
         match update {
@@ -89,6 +93,15 @@ fn status_update_system(
             }
             BackendStatusUpdate::RunFailed { error } => {
                 last_run.state = RunState::Failed { error };
+            }
+            BackendStatusUpdate::InstrumentsLoaded { ids } => {
+                instrument_list.ids = ids;
+                instrument_list.loaded = true;
+                instrument_list.error = None;
+            }
+            BackendStatusUpdate::InstrumentLoadFailed { error } => {
+                instrument_list.loaded = true;
+                instrument_list.error = Some(error);
             }
         }
     }
@@ -142,6 +155,27 @@ fn setup_backend_connection(
         // Backend manages its own lifecycle; no explicit Start call needed.
         info!("Backend connection established.");
         let _ = status_tx.send(BackendStatusUpdate::Running(true));
+
+        // Load instrument list once on connect. May be empty if catalog not yet ready.
+        match client.list_instruments(tonic::Request::new(ListInstrumentsRequest {
+            token: token.clone(),
+            source: None,
+        })).await {
+            Ok(r) => {
+                let inner = r.into_inner();
+                if inner.success {
+                    info!("ListInstruments: {:?}", inner.instrument_ids);
+                    let _ = status_tx.send(BackendStatusUpdate::InstrumentsLoaded { ids: inner.instrument_ids });
+                } else {
+                    warn!("ListInstruments: {}", inner.error_message);
+                    let _ = status_tx.send(BackendStatusUpdate::InstrumentLoadFailed { error: inner.error_message });
+                }
+            }
+            Err(e) => {
+                warn!("ListInstruments gRPC error: {}", e);
+                let _ = status_tx.send(BackendStatusUpdate::InstrumentLoadFailed { error: e.to_string() });
+            }
+        }
 
         loop {
             // Drain transport commands before polling state so the UI feels responsive.
