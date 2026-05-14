@@ -59,7 +59,8 @@
       "Bash(python -c \"import sys; sys.path.insert\\(0, 'python'\\); from engine.strategy_replay.cli import _build_parser; p = _build_parser\\(\\); p.parse_args\\(['run', '--help']\\)\")",
       "Bash(.venv\\\\Scripts\\\\python.exe -m pytest \"python/tests/strategy_runtime/test_cli.py::TestCliHelp::test_run_help_exits_zero\" \"python/tests/strategy_runtime/test_cli.py::TestCliHelp::test_run_help_contains_strategy_flag\" \"python/tests/strategy_runtime/test_cli.py::TestCliGranularityOverride::test_granularity_override_passed_to_loader\" -v)",
       "PowerShell(cd \"c:\\\\Users\\\\sasai\\\\Documents\\\\The-Trader-Was-Replaced\"; .\\\\.venv\\\\Scripts\\\\python.exe -m pytest \"python/tests/strategy_runtime/test_cli.py::_default_run_args\" -v 2>&1; echo \"Exit: $LASTEXITCODE\")",
-      "WebSearch"
+      "WebSearch",
+      "PowerShell($p = \\(Get-NetTCPConnection -LocalPort 19876 -ErrorAction SilentlyContinue\\).OwningProcess; if \\($p\\) { \"port 19876 occupied by PID $p\"; Get-Process -Id $p | Select-Object Id, ProcessName } else { \"port 19876 is free\" })"
     ],
     "additionalDirectories": [
       "\\tmp",
