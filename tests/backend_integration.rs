@@ -1,8 +1,8 @@
 use backcast::trading::engine::{
     EngineState, ForceStopReplayRequest, GetStateRequest, GetStateResponse, LoadReplayDataRequest,
     PauseReplayRequest, ReplayControlResponse, ResumeReplayRequest, SetReplaySpeedRequest,
-    StartEngineRequest, StartResponse, StepReplayRequest, StopEngineRequest, StopReplayRequest,
-    StopRequest, StopResponse,
+    StartEngineRequest, StartEngineResponse, StartResponse, StepReplayRequest, StopEngineRequest,
+    StopReplayRequest, StopRequest, StopResponse,
     data_engine_server::{DataEngine, DataEngineServer},
 };
 use backcast::trading::{BackendTradingState, StartRequest};
@@ -40,17 +40,19 @@ impl DataEngine for MyDataEngine {
     async fn start_engine(
         &self,
         request: Request<StartEngineRequest>,
-    ) -> Result<Response<ReplayControlResponse>, Status> {
+    ) -> Result<Response<StartEngineResponse>, Status> {
         let request = request.into_inner();
         if request.token != self.token {
             return Err(Status::unauthenticated("Invalid token"));
         }
-        Ok(Response::new(ReplayControlResponse {
+        Ok(Response::new(StartEngineResponse {
             success: true,
             request_id: request.request_id,
             current_state: EngineState::Running as i32,
-            error_code: "".to_string(),
-            error_message: "".to_string(),
+            error_code: None,
+            error_message: None,
+            run_id: Some("test-run".to_string()),
+            summary_json: Some("{}".to_string()),
         }))
     }
 
