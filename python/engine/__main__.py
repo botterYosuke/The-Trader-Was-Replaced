@@ -62,7 +62,7 @@ def main():
         serve(
             args.port,
             args.token,
-            auto_start=True,
+            auto_start=False,
             max_history_len=args.max_history_len,
             advance_interval_sec=args.advance_interval_sec,
             jquants_dir=args.jquants_dir,
