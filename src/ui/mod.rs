@@ -5,6 +5,7 @@ pub mod button;
 pub mod chart;
 pub mod footer;
 pub mod menu_bar;
+pub mod scenario_parser;
 pub mod strategy_editor;
 
 use bevy::prelude::*;
@@ -22,8 +23,9 @@ use crate::ui::menu_bar::{
 };
 use crate::ui::systems::{update_price_display, button_system, update_status_indicator};
 use crate::ui::window::setup_ui;
-use crate::ui::components::{OpenStrategyRequested, StrategyBuffer, StrategyRunRequested, WindowManager};
+use crate::ui::components::{OpenStrategyRequested, ScenarioMetadata, StrategyBuffer, StrategyRunRequested, WindowManager};
 use crate::ui::chart::chart_render_system;
+use crate::ui::scenario_parser::parse_scenario_system;
 use bevy_vector_shapes::Shape2dPlugin;
 
 pub struct UiPlugin;
@@ -35,6 +37,7 @@ impl Plugin for UiPlugin {
             .init_resource::<StrategyBuffer>()
             .add_event::<OpenStrategyRequested>()
             .add_event::<StrategyRunRequested>()
+            .init_resource::<ScenarioMetadata>()
             .add_systems(Startup, (setup_ui, spawn_footer, spawn_menu_bar))
             .add_systems(Update, (
                 update_price_display,
@@ -50,6 +53,7 @@ impl Plugin for UiPlugin {
                 strategy_editor_window_system,
                 log_strategy_run_requested_system,
                 handle_strategy_run_system,
+                parse_scenario_system,
             ));
     }
 }

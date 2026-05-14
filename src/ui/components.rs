@@ -72,3 +72,14 @@ pub struct StrategyStatusLabel;
 pub struct StrategyRunRequested {
     pub cache_path: std::path::PathBuf,
 }
+
+#[derive(Resource, Default, Debug, Clone)]
+pub struct ScenarioMetadata {
+    pub schema_version: Option<u32>,
+    /// Normalized instrument list (handles both "instrument" str/list and "instruments" list)
+    pub instruments: Vec<String>,
+    pub start: Option<String>,
+    pub end: Option<String>,
+    pub granularity: Option<String>,
+    pub initial_cash: Option<i64>,
+}

@@ -151,16 +151,17 @@ Acceptance criteria:
 
 **現在地**:
 
-- 最新コミット: `(next) Add TransportCommand::StartEngine signal shell`
-- `cargo check` は成功済み。
+- 最新コミット: `(next) Add SCENARIO parse shell (ScenarioMetadata resource)`
+- `cargo check` は成功済み。unit tests 4/4 passed。
 - `Open Strategy...` から `.py` を選ぶと、元ファイルを直接触らず OS cache 配下に作業コピーを作る。
 - `StrategyBuffer` resource が、元 path / cache path / editor source / dirty 状態を保持する。
 - `bevy_egui` の Strategy Editor window で `StrategyBuffer.source` を表示・編集できる。
 - 編集すると MenuBar に `*` が出る。
 - `Save Cache` で cache file にだけ保存し、成功すると `dirty = false` になって `*` が消える。
-- `Run` ボタンは `cache_path.is_some() && !dirty` のときのみ有効。押すと `StrategyRunRequested { cache_path }` event が発火し、ログに出る。
+- `Run` ボタンは `cache_path.is_some() && !dirty` のときのみ有効。押すと `StrategyRunRequested { cache_path }` event が発火し、`TransportCommand::StartEngine` に変換されて Tokio loop に届く。
+- `parse_scenario_system` が `StrategyBuffer.source` から SCENARIO dict を抽出し `ScenarioMetadata` resource に保存する。
 - 元 `.py` ファイルへの保存はまだ実装していない。今の不変条件は「元ファイルには書かない」。
-- backend RPC への接続はまだ実装していない。
+- `LoadReplayData` + `StartEngine` の 2-step sequencing はまだ実装していない。
 
 **動作確認コマンド**:
 
@@ -192,7 +193,7 @@ cargo run
 
 **次にやること**:
 
-次は **LoadReplayData + StartEngine 2-step sequencing**。`Run` 押下時に SCENARIO dict を parse して `LoadReplayData` → `StartEngine` を順番に呼ぶ。詳細は計画書内の次タスクノートを参照。
+次は **LoadReplayData + StartEngine 2-step sequencing**。`ScenarioMetadata` が ready なときに `TransportCommand::StartEngine` を `LoadReplayData` → `StartEngine` の 2-step に置き換える。`catalog_path` は `TradingSettings` または env var から取得する方針。
 
 ### Current Progress
 
