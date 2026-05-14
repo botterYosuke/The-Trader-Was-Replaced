@@ -432,7 +432,7 @@ docs/plan/assets/
 
 ### 手動検証手順（engine_runner.run 接続後）
 
-役割分担は `[AI 作業分担]` を参照。AI がステップ 1–2 を実行し、ステップ 3 はユーザーに依頼する。
+役割分担は `[AI 作業分担]` を参照。AI がステップ 1–2,4 を実行し、ステップ 3 はユーザーに依頼する。
 
 **ステップ 1: Backend 起動（AI が実行）**
 
@@ -711,5 +711,16 @@ StartEngine ok, state=RUNNING
   - Trigger conditions: sidebar needs 3+ persistent sections, such as Run Result / Scenario / Backend / Transport / Logs; or floating egui windows start getting in the way.
   - When migrating, build a fixed Bevy UI sidebar and move Run Result display into it; keep `LastRunResult` / `RunState` as the data source.
 - **Next task**: Strategy Editor 側の重複表示を整理するか、Transport 制御の実装へ進むか
+
+### 2026-05-14 Run Result Panel E2E + Strategy Editor cleanup
+
+- E2E verified: Run Result Window に `Completed` + run_id + fills/eq_pts/pnl が表示された
+- 両ウィンドウで run_id と metrics が一致することを目視確認済み
+- Strategy Editor の Run 状態・run_id・metrics 表示ブロックを削除
+  - Strategy Editor は編集と Run ボタンに集中、結果表示は Run Result Panel に一本化
+  - `last_run: Option<Res<LastRunResult>>` system パラメータも除去
+- `cargo test` 16 passed (all suites)
+- commit: `d50bf65`
+- **Next task**: Transport 制御（Step-back / Jump-to-start gRPC 接続）または Kline Chart 改善
 
 ---
