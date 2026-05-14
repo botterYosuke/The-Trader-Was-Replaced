@@ -839,6 +839,23 @@ StartEngine ok, state=RUNNING
 - `cargo check` OK / `cargo test` 16/16
 - **Next tasks**: StepBack 実装（backend replay 経路確定後）、Sidebar 銘柄一覧、Kline Chart 改善
 
+### 2026-05-14 KlineChart candle port step 1
+
+- **Port source**: `C:\Users\sasai\Documents\e-station\data\src\chart\kline.rs` — 考え方のみ借用（`exchange::Kline` / `TimeSeries` 依存は持ち込まない）
+- **Commit**: `8b06256 KlineChart candle port step 1: draw latest candlestick`
+- **変更内容** (`src/ui/chart.rs`):
+  - `draw_candle()` helper 追加: wick（high–low の line）+ body（open–close の rect）
+    - `close >= open` → bullish green / `close < open` → bearish red
+    - doji body height は min 1.5 px でフロア
+  - `chart_render_system`: `TradingData.open/high/low/close/open_time_ms` が全 `Some` のとき最新バーの candle を描画
+  - autoscale を candle の high/low まで拡張（close だけでなく）
+  - line chart はそのまま残す（candle と共存）
+- **Tests** (6 passed): `test_candle_direction` / `test_candle_y_mapping` / `test_candle_body_height_min` / `test_autoscale_extends_for_candle_high_low`
+- `cargo check` OK / `cargo test chart` 6/6 / `cargo test` all passed
+- **Next tasks**:
+  - Step 2: history_points を OhlcBar に拡張して複数本 candle を描画
+  - または Sidebar 銘柄一覧 (`ListInstruments` RPC) へ先行
+
 ### 2026-05-14 Phase 7 Closeout Checklist
 
 MVP コアの「Open Strategy → Run → Pause / Resume / StepForward / ForceStop / JumpToStart → 結果表示」は E2E 動作確認済み。以下で完了 / 持ち越し / 延期を確定する。
