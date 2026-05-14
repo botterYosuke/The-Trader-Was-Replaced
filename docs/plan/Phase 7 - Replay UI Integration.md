@@ -34,6 +34,7 @@
 | `3af5f3e` | MenuBar shell と `Open Strategy...` ボタンを追加 | ✅ |
 | `fecdb9a` | `rfd` file dialog と `OpenStrategyRequested` event を接続 | ✅ |
 | `af262f9` | `StrategyBuffer` resource と `open_strategy_buffer_system` を追加 | ✅ |
+| `fb95326` | `.py` strategy を OS cache 配下へコピーし `StrategyBuffer.cache_path` に保持 | ✅ |
 
 ### Verified State
 
@@ -45,8 +46,9 @@
 - ✅ File dialog (`rfd`) で `.py` を選択できる。
 - ✅ 選択 path は `OpenStrategyRequested { path }` event として Bevy 内に流れる。
 - ✅ 選択 path の `.py` source を `StrategyBuffer` resource に読み込める。
+- ✅ 元 `.py` を直接編集せず、OS cache 配下へ作業コピーを作れる。
 - 未実装: StrategyEditorWindow。
-- 未実装: Strategy cache copy / cache metadata。
+- 未実装: Strategy cache metadata。
 - 未実装: `Run` / `StepBack` / `JumpToStart` の実 RPC 接続。
 
 ### ADR 2026-05-14: MenuBar は Bevy UI の thin shell から始める
@@ -149,6 +151,71 @@ cargo run
 - ✅ `cargo check` が通る。
 
 ### Next Task: Strategy Cache Copy Shell
+
+`fb95326` で完了。
+
+- ✅ `Cargo.toml` に `dirs = "6.0.0"` と `sha2 = "0.11.0"` を追加。
+- ✅ `strategy_cache_path(original)` helper を追加。
+- ✅ `canonicalize()` した original path を SHA-256 し、先頭 16 hex + `__filename` で cache filename を作る。
+- ✅ cache directory は `dirs::cache_dir()/the-trader-was-replaced/strategy_buffers/`。
+- ✅ `open_strategy_buffer_system` で `create_dir_all` → `write` → `buffer.cache_path = Some(cache_path)` まで接続。
+- ✅ read / cache path compute / mkdir / write の各失敗箇所で `error!` を出す。
+- ✅ 元ファイルには書き込まない。
+
+Implementation note:
+
+- `sha2 v0.11` の `finalize()` が返す array は `LowerHex` 非実装だったため、`hash_bytes.iter().map(|b| format!("{:02x}", b)).collect::<String>()` で hex 化している。
+- `cache_path.parent().unwrap()` は helper が必ず directory + filename の path を返す設計なので現状は成立する。将来 `strategy_cache_path` を `Result<PathBuf, Error>` にして、cache dir も一緒に返すとより堅い。
+
+検証:
+
+```powershell
+$env:BACKEND_ENABLED="false"
+cargo run
+```
+
+合格条件:
+
+- ✅ `Open Strategy...` で `.py` を選ぶ。
+- ✅ 元ファイル内容が `StrategyBuffer.source` に入る。
+- ✅ cache file が OS cache 配下に作られる。
+- ✅ `StrategyBuffer.cache_path` が `Some(...)` になる。
+- ✅ ログに original path / cache path / bytes が出る。
+- ✅ 元ファイルには一切書き込まない。
+- ✅ `cargo check` が通る。
+
+### Next Task: Strategy Buffer Status UI Shell
+
+次の作業者はここから始める。目的は「Open した strategy が UI 上でも見える」状態にすること。まだ本格的な code editor は作らない。
+
+1. screen-space の小さな status label を MenuBar 右側に追加する。
+2. `StrategyBuffer.original_path` が `Some` なら filename を表示する。
+3. `StrategyBuffer.cache_path` が `Some` なら `cached` などの短い状態を表示する。
+4. `dirty` はまだ常に false でよい。
+5. 既存の MenuBar 高さ 24px に収まるよう、文字は 11-12px 程度にする。
+6. `cargo check`。
+
+推奨 component:
+
+```rust
+#[derive(Component)]
+pub struct StrategyStatusLabel;
+```
+
+推奨表示:
+
+```text
+strategy: test_strategy_daily.py cached
+```
+
+Acceptance Criteria:
+
+- 起動直後は `strategy: none` のような表示。
+- `Open Strategy...` で `.py` を選ぶと filename が MenuBar に出る。
+- cache copy 成功後は cached 状態が分かる。
+- `cargo check` が通る。
+
+### Previous Task: Strategy Cache Copy Shell Design
 
 次の作業者はここから始める。目的は「StrategyEditor が編集する作業ファイル」を OS cache 配下に作ること。まだ本格的な editor UI は作らない。
 
