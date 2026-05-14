@@ -428,7 +428,7 @@ docs/plan/assets/
 - **File Dialog**: `rfd::FileDialog::pick_file()` は同期 API のため表示中 Bevy が止まる。MVP として許容するが、必要なら `tokio` 越しに非同期化を検討。
 - **bevy_egui Version**: Bevy 0.15.1 には `bevy_egui = "0.31"` が適合する。
 - **Data Flow**: `egui::TextEdit::multiline` が `StrategyBuffer.source` を直接編集するため、変更検知は `response.changed()` で十分。
-- 手動検証作業の際、UI の操作や目視、スクリーンショットはユーザーに依頼してください。アプリの起動・プロセスkill・ログの確認などAIができることはAIが実行してください
+- **[AI 作業分担]** 手動検証時の役割分担: AI がやること — backend / Rust アプリの起動・停止・プロセス kill・ログ確認・gRPC 疎通確認。ユーザーに依頼すること — UI のボタン操作・目視確認・スクリーンショット。AI は `cargo run` を PowerShell 経由でユーザーに実行してもらい、ログは `$TEMP/rust_log.txt` や backend の標準出力をリダイレクトして読む。
 
 ---
 
