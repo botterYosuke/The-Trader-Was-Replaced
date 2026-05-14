@@ -36,6 +36,7 @@
 | `af262f9` | `StrategyBuffer` resource と `open_strategy_buffer_system` を追加 | ✅ |
 | `fb95326` | `.py` strategy を OS cache 配下へコピーし `StrategyBuffer.cache_path` に保持 | ✅ |
 | `d903a58` | MenuBar に `StrategyStatusLabel` を追加し、読み込み済み strategy 名と cache 状態を表示 | ✅ |
+| `74e90de` | `bevy_egui` の Strategy Editor Window shell を追加し、`StrategyBuffer.source` を編集可能にした | ✅ |
 
 ### Verified State
 
@@ -49,8 +50,11 @@
 - ✅ 選択 path の `.py` source を `StrategyBuffer` resource に読み込める。
 - ✅ 元 `.py` を直接編集せず、OS cache 配下へ作業コピーを作れる。
 - ✅ MenuBar 右端に現在の strategy filename と cache 状態を表示できる。
+- ✅ `bevy_egui` window で `StrategyBuffer.source` を表示・編集できる。
+- ✅ 編集時に `StrategyBuffer.dirty = true` になり、MenuBar に `*` が表示される。
 - 未実装: StrategyEditorWindow。
 - 未実装: Strategy cache metadata。
+- 未実装: Strategy cache save / autosave。
 - 未実装: `Run` / `StepBack` / `JumpToStart` の実 RPC 接続。
 
 ### ADR 2026-05-14: MenuBar は Bevy UI の thin shell から始める
@@ -217,6 +221,77 @@ Implementation note:
 - 現在 `open_strategy_buffer_system` と `update_strategy_status_label_system` は同じ Update tuple に登録されている。Bevy scheduler は `StrategyBuffer` の read/write conflict を見て同時実行はしないが、表示更新の順序を厳密にしたくなったら、後で `(open_strategy_buffer_system, update_strategy_status_label_system).chain()` のように順序を明示する。
 
 ### Next Task: Strategy Editor Window Shell
+
+`74e90de` で完了。
+
+- ✅ `Cargo.toml` に `bevy_egui = "0.31"` を追加。
+- ✅ `src/ui/strategy_editor.rs` を新規作成。
+- ✅ `egui::Window` + `egui::TextEdit::multiline` で `StrategyBuffer.source` を表示する。
+- ✅ editor で変更があれば `StrategyBuffer.dirty = true` にする。
+- ✅ `UiPlugin` に `EguiPlugin` を追加。
+- ✅ `strategy_editor_window_system` を Update に登録。
+
+Version note:
+
+- この repo は `bevy = "0.15"`。
+- `bevy_egui = "0.31"` が Bevy 0.15.1 と一致する。
+- `bevy_egui = "0.30"` は Bevy 0.14 系、`bevy_egui = "0.39.1"` は Bevy 0.18 系で依存が合わない。
+- `cargo add bevy_egui` は最新を入れがちなので、Phase 7 中は `bevy_egui = "0.31"` を固定する。
+
+検証:
+
+```powershell
+$env:BACKEND_ENABLED="false"
+cargo run
+```
+
+合格条件:
+
+- ✅ `.py` を Open すると Strategy Editor shell window が出る。
+- ✅ source text が multiline editor に表示される。
+- ✅ 文字を編集できる。
+- ✅ 編集後に MenuBar が `strategy: foo.py cached *` になる。
+- ✅ 元ファイルにも cache file にもまだ書き込まない。
+- ✅ `cargo check` が通る。
+
+Implementation note:
+
+- 現在の editor は egui の即席 window。Phase 7 の最終形である world-space floating window ではまだない。
+- ここでは data flow の確認を優先する。`Save` / `Run` / syntax highlight / line numbers は未実装。
+- `TextEdit::multiline` が直接 `buffer.source` を編集するため、変更検知は `response.changed()` で十分。
+
+### Next Task: Strategy Editor Save Cache Shell
+
+次の作業者はここから始める。目的は、editor で変更した `StrategyBuffer.source` を **cache file にだけ** 保存できるようにすること。元ファイルへの保存はまだしない。
+
+1. Strategy Editor window 上部に `[Save Cache]` ボタンを追加する。
+2. `buffer.cache_path` が `Some(path)` かつ `buffer.dirty == true` のとき、`std::fs::write(path, &buffer.source)` する。
+3. 保存成功時は `buffer.dirty = false`。
+4. 保存失敗時は `error!` を出し、`dirty` は true のままにする。
+5. 元ファイル (`original_path`) には絶対に書き込まない。
+6. MenuBar の `*` が保存後に消えることを確認する。
+7. `cargo check`。
+
+推奨 UI:
+
+```text
+[Save Cache]  cache: <cache filename or none>
+```
+
+Acceptance Criteria:
+
+- editor で文字を編集すると MenuBar に `*` が出る。
+- `[Save Cache]` を押すと cache file にだけ書き込まれる。
+- 保存成功後、MenuBar の `*` が消える。
+- 元ファイルは変化しない。
+- `cargo check` が通る。
+
+ADR:
+
+- 先に cache save を作る。理由は、後続の `[Run]` は cache path を backend に渡す設計なので、実行前に「cache に現在の editor 内容がある」状態を保証したいから。
+- `Save Original` はまだ作らない。元ファイル保護を Phase 7 前半の不変条件として維持する。
+
+### Previous Task: Strategy Editor Window Shell Design
 
 次の作業者はここから始める。目的は、cache copy 済み strategy source を「編集可能な UI の入口」に乗せること。ただし、まだ高度な syntax highlight や Save/Run は不要。
 
