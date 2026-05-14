@@ -473,12 +473,18 @@ if ($p) { Stop-Process -Id $p -Force }
 **ステップ 2: Rust アプリ起動（AI が実行）**
 
 ```powershell
-cd C:\Users\sasai\Documents\The-Trader-Was-Replaced
-$env:BACKEND_ENABLED="true"; $env:BACKEND_TOKEN="testtoken"; $env:BACKEND_CATALOG_PATH="artifacts/jquants-catalog"
-cargo run
+cd "C:\Users\sasai\Documents\The-Trader-Was-Replaced"
+$psi = New-Object System.Diagnostics.ProcessStartInfo
+$psi.FileName = ".\target\debug\backcast.exe"
+$psi.WorkingDirectory = $PWD.Path
+$psi.UseShellExecute = $false
+$psi.EnvironmentVariables["BACKEND_ENABLED"] = "true"
+$psi.EnvironmentVariables["BACKEND_TOKEN"] = "testtoken"
+$psi.EnvironmentVariables["BACKEND_CATALOG_PATH"] = "artifacts\jquants-catalog"
+[System.Diagnostics.Process]::Start($psi) | Out-Null
 ```
 
-> Rust アプリは Windows ネイティブ GUI のため WSL/Bash 経由では早期終了する。必ず PowerShell から起動すること。
+> `cargo run` 単体や `$env:BACKEND_ENABLED="true"; cargo run` では `.env` が読まれず `grpc: DISABLED` になる。`ProcessStartInfo.EnvironmentVariables` で直接渡すこと。WSL/Bash 経由では GUI が早期終了するため必ず PowerShell から起動。
 
 **ステップ 3: UI 操作（ユーザーが実行）**
 
@@ -855,6 +861,36 @@ StartEngine ok, state=RUNNING
 - **Next tasks**:
   - Step 2: history_points を OhlcBar に拡張して複数本 candle を描画
   - または Sidebar 銘柄一覧 (`ListInstruments` RPC) へ先行
+
+### 2026-05-14 Candle visibility fix — E2E verified
+
+- **背景**: `8b06256` で Step 1（最新 candle 1 本描画）を実装したが、backend から `open_time_ms` / OHLC が GetState に届いていなかったため candle が表示されない状態だった。stash に途中作業が残っていたため `git restore --source=stash@{0}` で 3 ファイルを復元し、`.claude/settings.local.json` は commit せず除外。
+- **修正内容**（commit `8564feb Fix latest candle state propagation`）:
+  - `python/engine/core.py`: replay provider 経路の `KlineUpdate` に `open_time_ms=ts_ms` を追加
+  - `python/engine/server_grpc.py`: `rb.finish()` 直後に最後の bar を `ReplayTimeUpdated` + `KlineUpdate` として engine に inject し、`GetState` が OHLC を返せるようにした
+  - `src/ui/chart.rs`: candle 描画条件から `open_time_ms` 必須を外し、`latest_timestamp_ms` へのフォールバックを追加
+- **Tests**: `cargo check` OK / `cargo test chart` 6/6 / `cargo test scenario_parser` 4/4 / Python pytest 68 passed
+
+#### 手動 E2E 検証（2026-05-14）
+
+- **手順**: Open Strategy → `test_strategy_daily.py` → Run
+- **フッター**: 実行中 `state: RUNNING grpc: OK` → 完了後 `state: IDLE grpc: OK`
+- **Run Result**: `Completed` / `fills: 2` / `eq_pts: 57` / `pnl: -410010`
+- **candle**: 赤 candle 1 本が両 TRADER DASHBOARD パネルに表示 ✅
+
+#### 副次バグ修正（commit `b5e7595`）
+
+- **症状**: `auto_start=True` のため backend 起動直後から `state: RUNNING` になり、Run ボタンが効かない
+- **原因**: `python/engine/__main__.py` の `serve()` 呼び出しで `auto_start=True` を渡していた。gRPC モードでは `StartEngine` RPC が来るまでエンジンは待機すべき
+- **修正**: `auto_start=False` に変更
+- **確認**: 起動後 `state: IDLE grpc: OK`、Run 後 `Completed` で正常動作
+
+#### 起動手順の確定（`docs/strategy-replay.md` に転記済み）
+
+- `.env` は Rust アプリ / backend ともに自動読み込みされない
+- backend: `uv run python -m engine --token testtoken --jquants-catalog-path artifacts\jquants-catalog`
+- Rust アプリ: `ProcessStartInfo.EnvironmentVariables` で `BACKEND_ENABLED=true` / `BACKEND_TOKEN=testtoken` / `BACKEND_CATALOG_PATH=artifacts\jquants-catalog` を明示的に渡す
+- `cargo run` 単体・`Start-Process` 単体では env が引き継がれず `grpc: DISABLED` になる
 
 ### 2026-05-14 Phase 7 Closeout Checklist
 
