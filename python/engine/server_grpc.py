@@ -173,7 +173,6 @@ class GrpcDataEngineServer(
             )
 
         try:
-            from pathlib import Path as _Path
             from engine.strategy_runtime.run_buffer import (
                 RunBuffer,
                 make_run_id,
