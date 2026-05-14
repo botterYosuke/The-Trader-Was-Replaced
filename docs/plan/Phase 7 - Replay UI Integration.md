@@ -28,14 +28,16 @@
 
 **現在地**:
 
-- 最新コミット: `e900cde Add Save Cache button to Strategy Editor window`
+- 最新コミット: `14284fc Add Strategy Run Event Shell: StrategyRunRequested event and Run button`
 - `cargo check` は成功済み。
 - `Open Strategy...` から `.py` を選ぶと、元ファイルを直接触らず OS cache 配下に作業コピーを作る。
 - `StrategyBuffer` resource が、元 path / cache path / editor source / dirty 状態を保持する。
 - `bevy_egui` の Strategy Editor window で `StrategyBuffer.source` を表示・編集できる。
 - 編集すると MenuBar に `*` が出る。
 - `Save Cache` で cache file にだけ保存し、成功すると `dirty = false` になって `*` が消える。
+- `Run` ボタンは `cache_path.is_some() && !dirty` のときのみ有効。押すと `StrategyRunRequested { cache_path }` event が発火し、ログに出る。
 - 元 `.py` ファイルへの保存はまだ実装していない。今の不変条件は「元ファイルには書かない」。
+- backend RPC への接続はまだ実装していない。
 
 **動作確認コマンド**:
 
@@ -56,15 +58,18 @@ cargo run
 
 **重要ファイル**:
 
-- `src/ui/components.rs`: `OpenStrategyRequested`, `StrategyBuffer`, `StrategyStatusLabel`
-- `src/ui/menu_bar.rs`: File open dialog、cache path 生成、cache copy、MenuBar status label 更新
-- `src/ui/strategy_editor.rs`: egui editor、`Save Cache`
+- `src/ui/components.rs`: `OpenStrategyRequested`, `StrategyBuffer`, `StrategyStatusLabel`, `StrategyRunRequested`
+- `src/ui/menu_bar.rs`: File open dialog、cache path 生成、cache copy、MenuBar status label 更新、`log_strategy_run_requested_system`
+- `src/ui/strategy_editor.rs`: egui editor、`Save Cache`、`Run` ボタン
 - `src/ui/mod.rs`: `EguiPlugin` と各 system 登録
 - `Cargo.toml`: `rfd`, `dirs`, `sha2`, `bevy_egui = "0.31"`
+- `python/proto/engine.proto`: `EngineStartConfig.strategy_file = 7` (optional string) ← 次接続に使う
+- `src/main.rs`: Tokio loop で transport command を処理 ← `StartEngine` arm を次に追加
+- `python/engine/server_grpc.py`: `StartEngine` handler ← `strategy_file` ログを次に追加
 
 **次にやること**:
 
-次は **Strategy Run Backend 接続**（`StrategyRunRequested` event を受け取り、backend RPC へ渡す）。詳細は下の `Next Task: Strategy Run Backend Connection` を参照（未作成）。
+次は **TransportCommand::StartEngine Signal Shell**。`StrategyRunRequested` → `TransportCommand::StartEngine { strategy_file }` → Tokio loop の信号経路を作る。Python は `strategy_file` ログのみ追加。詳細は下の `ADR 2026-05-14: Strategy Run Backend Contract Recon` の「次の小タスク」を参照。
 
 ### Current Progress
 
@@ -82,7 +87,8 @@ cargo run
 | `d903a58` | MenuBar に `StrategyStatusLabel` を追加し、読み込み済み strategy 名と cache 状態を表示 | ✅ |
 | `74e90de` | `bevy_egui` の Strategy Editor Window shell を追加し、`StrategyBuffer.source` を編集可能にした | ✅ |
 | `e900cde` | Strategy Editor に `Save Cache` ボタンを追加し、cache file へ editor 内容を保存可能にした | ✅ |
-| (next) | `StrategyRunRequested` event + `Run` ボタン shell を追加 | ✅ |
+| `14284fc` | `StrategyRunRequested` event + `Run` ボタン shell を追加 | ✅ |
+| (next) | `TransportCommand::StartEngine` 信号経路 shell + Python strategy_file ログ | 🔲 |
 
 ### Verified State
 
@@ -100,10 +106,11 @@ cargo run
 - ✅ 編集時に `StrategyBuffer.dirty = true` になり、MenuBar に `*` が表示される。
 - ✅ `Save Cache` で editor 内容を cache file にだけ保存できる。
 - ✅ cache 保存成功時に `StrategyBuffer.dirty = false` へ戻る。
-- 未実装: StrategyEditorWindow。
+- ✅ `StrategyRunRequested` event 発火と log shell まで完了。
+- 未実装: `TransportCommand::StartEngine` → gRPC `StartEngine` RPC 接続。
+- 未実装: `LoadReplayData` RPC 接続 (Run フルフロー前に必要)。
 - 未実装: Strategy cache metadata。
-- 未実装: Strategy Run event / backend run RPC 接続。
-- 未実装: `Run` / `StepBack` / `JumpToStart` の実 RPC 接続。
+- 未実装: `StepBack` / `JumpToStart` の実 RPC 接続。
 
 ### ADR 2026-05-14: MenuBar は Bevy UI の thin shell から始める
 
@@ -346,6 +353,47 @@ ADR:
 
 - 先に cache save を作る。理由は、後続の `[Run]` は cache path を backend に渡す設計なので、実行前に「cache に現在の editor 内容がある」状態を保証したいから。
 - `Save Original` はまだ作らない。元ファイル保護を Phase 7 前半の不変条件として維持する。
+
+### ADR 2026-05-14: Strategy Run Backend Contract Recon
+
+#### 調査結果
+
+| 層 | 状態 | キーポイント |
+|---|---|---|
+| Proto | `EngineStartConfig.strategy_file = 7` (optional string) が存在 | 新 RPC 不要 |
+| Rust client (`main.rs`) | `StartEngineRequest` は `tonic::include_proto!` で生成済みだが **未使用** — 現状は legacy `StartRequest` しか呼んでいない | call site なし |
+| Python `StartEngine` handler (`server_grpc.py:102`) | `request.config.strategy_file` を **完全無視** し `engine.start_engine()` を素通し | ログすら出ない |
+| `DataEngine.start_engine()` (`core.py:183`) | `LOADED → RUNNING` 状態遷移のみ、strategy load なし | gap: 戦略を読まない |
+| State machine | `StartEngine` は `LOADED` 状態でしか有効でない。`StrategyRunRequested` から直接呼ぶには `LoadReplayData` で先に `LOADED` にする必要がある | 2-step 接続が必要 |
+
+#### 判断: cache path 起動は現状では不可能 → 最小接続路を先に作る
+
+`StrategyRunRequested.cache_path` をそのまま `StartEngine.config.strategy_file` に渡しても Python 側が無視するため、現時点で UI から engine を起動できない。また `StartEngine` は `LOADED` 状態からのみ有効なので、Run だけ接続しても `IDLE → RUNNING` にはなれない。
+
+**完全な Run フローに必要なステップ**:
+
+1. `SCENARIO` dict を `.py` から読んで `instrument_ids`, `start_date`, `end_date`, `granularity` を取得 (Rust 側か Python 側)
+2. `LoadReplayData` RPC で `IDLE → LOADED`
+3. `StartEngine` RPC (with `strategy_file = cache_path`) で `LOADED → RUNNING`
+
+Python 側では `StartEngine` handler が `config.strategy_file` を見て strategy を import / instantiate する実装が必要（現在は未実装）。
+
+#### 次の小タスク: TransportCommand::StartEngine Signal Shell
+
+目的: Rust side の信号経路だけ作り、Python は変更しない。`BACKEND_ENABLED=false` でも動く。
+
+1. `TransportCommand` に `StartEngine { strategy_file: std::path::PathBuf }` を追加
+2. `handle_strategy_run_system` を追加 — `StrategyRunRequested` を読んで `TransportCommand::StartEngine` を送る
+3. Tokio loop に `StartEngine` arm を追加し、`StartEngineRequest { config: EngineStartConfig { strategy_file: ... } }` を呼ぶ (import, not yet wired)
+4. Python 側の `StartEngine` handler に `strategy_file` の `info!` logging だけ追加
+5. `LoadReplayData` + sequence は次フェーズ
+
+**この段階での合格条件**:
+- `Run` 押下で `TransportCommand::StartEngine { strategy_file: cache_path }` がログに出る
+- `BACKEND_ENABLED=false` で落ちない
+- Python handler は `strategy_file` をログするだけ
+- `cargo check` が通る
+- 元ファイル保護の不変条件を維持
 
 ### Next Task: Strategy Run Event Shell
 
@@ -983,6 +1031,71 @@ docs/plan/assets/
 ---
 
 ## 7. Open Questions
+
+---
+
+## Latest Handoff Update 2026-05-14: Strategy Run Event Shell complete
+
+New latest implementation commit:
+
+- `14284fc Add Strategy Run Event Shell: StrategyRunRequested event and Run button`
+
+Verification performed by Codex after user implementation:
+
+- `git status --short`: clean
+- `git log --oneline -12`: confirms `14284fc` is the latest implementation commit
+- Relevant code reviewed: `src/ui/components.rs`, `src/ui/mod.rs`, `src/ui/strategy_editor.rs`, `src/ui/menu_bar.rs`
+- `cargo check`: passed
+
+Completed Task: Strategy Run Event Shell
+
+- ✅ Added `StrategyRunRequested { cache_path: PathBuf }` event.
+- ✅ Registered `.add_event::<StrategyRunRequested>()` in `UiPlugin`.
+- ✅ Added `Run` button to the Strategy Editor toolbar next to `Save Cache`.
+- ✅ `Run` is enabled only when `buffer.cache_path.is_some() && !buffer.dirty`.
+- ✅ Editing the buffer marks it dirty, disables `Run`, and enables `Save Cache`.
+- ✅ Saving writes only to the cache file and restores `dirty = false`, which re-enables `Run`.
+- ✅ Pressing `Run` sends `StrategyRunRequested` with the cache path.
+- ✅ `log_strategy_run_requested_system` logs `strategy run requested: <cache_path>`.
+- ✅ No backend RPC is called yet.
+- ✅ Original `.py` strategy files are still not written by this flow.
+
+Implementation notes / Tips:
+
+- `EventReader` cursor independence still makes it safe to add small logging/observer systems without consuming the event for future backend wiring.
+- Keep `StrategyRunRequested` intentionally narrow for now. The event carries only the cache path, because the cache file is the current source of truth for edited strategy content.
+- The current UI uses a simple egui toolbar line: `[Save Cache] [Run] cache: <filename>`. This is enough for the shell phase and keeps backend connection concerns separate.
+- `Run` must remain disabled while `dirty = true`; otherwise the backend could later run stale cache content that differs from the editor buffer.
+
+ADR 2026-05-14: Run starts as an event shell, not a backend call
+
+Decision:
+
+- The Strategy Editor `Run` button emits `StrategyRunRequested` and logs it only.
+- Backend RPC wiring is deliberately deferred.
+
+Rationale:
+
+- This preserves the Phase 7 policy of small, independently verifiable UI slices.
+- It avoids inventing a new backend contract before checking the existing proto/server path.
+- It keeps the edited cache file as the only candidate input for future execution while protecting the original `.py` file.
+
+Next Task: Strategy Run Backend Contract Recon
+
+Before connecting `StrategyRunRequested` to backend startup, inspect the existing backend contract:
+
+1. Check proto definitions for `StartEngineRequest`, `EngineStartConfig`, and any `strategy_file` field.
+2. Check Rust client code that starts the engine today.
+3. Check Python gRPC server handling for start/load behavior.
+4. Decide whether the existing `strategy_file` path can point at `StrategyBuffer.cache_path`.
+5. Do not add a new `LoadStrategy` RPC unless the existing contract cannot support the cache-path flow.
+
+Candidate acceptance criteria for the recon step:
+
+- Document the exact proto/server/client path for starting an engine with a strategy file.
+- Confirm whether `StrategyRunRequested.cache_path` can be passed through unchanged.
+- Identify the smallest next implementation step, likely a Rust-side event consumer that calls the existing start path.
+- Keep original `.py` files untouched.
 
 ### 確定済み
 
