@@ -44,7 +44,7 @@ def _build_parser() -> argparse.ArgumentParser:
         default=None,
         metavar="FILE",
         help=(
-            "Path to a JSON file mapping instrument_id → list of bar dicts "
+            "Path to a JSON file mapping instrument_id -> list of bar dicts "
             "(for testing without a real catalog)."
         ),
     )

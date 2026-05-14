@@ -61,13 +61,13 @@ def _make_fake_bars_by_instrument():
     return {iid: bars}
 
 
-def _default_run_args(tmp_path: Path, **overrides) -> argparse.Namespace:
+def _default_run_args(base_dir: Path, **overrides) -> argparse.Namespace:
     """Build a minimal Namespace for _cmd_run / run_command."""
     defaults = dict(
         strategy=str(_FAKE_STRATEGY_PATH),
         catalog=None,
         bars_json=None,
-        run_buffer_dir=str(tmp_path / "rb"),
+        run_buffer_dir=str(base_dir / "rb"),
         strategy_params=[],
         granularity=None,
         start=None,
@@ -88,32 +88,20 @@ class TestCliHelp:
         )
         assert result.returncode == 0
 
+    def _run_help_text(self) -> str:
+        from engine.strategy_replay.cli import _build_parser
+        parser = _build_parser()
+        run_subparser = parser._subparsers._group_actions[0].choices["run"]
+        return run_subparser.format_help()
+
     def test_run_help_contains_strategy_flag(self):
-        result = subprocess.run(
-            [sys.executable, "-m", "engine.strategy_replay", "run", "--help"],
-            capture_output=True,
-            text=True,
-            env=_cli_env(),
-        )
-        assert "--strategy" in result.stdout
+        assert "--strategy" in self._run_help_text()
 
     def test_run_help_contains_catalog_flag(self):
-        result = subprocess.run(
-            [sys.executable, "-m", "engine.strategy_replay", "run", "--help"],
-            capture_output=True,
-            text=True,
-            env=_cli_env(),
-        )
-        assert "--catalog" in result.stdout
+        assert "--catalog" in self._run_help_text()
 
     def test_run_help_contains_bars_json_flag(self):
-        result = subprocess.run(
-            [sys.executable, "-m", "engine.strategy_replay", "run", "--help"],
-            capture_output=True,
-            text=True,
-            env=_cli_env(),
-        )
-        assert "--bars-json" in result.stdout
+        assert "--bars-json" in self._run_help_text()
 
     def test_top_level_help_exits_zero(self):
         result = subprocess.run(
@@ -369,12 +357,10 @@ class TestCliGranularityOverride:
         assert run_command(args) == 1
 
     def test_help_contains_granularity_flag(self):
-        result = subprocess.run(
-            [sys.executable, "-m", "engine.strategy_replay", "run", "--help"],
-            capture_output=True, text=True,
-            env=_cli_env(),
-        )
-        assert "--granularity" in result.stdout
+        from engine.strategy_replay.cli import _build_parser
+        parser = _build_parser()
+        run_subparser = parser._subparsers._group_actions[0].choices["run"]
+        assert "--granularity" in run_subparser.format_help()
 
 
 @pytest.mark.slow
@@ -382,10 +368,7 @@ class TestCliGranularityOverride:
     not _MR01_PATH.exists(),
     reason=f"blacksheep strategy not found: {_MR01_PATH}",
 )
-@pytest.mark.skipif(
-    not _CATALOG_PATH.exists(),
-    reason=f"catalog not found (set JQUANTS_CATALOG_PATH or place at {_CATALOG_PATH})",
-)
+@pytest.mark.usefixtures("ensure_slow_catalog")
 class TestCliCatalogSlow:
     """実 catalog + mean_reversion_01.py を使った E2E smoke。"""
 
