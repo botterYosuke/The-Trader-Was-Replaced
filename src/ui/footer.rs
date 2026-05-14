@@ -75,7 +75,7 @@ pub fn spawn_footer(mut commands: Commands) {
                 ));
             });
             spawn_transport_btn(p, ">",  TransportButton::StepForward);
-            spawn_transport_btn(p, ">>", TransportButton::Run);
+            spawn_transport_btn(p, "■", TransportButton::ForceStop);
 
             // Flex spacer — pushes status labels to the right
             p.spawn(Node {
@@ -210,7 +210,14 @@ pub fn transport_button_system(
                     }
                     TransportButton::JumpToStart => info!("transport: jump_to_start (not yet wired)"),
                     TransportButton::StepBack    => info!("transport: step_back (not yet wired)"),
-                    TransportButton::Run         => info!("transport: run (not yet wired)"),
+                    TransportButton::ForceStop => {
+                        match replay {
+                            "RUNNING" | "PAUSED" | "LOADED" => {
+                                let _ = sender.tx.send(TransportCommand::ForceStop);
+                            }
+                            other => info!("transport: force_stop ignored (state={})", other),
+                        }
+                    }
                 }
             }
             Interaction::Hovered => bg.0 = BTN_HOVER,

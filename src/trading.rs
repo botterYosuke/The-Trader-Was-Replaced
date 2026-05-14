@@ -151,6 +151,7 @@ pub enum TransportCommand {
     Pause,
     Resume,
     StepForward,
+    ForceStop,
     RunStrategy {
         strategy_file: std::path::PathBuf,
         config: StrategyRunConfig,

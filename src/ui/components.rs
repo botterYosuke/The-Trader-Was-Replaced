@@ -44,7 +44,7 @@ pub enum TransportButton {
     StepBack,
     PauseResume,
     StepForward,
-    Run,
+    ForceStop,
 }
 
 #[derive(Component)]

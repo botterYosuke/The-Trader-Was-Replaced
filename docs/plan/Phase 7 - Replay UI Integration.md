@@ -805,4 +805,15 @@ StartEngine ok, state=RUNNING
 - **UI 確認**: Run Result "Running..."・Footer `state: PAUSED grpc: OK`・`▶` ラベル表示
 - **Next tasks**: (1) gRPC GetState タイムアウト調整（LoadReplayData 中に GetState が 2s でタイムアウトする問題）、(2) Jump-to-start / Step-back 接続、(3) Kline Chart 改善
 
+### 2026-05-14 ForceStop 接続 (Footer ■ ボタン)
+
+- `TransportCommand::ForceStop` variant を `trading.rs` に追加
+- `main.rs` の transport loop に `ForceStop` ハンドラを追加（`force_stop_replay` gRPC 呼び出し）
+- `TransportButton::Run` → `TransportButton::ForceStop` にリネーム（`components.rs`）
+- Footer の `>>` ボタンラベルを `■` に変更 (`footer.rs`)
+- `transport_button_system`: RUNNING / PAUSED / LOADED 状態のとき `ForceStop` 送信; IDLE では無視
+- `cargo check` OK / `cargo test scenario_parser` 4/4
+- **手動 E2E 手順**: Run → RUNNING → ■ → ForceStop ok, state=IDLE → 次の Run が INVALID_STATE なしで通ることを確認
+- **Next tasks**: Jump-to-start / Step-back 接続、gRPC タイムアウト調整
+
 ---

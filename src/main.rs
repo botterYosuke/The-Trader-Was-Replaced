@@ -177,6 +177,16 @@ fn setup_backend_connection(
                             Err(e) => error!("StepReplay failed: {}", e),
                         }
                     }
+                    TransportCommand::ForceStop => {
+                        let req = tonic::Request::new(ForceStopReplayRequest {
+                            request_id: String::new(),
+                            token: token.clone(),
+                        });
+                        match client.force_stop_replay(req).await {
+                            Ok(r) => info!("ForceStopReplay ok, state={:?}", r.into_inner().current_state),
+                            Err(e) => error!("ForceStopReplay failed: {}", e),
+                        }
+                    }
                     TransportCommand::RunStrategy { strategy_file, config } => {
                         // Spawn on a separate task so the main loop can process
                         // Pause/Resume/StepForward while StartEngine is running.
