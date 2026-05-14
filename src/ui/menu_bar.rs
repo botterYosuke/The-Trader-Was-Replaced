@@ -2,7 +2,8 @@ use bevy::prelude::*;
 use rfd::FileDialog;
 use sha2::{Digest, Sha256};
 use crate::ui::components::{MenuBarRoot, MenuButton, OpenStrategyRequested, StrategyBuffer, StrategyStatusLabel, StrategyRunRequested};
-use crate::trading::{TransportCommand, TransportCommandSender};
+use crate::trading::{StrategyRunConfig, TransportCommand, TransportCommandSender};
+use crate::ui::components::ScenarioMetadata;
 
 const BTN_NORMAL: Color = Color::srgba(0.10, 0.10, 0.16, 1.0);
 const BTN_HOVER: Color = Color::srgba(0.20, 0.20, 0.30, 1.0);
@@ -206,16 +207,47 @@ pub fn log_strategy_run_requested_system(
 
 pub fn handle_strategy_run_system(
     mut events: EventReader<StrategyRunRequested>,
+    scenario: Res<ScenarioMetadata>,
     sender: Option<Res<TransportCommandSender>>,
 ) {
     for event in events.read() {
-        let cmd = TransportCommand::StartEngine {
-            strategy_file: event.cache_path.clone(),
+        if scenario.instruments.is_empty() {
+            error!("Run blocked: SCENARIO has no instruments");
+            continue;
+        }
+        let Some(ref start) = scenario.start else {
+            error!("Run blocked: SCENARIO has no start date");
+            continue;
         };
-        info!("strategy run: sending StartEngine command with strategy_file={:?}", event.cache_path);
+        let Some(ref end) = scenario.end else {
+            error!("Run blocked: SCENARIO has no end date");
+            continue;
+        };
+        let Some(ref granularity) = scenario.granularity else {
+            error!("Run blocked: SCENARIO has no granularity");
+            continue;
+        };
+
+        let run_config = StrategyRunConfig {
+            instruments: scenario.instruments.clone(),
+            start: start.clone(),
+            end: end.clone(),
+            granularity: granularity.clone(),
+            initial_cash: scenario.initial_cash,
+        };
+
+        info!(
+            "strategy run: RunStrategy strategy_file={:?} instruments={:?} start={:?} end={:?} granularity={:?}",
+            event.cache_path, run_config.instruments, run_config.start, run_config.end, run_config.granularity
+        );
+
+        let cmd = TransportCommand::RunStrategy {
+            strategy_file: event.cache_path.clone(),
+            config: run_config,
+        };
         if let Some(sender) = &sender {
             if let Err(e) = sender.tx.send(cmd) {
-                error!("failed to send StartEngine command: {}", e);
+                error!("failed to send RunStrategy command: {}", e);
             }
         }
     }

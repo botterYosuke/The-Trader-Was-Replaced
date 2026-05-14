@@ -86,6 +86,8 @@ pub struct TradingSettings {
     pub token: String,
     pub poll_interval_ms: u64,
     pub max_history_points: usize,
+    /// Path to ParquetDataCatalog used by LoadReplayData. Set via BACKEND_CATALOG_PATH env var.
+    pub catalog_path: Option<String>,
 }
 
 impl TradingSettings {
@@ -106,6 +108,7 @@ impl TradingSettings {
                 .ok()
                 .and_then(|v| v.parse().ok())
                 .unwrap_or(1000),
+            catalog_path: std::env::var("BACKEND_CATALOG_PATH").ok(),
         }
     }
 }
@@ -121,13 +124,25 @@ pub struct BackendChannel {
     pub rx: mpsc::UnboundedReceiver<BackendTradingState>,
 }
 
+/// Scenario fields extracted from SCENARIO dict in the strategy .py file.
+/// Kept in trading.rs to avoid ui → trading circular dependency.
+#[derive(Debug, Clone, Default)]
+pub struct StrategyRunConfig {
+    pub instruments: Vec<String>,
+    pub start: String,
+    pub end: String,
+    pub granularity: String,
+    pub initial_cash: Option<i64>,
+}
+
 #[derive(Debug, Clone)]
 pub enum TransportCommand {
     Pause,
     Resume,
     StepForward,
-    StartEngine {
+    RunStrategy {
         strategy_file: std::path::PathBuf,
+        config: StrategyRunConfig,
     },
 }
 

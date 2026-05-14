@@ -20,6 +20,33 @@
 
 ## Handoff Log / Phase 7 Replay UI Integration
 
+### Handoff Update 2026-05-14: LoadReplayData → StartEngine 2-step Shell completed
+
+Latest checked implementation commit:
+
+- (pending commit) LoadReplayData → StartEngine 2-step signal shell
+
+Changes:
+
+- `src/trading.rs`: Added `StrategyRunConfig` struct; renamed `TransportCommand::StartEngine` → `TransportCommand::RunStrategy { strategy_file, config }`. Added `catalog_path: Option<String>` to `TradingSettings` (from `BACKEND_CATALOG_PATH` env var).
+- `src/ui/menu_bar.rs`: Updated `handle_strategy_run_system` to validate `ScenarioMetadata` (instruments, start, end, granularity), build `StrategyRunConfig`, and send `TransportCommand::RunStrategy`.
+- `src/main.rs`: Added `LoadReplayDataRequest`, `ReplayGranularity` imports. Added `catalog_path` capture. Replaced old `StartEngine` arm with `RunStrategy` 2-step arm: granularity string → proto enum, Step 1 `LoadReplayData` (IDLE→LOADED), only on success Step 2 `StartEngine` (LOADED→RUNNING). Rust logs instruments/start/end/granularity/catalog_path before each step.
+- `cargo check`: passed.
+
+Acceptance criteria verified:
+
+- ✅ `Run` 押下で `LoadReplayData` が先に呼ばれる。
+- ✅ `LoadReplayData` success の場合だけ `StartEngine` が呼ばれる (`continue` on failure).
+- ✅ Rust log に instruments/start/end/granularity/catalog_path が出る。
+- ✅ `cargo check` が通る。
+
+ADR / Direction:
+
+- `StrategyRunConfig` は `trading.rs` に置いて UI→trading 循環依存を回避。
+- `catalog_path` は `BACKEND_CATALOG_PATH` env var から取得。未設定時は `None` で `catalog_path: ""` になる（Python 側は空文字を無視する設定）。
+- `ScenarioMetadata` が empty のとき Run は `error!` でブロックされ gRPC は呼ばれない。
+- granularity マッピング: `"Daily"` → `ReplayGranularity::Daily`, `"Minute"` → `ReplayGranularity::Minute`。unknown は `error!` + `continue`。
+
 ### Handoff Update 2026-05-14: StartEngine Signal Shell verified
 
 Latest checked implementation commit:
@@ -212,7 +239,8 @@ cargo run
 | `74e90de` | `bevy_egui` の Strategy Editor Window shell を追加し、`StrategyBuffer.source` を編集可能にした | ✅ |
 | `e900cde` | Strategy Editor に `Save Cache` ボタンを追加し、cache file へ editor 内容を保存可能にした | ✅ |
 | `14284fc` | `StrategyRunRequested` event + `Run` ボタン shell を追加 | ✅ |
-| (next) | `TransportCommand::StartEngine` 信号経路 shell + Python strategy_file ログ | ✅ |
+| `2612df1` | `TransportCommand::StartEngine` 信号経路 shell + Python strategy_file ログ | ✅ |
+| (next) | `LoadReplayData → StartEngine` 2-step signal shell + `ScenarioMetadata` validation | ✅ |
 
 ### Verified State
 

@@ -10,8 +10,8 @@ use bevy_pancam::PanCamPlugin;
 use tokio::sync::mpsc;
 use engine::data_engine_client::DataEngineClient;
 use engine::{
-    EngineStartConfig, EngineKind, GetStateRequest, PauseReplayRequest, ResumeReplayRequest,
-    StartEngineRequest, StartRequest, StepReplayRequest,
+    EngineStartConfig, EngineKind, GetStateRequest, LoadReplayDataRequest, PauseReplayRequest,
+    ReplayGranularity, ResumeReplayRequest, StartEngineRequest, StartRequest, StepReplayRequest,
 };
 
 // Bevy's compute task pool threads don't inherit the Tokio runtime context,
@@ -99,6 +99,7 @@ fn setup_backend_connection(
     let url = settings.backend_url.clone();
     let token = settings.token.clone();
     let interval = settings.poll_interval_ms;
+    let catalog_path = settings.catalog_path.clone();
 
     let handle = tokio_handle.0.clone();
     handle.spawn(async move {
@@ -165,20 +166,66 @@ fn setup_backend_connection(
                             Err(e) => error!("StepReplay failed: {}", e),
                         }
                     }
-                    TransportCommand::StartEngine { strategy_file } => {
+                    TransportCommand::RunStrategy { strategy_file, config } => {
                         let strategy_file_str = strategy_file.to_string_lossy().to_string();
-                        info!("StartEngine: strategy_file={:?}", strategy_file_str);
-                        let req = tonic::Request::new(StartEngineRequest {
+
+                        // Map granularity string → proto enum
+                        let granularity_i32 = match config.granularity.as_str() {
+                            "Daily"  => Some(ReplayGranularity::Daily as i32),
+                            "Minute" => Some(ReplayGranularity::Minute as i32),
+                            other => {
+                                error!("RunStrategy: unknown granularity {:?}, aborting", other);
+                                continue;
+                            }
+                        };
+
+                        info!(
+                            "RunStrategy: step1 LoadReplayData instruments={:?} start={:?} end={:?} granularity={:?} catalog_path={:?}",
+                            config.instruments, config.start, config.end, config.granularity, catalog_path
+                        );
+
+                        // Step 1: LoadReplayData (IDLE → LOADED)
+                        let load_req = tonic::Request::new(LoadReplayDataRequest {
+                            request_id: String::new(),
+                            instrument_ids: config.instruments.clone(),
+                            start_date: config.start.clone(),
+                            end_date: config.end.clone(),
+                            granularity: granularity_i32,
+                            token: token.clone(),
+                            catalog_path: catalog_path.clone(),
+                        });
+
+                        match client.load_replay_data(load_req).await {
+                            Ok(r) => {
+                                let inner = r.into_inner();
+                                if !inner.success {
+                                    error!(
+                                        "LoadReplayData rejected: code={}, msg={}",
+                                        inner.error_code, inner.error_message
+                                    );
+                                    continue; // do not proceed to StartEngine
+                                }
+                                info!("LoadReplayData ok, state={:?}", inner.current_state);
+                            }
+                            Err(e) => {
+                                error!("LoadReplayData gRPC error: {}", e);
+                                continue;
+                            }
+                        }
+
+                        // Step 2: StartEngine (LOADED → RUNNING)
+                        info!("RunStrategy: step2 StartEngine strategy_file={:?}", strategy_file_str);
+                        let start_req = tonic::Request::new(StartEngineRequest {
                             request_id: String::new(),
                             engine: EngineKind::Nautilus as i32,
                             strategy_id: String::new(),
                             config: Some(EngineStartConfig {
-                                instrument_id: String::new(),
-                                instrument_ids: vec![],
-                                start_date: None,
-                                end_date: None,
+                                instrument_id: config.instruments.first().cloned().unwrap_or_default(),
+                                instrument_ids: config.instruments.clone(),
+                                start_date: Some(config.start.clone()),
+                                end_date: Some(config.end.clone()),
                                 initial_cash: None,
-                                granularity: None,
+                                granularity: granularity_i32,
                                 strategy_file: Some(strategy_file_str),
                                 strategy_init_kwargs: None,
                                 max_qty: None,
@@ -186,7 +233,7 @@ fn setup_backend_connection(
                             }),
                             token: token.clone(),
                         });
-                        match client.start_engine(req).await {
+                        match client.start_engine(start_req).await {
                             Ok(r) => {
                                 let inner = r.into_inner();
                                 if inner.success {
