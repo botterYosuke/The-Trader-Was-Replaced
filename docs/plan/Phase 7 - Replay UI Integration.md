@@ -32,6 +32,7 @@
 | `a922b39` | Pause / Resume / StepForward を Footer から gRPC へ接続 | ✅ |
 | `207b60c` | Bevy setup 内で Tokio runtime context が無い問題を `TokioHandle` resource で修正 | ✅ |
 | `3af5f3e` | MenuBar shell と `Open Strategy...` ボタンを追加 | ✅ |
+| `fecdb9a` | `rfd` file dialog と `OpenStrategyRequested` event を接続 | ✅ |
 
 ### Verified State
 
@@ -40,9 +41,10 @@
 - ✅ `src/main.rs` は `TransportCommand::Pause` / `Resume` / `StepForward` を gRPC (`PauseReplay`, `ResumeReplay`, `StepReplay`) に送る。
 - ✅ `src/ui/menu_bar.rs` は `top: 0` の 24px screen-space menu bar を spawn する。
 - ✅ `MenuButton::OpenStrategy` 押下時は `info!("menu: open strategy requested")` を出すだけの shell。
-- 未実装: File dialog (`rfd`)。
-- 未実装: `OpenStrategyRequested` event。
+- ✅ File dialog (`rfd`) で `.py` を選択できる。
+- ✅ 選択 path は `OpenStrategyRequested { path }` event として Bevy 内に流れる。
 - 未実装: StrategyEditorWindow。
+- 未実装: StrategyBuffer / cache copy。
 - 未実装: `Run` / `StepBack` / `JumpToStart` の実 RPC 接続。
 
 ### ADR 2026-05-14: MenuBar は Bevy UI の thin shell から始める
@@ -84,25 +86,92 @@ pub struct OpenStrategyRequested {
 pub struct SelectedStrategyPath(pub Option<std::path::PathBuf>);
 ```
 
-### Next Task: File Open Dialog Shell
+### Completed Task: File Open Dialog Shell
 
-次の作業者はここから始める。
+`fecdb9a` で完了。
 
-1. `Cargo.toml` に `rfd` を追加する。
-2. `src/ui/components.rs` または新規 `src/ui/events.rs` に `OpenStrategyRequested` を追加する。
-3. `UiPlugin` で `.add_event::<OpenStrategyRequested>()` を登録する。
-4. `menu_button_system` で `MenuButton::OpenStrategy` 押下時に `.py` ファイル選択 dialog を開く。
-5. 選択された path を `OpenStrategyRequested` として投げる。
-6. 一旦、別 system で `info!("open strategy selected: {:?}", path)` を出す。
-7. `cargo check`。
-8. `BACKEND_ENABLED=false cargo run` 相当で、上部バーから `.py` を選べることを確認する。
+- ✅ `Cargo.toml` に `rfd = "0.17.2"` を追加。
+- ✅ `src/ui/components.rs` に `OpenStrategyRequested { path: PathBuf }` event を追加。
+- ✅ `UiPlugin` で `.add_event::<OpenStrategyRequested>()` を登録。
+- ✅ `menu_button_system` で `MenuButton::OpenStrategy` 押下時に `.py` file dialog を開く。
+- ✅ 選択された path を `OpenStrategyRequested` として送る。
+- ✅ `log_open_strategy_requested_system` で path をログ出力する。
 
-Windows PowerShell 検証例:
+検証:
 
 ```powershell
 $env:BACKEND_ENABLED="false"
 cargo run
 ```
+
+合格条件:
+
+- ✅ `Open Strategy...` 押下で `.py` file dialog が開く。
+- ✅ `.py` を選ぶと `open strategy selected: "..."` が出る。
+- ✅ cancel 時に落ちず、`menu: open strategy canceled` が出る。
+
+Known tradeoff:
+
+- `rfd::FileDialog::pick_file()` は同期 API のため、dialog 表示中は Bevy の画面更新が止まる。MVP shell として許容し、cache copy / StrategyEditor 実装時に必要なら非同期化を検討する。
+
+### Next Task: Strategy Buffer Shell
+
+次の作業者はここから始める。目的は「元の `.py` ファイルを直接編集しない」ための buffer/cache 境界を作ること。まだ本格的な code editor は作らない。
+
+1. `StrategyBuffer` resource を追加する。
+2. `OpenStrategyRequested` を受けて、選択 path の内容を読む。
+3. 読み込んだ内容を `StrategyBuffer` に保持する。
+4. まずは cache file へコピーせず、resource のみでよい。
+5. `info!` で original path、文字数、先頭数行などを出して確認する。
+6. `cargo check`。
+
+推奨の最小 struct:
+
+```rust
+#[derive(Resource, Default, Debug, Clone)]
+pub struct StrategyBuffer {
+    pub original_path: Option<std::path::PathBuf>,
+    pub cache_path: Option<std::path::PathBuf>,
+    pub source: String,
+    pub dirty: bool,
+}
+```
+
+推奨 system:
+
+```rust
+pub fn open_strategy_buffer_system(
+    mut events: EventReader<OpenStrategyRequested>,
+    mut buffer: ResMut<StrategyBuffer>,
+) {
+    for event in events.read() {
+        match std::fs::read_to_string(&event.path) {
+            Ok(source) => {
+                buffer.original_path = Some(event.path.clone());
+                buffer.cache_path = None;
+                buffer.source = source;
+                buffer.dirty = false;
+                info!(
+                    "strategy buffer loaded: {:?}, bytes={}",
+                    event.path,
+                    buffer.source.len()
+                );
+            }
+            Err(err) => {
+                error!("failed to read strategy file {:?}: {}", event.path, err);
+            }
+        }
+    }
+}
+```
+
+Acceptance Criteria:
+
+- `Open Strategy...` で `.py` を選ぶ。
+- `StrategyBuffer` に `original_path` と `source` が入る。
+- ログに path と bytes が出る。
+- 元ファイルには一切書き込まない。
+- `cargo check` が通る。
 
 ### Implementation Tips
 
@@ -128,9 +197,11 @@ Phase 7 は「一気に巨大な IDE を作る」のではなく、Replay UI の
 - ✅ 上部に 24px の黒い MenuBar が表示される。
 - ✅ `Open Strategy...` が押せる。
 - ✅ 押下時にログが出る。
-- 次: `.py` file dialog が開く。
-- 次: 選択 path が event/resource として Bevy 内に流れる。
-- 次: 選択 path をログ表示できる。
+- ✅ `.py` file dialog が開く。
+- ✅ 選択 path が event として Bevy 内に流れる。
+- ✅ 選択 path をログ表示できる。
+- 次: `StrategyBuffer` に `original_path` と `source` を保持する。
+- 次: 元ファイルには書き込まない buffer/cache 境界を作る。
 
 ## 0. UI 機能一覧 / UI Feature Inventory
 
