@@ -208,7 +208,14 @@ pub fn transport_button_system(
                             info!("transport: step_forward ignored (state={})", replay);
                         }
                     }
-                    TransportButton::JumpToStart => info!("transport: jump_to_start (not yet wired)"),
+                    TransportButton::JumpToStart => {
+                        match replay {
+                            "RUNNING" | "PAUSED" | "LOADED" => {
+                                let _ = sender.tx.send(TransportCommand::ForceStop);
+                            }
+                            other => info!("transport: jump_to_start ignored (state={})", other),
+                        }
+                    }
                     TransportButton::StepBack    => info!("transport: step_back (not yet wired)"),
                     TransportButton::ForceStop => {
                         match replay {

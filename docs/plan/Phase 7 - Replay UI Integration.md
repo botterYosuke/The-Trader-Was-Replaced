@@ -805,6 +805,17 @@ StartEngine ok, state=RUNNING
 - **UI 確認**: Run Result "Running..."・Footer `state: PAUSED grpc: OK`・`▶` ラベル表示
 - **Next tasks**: (1) gRPC GetState タイムアウト調整（LoadReplayData 中に GetState が 2s でタイムアウトする問題）、(2) Jump-to-start / Step-back 接続、(3) Kline Chart 改善
 
+### 2026-05-14 JumpToStart → ForceStop 近道実装 (Footer |< ボタン)
+
+- `TransportButton::JumpToStart` の click ハンドラを変更（`footer.rs`）
+  - RUNNING / PAUSED / LOADED → `TransportCommand::ForceStop` を送信（IDLE に戻す）
+  - IDLE → `jump_to_start ignored` ログのみ
+- `trading.rs` / `main.rs` は `TransportCommand::ForceStop` が既存のため追加変更なし
+- **意味論**: JumpToStart = 現在の replay を停止して IDLE に戻す。ユーザーは Run で最初から再実行可能
+- **StepBack は後回し**: `step_replay()` が Nautilus `engine_runner` と別経路のため、ring buffer + proto 変更を入れても意味論が変わる可能性あり。backend の replay 経路が確定してから実装する
+- `cargo check` OK / `cargo test scenario_parser` 4/4
+- **手動 E2E**: Run → RUNNING → `|<` → `ForceStopReplay ok, state=0` → 次 Run が INVALID_STATE なし、で確認
+
 ### 2026-05-14 ForceStop 接続 (Footer ■ ボタン)
 
 - `TransportCommand::ForceStop` variant を `trading.rs` に追加
