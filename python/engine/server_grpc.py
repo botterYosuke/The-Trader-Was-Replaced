@@ -172,6 +172,66 @@ class GrpcDataEngineServer(
                 error_message=str(exc),
             )
 
+        try:
+            from pathlib import Path as _Path
+            from engine.strategy_runtime.run_buffer import (
+                RunBuffer,
+                make_run_id,
+                get_run_buffer_base_dir,
+            )
+            from engine.strategy_runtime.engine_runner import run as engine_run
+            from engine.strategy_runtime.summary import compute_summary, write_summary_json
+
+            instruments = scenario.get("instruments") or [scenario.get("instrument", "unknown")]
+            first_instrument = instruments[0] if instruments else "unknown"
+            run_id = make_run_id(strategy_file, first_instrument)
+
+            rb = RunBuffer(
+                run_id=run_id,
+                strategy_file=str(strategy_file),
+                scenario=scenario,
+                base_dir=get_run_buffer_base_dir(),
+            )
+
+            try:
+                engine_run(
+                    strategy_cls=strategy_cls,
+                    scenario=scenario,
+                    bars_by_instrument=bars_by_instrument,
+                    run_buffer=rb,
+                    strategy_init_kwargs=None,
+                )
+                rb.finish()
+
+                summary = compute_summary(rb.run_dir)
+                write_summary_json(rb.run_dir, summary)
+
+                logging.info(
+                    "StartEngine: run complete run_id=%s run_dir=%s summary=%r",
+                    run_id,
+                    rb.run_dir,
+                    summary,
+                )
+            except Exception as exc:
+                rb.abort()
+                logging.exception("StartEngine: engine_runner failed")
+                return engine_pb2.ReplayControlResponse(
+                    success=False,
+                    request_id=request.request_id,
+                    current_state=self._current_engine_state(),
+                    error_code="RUN_FAILED",
+                    error_message=str(exc),
+                )
+        except ImportError as exc:
+            logging.error("StartEngine: RunBuffer/engine_runner import failed: %s", exc)
+            return engine_pb2.ReplayControlResponse(
+                success=False,
+                request_id=request.request_id,
+                current_state=self._current_engine_state(),
+                error_code="RUN_FAILED",
+                error_message=str(exc),
+            )
+
         success, error = self.engine.start_engine()
         return engine_pb2.ReplayControlResponse(
             success=success,
