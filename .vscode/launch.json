@@ -35,13 +35,18 @@
             ],
             "cwd": "${workspaceFolder}",
             "env": {
-                "PATH": "${workspaceFolder}/.venv/Scripts;${env:PATH}"
+                "PATH": "${workspaceFolder}/.venv/Scripts;${env:PATH}",
+                "BACKEND_ENABLED": "true",
+                "BACKEND_TOKEN": "testtoken",
+                "BACKEND_CATALOG_PATH": "artifacts\\jquants-catalog",
+                "RUST_LOG": "info"
             },
             "envFile": "${workspaceFolder}/.env",
             "sourceLanguages": [
                 "rust"
             ],
-            "preLaunchTask": "cargo build"
+            "preLaunchTask": "replay: prepare",
+            "postDebugTask": "stop backend (replay)"
         }
     ]
 }

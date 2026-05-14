@@ -13,6 +13,58 @@
                 "kind": "build",
                 "isDefault": true
             }
+        },
+        {
+            "label": "kill port 19876",
+            "type": "shell",
+            "command": "$p = (Get-NetTCPConnection -LocalPort 19876 -ErrorAction SilentlyContinue).OwningProcess; if ($p) { Stop-Process -Id $p -Force; Write-Output 'killed existing backend' } else { Write-Output 'port 19876 free' }",
+            "problemMatcher": [],
+            "presentation": {
+                "reveal": "silent",
+                "panel": "shared"
+            }
+        },
+        {
+            "label": "start backend (replay)",
+            "type": "shell",
+            "command": "uv run python -m engine --token testtoken --jquants-catalog-path artifacts\\jquants-catalog",
+            "isBackground": true,
+            "dependsOn": [
+                "kill port 19876"
+            ],
+            "problemMatcher": {
+                "pattern": {
+                    "regexp": "^NOMATCH$"
+                },
+                "background": {
+                    "activeOnStart": true,
+                    "beginsPattern": ".",
+                    "endsPattern": "Starting gRPC server on port 19876"
+                }
+            },
+            "presentation": {
+                "reveal": "always",
+                "panel": "dedicated",
+                "group": "backend"
+            }
+        },
+        {
+            "label": "stop backend (replay)",
+            "type": "shell",
+            "command": "$p = (Get-NetTCPConnection -LocalPort 19876 -ErrorAction SilentlyContinue).OwningProcess; if ($p) { Stop-Process -Id $p -Force; Write-Output 'backend stopped' } else { Write-Output 'backend already stopped' }",
+            "problemMatcher": [],
+            "presentation": {
+                "reveal": "silent"
+            }
+        },
+        {
+            "label": "replay: prepare",
+            "dependsOn": [
+                "cargo build",
+                "start backend (replay)"
+            ],
+            "dependsOrder": "parallel",
+            "problemMatcher": []
         }
     ]
 }
