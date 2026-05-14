@@ -1,6 +1,6 @@
 use backcast::trading::{
     backend_update_system, engine, price_simulation_system, BackendChannel, BackendStatus,
-    TradingData, TradingSettings, TransportCommand, TransportCommandSender,
+    LastRunResult, TradingData, TradingSettings, TransportCommand, TransportCommandSender,
 };
 use backcast::ui::UiPlugin;
 use backcast::grid::GridPlugin;
@@ -60,11 +60,6 @@ enum BackendStatusUpdate {
     RunComplete { run_id: String, summary_json: String },
 }
 
-#[derive(Resource, Default, Debug, Clone)]
-pub struct LastRunResult {
-    pub run_id: Option<String>,
-    pub summary_json: Option<String>,
-}
 
 fn status_update_system(
     mut status: ResMut<BackendStatus>,

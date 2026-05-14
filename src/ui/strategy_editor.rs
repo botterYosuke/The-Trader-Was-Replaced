@@ -1,11 +1,13 @@
 use bevy::prelude::*;
 use bevy_egui::{egui, EguiContexts};
 use crate::ui::components::{StrategyBuffer, StrategyRunRequested};
+use crate::trading::LastRunResult;
 
 pub fn strategy_editor_window_system(
     mut contexts: EguiContexts,
     mut buffer: ResMut<StrategyBuffer>,
     mut run_events: EventWriter<StrategyRunRequested>,
+    last_run: Option<Res<LastRunResult>>,
 ) {
     if buffer.original_path.is_none() {
         return;
@@ -63,6 +65,34 @@ pub fn strategy_editor_window_system(
             }
 
             ui.separator();
+
+            if let Some(run) = &last_run {
+                if let Some(run_id) = &run.run_id {
+                    ui.horizontal(|ui| {
+                        ui.label(egui::RichText::new("Last run:").small().color(egui::Color32::from_rgb(0, 207, 255)));
+                        ui.label(egui::RichText::new(run_id).small().monospace());
+                    });
+                    if let Some(sj) = &run.summary_json {
+                        if let Ok(v) = serde_json::from_str::<serde_json::Value>(sj) {
+                            ui.horizontal(|ui| {
+                                ui.label(egui::RichText::new("fills:").small());
+                                ui.label(egui::RichText::new(v["fills_count"].to_string()).small().monospace());
+                                ui.label(egui::RichText::new("equity_pts:").small());
+                                ui.label(egui::RichText::new(v["equity_points"].to_string()).small().monospace());
+                                ui.label(egui::RichText::new("total_pnl:").small());
+                                let pnl = v["total_pnl"].as_f64().unwrap_or(0.0);
+                                let pnl_color = if pnl >= 0.0 {
+                                    egui::Color32::from_rgb(0, 255, 127)
+                                } else {
+                                    egui::Color32::from_rgb(255, 51, 102)
+                                };
+                                ui.label(egui::RichText::new(format!("{:.0}", pnl)).small().monospace().color(pnl_color));
+                            });
+                        }
+                    }
+                    ui.separator();
+                }
+            }
 
             // Clone to avoid triggering Bevy change detection via DerefMut every frame.
             // Only write back (and mark changed) when egui reports actual content change.

@@ -239,6 +239,12 @@ pub fn backend_update_system(
     }
 }
 
+#[derive(Resource, Default, Debug, Clone)]
+pub struct LastRunResult {
+    pub run_id: Option<String>,
+    pub summary_json: Option<String>,
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
