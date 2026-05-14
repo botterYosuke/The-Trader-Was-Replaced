@@ -51,3 +51,8 @@ pub struct MenuBarRoot;
 pub enum MenuButton {
     OpenStrategy,
 }
+
+#[derive(Event, Debug, Clone)]
+pub struct OpenStrategyRequested {
+    pub path: std::path::PathBuf,
+}

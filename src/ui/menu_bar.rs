@@ -1,5 +1,6 @@
 use bevy::prelude::*;
-use crate::ui::components::{MenuBarRoot, MenuButton};
+use rfd::FileDialog;
+use crate::ui::components::{MenuBarRoot, MenuButton, OpenStrategyRequested};
 
 const BTN_NORMAL: Color = Color::srgba(0.10, 0.10, 0.16, 1.0);
 const BTN_HOVER: Color = Color::srgba(0.20, 0.20, 0.30, 1.0);
@@ -61,17 +62,38 @@ pub fn menu_button_system(
         (&Interaction, &mut BackgroundColor, &MenuButton),
         (Changed<Interaction>, With<Button>),
     >,
+    mut open_strategy_events: EventWriter<OpenStrategyRequested>,
 ) {
     for (interaction, mut bg, action) in &mut query {
         match interaction {
             Interaction::Pressed => {
                 bg.0 = BTN_PRESSED;
                 match action {
-                    MenuButton::OpenStrategy => info!("menu: open strategy requested"),
+                    MenuButton::OpenStrategy => {
+                        info!("menu: open strategy requested");
+                        if let Some(path) = FileDialog::new()
+                            .add_filter("Python strategy", &["py"])
+                            .set_directory("python/tests/data")
+                            .pick_file()
+                        {
+                            info!("menu: selected strategy: {:?}", path);
+                            open_strategy_events.send(OpenStrategyRequested { path });
+                        } else {
+                            info!("menu: open strategy canceled");
+                        }
+                    }
                 }
             }
             Interaction::Hovered => bg.0 = BTN_HOVER,
             Interaction::None => bg.0 = BTN_NORMAL,
         }
+    }
+}
+
+pub fn log_open_strategy_requested_system(
+    mut events: EventReader<OpenStrategyRequested>,
+) {
+    for event in events.read() {
+        info!("open strategy selected: {:?}", event.path);
     }
 }
