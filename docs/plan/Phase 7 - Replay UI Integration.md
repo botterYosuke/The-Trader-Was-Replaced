@@ -814,7 +814,7 @@ StartEngine ok, state=RUNNING
 - **意味論**: JumpToStart = 現在の replay を停止して IDLE に戻す。ユーザーは Run で最初から再実行可能
 - **StepBack は後回し**: `step_replay()` が Nautilus `engine_runner` と別経路のため、ring buffer + proto 変更を入れても意味論が変わる可能性あり。backend の replay 経路が確定してから実装する
 - `cargo check` OK / `cargo test scenario_parser` 4/4
-- **手動 E2E**: Run → RUNNING → `|<` → `ForceStopReplay ok, state=0` → 次 Run が INVALID_STATE なし、で確認
+- **手動 E2E 確認済み**: Run → RUNNING → `|<` → `ForceStopReplay ok, state=0` (IDLE) → 次 Run が INVALID_STATE なしで `LoadReplayData ok, state=1` → `StartEngine ok, state=0` ✅
 
 ### 2026-05-14 ForceStop 接続 (Footer ■ ボタン)
 
