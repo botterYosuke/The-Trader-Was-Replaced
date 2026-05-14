@@ -18,19 +18,175 @@
 
 ---
 
+## 0. UI 機能一覧 / UI Feature Inventory
+
+Phase 7 の UI が担う役割を網羅的に列挙する。各項目は §3 以降の詳細設計に対応する。
+
+### 0.1 戦略ファイル編集（`StrategyEditorWindow` 経由）
+
+対象ファイル: `python/tests/data/test_strategy_daily.py` / `test_strategy_minute.py` / `pair_trade_minute.py`
+
+- **`SCENARIO` dict の編集**
+  - 銘柄の追加 / 削除（`instruments` リスト）
+  - `start_date` / `end_date` の変更
+  - `granularity` の切替（Daily / Minute）
+  - `initial_cash` の変更
+- **戦略ソースコード本体の編集**（Python シンタックスハイライト / 行番号 / Undo-Redo / Find & Replace / オートインデント）
+- **ファイル操作**
+  - `[Save]` — キャッシュ → 元ファイルへ反映
+  - `[Revert]` — 編集破棄してディスクから再読込（確認ダイアログあり）
+  - `[▶ Run]` — キャッシュをフラッシュして `LoadStrategy` + `StartEngine` を発火（実装上は load+start の合成だが、UI 表記は IDE 標準の "Run" に統一）
+  - 自動保存（キャッシュへ、変更イベント駆動）
+
+### 0.2 リプレイ制御（Footer の Transport）
+
+- ▶ **Run**（エディタの `[▶ Run]` 経由 / IDLE→LOADED→RUNNING）
+- ⏯ **Pause / Resume**（トグル）
+- ⏪ **Step-back**（1 step 巻き戻し、ring buffer 512 件まで）
+- ⏭ **Step+1**（1 step 進める）
+- ⏮ **Jump-to-start**（先頭へ。PAUSED のまま時刻=start に戻る ≒ `LOADED` 相当）
+- **Speed 変更**（0.5x / 1x / 2x / 5x / 10x / 50x）
+
+> ⏹ Stop は採用しない。理由: `Pause + Jump-to-start` と機能が重複するため。戦略を完全にアンロードしたい場合は **File → New**（または別ファイルを Open）で `IDLE` に戻る。専用の Unload ボタンは設けない。
+
+### 0.3 アプリ / レイアウト操作
+
+- **File メニュー**: New / Open Strategy... / Save Layout (stub) / Exit
+  - **New** は空の戦略バッファを開き、`IDLE` 状態へ遷移させる（実質的な Unload を兼ねる）
+- **Floating Window 操作**: ドラッグ移動 / リサイズ / 前面化 (z-order) / 表示・非表示トグル
+- **Infinite Canvas 操作**: パン / ズーム（視点変更）
+- **Sidebar からの銘柄選択**（`SelectedSymbol` 更新 → Kline / Ladder の対象銘柄が連動）
+- **UI_LAYOUT の永続化** — floating window の位置・サイズ・z-order・可視性、canvas の pan/zoom、選択銘柄を戦略 `.py` 末尾の `UI_LAYOUT` センチネルブロックに保存（§3.4）
+- **Settings**（Sidebar 下半分、stub OK）: Theme dropdown / Backend address field / Save Layout button
+
+### 0.4 状態表示（Read-only）
+
+- **Footer**: 現在時刻 / ReplayState バッジ（IDLE/LOADED/RUNNING/PAUSED/STOPPING）/ Progress bar + パーセント / FPS / gRPC 接続状態（OK / RECONNECTING / ERROR）
+- **Sidebar**: Tickers リスト（`SCENARIO.end_date` ディレクトリの CSV から自動導出）+ 最新価格
+- **KlineChartWindow**: ローソク足（簡易 MA は UI 側で算出）
+- **LadderWindow**: bid/ask × 10 行 + LAST
+- **BuyingPowerPanel**: 現金 / 評価額 / 建余力
+- **PositionsPanel**: Sym / Qty / Avg / P&L
+- **OrdersPanel**: Time / Sym / Side / Qty / Price / Status
+
+> Note: 発注は戦略ソースコード（`SCENARIO` の `on_bar` 等）が行う。Kline / Ladder は read-only の可視化に徹し、BUY/SELL ボタンや手動クリック発注 UI は設けない。
+
+---
+
 ## 1. Screen Design / 画面設計
 
-詳細な解説図は [assets/phase7-screen-layout.drawio.svg](assets/phase7-screen-layout.drawio.svg) を参照。
+詳細な解説図は [assets/phase7-screen-layout.drawio.svg](../assets/phase7-screen-layout.drawio.svg) を参照。
 
-![Phase 7 Screen Layout](assets/phase7-screen-layout.drawio.svg)
+#### Figure 1: Dashboard Screen Layout
 
-3 枚構成:
+![Phase 7 Screen Layout](../assets/phase7-screen-layout.drawio.svg)
 
-| 図 | 内容 |
-|---|---|
-| Figure 1 | Dashboard 全体レイアウト — MenuBar / Sidebar / Infinite Canvas + Floating Windows / Footer |
-| Figure 2 | Replay Start Modal — File → Open 後に表示されるポップアップ |
-| Figure 3 | Bevy ECS コンポーネント階層 — screen-space (bevy_ui) と world-space (Sprite/Transform) の区分、Resources / Systems / Events / gRPC マッピング |
+#### Figure 2: Bevy ECS Component Hierarchy / コンポーネント階層
+
+screen-space (bevy_ui) と world-space (Sprite/Transform) の区分、Resources / Systems / Events / gRPC マッピング。
+
+```mermaid
+flowchart TD
+    UiPlugin["<b>UiPlugin</b><br/><code>src/ui/mod.rs</code>"]
+
+    UiPlugin --> MenuBarRoot
+    UiPlugin --> SidebarRoot
+    UiPlugin --> CanvasRoot
+    UiPlugin --> FooterRoot
+    UiPlugin --> ModalLayer
+
+    subgraph SCREEN["Screen-space (bevy_ui Node) — ズーム非依存"]
+        direction TB
+        MenuBarRoot["<b>MenuBarRoot</b>"] --> MenuChildren["FileMenu<br/>• OpenStrategy<br/>• SaveLayout (stub)<br/>• Exit<br/>View / Replay / Venue / Help (枠のみ)"]
+        SidebarRoot["<b>SidebarRoot</b>"] --> SidebarChildren["TickersPanel<br/>(CSV scan from SCENARIO.end_date dir)<br/>• TickerRow ×N<br/>SettingsPanel<br/>• Theme / Backend<br/>• SaveLayout (stub)"]
+        FooterRoot["<b>FooterRoot</b>"] --> FooterChildren["ReplayTimeLabel<br/>ReplayStateBadge<br/>TransportControls (⏮ ⏪ ⏯ ⏭ ⏹ Step-back MVP)<br/>SpeedSelector · Progress<br/>FpsCounter / GrpcStatus"]
+        ModalLayer["<b>ModalLayer</b><br/>overlay · top z"] --> ModalChildren["ConfirmDialogs only:<br/>• Revert 確認<br/>• 未保存復元 prompt<br/>※ ReplayStartModal は廃止<br/>(SCENARIO dict が代替)"]
+    end
+
+    subgraph WORLD["World-space (Sprite + Transform) — PanCam で可変 canvas"]
+        direction TB
+        CanvasRoot["<b>CanvasRoot</b><br/>Camera2d + PanCam"] --> WindowRoot["<b>WindowRoot</b> (Sprite, world-space) ×N<br/>• StrategyEditorWindow ★ NEW<br/>&nbsp;&nbsp;bevy_egui + egui_code_editor<br/>&nbsp;&nbsp;Header: filename ● Save ▶Run Revert<br/>• KlineChartWindow<br/>• LadderWindow<br/>• BuyingPowerPanel<br/>• PositionsPanel · OrdersPanel<br/>各 entity に Draggable / Zoomable / UI_LAYOUT 同期"]
+    end
+
+    classDef screen fill:#1a4d4d,stroke:#00CFFF,color:#e0e8f0;
+    classDef world fill:#3d1a4d,stroke:#a070ff,color:#e0e8f0;
+    classDef root fill:#1a2540,stroke:#00CFFF,stroke-width:2px,color:#00CFFF;
+    classDef detail fill:#0f1628,stroke:#2a3a5a,color:#9fb0c8;
+    class UiPlugin root;
+    class MenuBarRoot,SidebarRoot,FooterRoot,ModalLayer screen;
+    class CanvasRoot,WindowRoot world;
+    class MenuChildren,SidebarChildren,FooterChildren,ModalChildren detail;
+```
+
+**Resources (shared state) / 共有リソース**
+
+```text
+ReplayTimeRes      { timestamp_ms: i64 }
+ReplayStateRes     { phase: IDLE/LOADED/RUNNING/PAUSED/STOPPING }
+ReplaySpeedRes     { multiplier: f32 }  // 0.5/1/2/5/10/50
+TradingState       { price, history, timestamp, replay_state }
+PortfolioStateRes  { buying_power, positions[], orders[] }
+SelectedSymbol(Option<TickerId>)
+Tickers(Vec<TickerId>)                  // CSV scan の結果
+StrategyBuffer     { cache_path, dirty, original_path }
+UiLayoutCache      { windows, viewport, selected_symbol }
+WindowManager      { max_z: f32 }
+GrpcClientHandle   { tonic channel }
+```
+
+**Systems / 更新ループ**
+
+```text
+poll_engine_state_system     // 60 Hz GetState polling
+poll_portfolio_system        // 60 Hz GetPortfolio polling
+replay_time_sync_system      // ReplayTime → footer label
+transport_button_system      // ⏮⏪⏯⏭⏹ → RPC
+menu_open_strategy_system    // File→Open → rfd → cache copy
+strategy_editor_system       // bevy_egui code editor
+strategy_autosave_system     // changed() → async write to cache
+strategy_run_button_system   // [▶Run] → LoadStrategy + StartEngine
+ui_layout_persist_system     // window/viewport → UI_LAYOUT block
+kline_chart_render_system    // history → candle mesh
+ladder_render_system         // depth snapshot → ladder rows
+positions/orders/bp_render_system
+window_drag_system / window_focus_z_system   (existing)
+```
+
+**Events / イベント**
+
+```text
+OpenStrategyRequested / StrategyLoaded / ReplayStarted / ReplayStopped
+```
+
+**gRPC ↔ UI Mapping / Phase 6 API への接続**
+
+```text
+// Polling (60 Hz)
+GetState()           → ReplayTime, TradingState, ReplayStateRes
+GetPortfolio()       → PortfolioStateRes  (新規 DTO)
+
+// Strategy editor flow / エディタ起点
+LoadStrategy(cache_path, source: str)
+                     → IDLE → LOADED
+                       SCENARIO dict をパースして
+                       replay window 確定 + import
+StartEngine()        → LOADED → RUNNING
+[▶ Run] が LoadStrategy + StartEngine を順次発火
+
+// Transport buttons / トランスポート制御
+PauseReplay()        → RUNNING → PAUSED
+ResumeReplay()       → PAUSED → RUNNING
+StepReplay(n)        → PAUSED でのみ
+StepBackward(n)      → snapshot ring buffer (512)
+                       ★ MVP 必須 (positions/orders/buying_power も巻き戻し)
+JumpToStart()        → seek to begin
+SetReplaySpeed(x)    → 0.5/1/2/5/10/50
+StopReplay()         → * → STOPPING → IDLE
+```
+
+**Streaming 評価 (Phase 6 で決定)** — A. 現状の Unary GetState 60Hz polling 継続 / B. SubscribeReplayEvents (server stream)。UI 層は SubscriptionAgnostic で両対応。
+
+**UI_LAYOUT 永続化** — 戦略 `.py` 末尾の `UI_LAYOUT` センチネルブロックに保存。window 位置/size/z/可視性, viewport pan/zoom, selected_symbol。
 
 ### 1.1 Space の分割（重要な設計判断）
 
@@ -76,7 +232,7 @@
 | `src/screen/dashboard/panel/buying_power.rs` | `src/ui/floating/buying_power.rs` | world-space floating window |
 | `src/screen/dashboard/panel/positions.rs` | `src/ui/floating/positions.rs` | 同上。Text2d でテーブルを描画 |
 | `src/screen/dashboard/panel/orders.rs` | `src/ui/floating/orders.rs` | 同上 |
-| `src/screen/dashboard/panel/ladder.rs` (1382 行) | `src/ui/floating/ladder.rs` | 同上。MVP は bid/ask × 10 行 + LAST、クリック発注は Phase 9 |
+| `src/screen/dashboard/panel/ladder.rs` (1382 行) | `src/ui/floating/ladder.rs` | 同上。MVP は bid/ask × 10 行 + LAST のみ（read-only、クリック発注 UI なし） |
 | `src/chart/kline.rs` (2052 行) | 既存 `src/ui/chart.rs` を拡張 | ろうそく足モードを追加（現在は line chart のみ）|
 | `src/handlers/replay.rs`, `src/handlers/engine.rs` | `src/trading.rs` 内に gRPC クライアント拡張 | 制御 RPC 群を Tonic で叩く Bevy system に |
 | `src/widget/multi_split.rs`, `src/widget/decorate.rs` | (採用しない) | infinite canvas が代替する |
@@ -92,7 +248,7 @@
 - **`LoadStrategy` RPC の追加** — UI から戦略ファイルのパスと**編集後のソース文字列**を受け取り、`SCENARIO` dict を解析して replay window を確定 → in-process で戦略を import / instantiate する。`schema_version` をチェックし不一致なら明示的に reject。
 - **`StepBackward(n)` RPC を MVP に含める** — Phase 6 の snapshot ring buffer（既定 512 件）と組み合わせて、`PortfolioStateRes`/`positions`/`orders` を含む完全な状態を巻き戻す。Optional ではなく必須。
 - **`SubscribeReplayEvents` (Optional)** — server-streaming で `ReplayTime / Trades / KlineUpdate / OrderEvent / PositionEvent` を push。実装するかは Phase 6 末の判断に従う。実装しない場合は UI は 60 Hz polling のみで動かす。
-- **`Step / Pause / Resume / SetSpeed / Stop / StepBackward` の冪等化確認** — UI からの連打耐性。
+- **`Step / Pause / Resume / SetSpeed / StepBackward / JumpToStart / Unload` の冪等化確認** — UI からの連打耐性。`Unload` は `IDLE` への明示的な遷移（戦略破棄）で、UI からは **File → New** または別ファイル Open で発火する。
 
 ### 3.2 Bevy UI 共通基盤
 
@@ -115,7 +271,8 @@
 
 - **MenuBar** ([src/ui/menu_bar.rs])
   - Flexbox Row, height 36px, 黒紺背景
-  - File ドロップダウンに「Open Strategy...」「Save Layout (stub)」「Exit」
+  - File ドロップダウンに「New」「Open Strategy...」「Save Layout (stub)」「Exit」
+  - **New**: 空テンプレート（`SCENARIO` 雛形のみ）の戦略バッファを開き、`Unload` RPC を発火して `IDLE` に戻す
   - File→Open で `rfd::AsyncFileDialog` を起動して `*.py` のみフィルタ、`OpenStrategyRequested(path)` を発火
   - 既定ディレクトリは `python/tests/data/`（`test_strategy_daily.py` / `test_strategy_minute.py` / `pair_trade_minute.py` がある場所）
 - **Sidebar** ([src/ui/sidebar.rs])
@@ -139,7 +296,7 @@
 
 - **StrategyEditorWindow** ([src/ui/floating/strategy_editor.rs]) — monaco-editor 相当のコードエディタ。File→Open でファイルパスを受け取り、ファイル内容を読み込んで表示・編集。
   - 機能: Python シンタックスハイライト / 行番号 / 行折りたたみ / Find & Replace / Undo-Redo / オートインデント
-  - ヘッダ: ファイル名表示、`[Save]` / `[Load & Start]` / `[Reload from disk]`、ダーティマーク（`●` 印）
+  - ヘッダ: ファイル名表示、`[Save]` / `[▶ Run]` / `[Revert]`、ダーティマーク（`●` 印）
   - **UI 状態の保存場所（採用方針）**: floating window の位置・サイズ・z-order・可視性、infinite canvas の pan / zoom、選択銘柄などの **UI 状態は戦略 `.py` ファイル自体に埋め込む**（`SCENARIO` / `LIVE_SCENARIO` と同じ「戦略ファイル＝単一ソース」ポリシー）。
     - 埋め込み形式: ファイル末尾に **センチネルブロック**を置く。Rust から安全に書き換えるため、AST 解析や dict literal の rewrite ではなく、行ベースで全置換できる単純なフォーマットにする。
       ```python
@@ -170,12 +327,12 @@
     - 自動保存: **値の変更イベント駆動**（タイマーは使わない）。`egui::TextEdit` の `response.changed()` が立った時だけキャッシュへ書き出す。書き込みは `bevy_tokio_tasks` 経由の非同期 I/O で UI フレームをブロックしない。タイピング中は変更があるフレームでのみ I/O が走るため、無編集時はゼロコスト。
     - `[Load & Start]`: キャッシュをフラッシュ（同期書き込み）→ **キャッシュのパス**を `LoadStrategy` RPC へ送る（元ファイルは送らない／編集中の内容で実行される）
     - `[Save]`: キャッシュ → 元ファイル へコピー（`dirty: false` に更新）
-    - `[Reload from disk]`: 元ファイルで キャッシュを上書き（編集内容は破棄、確認ダイアログあり）
+    - `[Revert]`: 元ファイルで キャッシュを上書き（編集内容は破棄、確認ダイアログあり）
     - 起動時の復元: 同じ元ファイルを再度開いたとき、キャッシュの `last_modified_ms` が元ファイルより新しい & `dirty: true` ならモーダル「未保存の変更があります。復元しますか？ [復元] [破棄]」
     - クリーンアップ: `[Save]` 直後やユーザが明示的に閉じたタブのキャッシュは即削除しない（=次回も復元できる）。`.meta.json` の `dirty: false` で 30 日経過したものを起動時に GC。
   - **実装方針（確定）**: `bevy_egui` + `egui_code_editor` (v0.2.23) を採用。`egui::Window` 内にウィジェットを1行で配置できるターンキー構成。Python syntax は `Syntax` struct にキーワードセットを手動定義（~30 行）。精度向上が必要になったときのみ `egui_extras` の `syntect` feature を差し込む（差し替え不要、レイヤー追加のみ）。Undo/Redo は `TextEdit` 標準 undo + Bevy `Resource` の `Vec<String>` スナップショットスタックで対応。`wry`/`tao` WebView 路線は採用しない。
-- **KlineChartWindow** — 既存 `chart.rs` をろうそく足対応に拡張。`PortfolioStateRes` ではなく `TradingState.history` を入力とする。BUY/SELL ボタンはプレースホルダ（Phase 9 で実発注に接続）。
-- **LadderWindow** — bid/ask × 10 行 + LAST 行。MVP は depth が空でも LAST 行と数量入力＋BUY/SELL の擬似発注ボタンを描画。
+- **KlineChartWindow** — 既存 `chart.rs` をろうそく足対応に拡張。`PortfolioStateRes` ではなく `TradingState.history` を入力とする。read-only（発注は戦略ソースコードが担う）。
+- **LadderWindow** — bid/ask × 10 行 + LAST 行のみ。read-only（数量入力・BUY/SELL ボタンは設けない）。
 - **BuyingPowerPanel** — 3 行（現金 / 評価額 / 建余力）。`PortfolioStateRes.buying_power` を購読。
 - **PositionsPanel** — Sym/Qty/Avg/P&L のテーブル。各行 `Text2d` で描画。
 - **OrdersPanel** — Time/Sym/Side/Qty/Price/Status のテーブル。Status の色だけ状態に応じて変える。
@@ -239,11 +396,11 @@ docs/plan/assets/
 1. **Step 1 — Footer & Time Sync**:
    - **Backend**: `TradingState` に `replay_state: Optional[str]` を追加 → `get_current_state()` に含める（後方互換: デフォルト `None`）。
    - **Rust**: `BackendTradingState` / `TradingData` に `replay_state` フィールドを追加。`ReplayPhase` enum + `ReplayTimeRes` / `ReplayStateRes` Resource を定義。
-   - **Bevy UI**: bevy_ui Node ベースの Footer を実装（`src/ui/footer.rs`）。`ReplayTimeLabel` / `ReplayStateBadge` / Transport ボタン（⏪⏯⏭ / Speed — この Step ではログのみ） / FPS カウンタ / gRPC ステータスを表示。
+   - **Bevy UI**: bevy_ui Node ベースの Footer を実装（`src/ui/footer.rs`）。`ReplayTimeLabel` / `ReplayStateBadge` / Transport ボタン（⏪⏮⏯⏭ / Speed — この Step ではログのみ） / FPS カウンタ / gRPC ステータスを表示。
    - **合格基準**: backend RUNNING 時にフッターの時刻が更新され、状態バッジが色付きで切り替わる。
 2. **Step 2 — MenuBar & File→Open**: File→Open → `*.py` ファイル選択 → `OpenStrategyRequested` 発火。この時点ではログ出力だけで OK。
 3. **Step 3 — StrategyEditorWindow (MVP)**: `bevy_egui` + `egui_code_editor` を導入し、File→Open で受け取ったパスのファイル内容を表示・編集。`[Load & Start]` で `LoadStrategy` + `StartEngine` を呼ぶ。
-4. **Step 4 — Transport Controls (Step-back 含む)**: Footer の ⏪⏯⏭ / Speed を RPC に接続。Pause→Step→Resume→Step-back が動く。
+4. **Step 4 — Transport Controls (Step-back 含む)**: Footer の ⏪⏮⏯⏭ / Speed を RPC に接続。Pause→Step→Resume→Step-back が動く。
 5. **Step 5 — Sidebar**: Tickers リストと Settings の枠。`SelectedSymbol` に応じてチャートのタイトルが切り替わる。
 6. **Step 6 — Visual Reference**: `/frontend-design` で `phase7-visual-reference.html` を生成。以降の floating window 実装の見た目基準にする。
 7. **Step 7 — Floating Windows (簡単な順)**: BuyingPower → Positions → Orders → Ladder → Kline（既存 chart の拡張）。
