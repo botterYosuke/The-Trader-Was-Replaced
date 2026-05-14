@@ -63,7 +63,7 @@ Phase 7 の UI が担う役割を網羅的に列挙する。各項目は §3 以
 ### 0.4 状態表示（Read-only）
 
 - **Footer**: 現在時刻 / ReplayState バッジ（IDLE/LOADED/RUNNING/PAUSED/STOPPING）/ Progress bar + パーセント / FPS / gRPC 接続状態（OK / RECONNECTING / ERROR）
-- **Sidebar**: Tickers リスト（`SCENARIO.end_date` ディレクトリの CSV から自動導出）+ 最新価格
+- **Sidebar**: Tickers リスト（backend RPC `ListInstruments(source="replay")` 経由で取得。Rust 側 catalog 直叩きは行わない）+ 最新価格
 - **KlineChartWindow**: ローソク足（簡易 MA は UI 側で算出）
 - **BuyingPowerPanel**: 現金 / 評価額 / 建余力
 - **PositionsPanel**: Sym / Qty / Avg / P&L
@@ -99,7 +99,7 @@ flowchart TD
     subgraph SCREEN["Screen-space (bevy_ui Node) — ズーム非依存"]
         direction TB
         MenuBarRoot["<b>MenuBarRoot</b>"] --> MenuChildren["FileMenu<br/>• OpenStrategy<br/>• SaveLayout (stub)<br/>• Exit<br/>View / Replay / Venue / Help (枠のみ)"]
-        SidebarRoot["<b>SidebarRoot</b>"] --> SidebarChildren["TickersPanel<br/>(CSV scan from SCENARIO.end_date dir)<br/>• TickerRow ×N<br/>SettingsPanel<br/>• Theme / Backend<br/>• SaveLayout (stub)"]
+        SidebarRoot["<b>SidebarRoot</b>"] --> SidebarChildren["TickersPanel<br/>(backend ListInstruments source=replay)<br/>• TickerRow ×N<br/>SettingsPanel<br/>• Theme / Backend<br/>• SaveLayout (stub)"]
         FooterRoot["<b>FooterRoot</b>"] --> FooterChildren["ReplayTimeLabel<br/>ReplayStateBadge<br/>TransportControls (⏮ ⏪ ⏯ ⏭ ⏹ Step-back MVP)<br/>SpeedSelector · Progress<br/>FpsCounter / GrpcStatus"]
         ModalLayer["<b>ModalLayer</b><br/>overlay · top z"] --> ModalChildren["ConfirmDialogs only:<br/>• Revert 確認<br/>• 未保存復元 prompt<br/>※ ReplayStartModal は廃止<br/>(SCENARIO dict が代替)"]
     end
@@ -128,7 +128,7 @@ ReplaySpeedRes     { multiplier: f32 }  // 0.5/1/2/5/10/50
 TradingState       { price, history, timestamp, replay_state }
 PortfolioStateRes  { buying_power, positions[], orders[] }
 SelectedSymbol(Option<TickerId>)
-Tickers(Vec<TickerId>)                  // CSV scan の結果
+Tickers(Vec<TickerId>)                  // ListInstruments(source=replay) RPC の結果
 StrategyBuffer     { cache_path, dirty, original_path }
 UiLayoutCache      { windows, viewport, selected_symbol }
 WindowManager      { max_z: f32 }
@@ -251,6 +251,22 @@ StopReplay()         → * → STOPPING → IDLE
 - **`StepBackward(n)` RPC を MVP に含める** — Phase 6 の snapshot ring buffer（既定 512 件）と組み合わせて、`PortfolioStateRes`/`positions`/`orders` を含む完全な状態を巻き戻す。Optionalではなく必須。
 - **`SubscribeReplayEvents` (Optional)** — server-streaming で `ReplayTime / Trades / KlineUpdate / OrderEvent / PositionEvent` を push。実装するかは Phase 6 末の判断に従う。実装しない場合は UI は 60 Hz polling のみで動かす。
 - **`Step / Pause / Resume / SetSpeed / StepBackward / JumpToStart / Unload` の冪等化確認** — UI からの連打耐性。`Unload` は `IDLE` への明示的な遷移（戦略破棄）で、UI からは **File → New** または別ファイル Open で発火する。
+- **`ListInstruments(source="replay")` RPC の追加** — Sidebar Tickers パネル用。`SCENARIO.end_date` のディレクトリ配下（例: `S:/j-quants/2024/04/15/`）の CSV ファイル名からシンボルを列挙して返す。Rust 側から catalog ディレクトリを直接読まない（Python catalog ロジックを Rust に二重実装しないため）。Phase 8 で `source="live"` を追加し、同じ RPC で venue master を返せるよう拡張する設計。
+  ```protobuf
+  rpc ListInstruments (ListInstrumentsRequest) returns (ListInstrumentsResponse);
+  message ListInstrumentsRequest {
+    string source = 1;  // "replay" (Phase 7) / "live" (Phase 8 で追加)
+    string filter = 2;  // 任意の検索文字列 (Phase 8 で活用)
+  }
+  message ListInstrumentsResponse {
+    repeated InstrumentInfo instruments = 1;
+  }
+  message InstrumentInfo {
+    string instrument_id = 1;   // "1301.TSE"
+    string display_name = 2;    // "極洋"
+    string venue_hint = 3;      // "REPLAY" / "TACHIBANA" / "KABU"
+  }
+  ```
 
 ### 3.2 Bevy UI 共通基盤
 
@@ -280,7 +296,8 @@ StopReplay()         → * → STOPPING → IDLE
 - **Sidebar** ([src/ui/sidebar.rs])
   - 幅 200px, 左固定
   - 上半分: Tickers リスト（`PortfolioStateRes` と `ReplayTime` 由来の最新価格を表示、クリックで `SelectedSymbol` 更新）
-    - **銘柄マスタの導出**: `SCENARIO.end_date` のディレクトリ配下（例: `S:/j-quants/2024/04/15/`）の CSV ファイル名からシンボルを列挙する。スキャンは `LoadStrategy` RPC の完了後、バックエンドが `LOADED` に遷移したタイミングで行う。スキャン結果は `Tickers` Resource として保持。
+    - **銘柄マスタの導出**: backend RPC `ListInstruments(source="replay")` を呼び、Python 側で `SCENARIO.end_date` のディレクトリ配下（例: `S:/j-quants/2024/04/15/`）の CSV ファイル名からシンボルを列挙してもらう。Rust 側で catalog ディレクトリを直接読まない。呼び出しは `LoadStrategy` RPC の完了後、backend が `LOADED` に遷移したタイミングで 1 回。結果は `Tickers` Resource として保持。
+    - Phase 8 で venue ログイン成功時に `ListInstruments(source="live")` を追加で呼び、結果を Tickers Resource に **マージまたは置換** する設計（Phase 8 計画書 §3.5 参照）。Phase 7 ではこの分岐は実装しない。
   - 下半分: Settings（Theme dropdown / Backend address field / Save Layout button — 各 stub OK）
 - **Footer** ([src/ui/footer.rs])
   - 高さ 60px, 下固定

@@ -49,12 +49,19 @@ Phase 8 で backend に追加される責務を網羅列挙する。各項目は
 - 既存 `GetState` の `TradingState` に `mode: "REPLAY" | "LIVE" | "IDLE"` を追加。Live モード時は `replay_state` を `None` にし、代わりに `venue_state` を返す。
 - 既存 `GetPortfolio` は Phase 8 では Live 側からは常に空ポートフォリオを返す（Phase 9 で口座連携）。
 
-### 0.5 Mode Mutual Exclusion
+### 0.5 ExecutionMode と並列稼働
 
-- `ModeManager`（新規）が `ReplayStateMachine` と `VenueStateMachine` の両方を観測。
-- Replay が `LOADED` 以上に上がっている間は `VenueLogin` を `MODE_CONFLICT_REPLAY_ACTIVE` で reject。
-- Venue が `CONNECTED` 以上の間は `LoadReplayData` を `MODE_CONFLICT_LIVE_ACTIVE` で reject。
-- 切替には明示的な `Unload` / `VenueLogout` が必要。UI は確認ダイアログで案内する。
+「Replay engine の稼働」と「Venue 認証 / market data 購読」は **同時並行で動かせる** 設計に変更（旧計画の `ModeManager` 排他案は撤回）。理由は本フェーズ末尾「ADR: 認証と Execution は排他しない」参照。
+
+- `ExecutionMode: Replay | Live` — **発注経路の宛先** だけを決定する明示的なユーザ選択。UI トグルで切替（§3.5.1）
+- `ReplayState` / `VenueState` は独立に遷移し、互いに **排他しない**。具体的には:
+  - Replay `RUNNING` 中に Venue `Login` 可能 → Sidebar の Tickers リストが Live venue universe で更新される（要望: 「Phase 7 のローカル固定銘柄一覧をログインしたら更新する」）
+  - Venue `CONNECTED` 中に `LoadStrategy` / Replay `Run` 可能 → 並行してバックテストを走らせられる
+- `ModeManager` の責務は **発注経路の安全性のみ** に縮約:
+  - `ExecutionMode == Live` を選ぶには `VenueState >= CONNECTED` が必須（未ログインで Live 注文を出させない）
+  - `ExecutionMode == Replay` を選ぶには `ReplayState >= LOADED` が必須（戦略未ロードで Replay 注文を出させない）
+  - 違反は `EXECUTION_MODE_PRECONDITION` エラーで reject
+- 「Replay と Live の二重発注事故」は ExecutionMode が排他であることで構造的に防ぐ。データの読み取り（market data 購読）と認証は二重制約しない
 
 ---
 
@@ -108,11 +115,12 @@ VenueStateMachine (Phase 8 [NEW])
                                      ERROR → (manual reset) → DISCONNECTED
 ```
 
-`ModeManager` は両者を観測し、以下の不変条件を守る:
+`ReplayStateMachine` と `VenueStateMachine` は **完全に独立** に動く。`ModeManager` は両者を観測しつつ、**ExecutionMode（発注経路）の前提条件だけ**を守る:
 
-- `ReplayState ∈ {LOADED, RUNNING, PAUSED, STOPPING}` ⇒ `VenueState == DISCONNECTED`
-- `VenueState ∈ {AUTHENTICATING, CONNECTED, SUBSCRIBED, RECONNECTING}` ⇒ `ReplayState == IDLE`
-- 違反した RPC は `MODE_CONFLICT_*` エラーで reject する（state は変えない）。
+- `ExecutionMode == Live` ⇒ `VenueState >= CONNECTED` が必須（未ログインで Live モードに切替不可、`EXECUTION_MODE_PRECONDITION` で reject）
+- `ExecutionMode == Replay` ⇒ `ReplayState >= LOADED` が必須（戦略未ロードで Replay モードに切替不可）
+- ただし `Login` / `Logout` / `LoadStrategy` / `Unload` 自体は **どの ExecutionMode** でも、**どの相手側 state** でも実行可能。
+- 発注 RPC（Phase 9 で追加予定）は ExecutionMode を見て宛先を決める。`Replay` モードなら必ず simulator、`Live` モードなら必ず venue、誤配は構造的に発生しない。
 
 ### 1.3 LiveVenueAdapter Protocol
 
@@ -177,16 +185,19 @@ class LiveVenueAdapter(Protocol):
 
 ## 3. Tasks
 
-### 3.1 Backend: Mode 排他 & State 拡張
+### 3.1 Backend: ExecutionMode & State 拡張
 
-- `python/engine/mode_manager.py` を新設。`ReplayStateMachine` への参照と `VenueStateMachine` の owner を兼ねる。
+- `python/engine/mode_manager.py` を新設。`ReplayStateMachine` / `VenueStateMachine` の両 owner を保持し、**ExecutionMode** の遷移ガードのみを担う（排他制御は持たない）。
 - `TradingState` (`python/engine/models.py`) に以下を追加:
-  - `mode: Literal["IDLE", "REPLAY", "LIVE"]`
-  - `venue_state: Optional[str]` (`DISCONNECTED` 等)
+  - `execution_mode: Literal["Replay", "Live"]` — 発注経路の宛先（既定 `"Replay"`）
+  - `replay_state: Optional[str]` — Replay engine の状態（既存）
+  - `venue_state: Optional[str]` (`DISCONNECTED` 等) — Venue 接続状態（独立）
   - `venue_id: Optional[str]`
   - `subscribed_instruments: list[str]`
-- `core.py::get_current_state()` を更新。Replay 側の値は既存ロジックを維持し、Live 側は `live_runner` の状態を参照する。
-- 既存の `LoadReplayData` / `StartEngine` に **Mode ガード** を追加。`VenueState != DISCONNECTED` なら `MODE_CONFLICT_LIVE_ACTIVE` で reject。
+- `core.py::get_current_state()` を更新。Replay 側と Venue 側を**並列で**返す。どちらかが NULL ということは無い（IDLE 等は値を持つ）。
+- `LoadReplayData` / `StartEngine` / `VenueLogin` 系の Mode ガードは **撤廃**。Replay 中の Login も、Live 接続中の Replay Load も許可する。
+- **新 RPC `SetExecutionMode(mode)`** を追加。`Replay` / `Live` の切替を明示的に行い、前提条件不足なら `EXECUTION_MODE_PRECONDITION` で reject。
+- `ListInstruments` を **Phase 7 で導入予定の `source="replay"` に `source="live"` を追加**（既存 RPC を拡張）。Phase 7 で先に skeleton が作られている前提。
 
 ### 3.2 Backend: LiveVenueAdapter & 具象実装
 
@@ -264,13 +275,25 @@ python/engine/
 ```protobuf
 service Engine {
   // ... existing replay RPCs ...
+  // Phase 7 で追加済み: ListInstruments(source="replay")
 
   // Phase 8
   rpc VenueLogin (VenueLoginRequest) returns (VenueLoginResponse);
   rpc VenueLogout (VenueLogoutRequest) returns (VenueControlResponse);
-  rpc ListInstruments (ListInstrumentsRequest) returns (ListInstrumentsResponse);
+  // ListInstruments は Phase 7 のものを拡張 (source="live" を受け付ける)
   rpc SubscribeMarketData (SubscribeRequest) returns (SubscribeResponse);
   rpc UnsubscribeMarketData (UnsubscribeRequest) returns (SubscribeResponse);
+  rpc SetExecutionMode (SetExecutionModeRequest) returns (SetExecutionModeResponse);
+}
+
+message SetExecutionModeRequest {
+  string mode = 1;   // "Replay" / "Live"
+}
+
+message SetExecutionModeResponse {
+  bool success = 1;
+  string error_code = 2;  // "EXECUTION_MODE_PRECONDITION" 等
+  string execution_mode = 3;  // 切替後の実際の値
 }
 
 message VenueLoginRequest {
@@ -302,26 +325,57 @@ message SubscribeRequest {
 
 - `src/trading.rs`:
   - `VenueState` enum（Python と同期）と `VenueStatusRes` Resource を追加
+  - `ExecutionMode` enum (`Replay` / `Live`) と `ExecutionModeRes` Resource を追加
   - `BackendStatusUpdate::VenueChanged { state, venue_id, instruments_loaded }` を追加
-  - `GetState` の戻り値から `venue_state` を吸い上げて Resource を更新
+  - `BackendStatusUpdate::ExecutionModeChanged { mode }` を追加
+  - `GetState` の戻り値から `venue_state` / `execution_mode` を吸い上げて Resource を更新
 - `src/ui/menu_bar.rs`:
   - File メニューの下に **Venue メニュー** を追加（枠は Phase 7 で予約済み）
-  - `Connect → Tachibana (Demo) / Tachibana (Prod) / kabu Station` のサブ項目
+  - `Connect → Tachibana (Demo) / Tachibana (Prod) / kabuStation (Verify) / kabuStation (Prod)` のサブ項目
   - `Disconnect` 項目
   - クリックで `VenueConnectRequested(venue_id, env)` イベント発火 → backend へ `VenueLogin(credentials_source="prompt")` RPC を投げる。
   - **Rust 側にはログインフォームを実装しない**（資格情報を Rust プロセスに乗せないため）。クリック後は Python 側のログインウィンドウがフォーカスを取り、ユーザがそこで入力 → 結果が `VenueStateBadge` に反映されるのを待つだけ。
+  - **重要**: Venue → Connect は **mode 切替を伴わない**。Replay 稼働中でも実行可能で、成功すると Sidebar Tickers が Live universe で更新される
 - `src/ui/footer.rs`:
+  - 既存の `ReplayStateBadge` の左に **`ExecutionModeToggle`** (§3.5.1) を追加
   - 既存の `ReplayStateBadge` の右隣に `VenueStateBadge` を追加（DISCONNECTED=gray / CONNECTED=cyan / SUBSCRIBED=green / ERROR=red）
-  - mode が `LIVE` のときは `ReplayStateBadge` を `—` 表示にする
+  - **両バッジ常時表示**: Replay と Venue は独立に遷移するため、どちらの状態も常に見えるようにする（旧計画の「LIVE 時は ReplayStateBadge を — 表示」は撤回）
 - `src/ui/sidebar.rs`:
-  - Tickers リストのソースを切替: `mode == REPLAY` ⇒ 従来の CSV scan / `mode == LIVE` ⇒ `ListInstruments` RPC 結果（数千銘柄になるので検索ボックス + 仮想スクロール必須）
-  - 銘柄クリックで `SubscribeMarketData` を発行し `SelectedSymbol` を更新
+  - Tickers Resource は **Replay と Live の和集合** で構成:
+    - `replay_instruments: Vec<InstrumentInfo>` — `ListInstruments(source="replay")` の結果（Phase 7 で取得）
+    - `live_instruments: Vec<InstrumentInfo>` — `ListInstruments(source="live")` の結果（Phase 8 で venue ログイン成功時に取得）
+    - 表示は `venue_hint` で **タブまたはセクション分け**（[Replay catalog] / [Live: Tachibana] / [Live: kabu]）。MVP は単純な階層リスト
+    - 数千銘柄になる Live 側のために検索ボックス + 仮想スクロールを必須
+  - 銘柄クリック動作は `ExecutionMode` で分岐:
+    - `Replay` mode: `SelectedSymbol` 更新のみ（Replay engine が既に該当銘柄のバーを引いていれば Kline に反映）
+    - `Live` mode: `SelectedSymbol` 更新 + `SubscribeMarketData` 発行
 
-### 3.6 UI: Mode 排他の UX
+### 3.5.1 ExecutionModeToggle (Footer)
 
-- Replay 実行中に Venue メニューから接続を試みた場合: 確認ダイアログ「Replay セッションを終了して Live に切り替えますか？ [切り替える] [キャンセル]」 → 切り替える時は `Unload` → `VenueLogin` を順に発火。
-- 逆方向も同様。File→Open Strategy を Live 接続中に押した場合は `VenueLogout` 確認を挟む。
-- 確認ダイアログは Phase 7 の `ModalLayer` 機構を流用。
+Footer 左端に明示的なモード切替トグルを置く。「いま自分はどちらモードか」「切替操作の入口」を 1 箇所に集約する。
+
+```
+[ Replay ◐ Live ]   ReplayState: RUNNING   VenueState: SUBSCRIBED (Tachibana)
+```
+
+- セグメントコントロール風 (2 値) で、現モードがハイライト
+- クリックで反対側へ切替試行 → `SetExecutionMode(target_mode)` RPC を発行
+- 前提条件不足時の挙動:
+  - `Replay` → `Live` クリック時に未ログインなら、確認ダイアログ「Live モードに切り替えるには venue ログインが必要です。今すぐログインしますか？ [ログイン] [キャンセル]」 → 承認で `VenueLogin` を起動、成功後に `SetExecutionMode(Live)` を再試行
+  - `Live` → `Replay` クリック時に戦略未ロードなら、確認ダイアログ「Replay モードに切り替えるには戦略ファイルを開く必要があります。[開く] [キャンセル]」 → 承認で File → Open Strategy のフローへ
+- **mode 切替は Replay/Venue いずれの稼働も止めない**。たとえば「Live → Replay」切替後も Venue 接続は継続して market data 購読され、Sidebar の Live 銘柄欄も表示され続ける。発注経路の宛先だけが Replay simulator に切り替わる
+- 確認ダイアログ（特に Live → Replay）に「**注意**: Live 注文の発射経路が無効になります。既存の Live ポジションは venue 側にそのまま残ります」の警告を出す（Phase 9 で発注経路を実装したら活きる）
+
+### 3.6 UI: モード関連の UX フロー
+
+「Replay と Live は並列稼働可能。発注経路の宛先だけが ExecutionMode で決まる」を踏まえた UX。
+
+- **Replay 中の Venue → Connect**: 確認ダイアログ無しで即座に `VenueLogin` を発火。成功時に Sidebar Tickers の Live セクションが populate される。Replay engine は **止めない**
+- **Live 接続中の File → Open Strategy**: 確認ダイアログ無しで戦略ロード可能。`StrategyEditorWindow` が開き、`[▶ Run]` を押せば Replay engine が並列に立ち上がる。Venue 接続は **切らない**
+- **ExecutionMode の切替** は §3.5.1 の Footer トグル経由で明示的に行う。Venue → Connect / File → Open は ExecutionMode を勝手に切り替えない
+- **Venue → Disconnect 時に ExecutionMode=Live なら**: 確認ダイアログ「Venue を切断すると Live モードを維持できません。Replay モードに切り替えますか？ [切替えて切断] [キャンセル]」（戦略未ロードなら「IDLE に戻ります」と案内）
+- **File → New / Unload 時に ExecutionMode=Replay なら**: 確認ダイアログ「戦略をアンロードすると Replay モードを維持できません。Live モードに切り替えますか？ [切替えてアンロード] [キャンセル]」（未ログインなら「IDLE に戻ります」と案内）
+- 確認ダイアログは Phase 7 の `ModalLayer` 機構を流用
 
 ### 3.7 Live Market Data → 既存パネル + LadderWindow 新設
 
@@ -400,14 +454,18 @@ src/ui/floating/
    - `live_runner.py` / `live/adapter.py` / `live/state_machine.py` のスケルトン
    - `MockVenueAdapter`（固定銘柄 3 つ、ランダムウォーク価格を秒間 1 tick yield）
    - `ModeManager` の排他ロジックと unit test
-2. **Step 2 — gRPC RPC & Mode 排他確認**:
-   - 5 つの新 RPC を proto に追加 → stubs 再生成
+2. **Step 2 — gRPC RPC & 並列稼働確認**:
+   - 新 RPC を proto に追加 (`VenueLogin` / `VenueLogout` / `SubscribeMarketData` / `UnsubscribeMarketData` / `SetExecutionMode`) → stubs 再生成
+   - `ListInstruments` に `source="live"` 対応を追加（`source="replay"` は Phase 7 で実装済みの想定）
    - Rust `trading.rs` から RPC を叩き、`MockVenueAdapter` 経由で `VenueState` が `SUBSCRIBED` まで進むことを確認
-   - Replay 実行中の `VenueLogin` が `MODE_CONFLICT` で reject されることを確認
-3. **Step 3 — UI 表示**:
+   - **Replay 実行中でも `VenueLogin` が成功する** ことを確認（旧 `MODE_CONFLICT` 仕様は撤回されているため、reject されないことが正）
+   - `SetExecutionMode("Live")` を未ログイン状態で叩くと `EXECUTION_MODE_PRECONDITION` で reject されることを確認
+3. **Step 3 — UI 表示 (ExecutionModeToggle + バッジ)**:
    - `VenueStateBadge` を Footer に追加
+   - **`ExecutionModeToggle` を Footer 左端に追加**（`Replay ⇄ Live` セグメントコントロール）
    - `Venue → Connect (Mock)` メニュー項目
-   - mock で `SUBSCRIBED` になると Footer バッジが緑になるところまで
+   - mock で `SUBSCRIBED` になると Footer バッジが緑になり、トグルで `Live` 側に切替可能になる挙動を確認
+   - Replay 中（`ReplayState=RUNNING`）でも Venue → Connect が受理されること、両バッジが並列に正しく表示されることを目視確認
 4. **Step 4 — Snapshot Reducer 接続 + LadderWindow 新設**:
    - `MockVenueAdapter` の tick を `reducer` 経由で `TradingState` に流す
    - `KlineChartWindow` が Live モードで mock データを描画できることを確認
@@ -446,7 +504,8 @@ src/ui/floating/
 
 ## 6. Success Criteria
 
-- Replay 実行中に Venue メニューから接続を試みると、確認ダイアログを経由しない限り `MODE_CONFLICT_REPLAY_ACTIVE` が UI に表示され、Replay は中断されない。
+- Replay 実行中に Venue メニューから接続すると、Replay engine は **中断されずに継続し**、ログイン成功時点で Sidebar Tickers パネルに Live セクションが追加される。
+- Footer の `ExecutionModeToggle` で `Replay ⇄ Live` を切替できる。前提条件不足時は確認ダイアログ経由で前段操作（Login / Open Strategy）へ誘導される。
 - Venue メニュー → `kabuStation (Verify)` 接続（kabuステーション本体 18081 起動済み前提）→ `/token` 取得 → 銘柄登録 3 件 → Sidebar に表示、までが手動 E2E で通る（**Windows 上で実施**、CI では同等を httpx-mock で再現）。
 - Sidebar から 1 銘柄選択 → 数秒以内に Kline / Ladder が Live データで更新を開始する（kabu の場合は `PUT /register` → WebSocket PUSH 経由）。
 - kabuステーション本体が未起動 / API オプション無効 / 本体ログアウト状態の各ケースで原因別エラー (`KABU_STATION_NOT_RUNNING` / `KABU_API_DISABLED` / `4001001`) が分離されてトーストに出る。
@@ -466,7 +525,19 @@ src/ui/floating/
 ## 7. Open Questions & ADRs
 
 ### ADR: Live は別 runner として完全分離する
-`replay_runner.py` に live モードのフラグを足す案を採らず、`live_runner.py` を独立させる。理由: (1) Replay は決定論的なシミュレータでデバッグの中心。Live コードが混ざると再現性が壊れる。(2) `TradingNode` 由来の live execution を将来取り込むときも、Replay 系統に影響を与えないため。(3) `ModeManager` で排他を構造的に保証できる。
+`replay_runner.py` に live モードのフラグを足す案を採らず、`live_runner.py` を独立させる。理由: (1) Replay は決定論的なシミュレータでデバッグの中心。Live コードが混ざると再現性が壊れる。(2) `TradingNode` 由来の live execution を将来取り込むときも、Replay 系統に影響を与えないため。(3) Replay engine と Live venue を並列稼働させても、互いのコードパスが独立しているため副作用が漏れない。
+
+### ADR: 認証と Execution は排他しない（旧 ModeManager 排他案の撤回）
+初稿では `ReplayState >= LOADED` と `VenueState >= CONNECTED` を相互排他にし、片方が稼働中はもう片方を `MODE_CONFLICT_*` で reject する設計だった。これを **撤回** し、両 state machine を完全独立に動かす。代わりに `ExecutionMode: Replay | Live` という新しい明示的フラグを導入し、**発注経路の宛先だけ**を排他する。
+
+理由:
+1. **ユーザ要望**: 「Phase 7 のローカル固定銘柄一覧をログインしたら更新する」という UX を成立させるには、Replay 稼働中の venue ログインを許可する必要がある。排他制約を残したままだとログイン操作のたびに Replay セッションを破棄する確認ダイアログが出てしまい、流れが断たれる。
+2. **データ読取と発注は別問題**: market data 購読は read-only なので Replay と並行しても整合性に影響しない。誤発注事故は「発注 RPC が Replay simulator と Live venue のどちらに飛ぶか」だけが問題で、それは ExecutionMode で十分に守れる。
+3. **将来の Promote to Live (Phase 10) との親和性**: Phase 10 は「Replay で動いた戦略をそのまま Live に昇格」する。これは本質的に Replay と Live が同時に立ち上がっている瞬間を必要とする（昇格のためのウォームアップ）。排他制約があると Phase 10 でその制約を解く再設計が必要になる。今から撤廃しておくほうが整合的。
+4. **ExecutionMode の前提条件チェックで十分**: `Live` への切替は `VenueState >= CONNECTED` 必須、`Replay` への切替は `ReplayState >= LOADED` 必須、というガードを ModeManager に残せば「未認証で Live 注文」「戦略未ロードで Replay 注文」は構造的に発生しない。
+
+### ADR: ExecutionMode は明示的な UI トグルで切替える
+ExecutionMode 切替は Venue → Connect や File → Open Strategy などの **副作用として暗黙に**起こさず、Footer の `ExecutionModeToggle` を経由する明示操作のみとする。理由: (1) ログインしただけで Live モードに切り替わると「ちょっと銘柄一覧を見たかっただけ」のユーザを驚かせる。(2) 発注経路の宛先という重要事項を暗黙切替にすると事故の温床になる。(3) UI 上「いま自分はどちらモードか」を Footer の 1 箇所で常に確認できる利点もある。
 
 ### ADR: 資格情報を Rust UI 側に持たせない
 平文の API key / パスワードを gRPC ペイロードに乗せないため、`VenueLoginRequest` には `credentials_source` だけを乗せる。Backend が prompt / session_cache / env から自前で resolve する。理由: gRPC ログ・コアダンプ・OS の swap 経由で漏れる経路を構造的に塞ぐ。Rust 側に資格情報 UI を作る必要も無くなる。
