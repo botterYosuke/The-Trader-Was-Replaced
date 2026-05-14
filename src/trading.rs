@@ -279,6 +279,7 @@ pub struct LastRunResult {
     pub run_id: Option<String>,
     pub summary_json: Option<String>,
     pub parsed_summary: Option<RunSummary>,
+    pub state_label: Option<String>,
 }
 
 #[cfg(test)]

@@ -58,7 +58,9 @@ enum BackendStatusUpdate {
     Connected(bool),
     Running(bool),
     Error(String),
+    RunStarted,
     RunComplete { run_id: String, summary_json: String },
+    RunFailed { error: String },
 }
 
 
@@ -75,11 +77,18 @@ fn status_update_system(
                 status.last_error = Some(e);
                 status.connected = false;
             }
+            BackendStatusUpdate::RunStarted => {
+                last_run.state_label = Some("Running…".to_owned());
+            }
             BackendStatusUpdate::RunComplete { run_id, summary_json } => {
                 info!("RunComplete: run_id={} summary={}", run_id, summary_json);
                 last_run.parsed_summary = parse_summary_json(&summary_json);
                 last_run.run_id = Some(run_id);
                 last_run.summary_json = Some(summary_json);
+                last_run.state_label = Some("Completed".to_owned());
+            }
+            BackendStatusUpdate::RunFailed { error } => {
+                last_run.state_label = Some(format!("Failed: {}", error));
             }
         }
     }
@@ -192,6 +201,7 @@ fn setup_backend_connection(
                             "RunStrategy: step1 LoadReplayData instruments={:?} start={:?} end={:?} granularity={:?} catalog_path={:?}",
                             config.instruments, config.start, config.end, config.granularity, catalog_path
                         );
+                        let _ = status_tx.send(BackendStatusUpdate::RunStarted);
 
                         // Step 1: LoadReplayData (IDLE → LOADED)
                         let load_req = tonic::Request::new(LoadReplayDataRequest {
@@ -208,16 +218,17 @@ fn setup_backend_connection(
                             Ok(r) => {
                                 let inner = r.into_inner();
                                 if !inner.success {
-                                    error!(
-                                        "LoadReplayData rejected: code={}, msg={}",
-                                        inner.error_code, inner.error_message
-                                    );
+                                    let msg = format!("LoadReplayData: {} {}", inner.error_code, inner.error_message);
+                                    error!("{}", msg);
+                                    let _ = status_tx.send(BackendStatusUpdate::RunFailed { error: msg });
                                     continue; // do not proceed to StartEngine
                                 }
                                 info!("LoadReplayData ok, state={:?}", inner.current_state);
                             }
                             Err(e) => {
-                                error!("LoadReplayData gRPC error: {}", e);
+                                let msg = format!("LoadReplayData gRPC error: {}", e);
+                                error!("{}", msg);
+                                let _ = status_tx.send(BackendStatusUpdate::RunFailed { error: msg });
                                 continue;
                             }
                         }
@@ -254,14 +265,20 @@ fn setup_backend_connection(
                                         });
                                     }
                                 } else {
-                                    error!(
-                                        "StartEngine rejected: code={}, msg={}",
+                                    let msg = format!(
+                                        "StartEngine: {} {}",
                                         inner.error_code.as_deref().unwrap_or(""),
                                         inner.error_message.as_deref().unwrap_or(""),
                                     );
+                                    error!("{}", msg);
+                                    let _ = status_tx.send(BackendStatusUpdate::RunFailed { error: msg });
                                 }
                             }
-                            Err(e) => error!("StartEngine gRPC error: {}", e),
+                            Err(e) => {
+                                let msg = format!("StartEngine gRPC error: {}", e);
+                                error!("{}", msg);
+                                let _ = status_tx.send(BackendStatusUpdate::RunFailed { error: msg });
+                            }
                         }
                     }
                 }

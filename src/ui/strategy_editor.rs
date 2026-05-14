@@ -67,6 +67,16 @@ pub fn strategy_editor_window_system(
             ui.separator();
 
             if let Some(run) = &last_run {
+                if let Some(label) = &run.state_label {
+                    let (text, color) = if label.starts_with("Failed") {
+                        (label.as_str(), egui::Color32::from_rgb(255, 51, 102))
+                    } else if label == "Running…" {
+                        (label.as_str(), egui::Color32::from_rgb(255, 200, 0))
+                    } else {
+                        (label.as_str(), egui::Color32::from_rgb(0, 255, 127))
+                    };
+                    ui.label(egui::RichText::new(text).small().color(color));
+                }
                 if let Some(run_id) = &run.run_id {
                     ui.horizontal(|ui| {
                         ui.label(egui::RichText::new("Last run:").small().color(egui::Color32::from_rgb(0, 207, 255)));
