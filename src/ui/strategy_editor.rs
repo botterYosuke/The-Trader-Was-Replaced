@@ -1,7 +1,7 @@
 use bevy::prelude::*;
 use bevy_egui::{egui, EguiContexts};
 use crate::ui::components::{StrategyBuffer, StrategyRunRequested};
-use crate::trading::LastRunResult;
+use crate::trading::{LastRunResult, RunState};
 
 pub fn strategy_editor_window_system(
     mut contexts: EguiContexts,
@@ -67,15 +67,17 @@ pub fn strategy_editor_window_system(
             ui.separator();
 
             if let Some(run) = &last_run {
-                if let Some(label) = &run.state_label {
-                    let (text, color) = if label.starts_with("Failed") {
-                        (label.as_str(), egui::Color32::from_rgb(255, 51, 102))
-                    } else if label == "Running…" {
-                        (label.as_str(), egui::Color32::from_rgb(255, 200, 0))
-                    } else {
-                        (label.as_str(), egui::Color32::from_rgb(0, 255, 127))
-                    };
-                    ui.label(egui::RichText::new(text).small().color(color));
+                match &run.state {
+                    RunState::Idle => {}
+                    RunState::Running => {
+                        ui.label(egui::RichText::new("Running…").small().color(egui::Color32::from_rgb(255, 200, 0)));
+                    }
+                    RunState::Completed => {
+                        ui.label(egui::RichText::new("Completed").small().color(egui::Color32::from_rgb(0, 255, 127)));
+                    }
+                    RunState::Failed { error } => {
+                        ui.label(egui::RichText::new(format!("Failed: {}", error)).small().color(egui::Color32::from_rgb(255, 51, 102)));
+                    }
                 }
                 if let Some(run_id) = &run.run_id {
                     ui.horizontal(|ui| {

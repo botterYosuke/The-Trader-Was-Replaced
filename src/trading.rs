@@ -274,12 +274,21 @@ pub fn parse_summary_json(json: &str) -> Option<RunSummary> {
     })
 }
 
+#[derive(Debug, Clone, PartialEq, Default)]
+pub enum RunState {
+    #[default]
+    Idle,
+    Running,
+    Completed,
+    Failed { error: String },
+}
+
 #[derive(Resource, Default, Debug, Clone)]
 pub struct LastRunResult {
     pub run_id: Option<String>,
     pub summary_json: Option<String>,
     pub parsed_summary: Option<RunSummary>,
-    pub state_label: Option<String>,
+    pub state: RunState,
 }
 
 #[cfg(test)]

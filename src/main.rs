@@ -1,6 +1,6 @@
 use backcast::trading::{
     backend_update_system, engine, parse_summary_json, price_simulation_system, BackendChannel,
-    BackendStatus, LastRunResult, TradingData, TradingSettings, TransportCommand,
+    BackendStatus, LastRunResult, RunState, TradingData, TradingSettings, TransportCommand,
     TransportCommandSender,
 };
 use backcast::ui::UiPlugin;
@@ -78,17 +78,17 @@ fn status_update_system(
                 status.connected = false;
             }
             BackendStatusUpdate::RunStarted => {
-                last_run.state_label = Some("Running…".to_owned());
+                last_run.state = RunState::Running;
             }
             BackendStatusUpdate::RunComplete { run_id, summary_json } => {
                 info!("RunComplete: run_id={} summary={}", run_id, summary_json);
                 last_run.parsed_summary = parse_summary_json(&summary_json);
                 last_run.run_id = Some(run_id);
                 last_run.summary_json = Some(summary_json);
-                last_run.state_label = Some("Completed".to_owned());
+                last_run.state = RunState::Completed;
             }
             BackendStatusUpdate::RunFailed { error } => {
-                last_run.state_label = Some(format!("Failed: {}", error));
+                last_run.state = RunState::Failed { error };
             }
         }
     }
