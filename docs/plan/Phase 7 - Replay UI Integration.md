@@ -681,4 +681,14 @@ StartEngine ok, state=RUNNING
   ```
 - **Next task**: Transport / Sidebar 実装、または `RunState` enum 化（`state_label` 文字列判定を型安全にする）
 
+### 2026-05-14 RunState enum 化
+
+- `LastRunResult.state_label: Option<String>` を `state: RunState` に置き換え
+- `RunState` enum: `Idle / Running / Completed / Failed { error: String }` — `#[default]` で `Idle`
+- `src/main.rs`: `RunStarted/RunComplete/RunFailed` ハンドラが `RunState` を直接セット
+- `src/ui/strategy_editor.rs`: `starts_with("Failed")` 文字列判定を `match &run.state` に置き換え
+- `cargo check` OK / `cargo test scenario_parser` 4/4 / `cargo test parse_summary_json` 3/3
+- commit: `9ef9f64`
+- **Next task**: Transport / Sidebar のどちらへ進むか決定
+
 ---
