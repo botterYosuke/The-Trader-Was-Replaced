@@ -889,7 +889,7 @@ MVP コアの「Open Strategy → Run → Pause / Resume / StepForward / ForceSt
 | 項目 | 状態 | 推奨 |
 |---|---|---|
 | Sidebar: 銘柄一覧 (`ListInstruments` RPC) | 未実装 | Phase 7 継続 ← 最優先 |
-| KlineChartWindow: ローソク足対応 (`chart.rs` 拡張) | 未実装（line chart のみ） | Phase 7 継続 |
+| KlineChartWindow: ローソク足対応 (`chart.rs` 拡張) | Step 1 実装済み（最新バー 1 本のみ、複数本 candle は未実装） | Phase 7 継続 |
 | Footer: SpeedSelector UI (SetReplaySpeed は proto 済み) | 未実装 | Phase 7 継続 |
 | Footer: ProgressBar + パーセント | 未実装 | Phase 8 でも可 |
 | BuyingPowerPanel / PositionsPanel / OrdersPanel | 未実装 | GetPortfolio RPC と同時に |
