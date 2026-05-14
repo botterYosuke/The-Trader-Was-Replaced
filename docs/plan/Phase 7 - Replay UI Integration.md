@@ -725,4 +725,19 @@ StartEngine ok, state=RUNNING
 - commit: `d50bf65`
 - **Next task**: Transport 制御（Step-back / Jump-to-start gRPC 接続）または Kline Chart 改善
 
+### 2026-05-14 Transport Pause / StepForward E2E
+
+- `footer.rs` + `main.rs` は既に Pause / Resume / StepForward の gRPC 接続が実装済みだった（コード変更不要）
+- **E2E verified** (`test_strategy_minute.py` 使用):
+  - `PauseReplay ok, state=3` (PAUSED) — Pause ボタン動作確認
+  - `StepReplay ok, state=3` × 17 件 — StepForward 連打、全て成功
+  - Footer `state: PAUSED` 表示も一致
+- **Bug fix**: `test_strategy_minute.py` の SCENARIO が `"instrument"` (v2/単数) で Python バリデーターが `"instruments"` を要求しエラー
+  - `strategy_loader.py` で v2/v3 の `"instrument"` → `"instruments"` 正規化を追加
+  - `scenario.py` validate() にも defensive 正規化を追加
+  - Python scenario tests 35 passed / Rust tests 16 passed
+  - commit: `e5189e1`
+- **Note**: Run Result が `Completed` のまま PAUSED になるのは正常 — StartEngine が全 bars を同期実行して完了後に PauseReplay が届いた順序による
+- **Next task**: Jump-to-start / Step-back の gRPC 接続、または Kline Chart 表示改善
+
 ---
