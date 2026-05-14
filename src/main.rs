@@ -224,7 +224,7 @@ fn setup_backend_connection(
                                 instrument_ids: config.instruments.clone(),
                                 start_date: Some(config.start.clone()),
                                 end_date: Some(config.end.clone()),
-                                initial_cash: None,
+                                initial_cash: config.initial_cash.map(|v| v.to_string()),
                                 granularity: granularity_i32,
                                 strategy_file: Some(strategy_file_str),
                                 strategy_init_kwargs: None,
