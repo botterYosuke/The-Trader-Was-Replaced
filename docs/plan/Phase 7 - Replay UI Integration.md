@@ -33,6 +33,7 @@
 | `207b60c` | Bevy setup 内で Tokio runtime context が無い問題を `TokioHandle` resource で修正 | ✅ |
 | `3af5f3e` | MenuBar shell と `Open Strategy...` ボタンを追加 | ✅ |
 | `fecdb9a` | `rfd` file dialog と `OpenStrategyRequested` event を接続 | ✅ |
+| `af262f9` | `StrategyBuffer` resource と `open_strategy_buffer_system` を追加 | ✅ |
 
 ### Verified State
 
@@ -43,8 +44,9 @@
 - ✅ `MenuButton::OpenStrategy` 押下時は `info!("menu: open strategy requested")` を出すだけの shell。
 - ✅ File dialog (`rfd`) で `.py` を選択できる。
 - ✅ 選択 path は `OpenStrategyRequested { path }` event として Bevy 内に流れる。
+- ✅ 選択 path の `.py` source を `StrategyBuffer` resource に読み込める。
 - 未実装: StrategyEditorWindow。
-- 未実装: StrategyBuffer / cache copy。
+- 未実装: Strategy cache copy / cache metadata。
 - 未実装: `Run` / `StepBack` / `JumpToStart` の実 RPC 接続。
 
 ### ADR 2026-05-14: MenuBar は Bevy UI の thin shell から始める
@@ -115,6 +117,74 @@ Known tradeoff:
 - `rfd::FileDialog::pick_file()` は同期 API のため、dialog 表示中は Bevy の画面更新が止まる。MVP shell として許容し、cache copy / StrategyEditor 実装時に必要なら非同期化を検討する。
 
 ### Next Task: Strategy Buffer Shell
+
+`af262f9` で完了。
+
+- ✅ `src/ui/components.rs` に `StrategyBuffer { original_path, cache_path, source, dirty }` resource を追加。
+- ✅ `src/ui/menu_bar.rs` に `open_strategy_buffer_system` を追加。
+- ✅ `OpenStrategyRequested` を受けて `std::fs::read_to_string` し、`StrategyBuffer.source` に保持する。
+- ✅ 読み込み成功時は `strategy buffer loaded: ..., bytes=...` を出す。
+- ✅ 読み込み失敗時は `error!` で path と error を出す。
+- ✅ `UiPlugin` で `.init_resource::<StrategyBuffer>()` と `open_strategy_buffer_system` を登録。
+
+ADR / Note:
+
+- `log_open_strategy_requested_system` と `open_strategy_buffer_system` は同じ `OpenStrategyRequested` event を読むが、Bevy の `EventReader` は reader ごとに独立した cursor を持つため問題ない。
+- この段階では元ファイルへは書き込まない。`StrategyBuffer` は read-only load の受け皿。
+- `cache_path` はまだ `None`。次の cache copy 実装で埋める。
+
+検証:
+
+```powershell
+$env:BACKEND_ENABLED="false"
+cargo run
+```
+
+合格条件:
+
+- ✅ `Open Strategy...` で `.py` を選ぶ。
+- ✅ `StrategyBuffer` に `original_path` と `source` が入る。
+- ✅ ログに path と bytes が出る。
+- ✅ 元ファイルには一切書き込まない。
+- ✅ `cargo check` が通る。
+
+### Next Task: Strategy Cache Copy Shell
+
+次の作業者はここから始める。目的は「StrategyEditor が編集する作業ファイル」を OS cache 配下に作ること。まだ本格的な editor UI は作らない。
+
+1. `dirs` と `sha2` を `Cargo.toml` に追加する。
+2. cache directory を作る helper を追加する。
+3. `OpenStrategyRequested` で元ファイルを読んだあと、cache file にコピーする。
+4. `StrategyBuffer.cache_path` に cache file path を入れる。
+5. sidecar metadata は次 step でもよい。まずは cache file ができるところまで。
+6. 元ファイルは絶対に書き換えない。
+7. `cargo check`。
+
+推奨 cache path:
+
+```text
+dirs::cache_dir()/the-trader-was-replaced/strategy_buffers/{sha256(original_abs_path)[..16]}__{original_filename}
+```
+
+推奨 helper の責務:
+
+```text
+strategy_cache_dir() -> PathBuf
+strategy_cache_path(original_path: &Path) -> PathBuf
+copy_strategy_to_cache(original_path: &Path) -> Result<(PathBuf, String), Error>
+```
+
+Acceptance Criteria:
+
+- `Open Strategy...` で `.py` を選ぶ。
+- 元ファイル内容が `StrategyBuffer.source` に入る。
+- cache file が OS cache 配下に作られる。
+- `StrategyBuffer.cache_path` が `Some(...)` になる。
+- ログに original path / cache path / bytes が出る。
+- 元ファイルには一切書き込まない。
+- `cargo check` が通る。
+
+### Previous Task: Strategy Buffer Shell Design
 
 次の作業者はここから始める。目的は「元の `.py` ファイルを直接編集しない」ための buffer/cache 境界を作ること。まだ本格的な code editor は作らない。
 
