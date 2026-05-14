@@ -53,7 +53,10 @@ Phase 7 の UI が担う役割を網羅的に列挙する。各項目は §3 以
 ### 0.3 アプリ / レイアウト操作
 
 - **File メニュー**: New / Open Strategy... / Save Layout (stub) / Exit
-  - **New** は空の戦略バッファを開き、`IDLE` 状態へ遷移させる（実質的な Unload を兼ねる）
+  - **New** は現在の戦略をアンロードして **Live Manual モードへ戻る**（Phase 8 以降の既定動作）。Phase 7 は Replay 専用フェーズのため、IDLE 遷移として実装し、Phase 8 で Live Manual へ挙動を更新する
+  - **Open Strategy...** は `.py` ファイルを選択する。**現在の ExecutionMode によって遷移先が変わる**（Phase 8 で確立）:
+    - Replay モードのとき → Replay バックテストとしてロード（本フェーズの設計）
+    - Live モード（Manual / Auto）のとき → **Live Auto モードに切替え**（Phase 8 で実装）
 - **Floating Window 操作**: ドラッグ移動 / リサイズ / 前面化 (z-order) / 表示・非表示トグル
 - **Infinite Canvas 操作**: パン / ズーム（視点変更）
 - **Sidebar からの銘柄選択**（`SelectedSymbol` 更新 → Kline の対象銘柄が連動。Ladder は Phase 8 で連動）
