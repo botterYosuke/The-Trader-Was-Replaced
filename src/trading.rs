@@ -250,10 +250,35 @@ pub fn backend_update_system(
     }
 }
 
+#[derive(Debug, Clone)]
+pub struct RunSummary {
+    pub fills_count: i64,
+    pub equity_points: i64,
+    pub total_pnl: f64,
+    pub status: String,
+}
+
+pub fn parse_summary_json(json: &str) -> Option<RunSummary> {
+    let v: serde_json::Value = match serde_json::from_str(json) {
+        Ok(v) => v,
+        Err(e) => {
+            warn!("failed to parse summary_json: {}", e);
+            return None;
+        }
+    };
+    Some(RunSummary {
+        fills_count: v["fills_count"].as_i64().unwrap_or(0),
+        equity_points: v["equity_points"].as_i64().unwrap_or(0),
+        total_pnl: v["total_pnl"].as_f64().unwrap_or(0.0),
+        status: v["status"].as_str().unwrap_or("unknown").to_owned(),
+    })
+}
+
 #[derive(Resource, Default, Debug, Clone)]
 pub struct LastRunResult {
     pub run_id: Option<String>,
     pub summary_json: Option<String>,
+    pub parsed_summary: Option<RunSummary>,
 }
 
 #[cfg(test)]

@@ -72,23 +72,22 @@ pub fn strategy_editor_window_system(
                         ui.label(egui::RichText::new("Last run:").small().color(egui::Color32::from_rgb(0, 207, 255)));
                         ui.label(egui::RichText::new(run_id).small().monospace());
                     });
-                    if let Some(sj) = &run.summary_json {
-                        if let Ok(v) = serde_json::from_str::<serde_json::Value>(sj) {
-                            ui.horizontal(|ui| {
-                                ui.label(egui::RichText::new("fills:").small());
-                                ui.label(egui::RichText::new(v["fills_count"].to_string()).small().monospace());
-                                ui.label(egui::RichText::new("equity_pts:").small());
-                                ui.label(egui::RichText::new(v["equity_points"].to_string()).small().monospace());
-                                ui.label(egui::RichText::new("total_pnl:").small());
-                                let pnl = v["total_pnl"].as_f64().unwrap_or(0.0);
-                                let pnl_color = if pnl >= 0.0 {
-                                    egui::Color32::from_rgb(0, 255, 127)
-                                } else {
-                                    egui::Color32::from_rgb(255, 51, 102)
-                                };
-                                ui.label(egui::RichText::new(format!("{:.0}", pnl)).small().monospace().color(pnl_color));
-                            });
-                        }
+                    if let Some(s) = &run.parsed_summary {
+                        ui.horizontal(|ui| {
+                            ui.label(egui::RichText::new("fills:").small());
+                            ui.label(egui::RichText::new(s.fills_count.to_string()).small().monospace());
+                            ui.label(egui::RichText::new("equity_pts:").small());
+                            ui.label(egui::RichText::new(s.equity_points.to_string()).small().monospace());
+                            ui.label(egui::RichText::new("total_pnl:").small());
+                            let pnl_color = if s.total_pnl >= 0.0 {
+                                egui::Color32::from_rgb(0, 255, 127)
+                            } else {
+                                egui::Color32::from_rgb(255, 51, 102)
+                            };
+                            ui.label(egui::RichText::new(format!("{:.0}", s.total_pnl)).small().monospace().color(pnl_color));
+                            ui.label(egui::RichText::new("status:").small());
+                            ui.label(egui::RichText::new(&s.status).small().monospace());
+                        });
                     }
                     ui.separator();
                 }

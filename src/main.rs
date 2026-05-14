@@ -1,6 +1,7 @@
 use backcast::trading::{
-    backend_update_system, engine, price_simulation_system, BackendChannel, BackendStatus,
-    LastRunResult, TradingData, TradingSettings, TransportCommand, TransportCommandSender,
+    backend_update_system, engine, parse_summary_json, price_simulation_system, BackendChannel,
+    BackendStatus, LastRunResult, TradingData, TradingSettings, TransportCommand,
+    TransportCommandSender,
 };
 use backcast::ui::UiPlugin;
 use backcast::grid::GridPlugin;
@@ -76,6 +77,7 @@ fn status_update_system(
             }
             BackendStatusUpdate::RunComplete { run_id, summary_json } => {
                 info!("RunComplete: run_id={} summary={}", run_id, summary_json);
+                last_run.parsed_summary = parse_summary_json(&summary_json);
                 last_run.run_id = Some(run_id);
                 last_run.summary_json = Some(summary_json);
             }
