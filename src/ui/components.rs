@@ -22,3 +22,15 @@ pub enum TradeButton {
     Buy,
     Sell,
 }
+
+#[derive(Component)]
+pub struct FooterRoot;
+
+#[derive(Component)]
+pub struct ReplayTimeLabel;
+
+#[derive(Component)]
+pub struct ReplayStateBadge;
+
+#[derive(Component)]
+pub struct GrpcStatusLabel;
