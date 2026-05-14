@@ -1,5 +1,5 @@
 use bevy::prelude::*;
-use crate::trading::{BackendStatus, TradingData, TradingSettings};
+use crate::trading::{BackendStatus, TradingData, TradingSettings, TransportCommand, TransportCommandSender};
 use crate::ui::components::{
     FooterRoot, GrpcStatusLabel, ReplayStateBadge, ReplayTimeLabel, TransportButton,
 };
@@ -152,17 +152,38 @@ pub fn transport_button_system(
         (&Interaction, &mut BackgroundColor, &TransportButton),
         (Changed<Interaction>, With<Button>),
     >,
+    data: Res<TradingData>,
+    sender: Res<TransportCommandSender>,
 ) {
     for (interaction, mut bg, action) in &mut query {
         match interaction {
             Interaction::Pressed => {
                 bg.0 = BTN_PRESSED;
+                let replay = data.replay_state.as_deref().unwrap_or("IDLE");
                 match action {
-                    TransportButton::JumpToStart => info!("transport: jump_to_start"),
-                    TransportButton::StepBack    => info!("transport: step_back"),
-                    TransportButton::PauseResume => info!("transport: pause_resume"),
-                    TransportButton::StepForward => info!("transport: step_forward"),
-                    TransportButton::Run         => info!("transport: run"),
+                    TransportButton::PauseResume => {
+                        let cmd = match replay {
+                            "RUNNING" => Some(TransportCommand::Pause),
+                            "PAUSED"  => Some(TransportCommand::Resume),
+                            other => {
+                                info!("transport: pause_resume ignored (state={})", other);
+                                None
+                            }
+                        };
+                        if let Some(cmd) = cmd {
+                            let _ = sender.tx.send(cmd);
+                        }
+                    }
+                    TransportButton::StepForward => {
+                        if replay == "PAUSED" {
+                            let _ = sender.tx.send(TransportCommand::StepForward);
+                        } else {
+                            info!("transport: step_forward ignored (state={})", replay);
+                        }
+                    }
+                    TransportButton::JumpToStart => info!("transport: jump_to_start (not yet wired)"),
+                    TransportButton::StepBack    => info!("transport: step_back (not yet wired)"),
+                    TransportButton::Run         => info!("transport: run (not yet wired)"),
                 }
             }
             Interaction::Hovered => bg.0 = BTN_HOVER,

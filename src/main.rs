@@ -1,4 +1,7 @@
-use backcast::trading::{TradingData, price_simulation_system, backend_update_system, TradingSettings, BackendChannel, engine, BackendStatus};
+use backcast::trading::{
+    backend_update_system, engine, price_simulation_system, BackendChannel, BackendStatus,
+    TradingData, TradingSettings, TransportCommand, TransportCommandSender,
+};
 use backcast::ui::UiPlugin;
 use backcast::grid::GridPlugin;
 use backcast::camera::setup_camera;
@@ -6,7 +9,7 @@ use bevy::prelude::*;
 use bevy_pancam::PanCamPlugin;
 use tokio::sync::mpsc;
 use engine::data_engine_client::DataEngineClient;
-use engine::{GetStateRequest, StartRequest};
+use engine::{GetStateRequest, PauseReplayRequest, ResumeReplayRequest, StartRequest, StepReplayRequest};
 
 #[tokio::main]
 async fn main() {
@@ -67,8 +70,13 @@ fn setup_backend_connection(mut commands: Commands, settings: Res<TradingSetting
     let (status_tx, status_rx) = mpsc::unbounded_channel();
     commands.insert_resource(StatusUpdateChannel { rx: status_rx });
 
+    // Transport command channel: sender lives as a Bevy resource, receiver moves into the tokio task.
+    let (transport_tx, mut transport_rx) = mpsc::unbounded_channel::<TransportCommand>();
+    commands.insert_resource(TransportCommandSender { tx: transport_tx });
+
     if !settings.backend_enabled {
         info!("Backend connection is disabled. Running in simulation mode.");
+        // transport_rx is dropped here; sends from UI will silently fail — that's fine.
         return;
     }
 
@@ -109,6 +117,42 @@ fn setup_backend_connection(mut commands: Commands, settings: Res<TradingSetting
         }
 
         loop {
+            // Drain transport commands before polling state so the UI feels responsive.
+            while let Ok(cmd) = transport_rx.try_recv() {
+                match cmd {
+                    TransportCommand::Pause => {
+                        let req = tonic::Request::new(PauseReplayRequest {
+                            request_id: String::new(),
+                            token: token.clone(),
+                        });
+                        match client.pause_replay(req).await {
+                            Ok(r) => info!("PauseReplay ok, state={:?}", r.into_inner().current_state),
+                            Err(e) => error!("PauseReplay failed: {}", e),
+                        }
+                    }
+                    TransportCommand::Resume => {
+                        let req = tonic::Request::new(ResumeReplayRequest {
+                            request_id: String::new(),
+                            token: token.clone(),
+                        });
+                        match client.resume_replay(req).await {
+                            Ok(r) => info!("ResumeReplay ok, state={:?}", r.into_inner().current_state),
+                            Err(e) => error!("ResumeReplay failed: {}", e),
+                        }
+                    }
+                    TransportCommand::StepForward => {
+                        let req = tonic::Request::new(StepReplayRequest {
+                            request_id: String::new(),
+                            token: token.clone(),
+                        });
+                        match client.step_replay(req).await {
+                            Ok(r) => info!("StepReplay ok, state={:?}", r.into_inner().current_state),
+                            Err(e) => error!("StepReplay failed: {}", e),
+                        }
+                    }
+                }
+            }
+
             let request = tonic::Request::new(GetStateRequest {
                 token: token.clone(),
             });

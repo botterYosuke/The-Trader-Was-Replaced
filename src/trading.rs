@@ -121,6 +121,18 @@ pub struct BackendChannel {
     pub rx: mpsc::UnboundedReceiver<BackendTradingState>,
 }
 
+#[derive(Debug, Clone, Copy)]
+pub enum TransportCommand {
+    Pause,
+    Resume,
+    StepForward,
+}
+
+#[derive(Resource)]
+pub struct TransportCommandSender {
+    pub tx: mpsc::UnboundedSender<TransportCommand>,
+}
+
 pub fn price_simulation_system(
     time: Res<Time>,
     settings: Res<TradingSettings>,
