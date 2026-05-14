@@ -18,6 +18,120 @@
 
 ---
 
+## Handoff Log / Phase 7 Replay UI Integration
+
+この節は 2026-05-14 時点の引き継ぎ用メモです。上の本文に文字化けが残っているため、作業者がクラッシュ後に復帰できるよう、最新状況・設計判断・次の一手をここへ逐次追記する方針にします。
+
+### Current Progress
+
+| Commit | 内容 | 状態 |
+|---|---|---|
+| `d35c9e1` | `replay_state` を Python `GetState` JSON から Rust `TradingData` まで通す | ✅ |
+| `5f435f8` | screen-space Footer の最小表示を追加 | ✅ |
+| `b16830d` | Footer Transport ボタン shell (`|<`, `<`, `||`, `>`, `>>`) を追加 | ✅ |
+| `a922b39` | Pause / Resume / StepForward を Footer から gRPC へ接続 | ✅ |
+| `207b60c` | Bevy setup 内で Tokio runtime context が無い問題を `TokioHandle` resource で修正 | ✅ |
+| `3af5f3e` | MenuBar shell と `Open Strategy...` ボタンを追加 | ✅ |
+
+### Verified State
+
+- ✅ `cargo check` は `3af5f3e` 時点で成功。
+- ✅ `src/ui/footer.rs` は Footer 表示、replay time/state/grpc badge 更新、transport button interaction を持つ。
+- ✅ `src/main.rs` は `TransportCommand::Pause` / `Resume` / `StepForward` を gRPC (`PauseReplay`, `ResumeReplay`, `StepReplay`) に送る。
+- ✅ `src/ui/menu_bar.rs` は `top: 0` の 24px screen-space menu bar を spawn する。
+- ✅ `MenuButton::OpenStrategy` 押下時は `info!("menu: open strategy requested")` を出すだけの shell。
+- 未実装: File dialog (`rfd`)。
+- 未実装: `OpenStrategyRequested` event。
+- 未実装: StrategyEditorWindow。
+- 未実装: `Run` / `StepBack` / `JumpToStart` の実 RPC 接続。
+
+### ADR 2026-05-14: MenuBar は Bevy UI の thin shell から始める
+
+**Decision**: MenuBar は最初から本格的な dropdown menu にせず、`bevy_ui` の固定バー + ボタンとして実装する。
+
+**理由**:
+- Phase 7 の目的は大きいので、最初の到達点を「画面上部にバーが出る」「Open を押せる」「ログが出る」に限定して、壊れた時の復帰点を小さくする。
+- `File -> Open Strategy... -> StrategyEditorWindow` の本命フローは後続で段階的に接続する。
+- `bevy_ui` の screen-space UI は Footer と同じ方式なので、既存コードの形に合わせられる。
+
+**Consequences**:
+- 現在の `File` はラベルであり、dropdown ではない。
+- `Open Strategy...` は常時見えているボタン。
+- 後で dropdown 化する場合も `MenuButton` enum と `menu_button_system` を拡張すればよい。
+
+### ADR 2026-05-14: File Open はまず event 境界を作ってから StrategyEditor へ渡す
+
+**Decision**: 次の段階では `rfd::AsyncFileDialog` で直接エディタを開かず、まず `OpenStrategyRequested { path: PathBuf }` のような Bevy event/resource 境界を作る。
+
+**理由**:
+- File dialog、cache copy、StrategyEditorWindow、LoadStrategy RPC を一度に結合するとデバッグが難しい。
+- Open の結果を event として残すと、後で cache layer や restore prompt を挟みやすい。
+- StrategyEditorWindow はまだ存在しないため、選択パスをログ出力または `SelectedStrategyPath` resource に入れるだけで次の検証ができる。
+
+**推奨の最小 API**:
+
+```rust
+#[derive(Event, Debug, Clone)]
+pub struct OpenStrategyRequested {
+    pub path: std::path::PathBuf,
+}
+```
+
+または、より shell 段階では:
+
+```rust
+#[derive(Resource, Default)]
+pub struct SelectedStrategyPath(pub Option<std::path::PathBuf>);
+```
+
+### Next Task: File Open Dialog Shell
+
+次の作業者はここから始める。
+
+1. `Cargo.toml` に `rfd` を追加する。
+2. `src/ui/components.rs` または新規 `src/ui/events.rs` に `OpenStrategyRequested` を追加する。
+3. `UiPlugin` で `.add_event::<OpenStrategyRequested>()` を登録する。
+4. `menu_button_system` で `MenuButton::OpenStrategy` 押下時に `.py` ファイル選択 dialog を開く。
+5. 選択された path を `OpenStrategyRequested` として投げる。
+6. 一旦、別 system で `info!("open strategy selected: {:?}", path)` を出す。
+7. `cargo check`。
+8. `BACKEND_ENABLED=false cargo run` 相当で、上部バーから `.py` を選べることを確認する。
+
+Windows PowerShell 検証例:
+
+```powershell
+$env:BACKEND_ENABLED="false"
+cargo run
+```
+
+### Implementation Tips
+
+- Bevy 0.15 の UI ボタンは既存 Footer と同じく `Interaction::Pressed` を見る。
+- `menu_button_system` の query は `(Changed<Interaction>, With<Button>)` なので、Footer の transport button と同じフレームで動く。Button 全体を拾うため、component enum で対象を分ける設計が重要。
+- `rfd::AsyncFileDialog` を使う場合、async の結果を Bevy main thread へ戻す設計が必要。まずは synchronous `FileDialog::new().pick_file()` を検討してもよいが、UI freeze が気になる場合は既存の Tokio handle/channel 方式に寄せる。
+- 既存の `TokioHandle` は `main.rs` 内 private resource。UI module から使いたい場合は public な場所へ移すか、File dialog だけ同期版で MVP を作る。
+- 既存の Footer コメントに一部文字化けがある。機能には影響していないが、新規追記は UTF-8 の日本語または ASCII コメントに寄せる。
+- 計画書は既存本文が文字化けしているので、進捗・ADR・復帰メモはこの Handoff Log に追記する。
+
+### Design Background
+
+Phase 7 は「一気に巨大な IDE を作る」のではなく、Replay UI の骨格を screen-space と world-space に分けて育てる。
+
+- screen-space: MenuBar / Sidebar / Footer / Modal。カメラ pan/zoom の影響を受けない常設 UI。
+- world-space: Chart / Ladder / BuyingPower / Positions / Orders / StrategyEditor。PanCam 上で移動・リサイズ・z-order 管理される floating window。
+
+今回の MenuBar は screen-space 層の最初の上端 UI。Footer と対になる固定 UI として扱う。StrategyEditorWindow はまだ作らず、Open の入力経路だけを先に確定する。
+
+### Next Acceptance Criteria
+
+- ✅ `cargo check` が通る。
+- ✅ 上部に 24px の黒い MenuBar が表示される。
+- ✅ `Open Strategy...` が押せる。
+- ✅ 押下時にログが出る。
+- 次: `.py` file dialog が開く。
+- 次: 選択 path が event/resource として Bevy 内に流れる。
+- 次: 選択 path をログ表示できる。
+
 ## 0. UI 機能一覧 / UI Feature Inventory
 
 Phase 7 の UI が担う役割を網羅的に列挙する。各項目は §3 以降の詳細設計に対応する。
