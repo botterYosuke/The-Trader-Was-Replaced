@@ -1,6 +1,7 @@
-"""最小限の passthrough 戦略 — gRPC StartEngine 統合テスト用 (7203.TSE / Minute)。
+"""Minimal passthrough strategy for gRPC StartEngine integration tests (7203.TSE / Minute).
 
-何もしない戦略で、Minute 粒度の StartEngine contract をテストするためだけに使う。
+Does nothing; exists only to satisfy the strategy_file contract in StartEngine
+and verify minute-granularity execution runs to completion and returns to IDLE.
 """
 from __future__ import annotations
 
@@ -19,7 +20,7 @@ SCENARIO: dict = {
 
 
 class PassthroughMinuteStrategy(Strategy):
-    """バーを受信するだけで何もしない最小戦略（Minute 粒度）。"""
+    """Receives minute bars and does nothing — minimum viable strategy for testing."""
 
     def __init__(
         self,
