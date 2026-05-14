@@ -35,6 +35,9 @@ pub struct ReplayStateBadge;
 #[derive(Component)]
 pub struct GrpcStatusLabel;
 
+#[derive(Component)]
+pub struct PauseResumeLabel;
+
 #[derive(Component, Clone, Copy, Debug)]
 pub enum TransportButton {
     JumpToStart,

@@ -1,7 +1,8 @@
 use bevy::prelude::*;
 use crate::trading::{BackendStatus, TradingData, TradingSettings, TransportCommand, TransportCommandSender};
 use crate::ui::components::{
-    FooterRoot, GrpcStatusLabel, ReplayStateBadge, ReplayTimeLabel, TransportButton,
+    FooterRoot, GrpcStatusLabel, PauseResumeLabel, ReplayStateBadge, ReplayTimeLabel,
+    TransportButton,
 };
 
 const BTN_NORMAL: Color = Color::srgba(0.12, 0.12, 0.18, 1.0);
@@ -53,7 +54,26 @@ pub fn spawn_footer(mut commands: Commands) {
             // Transport buttons
             spawn_transport_btn(p, "|<", TransportButton::JumpToStart);
             spawn_transport_btn(p, "<",  TransportButton::StepBack);
-            spawn_transport_btn(p, "||", TransportButton::PauseResume);
+            // PauseResume: label gets PauseResumeLabel so update_footer_system can toggle it
+            p.spawn((
+                Button,
+                Node {
+                    width: Val::Px(34.0),
+                    height: Val::Px(20.0),
+                    justify_content: JustifyContent::Center,
+                    align_items: AlignItems::Center,
+                    ..default()
+                },
+                BackgroundColor(BTN_NORMAL),
+                TransportButton::PauseResume,
+            )).with_children(|pp| {
+                pp.spawn((
+                    Text::new("||"),
+                    TextFont { font_size: 11.0, ..default() },
+                    TextColor(Color::srgb(0.85, 0.85, 0.85)),
+                    PauseResumeLabel,
+                ));
+            });
             spawn_transport_btn(p, ">",  TransportButton::StepForward);
             spawn_transport_btn(p, ">>", TransportButton::Run);
 
@@ -91,16 +111,17 @@ pub fn update_footer_system(
     settings: Res<TradingSettings>,
     mut time_q: Query<
         &mut Text,
-        (With<ReplayTimeLabel>, Without<ReplayStateBadge>, Without<GrpcStatusLabel>),
+        (With<ReplayTimeLabel>, Without<ReplayStateBadge>, Without<GrpcStatusLabel>, Without<PauseResumeLabel>),
     >,
     mut state_q: Query<
         (&mut Text, &mut TextColor),
-        (With<ReplayStateBadge>, Without<ReplayTimeLabel>, Without<GrpcStatusLabel>),
+        (With<ReplayStateBadge>, Without<ReplayTimeLabel>, Without<GrpcStatusLabel>, Without<PauseResumeLabel>),
     >,
     mut grpc_q: Query<
         (&mut Text, &mut TextColor),
-        (With<GrpcStatusLabel>, Without<ReplayTimeLabel>, Without<ReplayStateBadge>),
+        (With<GrpcStatusLabel>, Without<ReplayTimeLabel>, Without<ReplayStateBadge>, Without<PauseResumeLabel>),
     >,
+    mut pause_q: Query<&mut Text, With<PauseResumeLabel>>,
 ) {
     if !data.is_changed() && !status.is_changed() && !settings.is_changed() {
         return;
@@ -144,6 +165,12 @@ pub fn update_footer_system(
             text.0 = "grpc: ...".to_string();
             color.0 = Color::srgb(0.80, 0.75, 0.25);
         }
+    }
+
+    // PauseResume label: show "▶" when PAUSED (resume action), "||" otherwise
+    let replay = data.replay_state.as_deref().unwrap_or("IDLE");
+    for mut text in &mut pause_q {
+        text.0 = if replay == "PAUSED" { "▶".to_string() } else { "||".to_string() };
     }
 }
 
