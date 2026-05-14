@@ -5,9 +5,12 @@ pub mod button;
 pub mod chart;
 pub mod footer;
 pub mod menu_bar;
+pub mod strategy_editor;
 
 use bevy::prelude::*;
+use bevy_egui::EguiPlugin;
 use crate::ui::footer::{spawn_footer, transport_button_system, update_footer_system};
+use crate::ui::strategy_editor::strategy_editor_window_system;
 use crate::ui::menu_bar::{
     log_open_strategy_requested_system,
     menu_button_system,
@@ -25,7 +28,7 @@ pub struct UiPlugin;
 
 impl Plugin for UiPlugin {
     fn build(&self, app: &mut App) {
-        app.add_plugins(Shape2dPlugin::default())
+        app.add_plugins((Shape2dPlugin::default(), EguiPlugin))
             .init_resource::<WindowManager>()
             .init_resource::<StrategyBuffer>()
             .add_event::<OpenStrategyRequested>()
@@ -41,6 +44,7 @@ impl Plugin for UiPlugin {
                 log_open_strategy_requested_system,
                 open_strategy_buffer_system,
                 update_strategy_status_label_system,
+                strategy_editor_window_system,
             ));
     }
 }
