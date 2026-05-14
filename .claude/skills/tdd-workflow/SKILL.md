@@ -1,282 +1,254 @@
 ---
 name: tdd-workflow
-description: Use this skill when writing new features, fixing bugs, or refactoring code. Enforces test-driven development with 80%+ coverage including unit, integration, and E2E tests.
-origin: ECC (customized for e-station)
+description: Use this skill when writing new features, fixing bugs, or refactoring code in The-Trader-Was-Replaced. Enforces test-driven development for both Python (pytest) and Rust (cargo test) layers. Trigger whenever the user says "implement", "add feature", "fix bug", "refactor", "write tests", or is about to touch any file in python/engine/, src/, or python/tests/.
+origin: ECC (customized for The-Trader-Was-Replaced)
 ---
 
-# Test-Driven Development Workflow — e-station (Rust + Python)
+# Test-Driven Development Workflow — The-Trader-Was-Replaced
 
-このスキルは e-station プロジェクト（Rust + Iced GUI、ワークスペース構成）に特化した TDD フローを提供する。
+このプロジェクトは **Rust (Bevy GUI)** + **Python (Nautilus Trader engine)** の 2 層構成。
+テストの主戦場は Python (`uv run pytest`)。Rust 側は gRPC 統合テストのみ。
+
+## Architecture Overview
+
+```
+Rust (Bevy GUI)  ←── gRPC :19876 ──→  Python Engine (Nautilus Trader)
+src/                                    python/engine/
+  main.rs  trading.rs  ui/               server_grpc.py  core.py
+                                         jquants_loader.py  replay.py
+                                         strategy_replay/  strategy_runtime/
+tests/                                  python/tests/
+  backend_integration.rs                 test_engine.py  test_grpc_*.py
+  (Rust integration tests)               test_nautilus_*.py  test_reducer.py
+```
+
+---
 
 ## When to Activate
 
-- 新機能・ロジックの追加
-- バグ修正
-- リファクタリング
-- 取引所アダプター追加
-- リプレイ・チャート機能の変更
-
----
-
-## Workspace Structure
-
-```
-flowsurface/               # GUI・チャート・リプレイ (src/)
-flowsurface-exchange/      # 取引所アダプター (exchange/src/)
-flowsurface-data/          # データ集約・設定永続化 (data/src/)
-```
-
-テストは**変更したクレート**内に書く。クレートをまたぐ結合テストは `exchange/tests/` 等の統合テストディレクトリへ。
+- Python engine の新機能・ロジック追加
+- gRPC エンドポイントの追加・変更
+- Nautilus アダプター / J-Quants ローダーの変更
+- リプレイ・ストラテジー実行ロジックの変更
+- バグ修正・リファクタリング全般
+- Rust 側の gRPC クライアント変更
 
 ---
 
 ## Core Principles
 
-### 1. Tests BEFORE Code
-テストを先に書き、失敗させてから実装する。Red → Green → Refactor。
+### 1. Tests BEFORE Code（Red → Green → Refactor）
+テストを先に書き、失敗させてから実装する。
 
 ### 2. Test Placement
-| テスト種別 | 場所 |
-|---|---|
-| ユニットテスト | モジュールファイル内 `#[cfg(test)] mod tests { }` |
-| 統合テスト | `<crate>/tests/<name>.rs` |
-| E2E テスト | `.claude/skills/e2e-test/` スキルを使用 |
+
+| テスト種別 | 場所 | コマンド |
+|---|---|---|
+| Python ユニット/統合 | `python/tests/test_*.py` | `uv run pytest` |
+| 重いテスト（実データ） | `@pytest.mark.slow` でマーク | `uv run pytest -m slow` |
+| Rust gRPC 統合 | `tests/backend_integration.rs` | `cargo test` |
+| E2E（Bevy GUI 込み） | `e2e-testing` スキルを使用 | `/e2e-testing` |
 
 ### 3. Coverage Goal
-ロジック・変換・エラーパスは 80% 以上。GUI レンダリング部分はユニットテスト対象外で可。
+ロジック・変換・エラーパスは 80% 以上。Bevy レンダリング部分はユニットテスト対象外で可。
 
 ---
 
 ## TDD Workflow Steps
 
-### Step 1: ユーザーシナリオを言語化
+### Step 1: シナリオを言語化
 ```
-対象クレート: flowsurface-exchange
-シナリオ: Bybit の WebSocket が切断されたとき、
-          自動再接続して購読を復元できる
+対象: python/engine/reducer.py
+シナリオ: 日足バーが存在しない銘柄コードを渡したとき、
+          空リストを返し例外を投げない
 ```
 
-### Step 2: テストケースを列挙（まず failing test から）
+### Step 2: テストを先に書く（failing test）
 
-```rust
-// exchange/src/bybit/adapter.rs
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn reconnect_restores_subscriptions() {
-        // Arrange: アダプターを接続状態に設定
-        // Act: 切断イベントをシミュレート
-        // Assert: 再接続後に購読が復元されている
-        todo!("implement after test is confirmed failing")
-    }
-
-    #[test]
-    fn reconnect_emits_error_after_max_retries() {
-        todo!()
-    }
-}
+```python
+# python/tests/test_reducer.py
+def test_reducer_returns_empty_for_unknown_symbol(reducer):
+    """存在しない銘柄は空リストを返す（例外なし）"""
+    result = reducer.reduce("9999999", bars=[])
+    assert result == []
 ```
 
 ### Step 3: テストを実行して失敗を確認
 ```bash
-cargo test -p flowsurface-exchange reconnect
-# FAIL が出ることを確認（コンパイルエラーは OK）
+uv run pytest python/tests/test_reducer.py::test_reducer_returns_empty_for_unknown_symbol -v
+# FAILED が出ることを確認
 ```
 
 ### Step 4: 最小限の実装
-テストが green になる最小のコードを書く。過剰な抽象化は禁止。
+テストが green になる最小のコードを書く。
 
-### Step 5: テストを再実行
+### Step 5: 再実行して green 確認
 ```bash
-cargo test -p flowsurface-exchange
-# すべて PASS になること
+uv run pytest python/tests/test_reducer.py -v
 ```
 
 ### Step 6: リファクタリング
-テストを green に保ちながらコード品質を向上させる。
+テストを green に保ちながらコード品質を向上。
 
-### Step 7: カバレッジ確認
+### Step 7: 全テストが壊れていないか確認
 ```bash
-cargo llvm-cov --package flowsurface-exchange --html
-# target/llvm-cov/html/index.html を確認
+uv run pytest -m "not slow"
 ```
 
 ---
 
 ## Testing Patterns
 
-### ユニットテスト（同期）
-```rust
-#[cfg(test)]
-mod tests {
-    use super::*;
+### Python ユニットテスト（基本形）
+```python
+# python/tests/test_reducer.py
+import pytest
+from engine.reducer import OHLCReducer
 
-    #[test]
-    fn parse_kline_from_binance_response() {
-        // Arrange
-        let raw = r#"{"t":1700000000000,"o":"100.0","h":"101.0","l":"99.0","c":"100.5","v":"500.0"}"#;
+@pytest.fixture
+def reducer():
+    return OHLCReducer()
 
-        // Act
-        let kline: Kline = serde_json::from_str(raw).expect("should parse");
+def test_reduce_daily_bars_sorted_by_date(reducer, sample_bars):
+    """バーが時系列順に並んでいることを確認"""
+    result = reducer.reduce("7203", sample_bars)
+    dates = [b.timestamp for b in result]
+    assert dates == sorted(dates)
 
-        // Assert
-        assert_eq!(kline.open, 100.0);
-        assert_eq!(kline.high, 101.0);
-        assert_eq!(kline.volume, 500.0);
-    }
-
-    #[test]
-    fn parse_returns_error_on_missing_field() {
-        let raw = r#"{"t":1700000000000}"#;
-        let result: Result<Kline, _> = serde_json::from_str(raw);
-        assert!(result.is_err());
-    }
-}
+def test_reduce_empty_input_returns_empty(reducer):
+    result = reducer.reduce("7203", bars=[])
+    assert result == []
 ```
 
-### 非同期テスト（tokio）
-```rust
-#[cfg(test)]
-mod tests {
-    use super::*;
-    use tokio::time::{timeout, Duration};
+### gRPC エンドポイントテスト
+```python
+# python/tests/test_grpc_control.py
+import pytest
+from engine.server_grpc import EngineServicer
 
-    #[tokio::test]
-    async fn fetch_historical_klines_returns_sorted_data() {
-        // Arrange
-        let adapter = BinanceAdapter::new_test();
+@pytest.fixture
+def servicer(tmp_path):
+    return EngineServicer()
 
-        // Act
-        let klines = adapter
-            .fetch_klines("BTCUSDT", Timeframe::M1, 100)
-            .await
-            .expect("fetch should succeed");
+@pytest.mark.asyncio
+async def test_start_engine_requires_strategy_file(servicer, grpc_context):
+    """strategy_file が空のとき INVALID_ARGUMENT を返す"""
+    from proto import engine_pb2
+    req = engine_pb2.StartEngineRequest(strategy_file="")
+    resp = await servicer.StartEngine(req, grpc_context)
+    # grpc_context に set_code が呼ばれていることを確認
+    assert grpc_context.code_was_set()
 
-        // Assert
-        assert!(!klines.is_empty());
-        assert!(klines.windows(2).all(|w| w[0].open_time <= w[1].open_time));
-    }
-
-    #[tokio::test]
-    async fn fetch_times_out_gracefully() {
-        let adapter = BinanceAdapter::new_test();
-        let result = timeout(Duration::from_millis(10), adapter.fetch_klines("X", Timeframe::M1, 1)).await;
-        // タイムアウトまたはエラーになること
-        assert!(result.is_err() || result.unwrap().is_err());
-    }
-}
+@pytest.mark.asyncio
+async def test_start_engine_valid_request_returns_ok(servicer, grpc_context, tmp_strategy_file):
+    from proto import engine_pb2
+    req = engine_pb2.StartEngineRequest(strategy_file=str(tmp_strategy_file))
+    resp = await servicer.StartEngine(req, grpc_context)
+    assert resp is not None
 ```
 
-### HTTP モック（mockito）
-```rust
-#[cfg(test)]
-mod tests {
-    use super::*;
-    use mockito::Server;
+### Nautilus アダプターテスト
+```python
+# python/tests/test_nautilus_adapter.py
+import pytest
+from unittest.mock import AsyncMock, patch
+from engine.nautilus_adapter import NautilusAdapter
 
-    #[tokio::test]
-    async fn rest_client_handles_rate_limit_response() {
-        // Arrange
-        let mut server = Server::new_async().await;
-        let mock = server
-            .mock("GET", "/api/v3/klines")
-            .with_status(429)
-            .with_header("Retry-After", "1")
-            .create_async()
-            .await;
+@pytest.fixture
+def adapter():
+    return NautilusAdapter()
 
-        let client = BinanceRestClient::new(&server.url());
+def test_adapter_converts_bar_to_nautilus_format(adapter, sample_bar):
+    """BarData → Nautilus Bar の変換が正しい"""
+    result = adapter.convert_bar(sample_bar)
+    assert result.open.as_double() == pytest.approx(sample_bar.open)
+    assert result.close.as_double() == pytest.approx(sample_bar.close)
 
-        // Act
-        let result = client.get_klines("BTCUSDT", "1m", 100).await;
-
-        // Assert
-        assert!(matches!(result, Err(ExchangeError::RateLimit { .. })));
-        mock.assert_async().await;
-    }
-
-    #[tokio::test]
-    async fn rest_client_parses_valid_response() {
-        let mut server = Server::new_async().await;
-        let body = include_str!("../fixtures/binance_klines.json");
-        let mock = server
-            .mock("GET", "/api/v3/klines")
-            .with_status(200)
-            .with_body(body)
-            .create_async()
-            .await;
-
-        let client = BinanceRestClient::new(&server.url());
-        let result = client.get_klines("BTCUSDT", "1m", 5).await;
-
-        assert!(result.is_ok());
-        assert_eq!(result.unwrap().len(), 5);
-        mock.assert_async().await;
-    }
-}
+def test_adapter_raises_on_invalid_symbol(adapter):
+    with pytest.raises(ValueError, match="invalid symbol"):
+        adapter.convert_bar(None)
 ```
 
-### 統合テスト（`tests/` ディレクトリ）
+### J-Quants ローダーテスト（実 API は skip）
+```python
+# python/tests/test_jquants_loader.py
+import pytest
+from unittest.mock import patch, MagicMock
+from engine.jquants_loader import JQuantsLoader
+
+@pytest.fixture
+def loader():
+    return JQuantsLoader(token="test-token")
+
+def test_loader_parses_response_to_bars(loader):
+    """API レスポンスが BarData リストに変換される"""
+    mock_response = [
+        {"Date": "2024-01-04", "Open": 2400.0, "High": 2450.0,
+         "Low": 2390.0, "Close": 2430.0, "Volume": 1234567}
+    ]
+    with patch.object(loader, "_fetch_raw", return_value=mock_response):
+        bars = loader.load("7203", start="2024-01-04", end="2024-01-04")
+    assert len(bars) == 1
+    assert bars[0].close == 2430.0
+
+@pytest.mark.slow
+def test_loader_real_api_returns_data(loader):
+    """実 API を叩く統合テスト — token が必要"""
+    bars = loader.load("7203", start="2024-01-04", end="2024-01-10")
+    assert len(bars) > 0
+```
+
+### Rust 統合テスト（gRPC mock）
 ```rust
-// exchange/tests/tachibana_integration.rs
-// 実際の API を叩く統合テスト — .env にクレデンシャルが必要
-// 通常の cargo test では skip し、明示的に実行する
-
-use std::env;
-
-async fn load_credentials() -> Option<(String, String)> {
-    dotenvy::dotenv().ok();
-    let user = env::var("TACHIBANA_USER").ok()?;
-    let pass = env::var("TACHIBANA_PASS").ok()?;
-    Some((user, pass))
-}
+// tests/backend_integration.rs
+use serial_test::serial;
 
 #[tokio::test]
-#[ignore = "requires live credentials in .env"]
-async fn login_returns_session_token() {
-    let Some((user, pass)) = load_credentials().await else {
-        eprintln!("skipping: no credentials");
-        return;
-    };
-    // ... 実際のテスト
+#[serial]
+async fn grpc_client_connects_to_mock_server() {
+    // Arrange: モック gRPC サーバーを起動
+    let addr = "127.0.0.1:19900";
+    let server = start_mock_server(addr).await;
+
+    // Act: Rust gRPC クライアントで接続
+    let mut client = EngineClient::connect(format!("http://{}", addr))
+        .await
+        .expect("should connect");
+
+    // Assert: ヘルスチェックが通る
+    let resp = client.health_check(Request::new(())).await;
+    assert!(resp.is_ok());
+    server.abort();
 }
-```
-
-実行方法:
-```bash
-# 通常テスト（ignore なし）
-cargo test -p flowsurface-exchange
-
-# 統合テスト含む
-cargo test -p flowsurface-exchange -- --include-ignored
 ```
 
 ---
 
-## テストファイル配置
+## ファイル配置
 
 ```
-exchange/
-├── src/
-│   ├── binance/
-│   │   ├── adapter.rs          # #[cfg(test)] mod tests { } を末尾に
-│   │   └── rest.rs
-│   └── tachibana/
-│       ├── adapter.rs
-│       └── fixtures/           # テスト用 JSON ファイル
-│           └── klines.json
-└── tests/
-    └── tachibana_integration.rs  # 統合テスト（要クレデンシャル）
+python/
+├── tests/
+│   ├── conftest.py              # pytest fixtures, markers
+│   ├── data/                   # テスト用ストラテジーファイル
+│   │   ├── test_strategy_7203_daily.py
+│   │   └── test_strategy_7203_minute.py
+│   ├── test_engine.py
+│   ├── test_grpc_control.py
+│   ├── test_grpc_replay.py
+│   ├── test_reducer.py
+│   ├── test_jquants_loader.py
+│   ├── test_nautilus_adapter.py
+│   └── test_data_engine_integration.py
+└── engine/                     # 実装コード
+    ├── server_grpc.py
+    ├── core.py
+    ├── reducer.py
+    ├── jquants_loader.py
+    └── nautilus_adapter.py
 
-data/
-└── src/
-    └── aggregator.rs           # #[cfg(test)] mod tests { }
-
-src/
-└── replay/
-    └── controller.rs           # #[cfg(test)] mod tests { }
+tests/
+└── backend_integration.rs      # Rust 統合テスト
 ```
 
 ---
@@ -284,45 +256,47 @@ src/
 ## よくある間違いと正しい書き方
 
 ### WRONG: 実装詳細をテスト
-```rust
-// 内部フィールドを直接検証しない
-assert_eq!(adapter.retry_count, 3);
+```python
+assert engine._internal_state == "running"  # プライベートな状態
 ```
 
-### CORRECT: 振る舞いをテスト
-```rust
-// 外部から観測できる結果を検証する
-let result = adapter.connect().await;
-assert!(matches!(result, Err(ExchangeError::MaxRetriesExceeded)));
+### CORRECT: 外部から観測できる振る舞いをテスト
+```python
+response = await servicer.GetStatus(req, ctx)
+assert response.status == "running"
 ```
 
 ### WRONG: テスト間で状態を共有
-```rust
-static mut SHARED_CLIENT: Option<Client> = None; // 危険
+```python
+engine = EngineServicer()  # モジュールレベル — テスト間で汚染される
 ```
 
-### CORRECT: 各テストで独立したセットアップ
-```rust
-fn make_client() -> Client {
-    Client::new_with_config(TestConfig::default())
-}
-
-#[test]
-fn test_a() { let c = make_client(); /* ... */ }
-
-#[test]
-fn test_b() { let c = make_client(); /* ... */ }
+### CORRECT: fixture で毎回独立したインスタンス
+```python
+@pytest.fixture
+def servicer():
+    return EngineServicer()
 ```
 
-### WRONG: panic! でアサーション
-```rust
-if result.is_err() { panic!("failed"); }
+### WRONG: 実 API に依存したユニットテスト
+```python
+def test_load_bars():
+    loader = JQuantsLoader(token=os.environ["JQUANTS_TOKEN"])  # 環境依存
+    bars = loader.load("7203")  # 実 API を叩く
+    assert len(bars) > 0
 ```
 
-### CORRECT: assert! / assert_eq! / unwrap_or_else
-```rust
-let klines = result.expect("fetch_klines should succeed in test");
-assert_eq!(klines.len(), 5, "expected exactly 5 klines");
+### CORRECT: mock で外部依存を分離し、slow マーク
+```python
+def test_load_bars_parses_response(loader):
+    with patch.object(loader, "_fetch_raw", return_value=FIXTURE_DATA):
+        bars = loader.load("7203")
+    assert len(bars) == len(FIXTURE_DATA)
+
+@pytest.mark.slow
+def test_load_bars_real_api(real_loader):  # 実 API はスローテスト
+    bars = real_loader.load("7203")
+    assert len(bars) > 0
 ```
 
 ---
@@ -330,67 +304,70 @@ assert_eq!(klines.len(), 5, "expected exactly 5 klines");
 ## テスト実行コマンド早見表
 
 ```bash
-# 全クレートのテスト
-cargo test --workspace
+# 高速テストのみ（CI 推奨）
+uv run pytest -m "not slow" -v
 
-# 特定クレートのみ
-cargo test -p flowsurface-exchange
+# 全テスト（slow 含む）
+uv run pytest -v
 
-# テスト名フィルター
-cargo test parse_kline
+# 特定ファイル
+uv run pytest python/tests/test_grpc_control.py -v
 
-# 出力を表示しながら実行
-cargo test -- --nocapture
+# 特定テスト名フィルター
+uv run pytest -k "test_start_engine" -v
 
-# 並列数制限（テスト競合時）
-cargo test -- --test-threads=1
+# 失敗時に即停止
+uv run pytest -x
 
-# カバレッジ（cargo-llvm-cov が必要）
-cargo llvm-cov --workspace --html
+# 標準出力を表示
+uv run pytest -s
 
-# watch モード（cargo-watch が必要）
-cargo watch -x "test -p flowsurface-exchange"
+# Rust 統合テスト
+cargo test
+
+# カバレッジ（pytest-cov が必要）
+uv run pytest --cov=engine --cov-report=html
+```
+
+---
+
+## gRPC 契約変更時のルール
+
+`python/proto/engine.proto` を変更したら必ず：
+
+1. Proto を再コンパイル（Rust 側は `cargo build` で `build.rs` が自動実行）
+2. Python 側も生成コードを更新
+3. 両サイドのテストが通ることを確認してから merge
+
+```bash
+# Python proto 再生成（プロジェクトルートで）
+cd python
+uv run python -m grpc_tools.protoc -I proto --python_out=. --grpc_python_out=. proto/engine.proto
+
+# Rust は cargo build で自動
+cargo build
 ```
 
 ---
 
 ## E2E テスト
 
-GUI・エンドツーエンドのテストは **e2e-testing スキル**を使用すること。
-このスキルは Python helper（`ReplaySession` / `LiveSession`）+ pytest で
-WS IPC（:19876）に attach してアプリを操作する。HTTP API（旧 :9876）は
-Phase 8.3 で廃止された。
+Bevy GUI + Python engine を実際に起動する E2E 検証は **e2e-testing スキル**を使用。
 
 ```
-/e2e-testing  # e2e-testing スキルを起動
-```
-
----
-
-## CI との連携
-
-```yaml
-# .github/workflows/test.yml に追加する場合
-- name: Run tests
-  run: cargo test --workspace
-
-- name: Clippy
-  run: cargo clippy --workspace -- -D warnings
-
-- name: Coverage (optional)
-  run: cargo llvm-cov --workspace --lcov --output-path lcov.info
+/e2e-testing
 ```
 
 ---
 
 ## Success Metrics
 
-- `cargo test --workspace` が全 PASS
+- `uv run pytest -m "not slow"` が全 PASS
 - ロジック部分のカバレッジ 80%+
-- `#[ignore]` テストが 0（統合テスト除く）
-- `cargo clippy` が warning なし
+- `cargo test` が全 PASS
 - 追加したテストが独立して実行できる（順序依存なし）
+- `@pytest.mark.slow` 以外に実 API・実 DB 依存がない
 
 ---
 
-**Remember**: Rust のコンパイラがコンパイルエラーを防いでも、ロジックバグは防がない。テストがその安全網。
+**Remember**: gRPC の型チェックは proto がカバーするが、ビジネスロジックのバグは防がない。テストがその安全網。

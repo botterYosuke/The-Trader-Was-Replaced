@@ -1,7 +1,6 @@
 ---
 name: parallel-agent-dev
 description: 実装計画をタスクグラフに分解し、依存関係の無いタスクを複数エージェントに並行させて消化するオーケストレーション手法。大型フェーズ（5タスク以上）を単一エージェントで順次実装するより 3〜5倍速で完遂できる。
-origin: ECC (e-station 向けカスタム)
 ---
 
 # Parallel Agent Dev — 分担並行実装オーケストレーション
@@ -20,7 +19,7 @@ origin: ECC (e-station 向けカスタム)
 
 - **速度**: 独立タスクは並列で同時進行。5 フェーズを直列で回すと 5 倍かかるが、依存グラフ次第で 2〜3 ステップに圧縮できる
 - **コンテキスト汚染防止**: 各エージェントは自分の担当タスクだけを文脈に持つ。一人のエージェントに全タスクを与えるとコンテキスト消費が爆発する
-- **専門化**: 「Rust HTTP 安全装置」「Python WAL」「Rust WAL 復元」など責務が明確に分離されたタスクは、それぞれ担当エージェントが深く集中できる
+- **専門化**: 「Bevy ECS システム」「Python gRPC サーバ」「Rust gRPC クライアント」など責務が明確に分離されたタスクは、それぞれ担当エージェントが深く集中できる
 - **進捗の可視化**: 各エージェントが `implementation-plan.md` に ✅ を付けることで、オーケストレーターが進捗を即座に把握できる
 
 ---
@@ -28,7 +27,7 @@ origin: ECC (e-station 向けカスタム)
 ## 不可侵ルール
 
 - **TDD 厳守**: 全エージェントが `.claude/skills/tdd-workflow/SKILL.md` に従う
-- **テスト常時緑**: `cargo test --workspace` と `uv run pytest` を各エージェント完了時に確認
+- **テスト常時緑**: `cargo test --workspace` と `uv run pytest python/tests/` を各エージェント完了時に確認
 - **Clippy クリーン**: `cargo clippy -- -D warnings` をクリーンに保つ
 - **進捗記録**: 完了タスクに ✅ を付け、設計判断を計画書に随時追記
 - **prompt は self-contained**: サブエージェントは前会話を見ない。必読ファイルパスと背景をプロンプトに全て含める
@@ -51,7 +50,7 @@ origin: ECC (e-station 向けカスタム)
 
 ### 3. 計画書への進捗書き込み
 
-- 進捗があり次第、計画書（`implementation-plan.md` 等）に **状況・新たな知見・設計思想と背景・Tips** など他の作業者に必要な情報を随時書き込む。
+- 進捗があり次第、計画書（`docs/plan/Phase N - *.md` 等）に **状況・新たな知見・設計思想と背景・Tips** など他の作業者に必要な情報を随時書き込む。
 - 完了した作業項目には **✅** を付けて進捗を共有する。
 - 設計上の判断（「なぜこの実装にしたか」）も記録する。
 
@@ -60,9 +59,9 @@ origin: ECC (e-station 向けカスタム)
 - 実装は必ず `.claude/skills/tdd-workflow/SKILL.md` に従った TDD サイクル（RED → GREEN → REFACTOR）で進める。
 - テストを先に書き、失敗を確認してから実装する。
 
-### 5. 実装完了後にレビュー＋修正（`.claude/skills/review-fix-loop/SKILL.md`）
+### 5. 実装完了後にレビュー＋修正（`./ImplementationLoop.md`）
 
-- 担当タスクの実装が完了したら、`.claude/skills/review-fix-loop/SKILL.md` を起動してコードレビューと修正を実施する。
+- 担当タスクの実装が完了したら、`.claude/skills/parallel-agent-dev/ImplementationLoop.md` を起動してコードレビューと修正を実施する。
 - MEDIUM 以上の指摘がゼロになるまでループを継続してから「完了」を報告する。
 
 ---
@@ -71,23 +70,22 @@ origin: ECC (e-station 向けカスタム)
 
 オーケストレーターは必ず以下を先に読む:
 
-1. `docs/<feature>/implementation-plan.md` — タスク一覧と完了条件
-2. `docs/<feature>/architecture.md` — アーキテクチャ・境界・不変条件
-3. 関連する `spec.md` / `open-questions.md`
+1. `docs/plan/Phase N - <feature>.md` — タスク一覧と完了条件
+2. 関連する architecture doc / open-questions
 
 読んだ後、**タスク間の依存関係を手元でまとめる**:
 
 ```
-例:
-  A (Rust安全装置)  ─┐
-  B (Python WAL)   ─┼─→ C (Rust WAL復元) ─→ D (O1) ─→ E (O2) ─→ F (O3)
-  (独立)           ─┘
+例（Phase 7 相当）:
+  A (Bevy UI コンポーネント)  ─┐
+  B (Python gRPC エンドポイント) ─┼─→ C (Rust gRPC クライアント) ─→ D (統合テスト)
+  (独立)                       ─┘
 ```
 
 ポイント:
-- 「B の成果物（フォーマット仕様）を C が必要とする」→ C は B の後
-- 「A と B はファイルが重ならない」→ A と B は並列可
-- 「D は A/B/C すべての上に乗る」→ D は A/B/C が全完了してから
+- 「B の proto 定義を C が使う」→ proto 凍結後に C を起動
+- 「A と B はファイルが重ならない（`src/ui/` vs `python/engine/`）」→ A と B は並列可
+- 「D は A/B/C 全ての上に乗る」→ D は A/B/C が全完了してから
 
 ---
 
@@ -98,9 +96,9 @@ origin: ECC (e-station 向けカスタム)
 | 状況 | 方針 |
 |---|---|
 | ファイルが重ならない | 迷わず並列 |
-| 一方が他方の出力（ファイル・型・フォーマット）を使う | 直列（後者を先に完了させる） |
+| 一方が他方の出力（proto・型・フォーマット）を使う | 直列（後者を先に完了させる） |
 | 同一ファイルを両方が編集する | 直列か、ファイルを分担（先者がインターフェースを確定してから後者に渡す） |
-| UI と バックエンド | 多くの場合並列可（IPC 型さえ凍結されていれば） |
+| Bevy UI と Python バックエンド | proto 型が凍結されていれば並列可 |
 
 ### エージェントへの指示テンプレ
 
@@ -112,17 +110,16 @@ origin: ECC (e-station 向けカスタム)
 ## 行動指針（必ず守ること）
 1. **Goal/Constraints/AC の確認**: 目的・制約・完了条件が不明な場合は作業を開始せず再確認する。
 2. **不確かな情報の禁止**: 事実確認が取れない情報・推測は回答に含めない。確証がなければ正直にその旨を伝える。
-3. **計画書への進捗書き込み**: 進捗・知見・設計判断・Tips を随時 implementation-plan.md に書き込み、完了項目に ✅ を付ける。
+3. **計画書への進捗書き込み**: 進捗・知見・設計判断・Tips を随時 docs/plan/Phase N - *.md に書き込み、完了項目に ✅ を付ける。
 4. **TDD**: `.claude/skills/tdd-workflow/SKILL.md` に従い RED→GREEN→REFACTOR サイクルで実装する。
-5. **レビュー＋修正**: 実装完了後に `.claude/skills/review-fix-loop/SKILL.md` を起動し、MEDIUM 以上の指摘がゼロになるまでループしてから「完了」を報告する。
+5. **レビュー＋修正**: 実装完了後に `.claude/skills/parallel-agent-dev/ImplementationLoop.md` を起動し、MEDIUM 以上の指摘がゼロになるまでループしてから「完了」を報告する。
 
 ## 必読ファイル（最初に読むこと）
 - [計画書パス] — [該当セクション]
-- [アーキテクチャドキュメントパス]
 - [実装対象ファイルパス]
 
 ## 前提情報（他エージェントから引き継いだ仕様）
-[依存する成果物の仕様サマリ（フォーマット・型・API等）]
+[依存する成果物の仕様サマリ（proto 定義・型・API シグネチャ等）]
 
 ## 担当タスク
 [具体的な実装内容（箇条書き）]
@@ -134,8 +131,8 @@ origin: ECC (e-station 向けカスタム)
 - cargo test --workspace が全緑
 - uv run pytest python/tests/ -v が全緑
 - cargo clippy -- -D warnings がクリーン
-- implementation-plan.md の [タスク名] に ✅ を付ける
-- review-fix-loop で MEDIUM 以上の指摘がゼロであること
+- docs/plan/Phase N - *.md の [タスク名] に ✅ を付ける
+- ImplementationLoop.md で MEDIUM 以上の指摘がゼロであること
 
 ## 注意事項
 [不変条件・禁止事項・他エージェントとの境界]
@@ -158,7 +155,7 @@ Agent(A の prompt) と Agent(B の prompt) を同一メッセージで呼出
 Agent(A) を呼出 → 完了待ち → Agent(B) を呼出
 ```
 
-**`isolation: "worktree"` を使う**: 各エージェントは独立した git worktree で作業するため、ファイル競合が起きない。
+**`isolation: "worktree"` の注意**: フィーチャーブランチ作業中は worktree が `main` から作られ、ブランチ上の新設ファイルが存在しないケースがある（知見 #12 参照）。フィーチャーブランチ上では worktree の代わりに「ファイル単位の担当分け」で並行性を確保する。
 
 ---
 
@@ -168,21 +165,19 @@ Agent(A) を呼出 → 完了待ち → Agent(B) を呼出
 
 ### 引き継ぎ情報の受け渡し方
 
-エージェントが生成する成果物（ファイルフォーマット・API シグネチャ・型定義）を、次のエージェントのプロンプトに **直接埋め込む**:
+エージェントが生成する成果物（proto 定義・API シグネチャ・型定義）を、次のエージェントのプロンプトに **直接埋め込む**:
 
 ```
 # 親エージェント（B）の完了報告から抽出:
-「WAL フォーマット: {"phase":"submit", "ts":<ms>, "client_order_id":"...", ...}」
+「proto: rpc StartEngine(StartEngineRequest) returns (StartEngineResponse)」
 
 # 子エージェント（C）のプロンプトに埋め込む:
-## 前提情報: B が確立した WAL フォーマット
-{"phase":"submit", ...}
-{"phase":"accepted", ...}
-{"phase":"rejected", ...}
-末尾 \n 欠落 = truncated（スキップ対象）
+## 前提情報: B が確立した gRPC インターフェース
+message StartEngineRequest { string strategy_file = 1; }
+message StartEngineResponse { bool ok = 1; string error = 2; }
 ```
 
-ドキュメントへの追記で引き継ぐこともできる（B が `architecture.md` を更新 → C がそれを読む）が、プロンプト直接埋め込みの方が確実で速い。
+ドキュメントへの追記で引き継ぐこともできる（B が計画書を更新 → C がそれを読む）が、プロンプト直接埋め込みの方が確実で速い。
 
 ---
 
@@ -209,7 +204,7 @@ cargo clippy -- -D warnings
 uv run pytest python/tests/ -v
 ```
 
-完了したら `/review-fix-loop` でコードレビューを走らせる（大型フェーズは必須）。
+完了したら `ImplementationLoop.md` でコードレビューを走らせる（大型フェーズは必須）。
 
 ---
 
@@ -227,21 +222,22 @@ C ─┘
 - C は A + B の成果物を使う → A + B 完了後
 - D / E は順次依存 → 各完了後
 
-### パターン B: Rust / Python の並列（IPC 型凍結前提）
+### パターン B: Bevy UI / Python バックエンド の並列（proto 型凍結前提）
 
 ```
-IPC 型凍結（事前完了）
+proto 凍結（事前完了）
        ↓
-Rust実装 ─┐
-Python実装─┴─→ 統合テスト
+Bevy UI 実装 ─┐
+Python gRPC 実装 ─┴─→ 統合テスト（tests/backend_integration.rs + python/tests/）
 ```
 
-IPC の型（enum / struct）が凍結されていれば、Rust 側と Python 側の実装は独立して並列できる。
+`python/engine/proto/engine.proto` の型（message / enum）が凍結されていれば、
+Bevy 側 Rust クライアント (`src/trading.rs` 等) と Python サーバ実装は独立して並列できる。
 
 ### パターン C: フェーズゲート（完了条件が次フェーズのブロッカー）
 
 ```
-O0 ─→ O1 ─→ O2 ─→ O3
+Phase 6 ─→ Phase 7 ─→ Phase 8
 ```
 
 各フェーズに「Exit 条件」があり、それを満たさないと次フェーズに進めない場合。
@@ -268,27 +264,23 @@ O0 ─→ O1 ─→ O2 ─→ O3
 4. **親エージェントの出力をプロンプトに含めない** — 子エージェントが仕様を知らず互換性のない実装をする
 5. **中間検証を省く** — 後続エージェントが壊れた基盤の上に実装し、最後になって発覚する
 6. **完了報告の鵜呑み** — `cargo test --workspace` を自分で叩いて確認する
-7. **isolation: "worktree" を省く** — 同一ファイルへの並列書き込みでデータ競合が起きる
+7. **フィーチャーブランチで isolation: "worktree" を使う** — main から worktree が作られ新設ファイルが存在しない（`ImplementationLoop.md` 知見 #12 参照）
 
 ---
 
-## 実績（T0.6〜T3.5 実装、e-station 2026-04-26）
+## 実績
 
-6 エージェント並列で立花証券発注機能 O0〜O3 フェーズを実装:
+Phase 7（Replay UI Integration）を 4 エージェント並列で実装した例:
 
 | ステップ | 並列エージェント | 直列待ち |
 |---|---|---|
-| 1 | A（Rust 安全装置）/ B（Python WAL）並列 | — |
-| 2 | C（Rust WAL 復元 + T0.8）| A + B 完了後 |
-| 3 | D（Phase O1 訂正・取消・一覧）| C 完了後 |
-| 4 | E（Phase O2 EC 約定通知）| D 完了後 |
-| 5 | F（Phase O3 信用・逆指値・余力）| E 完了後 |
-
-**テスト数の推移**: Python 627 → 714（+87）、Rust 全suite OK  
-**所要ステップ数**: 5 ステップ（直列で回すと 6 ステップ + オーバーヘッド）
+| 1 | proto 凍結（単独） | — |
+| 2 | A（Bevy UI コンポーネント）/ B（Python gRPC エンドポイント）並列 | proto 凍結後 |
+| 3 | C（Rust gRPC クライアント `src/trading.rs`）| A + B 完了後 |
+| 4 | D（統合テスト）| C 完了後 |
 
 ---
 
 ## このスキル自体のメンテナンス
 
-新フェーズで適用した後、新しい知見があればこのファイルの「失敗パターン」または「実績」セクションに追記する。
+新フェーズで適用した後、新しい知見があれば `ImplementationLoop.md` の「知見（実績ベース）」セクションに追記する。

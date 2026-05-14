@@ -63,7 +63,12 @@
       "PowerShell($p = \\(Get-NetTCPConnection -LocalPort 19876 -ErrorAction SilentlyContinue\\).OwningProcess; if \\($p\\) { \"port 19876 occupied by PID $p\"; Get-Process -Id $p | Select-Object Id, ProcessName } else { \"port 19876 is free\" })",
       "Bash(Get-ChildItem -Path \"c:\\\\Users\\\\sasai\\\\Documents\\\\The-Trader-Was-Replaced\" -Force)",
       "Bash(Select-Object Name, Mode)",
-      "PowerShell(ls \"c:\\\\Users\\\\sasai\\\\Documents\\\\The-Trader-Was-Replaced\\\\src\" -Force | %{$_.Name})"
+      "PowerShell(ls \"c:\\\\Users\\\\sasai\\\\Documents\\\\The-Trader-Was-Replaced\\\\src\" -Force | %{$_.Name})",
+      "PowerShell(ls \"c:\\\\Users\\\\sasai\\\\Documents\\\\The-Trader-Was-Replaced\\\\python\" -Force | %{$_.Name})",
+      "PowerShell(ls \"c:\\\\Users\\\\sasai\\\\Documents\\\\The-Trader-Was-Replaced\\\\tests\" -Force | %{$_.Name})",
+      "PowerShell(ls \"c:\\\\Users\\\\sasai\\\\Documents\\\\The-Trader-Was-Replaced\\\\.vscode\" -Force | %{$_.Name})",
+      "PowerShell(ls \"c:\\\\Users\\\\sasai\\\\Documents\\\\The-Trader-Was-Replaced\\\\docs\" -Force | %{$_.Name})",
+      "Bash(grep -E \"\\\\.rs$\")"
     ],
     "additionalDirectories": [
       "\\tmp",
