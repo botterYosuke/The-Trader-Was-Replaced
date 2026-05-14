@@ -26,7 +26,7 @@ Phase 8 で backend に追加される責務を網羅列挙する。各項目は
 
 ### 0.1 Venue 認証
 
-- `VenueLogin(venue, credentials_source)` — `credentials_source` は `"env"` / `"keyring"` / `"file"` の 3 種。Rust UI からは平文資格情報を渡さない。
+- `VenueLogin(venue, credentials_source)` — `credentials_source` は `"prompt"` / `"session_cache"` / `"env"` の 3 種。Rust UI からは平文資格情報を渡さない（詳細は §3.2 参照）。`"keyring"` / `"file"` は不採用（§7 ADR「keyring / 平文 file credentials を採用しない」）。
 - `VenueLogout()` — セッションを閉じてキャッシュを破棄。
 - `GetVenueState()` — 現在の `VenueState`（DISCONNECTED / AUTHENTICATING / CONNECTED / SUBSCRIBED / RECONNECTING / ERROR）。
 - 自動再接続: ネットワーク切断時に最大 3 回の指数バックオフ（1s / 4s / 16s）でリトライ。失敗で `ERROR` 遷移。
@@ -207,8 +207,15 @@ class LiveVenueAdapter(Protocol):
 - 必須パラメータ: `p_no`（連番）/ `p_sd_date`（YYYY.MM.DD-HH:mm:ss.fff）/ `sJsonOfmt`。
 - エンコーディング: Shift-JIS。`p_errno` と `sResultCode` の二段判定。
 - マーケットデータ: EventWebSocket（区切り `\x01\x02\x03`）。
-- 第二暗証番号が必須化されているため、`credentials_source` に追加フィールドを持たせる。
+- 第二暗証番号が必須化されているため、`credentials_source` に追加フィールドを持たせる。**第二暗証番号は Phase 8 では収集しない**（Phase 9 の発注 UI で iced modal により都度取得、§7 ADR 参照）。
 - 検証フロー: 認証 → `CLMEventDownload` でマスタ取得 → EventWebSocket で板/歩み値を購読。
+
+> **運用ファクト — セッションライフサイクル**:
+> - **初回（JST 当日の最初の起動）**: `CLMAuthLoginRequest` でログイン。debug ビルド + `.env` に `DEV_TACHIBANA_USER_ID` / `DEV_TACHIBANA_PASSWORD` があれば無人ログイン（tachibana skill S2）。release では常に tkinter ダイアログ。
+> - **JST 当日内の 2 回目以降の起動**: `tachibana_session.json` が JST 当日付であれば仮想 URL 5 本を自動復元し、**ユーザー操作なしで `CONNECTED` まで到達する**（tachibana skill S3）。`.env` も不要。
+> - **翌日 / 夜間閉局越え**: 仮想 URL が失効しているため再ログインが必要。`p_errno=2` を検知したら session.json を破棄して env / prompt 経路にフォールバック（tachibana skill R6 / §3.8.8）。
+> - **電話認証 (CLMAuthLoginAck 前提)**: 電話認証は最初の 1 回だけユーザーが手動で済ませる必要がある。一度通れば以降は ID/PW 入力のみ（skill 前提条件 §1）。
+> - **第二暗証番号**: ログインに不要。発注時にのみ必要（Phase 9）。ファイル/env には書かない（skill F-H5）。
 
 ### 2.2 kabuステーション (kabusapi)
 
@@ -219,6 +226,21 @@ class LiveVenueAdapter(Protocol):
   - 本番 `http://localhost:18080/kabusapi/` — `KABU_ALLOW_PROD=1` env が立っているときのみ Python URL builder が解禁
   - 検証 `http://localhost:18081/kabusapi/` — 既定。`DEV_KABU_PROD` 未設定 / `false` ならこちら
 - **本体プロセス前提**: kabuステーション本体（Win GUI）が起動 → 本体に手動ログイン → 設定で「APIを利用する」✅ → APIPassword 設定、までを **ユーザーが手動で済ませる**。`live_runner` 起動時に `:18080` / `:18081` の TCP LISTEN を確認し、未 LISTEN なら `KABU_STATION_NOT_RUNNING` で reject。本体は早朝に強制ログアウトされる仕様のため、深夜 E2E では落ちる前提（skill S1）
+
+> **運用ファクト — セッションライフサイクルと毎日の手動操作**:
+>
+> **「API パスワードを入力する」≠「kabuステーション本体にログインする」** — これが立花と最も違う点。
+>
+> | 操作 | 誰が / いつ | 自動化できるか |
+> |---|---|---|
+> | kabuステーション本体への GUI ログイン | ユーザーが毎営業日朝に手動 | **できない**（本体は Windows GUI アプリ。早朝に強制ログアウトされる仕様） |
+> | `/token` 発行（API パスワード入力） | flowsurface 起動のたびに自動 | debug + `.env` で無人化可（`DEV_KABU_API_PASSWORD`） |
+> | `/token` の有効期間 | 本体終了 / ログアウト / 別トークン発行で即失効 | ファイルキャッシュ不要・毎起動取り直し（kabu skill S4） |
+>
+> - **JST 当日内の 2 回目以降の起動**: `/token` を再発行（数十 ms）するだけ。ダイアログは出ない（debug + env なら）。**ただし本体がログアウトしていると `/token` が `4001001` で失敗する**。
+> - **翌朝 / 強制ログアウト後**: ユーザーは本体 GUI に手動でログインしてから flowsurface を起動する必要がある。これは kabuステーション本体の仕様上 **Phase 8 の制約として受け入れる**（§7 ADR「kabuStation 本体プロセスへの依存を許容する」参照）。
+> - **本体ログアウト中の `/token` 失敗**（`4001001`）→ Phase 8 ではエラートースト「kabuStation 本体に再ログインしてください」を出すのみ。自動回復は Phase 9 へ（§7 ADR「kabu 本体早朝ログアウト後の自動回復は Phase 9 へ」参照）。
+> - **取引パスワード**（`/cancelorder` の `Password` フィールド）: 取消発注時に必要。Phase 8 では発注経路を持たないため非対応（§7 ADR「取引パスワード (kabu) は Phase 8 で扱わない」参照）。
 - **認証**: `POST /token {"APIPassword": "..."}` → トークン取得 → 以降の全リクエストに `X-API-KEY` ヘッダ。Bearer ではない（skill R3）
 - **トークン寿命**: 本体終了/ログアウト/別トークン発行で失効。**ファイルキャッシュは作らない**（毎起動 `/token` を叩き直す、skill S4）。Tachibana の session_cache 経路は kabu には無い
 - **マーケットデータ**: WebSocket `ws://localhost:1808X/kabusapi/websocket`。UTF-8 JSON、認証ヘッダ不要（本体ログイン状態が前提）。受信専用（クライアントから何も送らない）
@@ -294,6 +316,21 @@ python/engine/
 本番接続のガード:
 - Tachibana: `DEV_TACHIBANA_DEMO` 未設定 = demo 既定。本番 URL `https://kabuka.e-shiten.jp/e_api_v4r8/` への接続は **`TACHIBANA_ALLOW_PROD=1` env を併用したときのみ** Python URL builder が解禁する（Tachibana skill S2 / Q7）
 - kabu: `DEV_KABU_PROD` 未設定 / `false` = 検証 18081 既定。本番 18080 への接続は **`KABU_ALLOW_PROD=1` env を併用したときのみ** Python URL builder が解禁する（kabu skill R1 / S3）。`DEV_KABU_PROD=true` 単体では検証ポートに落とす二重ガード
+
+#### 起動シナリオ別の認証挙動（運用マトリクス）
+
+「毎回ログインが必要か」を起動ごとに整理した早見表。
+
+| 起動シナリオ | Tachibana | kabu |
+|---|---|---|
+| **初回（JST 当日の最初の起動）** | ID/PW 入力が必要。debug + `.env` があれば自動。電話認証は過去に済んでいる前提 | (1) kabuStation 本体への**手動 GUI ログイン**が先に必要。(2) API パスワード入力（debug + `.env` で自動）。これで `/token` を取得 |
+| **JST 当日内の 2 回目以降** | `tachibana_session.json` から仮想 URL を自動復元。**ダイアログ・env 不要** | `/token` を毎起動取り直し（数十 ms）。本体がログイン状態なら**ダイアログなし**（debug + env なら完全無人） |
+| **翌営業日 / 夜間閉局越え** | 仮想 URL 失効 → 再ログイン必要。debug + env なら自動 | 本体が早朝強制ログアウト → **本体への手動 GUI 再ログインが先に必要**。その後 `/token` 再取得（自動） |
+| **本体が落ちている（kabu のみ）** | — | `/token` が `KABU_STATION_NOT_RUNNING` or `4001001` で失敗。エラートーストを出して終了。自動回復は Phase 9 |
+| **release ビルド** | env 無視 → tkinter ダイアログ毎回 | env 無視 → tkinter ダイアログ毎回（本体手動ログインは同様に必要） |
+| **headless 環境** | `NO_DISPLAY_AVAILABLE` を返す（§3.2.1） | 同左 |
+
+> **重要**: Tachibana は「2 回目以降の起動にユーザー操作は不要」だが、kabu は「毎営業日 1 回の本体 GUI ログインが不可避」。この非対称性は venue の設計差異（リモートサービス vs ローカル Windows アプリ）に起因する。
 
 平文の資格情報は **絶対にログに出さない**。`logger` の `extra` フィルタで `password|token|api_key|p_pwd|sPassword|sSecondPassword|virtual_url|sUrl[A-Z]` を含むキーをマスクする helper を `live/logging.py` に置く（Tachibana skill R10）。仮想 URL もセッション秘密なのでマスク対象（`***` 化）。
 
@@ -870,6 +907,20 @@ kabusapi の WebSocket サーバは RFC 6455 準拠の PONG を返さない（PI
 ### ADR: 第二暗証番号 (Tachibana) は Phase 8 で扱わない
 Tachibana の発注時必須項目である第二暗証番号 (`sSecondPassword`) は **Phase 8 のログインダイアログに含めない**。Tachibana skill F-H5 に従い、Phase 9 の発注 UI 内で **iced modal** (Rust 側) で取得し、Python の venue adapter メモリにのみ保持・idle forget タイマーで自動消去する。理由: (1) Phase 8 は read-only 市場接続であり、第二暗証番号を必要としない。(2) ログイン時に集めて長時間保持すると漏洩窓が広がる。発注のたびに再入力させて寿命を短く保つ。(3) env / セッションキャッシュに書かない原則を Phase 8 で乱さない。
 
+### ADR: 取引パスワード (kabu) は Phase 8 で扱わない
+kabu の取消注文 (`PUT /cancelorder`) には `Password`（取引パスワード）フィールドが必要。これは `/token` 発行に使う **API パスワードとは別の概念**（kabu skill「注文パラメータの定石」参照）。Phase 8 は発注・取消経路を持たない（§7 ADR「発注経路は Phase 8 で握らない」）ため、取引パスワードの収集 UI も実装しない。Phase 9 で発注 / 取消 UI を作る際に、第二暗証番号 (Tachibana) と並べて設計する。
+
+理由: (1) 取引パスワードを事前に収集・保持すると漏洩窓が広がり、かつ Phase 8 では使う場面が存在しない。(2) Tachibana の第二暗証番号と対称的に「発注時に都度入力、メモリのみ保持、idle forget」の同一ポリシーで実装する。(3) 両者を別々の Phase で実装すると設計が噛み合わないため、一括して Phase 9 へ持ち越す。
+
+### ADR: kabu 本体早朝ログアウト後の自動回復は Phase 9 へ
+kabuStation 本体は早朝に強制ログアウトする。ログアウト後に flowsurface が `/token` を叩くと `4001001`（未認証）が返る。この状態からの自動回復（本体再ログイン検出 → ユーザーへの再ログイン誘導 modal → `/token` 再発行 → 購読を自動的に再開）は **Phase 8 では実装しない**。
+
+Phase 8 の挙動: `4001001` を受信したら `VenueState=ERROR` に遷移し、トーストで「kabuStation 本体に再ログインしてから [再接続] を押してください」を表示する。自動再接続はしない。
+
+理由: (1) Phase 8 は read-only。深夜に落ちてもデータが消えるだけで発注リスクはなく、手動対処で足りる。(2) 本体ログアウト → 再ログイン → `/token` 再取得 → 購読再開という一連のフローは、Phase 9 で発注経路が入ったときに「in-flight 注文の再確認」と合わせて設計するほうが整合する。(3) Phase 8 で半端な自動回復を実装すると、Phase 9 の発注経路と競合するリスクが高い。
+
+**Phase 9 への引き継ぎ事項**: 「Venue health watchdog」として `kabusapi_auth` の `/token` エラーを定期的に検知し、modal で本体再ログイン誘導 → 承認後に自動 `/token` 再発行 → 購読自動再開の一連フローを実装する。
+
 ### ADR: debug ビルドのみ env 自動ログインを許可する
 `DEV_TACHIBANA_USER_ID` / `DEV_TACHIBANA_PASSWORD` / `DEV_TACHIBANA_DEMO` / `KABU_API_PASSWORD` の自動ログインは **debug ビルドの Python のみ**が読む。release では env を完全に無視し、`credentials_source="env"` を `ENV_DISABLED_IN_RELEASE` で reject する。理由: (1) 配布バイナリにユーザー資格情報の env 取込みパスを残さない。(2) 本番ユーザーが誤って `.env` を作ってリポジトリへ commit する事故経路を塞ぐ。(3) Tachibana skill S1 と一致させる。
 
@@ -879,8 +930,12 @@ demo 既定 (`DEV_TACHIBANA_DEMO` 未設定 = demo) に加え、本番 URL `http
 ### ADR: 発注経路は Phase 8 で握らない
 `nautilus_trader` の `TradingNode` を Live でホストすると ExecEngine が venue に注文を発射できてしまう。Phase 8 では `DataEngine` のみホストし、`ExecEngine` は **インスタンス化しない**。これにより「読み取り専用」を型レベルで担保する。Phase 9 で発注経路を追加する際は、別途明示的なフラグと確認 UX を入れる。
 
-### ADR: kabu ステーション本体プロセスへの依存を許容する
-kabu adapter は `localhost:18080` への HTTP 接続前提。アプリ側でプロセス起動まで自動化はしない（ユーザに手動起動を求める）。理由: kabu ステーション GUI のライセンス・自動操作の規約上、起動自動化はリスクが高い。代わりに「起動していない」ことを `KABU_STATION_NOT_RUNNING` で即時検出して UX 上明示する。
+### ADR: kabuStation 本体プロセスへの依存を許容する（毎営業日手動ログインも含む）
+kabu adapter は `localhost:18080` / `localhost:18081` への HTTP 接続前提。アプリ側でプロセス起動まで自動化はしない（ユーザに手動起動を求める）。理由: kabuStation GUI のライセンス・自動操作の規約上、起動自動化はリスクが高い。代わりに「起動していない」ことを `KABU_STATION_NOT_RUNNING` で即時検出して UX 上明示する。
+
+**毎営業日 1 回の手動 GUI ログインを Phase 8 の制約として受け入れる**: kabuStation 本体は証券会社のサービス仕様として早朝に強制ログアウトする（[ptal/howto.html](../.claude/skills/kabusapi/ptal/howto.html)）。この仕様を flowsurface 側で回避する手段は存在しない。Phase 8 では「本体ログアウトを検出したらトーストで再ログインを促す」に留め、自動回復は Phase 9 へ（下記 ADR 参照）。
+
+**「API パスワード入力」と「本体 GUI ログイン」は別の操作であることを計画全体で区別する**: `/token` の自動発行は debug + env で無人化できる。しかし本体 GUI へのログインは自動化できない。この非対称性を見落とすと「env を設定したのに毎朝エラーが出る」という誤診断につながる。
 
 ### ADR: Replay と Live Auto のデータソース非対称性（Phase 10 への前提制約）
 
@@ -943,6 +998,38 @@ backend 再起動時、kabu venue 側の既存登録銘柄と Tachibana の `tac
 
 ### Open Question: 複数 Venue の同時接続を将来許可するか
 Phase 8 では 1 Venue のみ。`VenueStateMachine` を venue ごとに持つよう作っておけば将来拡張可能だが、`ExecutionMode` の前提条件チェックが venue ごとに分岐し複雑化する（どの venue が `CONNECTED` なら Live 切替を許すか等）。Phase 10 以降で必要性が出てから再評価。
+
+---
+
+### Phase 9 への持ち越し項目
+
+Phase 8 で意図的に実装を後回しにした項目の一覧。Phase 9 計画書を起こす際にここから引き継ぐ。
+
+#### 認証 / セッション管理
+
+| 項目 | 対象 venue | Phase 8 での暫定挙動 | Phase 9 での期待実装 |
+|---|---|---|---|
+| **第二暗証番号の収集 UI** | Tachibana | 非実装。発注ボタン disabled | 発注ごとに iced modal で取得、メモリのみ保持、idle forget タイマー（§7 ADR「第二暗証番号 (Tachibana) は Phase 8 で扱わない」） |
+| **取引パスワードの収集 UI** | kabu | 非実装。取消ボタン disabled | 第二暗証番号と同ポリシー（発注時都度入力、メモリのみ）（§7 ADR「取引パスワード (kabu) は Phase 8 で扱わない」） |
+| **kabu 本体早朝ログアウト後の自動回復** | kabu | `4001001` でエラートーストを出して停止。手動再接続のみ | Venue health watchdog → modal で本体再ログイン誘導 → `/token` 再発行 → 購読自動再開（§7 ADR「kabu 本体早朝ログアウト後の自動回復は Phase 9 へ」） |
+| **Tachibana 閉局越えセッション能動検出** | Tachibana | crash 復帰時のみ `p_errno=2` を検知（§3.8.8）。通常運用中の閉局越えは次回起動時に検出 | 通常運用中に定期的に仮想 URL の健全性を確認し（`CLMStatusRequest` など）、失効を能動検出して無人 re-login |
+
+#### 発注 / 取消経路
+
+| 項目 | 対象 venue | Phase 9 での期待実装 |
+|---|---|---|
+| **`PlaceOrder` RPC の実装** | 両 venue | `OrderPanel` の発注ボタンを有効化。`ExecEngine` を初めてインスタンス化 |
+| **Tachibana `CLMKabuNewOrder`** | Tachibana | 現物 / 信用新規注文のパラメータ組立て（第二暗証番号 idle forget と同時実装） |
+| **kabu `POST /sendorder`** | kabu | 現物 / 信用注文。取引パスワード収集と同時実装。`PUT /cancelorder` も含む |
+| **kabu 「訂正なし」制約の UX 反映** | kabu | 訂正ボタンを「取消 → 再発注」フローに差し替え（立花との非対称性、§2.2 末尾参照） |
+
+#### UX 補強
+
+| 項目 | Phase 9 での期待実装 |
+|---|---|
+| **kabu本体 APIオプション OFF 検出** | `PUT /register` or `/token` で `4001003` が返ったとき、「kabuStation の設定で API を有効化してください」というガイド付きエラーを出す |
+| **Tachibana JST 閉局タイマー UI 表示** | Footer に「Tachibana セッション残り HH:MM」を小さく表示し、閉局前にユーザーに通知 |
+| **kabu 50 銘柄枠の残量表示** | Sidebar or Footer に「購読中 N / 50」を常時表示し、上限に近づいたら警告 |
 
 ---
 
