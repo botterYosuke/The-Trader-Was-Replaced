@@ -10,3 +10,4 @@ target/
 artifacts/
 python/tmp/
 tmp/
+python.egg-info/

@@ -68,7 +68,17 @@
       "PowerShell(ls \"c:\\\\Users\\\\sasai\\\\Documents\\\\The-Trader-Was-Replaced\\\\tests\" -Force | %{$_.Name})",
       "PowerShell(ls \"c:\\\\Users\\\\sasai\\\\Documents\\\\The-Trader-Was-Replaced\\\\.vscode\" -Force | %{$_.Name})",
       "PowerShell(ls \"c:\\\\Users\\\\sasai\\\\Documents\\\\The-Trader-Was-Replaced\\\\docs\" -Force | %{$_.Name})",
-      "Bash(grep -E \"\\\\.rs$\")"
+      "Bash(grep -E \"\\\\.rs$\")",
+      "PowerShell(\\(Get-Content \"D:\\\\Documents\\\\_blacksheep\\\\raw\\\\replay-runs\\\\1778684774-order_flow_06-1360_TSE\\\\fills.jsonl\" -ErrorAction SilentlyContinue | Measure-Object -Line\\).Lines; Write-Host \"---equity---\"; \\(Get-Content \"D:\\\\Documents\\\\_blacksheep\\\\raw\\\\replay-runs\\\\1778684774-order_flow_06-1360_TSE\\\\equity.jsonl\" -ErrorAction SilentlyContinue | Measure-Object -Line\\).Lines)",
+      "PowerShell(cd D:\\\\Documents\\\\_blacksheep; .\\\\scripts\\\\run_cooldown_sweep.ps1 -Window jan1324 -Bars @\\(0\\) 2>&1)",
+      "PowerShell($env:DEV_J_QUANTS_CACHE; [Environment]::GetEnvironmentVariable\\(\"DEV_J_QUANTS_CACHE\", \"User\"\\); [Environment]::GetEnvironmentVariable\\(\"DEV_J_QUANTS_CACHE\", \"Machine\"\\))",
+      "Bash(find /s -maxdepth 3 -type d 2>/dev/null | head -5; find /s -maxdepth 2 -name \"*.parquet\" 2>/dev/null | head -5; echo \"---\"; ls /s/ 2>/dev/null | head -10)",
+      "PowerShell($f = Get-Item \"S:\\\\j-quants\\\\equities_bars_minute_202411.csv.gz\"; \"$\\($f.Length / 1MB\\) MB size\")",
+      "PowerShell(Get-Content \"$env:APPDATA\\\\flowsurface\\\\run-buffer\\\\1778721034-order_flow_06-1360_TSE\\\\equity.jsonl\" -ErrorAction SilentlyContinue | Select-Object -First 3; Get-ChildItem \"$env:APPDATA\\\\flowsurface\\\\run-buffer\\\\1778721034-order_flow_06-1360_TSE\" -ErrorAction SilentlyContinue | Select-Object Name, Length)",
+      "PowerShell(cd \"S:\\\\j-quants\"; $gz = [System.IO.Compression.GZipStream]::new\\([System.IO.File]::OpenRead\\(\"equities_bars_minute_202501.csv.gz\"\\), [System.IO.Compression.CompressionMode]::Decompress\\); $sr = [System.IO.StreamReader]::new\\($gz\\); 1..3 | % { $sr.ReadLine\\(\\) }; $sr.Close\\(\\); $gz.Close\\(\\))",
+      "PowerShell(cd D:\\\\Documents\\\\_blacksheep; $eq = Get-Content \"raw\\\\replay-runs\\\\1778722323-order_flow_06-1360_TSE\\\\equity.jsonl\" | ConvertFrom-Json; $vals = $eq.equity; \"count=$\\($vals.Count\\)  min=$\\([Math]::Round\\(\\($vals | Measure-Object -Min\\).Minimum,2\\)\\)  max=$\\([Math]::Round\\(\\($vals | Measure-Object -Max\\).Maximum,2\\)\\)  first=$\\($vals[0]\\)  last=$\\($vals[-1]\\)\")",
+      "PowerShell(cd D:\\\\Documents\\\\_blacksheep; $eq = Get-Content \"raw\\\\replay-runs\\\\1778566927-order_flow_06-1360_TSE\\\\equity.jsonl\" | ConvertFrom-Json; $vals = $eq.equity; \"count=$\\($vals.Count\\)  min=$\\([Math]::Round\\(\\($vals | Measure-Object -Min\\).Minimum,2\\)\\)  max=$\\([Math]::Round\\(\\($vals | Measure-Object -Max\\).Maximum,2\\)\\)  first=$\\($vals[0]\\)  last=$\\($vals[-1]\\)\")",
+      "PowerShell(Set-Location D:\\\\Documents\\\\_blacksheep; .\\\\scripts\\\\run_cooldown_sweep.ps1 -Window jan1324 -Bars @\\(0, 1, 2, 3, 5, 10\\))"
     ],
     "additionalDirectories": [
       "\\tmp",
