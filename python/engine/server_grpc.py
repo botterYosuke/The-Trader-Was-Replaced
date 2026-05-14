@@ -106,6 +106,43 @@ class GrpcDataEngineServer(
         strategy_file = request.config.strategy_file if request.HasField("config") and request.config.HasField("strategy_file") else None
         logging.info(f"StartEngine: strategy_file={strategy_file!r}")
 
+        if not strategy_file:
+            return engine_pb2.ReplayControlResponse(
+                success=False,
+                request_id=request.request_id,
+                current_state=self._current_engine_state(),
+                error_code="MISSING_STRATEGY_FILE",
+                error_message="StartEngine requires config.strategy_file",
+            )
+
+        try:
+            from engine.strategy_runtime.strategy_loader import load as _load_strategy, StrategyLoadError
+            _module, scenario, strategy_cls = _load_strategy(strategy_file)
+            logging.info(
+                f"StartEngine: strategy loaded cls={strategy_cls.__name__!r}"
+                f" instruments={scenario.get('instruments') or [scenario.get('instrument')]}"
+                f" granularity={scenario.get('granularity')!r}"
+                f" start={scenario.get('start')!r} end={scenario.get('end')!r}"
+            )
+        except FileNotFoundError as exc:
+            logging.error(f"StartEngine: strategy file not found: {exc}")
+            return engine_pb2.ReplayControlResponse(
+                success=False,
+                request_id=request.request_id,
+                current_state=self._current_engine_state(),
+                error_code="STRATEGY_FILE_NOT_FOUND",
+                error_message=str(exc),
+            )
+        except Exception as exc:
+            logging.error(f"StartEngine: strategy load failed: {exc}")
+            return engine_pb2.ReplayControlResponse(
+                success=False,
+                request_id=request.request_id,
+                current_state=self._current_engine_state(),
+                error_code="STRATEGY_LOAD_ERROR",
+                error_message=str(exc),
+            )
+
         success, error = self.engine.start_engine()
         return engine_pb2.ReplayControlResponse(
             success=success,

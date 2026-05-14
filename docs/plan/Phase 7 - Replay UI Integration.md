@@ -18,24 +18,6 @@
 
 ---
 
-## Design Decisions & ADRs
-
-### ADR: MenuBar は Bevy UI の thin shell から始める
-MenuBar は最初から本格的な dropdown menu にせず、`bevy_ui` の固定バー + ボタンとして実装する。Phase 7 の目的は大きいため、最初の到達点を小さくし、既存の Footer と同じ方式（screen-space UI）に寄せることで、破壊時の復帰コストを下げる。
-
-### ADR: File Open は event 境界を作ってから StrategyEditor へ渡す
-`rfd` で直接エディタを開かず、まず `OpenStrategyRequested { path: PathBuf }` event を作る。これにより、File dialog、cache copy、StrategyEditorWindow、LoadStrategy RPC の結合を分離し、後続で cache layer や復元 prompt を挟みやすくする。
-
-### ADR: Strategy Run Backend Contract
-- **シーケンス**: `StartEngine` は `LOADED` 状態でしか有効でないため、IDLE から Run するには `LoadReplayData` -> `StartEngine` の 2-step sequencing が必要。
-- **データ源**: 実行には `ScenarioMetadata` (instruments, start, end, granularity) が必須であり、これらは実行前に `.py` からパースして Rust 側 Resource に保持する。
-- **カタログパス**: `catalog_path` は環境変数 `BACKEND_CATALOG_PATH` 等から取得し、Load 時に渡す。
-
-### ADR: Run starts as an event shell
-`Run` ボタンは `StrategyRunRequested` event を発火するのみとし、UI と backend 接続を分離する。また、dirty なバッファでの実行を避けるため、`Run` は cache 保存済み（`!dirty`）の状態でのみ有効化する。
-
----
-
 ## 0. UI 機能一覧 / UI Feature Inventory
 
 Phase 7 の UI が担う役割を網羅的に列挙する。各項目は §3 以降の詳細設計に対応する。
@@ -449,7 +431,21 @@ docs/plan/assets/
 
 ---
 
-## 8. Open Questions
+## 8. Open Questions & ADRs
+
+### ADR: MenuBar は Bevy UI の thin shell から始める
+MenuBar は最初から本格的な dropdown menu にせず、`bevy_ui` の固定バー + ボタンとして実装する。Phase 7 の目的は大きいため、最初の到達点を小さくし、既存の Footer と同じ方式（screen-space UI）に寄せることで、破壊時の復帰コストを下げる。
+
+### ADR: File Open は event 境界を作ってから StrategyEditor へ渡す
+`rfd` で直接エディタを開かず、まず `OpenStrategyRequested { path: PathBuf }` event を作る。これにより、File dialog、cache copy、StrategyEditorWindow、LoadStrategy RPC の結合を分離し、後続で cache layer や復元 prompt を挟みやすくする。
+
+### ADR: Strategy Run Backend Contract
+- **シーケンス**: `StartEngine` は `LOADED` 状態でしか有効でないため、IDLE から Run するには `LoadReplayData` -> `StartEngine` の 2-step sequencing が必要。
+- **データ源**: 実行には `ScenarioMetadata` (instruments, start, end, granularity) が必須であり、これらは実行前に `.py` からパースして Rust 側 Resource に保持する。
+- **カタログパス**: `catalog_path` は環境変数 `BACKEND_CATALOG_PATH` 等から取得し、Load 時に渡す。
+
+### ADR: Run starts as an event shell
+`Run` ボタンは `StrategyRunRequested` event を発火するのみとし、UI と backend 接続を分離する。また、dirty なバッファでの実行を避けるため、`Run` は cache 保存済み（`!dirty`）の状態でのみ有効化する。
 
 ---
 
@@ -474,5 +470,20 @@ docs/plan/assets/
   - `StartEngine` in Python still only logs `strategy_file` — does not call `strategy_loader.load()`
   - Next task: add `strategy_loader.load(strategy_file)` shell in `server_grpc.py::StartEngine` (error → `success=False`, no `engine_runner.run()` yet)
   - `catalog_path` for `load_bars_for_scenario()` is not in `StartEngineRequest`; options: persist in `DataEngine` during `LoadReplayData`, or add field to `EngineStartConfig` (no new RPC needed)
+
+### 2026-05-14 strategy_loader.load shell
+
+- **Commit**: see next commit after `e0636d8`
+- `strategy_loader.load(strategy_file)` shell added to `server_grpc.py::StartEngine`
+  - empty `strategy_file` → `success=False, error_code=MISSING_STRATEGY_FILE`
+  - `FileNotFoundError` → `success=False, error_code=STRATEGY_FILE_NOT_FOUND`
+  - other exception → `success=False, error_code=STRATEGY_LOAD_ERROR`
+  - success → logs `cls=`, `instruments=`, `granularity=`, `start=`, `end=`, then calls `engine.start_engine()`
+- Verified: `BuyAndHoldStrategy` loaded from `tests/data/test_strategy_daily.py`, state=RUNNING
+- `engine_runner.run()` is still not connected
+- Next task: decide how to supply `catalog_path` + `bars_by_instrument` to `engine_runner.run()`
+  - Option A: persist `catalog_path` in `DataEngine` during `load_replay_data`, expose as property
+  - Option B: add `catalog_path` field to `EngineStartConfig` (no new RPC)
+  - Decide before implementing RunBuffer / engine_runner wiring
 
 ---
