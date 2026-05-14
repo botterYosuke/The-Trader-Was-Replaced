@@ -1000,11 +1000,12 @@ MVP コアの「Open Strategy → Run → Pause / Resume / StepForward / ForceSt
   - autoscale extended to cover all visible candles' high/low range.
   - Falls back to single-candle behavior when `ohlc_points.len() < 2`.
 - Deferred: e-station `Basis/PlotData/Footprint`, Sidebar chart selection linkage.
+- Fix: `server_grpc.py` was only injecting the last bar; changed to inject `bars[1:]` so all bars populate `ohlc_points`.
 - Verification:
   - `cargo check`: OK; `scenario_parser --lib`: 4/4; `chart --lib`: 8/8 (+2 new multi-candle tests).
   - `test_reducer.py`: 31/31 (+7 new ohlc_points tests).
-  - `strategy_runtime` pytest: 68/68.
-- Manual E2E: (ユーザーが実施)
+  - `strategy_runtime` pytest: 99/99.
+- Manual E2E: Open Strategy → test_strategy_daily.py → Run → Completed (fills: 2, eq_pts: 57, pnl: -410010); KlineChart shows ~57 green/red daily candles + line chart; Footer SpeedSelector / Sidebar / Run Result unbroken; state: IDLE grpc: OK.
 - Next task: Footer ProgressBar / Phase 8 scoping.
 
 ---
