@@ -11,8 +11,14 @@ use tokio::sync::mpsc;
 use engine::data_engine_client::DataEngineClient;
 use engine::{GetStateRequest, PauseReplayRequest, ResumeReplayRequest, StartRequest, StepReplayRequest};
 
+// Bevy's compute task pool threads don't inherit the Tokio runtime context,
+// so we capture the handle here (before App::run takes over) and pass it as a resource.
+#[derive(Resource, Clone)]
+struct TokioHandle(tokio::runtime::Handle);
+
 #[tokio::main]
 async fn main() {
+    let tokio_handle = TokioHandle(tokio::runtime::Handle::current());
     App::new()
         .add_plugins(DefaultPlugins.set(WindowPlugin {
             primary_window: Some(Window {
@@ -27,6 +33,7 @@ async fn main() {
         .insert_resource(TradingData::default())
         .insert_resource(TradingSettings::default())
         .insert_resource(BackendStatus::default())
+        .insert_resource(tokio_handle)
         .add_systems(Startup, (setup_camera, setup_backend_connection))
         .add_systems(Update, (
             price_simulation_system,
@@ -63,7 +70,11 @@ fn status_update_system(
     }
 }
 
-fn setup_backend_connection(mut commands: Commands, settings: Res<TradingSettings>) {
+fn setup_backend_connection(
+    mut commands: Commands,
+    settings: Res<TradingSettings>,
+    tokio_handle: Res<TokioHandle>,
+) {
     let (tx, rx) = mpsc::unbounded_channel();
     commands.insert_resource(BackendChannel { rx });
 
@@ -86,7 +97,8 @@ fn setup_backend_connection(mut commands: Commands, settings: Res<TradingSetting
     let token = settings.token.clone();
     let interval = settings.poll_interval_ms;
 
-    tokio::spawn(async move {
+    let handle = tokio_handle.0.clone();
+    handle.spawn(async move {
         let mut client = loop {
             match DataEngineClient::connect(url.clone()).await {
                 Ok(c) => {
