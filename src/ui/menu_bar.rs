@@ -1,7 +1,7 @@
 use bevy::prelude::*;
 use rfd::FileDialog;
 use sha2::{Digest, Sha256};
-use crate::ui::components::{MenuBarRoot, MenuButton, OpenStrategyRequested, StrategyBuffer};
+use crate::ui::components::{MenuBarRoot, MenuButton, OpenStrategyRequested, StrategyBuffer, StrategyStatusLabel};
 
 const BTN_NORMAL: Color = Color::srgba(0.10, 0.10, 0.16, 1.0);
 const BTN_HOVER: Color = Color::srgba(0.20, 0.20, 0.30, 1.0);
@@ -55,6 +55,15 @@ pub fn spawn_menu_bar(mut commands: Commands) {
             ));
 
             spawn_menu_btn(p, "Open Strategy...", MenuButton::OpenStrategy);
+
+            p.spawn(Node { flex_grow: 1.0, ..default() });
+
+            p.spawn((
+                Text::new("strategy: none"),
+                TextFont { font_size: 12.0, ..default() },
+                TextColor(Color::srgb(0.55, 0.55, 0.55)),
+                StrategyStatusLabel,
+            ));
         });
 }
 
@@ -115,6 +124,32 @@ fn strategy_cache_path(original: &std::path::Path) -> Option<std::path::PathBuf>
         .join("the-trader-was-replaced")
         .join("strategy_buffers");
     Some(dir.join(cache_name))
+}
+
+pub fn update_strategy_status_label_system(
+    buffer: Res<StrategyBuffer>,
+    mut query: Query<&mut Text, With<StrategyStatusLabel>>,
+) {
+    if !buffer.is_changed() {
+        return;
+    }
+
+    let label = match &buffer.original_path {
+        Some(path) => {
+            let name = path
+                .file_name()
+                .and_then(|s| s.to_str())
+                .unwrap_or("<unnamed>");
+            let cache = if buffer.cache_path.is_some() { " cached" } else { "" };
+            let dirty = if buffer.dirty { " *" } else { "" };
+            format!("strategy: {}{}{}", name, cache, dirty)
+        }
+        None => "strategy: none".to_string(),
+    };
+
+    for mut text in &mut query {
+        text.0 = label.clone();
+    }
 }
 
 pub fn open_strategy_buffer_system(

@@ -64,3 +64,6 @@ pub struct StrategyBuffer {
     pub source: String,
     pub dirty: bool,
 }
+
+#[derive(Component)]
+pub struct StrategyStatusLabel;

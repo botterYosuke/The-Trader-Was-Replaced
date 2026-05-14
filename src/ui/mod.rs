@@ -13,6 +13,7 @@ use crate::ui::menu_bar::{
     menu_button_system,
     open_strategy_buffer_system,
     spawn_menu_bar,
+    update_strategy_status_label_system,
 };
 use crate::ui::systems::{update_price_display, button_system, update_status_indicator};
 use crate::ui::window::setup_ui;
@@ -39,6 +40,7 @@ impl Plugin for UiPlugin {
                 menu_button_system,
                 log_open_strategy_requested_system,
                 open_strategy_buffer_system,
+                update_strategy_status_label_system,
             ));
     }
 }
