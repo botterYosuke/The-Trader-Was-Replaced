@@ -924,13 +924,13 @@ MVP コアの「Open Strategy → Run → Pause / Resume / StepForward / ForceSt
 
 | 項目 | 状態 | 推奨 |
 |---|---|---|
-| Sidebar: 銘柄一覧 (`ListInstruments` RPC) | 未実装 | Phase 7 継続 ← 最優先 |
+| Sidebar: 銘柄一覧 (`ListInstruments` RPC) | E2E 実装済み（1301.TSE 表示確認済み） | Phase 7 継続 |
 | KlineChartWindow: ローソク足対応 (`chart.rs` 拡張) | Step 1 実装済み（最新バー 1 本のみ、複数本 candle は未実装） | Phase 7 継続 |
-| Footer: SpeedSelector UI (SetReplaySpeed は proto 済み) | 未実装 | Phase 7 継続 |
+| Footer: SpeedSelector UI (SetReplaySpeed は proto 済み) | 未実装 | Phase 7 継続 ← 最優先 |
 | Footer: ProgressBar + パーセント | 未実装 | Phase 8 でも可 |
 | BuyingPowerPanel / PositionsPanel / OrdersPanel | 未実装 | GetPortfolio RPC と同時に |
 | GetPortfolio RPC (`python/engine/server_grpc.py`) | 未実装 | BuyingPower 等の前提 |
-| ListInstruments RPC | 未実装 | Sidebar の前提 |
+| ListInstruments RPC | 実装済み（instrument IDs only、metadata は延期） | 完了 |
 | UI_LAYOUT 永続化 (`.json` サイドカー) | 未実装 | Phase 8 でも可 |
 
 #### ➡️ 明示延期（変更なし）
