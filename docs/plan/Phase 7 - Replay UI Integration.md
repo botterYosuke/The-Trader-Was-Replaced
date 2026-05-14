@@ -961,3 +961,14 @@ MVP コアの「Open Strategy → Run → Pause / Resume / StepForward / ForceSt
 - Next task: Sidebar / ListInstruments RPC vertical slice.
 
 ---
+
+### 2026-05-14 Sidebar / ListInstruments vertical slice
+
+- Added `ListInstruments` RPC and Rust Sidebar Instruments window.
+- Sidebar displays loading/error/empty/list states.
+- First slice returns instrument IDs only; metadata and chart selection linkage are deferred.
+- Verification: cargo check OK; scenario_parser --lib 4/4; chart --lib 6/6; ListInstruments pytest 4/4; strategy runtime pytest OK.
+- Manual E2E: Instruments window shows `1301.TSE` on startup; Open Strategy → test_strategy_daily.py → Run → Completed (fills: 2, eq_pts: 57, pnl: -410010); candle visible; Footer state: IDLE grpc: OK.
+- Next task: KlineChart 複数本 candle（複数 bar 表示）または Footer SpeedSelector UI。
+
+---
