@@ -950,3 +950,14 @@ MVP コアの「Open Strategy → Run → Pause / Resume / StepForward / ForceSt
 残りの表示系（Sidebar / Kline candle / Speed UI / Portfolio panels）は **Phase 7 継続** か **Phase 8 序盤** のどちらでも進められる。次フェーズの計画書を先に書くより、表示品質を上げながら Phase 7 のまま継続し、Kline + Sidebar が動いた時点で Phase 7 完了とする判断を推奨する。
 
 ---
+
+### 2026-05-14 Candle visibility E2E + auto_start fix
+
+- Fixed latest candle state propagation through replay provider and StartEngine completion path.
+- Manual E2E verified: latest red candle visible after Open Strategy -> Run; Run Result Completed; backend returns to IDLE; grpc OK.
+- Fixed backend startup so gRPC mode starts IDLE instead of RUNNING (`b5e7595`).
+- Verification: cargo check OK; scenario_parser --lib 4/4; chart --lib 6/6; strategy runtime pytest 68/68; test_main_args 5/5.
+- Note: `test_grpc_control.py` still has legacy StartEngine-without-strategy expectations and should be updated separately.
+- Next task: Sidebar / ListInstruments RPC vertical slice.
+
+---
