@@ -6,7 +6,7 @@ pub mod chart;
 pub mod footer;
 
 use bevy::prelude::*;
-use crate::ui::footer::{spawn_footer, update_footer_system};
+use crate::ui::footer::{spawn_footer, transport_button_system, update_footer_system};
 use crate::ui::systems::{update_price_display, button_system, update_status_indicator};
 use crate::ui::window::setup_ui;
 use crate::ui::components::WindowManager;
@@ -26,6 +26,7 @@ impl Plugin for UiPlugin {
                 update_status_indicator,
                 chart_render_system,
                 update_footer_system,
+                transport_button_system,
             ));
     }
 }

@@ -34,3 +34,12 @@ pub struct ReplayStateBadge;
 
 #[derive(Component)]
 pub struct GrpcStatusLabel;
+
+#[derive(Component, Clone, Copy, Debug)]
+pub enum TransportButton {
+    JumpToStart,
+    StepBack,
+    PauseResume,
+    StepForward,
+    Run,
+}

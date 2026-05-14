@@ -1,6 +1,35 @@
 use bevy::prelude::*;
 use crate::trading::{BackendStatus, TradingData, TradingSettings};
-use crate::ui::components::{FooterRoot, GrpcStatusLabel, ReplayStateBadge, ReplayTimeLabel};
+use crate::ui::components::{
+    FooterRoot, GrpcStatusLabel, ReplayStateBadge, ReplayTimeLabel, TransportButton,
+};
+
+const BTN_NORMAL: Color = Color::srgba(0.12, 0.12, 0.18, 1.0);
+const BTN_HOVER: Color = Color::srgba(0.22, 0.22, 0.32, 1.0);
+const BTN_PRESSED: Color = Color::srgba(0.35, 0.35, 0.52, 1.0);
+
+fn spawn_transport_btn(parent: &mut ChildBuilder, label: &str, action: TransportButton) {
+    parent
+        .spawn((
+            Button,
+            Node {
+                width: Val::Px(34.0),
+                height: Val::Px(20.0),
+                justify_content: JustifyContent::Center,
+                align_items: AlignItems::Center,
+                ..default()
+            },
+            BackgroundColor(BTN_NORMAL),
+            action,
+        ))
+        .with_children(|p| {
+            p.spawn((
+                Text::new(label),
+                TextFont { font_size: 11.0, ..default() },
+                TextColor(Color::srgb(0.85, 0.85, 0.85)),
+            ));
+        });
+}
 
 pub fn spawn_footer(mut commands: Commands) {
     commands
@@ -13,14 +42,28 @@ pub fn spawn_footer(mut commands: Commands) {
                 height: Val::Px(28.0),
                 flex_direction: FlexDirection::Row,
                 align_items: AlignItems::Center,
-                column_gap: Val::Px(20.0),
-                padding: UiRect::horizontal(Val::Px(14.0)),
+                column_gap: Val::Px(6.0),
+                padding: UiRect::horizontal(Val::Px(10.0)),
                 ..default()
             },
             BackgroundColor(Color::srgba(0.04, 0.04, 0.07, 0.93)),
             FooterRoot,
         ))
         .with_children(|p| {
+            // Transport buttons
+            spawn_transport_btn(p, "|<", TransportButton::JumpToStart);
+            spawn_transport_btn(p, "<",  TransportButton::StepBack);
+            spawn_transport_btn(p, "||", TransportButton::PauseResume);
+            spawn_transport_btn(p, ">",  TransportButton::StepForward);
+            spawn_transport_btn(p, ">>", TransportButton::Run);
+
+            // Flex spacer — pushes status labels to the right
+            p.spawn(Node {
+                flex_grow: 1.0,
+                ..default()
+            });
+
+            // Status labels
             p.spawn((
                 Text::new("time: --"),
                 TextFont { font_size: 12.0, ..default() },
@@ -59,6 +102,10 @@ pub fn update_footer_system(
         (With<GrpcStatusLabel>, Without<ReplayTimeLabel>, Without<ReplayStateBadge>),
     >,
 ) {
+    if !data.is_changed() && !status.is_changed() && !settings.is_changed() {
+        return;
+    }
+
     // Timestamp
     for mut text in &mut time_q {
         if data.timestamp_ms > 0 {
@@ -76,9 +123,9 @@ pub fn update_footer_system(
         text.0 = format!("state: {}", replay);
         color.0 = match replay {
             "RUNNING" => Color::srgb(0.20, 1.00, 0.45),
-            "PAUSED" => Color::srgb(1.00, 0.75, 0.20),
-            "LOADED" => Color::srgb(0.35, 0.70, 1.00),
-            _ => Color::srgb(0.45, 0.45, 0.45), // IDLE
+            "PAUSED"  => Color::srgb(1.00, 0.75, 0.20),
+            "LOADED"  => Color::srgb(0.35, 0.70, 1.00),
+            _         => Color::srgb(0.45, 0.45, 0.45), // IDLE
         };
     }
 
@@ -96,6 +143,30 @@ pub fn update_footer_system(
         } else {
             text.0 = "grpc: ...".to_string();
             color.0 = Color::srgb(0.80, 0.75, 0.25);
+        }
+    }
+}
+
+pub fn transport_button_system(
+    mut query: Query<
+        (&Interaction, &mut BackgroundColor, &TransportButton),
+        (Changed<Interaction>, With<Button>),
+    >,
+) {
+    for (interaction, mut bg, action) in &mut query {
+        match interaction {
+            Interaction::Pressed => {
+                bg.0 = BTN_PRESSED;
+                match action {
+                    TransportButton::JumpToStart => info!("transport: jump_to_start"),
+                    TransportButton::StepBack    => info!("transport: step_back"),
+                    TransportButton::PauseResume => info!("transport: pause_resume"),
+                    TransportButton::StepForward => info!("transport: step_forward"),
+                    TransportButton::Run         => info!("transport: run"),
+                }
+            }
+            Interaction::Hovered => bg.0 = BTN_HOVER,
+            Interaction::None    => bg.0 = BTN_NORMAL,
         }
     }
 }
