@@ -95,8 +95,6 @@ pub fn strategy_editor_window_system(
                                 egui::Color32::from_rgb(255, 51, 102)
                             };
                             ui.label(egui::RichText::new(format!("{:.0}", s.total_pnl)).small().monospace().color(pnl_color));
-                            ui.label(egui::RichText::new("status:").small());
-                            ui.label(egui::RichText::new(&s.status).small().monospace());
                         });
                     }
                     ui.separator();
