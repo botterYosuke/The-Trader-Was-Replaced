@@ -57,7 +57,7 @@ Phase 7 の UI が担う役割を網羅的に列挙する。各項目は §3 以
 - **Floating Window 操作**: ドラッグ移動 / リサイズ / 前面化 (z-order) / 表示・非表示トグル
 - **Infinite Canvas 操作**: パン / ズーム（視点変更）
 - **Sidebar からの銘柄選択**（`SelectedSymbol` 更新 → Kline の対象銘柄が連動。Ladder は Phase 8 で連動）
-- **UI_LAYOUT の永続化（Replay モード専用）** — floating window の位置・サイズ・z-order・可視性、canvas の pan/zoom、選択銘柄を戦略 `.py` 末尾の `UI_LAYOUT` センチネルブロックに保存（§3.4）。Live Manual モードでは戦略 `.py` への紐付けが無いため別ファイルに保存（Phase 8 で定義）。Live Auto モード（Phase 10）は Replay と同様に戦略 `.py` に保存する
+- **UI_LAYOUT の永続化** — floating window の位置・サイズ・z-order・可視性、canvas の pan/zoom、選択銘柄を戦略 `.py` と **同名の `.json` ファイル**（サイドカー）に保存（§3.4）。`.py` + `.json` を 1 組の入力ファイルとして扱う。Live Auto モード（Phase 10）も同様。Live Manual モードは `.py` が無いため例外設計（Phase 8 で定義）
 - **Settings**（Sidebar 下半分、stub OK）: Theme dropdown / Backend address field / Save Layout button
 
 ### 0.4 状態表示（Read-only）
@@ -187,7 +187,7 @@ StopReplay()         → * → STOPPING → IDLE
 
 **Streaming 評価 (Phase 6 で決定)** — A. 現状の Unary GetState 60Hz polling 継続 / B. SubscribeReplayEvents (server stream)。UI 層は SubscriptionAgnostic で両対応。
 
-**UI_LAYOUT 永続化** — 戦略 `.py` 末尾の `UI_LAYOUT` センチネルブロックに保存。window 位置/size/z/可視性, viewport pan/zoom, selected_symbol。
+**UI_LAYOUT 永続化** — 戦略 `.py` と同名の `.json` サイドカーファイルに保存（sentinel block 方式は不採用）。window 位置/size/z/可視性, viewport pan/zoom, selected_symbol。`.py` + `.json` を 1 組の入力ファイルとして扱う。
 
 ### 1.1 Space の分割（重要な設計判断）
 
@@ -316,32 +316,28 @@ StopReplay()         → * → STOPPING → IDLE
 - **StrategyEditorWindow** ([src/ui/floating/strategy_editor.rs]) — monaco-editor 相当のコードエディタ。File→Open でファイルパスを受け取り、ファイル内容を読み込んで表示・編集。
   - 機能: Python シンタックスハイライト / 行番号 / 行折りたたみ / Find & Replace / Undo-Redo / オートインデント
   - ヘッダ: ファイル名表示、`[Save]` / `[▶ Run]` / `[Revert]`、ダーティマーク（`●` 印）
-  - **UI 状態の保存場所（採用方針、Replay モード専用）**: floating window の位置・サイズ・z-order・可視性、infinite canvas の pan / zoom、選択銘柄などの **UI 状態は戦略 `.py` ファイル自体に埋め込む**（`SCENARIO` / `LIVE_SCENARIO` と同じ「戦略ファイル＝単一ソース」ポリシーに揃える）。このアプリは **3 つの ExecutionMode** を持つ（§0.5.2 を参照）:
-    - **Replay モード**: 戦略 `.py` 末尾の `UI_LAYOUT` センチネルブロック（本 §3.4 の設計）
-    - **Live Manual モード** (Phase 8/9): 戦略ファイルの紐付けなし → `cache_dir/the-trader-was-replaced/live_manual_layout.json`（Phase 8 で実装）
-    - **Live Auto モード** (Phase 10): 戦略 `.py` にウィンドウ位置を保存（Replay と同じ方式。戦略＝設定ファイルのポリシーが再適用される）
-    - 埋め込み形式: ファイル末尾に **センチネルブロック**を置く。Rust から安全に書き換えるため、AST 解析や dict literal の rewrite ではなく、行ベースで全置換できる単純なフォーマットにする。
-      ```python
-      # === UI_LAYOUT_BEGIN (auto-generated; do not edit by hand) ===
-      UI_LAYOUT = {
-          "schema_version": 1,
-          "viewport": {"pan_x": 0.0, "pan_y": 0.0, "zoom": 1.0},
-          "windows": {
-              "kline":         {"x": 100, "y": 80,  "w": 800, "h": 500, "z": 0, "visible": True},
-              "ladder":        {"x": 920, "y": 80,  "w": 320, "h": 500, "z": 1, "visible": True},
-              "buying_power":  {"x": 100, "y": 600, "w": 300, "h": 120, "z": 2, "visible": True},
-              "positions":     {"x": 420, "y": 600, "w": 500, "h": 200, "z": 3, "visible": True},
-              "orders":        {"x": 940, "y": 600, "w": 500, "h": 200, "z": 4, "visible": True},
-              "strategy_editor": {"x": 50, "y": 50, "w": 900, "h": 700, "z": 5, "visible": True},
-          },
-          "selected_symbol": "1301.TSE",
+  - **UI 状態の保存場所（採用方針）**: floating window の位置・サイズ・z-order・可視性、infinite canvas の pan / zoom、選択銘柄などの **UI 状態は戦略 `.py` と同名の `.json` ファイル（サイドカー）に保存**する。`.py` + `.json` を 1 組の入力ファイルとして扱う。このアプリは **3 つの ExecutionMode** を持つ（Phase 8 §0.5.2 参照）:
+    - **Replay モード**: `{strategy_name}.json`（`.py` と同じディレクトリ）
+    - **Live Auto モード** (Phase 10): 同上（`.py` + `.json` ペアを Promote to Live でそのまま利用）
+    - **Live Manual モード** (Phase 8/9): 戦略 `.py` が存在しないため例外 → Phase 8 で設計
+    - ファイル形式: **JSON**（拡張子 `.json`、UTF-8）。`.py` を汚さないため sentinel block は使わない。
+      ```json
+      {
+        "schema_version": 1,
+        "viewport": {"pan_x": 0.0, "pan_y": 0.0, "zoom": 1.0},
+        "windows": {
+          "kline":          {"x": 100, "y": 80,  "w": 800, "h": 500, "z": 0, "visible": true},
+          "buying_power":   {"x": 100, "y": 600, "w": 300, "h": 120, "z": 2, "visible": true},
+          "positions":      {"x": 420, "y": 600, "w": 500, "h": 200, "z": 3, "visible": true},
+          "orders":         {"x": 940, "y": 600, "w": 500, "h": 200, "z": 4, "visible": true},
+          "strategy_editor":{"x": 50,  "y": 50,  "w": 900, "h": 700, "z": 5, "visible": true}
+        },
+        "selected_symbol": "1301.TSE"
       }
-      # === UI_LAYOUT_END ===
       ```
-    - 書き換え戦略: `# === UI_LAYOUT_BEGIN ` 行から `# === UI_LAYOUT_END ===` 行までを Rust 側で正規表現マッチして丸ごと差し替える（中身は Rust struct → `serde_json` → Python literal 風 pretty-print）。AST は触らない。
-    - ブロックが存在しない戦略ファイル（既存サンプル等）を開いたときは、**ファイル末尾に新規追加**する形で初回書き込み。Python としては未使用の module-level dict なので副作用ゼロ。
-    - 読み込み: アプリは Python AST を持たないので、同じ正規表現でブロックを抽出 → ブロック内の `UI_LAYOUT = {...}` を **JSON5 互換パーサ**（`json5` crate 等）で読む。Python の `True`/`False`/`None` は JSON5 が扱えないので、書き出し時に `true`/`false`/`null` に正規化しておく（Python 側はこの dict を実行しないので問題なし）。
-      実装簡略化のため、書き出しを Python 風（`True`/`False`/`None`）ではなく **JSON 風**（`true`/`false`/`null`）に統一する案も可。表示上は Python ファイル内に JSON が埋まる形になるが、`UI_LAYOUT = json.loads("""...""")` のラッパで Python からも読めるようにする手もある。**MVP は JSON 風で統一**。
+    - 読み込み: File → Open で `test_strategy_daily.py` を開いたとき、`test_strategy_daily.json` が同ディレクトリに存在すれば読み込んでウィンドウ配置を復元。存在しなければデフォルト配置で起動（初回書き込みは `[Save]` 操作 / ウィンドウ移動時の自動保存で行う）。
+    - 書き込み: Rust の `serde_json` で serialize → ファイル書き出し。`.py` 本体は一切改変しない。
+    - **`.py` と `.json` の対応**: ファイル名（拡張子を除く stem）が一致する同ディレクトリのペアとする。`test_strategy_daily.py` の UI レイアウトは `test_strategy_daily.json`。
   - **キャッシュフォルダ運用（採用方針）**: 編集中の状態は OS 標準のキャッシュディレクトリにミラーリングして運用する。元ファイルは `[Save]` するまで触らない。UI 状態の自動保存先も**キャッシュ内のコピー**（同じ `UI_LAYOUT` ブロック）。
     - キャッシュ位置: `dirs::cache_dir()` 配下に `the-trader-was-replaced/strategy_buffers/` を作る（Windows: `%LOCALAPPDATA%\the-trader-was-replaced\cache\strategy_buffers\`、Linux: `~/.cache/the-trader-was-replaced/strategy_buffers/`、macOS: `~/Library/Caches/the-trader-was-replaced/strategy_buffers/`）
     - キャッシュファイル名: `{sha256(original_abs_path)[..16]}__{original_filename}` ＋ サイドカー JSON `{...}.meta.json` に `original_path` / `last_modified_ms` / `dirty: bool` を保存

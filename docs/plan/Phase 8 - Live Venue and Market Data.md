@@ -69,21 +69,28 @@ Phase 8 で backend に追加される責務を網羅列挙する。各項目は
 
 ### 0.5.2 UI_LAYOUT の保存先（ExecutionMode 別）
 
+**基本方針**: 戦略 `.py` と **同名の `.json` ファイル（サイドカー）** に保存する。`.py` + `.json` を 1 組の入力ファイルとして扱う。`.py` 本体は一切改変しない（sentinel block 方式は不採用）。
+
 | ExecutionMode | UI_LAYOUT の保存先 | 理由 |
 |---|---|---|
-| **Replay** | 戦略 `.py` 末尾の `UI_LAYOUT` センチネルブロック（Phase 7 設計） | 戦略ファイル＝単一ソースのポリシー。バックテスト文脈はファイルに紐付く |
-| **Live Manual** | `cache_dir/the-trader-was-replaced/live_manual_layout.json` | 戦略 `.py` の紐付けなし。ウィンドウ位置のみ保存（手動発注に戦略コードは不要） |
-| **Live Auto** | 戦略 `.py` 末尾の `UI_LAYOUT` センチネルブロック（Replay と同方式） | Phase 10 で実装。戦略ファイルが自動発注の設定を兼ねるため Replay と同じポリシーが復活 |
+| **Replay** | `{strategy_name}.json`（`.py` と同じディレクトリ） | 戦略ファイルと 1:1 対応。バックテスト文脈（SCENARIO・コード）と UI 状態を同じ場所に置く |
+| **Live Auto** (Phase 10) | `{strategy_name}.json`（`.py` と同じディレクトリ） | Replay と同方式。Promote to Live でそのまま `.py` + `.json` ペアを引き継ぐ |
+| **Live Manual** | `cache_dir/the-trader-was-replaced/live_manual_layout.json` | 対応する戦略 `.py` が存在しない。ウィンドウ位置のみを standalone ファイルで保持 |
 
-- **Live Manual** の layout ファイルは venue や instrument ごとに分けない（1 ファイル固定）。保存タイミングは Replay と同様にウィンドウ移動・リサイズのたびに自動保存。
-- `UiLayoutCache` Resource の保存先選択は `ExecutionModeRes` を参照して切り替える:
+- 保存タイミング: ウィンドウ移動・リサイズのたびに変更イベント駆動で自動保存（`response.changed()` 相当）。非同期 I/O で UI フレームをブロックしない。
+- `UiLayoutCache` Resource の保存先選択は `ExecutionModeRes` を参照:
   ```rust
   match mode {
-      ExecutionMode::Replay | ExecutionMode::LiveAuto => save_to_strategy_py(),
-      ExecutionMode::LiveManual => save_to_json("live_manual_layout.json"),
+      ExecutionMode::Replay | ExecutionMode::LiveAuto => {
+          // {original_path stem}.json
+          save_to_sidecar_json(strategy_path.with_extension("json"))
+      }
+      ExecutionMode::LiveManual => {
+          save_to_json(cache_dir.join("live_manual_layout.json"))
+      }
   }
   ```
-- Live Auto（Phase 10）は本フェーズではスタブのみ（`LiveAuto` enum バリアントを定義しておき、保存先ロジックは `Replay` と共通パスを使う）。
+- Live Auto（Phase 10）は本フェーズではスタブのみ（`LiveAuto` enum バリアントを定義。保存先ロジックは `Replay` と共通パスを使う）。
 
 ### 0.5.1 時系列データの時間軸ルール（混在禁止）
 
@@ -591,13 +598,15 @@ src/ui/floating/
 
 Phase 8 では `LiveAuto` は grayed-out スタブとして定義のみ行い（Phase 10 で実装）、実質的に `Replay ⇄ LiveManual` の 2 値切替として動作する。
 
-### ADR: UI_LAYOUT の保存先を ExecutionMode ごとに分ける
-Phase 7 で確立した「戦略 `.py` 末尾の `UI_LAYOUT` センチネルブロック」は **Replay モード（および将来の LiveAuto モード）専用**とし、LiveManual モードでは `live_manual_layout.json`（standalone ファイル）を使う。
+### ADR: UI_LAYOUT は `.py` 同名の `.json` サイドカーに保存する（sentinel block 方式不採用）
+Phase 7 設計段階では「`.py` 末尾に sentinel block を埋め込む」案があったが、**不採用**とし、`.py` と同名の `.json` ファイル（サイドカー）に保存する方式を採用する。
 
 理由:
-1. **LiveManual には戦略 `.py` が存在しない** — 手動発注モードでは特定の戦略ファイルを開く必要がない。紐付けるべき `.py` が無いため sentinel block 方式を使えない。
-2. **モード間で保存先が混在しない** — Replay の `.py` ファイルに Live Manual のレイアウトが書き込まれると、そのファイルを別マシンや別ユーザが開いたときに Live Manual 専用の情報が混入する。
-3. **LiveAuto が Replay と同じ方式を使う理由** — LiveAuto は特定の戦略ファイルを起点とする（Phase 10 の「Promote to Live」操作）。「戦略ファイル＝設定の単一ソース」ポリシーが再適用されるため、Replay と同じパスを共有するのが自然。
+1. **`.py` を汚さない** — UI レイアウトは Python 実行と無関係。コードレビュー / git diff にノイズが入る。sentinel block を後から追加するパースロジックも不要になる。
+2. **`.py` + `.json` を 1 組の入力ファイルとして扱える** — `test_strategy_daily.py` と `test_strategy_daily.json` がセットであることがファイル名で自明。IDE / OS のファイラでも一緒に並ぶ。
+3. **JSON は既存ツールで読み書きできる** — `serde_json` で直接 serialize/deserialize。JSON5 パーサや Python literal 正規化ロジックが不要。
+4. **LiveManual 例外の扱いが自然に決まる** — Replay / LiveAuto は対応する `.py` があるのでサイドカーが成立。LiveManual は `.py` が存在しないため、`cache_dir` の standalone `live_manual_layout.json` で別処理する。この場合でも保存形式（JSON）は統一。
+5. **Promote to Live (Phase 10) との親和性** — `replay_strategy.py` + `replay_strategy.json` のペアをそのまま LiveAuto に昇格できる。sentinel block を除去する変換ステップが不要。
 
 ### ADR: Live は別 runner として完全分離する
 `replay_runner.py` に live モードのフラグを足す案を採らず、`live_runner.py` を独立させる。理由: (1) Replay は決定論的なシミュレータでデバッグの中心。Live コードが混ざると再現性が壊れる。(2) `TradingNode` 由来の live execution を将来取り込むときも、Replay 系統に影響を与えないため。(3) Replay engine と Live venue を並列稼働させても、互いのコードパスが独立しているため副作用が漏れない。
