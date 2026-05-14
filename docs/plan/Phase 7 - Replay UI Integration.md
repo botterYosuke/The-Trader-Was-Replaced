@@ -757,4 +757,24 @@ StartEngine ok, state=RUNNING
 - **Note**: Run Result が `Completed` のまま PAUSED になるのは正常 — StartEngine が全 bars を同期実行して完了後に PauseReplay が届いた順序による
 - **Next task**: Jump-to-start / Step-back の gRPC 接続、または Kline Chart 表示改善
 
+### 2026-05-14 PauseResume toggle label
+
+- Footer の PauseResume ボタンが Replay 状態に応じてラベルを切り替えるように修正
+- `PauseResumeLabel` コンポーネントを `components.rs` に追加
+- `footer.rs::spawn_footer`: PauseResume ボタンをインライン spawn に変更し、テキスト子エンティティに `PauseResumeLabel` を付与
+- `footer.rs::update_footer_system`: 既存 Text クエリに `Without<PauseResumeLabel>` filter を追加してクエリ競合を回避。末尾に `pause_q` ループを追加
+  - PAUSED → `▶`（Resume を促す）
+  - その他 → `||`（Pause を促す）
+- `cargo check` OK / `cargo test` 16/16
+
+### 2026-05-14 RunStrategy tokio::spawn（Pause ブロック修正）
+
+- **Root cause**: `TransportCommand::RunStrategy` の match arm 内で `LoadReplayData` → `StartEngine` を逐次 await していたため、数秒かかる StartEngine が終わるまで `transport_rx.try_recv()` ループに戻れず、その間の Pause 送信が全て無視されていた
+- **Fix**: `TransportCommand::RunStrategy` ブロック全体を `tokio::spawn(async move { ... })` でラップ
+  - `client.clone()` / `token.clone()` / `catalog_path.clone()` / `status_tx.clone()` を spawn 前にクローン
+  - `continue` → `return`（spawn 内クロージャのため）
+  - メインループは即座に次の `transport_rx.try_recv()` に戻り、Pause/Resume を処理できるようになった
+- `cargo check` OK / `cargo test` 2/2 (backend_integration)
+- **Next task (E2E)**: `test_strategy_minute.py` で Run → `||` 押下 → PAUSED 表示 + `▶` ラベルに変わることを確認
+
 ---

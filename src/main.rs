@@ -178,108 +178,114 @@ fn setup_backend_connection(
                         }
                     }
                     TransportCommand::RunStrategy { strategy_file, config } => {
-                        let strategy_file_str = strategy_file.to_string_lossy().to_string();
+                        // Spawn on a separate task so the main loop can process
+                        // Pause/Resume/StepForward while StartEngine is running.
+                        let mut run_client = client.clone();
+                        let run_token = token.clone();
+                        let run_catalog = catalog_path.clone();
+                        let run_status_tx = status_tx.clone();
+                        tokio::spawn(async move {
+                            let strategy_file_str = strategy_file.to_string_lossy().to_string();
 
-                        // Step 0: ForceStop to ensure IDLE before LoadReplayData
-                        // (backend auto_start=True may leave engine in RUNNING)
-                        let _ = client.force_stop_replay(tonic::Request::new(ForceStopReplayRequest {
-                            request_id: String::new(),
-                            token: token.clone(),
-                        })).await;
+                            // Step 0: ForceStop to ensure IDLE before LoadReplayData
+                            let _ = run_client.force_stop_replay(tonic::Request::new(ForceStopReplayRequest {
+                                request_id: String::new(),
+                                token: run_token.clone(),
+                            })).await;
 
-                        // Map granularity string → proto enum
-                        let granularity_i32 = match config.granularity.as_str() {
-                            "Daily"  => Some(ReplayGranularity::Daily as i32),
-                            "Minute" => Some(ReplayGranularity::Minute as i32),
-                            other => {
-                                error!("RunStrategy: unknown granularity {:?}, aborting", other);
-                                continue;
-                            }
-                        };
-
-                        info!(
-                            "RunStrategy: step1 LoadReplayData instruments={:?} start={:?} end={:?} granularity={:?} catalog_path={:?}",
-                            config.instruments, config.start, config.end, config.granularity, catalog_path
-                        );
-                        let _ = status_tx.send(BackendStatusUpdate::RunStarted);
-
-                        // Step 1: LoadReplayData (IDLE → LOADED)
-                        let load_req = tonic::Request::new(LoadReplayDataRequest {
-                            request_id: String::new(),
-                            instrument_ids: config.instruments.clone(),
-                            start_date: config.start.clone(),
-                            end_date: config.end.clone(),
-                            granularity: granularity_i32,
-                            token: token.clone(),
-                            catalog_path: catalog_path.clone(),
-                        });
-
-                        match client.load_replay_data(load_req).await {
-                            Ok(r) => {
-                                let inner = r.into_inner();
-                                if !inner.success {
-                                    let msg = format!("LoadReplayData: {} {}", inner.error_code, inner.error_message);
-                                    error!("{}", msg);
-                                    let _ = status_tx.send(BackendStatusUpdate::RunFailed { error: msg });
-                                    continue; // do not proceed to StartEngine
+                            let granularity_i32 = match config.granularity.as_str() {
+                                "Daily"  => Some(ReplayGranularity::Daily as i32),
+                                "Minute" => Some(ReplayGranularity::Minute as i32),
+                                other => {
+                                    error!("RunStrategy: unknown granularity {:?}, aborting", other);
+                                    return;
                                 }
-                                info!("LoadReplayData ok, state={:?}", inner.current_state);
-                            }
-                            Err(e) => {
-                                let msg = format!("LoadReplayData gRPC error: {}", e);
-                                error!("{}", msg);
-                                let _ = status_tx.send(BackendStatusUpdate::RunFailed { error: msg });
-                                continue;
-                            }
-                        }
+                            };
 
-                        // Step 2: StartEngine (LOADED → RUNNING)
-                        info!("RunStrategy: step2 StartEngine strategy_file={:?}", strategy_file_str);
-                        let start_req = tonic::Request::new(StartEngineRequest {
-                            request_id: String::new(),
-                            engine: EngineKind::Nautilus as i32,
-                            strategy_id: String::new(),
-                            config: Some(EngineStartConfig {
-                                instrument_id: config.instruments.first().cloned().unwrap_or_default(),
+                            info!(
+                                "RunStrategy: step1 LoadReplayData instruments={:?} start={:?} end={:?} granularity={:?} catalog_path={:?}",
+                                config.instruments, config.start, config.end, config.granularity, run_catalog
+                            );
+                            let _ = run_status_tx.send(BackendStatusUpdate::RunStarted);
+
+                            // Step 1: LoadReplayData (IDLE → LOADED)
+                            let load_req = tonic::Request::new(LoadReplayDataRequest {
+                                request_id: String::new(),
                                 instrument_ids: config.instruments.clone(),
-                                start_date: Some(config.start.clone()),
-                                end_date: Some(config.end.clone()),
-                                initial_cash: config.initial_cash.map(|v| v.to_string()),
+                                start_date: config.start.clone(),
+                                end_date: config.end.clone(),
                                 granularity: granularity_i32,
-                                strategy_file: Some(strategy_file_str),
-                                strategy_init_kwargs: None,
-                                max_qty: None,
-                                max_notional_jpy: None,
-                            }),
-                            token: token.clone(),
-                        });
-                        match client.start_engine(start_req).await {
-                            Ok(r) => {
-                                let inner: StartEngineResponse = r.into_inner();
-                                if inner.success {
-                                    info!("StartEngine ok, state={:?}", inner.current_state);
-                                    if let (Some(rid), Some(sj)) = (inner.run_id.as_deref(), inner.summary_json.as_deref()) {
-                                        let _ = status_tx.send(BackendStatusUpdate::RunComplete {
-                                            run_id: rid.to_owned(),
-                                            summary_json: sj.to_owned(),
-                                        });
+                                token: run_token.clone(),
+                                catalog_path: run_catalog.clone(),
+                            });
+
+                            match run_client.load_replay_data(load_req).await {
+                                Ok(r) => {
+                                    let inner = r.into_inner();
+                                    if !inner.success {
+                                        let msg = format!("LoadReplayData: {} {}", inner.error_code, inner.error_message);
+                                        error!("{}", msg);
+                                        let _ = run_status_tx.send(BackendStatusUpdate::RunFailed { error: msg });
+                                        return;
                                     }
-                                } else {
-                                    let msg = format!(
-                                        "StartEngine: {} {}",
-                                        inner.error_code.as_deref().unwrap_or(""),
-                                        inner.error_message.as_deref().unwrap_or(""),
-                                    );
+                                    info!("LoadReplayData ok, state={:?}", inner.current_state);
+                                }
+                                Err(e) => {
+                                    let msg = format!("LoadReplayData gRPC error: {}", e);
                                     error!("{}", msg);
-                                    let _ = status_tx.send(BackendStatusUpdate::RunFailed { error: msg });
+                                    let _ = run_status_tx.send(BackendStatusUpdate::RunFailed { error: msg });
+                                    return;
                                 }
                             }
-                            Err(e) => {
-                                let msg = format!("StartEngine gRPC error: {}", e);
-                                error!("{}", msg);
-                                let _ = status_tx.send(BackendStatusUpdate::RunFailed { error: msg });
+
+                            // Step 2: StartEngine (LOADED → RUNNING → COMPLETED)
+                            info!("RunStrategy: step2 StartEngine strategy_file={:?}", strategy_file_str);
+                            let start_req = tonic::Request::new(StartEngineRequest {
+                                request_id: String::new(),
+                                engine: EngineKind::Nautilus as i32,
+                                strategy_id: String::new(),
+                                config: Some(EngineStartConfig {
+                                    instrument_id: config.instruments.first().cloned().unwrap_or_default(),
+                                    instrument_ids: config.instruments.clone(),
+                                    start_date: Some(config.start.clone()),
+                                    end_date: Some(config.end.clone()),
+                                    initial_cash: config.initial_cash.map(|v| v.to_string()),
+                                    granularity: granularity_i32,
+                                    strategy_file: Some(strategy_file_str),
+                                    strategy_init_kwargs: None,
+                                    max_qty: None,
+                                    max_notional_jpy: None,
+                                }),
+                                token: run_token.clone(),
+                            });
+                            match run_client.start_engine(start_req).await {
+                                Ok(r) => {
+                                    let inner: StartEngineResponse = r.into_inner();
+                                    if inner.success {
+                                        info!("StartEngine ok, state={:?}", inner.current_state);
+                                        if let (Some(rid), Some(sj)) = (inner.run_id.as_deref(), inner.summary_json.as_deref()) {
+                                            let _ = run_status_tx.send(BackendStatusUpdate::RunComplete {
+                                                run_id: rid.to_owned(),
+                                                summary_json: sj.to_owned(),
+                                            });
+                                        }
+                                    } else {
+                                        let msg = format!(
+                                            "StartEngine: {} {}",
+                                            inner.error_code.as_deref().unwrap_or(""),
+                                            inner.error_message.as_deref().unwrap_or(""),
+                                        );
+                                        error!("{}", msg);
+                                        let _ = run_status_tx.send(BackendStatusUpdate::RunFailed { error: msg });
+                                    }
+                                }
+                                Err(e) => {
+                                    let msg = format!("StartEngine gRPC error: {}", e);
+                                    error!("{}", msg);
+                                    let _ = run_status_tx.send(BackendStatusUpdate::RunFailed { error: msg });
+                                }
                             }
-                        }
+                        });
                     }
                 }
             }
