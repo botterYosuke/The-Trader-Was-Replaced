@@ -631,4 +631,19 @@ StartEngine ok, state=RUNNING
 - `cargo check` OK / `cargo test scenario_parser` 4/4 / `pytest strategy_runtime` 68/68
 - **次タスク**: 手動 UI 確認（`Last run:` 行が Strategy Editor に表示されること）
 
+### 2026-05-14 LastRunResult UI E2E verification
+
+- **手動確認**: Open Strategy → `test_strategy_daily.py` → Run で Strategy Editor に以下が表示された
+  ```
+  Last run: 1778732239-0f79b86c5b66a01a__test_strategy_daily-1301_TSE
+  fills: 2   equity_pts: 57   total_pnl: -410010 (赤)
+  state: RUNNING  grpc: OK
+  ```
+- **修正した E2E バグ 3 件**:
+  1. `engine_pb2_grpc.py`: proto 再生成で `import engine_pb2` (absolute) になっていた → `from . import engine_pb2` (relative) に戻す
+  2. `main.rs`: `LoadReplayData` 前に `ForceStopReplay` を追加（`auto_start=True` で RUNNING になっている場合に対応）
+  3. `trading.rs`: `BACKEND_CATALOG_PATH` の相対パスを `canonicalize()` で解決すると `\\?\` UNC prefix が付いて Python が解釈できなかった → `current_dir().join()` に変更
+- `cargo test scenario_parser` 4/4 passed
+- **次タスク**: 次の実装候補 — `LastRunResult` の parsed fields 化、または Step-back / Transport 制御の実装
+
 ---
