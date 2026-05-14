@@ -323,11 +323,19 @@ message SubscribeRequest {
 - 逆方向も同様。File→Open Strategy を Live 接続中に押した場合は `VenueLogout` 確認を挟む。
 - 確認ダイアログは Phase 7 の `ModalLayer` 機構を流用。
 
-### 3.7 Live Market Data → 既存パネル
+### 3.7 Live Market Data → 既存パネル + LadderWindow 新設
 
-- Snapshot Reducer は Replay と同じ実装を使うため、`KlineChartWindow` / `LadderWindow` は **無改修** で動くのが目標。
-- 唯一の差: バー集約。Live は tick / quote を 1m / 5m / 1D に集約する必要があるため、`live/aggregator.py` で BarAggregator を一段挟む（Nautilus 標準 `BarBuilder` を流用）。
-- Ladder は `depth` channel が無い venue 環境（例: Tachibana 検証）では 5 段に縮退し、空行をプレースホルダで埋める。
+- **既存パネル (KlineChartWindow / BuyingPowerPanel / PositionsPanel / OrdersPanel)** — Snapshot Reducer は Replay と同じ実装を使うため、これらは **無改修** で Live モードでも動くのが目標。
+- **バー集約** — Live は tick / quote を 1m / 5m / 1D に集約する必要があるため、`live/aggregator.py` で BarAggregator を一段挟む（Nautilus 標準 `BarBuilder` を流用）。
+- **LadderWindow (新設、Phase 7 から延期分)** — Phase 8 で初めて板情報 (depth) のデータソースが手に入るため、ここで実装する。
+  - 実装位置: `src/ui/floating/ladder.rs` (Phase 7 で予約していたファイル名をそのまま使う)
+  - MVP: bid/ask × 10 行 + LAST 行 (read-only、クリック発注なし)
+  - `e-station` の `src/screen/dashboard/panel/ladder.rs` (1382 行) からの移植
+  - データ源:
+    - **kabu**: WebSocket PUSH の `Sell1..Sell10` / `Buy1..Buy10` フィールド (kabu skill §「PUSH メッセージ形式」参照)。10 段固定で揃う
+    - **Tachibana**: EventWebSocket の板気配。venue/環境によっては 5 段までしか出ないため、不足行はプレースホルダで埋めて 10 行のレイアウトを維持
+  - `TradingState` に新フィールド `depth: Option<DepthSnapshot>` を追加 (Replay モードでは常に `None`)。`LadderWindow` は `depth.is_none()` のとき「板情報なし (Replay モード)」プレースホルダを表示
+  - Live モード時のみ visible にする UX も可だが、MVP は常時表示 + Replay 時プレースホルダで揃える (UI_LAYOUT との一貫性のため)
 
 ---
 
@@ -377,6 +385,9 @@ src/
 
 docs/plan/assets/
 └── phase8-architecture.drawio.svg [TODO]   # §1.1 図の正本
+
+src/ui/floating/
+└── ladder.rs              [NEW]    # Phase 7 から延期分、bid/ask × 10 行 + LAST
 ```
 
 ---
@@ -397,9 +408,11 @@ docs/plan/assets/
    - `VenueStateBadge` を Footer に追加
    - `Venue → Connect (Mock)` メニュー項目
    - mock で `SUBSCRIBED` になると Footer バッジが緑になるところまで
-4. **Step 4 — Snapshot Reducer 接続**:
+4. **Step 4 — Snapshot Reducer 接続 + LadderWindow 新設**:
    - `MockVenueAdapter` の tick を `reducer` 経由で `TradingState` に流す
    - `KlineChartWindow` が Live モードで mock データを描画できることを確認
+   - **`src/ui/floating/ladder.rs` を新設** (Phase 7 から延期分)。`TradingState.depth` の bid/ask × 10 行 + LAST 行を描画。`depth == None` 時は「板情報なし (Replay モード)」プレースホルダ
+   - `MockVenueAdapter` に固定の 10 段 depth 生成を加えて、Ladder が更新されることを確認
 5. **Step 4.5 — Python tkinter ログインサブプロセス**:
    - `live/login_dialog_runner.py` を実装（`python -m engine.live.login_dialog_runner --venue <id> --env demo` で起動可能）
    - venue 固有の入力フィールド定義は `exchanges/tachibana_login_flow.py` / `exchanges/kabusapi_login_flow.py` に置く
@@ -414,9 +427,10 @@ docs/plan/assets/
    - `kabusapi_ws` で `ping_interval=None` + `asyncio.wait_for(ws.recv(), 3600)` のハング検出パスを unit test
    - `KABU_ALLOW_PROD` 未設定で本番 18080 への接続が Python URL builder で拒否されることを unit test
 6. **Step 6 — Tachibana 実装**:
-   - `tachibana_adapter.py` を `.claude/skills/tachibana/` の skill に従って実装
-   - 検証環境（`demo-kabuka.e-shiten.jp`）で同様の E2E
-   - Shift-JIS / `p_errno` / 第二暗証番号の取り扱いを単体テスト
+   - `exchanges/tachibana*.py` を `.claude/skills/tachibana/SKILL.md` に従って実装
+   - 検証環境（`demo-kabuka.e-shiten.jp`）で `VenueLogin` → `ListInstruments` → 板情報購読 → Ladder 反映までの E2E
+   - Shift-JIS / `p_errno` / 仮想 URL / `^A^B^C` 区切りの取り扱いを単体テスト
+   - 第二暗証番号は **Phase 8 では収集しない** (Phase 9 で発注時に iced modal、skill F-H5)
 7. **Step 7 — Sidebar 銘柄検索**:
    - `ListInstruments` 結果を仮想スクロールで表示
    - インクリメンタル検索（コード前方一致 / 名称部分一致）
