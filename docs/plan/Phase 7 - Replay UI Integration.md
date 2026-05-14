@@ -777,4 +777,14 @@ StartEngine ok, state=RUNNING
 - `cargo check` OK / `cargo test` 2/2 (backend_integration)
 - **Next task (E2E)**: `test_strategy_minute.py` で Run → `||` 押下 → PAUSED 表示 + `▶` ラベルに変わることを確認
 
+### 2026-05-14 E2E 確認: tokio::spawn Pause non-blocking
+
+- **環境**: `BACKEND_ENABLED=true BACKEND_TOKEN=testtoken BACKEND_CATALOG_PATH=artifacts/jquants-catalog cargo run`
+  - `.env` ファイルは VS Code デバッガ専用。`cargo run` では env vars を明示的に設定する必要あり（**注意: dotenv クレートなし**）
+- **結果**: `PauseReplay ok, state=1` が `StartEngine` 実行中に処理された → **tokio::spawn によるノンブロッキング確認済み**
+- **補足**: 5日分 Minute バー (372本) は ~0.15s で完走するため RUNNING 中に Pause を打てない。Pause は LOADED(1) 状態で受信 → state=1 返答（PAUSED=3 にはならない）
+- **副次確認**: Run Result Panel "Completed" 表示・PnL -411510・fills 2・eq_pts 372 → RunComplete 経路 OK
+- **gRPC タイムアウト**: LoadReplayData で 1 回タイムアウト後リトライ成功。デフォルトタイムアウト設定の見直しが必要
+- **Next tasks**: (1) LoadReplayData gRPC タイムアウト延長、(2) Jump-to-start / Step-back gRPC 接続、(3) Kline Chart 表示改善、(4) Sidebar 銘柄一覧
+
 ---
