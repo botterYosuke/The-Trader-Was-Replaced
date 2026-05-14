@@ -1,7 +1,7 @@
 use bevy::prelude::*;
 use rfd::FileDialog;
 use sha2::{Digest, Sha256};
-use crate::ui::components::{MenuBarRoot, MenuButton, OpenStrategyRequested, StrategyBuffer, StrategyStatusLabel};
+use crate::ui::components::{MenuBarRoot, MenuButton, OpenStrategyRequested, StrategyBuffer, StrategyStatusLabel, StrategyRunRequested};
 
 const BTN_NORMAL: Color = Color::srgba(0.10, 0.10, 0.16, 1.0);
 const BTN_HOVER: Color = Color::srgba(0.20, 0.20, 0.30, 1.0);
@@ -192,5 +192,13 @@ pub fn open_strategy_buffer_system(
                 error!("failed to read strategy file {:?}: {}", event.path, err);
             }
         }
+    }
+}
+
+pub fn log_strategy_run_requested_system(
+    mut events: EventReader<StrategyRunRequested>,
+) {
+    for event in events.read() {
+        info!("strategy run requested: {:?}", event.cache_path);
     }
 }

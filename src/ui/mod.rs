@@ -13,6 +13,7 @@ use crate::ui::footer::{spawn_footer, transport_button_system, update_footer_sys
 use crate::ui::strategy_editor::strategy_editor_window_system;
 use crate::ui::menu_bar::{
     log_open_strategy_requested_system,
+    log_strategy_run_requested_system,
     menu_button_system,
     open_strategy_buffer_system,
     spawn_menu_bar,
@@ -20,7 +21,7 @@ use crate::ui::menu_bar::{
 };
 use crate::ui::systems::{update_price_display, button_system, update_status_indicator};
 use crate::ui::window::setup_ui;
-use crate::ui::components::{OpenStrategyRequested, StrategyBuffer, WindowManager};
+use crate::ui::components::{OpenStrategyRequested, StrategyBuffer, StrategyRunRequested, WindowManager};
 use crate::ui::chart::chart_render_system;
 use bevy_vector_shapes::Shape2dPlugin;
 
@@ -32,6 +33,7 @@ impl Plugin for UiPlugin {
             .init_resource::<WindowManager>()
             .init_resource::<StrategyBuffer>()
             .add_event::<OpenStrategyRequested>()
+            .add_event::<StrategyRunRequested>()
             .add_systems(Startup, (setup_ui, spawn_footer, spawn_menu_bar))
             .add_systems(Update, (
                 update_price_display,
@@ -45,6 +47,7 @@ impl Plugin for UiPlugin {
                 open_strategy_buffer_system,
                 update_strategy_status_label_system,
                 strategy_editor_window_system,
+                log_strategy_run_requested_system,
             ));
     }
 }

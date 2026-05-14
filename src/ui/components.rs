@@ -67,3 +67,8 @@ pub struct StrategyBuffer {
 
 #[derive(Component)]
 pub struct StrategyStatusLabel;
+
+#[derive(Event, Debug, Clone)]
+pub struct StrategyRunRequested {
+    pub cache_path: std::path::PathBuf,
+}

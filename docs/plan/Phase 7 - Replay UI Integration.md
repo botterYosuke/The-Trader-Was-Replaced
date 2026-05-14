@@ -64,7 +64,7 @@ cargo run
 
 **次にやること**:
 
-次は **Strategy Run Event Shell**。まだ backend RPC へ接続しない。まず editor window に `Run` ボタンを追加し、cache path を持つ `StrategyRunRequested` event を発火してログに出すだけにする。詳細は下の `Next Task: Strategy Run Event Shell` を参照。
+次は **Strategy Run Backend 接続**（`StrategyRunRequested` event を受け取り、backend RPC へ渡す）。詳細は下の `Next Task: Strategy Run Backend Connection` を参照（未作成）。
 
 ### Current Progress
 
@@ -82,6 +82,7 @@ cargo run
 | `d903a58` | MenuBar に `StrategyStatusLabel` を追加し、読み込み済み strategy 名と cache 状態を表示 | ✅ |
 | `74e90de` | `bevy_egui` の Strategy Editor Window shell を追加し、`StrategyBuffer.source` を編集可能にした | ✅ |
 | `e900cde` | Strategy Editor に `Save Cache` ボタンを追加し、cache file へ editor 内容を保存可能にした | ✅ |
+| (next) | `StrategyRunRequested` event + `Run` ボタン shell を追加 | ✅ |
 
 ### Verified State
 
