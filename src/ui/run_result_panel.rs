@@ -1,56 +1,110 @@
-use bevy::prelude::*;
-use bevy_egui::{egui, EguiContexts};
 use crate::trading::{LastRunResult, RunState};
+use crate::ui::components::PanelKind;
+use crate::ui::floating_window::{FloatingWindowSpec, spawn_floating_window};
+use bevy::prelude::*;
 
+// ── レイアウト & 配色 ─────────────────────────────────────────
+const PANEL_SIZE: Vec2 = Vec2::new(280.0, 160.0);
+const PANEL_POSITION: Vec2 = Vec2::new(-450.0, -70.0);
+const ACCENT: Color = Color::srgba(0.0, 0.8, 1.0, 0.4); // cyan rim
+
+const COLOR_DEFAULT: Color = Color::srgb(0.85, 0.88, 0.94);
+const COLOR_IDLE: Color = Color::srgb(0.55, 0.55, 0.55);
+const COLOR_RUNNING: Color = Color::srgb(1.0, 0.78, 0.0);
+const COLOR_COMPLETED: Color = Color::srgb(0.0, 1.0, 0.50);
+const COLOR_FAILED: Color = Color::srgb(1.0, 0.20, 0.40);
+const COLOR_RUNID: Color = Color::srgb(0.0, 0.81, 1.0);
+const COLOR_PNL_POS: Color = Color::srgb(0.0, 1.0, 0.50);
+const COLOR_PNL_NEG: Color = Color::srgb(1.0, 0.20, 0.40);
+
+// ── 行マーカー ───────────────────────────────────────────────
+/// 4 行それぞれを識別するためのマーカー。
+#[derive(Component, Clone, Copy)]
+pub enum RunResultLabel {
+    State,
+    RunId,
+    Stats,
+    Pnl,
+}
+
+// ── Spawn ────────────────────────────────────────────────────
+pub fn spawn_run_result_panel(commands: &mut Commands) {
+    let (root, content_area) = spawn_floating_window(
+        commands,
+        FloatingWindowSpec {
+            title: "RUN RESULT".to_string(),
+            size: PANEL_SIZE,
+            position: PANEL_POSITION,
+            accent: ACCENT,
+        },
+    );
+    commands.entity(root).insert(PanelKind::RunResult);
+
+    // 4 行を上から下へ 22px 間隔で配置
+    spawn_row(commands, content_area, RunResultLabel::State, 33.0);
+    spawn_row(commands, content_area, RunResultLabel::RunId, 11.0);
+    spawn_row(commands, content_area, RunResultLabel::Stats, -11.0);
+    spawn_row(commands, content_area, RunResultLabel::Pnl, -33.0);
+}
+
+fn spawn_row(commands: &mut Commands, parent: Entity, kind: RunResultLabel, y: f32) {
+    let entity = commands
+        .spawn((
+            Text2d::new(""),
+            TextFont {
+                font_size: 12.0,
+                ..default()
+            },
+            TextColor(COLOR_DEFAULT),
+            Transform::from_xyz(0.0, y, 0.1),
+            kind,
+        ))
+        .id();
+    commands.entity(parent).add_child(entity);
+}
+
+/// LastRunResult の現在値を 4 行のテキストに反映する。
+/// 同名の旧 egui 版から引数も中身も完全に作り直し。
 pub fn run_result_panel_system(
-    mut contexts: EguiContexts,
-    last_run: Option<Res<LastRunResult>>,
+    last_run: Res<LastRunResult>,
+    mut q: Query<(&RunResultLabel, &mut Text2d, &mut TextColor)>,
 ) {
-    let Some(run) = last_run else { return };
-
-    egui::Window::new("Run Result")
-        .default_width(240.0)
-        .collapsible(true)
-        .resizable(true)
-        .show(contexts.ctx_mut(), |ui| {
-            match &run.state {
-                RunState::Idle => {
-                    ui.label(egui::RichText::new("No run yet").small().color(egui::Color32::GRAY));
+    for (kind, mut text, mut color) in &mut q {
+        let (new_text, new_color) = match kind {
+            RunResultLabel::State => match &last_run.state {
+                RunState::Idle => ("No run yet".to_string(), COLOR_IDLE),
+                RunState::Running => ("Running…".to_string(), COLOR_RUNNING),
+                RunState::Completed => ("Completed".to_string(), COLOR_COMPLETED),
+                RunState::Failed { error } => (format!("Failed: {}", error), COLOR_FAILED),
+            },
+            RunResultLabel::RunId => match &last_run.run_id {
+                Some(id) => (format!("run: {}", id), COLOR_RUNID),
+                None => (String::new(), COLOR_DEFAULT),
+            },
+            RunResultLabel::Stats => match &last_run.parsed_summary {
+                Some(s) => (
+                    format!("fills: {}  eq_pts: {}", s.fills_count, s.equity_points),
+                    COLOR_DEFAULT,
+                ),
+                None => (String::new(), COLOR_DEFAULT),
+            },
+            RunResultLabel::Pnl => match &last_run.parsed_summary {
+                Some(s) => {
+                    let c = if s.total_pnl >= 0.0 {
+                        COLOR_PNL_POS
+                    } else {
+                        COLOR_PNL_NEG
+                    };
+                    (format!("pnl: {:.0}", s.total_pnl), c)
                 }
-                RunState::Running => {
-                    ui.label(egui::RichText::new("Running…").small().color(egui::Color32::from_rgb(255, 200, 0)));
-                }
-                RunState::Completed => {
-                    ui.label(egui::RichText::new("Completed").small().color(egui::Color32::from_rgb(0, 255, 127)));
-                }
-                RunState::Failed { error } => {
-                    ui.label(egui::RichText::new(format!("Failed: {}", error)).small().color(egui::Color32::from_rgb(255, 51, 102)));
-                }
-            }
-
-            if let Some(run_id) = &run.run_id {
-                ui.separator();
-                ui.horizontal(|ui| {
-                    ui.label(egui::RichText::new("run:").small().color(egui::Color32::from_rgb(0, 207, 255)));
-                    ui.label(egui::RichText::new(run_id).small().monospace());
-                });
-                if let Some(s) = &run.parsed_summary {
-                    ui.horizontal(|ui| {
-                        ui.label(egui::RichText::new("fills:").small());
-                        ui.label(egui::RichText::new(s.fills_count.to_string()).small().monospace());
-                        ui.label(egui::RichText::new("eq_pts:").small());
-                        ui.label(egui::RichText::new(s.equity_points.to_string()).small().monospace());
-                    });
-                    ui.horizontal(|ui| {
-                        ui.label(egui::RichText::new("pnl:").small());
-                        let pnl_color = if s.total_pnl >= 0.0 {
-                            egui::Color32::from_rgb(0, 255, 127)
-                        } else {
-                            egui::Color32::from_rgb(255, 51, 102)
-                        };
-                        ui.label(egui::RichText::new(format!("{:.0}", s.total_pnl)).small().monospace().color(pnl_color));
-                    });
-                }
-            }
-        });
+                None => (String::new(), COLOR_DEFAULT),
+            },
+        };
+        if text.0 != new_text {
+            text.0 = new_text;
+        }
+        if color.0 != new_color {
+            color.0 = new_color;
+        }
+    }
 }
