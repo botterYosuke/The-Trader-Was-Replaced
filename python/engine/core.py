@@ -39,6 +39,7 @@ class DataEngine:
         self._jquants_catalog_path = jquants_catalog_path
         self._event_log: list[ReplayEvent] = []
         self._last_replay_catalog_path: Optional[str] = None
+        self.last_portfolio: Optional[dict] = None
 
         # Initialize the first visible state.
         if self._mode == "replay" and self._replay_provider:

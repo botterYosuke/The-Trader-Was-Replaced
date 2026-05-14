@@ -332,6 +332,34 @@ pub struct InstrumentList {
     pub error: Option<String>,
 }
 
+#[derive(Debug, Clone, Default)]
+pub struct PortfolioPosition {
+    pub symbol: String,
+    pub qty: i64,
+    pub avg_price: f64,
+    pub unrealized_pnl: f64,
+}
+
+#[derive(Debug, Clone, Default)]
+pub struct PortfolioOrder {
+    pub symbol: String,
+    pub side: String,
+    pub qty: f64,
+    pub price: f64,
+    pub status: String,
+    pub ts_ms: i64,
+}
+
+#[derive(Resource, Default, Debug, Clone)]
+pub struct PortfolioState {
+    pub buying_power: f64,
+    pub cash: f64,
+    pub equity: f64,
+    pub positions: Vec<PortfolioPosition>,
+    pub orders: Vec<PortfolioOrder>,
+    pub loaded: bool,
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

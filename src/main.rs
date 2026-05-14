@@ -1,7 +1,7 @@
 use backcast::trading::{
     backend_update_system, engine, parse_summary_json, price_simulation_system, BackendChannel,
-    BackendStatus, InstrumentList, LastRunResult, ReplaySpeed, RunState, TradingData,
-    TradingSettings, TransportCommand, TransportCommandSender,
+    BackendStatus, InstrumentList, LastRunResult, PortfolioOrder, PortfolioPosition, PortfolioState,
+    ReplaySpeed, RunState, TradingData, TradingSettings, TransportCommand, TransportCommandSender,
 };
 use backcast::ui::UiPlugin;
 use backcast::grid::GridPlugin;
@@ -11,9 +11,10 @@ use bevy_pancam::PanCamPlugin;
 use tokio::sync::mpsc;
 use engine::data_engine_client::DataEngineClient;
 use engine::{
-    EngineStartConfig, EngineKind, ForceStopReplayRequest, GetStateRequest, ListInstrumentsRequest,
-    LoadReplayDataRequest, PauseReplayRequest, ReplayGranularity, ResumeReplayRequest,
-    SetReplaySpeedRequest, StartEngineRequest, StartEngineResponse, StepReplayRequest,
+    EngineStartConfig, EngineKind, ForceStopReplayRequest, GetPortfolioRequest, GetStateRequest,
+    ListInstrumentsRequest, LoadReplayDataRequest, PauseReplayRequest, ReplayGranularity,
+    ResumeReplayRequest, SetReplaySpeedRequest, StartEngineRequest, StartEngineResponse,
+    StepReplayRequest,
 };
 
 // Bevy's compute task pool threads don't inherit the Tokio runtime context,
@@ -40,6 +41,7 @@ async fn main() {
         .insert_resource(BackendStatus::default())
         .insert_resource(LastRunResult::default())
         .insert_resource(InstrumentList::default())
+        .insert_resource(PortfolioState::default())
         .insert_resource(ReplaySpeed::default())
         .insert_resource(tokio_handle)
         .add_systems(Startup, (setup_camera, setup_backend_connection))
@@ -65,6 +67,13 @@ enum BackendStatusUpdate {
     RunFailed { error: String },
     InstrumentsLoaded { ids: Vec<String> },
     InstrumentLoadFailed { error: String },
+    PortfolioLoaded {
+        buying_power: f64,
+        cash: f64,
+        equity: f64,
+        positions: Vec<PortfolioPosition>,
+        orders: Vec<PortfolioOrder>,
+    },
 }
 
 
@@ -73,6 +82,7 @@ fn status_update_system(
     mut channel: ResMut<StatusUpdateChannel>,
     mut last_run: ResMut<LastRunResult>,
     mut instrument_list: ResMut<InstrumentList>,
+    mut portfolio: ResMut<PortfolioState>,
 ) {
     while let Ok(update) = channel.rx.try_recv() {
         match update {
@@ -103,6 +113,14 @@ fn status_update_system(
             BackendStatusUpdate::InstrumentLoadFailed { error } => {
                 instrument_list.loaded = true;
                 instrument_list.error = Some(error);
+            }
+            BackendStatusUpdate::PortfolioLoaded { buying_power, cash, equity, positions, orders } => {
+                portfolio.buying_power = buying_power;
+                portfolio.cash = cash;
+                portfolio.equity = equity;
+                portfolio.positions = positions;
+                portfolio.orders = orders;
+                portfolio.loaded = true;
             }
         }
     }
@@ -324,6 +342,38 @@ fn setup_backend_connection(
                                                 run_id: rid.to_owned(),
                                                 summary_json: sj.to_owned(),
                                             });
+                                        }
+                                        // Fetch updated portfolio after run completes.
+                                        match run_client.get_portfolio(tonic::Request::new(GetPortfolioRequest {
+                                            token: run_token.clone(),
+                                        })).await {
+                                            Ok(r) => {
+                                                let p = r.into_inner();
+                                                if p.success {
+                                                    let positions = p.positions.into_iter().map(|pos| PortfolioPosition {
+                                                        symbol: pos.symbol,
+                                                        qty: pos.qty,
+                                                        avg_price: pos.avg_price,
+                                                        unrealized_pnl: pos.unrealized_pnl,
+                                                    }).collect();
+                                                    let orders = p.orders.into_iter().map(|o| PortfolioOrder {
+                                                        symbol: o.symbol,
+                                                        side: o.side,
+                                                        qty: o.qty,
+                                                        price: o.price,
+                                                        status: o.status,
+                                                        ts_ms: o.ts_ms,
+                                                    }).collect();
+                                                    let _ = run_status_tx.send(BackendStatusUpdate::PortfolioLoaded {
+                                                        buying_power: p.buying_power,
+                                                        cash: p.cash,
+                                                        equity: p.equity,
+                                                        positions,
+                                                        orders,
+                                                    });
+                                                }
+                                            }
+                                            Err(e) => warn!("GetPortfolio failed: {}", e),
                                         }
                                     } else {
                                         let msg = format!(

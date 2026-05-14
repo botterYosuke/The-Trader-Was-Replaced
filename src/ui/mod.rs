@@ -1,3 +1,4 @@
+pub mod buying_power;
 pub mod components;
 pub mod systems;
 pub mod window;
@@ -5,6 +6,8 @@ pub mod button;
 pub mod chart;
 pub mod footer;
 pub mod menu_bar;
+pub mod orders;
+pub mod positions;
 pub mod run_result_panel;
 pub mod scenario_parser;
 pub mod sidebar;
@@ -29,6 +32,9 @@ use crate::ui::window::setup_ui;
 use crate::ui::components::{OpenStrategyRequested, ScenarioMetadata, StrategyBuffer, StrategyRunRequested, WindowManager};
 use crate::ui::chart::chart_render_system;
 use crate::ui::scenario_parser::parse_scenario_system;
+use crate::ui::buying_power::buying_power_panel_system;
+use crate::ui::orders::orders_panel_system;
+use crate::ui::positions::positions_panel_system;
 use crate::ui::sidebar::{spawn_sidebar, update_sidebar_system};
 use bevy_vector_shapes::Shape2dPlugin;
 
@@ -62,6 +68,11 @@ impl Plugin for UiPlugin {
                 handle_strategy_run_system,
                 parse_scenario_system,
                 update_sidebar_system,
+            ))
+            .add_systems(Update, (
+                buying_power_panel_system,
+                positions_panel_system,
+                orders_panel_system,
             ));
     }
 }

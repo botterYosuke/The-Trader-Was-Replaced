@@ -228,6 +228,9 @@ class GrpcDataEngineServer(
                 summary = compute_summary(rb.run_dir)
                 write_summary_json(rb.run_dir, summary)
 
+                from engine.strategy_runtime.portfolio import compute_portfolio
+                self.engine.last_portfolio = compute_portfolio(rb.run_dir, scenario)
+
                 logging.info(
                     "StartEngine: run complete run_id=%s run_dir=%s summary=%r",
                     run_id,
@@ -355,6 +358,43 @@ class GrpcDataEngineServer(
             current_state=self._current_engine_state(),
             error_code="" if success else "INVALID_STATE",
             error_message="" if success else error,
+        )
+
+    def GetPortfolio(self, request, context):
+        if request.token != self.token:
+            context.abort(grpc.StatusCode.UNAUTHENTICATED, "Invalid token")
+
+        p = self.engine.last_portfolio
+        if p is None:
+            return engine_pb2.GetPortfolioResponse(success=True)
+
+        positions = [
+            engine_pb2.PortfolioPosition(
+                symbol=pos.get("symbol", ""),
+                qty=int(pos.get("qty", 0)),
+                avg_price=float(pos.get("avg_price", 0.0)),
+                unrealized_pnl=float(pos.get("unrealized_pnl", 0.0)),
+            )
+            for pos in p.get("positions", [])
+        ]
+        orders = [
+            engine_pb2.PortfolioOrder(
+                symbol=ord_.get("symbol", ""),
+                side=ord_.get("side", ""),
+                qty=float(ord_.get("qty", 0.0)),
+                price=float(ord_.get("price", 0.0)),
+                status=ord_.get("status", ""),
+                ts_ms=int(ord_.get("ts_ms", 0)),
+            )
+            for ord_ in p.get("orders", [])
+        ]
+        return engine_pb2.GetPortfolioResponse(
+            success=True,
+            buying_power=float(p.get("buying_power", 0.0)),
+            cash=float(p.get("cash", 0.0)),
+            equity=float(p.get("equity", 0.0)),
+            positions=positions,
+            orders=orders,
         )
 
     def ListInstruments(self, request, context):
