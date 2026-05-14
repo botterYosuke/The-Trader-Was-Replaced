@@ -926,7 +926,7 @@ MVP コアの「Open Strategy → Run → Pause / Resume / StepForward / ForceSt
 |---|---|---|
 | Sidebar: 銘柄一覧 (`ListInstruments` RPC) | E2E 実装済み（1301.TSE 表示確認済み） | Phase 7 継続 |
 | KlineChartWindow: ローソク足対応 (`chart.rs` 拡張) | Step 1 実装済み（最新バー 1 本のみ、複数本 candle は未実装） | Phase 7 継続 |
-| Footer: SpeedSelector UI (SetReplaySpeed は proto 済み) | 未実装 | Phase 7 継続 ← 最優先 |
+| Footer: SpeedSelector UI (SetReplaySpeed は proto 済み) | E2E 実装済み（1x/2x/5x/10x/50x、選択ハイライト確認済み） | Phase 7 継続 |
 | Footer: ProgressBar + パーセント | 未実装 | Phase 8 でも可 |
 | BuyingPowerPanel / PositionsPanel / OrdersPanel | 未実装 | GetPortfolio RPC と同時に |
 | GetPortfolio RPC (`python/engine/server_grpc.py`) | 未実装 | BuyingPower 等の前提 |
@@ -970,5 +970,19 @@ MVP コアの「Open Strategy → Run → Pause / Resume / StepForward / ForceSt
 - Verification: cargo check OK; scenario_parser --lib 4/4; chart --lib 6/6; ListInstruments pytest 4/4; strategy runtime pytest OK.
 - Manual E2E: Instruments window shows `1301.TSE` on startup; Open Strategy → test_strategy_daily.py → Run → Completed (fills: 2, eq_pts: 57, pnl: -410010); candle visible; Footer state: IDLE grpc: OK.
 - Next task: KlineChart 複数本 candle（複数 bar 表示）または Footer SpeedSelector UI。
+
+---
+
+### 2026-05-14 Footer SpeedSelector UI (1x/2x/5x/10x/50x)
+
+- Added `ReplaySpeed` resource and `TransportCommand::SetSpeed(u32)` in `trading.rs`.
+- Added `SpeedButton(u32)` component in `components.rs`.
+- Footer now shows speed buttons: 1x 2x 5x 10x 50x. Selected button highlighted in blue.
+- `speed_button_system` sends `SetReplaySpeedRequest` via gRPC on click.
+- `update_speed_buttons_system` refreshes highlight when `ReplaySpeed` changes.
+- Verification: cargo check OK; scenario_parser --lib 4/4; chart --lib 6/6.
+- Manual E2E: speed buttons visible in footer; 5x click highlighted correctly; Run → Completed (fills: 2, eq_pts: 57, pnl: -410010); Sidebar / candle / Run Result unbroken; state: IDLE grpc: OK.
+- Note: `SetReplaySpeed` backend handler has no explicit log; RPC delivery confirmed via Rust-side `SetReplaySpeed 5x ok` log and UI highlight state.
+- Next task: KlineChart 複数本 candle（複数 bar 表示）。
 
 ---
