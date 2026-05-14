@@ -10,9 +10,9 @@ use bevy_pancam::PanCamPlugin;
 use tokio::sync::mpsc;
 use engine::data_engine_client::DataEngineClient;
 use engine::{
-    EngineStartConfig, EngineKind, GetStateRequest, LoadReplayDataRequest, PauseReplayRequest,
-    ReplayGranularity, ResumeReplayRequest, StartEngineRequest, StepReplayRequest,
-    StartEngineResponse,
+    EngineStartConfig, EngineKind, ForceStopReplayRequest, GetStateRequest, LoadReplayDataRequest,
+    PauseReplayRequest, ReplayGranularity, ResumeReplayRequest, StartEngineRequest,
+    StartEngineResponse, StepReplayRequest,
 };
 
 // Bevy's compute task pool threads don't inherit the Tokio runtime context,
@@ -168,6 +168,13 @@ fn setup_backend_connection(
                     }
                     TransportCommand::RunStrategy { strategy_file, config } => {
                         let strategy_file_str = strategy_file.to_string_lossy().to_string();
+
+                        // Step 0: ForceStop to ensure IDLE before LoadReplayData
+                        // (backend auto_start=True may leave engine in RUNNING)
+                        let _ = client.force_stop_replay(tonic::Request::new(ForceStopReplayRequest {
+                            request_id: String::new(),
+                            token: token.clone(),
+                        })).await;
 
                         // Map granularity string → proto enum
                         let granularity_i32 = match config.granularity.as_str() {

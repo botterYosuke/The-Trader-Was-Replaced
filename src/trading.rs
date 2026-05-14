@@ -108,7 +108,18 @@ impl TradingSettings {
                 .ok()
                 .and_then(|v| v.parse().ok())
                 .unwrap_or(1000),
-            catalog_path: std::env::var("BACKEND_CATALOG_PATH").ok(),
+            catalog_path: std::env::var("BACKEND_CATALOG_PATH").ok().map(|p| {
+                let path = std::path::Path::new(&p);
+                if path.is_absolute() {
+                    p
+                } else {
+                    std::env::current_dir()
+                        .unwrap_or_default()
+                        .join(path)
+                        .to_string_lossy()
+                        .to_string()
+                }
+            }),
         }
     }
 }
