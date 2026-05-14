@@ -655,4 +655,16 @@ StartEngine ok, state=RUNNING
 - `cargo check` OK / `cargo test parse_summary_json` 3/3 / `cargo test scenario_parser` 4/4
 - **次タスク**: Step-back / Transport 制御の実装、または Sidebar 枠の追加
 
+### 2026-05-14 Run state label UI
+
+- Strategy Editor shows Running… (amber) / Completed (green) / Failed: … (red) state for latest Run
+- `LoadReplayData` and `StartEngine` failure paths now surface `RunFailed`
+- **Verified (normal path)**: Open Strategy → `test_strategy_daily.py` → Run
+  - `Running…` (amber) → `Completed` (green) displayed as expected
+  - `Last run: 1778733073-...  fills: 2  equity_pts: 57  total_pnl: -410010`
+  - Backend log confirmed: `run complete summary={total_pnl: -410010.0, equity_points: 57, fills_count: 2}`
+- **Known nit**: `status: unknown` — summary JSON has no `status` key (fields are `total_pnl`, `equity_points`, `fills_count`, `max_drawdown`, `trade_count`, `win_rate`, `fee_total`). Parse default falls through to "unknown". Fix options: remove `status` display, change default label, or add `status` to Python summary.
+- **Failure path**: not yet manually verified (RunFailed logic is wired but not UI-tested)
+- **Next task**: Fix `status: unknown` (remove or correct), or proceed to Transport / Sidebar
+
 ---
