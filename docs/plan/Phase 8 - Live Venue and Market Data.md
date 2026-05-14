@@ -180,31 +180,63 @@ class LiveVenueAdapter(Protocol):
 
 ### 3.2 Backend: LiveVenueAdapter & 具象実装
 
-- `python/engine/live/` ディレクトリ新設:
-  - `__init__.py`
-  - `adapter.py` — `LiveVenueAdapter` Protocol、`LiveEvent` データクラス、`VenueCredentials` 型
-  - `state_machine.py` — `VenueStateMachine` + 遷移ガード
-  - `tachibana_adapter.py` — Tachibana 実装（skill `.claude/skills/tachibana/SKILL.md` 必読）
-  - `kabu_adapter.py` — kabu 実装（skill `.claude/skills/kabusapi/SKILL.md` 必読）
-  - `instrument_mapping.py` — venue 固有マスタ → Nautilus `Instrument` 変換
-  - `event_bus.py` — adapter からの asyncio Queue を `reducer` に橋渡し
-- 認証情報の解決順（**いずれの経路も Rust → Python に資格情報を渡さない**。`VenueLogin` RPC は「ログイン開始」のトリガのみで、ペイロードに password を含めない）:
-  1. `credentials_source == "env"` ⇒ `TACHIBANA_USER` / `TACHIBANA_PASS` / `TACHIBANA_PASS2` / `KABU_API_PASSWORD` を環境変数から読む（CI / 自動運転向け）
-  2. `credentials_source == "keyring"` ⇒ `keyring` ライブラリで OS Credential Store から取得
-  3. `credentials_source == "file"` ⇒ `~/.the-trader-was-replaced/credentials.toml` を読む（権限 0600 を強制）
-  4. `credentials_source == "prompt"` ⇒ **Python プロセスがローカルに資格情報入力ウィンドウを開く**（§3.2.1）。デフォルトはこれ。
-- 平文の資格情報は **絶対にログに出さない**。`logger` の `extra` フィルタで `password|token|api_key|p_pwd` を含むキーをマスクする helper を `live/logging.py` に置く。
+venue 共通の抽象は `python/engine/live/` に置き、venue 固有のプロトコル実装は **`python/engine/exchanges/` 配下に venue 名で集約**する（tachibana skill `.claude/skills/tachibana/SKILL.md` の規約 R1 / F-L1 を踏襲。「立花プロトコル固有のヘルパーは Rust に書かない／Python は `exchanges/tachibana*.py` に集める」）。kabusapi も同方針で `exchanges/kabu*.py` に置き、Python に集約する。
+
+```
+python/engine/
+├── live/                          # venue 非依存の枠組み
+│   ├── __init__.py
+│   ├── adapter.py                 # LiveVenueAdapter Protocol / LiveEvent
+│   ├── state_machine.py           # VenueStateMachine
+│   ├── event_bus.py               # adapter → reducer の asyncio Queue
+│   ├── aggregator.py              # tick → bar 集約（Nautilus BarBuilder ラッパ）
+│   ├── instrument_mapping.py      # venue 共通の InstrumentId 正規化（.TSE 等）
+│   └── logging.py                 # secrets masking filter
+└── exchanges/                     # venue 固有プロトコル（Rust 側に同等実装を作らない）
+    ├── __init__.py
+    ├── tachibana.py               # LiveVenueAdapter 実装（薄いラッパ）
+    ├── tachibana_url.py           # build_request_url / build_event_url / func_replace_urlecnode (R2/R9)
+    ├── tachibana_auth.py          # next_p_no / current_p_sd_date / check_response / 例外型 (R4/R6)
+    ├── tachibana_codec.py         # Shift-JIS decode / ^A^B^C parse / 空配列 "" → [] (R7/R8)
+    ├── tachibana_ws.py            # EventWebSocket クライアント (sUrlEventWebSocket)
+    ├── tachibana_master.py        # CLMEventDownload マスタ取得
+    ├── tachibana_file_store.py    # tachibana_session.json ファイルキャッシュ (R3 / S3)
+    ├── tachibana_login_flow.py    # debug 専用 env 取込み + tkinter ダイアログ起動の橋渡し
+    ├── kabu.py                    # LiveVenueAdapter 実装
+    └── kabu_*.py                  # localhost:18080/18081 REST + WebSocket
+```
+
+認証情報の解決順（**いずれの経路も Rust → Python に資格情報を渡さない**。`VenueLogin` RPC は「ログイン開始」のトリガのみで、ペイロードに password を含めない）:
+
+1. `credentials_source == "prompt"`（**既定**）⇒ Python プロセスが tkinter サブプロセスでログインウィンドウを開く（§3.2.1）
+2. `credentials_source == "session_cache"` ⇒ Tachibana は `cache_dir/tachibana/tachibana_session.json` から仮想 URL 一式を復元（JST 当日付に限り有効、skill R3 / S3）。kabu は token 再取得が軽量なので session cache なし
+3. `credentials_source == "env"` ⇒ **debug ビルドの Python のみ**が読む（release は無視）。
+   - Tachibana: `DEV_TACHIBANA_USER_ID` / `DEV_TACHIBANA_PASSWORD` / `DEV_TACHIBANA_DEMO`（既定 `true`）
+   - kabu: `KABU_API_PASSWORD` / `KABU_ENV`（`demo` 既定）
+   - **第二暗証番号は env に置かない**（Tachibana skill F-H5）。後述 §3.2.1 参照
+4. `credentials_source == "keyring"` / `"file"` は **採用しない**。Tachibana skill が `tachibana_session.json` ファイルキャッシュに集約しており、keyring も平文 file もこの方針と衝突する
+
+本番接続のガード:
+- Tachibana: `DEV_TACHIBANA_DEMO` 未設定 = demo 既定。本番 URL `https://kabuka.e-shiten.jp/e_api_v4r8/` への接続は **`TACHIBANA_ALLOW_PROD=1` env を併用したときのみ** Python URL builder が解禁する（Tachibana skill S2 / Q7）
+- kabu: `KABU_ENV=production` を明示しない限り `localhost:18081` (demo) のみ接続
+
+平文の資格情報は **絶対にログに出さない**。`logger` の `extra` フィルタで `password|token|api_key|p_pwd|sPassword|sSecondPassword|virtual_url|sUrl[A-Z]` を含むキーをマスクする helper を `live/logging.py` に置く（Tachibana skill R10）。仮想 URL もセッション秘密なのでマスク対象（`***` 化）。
 
 ### 3.2.1 Python 側のログインウィンドウ
 
-- 実装: `tkinter`（Python 標準ライブラリ。追加依存ゼロ）でモーダルウィンドウを `python/engine/live/login_dialog.py` に置く。
-- 表示タイミング: `VenueLogin(credentials_source="prompt")` を受けた瞬間、`server_grpc` のハンドラが asyncio executor 経由で `Tk` ループを別スレッドで起動。RPC は dialog が閉じるまで `AUTHENTICATING` 状態を保ったまま戻らない（または "pending" を即返して `GetVenueState` で polling）。
-- 入力フィールド: venue ごとに異なる。
-  - Tachibana: ユーザー ID / パスワード / 第二暗証番号 / 環境（demo/prod 選択）
-  - kabu: APIパスワード / 環境（demo/prod 選択）。kabu 本体プロセスのポートも表示（読み取り専用）。
-- セッション内キャッシュ: 一度入力した資格情報は `live_runner` のメモリ内でのみ保持し、Logout で消す。ディスクには書かない（書きたい場合は別途 keyring へ昇格させる UX を `[ ] OS の Credential Store に保存` チェックボックスで提供）。
-- ウィンドウは Bevy UI のプロセスとは **完全に独立**。Bevy が落ちても認証フローは影響を受けず、逆も同様。
-- headless サーバ上で X11/Wayland/Win32 が無い環境では `tkinter` の import に失敗する。その場合は `credentials_source="prompt"` を `NO_DISPLAY_AVAILABLE` で reject し、`env` / `keyring` / `file` への切替をエラーメッセージで案内する。
+- 実装: `tkinter`（Python 標準ライブラリ、追加依存ゼロ）の **サブプロセスヘルパー**として起動する。`python/engine/live/login_dialog_runner.py` がフロントエンドとなり、`python -m engine.live.login_dialog_runner --venue tachibana --env demo` で別プロセスを spawn、結果は stdout JSON で受け取る。
+  - Tachibana の入力フィールド定義は **`python/engine/exchanges/tachibana_login_flow.py`** に集約（Rust 側に立花用ログイン UI を書かない方針、skill「Rust 側に置かないもの」を参照）。kabu の入力フィールド定義は `exchanges/kabu_login_flow.py` に置く
+  - サブプロセス分離により Bevy/asyncio イベントループを `Tk.mainloop()` でブロックしない
+- 表示タイミング: `VenueLogin(credentials_source="prompt")` 受信時、`server_grpc` ハンドラが `VenueState` を `AUTHENTICATING` に遷移させてから即座に "pending" を返す。サブプロセスの stdout JSON を asyncio で読み、完了時に `VenueState` を `CONNECTED` / `ERROR` に再遷移。UI は `GetVenueState` を polling して確認する（既存 60Hz polling パスを再利用）
+- **入力フィールド**（venue 固有 / skill 準拠）:
+  - **Tachibana**: ユーザー ID / パスワード / 環境（demo/prod 選択、prod 選択肢は `TACHIBANA_ALLOW_PROD=1` が立っていないとグレーアウト）。**第二暗証番号は収集しない**（skill F-H5: ログイン時には不要。発注時に Phase 9 の別 UI で取得しメモリ保持・idle forget タイマーで自動消去）
+  - **kabu**: API パスワード / 環境（demo/prod 選択）。kabu ステーション本体プロセスの listening ポートを読み取り専用で表示。未起動なら `KABU_STATION_NOT_RUNNING` を表示して [再確認] ボタンを出す
+- セッション内キャッシュ:
+  - **Tachibana**: ログイン成功時に `tachibana_file_store` が `cache_dir/tachibana/tachibana_session.json` に**仮想 URL 一式のみ**を保存（JST 当日付）。ユーザー ID / パスワードはディスクに書かない。次回起動時はこの session JSON を session_cache 経路で復元（skill S3）
+  - **kabu**: API token のみ `live_runner` メモリ内に保持。ディスクには書かない
+- ウィンドウは Bevy UI / asyncio loop と **完全に独立したサブプロセス**。Bevy が落ちても認証フローに影響なし、逆も同様
+- headless 環境（DISPLAY 無し / Win32 GUI 無し）では `tkinter` の `Tk()` インスタンス化が失敗する。サブプロセスはこれを検知して `{"error_code": "NO_DISPLAY_AVAILABLE"}` を JSON で返す。`server_grpc` ハンドラはそれを `env` への切替を促すエラーメッセージにマップして UI に返す
+- CI 上で立花ライブログインが必要なテストは **`pytest -m demo_tachibana`** で隔離し、GitHub Actions では **`workflow_dispatch` 限定**のジョブで実行する（Tachibana skill 前提条件 §4 / open-questions Q21）。PR/push トリガには載せない（閉局帯ヒットによる偽陰性回避）
 
 ### 3.3 Backend: live_runner.py
 
@@ -233,10 +265,11 @@ service Engine {
 
 message VenueLoginRequest {
   string venue_id = 1;                     // "TACHIBANA" / "KABU"
-  string credentials_source = 2;           // "prompt" (default) / "env" / "keyring" / "file"
+  string credentials_source = 2;           // "prompt" (default) / "session_cache" / "env"
   string environment = 3;                  // "production" / "demo"
-  // 注: password / api_key / 第二暗証番号 などの平文資格情報は本 RPC に含めない。
-  //     "prompt" 指定時は Python 側が tkinter のログインウィンドウを開く。
+  // 注: password / api_key などの平文資格情報は本 RPC に含めない。
+  //     "prompt" 指定時は Python 側が tkinter サブプロセスでログインウィンドウを開く。
+  //     第二暗証番号 (Tachibana) は本フェーズで一切扱わない (Phase 9 で発注時に収集)。
 }
 
 message VenueLoginResponse {
@@ -294,17 +327,30 @@ message SubscribeRequest {
 python/engine/
 ├── mode_manager.py        [NEW]   # Replay/Live 排他制御
 ├── live_runner.py         [NEW]   # Live 系統のエントリポイント
-├── live/                  [NEW]
+├── live/                  [NEW]   # venue 非依存の枠組み
 │   ├── __init__.py
 │   ├── adapter.py                 # LiveVenueAdapter Protocol / LiveEvent
 │   ├── state_machine.py           # VenueStateMachine
-│   ├── login_dialog.py            # tkinter のログインウィンドウ（Python 側 UI 例外）
-│   ├── tachibana_adapter.py
-│   ├── kabu_adapter.py
-│   ├── instrument_mapping.py
-│   ├── aggregator.py              # tick → bar 集約
-│   ├── event_bus.py
-│   └── logging.py                 # secrets masking filter
+│   ├── event_bus.py               # adapter → reducer の asyncio Queue
+│   ├── aggregator.py              # tick → bar (Nautilus BarBuilder ラッパ)
+│   ├── instrument_mapping.py      # InstrumentId 正規化 (.TSE / .OSE)
+│   ├── login_dialog_runner.py     # tkinter サブプロセスエントリ (python -m ...)
+│   └── logging.py                 # secrets masking filter (sUrl* / password)
+├── exchanges/             [NEW]   # venue 固有プロトコル (Rust に同等実装を作らない)
+│   ├── __init__.py
+│   ├── tachibana.py               # LiveVenueAdapter 実装
+│   ├── tachibana_url.py           # build_request_url / func_replace_urlecnode (R2/R9)
+│   ├── tachibana_auth.py          # next_p_no / current_p_sd_date / check_response (R4/R6)
+│   ├── tachibana_codec.py         # Shift-JIS / ^A^B^C / "" → [] (R7/R8)
+│   ├── tachibana_ws.py            # sUrlEventWebSocket クライアント
+│   ├── tachibana_master.py        # CLMEventDownload マスタ
+│   ├── tachibana_file_store.py    # tachibana_session.json (R3)
+│   ├── tachibana_login_flow.py    # debug env 取込み + tkinter 橋渡し
+│   ├── kabu.py                    # LiveVenueAdapter 実装
+│   ├── kabu_auth.py               # /kabusapi/token / X-API-KEY
+│   ├── kabu_ws.py                 # WebSocket PUSH
+│   ├── kabu_master.py             # 銘柄マスタ
+│   └── kabu_login_flow.py         # 入力フィールド定義 + 本体プロセス ping
 ├── models.py                      # TradingState に mode / venue_state 追加
 ├── core.py                        # get_current_state に venue 情報を含める
 ├── server_grpc.py                 # 5 つの新 RPC ハンドラ
@@ -342,9 +388,12 @@ docs/plan/assets/
 4. **Step 4 — Snapshot Reducer 接続**:
    - `MockVenueAdapter` の tick を `reducer` 経由で `TradingState` に流す
    - `KlineChartWindow` が Live モードで mock データを描画できることを確認
-5. **Step 4.5 — Python tkinter ログインウィンドウ**:
-   - `live/login_dialog.py` を実装。`credentials_source="prompt"` で Rust から RPC を叩くとダイアログが立ち上がり、入力 → 完了で `VenueState` が遷移するまでを mock adapter で確認
+5. **Step 4.5 — Python tkinter ログインサブプロセス**:
+   - `live/login_dialog_runner.py` を実装（`python -m engine.live.login_dialog_runner --venue <id> --env demo` で起動可能）
+   - venue 固有の入力フィールド定義は `exchanges/tachibana_login_flow.py` / `exchanges/kabu_login_flow.py` に置く
+   - `credentials_source="prompt"` で Rust から RPC を叩くとサブプロセスが立ち上がり、stdout JSON が `VenueState` を遷移させるまでを mock adapter で確認
    - headless 環境（DISPLAY 無し）で `NO_DISPLAY_AVAILABLE` が返ることを確認
+   - `TACHIBANA_ALLOW_PROD` 未設定時に prod 選択肢がグレーアウトされることを確認
 6. **Step 5 — kabu ステーション実装**:
    - `kabu_adapter.py` を `.claude/skills/kabusapi/` の skill に従って実装
    - 検証環境（`localhost:18081`）で `VenueLogin` → `ListInstruments` → `SubscribeMarketData(3 銘柄)` → 板更新が Ladder に反映、までの E2E
@@ -374,8 +423,11 @@ docs/plan/assets/
 - 同様の手動 E2E が `Tachibana (Demo)` でも通る。
 - 同時購読が 50 銘柄を超えるリクエストは `SUBSCRIPTION_LIMIT_EXCEEDED` で reject され、UI に明示される。
 - 認証エラー時、`VenueState=ERROR` バッジが赤で表示され、エラーコード（`AUTH_FAILED` / `KABU_STATION_NOT_RUNNING` / `NETWORK_ERROR` 等）がトーストに出る。
-- ログを全文 grep してもユーザ名・パスワード・第二暗証番号・API key が平文で出現しない（secrets masking テスト）。
+- ログを全文 grep してもユーザ名・パスワード・API key・Tachibana の仮想 URL (`sUrlRequest` / `sUrlMaster` / `sUrlPrice` / `sUrlEvent` / `sUrlEventWebSocket`) が平文で出現しない（secrets masking テスト、Tachibana skill R10）。
+- Tachibana の 2 回目以降の起動が `tachibana_session.json` のみで成立する（env 未設定でも JST 当日付なら復元できる、Tachibana skill S3）。
+- `TACHIBANA_ALLOW_PROD` 未設定での本番接続試行が Python URL builder で拒否される（unit test）。
 - Replay と Live で **同じ Snapshot Reducer / 同じ UI コード** が使われており、`src/ui/floating/kline.rs` / `ladder.rs` には Phase 8 起因の差分が無い（あっても mode 表示の 1 行のみ）。
+- Rust 側に `exchange/src/adapter/tachibana.rs` / `src/connector/auth.rs` の立花拡張 / 立花用ログイン UI が存在しない（grep で確認、Tachibana skill 「Rust 側に置かないもの」）。
 
 ---
 
@@ -385,10 +437,16 @@ docs/plan/assets/
 `replay_runner.py` に live モードのフラグを足す案を採らず、`live_runner.py` を独立させる。理由: (1) Replay は決定論的なシミュレータでデバッグの中心。Live コードが混ざると再現性が壊れる。(2) `TradingNode` 由来の live execution を将来取り込むときも、Replay 系統に影響を与えないため。(3) `ModeManager` で排他を構造的に保証できる。
 
 ### ADR: 資格情報を Rust UI 側に持たせない
-平文の API key / パスワードを gRPC ペイロードに乗せないため、`VenueLoginRequest` には `credentials_source` だけを乗せる。Backend が env / keyring / file / prompt から自前で resolve する。理由: gRPC ログ・コアダンプ・OS の swap 経由で漏れる経路を構造的に塞ぐ。Rust 側に資格情報 UI を作る必要も無くなる。
+平文の API key / パスワードを gRPC ペイロードに乗せないため、`VenueLoginRequest` には `credentials_source` だけを乗せる。Backend が prompt / session_cache / env から自前で resolve する。理由: gRPC ログ・コアダンプ・OS の swap 経由で漏れる経路を構造的に塞ぐ。Rust 側に資格情報 UI を作る必要も無くなる。
+
+### ADR: keyring / 平文 file credentials を採用しない
+Phase 8 初稿では `credentials_source` に `"keyring"` / `"file"` も含めたが、Tachibana skill が **`tachibana_session.json` ファイルキャッシュ一本**でセッション永続化する規約 (R3 / S3) を確立しているため、keyring も平文資格情報ファイルも採用しない。理由: (1) 永続化される資料は「ユーザー名/パスワード」ではなく「短命の仮想 URL」だけにし、漏洩時の被害範囲を 1 営業日に限定する。(2) Python 側に 2 種類の credential store 抽象（keyring vs file）を保つコストを払わない。kabu 側は token 再取得が軽量なため永続化自体を諦め、`exchanges/kabu*.py` のメモリ保持のみで足りる。
+
+### ADR: 立花プロトコル固有コードは Python `exchanges/` にだけ置く
+Tachibana skill が `python/engine/exchanges/tachibana*.py` 集約を規定しているため、これに完全準拠する。`exchange/src/adapter/tachibana.rs` / `src/connector/auth.rs` の立花拡張 / `src/screen/login.rs` の立花フォーム / Rust 側の立花 WebSocket クライアントは Phase 8 のスコープから明示的に除外する。理由: (1) URL ビルド・Shift-JIS・p_no 採番・`^A^B^C` パース等が Rust と Python に二重実装されると齟齬が必ず発生する。(2) 仮想 URL の取り扱いは「セッション秘密」のためマスク・寿命管理を 1 箇所に閉じたい。(3) skill の規範に逆らうとレビューが通らない。
 
 ### ADR: ログインウィンドウは Python 側で出す（プロジェクト唯一の UI 例外）
-本プロジェクトは原則「UI は Bevy (Rust) に一本化」だが、**ログインフォームに限り Python プロセスから tkinter で表示する**例外を設ける。
+本プロジェクトは原則「UI は Bevy (Rust) に一本化」だが、**ログインフォームに限り Python のサブプロセスから tkinter で表示する**例外を設ける。
 
 理由:
 1. **資格情報を Rust → Python に受け渡したくない**。Rust 側で入力させると `VenueLoginRequest` に password を載せるか、別 RPC で平文を送る必要があり、gRPC 上の暗号化が無い localhost 通信ではコアダンプ / プロセスダンプ / メモリスキャンで漏れる経路が増える。Python プロセス内で完結させれば、資格情報はそのまま venue adapter のメモリにしか乗らない。
@@ -396,6 +454,17 @@ docs/plan/assets/
 3. tkinter は Python 標準ライブラリで追加依存ゼロ。Bevy より遥かに小さなフォームウィンドウで十分なため、専用 UI フレームワークは不要。
 
 結果として Rust UI は「Venue メニューでログイン開始トリガを発火 → Python 側のダイアログ完了を待つ → `VenueStateBadge` に結果が反映される」という一方向の責務だけを持つ。ログインフォーム描画責務は Rust から完全に切り離される。
+
+実装上は **サブプロセス**として `python -m engine.live.login_dialog_runner` を起動する（`Tk.mainloop()` が server_grpc の asyncio loop / Bevy をブロックしないため）。venue 固有の入力フィールド定義は `exchanges/{tachibana,kabu}_login_flow.py` に置き、`login_dialog_runner` 側は venue 共通の枠だけを描画する。
+
+### ADR: 第二暗証番号 (Tachibana) は Phase 8 で扱わない
+Tachibana の発注時必須項目である第二暗証番号 (`sSecondPassword`) は **Phase 8 のログインダイアログに含めない**。Tachibana skill F-H5 に従い、Phase 9 の発注 UI 内で **iced modal** (Rust 側) で取得し、Python の venue adapter メモリにのみ保持・idle forget タイマーで自動消去する。理由: (1) Phase 8 は read-only 市場接続であり、第二暗証番号を必要としない。(2) ログイン時に集めて長時間保持すると漏洩窓が広がる。発注のたびに再入力させて寿命を短く保つ。(3) env / セッションキャッシュに書かない原則を Phase 8 で乱さない。
+
+### ADR: debug ビルドのみ env 自動ログインを許可する
+`DEV_TACHIBANA_USER_ID` / `DEV_TACHIBANA_PASSWORD` / `DEV_TACHIBANA_DEMO` / `KABU_API_PASSWORD` の自動ログインは **debug ビルドの Python のみ**が読む。release では env を完全に無視し、`credentials_source="env"` を `ENV_DISABLED_IN_RELEASE` で reject する。理由: (1) 配布バイナリにユーザー資格情報の env 取込みパスを残さない。(2) 本番ユーザーが誤って `.env` を作ってリポジトリへ commit する事故経路を塞ぐ。(3) Tachibana skill S1 と一致させる。
+
+### ADR: 本番接続は `TACHIBANA_ALLOW_PROD=1` で明示解禁する
+demo 既定 (`DEV_TACHIBANA_DEMO` 未設定 = demo) に加え、本番 URL `https://kabuka.e-shiten.jp/e_api_v4r8/` への接続は **Python URL builder が `TACHIBANA_ALLOW_PROD=1` env を検出したときに限り**許可する。理由: (1) Tachibana skill R1 が「本番接続で実弾が飛ぶ」「URL リテラルは `tachibana_url.py` の 1 箇所限定 (F-L1)」を明文化している。(2) demo/prod 切替を UI チェックボックス一つで誤爆させない。(3) prod 解禁は env で意図表明する形にし、CI 自動運転からは外す。
 
 ### ADR: 発注経路は Phase 8 で握らない
 `nautilus_trader` の `TradingNode` を Live でホストすると ExecEngine が venue に注文を発射できてしまう。Phase 8 では `DataEngine` のみホストし、`ExecEngine` は **インスタンス化しない**。これにより「読み取り専用」を型レベルで担保する。Phase 9 で発注経路を追加する際は、別途明示的なフラグと確認 UX を入れる。
