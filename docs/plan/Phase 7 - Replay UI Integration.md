@@ -22,6 +22,50 @@
 
 この節は 2026-05-14 時点の引き継ぎ用メモです。上の本文に文字化けが残っているため、作業者がクラッシュ後に復帰できるよう、最新状況・設計判断・次の一手をここへ逐次追記する方針にします。
 
+### START HERE for New Worker
+
+何も知らない新しい作業者は、まずここだけ読めば復帰できます。
+
+**現在地**:
+
+- 最新コミット: `e900cde Add Save Cache button to Strategy Editor window`
+- `cargo check` は成功済み。
+- `Open Strategy...` から `.py` を選ぶと、元ファイルを直接触らず OS cache 配下に作業コピーを作る。
+- `StrategyBuffer` resource が、元 path / cache path / editor source / dirty 状態を保持する。
+- `bevy_egui` の Strategy Editor window で `StrategyBuffer.source` を表示・編集できる。
+- 編集すると MenuBar に `*` が出る。
+- `Save Cache` で cache file にだけ保存し、成功すると `dirty = false` になって `*` が消える。
+- 元 `.py` ファイルへの保存はまだ実装していない。今の不変条件は「元ファイルには書かない」。
+
+**動作確認コマンド**:
+
+```powershell
+$env:BACKEND_ENABLED="false"
+cargo run
+```
+
+**手動確認手順**:
+
+1. 起動直後、上部 MenuBar 右端が `strategy: none`。
+2. `Open Strategy...` で `python/tests/data/*.py` を選ぶ。
+3. MenuBar が `strategy: foo.py cached` になる。
+4. Strategy Editor window が開き、source が表示される。
+5. editor で文字を編集すると MenuBar が `strategy: foo.py cached *` になる。
+6. `Save Cache` を押すとログに `strategy cache saved: ...` が出て、`*` が消える。
+7. 元 `.py` は変化しない。
+
+**重要ファイル**:
+
+- `src/ui/components.rs`: `OpenStrategyRequested`, `StrategyBuffer`, `StrategyStatusLabel`
+- `src/ui/menu_bar.rs`: File open dialog、cache path 生成、cache copy、MenuBar status label 更新
+- `src/ui/strategy_editor.rs`: egui editor、`Save Cache`
+- `src/ui/mod.rs`: `EguiPlugin` と各 system 登録
+- `Cargo.toml`: `rfd`, `dirs`, `sha2`, `bevy_egui = "0.31"`
+
+**次にやること**:
+
+次は **Strategy Run Event Shell**。まだ backend RPC へ接続しない。まず editor window に `Run` ボタンを追加し、cache path を持つ `StrategyRunRequested` event を発火してログに出すだけにする。詳細は下の `Next Task: Strategy Run Event Shell` を参照。
+
 ### Current Progress
 
 | Commit | 内容 | 状態 |
@@ -37,6 +81,7 @@
 | `fb95326` | `.py` strategy を OS cache 配下へコピーし `StrategyBuffer.cache_path` に保持 | ✅ |
 | `d903a58` | MenuBar に `StrategyStatusLabel` を追加し、読み込み済み strategy 名と cache 状態を表示 | ✅ |
 | `74e90de` | `bevy_egui` の Strategy Editor Window shell を追加し、`StrategyBuffer.source` を編集可能にした | ✅ |
+| `e900cde` | Strategy Editor に `Save Cache` ボタンを追加し、cache file へ editor 内容を保存可能にした | ✅ |
 
 ### Verified State
 
@@ -52,9 +97,11 @@
 - ✅ MenuBar 右端に現在の strategy filename と cache 状態を表示できる。
 - ✅ `bevy_egui` window で `StrategyBuffer.source` を表示・編集できる。
 - ✅ 編集時に `StrategyBuffer.dirty = true` になり、MenuBar に `*` が表示される。
+- ✅ `Save Cache` で editor 内容を cache file にだけ保存できる。
+- ✅ cache 保存成功時に `StrategyBuffer.dirty = false` へ戻る。
 - 未実装: StrategyEditorWindow。
 - 未実装: Strategy cache metadata。
-- 未実装: Strategy cache save / autosave。
+- 未実装: Strategy Run event / backend run RPC 接続。
 - 未実装: `Run` / `StepBack` / `JumpToStart` の実 RPC 接続。
 
 ### ADR 2026-05-14: MenuBar は Bevy UI の thin shell から始める
@@ -260,36 +307,91 @@ Implementation note:
 - ここでは data flow の確認を優先する。`Save` / `Run` / syntax highlight / line numbers は未実装。
 - `TextEdit::multiline` が直接 `buffer.source` を編集するため、変更検知は `response.changed()` で十分。
 
-### Next Task: Strategy Editor Save Cache Shell
+### Completed Task: Strategy Editor Save Cache Shell
 
-次の作業者はここから始める。目的は、editor で変更した `StrategyBuffer.source` を **cache file にだけ** 保存できるようにすること。元ファイルへの保存はまだしない。
+`e900cde` で完了。
 
-1. Strategy Editor window 上部に `[Save Cache]` ボタンを追加する。
-2. `buffer.cache_path` が `Some(path)` かつ `buffer.dirty == true` のとき、`std::fs::write(path, &buffer.source)` する。
-3. 保存成功時は `buffer.dirty = false`。
-4. 保存失敗時は `error!` を出し、`dirty` は true のままにする。
-5. 元ファイル (`original_path`) には絶対に書き込まない。
-6. MenuBar の `*` が保存後に消えることを確認する。
-7. `cargo check`。
+- ✅ Strategy Editor window 上部に toolbar 行を追加。
+- ✅ `Save Cache` ボタンは `cache_path.is_some() && dirty` のときだけ有効。
+- ✅ `std::fs::write(cache_path, &buffer.source)` で cache file にだけ保存する。
+- ✅ 保存成功時は `buffer.dirty = false`。
+- ✅ 保存失敗時は `error!` を出し、`dirty` は true のままにする。
+- ✅ cache filename label を toolbar 右側に表示。
+- ✅ `ui.separator()` で toolbar と `TextEdit` を分離。
+- ✅ 元ファイル (`original_path`) には書き込まない。
 
-推奨 UI:
+Implementation note:
 
-```text
-[Save Cache]  cache: <cache filename or none>
+- `&buffer.cache_path` を借りたまま `buffer.dirty = false` を行うと borrow conflict になるため、`buffer.cache_path.clone()` で path を取り出してから保存する。
+- `Save Cache` は cache file だけを更新する。元ファイルへの保存や restore prompt は未実装。
+
+検証:
+
+```powershell
+$env:BACKEND_ENABLED="false"
+cargo run
 ```
 
-Acceptance Criteria:
+合格条件:
 
-- editor で文字を編集すると MenuBar に `*` が出る。
-- `[Save Cache]` を押すと cache file にだけ書き込まれる。
-- 保存成功後、MenuBar の `*` が消える。
-- 元ファイルは変化しない。
-- `cargo check` が通る。
+- ✅ editor で文字を編集すると MenuBar に `*` が出る。
+- ✅ `Save Cache` が有効になる。
+- ✅ `Save Cache` を押すと cache file にだけ書き込まれる。
+- ✅ 保存成功後、MenuBar の `*` が消える。
+- ✅ 元ファイルは変化しない。
+- ✅ `cargo check` が通る。
 
 ADR:
 
 - 先に cache save を作る。理由は、後続の `[Run]` は cache path を backend に渡す設計なので、実行前に「cache に現在の editor 内容がある」状態を保証したいから。
 - `Save Original` はまだ作らない。元ファイル保護を Phase 7 前半の不変条件として維持する。
+
+### Next Task: Strategy Run Event Shell
+
+次の作業者はここから始める。目的は `Run` ボタンの UI と event 境界だけを作ること。**まだ backend RPC は呼ばない**。
+
+実装方針:
+
+1. `src/ui/components.rs` に event を追加する。
+
+```rust
+#[derive(Event, Debug, Clone)]
+pub struct StrategyRunRequested {
+    pub cache_path: std::path::PathBuf,
+}
+```
+
+2. `UiPlugin` で `.add_event::<StrategyRunRequested>()` を登録する。
+3. `strategy_editor_window_system` に `EventWriter<StrategyRunRequested>` を追加する。
+4. `Save Cache` の隣に `Run` ボタンを追加する。
+5. `Run` は `buffer.cache_path.is_some() && !buffer.dirty` のときだけ有効にする。
+6. `Run` 押下時は `StrategyRunRequested { cache_path }` を送る。
+7. `log_strategy_run_requested_system` を追加し、`info!("strategy run requested: {:?}", cache_path)` を出す。
+8. dirty な状態で Run したい場合は、まず `Save Cache` してから Run、という UX にする。
+9. `cargo check`。
+
+推奨 UI:
+
+```text
+[Save Cache] [Run]  cache: <cache filename or none>
+```
+
+Acceptance Criteria:
+
+- `.py` を開くと `Run` ボタンが見える。
+- dirty でない cache 済み状態では `Run` が有効。
+- editor を編集すると `Run` が無効になり、`Save Cache` が有効になる。
+- `Save Cache` 後に `Run` が再び有効になる。
+- `Run` 押下で `strategy run requested: <cache_path>` がログに出る。
+- backend RPC はまだ呼ばない。
+- 元ファイルは変化しない。
+- `cargo check` が通る。
+
+ADR:
+
+- `Run` を直接 backend に接続しない。まず `StrategyRunRequested` event を作り、UI と backend 接続を分離する。
+- `Run` は dirty な buffer では無効にする。理由は、backend に渡す cache file と editor 上の source が食い違う状態を避けるため。
+- 次の次の step で、この event を `StartEngineRequest.config.strategy_file = cache_path` などの既存 proto 契約へ接続するか、新 RPC を追加するかを判断する。
 
 ### Previous Task: Strategy Editor Window Shell Design
 
