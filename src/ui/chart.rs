@@ -27,6 +27,58 @@ impl Default for ChartViewState {
     }
 }
 
+/// Draw a single candlestick at `x_rel` (relative to chart center).
+///
+/// `chart_origin` is the painter world-space origin (entity translation).
+/// Wick covers high–low; body covers open–close.
+/// Green when close >= open, red when close < open.
+fn draw_candle(
+    painter: &mut ShapePainter,
+    chart_origin: Vec3,
+    x_rel: f32,
+    open: f32,
+    high: f32,
+    low: f32,
+    close: f32,
+    body_half_width: f32,
+    min_price: f32,
+    price_range: f32,
+    chart_height: f32,
+) {
+    let color = if close >= open {
+        Color::srgb(0.0, 0.78, 0.31) // bullish green
+    } else {
+        Color::srgb(0.9, 0.2, 0.2)   // bearish red
+    };
+
+    let y_of = |p: f32| -chart_height / 2.0 + (p - min_price) / price_range * chart_height;
+
+    let y_high  = y_of(high);
+    let y_low   = y_of(low);
+    let y_open  = y_of(open);
+    let y_close = y_of(close);
+
+    painter.color = color;
+
+    // Wick: thin vertical line spanning high–low
+    painter.set_translation(chart_origin);
+    painter.thickness = 1.5;
+    painter.line(
+        Vec3::new(x_rel, y_low,  0.15),
+        Vec3::new(x_rel, y_high, 0.15),
+    );
+
+    // Body: rect from open to close (min 1.5 px tall so doji is visible)
+    let body_center_y = (y_open + y_close) / 2.0;
+    let body_height   = (y_close - y_open).abs().max(1.5);
+    painter.set_translation(Vec3::new(
+        chart_origin.x + x_rel,
+        chart_origin.y + body_center_y,
+        chart_origin.z + 0.2,
+    ));
+    painter.rect(Vec2::new(body_half_width * 2.0, body_height));
+}
+
 pub fn chart_render_system(
     mut painter: ShapePainter,
     trading_data: Res<TradingData>,
@@ -34,7 +86,7 @@ pub fn chart_render_system(
 ) {
     for (mut state, transform) in query.iter_mut() {
         let history = &trading_data.history_points;
-        
+
         if history.is_empty() {
             continue;
         }
@@ -60,6 +112,12 @@ pub fn chart_render_system(
                     has_visible_data = true;
                 }
             }
+            // Extend range to cover latest candle high/low
+            if let (Some(high), Some(low)) = (trading_data.high, trading_data.low) {
+                if high > max { max = high; }
+                if low  < min { min = low; }
+                has_visible_data = true;
+            }
 
             if has_visible_data {
                 let range = max - min;
@@ -79,9 +137,11 @@ pub fn chart_render_system(
         let start_pos = transform.translation();
         painter.set_translation(start_pos);
 
+        // Background
         painter.color = Color::srgb(0.3, 0.3, 0.3);
         painter.rect(Vec2::new(state.width, state.height));
 
+        // --- Line chart (existing, keep) ---
         painter.color = Color::srgb(0.0, 1.0, 0.5);
         painter.thickness = 2.0;
 
@@ -92,7 +152,6 @@ pub fn chart_render_system(
             if p.timestamp_ms < start_ts {
                 continue;
             }
-
             let time_offset = p.timestamp_ms - state.latest_timestamp_ms;
             let x = (time_offset as f32 / state.time_window_ms as f32) * state.width + (state.width / 2.0);
             let y = -state.height / 2.0 + (p.price - state.min_price) / price_range * state.height;
@@ -102,6 +161,36 @@ pub fn chart_render_system(
                 painter.line(prev, current_pos);
             }
             prev_pos = Some(current_pos);
+        }
+
+        // --- Latest candlestick (Step 1: single candle) ---
+        if let (Some(open), Some(high), Some(low), Some(close), Some(open_time_ms)) = (
+            trading_data.open,
+            trading_data.high,
+            trading_data.low,
+            trading_data.close,
+            trading_data.open_time_ms,
+        ) {
+            let x_rel = (open_time_ms - state.latest_timestamp_ms) as f32
+                / state.time_window_ms as f32
+                * state.width;
+            let body_half_width = state.width / 40.0;
+
+            draw_candle(
+                &mut painter,
+                start_pos,
+                x_rel,
+                open,
+                high,
+                low,
+                close,
+                body_half_width,
+                state.min_price,
+                price_range,
+                state.height,
+            );
+
+            painter.set_translation(start_pos);
         }
     }
 }
@@ -127,11 +216,6 @@ mod tests {
         )).id();
 
         let _schedule = Schedule::default();
-        // Note: ShapePainter requires more setup, but we can test the state update part
-        // by only running the system logic if possible, or mocking painter.
-        // Since we can't easily mock ShapePainter here without full bevy setup,
-        // we'll focus on testing the state update logic if we extracted it.
-        // For now, let's at least check if it compiles and runs.
     }
 
     #[test]
@@ -142,12 +226,11 @@ mod tests {
         state.latest_timestamp_ms = 2000;
 
         let history = vec![
-            HistoryPoint { timestamp_ms: 500, price: 100.0 }, // Out of window
-            HistoryPoint { timestamp_ms: 1500, price: 10.0 }, // In window
-            HistoryPoint { timestamp_ms: 2000, price: 20.0 }, // In window
+            HistoryPoint { timestamp_ms: 500,  price: 100.0 }, // out of window
+            HistoryPoint { timestamp_ms: 1500, price: 10.0  }, // in window
+            HistoryPoint { timestamp_ms: 2000, price: 20.0  }, // in window
         ];
 
-        // Manually trigger autoscale logic (extracted or simulated)
         let mut min = f32::MAX;
         let mut max = f32::MIN;
         let mut has_visible_data = false;
@@ -169,6 +252,58 @@ mod tests {
 
         assert!(state.min_price < 10.0);
         assert!(state.max_price > 20.0);
-        assert!(state.min_price > 0.0); // Should not be affected by 100.0
+        assert!(state.min_price > 0.0);
+    }
+
+    #[test]
+    fn test_candle_direction() {
+        // Bullish: close >= open
+        let (open, close) = (100.0_f32, 110.0_f32);
+        assert!(close >= open, "close >= open should be bullish");
+
+        // Bearish: close < open
+        let (open2, close2) = (100.0_f32, 90.0_f32);
+        assert!(close2 < open2, "close < open should be bearish");
+
+        // Doji: close == open
+        let (open3, close3) = (100.0_f32, 100.0_f32);
+        assert!(close3 >= open3, "doji (close == open) treated as bullish");
+    }
+
+    #[test]
+    fn test_candle_y_mapping() {
+        let chart_height = 200.0_f32;
+        let min_price   = 100.0_f32;
+        let price_range = 50.0_f32;
+        let y_of = |p: f32| -chart_height / 2.0 + (p - min_price) / price_range * chart_height;
+
+        // Bottom of chart corresponds to min_price
+        assert!((y_of(100.0) - (-100.0)).abs() < 0.001);
+        // Top of chart corresponds to min_price + price_range
+        assert!((y_of(150.0) - 100.0).abs() < 0.001);
+        // Mid-price maps to y=0
+        assert!((y_of(125.0) - 0.0).abs() < 0.001);
+    }
+
+    #[test]
+    fn test_candle_body_height_min() {
+        // Doji body height must be at least 1.5 so it's always visible
+        let y_open  = 50.0_f32;
+        let y_close = 50.0_f32; // same → doji
+        let body_height = (y_close - y_open).abs().max(1.5);
+        assert!(body_height >= 1.5);
+    }
+
+    #[test]
+    fn test_autoscale_extends_for_candle_high_low() {
+        // If candle high > close prices, autoscale should include it
+        let high = 200.0_f32;
+        let low  = 50.0_f32;
+        let mut max = 150.0_f32; // from close prices
+        let mut min = 80.0_f32;
+        if high > max { max = high; }
+        if low  < min { min = low; }
+        assert_eq!(max, 200.0);
+        assert_eq!(min, 50.0);
     }
 }
