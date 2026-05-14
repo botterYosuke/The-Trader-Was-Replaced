@@ -35,6 +35,7 @@
 | `fecdb9a` | `rfd` file dialog と `OpenStrategyRequested` event を接続 | ✅ |
 | `af262f9` | `StrategyBuffer` resource と `open_strategy_buffer_system` を追加 | ✅ |
 | `fb95326` | `.py` strategy を OS cache 配下へコピーし `StrategyBuffer.cache_path` に保持 | ✅ |
+| `d903a58` | MenuBar に `StrategyStatusLabel` を追加し、読み込み済み strategy 名と cache 状態を表示 | ✅ |
 
 ### Verified State
 
@@ -47,6 +48,7 @@
 - ✅ 選択 path は `OpenStrategyRequested { path }` event として Bevy 内に流れる。
 - ✅ 選択 path の `.py` source を `StrategyBuffer` resource に読み込める。
 - ✅ 元 `.py` を直接編集せず、OS cache 配下へ作業コピーを作れる。
+- ✅ MenuBar 右端に現在の strategy filename と cache 状態を表示できる。
 - 未実装: StrategyEditorWindow。
 - 未実装: Strategy cache metadata。
 - 未実装: `Run` / `StepBack` / `JumpToStart` の実 RPC 接続。
@@ -185,6 +187,65 @@ cargo run
 - ✅ `cargo check` が通る。
 
 ### Next Task: Strategy Buffer Status UI Shell
+
+`d903a58` で完了。
+
+- ✅ `src/ui/components.rs` に `StrategyStatusLabel` component を追加。
+- ✅ `spawn_menu_bar` に spacer と `strategy: none` label を追加。
+- ✅ `update_strategy_status_label_system` を追加。
+- ✅ `StrategyBuffer.original_path` から filename を表示する。
+- ✅ `StrategyBuffer.cache_path.is_some()` なら `cached` を表示する。
+- ✅ `StrategyBuffer.dirty` が true なら `*` を表示する。
+- ✅ `UiPlugin` の Update に `update_strategy_status_label_system` を登録。
+
+検証:
+
+```powershell
+$env:BACKEND_ENABLED="false"
+cargo run
+```
+
+合格条件:
+
+- ✅ 起動直後は MenuBar 右端に `strategy: none`。
+- ✅ `Open Strategy...` で `.py` を選ぶと `strategy: foo.py cached` に変わる。
+- ✅ `cargo check` が通る。
+
+Implementation note:
+
+- `update_strategy_status_label_system` は `buffer.is_changed()` で早期 return するため、`StrategyBuffer` が変わった frame だけ label を更新する。
+- 現在 `open_strategy_buffer_system` と `update_strategy_status_label_system` は同じ Update tuple に登録されている。Bevy scheduler は `StrategyBuffer` の read/write conflict を見て同時実行はしないが、表示更新の順序を厳密にしたくなったら、後で `(open_strategy_buffer_system, update_strategy_status_label_system).chain()` のように順序を明示する。
+
+### Next Task: Strategy Editor Window Shell
+
+次の作業者はここから始める。目的は、cache copy 済み strategy source を「編集可能な UI の入口」に乗せること。ただし、まだ高度な syntax highlight や Save/Run は不要。
+
+推奨方針:
+
+1. まずは `bevy_egui` を導入する。
+2. `StrategyBuffer.original_path.is_some()` のときだけ egui window を表示する。
+3. window title は `Strategy: foo.py`。
+4. 中身は `egui::TextEdit::multiline(&mut buffer.source)`。
+5. `TextEdit` が changed なら `buffer.dirty = true`。
+6. まだ disk write はしない。cache file への autosave/save は次 step。
+7. MenuBar の label が `*` を表示することを確認する。
+8. `cargo check`。
+
+Acceptance Criteria:
+
+- `.py` を Open すると Strategy Editor shell window が出る。
+- source text が multiline editor に表示される。
+- 文字を編集すると `StrategyBuffer.dirty = true` になる。
+- MenuBar の表示が `strategy: foo.py cached *` になる。
+- 元ファイルにも cache file にもまだ書き込まない。
+- `cargo check` が通る。
+
+ADR:
+
+- 本格的な floating world-space window に入る前に、`bevy_egui` の window で StrategyEditor MVP を作る。理由は、まず `StrategyBuffer` と editable text の data flow を確認したいから。
+- `Save` / `Run` / syntax highlight / line numbers は次以降。ここで混ぜると、UI・I/O・RPC が同時に壊れる。
+
+### Previous Task: Strategy Buffer Status UI Shell Design
 
 次の作業者はここから始める。目的は「Open した strategy が UI 上でも見える」状態にすること。まだ本格的な code editor は作らない。
 
