@@ -705,6 +705,11 @@ StartEngine ok, state=RUNNING
 - Strategy Editor 側の表示は保持（重複整理は次タスク判断）
 - `cargo check` OK / `cargo test scenario_parser` 4/4 / `cargo test parse_summary_json` 3/3
 - commit: `cf3107e`
+- **TODO: Bevy-native Sidebar migration trigger**:
+  - Keep the Run Result Panel as an `egui::Window` for now; it is a small floating work panel and matches the Strategy Editor path.
+  - Migrate to a Bevy-native Node sidebar when Run Result becomes part of the permanent app layout.
+  - Trigger conditions: sidebar needs 3+ persistent sections, such as Run Result / Scenario / Backend / Transport / Logs; or floating egui windows start getting in the way.
+  - When migrating, build a fixed Bevy UI sidebar and move Run Result display into it; keep `LastRunResult` / `RunState` as the data source.
 - **Next task**: Strategy Editor 側の重複表示を整理するか、Transport 制御の実装へ進むか
 
 ---
