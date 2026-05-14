@@ -54,7 +54,9 @@
       "Bash(Get-ChildItem -Path \"C:\\\\Users\\\\sasai\\\\Documents\\\\The-Trader-Was-Replaced\\\\scripts\" -Recurse -ErrorAction SilentlyContinue)",
       "Bash(Select-Object -First 20)",
       "Bash(grep -E \"\\\\.\\(ps1|sh\\)$\")",
-      "Bash(Remove-Item \"c:\\\\Users\\\\sasai\\\\Documents\\\\The-Trader-Was-Replaced\\\\python\\\\tests\\\\test_phase3.py\", \"c:\\\\Users\\\\sasai\\\\Documents\\\\The-Trader-Was-Replaced\\\\python\\\\tests\\\\test_phase5.py\")"
+      "Bash(Remove-Item \"c:\\\\Users\\\\sasai\\\\Documents\\\\The-Trader-Was-Replaced\\\\python\\\\tests\\\\test_phase3.py\", \"c:\\\\Users\\\\sasai\\\\Documents\\\\The-Trader-Was-Replaced\\\\python\\\\tests\\\\test_phase5.py\")",
+      "PowerShell(\\(Get-Content \"D:\\\\Documents\\\\_blacksheep\\\\raw\\\\replay-runs\\\\1778684774-order_flow_06-1360_TSE\\\\fills.jsonl\" -ErrorAction SilentlyContinue | Measure-Object -Line\\).Lines; Write-Host \"---equity---\"; \\(Get-Content \"D:\\\\Documents\\\\_blacksheep\\\\raw\\\\replay-runs\\\\1778684774-order_flow_06-1360_TSE\\\\equity.jsonl\" -ErrorAction SilentlyContinue | Measure-Object -Line\\).Lines)",
+      "PowerShell(cd D:\\\\Documents\\\\_blacksheep; .\\\\scripts\\\\run_cooldown_sweep.ps1 -Window jan1324 -Bars @\\(0\\) 2>&1)"
     ],
     "additionalDirectories": [
       "\\tmp",
