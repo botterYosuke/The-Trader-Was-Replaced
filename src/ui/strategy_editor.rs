@@ -64,13 +64,17 @@ pub fn strategy_editor_window_system(
 
             ui.separator();
 
+            // Clone to avoid triggering Bevy change detection via DerefMut every frame.
+            // Only write back (and mark changed) when egui reports actual content change.
+            let mut source = buffer.source.clone();
             let response = ui.add(
-                egui::TextEdit::multiline(&mut buffer.source)
+                egui::TextEdit::multiline(&mut source)
                     .desired_width(f32::INFINITY)
                     .desired_rows(30),
             );
 
             if response.changed() {
+                buffer.source = source;
                 buffer.dirty = true;
             }
         });

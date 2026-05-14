@@ -11,7 +11,7 @@ use tokio::sync::mpsc;
 use engine::data_engine_client::DataEngineClient;
 use engine::{
     EngineStartConfig, EngineKind, GetStateRequest, LoadReplayDataRequest, PauseReplayRequest,
-    ReplayGranularity, ResumeReplayRequest, StartEngineRequest, StartRequest, StepReplayRequest,
+    ReplayGranularity, ResumeReplayRequest, StartEngineRequest, StepReplayRequest,
 };
 
 // Bevy's compute task pool threads don't inherit the Tokio runtime context,
@@ -118,19 +118,9 @@ fn setup_backend_connection(
             }
         };
 
-        let start_request = tonic::Request::new(StartRequest {
-            token: token.clone(),
-        });
-        match client.start(start_request).await {
-            Ok(_) => {
-                info!("Backend engine started successfully.");
-                let _ = status_tx.send(BackendStatusUpdate::Running(true));
-            }
-            Err(e) => {
-                error!("Failed to start backend engine: {}", e);
-                let _ = status_tx.send(BackendStatusUpdate::Error(format!("Start failed: {}", e)));
-            }
-        }
+        // Backend manages its own lifecycle; no explicit Start call needed.
+        info!("Backend connection established.");
+        let _ = status_tx.send(BackendStatusUpdate::Running(true));
 
         loop {
             // Drain transport commands before polling state so the UI feels responsive.
