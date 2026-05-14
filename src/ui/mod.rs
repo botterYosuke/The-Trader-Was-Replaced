@@ -5,12 +5,14 @@ pub mod button;
 pub mod chart;
 pub mod footer;
 pub mod menu_bar;
+pub mod run_result_panel;
 pub mod scenario_parser;
 pub mod strategy_editor;
 
 use bevy::prelude::*;
 use bevy_egui::EguiPlugin;
 use crate::ui::footer::{spawn_footer, transport_button_system, update_footer_system};
+use crate::ui::run_result_panel::run_result_panel_system;
 use crate::ui::strategy_editor::strategy_editor_window_system;
 use crate::ui::menu_bar::{
     handle_strategy_run_system,
@@ -51,6 +53,7 @@ impl Plugin for UiPlugin {
                 open_strategy_buffer_system,
                 update_strategy_status_label_system,
                 strategy_editor_window_system,
+                run_result_panel_system,
                 log_strategy_run_requested_system,
                 handle_strategy_run_system,
                 parse_scenario_system,
