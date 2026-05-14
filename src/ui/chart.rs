@@ -164,14 +164,17 @@ pub fn chart_render_system(
         }
 
         // --- Latest candlestick (Step 1: single candle) ---
-        if let (Some(open), Some(high), Some(low), Some(close), Some(open_time_ms)) = (
+        // open_time_ms is optional; fall back to latest_timestamp_ms so the
+        // candle lands at the right edge even when the backend omits it.
+        if let (Some(open), Some(high), Some(low), Some(close)) = (
             trading_data.open,
             trading_data.high,
             trading_data.low,
             trading_data.close,
-            trading_data.open_time_ms,
         ) {
-            let x_rel = (open_time_ms - state.latest_timestamp_ms) as f32
+            let candle_ts = trading_data.open_time_ms
+                .unwrap_or(state.latest_timestamp_ms);
+            let x_rel = (candle_ts - state.latest_timestamp_ms) as f32
                 / state.time_window_ms as f32
                 * state.width;
             let body_half_width = state.width / 40.0;

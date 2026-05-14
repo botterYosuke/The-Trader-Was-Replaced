@@ -216,6 +216,20 @@ class GrpcDataEngineServer(
                 )
                 rb.finish()
 
+                # Expose the last bar's OHLC to GetState so the chart can
+                # draw a candle after the run completes.
+                from .nautilus_adapter import bar_to_kline_update
+                from .reducer import ReplayTimeUpdated
+                for bars in bars_by_instrument.values():
+                    if bars:
+                        last = bars[-1]
+                        kline = bar_to_kline_update(last)
+                        self.engine.apply_replay_event(
+                            ReplayTimeUpdated(timestamp_ms=kline.timestamp_ms)
+                        )
+                        self.engine.apply_replay_event(kline)
+                        break
+
                 summary = compute_summary(rb.run_dir)
                 write_summary_json(rb.run_dir, summary)
 

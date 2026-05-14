@@ -272,7 +272,7 @@ class DataEngine:
                 ts, o, h, l, c = tick
                 ts_ms = int(ts * 1000)
                 self._apply_event_locked(ReplayTimeUpdated(timestamp_ms=ts_ms))
-                self._apply_event_locked(KlineUpdate(timestamp_ms=ts_ms, close=c, open=o, high=h, low=l))
+                self._apply_event_locked(KlineUpdate(timestamp_ms=ts_ms, close=c, open=o, high=h, low=l, open_time_ms=ts_ms))
                 self._is_exhausted = self._replay_provider.is_exhausted()
             else:
                 self._is_exhausted = True
