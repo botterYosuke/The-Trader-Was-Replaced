@@ -11,3 +11,4 @@ artifacts/
 python/tmp/
 tmp/
 python.egg-info/
+.claude/settings.local.json
