@@ -19,6 +19,13 @@ description: |
     "Trigger::entity", "Trigger::target", "required components" など破壊的変更語彙が出たとき
   ⑤ 新しいパネル（floating window）を増やす／既存パネルを書き換える作業
   ⑥ bevy_egui::Window と Bevy world-space ウィンドウ（Sprite ベース）の選択で迷ったとき
+  ⑦ `pair-relay` / `pair-nav` で `src/ui/**` を触る作業に入るとき（Orchestrator または
+    Navigator サブエージェントがこのスキルを読まずに進めると、Bevy 0.15 固有の罠
+    — `add_systems` タプル 20 上限、`IntoObserverSystem` の import path、
+    `CosmicEditor` 経由の `with_buffer_mut`、Text2d Anchor の左寄せ — で必ずハマる）
+  ⑧ `cosmic_edit`, `CosmicEditBuffer`, `CosmicEditor`, `TextEdit2d`, `FocusedWidget`,
+    `CosmicBackgroundColor`, `CursorColor`, `CosmicTextChanged`, `set_text`, `with_buffer_mut`
+    という語彙が出てきたとき
 
   本プロジェクトは **Bevy 0.15** をピン留めしている（`Cargo.toml` の `bevy = "0.15"`）。
   一方 `.claude/skills/bevy-engine/src/` にミラーされている upstream は **0.19.0-dev** で、
@@ -47,7 +54,8 @@ description: |
   PanCamPlugin          — bevy_pancam 0.16: 右/中クリックドラッグでパン、スクロールでズーム
   UiPlugin              — src/ui/mod.rs: パネル系すべての本体
     ├ Shape2dPlugin     — bevy_vector_shapes 0.9: チャートの線・矩形描画
-    ├ EguiPlugin        — bevy_egui 0.31: メニューバー・ストラテジエディタの即時 UI
+    ├ CosmicEditPlugin  — bevy_cosmic_edit 0.26: Strategy Editor のテキスト編集
+    │  ※ bevy_egui は 2026-05-15 Phase 7 Sub-step 1.8d で完全撤去済み
     └ CosmicEditPlugin  — bevy_cosmic_edit 0.26: ストラテジエディタのテキスト編集
   GridPlugin            — src/grid.rs: 背景グリッド
 ```

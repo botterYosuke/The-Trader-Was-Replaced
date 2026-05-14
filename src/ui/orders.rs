@@ -52,7 +52,7 @@ pub struct OrdersStatus;
 
 // ── Spawn ────────────────────────────────────────────────────
 pub fn spawn_orders_panel(commands: &mut Commands) {
-    let (root, content_area) = spawn_floating_window(
+    let (root, content_area, _title_bar) = spawn_floating_window(
         commands,
         FloatingWindowSpec {
             title: "ORDERS".to_string(),

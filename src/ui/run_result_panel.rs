@@ -29,7 +29,7 @@ pub enum RunResultLabel {
 
 // ── Spawn ────────────────────────────────────────────────────
 pub fn spawn_run_result_panel(commands: &mut Commands) {
-    let (root, content_area) = spawn_floating_window(
+    let (root, content_area, _title_bar) = spawn_floating_window(
         commands,
         FloatingWindowSpec {
             title: "RUN RESULT".to_string(),

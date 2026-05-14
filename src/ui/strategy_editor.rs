@@ -1,96 +1,12 @@
-use crate::ui::components::{PanelKind, StrategyBuffer, StrategyRunRequested};
+use crate::ui::components::{OpenStrategyRequested, PanelKind, StrategyBuffer, StrategyRunRequested};
 use crate::ui::floating_window::{FloatingWindowSpec, spawn_floating_window};
+use bevy::ecs::system::IntoObserverSystem;
 use bevy::prelude::*;
-use bevy_cosmic_edit::CursorColor;
-use bevy_cosmic_edit::cosmic_text::{Attrs, AttrsOwned, Metrics};
-use bevy_cosmic_edit::prelude::*;
-use bevy_egui::{EguiContexts, egui};
+use bevy_cosmic_edit::{CosmicBackgroundColor, CosmicFontSystem, CursorColor};
+use bevy_cosmic_edit::cosmic_text::{Attrs, AttrsOwned, Edit, Metrics, Shaping};
+use bevy_cosmic_edit::{prelude::*, CosmicTextChanged};
 
-pub fn strategy_editor_window_system(
-    mut contexts: EguiContexts,
-    mut buffer: ResMut<StrategyBuffer>,
-    mut run_events: EventWriter<StrategyRunRequested>,
-) {
-    if buffer.original_path.is_none() {
-        return;
-    }
-
-    let filename = buffer
-        .original_path
-        .as_ref()
-        .and_then(|p| p.file_name())
-        .and_then(|s| s.to_str())
-        .unwrap_or("<unnamed>");
-
-    egui::Window::new(format!("Strategy: {}", filename))
-        .default_width(800.0)
-        .default_height(600.0)
-        .show(contexts.ctx_mut(), |ui| {
-            let can_save = buffer.cache_path.is_some() && buffer.dirty;
-            let can_run = buffer.cache_path.is_some() && !buffer.dirty;
-            let cache_path_clone = buffer.cache_path.clone();
-
-            let mut save_clicked = false;
-            let mut run_clicked = false;
-            ui.horizontal(|ui| {
-                save_clicked = ui
-                    .add_enabled(can_save, egui::Button::new("Save Cache"))
-                    .clicked();
-                run_clicked = ui.add_enabled(can_run, egui::Button::new("Run")).clicked();
-
-                if let Some(path) = &cache_path_clone {
-                    ui.label(format!(
-                        "cache: {}",
-                        path.file_name()
-                            .and_then(|s| s.to_str())
-                            .unwrap_or("<cache>")
-                    ));
-                } else {
-                    ui.label("cache: none");
-                }
-            });
-
-            if save_clicked {
-                if let Some(path) = cache_path_clone.clone() {
-                    match std::fs::write(&path, &buffer.source) {
-                        Ok(()) => {
-                            buffer.dirty = false;
-                            info!("strategy cache saved: {:?}", path);
-                        }
-                        Err(err) => {
-                            error!("failed to save strategy cache {:?}: {}", path, err);
-                        }
-                    }
-                }
-            }
-
-            if run_clicked {
-                if let Some(path) = cache_path_clone {
-                    run_events.send(StrategyRunRequested { cache_path: path });
-                }
-            }
-
-            ui.separator();
-
-            // Clone to avoid triggering Bevy change detection via DerefMut every frame.
-            // Only write back (and mark changed) when egui reports actual content change.
-            let mut source = buffer.source.clone();
-            let response = ui.add(
-                egui::TextEdit::multiline(&mut source)
-                    .desired_width(f32::INFINITY)
-                    .desired_rows(30),
-            );
-
-            if response.changed() {
-                buffer.source = source;
-                buffer.dirty = true;
-            }
-        });
-}
-
-// ── Bevy native 版 Strategy Editor（Sub-step 1.8b 以降） ─────────────
-// 旧 egui 版 (strategy_editor_window_system) は 1.8d で削除予定。
-// それまで両方並行稼働。
+// ── Bevy native 版 Strategy Editor ─────────────
 
 const PANEL_SIZE: Vec2 = Vec2::new(500.0, 400.0);
 const PANEL_POSITION: Vec2 = Vec2::new(-300.0, 50.0);
@@ -98,14 +14,79 @@ const EDITOR_SIZE: Vec2 = Vec2::new(440.0, 320.0);
 const ACCENT: Color = Color::srgba(0.63, 0.44, 1.0, 0.4); // SVG #a070ff (purple)
 const EDITOR_BG: Color = Color::srgba(0.02, 0.02, 0.04, 1.0);
 
+const TITLE_BAR_BUTTON_SIZE: Vec2 = Vec2::new(80.0, 24.0);
+const TITLE_BAR_BUTTON_GAP: f32 = 8.0;
+const TITLE_BAR_BUTTON_Z: f32 = 0.2;
+const BUTTON_ENABLED_ALPHA: f32 = 1.0;
+const BUTTON_DISABLED_ALPHA: f32 = 0.3;
+const SAVE_BUTTON_COLOR: Color = Color::srgba(0.25, 0.55, 0.35, 1.0); // 緑系: 保存
+const RUN_BUTTON_COLOR: Color = Color::srgba(0.55, 0.35, 0.75, 1.0); // 紫系: ACCENT 寄り
+
+/// Save Cache ボタン sprite に付けるマーカー。
+/// 毎フレーム `StrategyBuffer.dirty` を見て alpha を更新する system で query される。
+#[derive(Component)]
+pub struct StrategySaveButton;
+
+/// Run ボタン sprite に付けるマーカー。
+#[derive(Component)]
+pub struct StrategyRunButton;
+
 /// エディタ本体（TextEdit2d 付き sprite）を識別するマーカー。
 /// Sub-step 1.8c で `Query<&mut CosmicEditBuffer, With<StrategyEditorContent>>` で取りに行く。
 #[derive(Component)]
 pub struct StrategyEditorContent;
 
+/// タイトルバー上に水平に並べるラベル付きボタン。
+/// Strategy Editor の Save Cache / Run は同じ見た目ロジックなので 1 箇所に集約する。
+///
+/// - `marker`: `StrategySaveButton` か `StrategyRunButton`。後段の system が
+///   `Query<&mut Sprite, With<Marker>>` で alpha を更新する目印。
+/// - `on_click`: `Trigger<Pointer<Click>>` を取る observer クロージャ。
+///   有効/無効判定はクロージャ内で行う（observer subscribe をいじるより単純）。
+fn spawn_title_bar_button<Marker, F, B, ObsMarker>(
+    commands: &mut Commands,
+    title_bar: Entity,
+    local_pos: Vec2,
+    base_color: Color,
+    label: &str,
+    marker: Marker,
+    on_click: F,
+) where
+    Marker: Component,
+    F: IntoObserverSystem<Pointer<Click>, B, ObsMarker>,
+    B: Bundle,
+{
+    let button = commands
+        .spawn((
+            Sprite {
+                color: base_color,
+                custom_size: Some(TITLE_BAR_BUTTON_SIZE),
+                ..default()
+            },
+            Transform::from_xyz(local_pos.x, local_pos.y, TITLE_BAR_BUTTON_Z),
+            marker,
+        ))
+        .observe(on_click)
+        .id();
+
+    let text = commands
+        .spawn((
+            Text2d::new(label.to_string()),
+            TextFont {
+                font_size: 14.0,
+                ..default()
+            },
+            TextColor(Color::WHITE),
+            Transform::from_xyz(0.0, 0.0, 0.01),
+        ))
+        .id();
+    commands.entity(button).add_child(text);
+    commands.entity(title_bar).add_child(button);
+}
+
 /// dispatcher から呼ばれる spawn 関数。
 pub fn spawn_strategy_editor_panel(commands: &mut Commands, font_system: &mut CosmicFontSystem) {
-    let (root, content_area) = spawn_floating_window(
+    let (root, content_area, title_bar) = spawn_floating_window(
         commands,
         FloatingWindowSpec {
             title: "STRATEGY EDITOR".to_string(),
@@ -122,7 +103,7 @@ pub fn spawn_strategy_editor_panel(commands: &mut Commands, font_system: &mut Co
             TextEdit2d,
             Sprite {
                 custom_size: Some(EDITOR_SIZE),
-                color: EDITOR_BG,
+                color: Color::WHITE,
                 ..default()
             },
             CosmicEditBuffer::new(font_system, Metrics::new(14.0, 18.0)).with_text(
@@ -134,6 +115,7 @@ pub fn spawn_strategy_editor_panel(commands: &mut Commands, font_system: &mut Co
                 Attrs::new().color(CosmicColor::rgb(220, 220, 220)),
             )),
             CursorColor(Color::WHITE),
+            CosmicBackgroundColor(EDITOR_BG),
             Transform::from_xyz(0.0, 0.0, 0.1),
             StrategyEditorContent,
         ))
@@ -141,4 +123,171 @@ pub fn spawn_strategy_editor_panel(commands: &mut Commands, font_system: &mut Co
 
     commands.entity(content_area).add_child(editor);
     commands.insert_resource(FocusedWidget(Some(editor)));
+
+    // ── Save Cache / Run ボタンをタイトルバー右端に積む ───────────────
+    let title_bar_right_inner =
+        PANEL_SIZE.x / 2.0 - TITLE_BAR_BUTTON_SIZE.x / 2.0 - TITLE_BAR_BUTTON_GAP;
+    let run_x = title_bar_right_inner;
+    let save_x = run_x - TITLE_BAR_BUTTON_SIZE.x - TITLE_BAR_BUTTON_GAP;
+
+    spawn_title_bar_button(
+        commands,
+        title_bar,
+        Vec2::new(save_x, 0.0),
+        SAVE_BUTTON_COLOR,
+        "Save Cache",
+        StrategySaveButton,
+        |_trigger: Trigger<Pointer<Click>>, mut buffer: ResMut<StrategyBuffer>| {
+            let can_save = buffer.cache_path.is_some() && buffer.dirty;
+            if !can_save {
+                return;
+            }
+            let Some(path) = buffer.cache_path.clone() else {
+                return;
+            };
+            match std::fs::write(&path, &buffer.source) {
+                Ok(()) => {
+                    buffer.dirty = false;
+                    info!("strategy cache saved: {:?}", path);
+                }
+                Err(err) => {
+                    error!("failed to save strategy cache {:?}: {}", path, err);
+                }
+            }
+        },
+    );
+
+    spawn_title_bar_button(
+        commands,
+        title_bar,
+        Vec2::new(run_x, 0.0),
+        RUN_BUTTON_COLOR,
+        "Run",
+        StrategyRunButton,
+        |_trigger: Trigger<Pointer<Click>>,
+         buffer: Res<StrategyBuffer>,
+         mut run_events: EventWriter<StrategyRunRequested>| {
+            let can_run = buffer.cache_path.is_some() && !buffer.dirty;
+            if !can_run {
+                return;
+            }
+            if let Some(path) = buffer.cache_path.clone() {
+                run_events.send(StrategyRunRequested { cache_path: path });
+            }
+        },
+    );
+}
+
+/// `OpenStrategyRequested` イベント（ファイル → buffer に丸ごとロード）の直後に、
+/// cosmic_edit エディタの内容を `buffer.source` で置き換える（片側同期: buffer → editor）。
+///
+/// 旧実装は `buffer.is_changed()` でトリガしていたが、`sync_editor_to_strategy_buffer_system`
+/// がユーザー入力ごとに `buffer.source = new_text` を書く（DerefMut で次フレーム is_changed = true）
+/// → buffer→editor 同期が走り `set_text` でカーソルが先頭にリセット、という不具合があった。
+/// イベント駆動に切り替えることで「外部から `.py` を読み込んだ瞬間」だけに発火範囲を絞る。
+///
+/// system 順序: `open_strategy_buffer_system` が同じイベントを読んで `buffer.source` を
+/// 更新するので、本 system は必ず `.after(open_strategy_buffer_system)` で走らせる。
+/// `EventReader` は system ごとに独立した読み取りカーソルを持つため、両方とも同じイベントを読める。
+pub fn sync_strategy_buffer_to_editor_system(
+    mut events: EventReader<OpenStrategyRequested>,
+    buffer: Res<StrategyBuffer>,
+    mut font_system: ResMut<CosmicFontSystem>,
+    mut editor_q: Query<
+        (&mut CosmicEditBuffer, Option<&mut CosmicEditor>),
+        With<StrategyEditorContent>,
+    >,
+) {
+    if events.is_empty() {
+        return;
+    }
+    events.clear();
+
+    if buffer.original_path.is_none() {
+        return;
+    }
+
+    for (mut edit_buffer, editor_opt) in &mut editor_q {
+        // CosmicEditBuffer 側も更新しておく：focus が外れたとき focus.rs の
+        // drop_editor_unfocused が editor.lines を CosmicEditBuffer に書き戻すが、
+        // CosmicEditor が存在しない状態で再 focus したときの初期値はこちらが使われる。
+        // また editor 不在分岐（パネル開いただけでまだクリックしてない）でもこちらが正となる。
+        edit_buffer.set_text(&mut font_system, &buffer.source, Attrs::new());
+
+        // CosmicEditor が attach されている間、render は editor 内部の Buffer を参照し
+        // CosmicEditBuffer は無視される（widget.rs:84-86）。よって editor が居れば
+        // editor 内部の Buffer に対しても set_text を呼ぶ必要がある。
+        if let Some(mut editor) = editor_opt {
+            editor.with_buffer_mut(|b| {
+                b.set_text(
+                    &mut font_system,
+                    &buffer.source,
+                    Attrs::new(),
+                    Shaping::Advanced,
+                );
+                b.set_redraw(true);
+            });
+        }
+    }
+}
+
+/// cosmic_edit エディタでユーザーが編集した内容を `StrategyBuffer.source` に書き戻し、
+/// `dirty = true` を立てる（片側同期: editor → buffer）。
+///
+/// `CosmicTextChanged` イベントは bevy_cosmic_edit の input system
+/// （キーボード入力 / paste / drop）で発火する。`CosmicEditBuffer::set_text`
+/// からは発火しないので、buffer → editor 同期（`sync_strategy_buffer_to_editor_system`）
+/// とのループは発生しない（exact version 0.26.0 の input.rs / buffer.rs で確認済）。
+///
+/// イベント本体は `CosmicTextChanged(pub (Entity, String))` というタプル struct。
+/// 第 1 要素が編集されたエディタ entity、第 2 要素が新しい全文。
+/// Strategy Editor 以外のエディタ entity からのイベントは無視する。
+pub fn sync_editor_to_strategy_buffer_system(
+    mut events: EventReader<CosmicTextChanged>,
+    editor_q: Query<Entity, With<StrategyEditorContent>>,
+    mut buffer: ResMut<StrategyBuffer>,
+) {
+    for CosmicTextChanged((entity, new_text)) in events.read() {
+        if !editor_q.contains(*entity) {
+            continue;
+        }
+        if buffer.source == *new_text {
+            continue;
+        }
+        buffer.source = new_text.clone();
+        buffer.dirty = true;
+    }
+}
+
+/// Save Cache / Run ボタンの有効/無効を視覚的に反映する system。
+///
+/// 毎フレーム `StrategyBuffer` を read して、ボタン sprite の alpha を
+/// `BUTTON_ENABLED_ALPHA` / `BUTTON_DISABLED_ALPHA` に切り替える。
+///
+/// クリック自体は observer 側で `can_save` / `can_run` を再判定して
+/// 早期 return するので、ここでは見た目だけ揃える役割。
+pub fn update_strategy_button_visuals_system(
+    buffer: Res<StrategyBuffer>,
+    mut save_q: Query<
+        &mut Sprite,
+        (With<StrategySaveButton>, Without<StrategyRunButton>),
+    >,
+    mut run_q: Query<
+        &mut Sprite,
+        (With<StrategyRunButton>, Without<StrategySaveButton>),
+    >,
+) {
+    let can_save = buffer.cache_path.is_some() && buffer.dirty;
+    let can_run = buffer.cache_path.is_some() && !buffer.dirty;
+
+    for mut sprite in &mut save_q {
+        sprite
+            .color
+            .set_alpha(if can_save { BUTTON_ENABLED_ALPHA } else { BUTTON_DISABLED_ALPHA });
+    }
+    for mut sprite in &mut run_q {
+        sprite
+            .color
+            .set_alpha(if can_run { BUTTON_ENABLED_ALPHA } else { BUTTON_DISABLED_ALPHA });
+    }
 }

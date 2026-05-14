@@ -49,7 +49,7 @@ pub struct PositionsStatus;
 
 // ── Spawn ────────────────────────────────────────────────────
 pub fn spawn_positions_panel(commands: &mut Commands) {
-    let (root, content_area) = spawn_floating_window(
+    let (root, content_area, _title_bar) = spawn_floating_window(
         commands,
         FloatingWindowSpec {
             title: "POSITIONS".to_string(),

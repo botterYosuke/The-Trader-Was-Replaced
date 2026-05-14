@@ -26,7 +26,7 @@ pub enum BuyingPowerLabel {
 
 /// dispatcher から呼ばれる spawn 関数。
 pub fn spawn_buying_power_panel(commands: &mut Commands) {
-    let (root, content_area) = spawn_floating_window(
+    let (root, content_area, _title_bar) = spawn_floating_window(
         commands,
         FloatingWindowSpec {
             title: "BUYING POWER".to_string(),

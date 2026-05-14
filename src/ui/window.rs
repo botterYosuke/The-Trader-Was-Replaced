@@ -10,7 +10,7 @@ const ACCENT: Color = Color::srgba(0.0, 0.8, 1.0, 0.4);
 
 pub fn spawn_chart_panel(commands: &mut Commands) {
     // 枠は共通ヘルパーに任せる
-    let (root, content_area) = spawn_floating_window(
+    let (root, content_area, _title_bar) = spawn_floating_window(
         commands,
         FloatingWindowSpec {
             title: "CHART".to_string(),

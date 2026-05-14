@@ -35,11 +35,13 @@ use crate::ui::positions::positions_panel_system;
 use crate::ui::run_result_panel::run_result_panel_system;
 use crate::ui::scenario_parser::parse_scenario_system;
 use crate::ui::sidebar::{panel_button_system, spawn_sidebar, update_sidebar_system};
-use crate::ui::strategy_editor::strategy_editor_window_system;
+use crate::ui::strategy_editor::{
+    sync_editor_to_strategy_buffer_system, sync_strategy_buffer_to_editor_system,
+    update_strategy_button_visuals_system,
+};
 use crate::ui::systems::{button_system, update_price_display, update_status_indicator};
 use bevy::prelude::*;
 use bevy_cosmic_edit::{CosmicEditPlugin, CosmicFontConfig, prelude::change_active_editor_sprite};
-use bevy_egui::EguiPlugin;
 use bevy_vector_shapes::Shape2dPlugin;
 
 pub struct UiPlugin;
@@ -48,7 +50,6 @@ impl Plugin for UiPlugin {
     fn build(&self, app: &mut App) {
         app.add_plugins((
             Shape2dPlugin::default(),
-            EguiPlugin,
             CosmicEditPlugin {
                 font_config: CosmicFontConfig::default(),
             },
@@ -75,7 +76,6 @@ impl Plugin for UiPlugin {
                 log_open_strategy_requested_system,
                 open_strategy_buffer_system,
                 update_strategy_status_label_system,
-                strategy_editor_window_system,
                 run_result_panel_system,
                 log_strategy_run_requested_system,
                 handle_strategy_run_system,
@@ -91,6 +91,9 @@ impl Plugin for UiPlugin {
                 buying_power_panel_system,
                 positions_panel_system,
                 orders_panel_system,
+                sync_strategy_buffer_to_editor_system.after(open_strategy_buffer_system),
+                sync_editor_to_strategy_buffer_system,
+                update_strategy_button_visuals_system,
             ),
         )
         .add_systems(Update, change_active_editor_sprite);

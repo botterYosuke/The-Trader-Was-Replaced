@@ -21,14 +21,16 @@ pub struct FloatingWindowSpec {
     pub accent: Color,
 }
 
-/// 戻り値: (root_entity, content_area_entity)
+/// 戻り値: (root_entity, content_area_entity, title_bar_entity)
 /// - root_entity: ウィンドウ全体の親。位置を動かしたいときはこれを動かす
 /// - content_area_entity: タイトルバーの下の領域。中身（チャート・テキストなど）はここの子にする
+/// - title_bar_entity: タイトルバー sprite。タイトル右端にボタンを足したい panel 用に公開する
 pub fn spawn_floating_window(
     commands: &mut Commands,
     spec: FloatingWindowSpec,
-) -> (Entity, Entity) {
+) -> (Entity, Entity, Entity) {
     const TITLE_BAR_HEIGHT: f32 = 40.0;
+    const TITLE_PADDING_LEFT: f32 = 16.0;
     let title_bar_half = TITLE_BAR_HEIGHT / 2.0;
 
     // ─── 1. Window root (背景) ───
@@ -109,6 +111,7 @@ pub fn spawn_floating_window(
     commands.entity(root).add_child(title_bar);
 
     // ─── 5. Title text (タイトルバーに乗る文字) ───
+    let title_text_x = -spec.size.x / 2.0 + TITLE_PADDING_LEFT;
     let title_text = commands
         .spawn((
             Text2d::new(spec.title.clone()),
@@ -117,7 +120,8 @@ pub fn spawn_floating_window(
                 ..default()
             },
             TextColor(Color::WHITE),
-            Transform::from_xyz(0.0, 0.0, 0.1),
+            bevy::sprite::Anchor::CenterLeft,
+            Transform::from_xyz(title_text_x, 0.0, 0.1),
         ))
         .id();
     commands.entity(title_bar).add_child(title_text);
@@ -128,7 +132,7 @@ pub fn spawn_floating_window(
         .id();
     commands.entity(root).add_child(content_area);
 
-    (root, content_area)
+    (root, content_area, title_bar)
 }
 
 /// パネル spawn イベントを捌く dispatcher。
