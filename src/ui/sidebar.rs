@@ -54,7 +54,7 @@ pub fn spawn_sidebar(mut commands: Commands) {
             spawn_section_header(parent, "Settings");
 
             parent.spawn((
-                Text::new("Theme: Dark\nBackend: localhost:19876"),
+                Text::new("Theme: Dark\nBackend: localhost:19876\nSave Layout: —"),
                 TextFont { font_size: 10.0, ..default() },
                 TextColor(Color::srgb(0.45, 0.45, 0.55)),
                 Node {

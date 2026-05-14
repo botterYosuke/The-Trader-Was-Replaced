@@ -924,7 +924,7 @@ MVP コアの「Open Strategy → Run → Pause / Resume / StepForward / ForceSt
 
 | 項目 | 状態 | 推奨 |
 |---|---|---|
-| Sidebar: 銘柄一覧 (`ListInstruments` RPC) | E2E 実装済み（1301.TSE 表示確認済み） | Phase 7 継続 |
+| Sidebar: 銘柄一覧 (`ListInstruments` RPC) | Bevy screen-space 左固定 UI に置換済み（loading/error/empty/list + Settings stub）| Phase 7 継続 |
 | KlineChartWindow: ローソク足対応 (`chart.rs` 拡張) | 複数 candle 実装済み（ohlc_points 履歴から最大 50 本描画） | 完了 |
 | Footer: SpeedSelector UI (SetReplaySpeed は proto 済み) | E2E 実装済み（1x/2x/5x/10x/50x、選択ハイライト確認済み） | Phase 7 継続 |
 | Footer: ProgressBar + パーセント | 未実装 | Phase 8 でも可 |
@@ -1027,3 +1027,17 @@ MVP コアの「Open Strategy → Run → Pause / Resume / StepForward / ForceSt
   - `pytest tests/test_grpc_list_instruments.py tests/test_main_args.py`: 9/9.
   - `pytest tests/strategy_runtime/test_strategy_loader.py ...test_fake_strategy_e2e.py`: 68/68.
 - Next task: Phase 7 closeout decision.
+
+---
+
+### 2026-05-14 Sidebar → Bevy screen-space left-fixed UI
+
+- Replaced egui `Window::new("Instruments")` with a proper Bevy UI `Node` sidebar.
+- `spawn_sidebar` (Startup): `PositionType::Absolute`, `left:0 / top:24px / bottom:28px / width:180px`; dark panel with right border.
+- `update_sidebar_system` reads `InstrumentList` on change and updates `SidebarListLabel` text/color for 4 states: Loading (yellow) → Error (red) → Empty (grey) → instrument list (light blue, newline-joined).
+- Settings stub at bottom (flex-grow spacer pushes it down): Theme / Backend / Save Layout placeholder.
+- `SidebarRoot` / `SidebarListLabel` components added to `src/ui/components.rs`.
+- `bevy_egui` import removed from `sidebar.rs`; Strategy Editor / Run Result Panel egui usage unaffected.
+- Verification: `cargo check`: OK; `scenario_parser --lib`: 4/4; `chart --lib`: 8/8.
+- Pending manual E2E: left-fixed sidebar visible; `1301.TSE` shown on startup; egui Instruments window absent; Footer / Run Result / Kline unbroken.
+- Next task: manual E2E confirm → Footer ProgressBar or Phase 7 closeout decision.

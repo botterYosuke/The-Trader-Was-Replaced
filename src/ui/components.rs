@@ -80,6 +80,13 @@ pub struct StrategyRunRequested {
     pub cache_path: std::path::PathBuf,
 }
 
+#[derive(Component)]
+pub struct SidebarRoot;
+
+/// Single text node that shows loading / error / empty / instrument list.
+#[derive(Component)]
+pub struct SidebarListLabel;
+
 #[derive(Resource, Default, Debug, Clone)]
 pub struct ScenarioMetadata {
     pub schema_version: Option<u32>,
