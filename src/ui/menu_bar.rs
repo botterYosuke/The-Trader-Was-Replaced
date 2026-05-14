@@ -1,5 +1,6 @@
 use bevy::prelude::*;
 use rfd::FileDialog;
+use sha2::{Digest, Sha256};
 use crate::ui::components::{MenuBarRoot, MenuButton, OpenStrategyRequested, StrategyBuffer};
 
 const BTN_NORMAL: Color = Color::srgba(0.10, 0.10, 0.16, 1.0);
@@ -98,6 +99,24 @@ pub fn log_open_strategy_requested_system(
     }
 }
 
+fn strategy_cache_path(original: &std::path::Path) -> Option<std::path::PathBuf> {
+    let abs = original.canonicalize().ok()?;
+    let hash_bytes = {
+        let mut h = Sha256::new();
+        h.update(abs.to_string_lossy().as_bytes());
+        h.finalize()
+    };
+    let hash: String = hash_bytes.iter().map(|b| format!("{:02x}", b)).collect();
+    let prefix = &hash[..16];
+    let filename = original.file_name()?.to_string_lossy();
+    let cache_name = format!("{}__{}", prefix, filename);
+
+    let dir = dirs::cache_dir()?
+        .join("the-trader-was-replaced")
+        .join("strategy_buffers");
+    Some(dir.join(cache_name))
+}
+
 pub fn open_strategy_buffer_system(
     mut events: EventReader<OpenStrategyRequested>,
     mut buffer: ResMut<StrategyBuffer>,
@@ -106,10 +125,33 @@ pub fn open_strategy_buffer_system(
         match std::fs::read_to_string(&event.path) {
             Ok(source) => {
                 buffer.original_path = Some(event.path.clone());
-                buffer.cache_path = None;
-                buffer.source = source;
+                buffer.source = source.clone();
                 buffer.dirty = false;
-                info!("strategy buffer loaded: {:?}, bytes={}", event.path, buffer.source.len());
+
+                match strategy_cache_path(&event.path) {
+                    Some(cache_path) => {
+                        let cache_dir = cache_path.parent().unwrap();
+                        if let Err(err) = std::fs::create_dir_all(cache_dir) {
+                            error!("failed to create cache dir {:?}: {}", cache_dir, err);
+                            buffer.cache_path = None;
+                        } else if let Err(err) = std::fs::write(&cache_path, &source) {
+                            error!("failed to write cache file {:?}: {}", cache_path, err);
+                            buffer.cache_path = None;
+                        } else {
+                            info!(
+                                "strategy buffer loaded: original={:?}, cache={:?}, bytes={}",
+                                event.path,
+                                cache_path,
+                                buffer.source.len()
+                            );
+                            buffer.cache_path = Some(cache_path);
+                        }
+                    }
+                    None => {
+                        error!("failed to compute cache path for {:?}", event.path);
+                        buffer.cache_path = None;
+                    }
+                }
             }
             Err(err) => {
                 error!("failed to read strategy file {:?}: {}", event.path, err);
