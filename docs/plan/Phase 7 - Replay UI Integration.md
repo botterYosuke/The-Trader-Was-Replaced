@@ -664,7 +664,21 @@ StartEngine ok, state=RUNNING
   - `Last run: 1778733073-...  fills: 2  equity_pts: 57  total_pnl: -410010`
   - Backend log confirmed: `run complete summary={total_pnl: -410010.0, equity_points: 57, fills_count: 2}`
 - **Known nit**: `status: unknown` — summary JSON has no `status` key (fields are `total_pnl`, `equity_points`, `fills_count`, `max_drawdown`, `trade_count`, `win_rate`, `fee_total`). Parse default falls through to "unknown". Fix options: remove `status` display, change default label, or add `status` to Python summary.
-- **Failure path**: not yet manually verified (RunFailed logic is wired but not UI-tested)
+- **Failure path**: verified — `BACKEND_CATALOG_PATH=artifacts/NO_SUCH_CATALOG` で Run → UI に `Failed: LoadReplayData: INVALID_STATE Catalog path does not exist: ...` (赤) が表示された
 - **Next task**: Fix `status: unknown` (remove or correct), or proceed to Transport / Sidebar
+
+### 2026-05-14 Run failed state E2E
+
+- Verified Strategy Editor shows `Failed: ...` (red) on `LoadReplayData` rejection
+  - Trigger: `BACKEND_CATALOG_PATH` を存在しないパスに設定して Run
+  - UI result: `Failed: LoadReplayData: INVALID_STATE Catalog path does not exist: ...`
+- `status: unknown` 表示は Strategy Editor から除去済み（`state_label` が実行状態を担う）
+- Confirmed final Run result UI shape:
+  ```
+  Running… (amber) → Completed (green) / Failed: ... (red)
+  Last run: <run_id>
+  fills: 2   equity_pts: 57   total_pnl: -410010
+  ```
+- **Next task**: Transport / Sidebar 実装、または `RunState` enum 化（`state_label` 文字列判定を型安全にする）
 
 ---
