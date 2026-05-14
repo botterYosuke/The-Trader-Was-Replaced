@@ -29,7 +29,7 @@ use crate::ui::window::setup_ui;
 use crate::ui::components::{OpenStrategyRequested, ScenarioMetadata, StrategyBuffer, StrategyRunRequested, WindowManager};
 use crate::ui::chart::chart_render_system;
 use crate::ui::scenario_parser::parse_scenario_system;
-use crate::ui::sidebar::sidebar_system;
+use crate::ui::sidebar::{spawn_sidebar, update_sidebar_system};
 use bevy_vector_shapes::Shape2dPlugin;
 
 pub struct UiPlugin;
@@ -42,7 +42,7 @@ impl Plugin for UiPlugin {
             .add_event::<OpenStrategyRequested>()
             .add_event::<StrategyRunRequested>()
             .init_resource::<ScenarioMetadata>()
-            .add_systems(Startup, (setup_ui, spawn_footer, spawn_menu_bar))
+            .add_systems(Startup, (setup_ui, spawn_footer, spawn_menu_bar, spawn_sidebar))
             .add_systems(Update, (
                 update_price_display,
                 button_system,
@@ -61,7 +61,7 @@ impl Plugin for UiPlugin {
                 log_strategy_run_requested_system,
                 handle_strategy_run_system,
                 parse_scenario_system,
-                sidebar_system,
+                update_sidebar_system,
             ));
     }
 }
