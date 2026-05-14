@@ -827,4 +827,16 @@ StartEngine ok, state=RUNNING
 - **手動 E2E 手順**: Run → RUNNING → ■ → ForceStop ok, state=IDLE → 次の Run が INVALID_STATE なしで通ることを確認
 - **Next tasks**: Jump-to-start / Step-back 接続、gRPC タイムアウト調整
 
+### 2026-05-14 GetState timeout 調整
+
+- **Commit**: `b29e80a Raise GetState timeout 2s→5s, downgrade timeout log to warn`
+- **問題**: `LoadReplayData` / `engine_runner.run` 中に Python backend が busy で GetState に応答できず、2s timeout → `error!` ログ + 不要な reconnect が発生していた
+- **変更** (`src/main.rs`):
+  - timeout: `from_secs(2)` → `from_secs(5)`
+  - timeout arm: `error!` + reconnect → `warn!` のみ（reconnect 除去）
+  - コメント追加: "Backend busy ≠ connection lost"
+- **理由**: 5s はカバレッジ上十分（LoadReplayData の実測は ~1s 以内）。reconnect は接続断時の `Ok(Err(e))` arm が担うので timeout arm では不要
+- `cargo check` OK / `cargo test` 16/16
+- **Next tasks**: StepBack 実装（backend replay 経路確定後）、Sidebar 銘柄一覧、Kline Chart 改善
+
 ---
