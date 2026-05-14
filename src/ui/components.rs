@@ -43,3 +43,11 @@ pub enum TransportButton {
     StepForward,
     Run,
 }
+
+#[derive(Component)]
+pub struct MenuBarRoot;
+
+#[derive(Component, Clone, Copy, Debug)]
+pub enum MenuButton {
+    OpenStrategy,
+}
