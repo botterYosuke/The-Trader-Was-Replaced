@@ -1009,3 +1009,21 @@ MVP コアの「Open Strategy → Run → Pause / Resume / StepForward / ForceSt
 - Next task: Footer ProgressBar / Phase 8 scoping.
 
 ---
+
+### 2026-05-14 test_grpc_control alignment
+
+- Updated legacy gRPC control tests to match current StartEngine contract (`config.strategy_file` required, synchronous execution, returns IDLE on completion).
+- Created `tests/data/test_strategy_7203_daily.py` and `test_strategy_7203_minute.py` — minimal passthrough strategies for 7203.TSE / Daily|Minute used by the updated tests.
+- Key changes per test:
+  - `test_grpc_replay_control_flow`: rewritten as StartEngine happy-path (Load → StartEngine with strategy → IDLE + run_id).
+  - `test_grpc_start_engine_rejects_before_load`: error_code updated to `MISSING_STRATEGY_FILE` (strategy_file is checked before state guard).
+  - `test_grpc_force_stop_replay_returns_to_idle`: now tests ForceStop from LOADED state (no StartEngine needed).
+  - Price/timestamp sync tests (4 tests): verify history/history_points populated after StartEngine completes.
+  - `test_grpc_stop_engine_aliases_stop_replay`: verifies StopEngine delegates to stop_replay() (INVALID_STATE from IDLE after completed StartEngine).
+- Preserved: backend implementation unchanged; StartEngine `config.strategy_file` requirement intact.
+- Verification:
+  - `cargo check`: OK; `scenario_parser --lib`: 4/4; `chart --lib`: 8/8.
+  - `pytest tests/test_grpc_control.py`: 20/20 (was 8 failed).
+  - `pytest tests/test_grpc_list_instruments.py tests/test_main_args.py`: 9/9.
+  - `pytest tests/strategy_runtime/test_strategy_loader.py ...test_fake_strategy_e2e.py`: 68/68.
+- Next task: Phase 7 closeout decision.
