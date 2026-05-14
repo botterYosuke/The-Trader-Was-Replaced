@@ -587,6 +587,18 @@ ls "$env:APPDATA\flowsurface\run-buffer\<run_id>"
 - **Tests**: `cargo check` OK; `cargo test scenario_parser` 4/4; `pytest strategy_runtime` 68/68
 - **Next task**: hand-run UI verification (`python -m engine` + `cargo run` + Open Strategy + Run), then decide whether to pass `run_id` back to Rust UI
 
+### 2026-05-14 StartEngineResponse 新設 (proto B 方式)
+
+- **Commits**: this session
+- **変更内容**:
+  - `engine.proto`: `StartEngineResponse` message 追加（`ReplayControlResponse` から独立）。`run_id: optional string`, `summary_json: optional string` を含む
+  - `StartEngine` RPC の return type を `ReplayControlResponse` → `StartEngineResponse` に変更
+  - `python/engine/proto/`: `grpc_tools.protoc` で stubs 再生成
+  - `python/engine/server_grpc.py`: `StartEngine` 内の全 return を `StartEngineResponse` に変更。成功時に `run_id` / `summary_json` を返す
+  - `src/main.rs`: `StartEngineResponse` import、`BackendStatusUpdate::RunComplete` バリアント追加、`LastRunResult` Resource 追加。`start_engine` レスポンスで `run_id` / `summary_json` を受け取り Resource に保持
+- **検証**: `cargo check` OK / `pytest strategy_runtime` 68/68 passed
+- **次タスク**: `LastRunResult` Resource を UI に表示する（StrategyEditor ヘッダ or Footer の run_id バッジなど）
+
 ### 2026-05-14 手動検証 & Rust バグ修正
 
 - **Commits**: `14338ca Fix SCENARIO parse spam and Start RPC on connect`

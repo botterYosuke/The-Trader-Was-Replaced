@@ -107,7 +107,7 @@ class GrpcDataEngineServer(
         logging.info(f"StartEngine: strategy_file={strategy_file!r}")
 
         if not strategy_file:
-            return engine_pb2.ReplayControlResponse(
+            return engine_pb2.StartEngineResponse(
                 success=False,
                 request_id=request.request_id,
                 current_state=self._current_engine_state(),
@@ -126,7 +126,7 @@ class GrpcDataEngineServer(
             )
         except FileNotFoundError as exc:
             logging.error(f"StartEngine: strategy file not found: {exc}")
-            return engine_pb2.ReplayControlResponse(
+            return engine_pb2.StartEngineResponse(
                 success=False,
                 request_id=request.request_id,
                 current_state=self._current_engine_state(),
@@ -135,7 +135,7 @@ class GrpcDataEngineServer(
             )
         except Exception as exc:
             logging.error(f"StartEngine: strategy load failed: {exc}")
-            return engine_pb2.ReplayControlResponse(
+            return engine_pb2.StartEngineResponse(
                 success=False,
                 request_id=request.request_id,
                 current_state=self._current_engine_state(),
@@ -146,7 +146,7 @@ class GrpcDataEngineServer(
         catalog_path = self.engine.last_replay_catalog_path
         if not catalog_path:
             logging.error("StartEngine: catalog_path not available (LoadReplayData not called or no catalog configured)")
-            return engine_pb2.ReplayControlResponse(
+            return engine_pb2.StartEngineResponse(
                 success=False,
                 request_id=request.request_id,
                 current_state=self._current_engine_state(),
@@ -164,7 +164,7 @@ class GrpcDataEngineServer(
             )
         except Exception as exc:
             logging.error(f"StartEngine: catalog bars load failed: {exc}")
-            return engine_pb2.ReplayControlResponse(
+            return engine_pb2.StartEngineResponse(
                 success=False,
                 request_id=request.request_id,
                 current_state=self._current_engine_state(),
@@ -214,7 +214,7 @@ class GrpcDataEngineServer(
             except Exception as exc:
                 rb.abort()
                 logging.exception("StartEngine: engine_runner failed")
-                return engine_pb2.ReplayControlResponse(
+                return engine_pb2.StartEngineResponse(
                     success=False,
                     request_id=request.request_id,
                     current_state=self._current_engine_state(),
@@ -223,7 +223,7 @@ class GrpcDataEngineServer(
                 )
         except ImportError as exc:
             logging.error("StartEngine: RunBuffer/engine_runner import failed: %s", exc)
-            return engine_pb2.ReplayControlResponse(
+            return engine_pb2.StartEngineResponse(
                 success=False,
                 request_id=request.request_id,
                 current_state=self._current_engine_state(),
@@ -231,14 +231,20 @@ class GrpcDataEngineServer(
                 error_message=str(exc),
             )
 
+        import json as _json
         success, error = self.engine.start_engine()
-        return engine_pb2.ReplayControlResponse(
+        resp = engine_pb2.StartEngineResponse(
             success=success,
             request_id=request.request_id,
             current_state=self._current_engine_state(),
-            error_code="" if success else "INVALID_STATE",
-            error_message="" if success else error,
         )
+        if success:
+            resp.run_id = run_id
+            resp.summary_json = _json.dumps(summary, ensure_ascii=False)
+        else:
+            resp.error_code = "INVALID_STATE"
+            resp.error_message = error or ""
+        return resp
 
     def StopEngine(self, request, context):
         if request.token != self.token:

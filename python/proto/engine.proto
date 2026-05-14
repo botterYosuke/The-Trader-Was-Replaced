@@ -47,7 +47,7 @@ service DataEngine {
 
   // Nautilus Replay Control
   rpc LoadReplayData(LoadReplayDataRequest) returns (ReplayControlResponse);
-  rpc StartEngine(StartEngineRequest) returns (ReplayControlResponse);
+  rpc StartEngine(StartEngineRequest) returns (StartEngineResponse);
   rpc StopEngine(StopEngineRequest) returns (ReplayControlResponse);
   rpc SetReplaySpeed(SetReplaySpeedRequest) returns (ReplayControlResponse);
   rpc PauseReplay(PauseReplayRequest) returns (ReplayControlResponse);
@@ -87,6 +87,16 @@ message ReplayControlResponse {
   EngineState current_state = 3;
   string error_code = 4;
   string error_message = 5;
+}
+
+message StartEngineResponse {
+  bool success = 1;
+  string request_id = 2;
+  EngineState current_state = 3;
+  optional string error_code = 4;
+  optional string error_message = 5;
+  optional string run_id = 6;
+  optional string summary_json = 7;
 }
 
 message LoadReplayDataRequest {

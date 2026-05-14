@@ -3,7 +3,7 @@
 import grpc
 import warnings
 
-from . import engine_pb2 as engine__pb2
+import engine_pb2 as engine__pb2
 
 GRPC_GENERATED_VERSION = '1.80.0'
 GRPC_VERSION = grpc.__version__
@@ -129,7 +129,7 @@ class DataEngineStub(object):
         self.StartEngine = channel.unary_unary(
                 '/engine.DataEngine/StartEngine',
                 request_serializer=engine__pb2.StartEngineRequest.SerializeToString,
-                response_deserializer=engine__pb2.ReplayControlResponse.FromString,
+                response_deserializer=engine__pb2.StartEngineResponse.FromString,
                 _registered_method=True)
         self.StopEngine = channel.unary_unary(
                 '/engine.DataEngine/StopEngine',
@@ -271,7 +271,7 @@ def add_DataEngineServicer_to_server(servicer, server):
             'StartEngine': grpc.unary_unary_rpc_method_handler(
                     servicer.StartEngine,
                     request_deserializer=engine__pb2.StartEngineRequest.FromString,
-                    response_serializer=engine__pb2.ReplayControlResponse.SerializeToString,
+                    response_serializer=engine__pb2.StartEngineResponse.SerializeToString,
             ),
             'StopEngine': grpc.unary_unary_rpc_method_handler(
                     servicer.StopEngine,
@@ -443,7 +443,7 @@ class DataEngine(object):
             target,
             '/engine.DataEngine/StartEngine',
             engine__pb2.StartEngineRequest.SerializeToString,
-            engine__pb2.ReplayControlResponse.FromString,
+            engine__pb2.StartEngineResponse.FromString,
             options,
             channel_credentials,
             insecure,

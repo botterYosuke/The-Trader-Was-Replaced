@@ -12,6 +12,7 @@ use engine::data_engine_client::DataEngineClient;
 use engine::{
     EngineStartConfig, EngineKind, GetStateRequest, LoadReplayDataRequest, PauseReplayRequest,
     ReplayGranularity, ResumeReplayRequest, StartEngineRequest, StepReplayRequest,
+    StartEngineResponse,
 };
 
 // Bevy's compute task pool threads don't inherit the Tokio runtime context,
@@ -36,6 +37,7 @@ async fn main() {
         .insert_resource(TradingData::default())
         .insert_resource(TradingSettings::default())
         .insert_resource(BackendStatus::default())
+        .insert_resource(LastRunResult::default())
         .insert_resource(tokio_handle)
         .add_systems(Startup, (setup_camera, setup_backend_connection))
         .add_systems(Update, (
@@ -55,11 +57,19 @@ enum BackendStatusUpdate {
     Connected(bool),
     Running(bool),
     Error(String),
+    RunComplete { run_id: String, summary_json: String },
+}
+
+#[derive(Resource, Default, Debug, Clone)]
+pub struct LastRunResult {
+    pub run_id: Option<String>,
+    pub summary_json: Option<String>,
 }
 
 fn status_update_system(
     mut status: ResMut<BackendStatus>,
     mut channel: ResMut<StatusUpdateChannel>,
+    mut last_run: ResMut<LastRunResult>,
 ) {
     while let Ok(update) = channel.rx.try_recv() {
         match update {
@@ -68,6 +78,11 @@ fn status_update_system(
             BackendStatusUpdate::Error(e) => {
                 status.last_error = Some(e);
                 status.connected = false;
+            }
+            BackendStatusUpdate::RunComplete { run_id, summary_json } => {
+                info!("RunComplete: run_id={} summary={}", run_id, summary_json);
+                last_run.run_id = Some(run_id);
+                last_run.summary_json = Some(summary_json);
             }
         }
     }
@@ -225,13 +240,20 @@ fn setup_backend_connection(
                         });
                         match client.start_engine(start_req).await {
                             Ok(r) => {
-                                let inner = r.into_inner();
+                                let inner: StartEngineResponse = r.into_inner();
                                 if inner.success {
                                     info!("StartEngine ok, state={:?}", inner.current_state);
+                                    if let (Some(rid), Some(sj)) = (inner.run_id.as_deref(), inner.summary_json.as_deref()) {
+                                        let _ = status_tx.send(BackendStatusUpdate::RunComplete {
+                                            run_id: rid.to_owned(),
+                                            summary_json: sj.to_owned(),
+                                        });
+                                    }
                                 } else {
                                     error!(
                                         "StartEngine rejected: code={}, msg={}",
-                                        inner.error_code, inner.error_message
+                                        inner.error_code.as_deref().unwrap_or(""),
+                                        inner.error_message.as_deref().unwrap_or(""),
                                     );
                                 }
                             }
