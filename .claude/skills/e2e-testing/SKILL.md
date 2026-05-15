@@ -203,7 +203,9 @@ cargo test --test backend_integration
 |---|---|---|
 | `grpc: DISABLED` のまま | `BACKEND_ENABLED` が GUI プロセスに渡っていない | `ProcessStartInfo.EnvironmentVariables` で明示渡し（§2.3） |
 | 起動直後から `state: RUNNING` | backend 側 `auto_start=True` | `python/engine/__main__.py` を `auto_start=False` |
-| Run ボタン無反応 | `grpc: DISABLED` / dirty buffer | backend 起動状態確認 + cache 保存 |
+| Run ボタン無反応 | `grpc: DISABLED` / dirty buffer（`cached *` 表示） | backend 起動状態確認 + Save Cache を押してから Run |
+| Run ボタン連打で backend が INVALID_STATE | 複数 tokio タスクが並列起動し `LoadReplayData is only allowed from IDLE` エラー | **修正済み**（`RunState::Running` 中は Run ボタン disabled に）。ログで `INVALID_STATE` が出たら GUI 側の guard が機能していない可能性 |
+| Run Result パネルに何も出ない（run は実際には成功している） | サイドバーで「Run Result」を選択していない / `run_id` または `summary_json` が None で `RunComplete` が送信されない | ① Run Result パネルを選択して確認 ② `backcast_err.txt` で `RunComplete:` ログを検索 |
 | candle が出ない | `KlineUpdate` に `open_time_ms` が無い | `python/engine/core.py` を確認 |
 | port 19876 が掴めない | 前回の backend がゾンビ | §2.1 で kill |
 | `python -m engine.server_grpc` でエラー | `__main__` 不在 | `python -m engine` を使う |
