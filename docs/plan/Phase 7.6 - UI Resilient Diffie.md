@@ -301,57 +301,41 @@ Phase 7.6 のスコープ外として放置。
    4. ✅ Scenario D: `.py` 未オープンで Ctrl+S → ダイアログ fallback → 保存/キャンセル両方正常 — **PASSED**
    5. ✅ JSON にないパネルが Load 後に despawn される — **PASSED**
 4. ✅ 未 spawn の PanelKind を含む JSON を Load → **re-spawn（2026-05-15 実装・E2E PASS）**
-5. **未確認項目**:
+5. ✅ **Load 時に Strategy Editor の .py 内容が復元される（2026-05-15 E2E PASS）**
+   - `strategy_path` フィールドを含む JSON を Ctrl+O でロード → Strategy Editor に内容が復元されることを確認
+   - `strategy_path` フィールドを含まない旧 JSON のロードも問題なし（`#[serde(default)]` で `None` として扱われる）
+6. **未確認項目**:
    - schema_version 不一致 JSON を Load → warn してスキップ（実装済み・テスト未実施）
 
 ### 次の作業者への引継ぎ事項
 
-**Phase 7.6 は完了。残課題は Strategy Editor のファイル内容復元（Phase 7.7 以降推奨）。**
+**Phase 7.6 は全タスク完了（2026-05-15 E2E PASS）。次は Phase 7.7（起動時自動ロード、デバウンス保存）へ。**
 
-#### 残課題: Load 時に Strategy Editor の .py 内容を復元する
+#### ✅ 完了: Load 時に Strategy Editor の .py 内容を復元する（2026-05-15）
 
-**現象**: Ctrl+O でレイアウト JSON をロードすると Strategy Editor パネル自体は復活するが、
-中身が `// strategy code`（空）のままになる。
-
-**原因**: `SidecarLayout` JSON にはパネルの位置/サイズ/表示のみ保存されており、
-`StrategyBuffer.original_path`（どの .py を開いていたか）が含まれていない。
-
-**実装方針**:
+**対応内容**:
 
 1. `SidecarLayout` に `strategy_path: Option<String>` フィールドを追加
-   （`PathBuf` は serde 非対応なので `String` を使う）
+   （`#[serde(default)]` で旧 JSON との後方互換を確保。`schema_version` は変えない）
 
-   ```rust
-   #[derive(Serialize, Deserialize, Debug, Clone, PartialEq)]
-   pub struct SidecarLayout {
-       pub schema_version: u32,
-       pub viewport: ViewportState,
-       pub windows: Vec<WindowLayout>,
-       #[serde(default)]                    // ← 旧 JSON との後方互換
-       pub strategy_path: Option<String>,
-   }
-   ```
+2. `build_layout` に `buffer: &Res<StrategyBuffer>` を追加し、`original_path` を文字列化して保存
+   - `to_string_lossy().into_owned()` で Windows の `\` パスも正しく文字列化される
+   - 呼び出し元 3 箇所（`handle_save_layout_system`, `handle_save_as_layout_system`, `save_layout_on_window_close`）に `buffer: Res<StrategyBuffer>` 追加
 
-2. `build_layout` に `buffer: &Res<StrategyBuffer>` を追加してパスを保存
-
-   ```rust
-   strategy_path: buffer.original_path
-       .as_ref()
-       .map(|p| p.to_string_lossy().into_owned()),
-   ```
-
-3. `apply_layout_system` で復元: `pending_strategy.path = Some(PathBuf::from(path_str))`
-
-   - `PendingStrategyLoad` リソース（`src/ui/components.rs:75`）に積むだけでよい
-   - `sidebar::pending_strategy_load_system` が毎フレーム監視し、StrategyEditor パネルが
-     出現したタイミングで `OpenStrategyRequested` に変換する（既存の仕組みを再利用）
+3. `apply_layout_system` に `mut pending_strategy: ResMut<PendingStrategyLoad>` を追加
+   - `path.exists()` チェックを行い、存在すれば `pending_strategy.path = Some(path)` にセット
+   - 存在しない場合は `warn!` してスキップ（旧環境でパスが変わっていても crash しない）
+   - `PendingStrategyLoad` は `sidebar::pending_strategy_load_system` が毎フレーム監視し、
+     StrategyEditor パネルが出現したタイミングで `OpenStrategyRequested` に自動変換される
    - パネル re-spawn 後にも動作する（re-spawn 後に pending が消費される）
 
-4. `schema_version` は変更不要（`#[serde(default)]` で旧 JSON も読める）
+**設計のポイント**:
+- `PendingStrategyLoad` → `pending_strategy_load_system` → `OpenStrategyRequested` という
+  既存フロー（元々は初回起動時の遅延ロード用に作られた）を Load 復元にそのまま流用できた
+- re-spawn が複数フレームかかる StrategyEditor でも、pending が残り続けて消費されるため追加実装不要
+- `PathBuf` は serde の `Serialize/Deserialize` を持たないため JSON フィールドは `String` を使うこと
 
-**関連ファイル（修正対象）**:
-- `src/ui/layout_persistence.rs` — `SidecarLayout` + `build_layout` + `apply_layout_system`
-- 呼び出し元 3 箇所（`handle_save_layout_system`, `handle_save_as_layout_system`, `save_layout_on_window_close`）に `buffer: Res<StrategyBuffer>` 追加
+**検証**: `cargo test --lib` pass + E2E pass（`python/tests/data/test_strategy_daily.json` に `strategy_path` が書き込まれ、Load 後に Strategy Editor に内容が復元されることを確認）
 
 **既存の知見・落とし穴**（上記「Bevy 0.15 API 確認事項」を必ず読むこと）:
 - `EventReader<WindowCloseRequested>` + `add_systems(Update, ...)` — 触らない
@@ -367,7 +351,7 @@ Phase 7.6 のスコープ外として放置。
 
 | 7.7 サブステップ | 内容 | 備考 |
 |---|---|---|
-| **7.6 残課題** | Load 時に Strategy Editor の .py 内容を復元 | `SidecarLayout.strategy_path` 追加。上記「引継ぎ事項」参照 |
+| ~~**7.6 残課題**~~ | ✅ Load 時に Strategy Editor の .py 内容を復元 | `SidecarLayout.strategy_path` 追加。2026-05-15 完了 |
 | 7A | `app_state.json` で前回の `.py` を永続化 | |
 | 7B | 起動時に `last_strategy_path` を自動 open | |
 | 7C | Open 直後にサイドカー `.json` を自動 Load | |

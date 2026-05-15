@@ -4,7 +4,7 @@ use rfd::FileDialog;
 use serde::{Deserialize, Serialize};
 use std::path::PathBuf;
 
-use crate::ui::components::{PanelKind, PanelSpawnRequested, StrategyBuffer, WindowManager, WindowRoot};
+use crate::ui::components::{PanelKind, PanelSpawnRequested, PendingStrategyLoad, StrategyBuffer, WindowManager, WindowRoot};
 
 pub const SCHEMA_VERSION: u32 = 1;
 
@@ -13,6 +13,11 @@ pub struct SidecarLayout {
     pub schema_version: u32,
     pub viewport: ViewportState,
     pub windows: Vec<WindowLayout>,
+    /// ロード時に復元する strategy ファイルのパス（文字列）。
+    /// PathBuf は serde の Serialize/Deserialize を標準では持たないため String で保持。
+    /// #[serde(default)] により旧 JSON (このフィールドなし) も None として読める。
+    #[serde(default)]
+    pub strategy_path: Option<String>,
 }
 
 #[derive(Serialize, Deserialize, Debug, Clone, Copy, Default, PartialEq)]
@@ -55,6 +60,7 @@ pub struct LayoutLoadRequested {
 fn build_layout(
     panels: &Query<(&PanelKind, &Transform, &Sprite, &Visibility), With<WindowRoot>>,
     camera: &Query<(&Transform, &OrthographicProjection), (With<Camera2d>, Without<WindowRoot>)>,
+    buffer: &Res<StrategyBuffer>,
 ) -> SidecarLayout {
     let viewport = camera
         .get_single()
@@ -79,10 +85,16 @@ fn build_layout(
         })
         .collect();
 
+    let strategy_path = buffer
+        .original_path
+        .as_ref()
+        .and_then(|p| p.to_str().map(|s| s.to_string()));
+
     SidecarLayout {
         schema_version: SCHEMA_VERSION,
         viewport,
         windows,
+        strategy_path,
     }
 }
 
@@ -120,7 +132,7 @@ fn handle_save_layout_system(
             }
         };
 
-        let layout = build_layout(&panels, &camera);
+        let layout = build_layout(&panels, &camera, &buffer);
         match save_layout_to(&path, &layout) {
             Ok(()) => info!("layout saved to {:?}", path),
             Err(e) => error!("layout save failed: {e}"),
@@ -132,6 +144,7 @@ fn handle_save_as_layout_system(
     mut events: EventReader<LayoutSaveAsRequested>,
     panels: Query<(&PanelKind, &Transform, &Sprite, &Visibility), With<WindowRoot>>,
     camera: Query<(&Transform, &OrthographicProjection), (With<Camera2d>, Without<WindowRoot>)>,
+    buffer: Res<StrategyBuffer>,
 ) {
     for _ in events.read() {
         let path = match FileDialog::new()
@@ -145,7 +158,7 @@ fn handle_save_as_layout_system(
             }
         };
 
-        let layout = build_layout(&panels, &camera);
+        let layout = build_layout(&panels, &camera, &buffer);
         match save_layout_to(&path, &layout) {
             Ok(()) => info!("layout saved-as to {:?}", path),
             Err(e) => error!("layout save-as failed: {e}"),
@@ -180,6 +193,7 @@ fn apply_layout_system(
     mut wm: ResMut<WindowManager>,
     mut spawn_ev: EventWriter<PanelSpawnRequested>,
     mut pending: ResMut<PendingLayoutApply>,
+    mut pending_strategy: ResMut<PendingStrategyLoad>,
 ) {
     for event in events.read() {
         let layout = match load_layout_from(&event.path) {
@@ -243,6 +257,16 @@ fn apply_layout_system(
             commands.entity(entity).despawn_recursive();
         }
 
+        // ストラテジーファイルの復元
+        if let Some(path_str) = &layout.strategy_path {
+            let path = std::path::PathBuf::from(path_str);
+            if path.exists() {
+                pending_strategy.path = Some(path);
+            } else {
+                warn!("layout load: strategy_path {:?} not found, skipping", path);
+            }
+        }
+
         info!("layout applied from {:?}", event.path);
     }
 }
@@ -297,7 +321,7 @@ fn save_layout_on_window_close(
             continue;
         };
         let path = orig.with_extension("json");
-        let layout = build_layout(&panels, &camera);
+        let layout = build_layout(&panels, &camera, &buffer);
         match save_layout_to(&path, &layout) {
             Ok(()) => info!("layout auto-saved to {:?}", path),
             Err(e) => error!("layout auto-save failed: {e}"),
@@ -396,6 +420,7 @@ mod tests {
                     z: 2.0,
                 },
             ],
+            strategy_path: None,
         };
         let json = serde_json::to_string_pretty(&layout).unwrap();
         let restored: SidecarLayout = serde_json::from_str(&json).unwrap();
