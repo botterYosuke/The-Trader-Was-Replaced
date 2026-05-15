@@ -247,6 +247,40 @@ fn apply_layout_system(
     }
 }
 
+fn apply_pending_layout_system(
+    mut pending: ResMut<PendingLayoutApply>,
+    mut panels: Query<(&PanelKind, &mut Transform, &mut Sprite, &mut Visibility), With<WindowRoot>>,
+    mut wm: ResMut<WindowManager>,
+) {
+    if pending.windows.is_empty() {
+        return;
+    }
+    let mut still_pending = vec![];
+    for win_layout in pending.windows.drain(..) {
+        let found = panels
+            .iter_mut()
+            .find(|(kind, ..)| **kind == win_layout.kind);
+        match found {
+            None => still_pending.push(win_layout),
+            Some((_, mut tf, mut sprite, mut vis)) => {
+                tf.translation.x = win_layout.position[0];
+                tf.translation.y = win_layout.position[1];
+                tf.translation.z = win_layout.z;
+                sprite.custom_size = Some(Vec2::from_array(win_layout.size));
+                *vis = if win_layout.visible {
+                    Visibility::Inherited
+                } else {
+                    Visibility::Hidden
+                };
+                if win_layout.z > wm.max_z {
+                    wm.max_z = win_layout.z;
+                }
+            }
+        }
+    }
+    pending.windows = still_pending;
+}
+
 fn save_layout_on_window_close(
     mut close_events: EventReader<WindowCloseRequested>,
     panels: Query<(&PanelKind, &Transform, &Sprite, &Visibility), With<WindowRoot>>,
@@ -312,7 +346,8 @@ pub struct LayoutPersistencePlugin;
 
 impl Plugin for LayoutPersistencePlugin {
     fn build(&self, app: &mut App) {
-        app.add_event::<LayoutSaveRequested>()
+        app.init_resource::<PendingLayoutApply>()
+            .add_event::<LayoutSaveRequested>()
             .add_event::<LayoutSaveAsRequested>()
             .add_event::<LayoutLoadDialogRequested>()
             .add_event::<LayoutLoadRequested>()
@@ -323,6 +358,7 @@ impl Plugin for LayoutPersistencePlugin {
                     handle_save_as_layout_system,
                     handle_load_dialog_system,
                     apply_layout_system,
+                    apply_pending_layout_system,
                     layout_shortcut_system,
                 ),
             )

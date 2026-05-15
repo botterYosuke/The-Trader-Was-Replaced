@@ -17,7 +17,7 @@
 |---|---|---|
 | 2 | `SidecarLayout` JSON スキーマ（serde 構造体 + round-trip テスト） | ✅ |
 | 3 | apply_layout system（Load 用：JSON → 既存 entity の Transform/Sprite/Visibility 上書き） | ✅ |
-| 3b | apply_layout: JSON に**ない**パネルを despawn、JSON に**ある**が未 spawn のパネルを re-spawn | ⚠️ **実装中** — despawn は完了、re-spawn が未実装 |
+| 3b | apply_layout: JSON に**ない**パネルを despawn、JSON に**ある**が未 spawn のパネルを re-spawn | ✅ **完了**（2026-05-15、E2E PASS） |
 | 4 | AppExit observer による自動保存 | ✅ |
 | 追加 | Save / Save As / Load メニューボタン | ✅ |
 | 追加 | Ctrl+S / Ctrl+Shift+S / Ctrl+O キーボードショートカット | ✅ |
@@ -95,9 +95,9 @@ fn load_layout_from(path: &Path) -> std::io::Result<SidecarLayout> {
 }
 ```
 
-### 3. apply_layout system (Step 3 — Load 用) ⚠️ re-spawn が未実装
+### 3. apply_layout system (Step 3 — Load 用) ✅ 完全実装済み（2026-05-15）
 
-現在の実装（`src/ui/layout_persistence.rs`）:
+実装済みの `apply_layout_system`（`src/ui/layout_persistence.rs`）:
 
 ```rust
 fn apply_layout_system(
@@ -106,15 +106,9 @@ fn apply_layout_system(
     mut panels: Query<(Entity, &PanelKind, &mut Transform, &mut Sprite, &mut Visibility), With<WindowRoot>>,
     mut camera: Query<(&mut Transform, &mut OrthographicProjection), (With<Camera2d>, Without<WindowRoot>)>,
     mut wm: ResMut<WindowManager>,
-) {
-    for event in events.read() {
-        // 1. JSON 読み込み + schema_version チェック
-        // 2. viewport を camera に反映
-        // 3. 各 WindowLayout を kind でマッチして既存 entity に上書き
-        // 4. JSON に掲載されていない entity を despawn_recursive ← ✅ 実装済み
-        // 5. JSON に掲載されているが ECS に存在しない kind を re-spawn ← ⚠️ 未実装
-    }
-}
+    mut spawn_ev: EventWriter<PanelSpawnRequested>,   // ← 追加
+    mut pending: ResMut<PendingLayoutApply>,          // ← 追加
+) { ... }
 ```
 
 #### ✅ 実装済み: JSON にないパネルを despawn
@@ -130,24 +124,48 @@ for entity in to_despawn {
 }
 ```
 
-#### ⚠️ 未実装: JSON にある PanelKind が ECS に存在しない場合の re-spawn
+#### ✅ 実装済み: JSON にある PanelKind が ECS に存在しない場合の re-spawn（2フェーズ方式）
 
-**次の作業者がここを実装すること。**
+**設計: 直接 spawn ではなく PanelSpawnRequested イベント + PendingLayoutApply リソースを使う 2 フェーズ方式を採用。**
 
-設計方針:
-- `apply_layout_system` の `find` で `None` になったとき（現在は `warn` してスキップ）、
-  代わりに対応する spawn 関数を呼んで entity を作り直す
-- spawn 後に position / size / visibility を即座に適用する
-- 各 PanelKind の spawn 関数を調べ、`apply_layout_system` から呼べる形に整理する
+```rust
+None => {
+    // ECS にまだ存在しない → spawn を要求し、翌フレームで位置適用
+    spawn_ev.send(PanelSpawnRequested { kind: win_layout.kind });
+    pending.windows.push(win_layout.clone());
+}
+```
 
-実装する前に以下のファイルを Read して spawn 関数のシグネチャを把握すること:
-- `src/ui/floating_window.rs` — `FloatingWindowSpec` / `spawn_floating_window` の構造
-- `src/ui/window.rs` — Chart パネルの spawn
-- `src/ui/orders.rs` — Orders パネルの spawn
-- `src/ui/positions.rs` — Positions パネルの spawn
-- `src/ui/buying_power.rs` — BuyingPower パネルの spawn
-- `src/ui/run_result_panel.rs` — RunResult パネルの spawn
-- `src/ui/strategy_editor.rs` — StrategyEditor パネルの spawn
+```rust
+fn apply_pending_layout_system(
+    mut pending: ResMut<PendingLayoutApply>,
+    mut panels: Query<(&PanelKind, &mut Transform, &mut Sprite, &mut Visibility), With<WindowRoot>>,
+    mut wm: ResMut<WindowManager>,
+) {
+    if pending.windows.is_empty() { return; }
+    let mut still_pending = vec![];
+    for win_layout in pending.windows.drain(..) {
+        let found = panels.iter_mut().find(|(kind, ..)| **kind == win_layout.kind);
+        match found {
+            None => still_pending.push(win_layout),  // 翌フレームに再試行
+            Some((_, mut tf, mut sprite, mut vis)) => { /* 位置/サイズ/表示を適用 */ }
+        }
+    }
+    pending.windows = still_pending;
+}
+```
+
+**2 フェーズ方式を選んだ理由**:
+- 各 spawn 関数（`spawn_chart_panel` 等）は戻り値 `()` で root entity ID を返さない
+- Bevy の commands は deferred — 同一システム内で spawn した entity を即 Query できない
+- `PanelSpawnRequested` → `panel_spawn_dispatcher_system`（floating_window.rs に既存）という
+  実績あるパスを再利用できる
+- `still_pending` ループで spawn が複数フレームかかる場合（StrategyEditor 等）も自動リトライ
+
+**StrategyEditor の CosmicFontSystem 依存**:
+- `spawn_strategy_editor_panel` は `&mut CosmicFontSystem` を必要とする
+- `panel_spawn_dispatcher_system` がすでにこれを扱っているため、`apply_layout_system` に
+  `CosmicFontSystem` を追加する必要はない（イベント経由で委譲するだけでよい）
 
 ### 4. AppExit 自動保存 ✅ 実装済み（EventReader 方式）
 
@@ -282,28 +300,64 @@ Phase 7.6 のスコープ外として放置。
    3. ✅ Scenario C: ×ボタンで閉じる → `layout auto-saved to ...json` 発火 — **PASSED**
    4. ✅ Scenario D: `.py` 未オープンで Ctrl+S → ダイアログ fallback → 保存/キャンセル両方正常 — **PASSED**
    5. ✅ JSON にないパネルが Load 後に despawn される — **PASSED**
-4. **未確認項目**:
+4. ✅ 未 spawn の PanelKind を含む JSON を Load → **re-spawn（2026-05-15 実装・E2E PASS）**
+5. **未確認項目**:
    - schema_version 不一致 JSON を Load → warn してスキップ（実装済み・テスト未実施）
-   - 未 spawn の PanelKind を含む JSON を Load → **re-spawn（実装待ち）**
 
 ### 次の作業者への引継ぎ事項
 
-**残タスク 1 件: `apply_layout_system` の re-spawn 実装**
+**Phase 7.6 は完了。残課題は Strategy Editor のファイル内容復元（Phase 7.7 以降推奨）。**
 
-現状:
-- JSON に存在するが ECS に entity がない PanelKind は `warn` してスキップされる
-- ユーザー要求: Load 時に JSON にある PanelKind が存在しなければ spawn し直す
+#### 残課題: Load 時に Strategy Editor の .py 内容を復元する
 
-実装手順:
-1. `src/ui/floating_window.rs` と各パネルの spawn 関数（window.rs, orders.rs, positions.rs, buying_power.rs, run_result_panel.rs, strategy_editor.rs）を Read して spawn のシグネチャを把握
-2. `apply_layout_system` の `None =>` アーム（現在 `warn!` してスキップ）で spawn を呼ぶ
-3. spawn 直後に `WindowLayout` の position / size / visible / z を適用する
-4. `cargo build` + 手動 E2E で確認
+**現象**: Ctrl+O でレイアウト JSON をロードすると Strategy Editor パネル自体は復活するが、
+中身が `// strategy code`（空）のままになる。
+
+**原因**: `SidecarLayout` JSON にはパネルの位置/サイズ/表示のみ保存されており、
+`StrategyBuffer.original_path`（どの .py を開いていたか）が含まれていない。
+
+**実装方針**:
+
+1. `SidecarLayout` に `strategy_path: Option<String>` フィールドを追加
+   （`PathBuf` は serde 非対応なので `String` を使う）
+
+   ```rust
+   #[derive(Serialize, Deserialize, Debug, Clone, PartialEq)]
+   pub struct SidecarLayout {
+       pub schema_version: u32,
+       pub viewport: ViewportState,
+       pub windows: Vec<WindowLayout>,
+       #[serde(default)]                    // ← 旧 JSON との後方互換
+       pub strategy_path: Option<String>,
+   }
+   ```
+
+2. `build_layout` に `buffer: &Res<StrategyBuffer>` を追加してパスを保存
+
+   ```rust
+   strategy_path: buffer.original_path
+       .as_ref()
+       .map(|p| p.to_string_lossy().into_owned()),
+   ```
+
+3. `apply_layout_system` で復元: `pending_strategy.path = Some(PathBuf::from(path_str))`
+
+   - `PendingStrategyLoad` リソース（`src/ui/components.rs:75`）に積むだけでよい
+   - `sidebar::pending_strategy_load_system` が毎フレーム監視し、StrategyEditor パネルが
+     出現したタイミングで `OpenStrategyRequested` に変換する（既存の仕組みを再利用）
+   - パネル re-spawn 後にも動作する（re-spawn 後に pending が消費される）
+
+4. `schema_version` は変更不要（`#[serde(default)]` で旧 JSON も読める）
+
+**関連ファイル（修正対象）**:
+- `src/ui/layout_persistence.rs` — `SidecarLayout` + `build_layout` + `apply_layout_system`
+- 呼び出し元 3 箇所（`handle_save_layout_system`, `handle_save_as_layout_system`, `save_layout_on_window_close`）に `buffer: Res<StrategyBuffer>` 追加
 
 **既存の知見・落とし穴**（上記「Bevy 0.15 API 確認事項」を必ず読むこと）:
 - `EventReader<WindowCloseRequested>` + `add_systems(Update, ...)` — 触らない
 - despawn ロジック（`to_despawn` Vec → `despawn_recursive`）— 触らない
 - キーリピート 500ms クールダウン — 触らない
+- re-spawn の 2 フェーズ方式（`PendingLayoutApply`）— 触らない
 
 **保存先パス**:
 `buffer.original_path` が `Some(path)` のとき → `path.with_extension("json")`（同ディレクトリ・同名）
@@ -311,13 +365,14 @@ Phase 7.6 のスコープ外として放置。
 
 ## 次フェーズ（**対象外** — すべて [Phase 7.7](Phase%207.7%20-%20UI%20Layout%20Persistence.md) で扱う）
 
-| 7.7 サブステップ | 内容 |
-|---|---|
-| 7A | `app_state.json` で前回の `.py` を永続化 |
-| 7B | 起動時に `last_strategy_path` を自動 open |
-| 7C | Open 直後にサイドカー `.json` を自動 Load |
-| 7D | ドラッグ/リサイズ後の 1 秒デバウンス自動保存 |
-| 7E | viewport (camera pan/zoom) の保存・復元 |
-| 7F | `selected_symbol` の保存・復元（スキーマ拡張あり） |
+| 7.7 サブステップ | 内容 | 備考 |
+|---|---|---|
+| **7.6 残課題** | Load 時に Strategy Editor の .py 内容を復元 | `SidecarLayout.strategy_path` 追加。上記「引継ぎ事項」参照 |
+| 7A | `app_state.json` で前回の `.py` を永続化 | |
+| 7B | 起動時に `last_strategy_path` を自動 open | |
+| 7C | Open 直後にサイドカー `.json` を自動 Load | |
+| 7D | ドラッグ/リサイズ後の 1 秒デバウンス自動保存 | |
+| 7E | viewport (camera pan/zoom) の保存・復元 | viewport は既に JSON に含まれ復元も動作中 (2026-05-15 確認) |
+| 7F | `selected_symbol` の保存・復元（スキーマ拡張あり） | |
 
 本フェーズ (7.6) では **手動操作 (Ctrl+S/Ctrl+Shift+S/Ctrl+O) と AppExit のみ**。「アプリを開き直したら前回の続きから始まる」体験は 7.7 で完成する。

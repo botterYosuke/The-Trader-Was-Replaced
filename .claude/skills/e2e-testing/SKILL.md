@@ -1,6 +1,6 @@
 ---
 name: e2e-testing
-description: The-Trader-Was-Replaced（Bevy + gRPC backend）の E2E 手動検証パターン。`backcast.exe`（Rust/Bevy GUI）と `python -m engine`（gRPC backend, port 19876）を起動し、AI とユーザーで役割分担しながら検証する。「E2E」「手動検証」「動作確認」「backcast を起動」「backend を起動」「Run ボタン」「Strategy を動かしたい」「gRPC: OK にならない」「リプレイを実機で確認」と言われたら必ず起動する。Playwright / HTTP API（旧 :9876）/ WebSocket IPC は **使わない**（過去の e-station アーキテクチャの残骸）。
+description: The-Trader-Was-Replaced（Bevy + gRPC backend）の E2E 手動検証パターン。`backcast.exe`（Rust/Bevy GUI）と `python -m engine`（gRPC backend, port 19876）を起動し、AI とユーザーで役割分担しながら検証する。「E2E」「手動検証」「動作確認」「backcast を起動」「backend を起動」「Run ボタン」「Strategy を動かしたい」「gRPC: OK にならない」「リプレイを実機で確認」「レイアウトをロード」「パネルが復活するか確認」「Save/Load のテスト」「Ctrl+O で開く」「Ctrl+S で保存」と言われたら必ず起動する。Playwright / HTTP API（旧 :9876）/ WebSocket IPC は **使わない**（過去の e-station アーキテクチャの残骸）。**既知制限**: レイアウト JSON はパネルの位置/サイズ/表示のみ保存。Strategy ファイルパス（`StrategyBuffer.original_path`）は保存されないため、Load 後に Strategy Editor は空（`// strategy code`）になる。これは Phase 7.7 以降で対応予定。
 ---
 
 # E2E Testing — The-Trader-Was-Replaced（Bevy GUI + Python gRPC backend）
