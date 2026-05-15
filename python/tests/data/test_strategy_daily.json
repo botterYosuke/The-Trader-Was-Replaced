@@ -1,9 +1,9 @@
 {
   "schema_version": 1,
   "viewport": {
-    "pan_x": 0.0,
-    "pan_y": 0.0,
-    "zoom": 1.0
+    "pan_x": -100.95157,
+    "pan_y": -28.010271,
+    "zoom": 1.0725257
   },
   "windows": [
     {
@@ -36,15 +36,16 @@
       "kind": "StrategyEditor",
       "visible": true,
       "position": [
-        -72.5,
-        66.5
+        -153.52797,
+        9.641701
       ],
       "size": [
         500.0,
         400.0
       ],
-      "z": 24.0
+      "z": 108.0
     }
   ],
-  "strategy_path": "C:\\Users\\sasai\\Documents\\The-Trader-Was-Replaced\\python\\tests\\data\\test_strategy_daily.py"
+  "strategy_path": "C:\\Users\\sasai\\Documents\\The-Trader-Was-Replaced\\python\\tests\\data\\test_strategy_daily.py",
+  "selected_symbol": null
 }
