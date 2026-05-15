@@ -105,7 +105,7 @@ pub enum AppEdit {
 // ─────────────────────────────────────────────────────────────────────────────
 
 /// テキスト編集のマージ判定で使う定数。
-/// 500ms 以内・差分 50 文字以下・改行追加なし・末尾が単語境界でない → マージ
+/// 500ms 以内・差分 50 文字以下・改行追加なし → マージ
 const TEXT_MERGE_WINDOW_MS: u128 = 500;
 const TEXT_MERGE_MAX_DIFF: usize = 50;
 
@@ -170,7 +170,7 @@ impl Edit for AppEdit {
     }
 
     /// Text 同士のマージポリシー:
-    /// 500ms 以内 & 差分 50 文字以下 & \n 追加なし & 末尾が単語境界文字でない → Merged::Yes
+    /// 500ms 以内 & 差分 50 文字以下 & \n 追加なし → Merged::Yes
     fn merge(&mut self, other: Self) -> Merged<Self> {
         if let (AppEdit::Text(self_t), AppEdit::Text(other_t)) = (self, &other) {
             let elapsed = other_t
@@ -179,17 +179,10 @@ impl Edit for AppEdit {
                 .as_millis();
             let diff_len = other_t.after.len().abs_diff(self_t.after.len());
             let added_newline = other_t.after.contains('\n') && !self_t.after.contains('\n');
-            let last_char_is_word_boundary = self_t
-                .after
-                .chars()
-                .last()
-                .map(|c| !c.is_alphanumeric() && c != '_')
-                .unwrap_or(false);
 
             if elapsed <= TEXT_MERGE_WINDOW_MS
                 && diff_len <= TEXT_MERGE_MAX_DIFF
                 && !added_newline
-                && !last_char_is_word_boundary
             {
                 // after を更新してマージ。timestamp はそのまま（最初のキーストロークを基準にする）
                 self_t.after = other_t.after.clone();
@@ -211,11 +204,16 @@ impl Edit for AppEdit {
 /// - `replaying_depth`: > 0 の間は新たなエントリ push を抑止する。
 ///   `undo_redo_system` が undo/redo 呼び出し前に +1、
 ///   `apply_pending_app_edits_system` が drain 完了後に -1 する。
+/// - `suppress_echo_target`: `Some(text)` のとき `sync_editor_to_strategy_buffer_system` が
+///   `CosmicTextChanged` の内容を `text` と比較し、一致した場合のみ無視（消費）する。
+///   undo/redo 適用後に cosmic_edit が返す echo を「期待テキスト一致」で判別することで、
+///   echo が 1 回しか来なかった場合でも次の本物のユーザー入力を誤って捨てない。
 #[derive(Resource)]
 pub struct AppHistory {
     pub record: Record<AppEdit>,
     pub pending: PendingAppEdits,
     pub replaying_depth: u32,
+    pub suppress_echo_target: Option<String>,
 }
 
 impl Default for AppHistory {
@@ -225,6 +223,7 @@ impl Default for AppHistory {
             record: Record::builder().limit(200).build(),
             pending: PendingAppEdits::default(),
             replaying_depth: 0,
+            suppress_echo_target: None,
         }
     }
 }
@@ -234,6 +233,15 @@ impl AppHistory {
     /// `true` の間は新たなエントリを Record に push しない。
     pub fn is_replaying(&self) -> bool {
         self.replaying_depth > 0
+    }
+
+    /// undo/redo や外部からのテキスト適用後に cosmic_edit が echo する
+    /// `CosmicTextChanged` を無視するターゲットテキストをセットする。
+    /// `sync_editor_to_strategy_buffer_system` が `new_text == target` のとき
+    /// だけ echo を消費・無視し、異なるテキストが来た場合はターゲットをクリアして
+    /// 通常入力として履歴に積む。
+    pub fn suppress_echo(&mut self, target: String) {
+        self.suppress_echo_target = Some(target);
     }
 
     /// TextEdit を Record に push する。
@@ -370,29 +378,34 @@ mod tests {
 
     // ── Record を使った undo/redo 往復 ───────────────────────────────────
     //
-    // マージポリシーでは末尾が単語境界文字（スペース等）の場合にマージが抑止される。
-    // "hello " (末尾スペース) → last_char_is_word_boundary = true → マージなし → 2 エントリ確定。
+    // マージポリシーでは 500ms 超過の場合にマージが抑止される。
+    // sleep で確実に 2 エントリを作り、undo/redo 往復を検証する。
 
     #[test]
     fn test_record_undo_redo_text() {
+        use std::time::Duration;
+
         let mut record: Record<AppEdit> = Record::new();
         let mut pending = PendingAppEdits::default();
 
-        // 末尾スペースでマージを抑止して確実に 2 エントリにする
-        record.edit(&mut pending, make_text_edit("", "hello "));
+        // 1 エントリ目を push
+        record.edit(&mut pending, make_text_edit("", "hello"));
         pending.queue.clear(); // 通常入力時は clear する設計
 
-        record.edit(&mut pending, make_text_edit("hello ", "hello world"));
+        // 600ms 待機して確実に 500ms タイムウィンドウを超過させる → マージ不可
+        std::thread::sleep(Duration::from_millis(600));
+
+        record.edit(&mut pending, make_text_edit("hello", "hello world"));
         pending.queue.clear();
 
-        assert_eq!(record.len(), 2, "末尾スペースによりマージが抑止されて 2 エントリになるはず");
+        assert_eq!(record.len(), 2, "500ms 超過によりマージが抑止されて 2 エントリになるはず");
 
-        // undo → "hello " が pending に積まれる
+        // undo → "hello" が pending に積まれる
         record.undo(&mut pending);
         assert_eq!(pending.queue.len(), 1);
         match &pending.queue[0] {
-            AppEditAction::SetStrategySource { text } => assert_eq!(text, "hello "),
-            _ => panic!("expected SetStrategySource(hello )"),
+            AppEditAction::SetStrategySource { text } => assert_eq!(text, "hello"),
+            _ => panic!("expected SetStrategySource(hello)"),
         }
         pending.queue.clear();
 
@@ -580,5 +593,154 @@ mod tests {
             }
             _ => panic!("expected SpawnWindow(StrategyEditor)"),
         }
+    }
+
+    // ── マージポリシー緩和: スペース・記号でもマージされる ─────────────
+
+    #[test]
+    fn test_merge_space_input() {
+        // スペース入力でもマージされることを確認（last_char_is_word_boundary 条件廃止後の挙動）
+        let mut record: Record<AppEdit> = Record::new();
+        let mut pending = PendingAppEdits::default();
+
+        let edit1 = AppEdit::Text(TextEdit {
+            before: "".to_string(),
+            after: "hello".to_string(),
+            timestamp: Instant::now(),
+        });
+        let edit2 = AppEdit::Text(TextEdit {
+            before: "hello".to_string(),
+            after: "hello ".to_string(), // 末尾にスペース追加
+            timestamp: Instant::now(),
+        });
+
+        record.edit(&mut pending, edit1);
+        pending.queue.clear();
+        record.edit(&mut pending, edit2);
+        pending.queue.clear();
+
+        assert_eq!(record.len(), 1, "スペース入力でもマージされるべき");
+    }
+
+    #[test]
+    fn test_merge_symbol_inputs() {
+        // ':', '(', ')' などの記号入力でもマージされることを確認
+        let mut record: Record<AppEdit> = Record::new();
+        let mut pending = PendingAppEdits::default();
+
+        // ':' を追加
+        let e1 = AppEdit::Text(TextEdit {
+            before: "".to_string(),
+            after: "foo".to_string(),
+            timestamp: Instant::now(),
+        });
+        let e2 = AppEdit::Text(TextEdit {
+            before: "foo".to_string(),
+            after: "foo:".to_string(),
+            timestamp: Instant::now(),
+        });
+        record.edit(&mut pending, e1);
+        pending.queue.clear();
+        record.edit(&mut pending, e2);
+        pending.queue.clear();
+        assert_eq!(record.len(), 1, "':' 入力でもマージされるべき");
+
+        let mut record2: Record<AppEdit> = Record::new();
+        // '(' を追加
+        let e3 = AppEdit::Text(TextEdit {
+            before: "".to_string(),
+            after: "fn".to_string(),
+            timestamp: Instant::now(),
+        });
+        let e4 = AppEdit::Text(TextEdit {
+            before: "fn".to_string(),
+            after: "fn(".to_string(),
+            timestamp: Instant::now(),
+        });
+        record2.edit(&mut pending, e3);
+        pending.queue.clear();
+        record2.edit(&mut pending, e4);
+        pending.queue.clear();
+        assert_eq!(record2.len(), 1, "'(' 入力でもマージされるべき");
+    }
+
+    #[test]
+    fn test_no_merge_newline() {
+        // 改行入力はマージされない
+        let mut record: Record<AppEdit> = Record::new();
+        let mut pending = PendingAppEdits::default();
+
+        let edit1 = AppEdit::Text(TextEdit {
+            before: "".to_string(),
+            after: "hello".to_string(),
+            timestamp: Instant::now(),
+        });
+        let edit2 = AppEdit::Text(TextEdit {
+            before: "hello".to_string(),
+            after: "hello\nworld".to_string(), // 改行追加
+            timestamp: Instant::now(),
+        });
+
+        record.edit(&mut pending, edit1);
+        pending.queue.clear();
+        record.edit(&mut pending, edit2);
+        pending.queue.clear();
+
+        assert_eq!(record.len(), 2, "改行入力はマージされない");
+    }
+
+    #[test]
+    fn test_no_merge_large_paste() {
+        // 差分が TEXT_MERGE_MAX_DIFF (50) を超える大きな paste はマージされない
+        let mut record: Record<AppEdit> = Record::new();
+        let mut pending = PendingAppEdits::default();
+
+        let large_text = "a".repeat(100); // 100 文字の paste
+        let edit1 = AppEdit::Text(TextEdit {
+            before: "".to_string(),
+            after: "start".to_string(),
+            timestamp: Instant::now(),
+        });
+        let edit2 = AppEdit::Text(TextEdit {
+            before: "start".to_string(),
+            after: format!("start{}", large_text), // 差分 100 文字
+            timestamp: Instant::now(),
+        });
+
+        record.edit(&mut pending, edit1);
+        pending.queue.clear();
+        record.edit(&mut pending, edit2);
+        pending.queue.clear();
+
+        assert_eq!(record.len(), 2, "大きな paste (差分 100 文字) はマージされない");
+    }
+
+    #[test]
+    fn test_no_merge_timeout() {
+        // 500ms 超過はマージされない
+        use std::time::Duration;
+
+        let mut record: Record<AppEdit> = Record::new();
+        let mut pending = PendingAppEdits::default();
+
+        let edit1 = AppEdit::Text(TextEdit {
+            before: "".to_string(),
+            after: "hello".to_string(),
+            timestamp: Instant::now(),
+        });
+        record.edit(&mut pending, edit1);
+        pending.queue.clear();
+
+        std::thread::sleep(Duration::from_millis(600));
+
+        let edit2 = AppEdit::Text(TextEdit {
+            before: "hello".to_string(),
+            after: "hello world".to_string(),
+            timestamp: Instant::now(),
+        });
+        record.edit(&mut pending, edit2);
+        pending.queue.clear();
+
+        assert_eq!(record.len(), 2, "500ms 超過はマージされない");
     }
 }

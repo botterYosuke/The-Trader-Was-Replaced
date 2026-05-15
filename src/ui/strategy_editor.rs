@@ -334,6 +334,20 @@ pub fn sync_editor_to_strategy_buffer_system(
         if !editor_q.contains(*entity) {
             continue;
         }
+        // suppress_echo_target が Some のとき: undo/redo 適用直後に cosmic_edit が
+        // 返す echo を「期待テキスト一致」で判別して無視する。
+        // - new_text が target と一致 → echo として消費・無視（buffer.source を同期して continue）
+        // - 一致しない → ターゲットをクリアして通常入力として処理に流す
+        if let Some(ref target) = history.suppress_echo_target.clone() {
+            if new_text.as_str() == target.as_str() {
+                history.suppress_echo_target = None;
+                buffer.source = new_text.clone();
+                continue;
+            } else {
+                // 違うテキストが来たらターゲットをクリアして通常処理
+                history.suppress_echo_target = None;
+            }
+        }
         if buffer.source == *new_text {
             continue;
         }
@@ -382,7 +396,7 @@ pub fn undo_redo_system(
         if !changed {
             history.replaying_depth -= 1; // 何も起きなかったので即戻す
         }
-        *cooldown = 0.1;
+        *cooldown = 0.05;
     } else if do_redo {
         history.replaying_depth += 1;
         let changed = {
@@ -392,7 +406,7 @@ pub fn undo_redo_system(
         if !changed {
             history.replaying_depth -= 1;
         }
-        *cooldown = 0.1;
+        *cooldown = 0.05;
     }
 }
 
@@ -419,6 +433,9 @@ pub fn apply_pending_app_edits_system(
     for action in actions {
         match action {
             AppEditAction::SetStrategySource { text } => {
+                // buffer に書き込む text が echo で返ってくるテキストなので、
+                // そのテキストを target としてセットし期待一致方式で echo を抑制する。
+                history.suppress_echo(text.clone());
                 buffer.source = text;
                 buffer.dirty = true;
                 any_text = true;
@@ -470,6 +487,7 @@ pub fn apply_pending_app_edits_system(
 pub fn apply_strategy_snapshot_restore_system(
     mut pending_restore: ResMut<PendingStrategySnapshotRestore>,
     mut buffer: ResMut<StrategyBuffer>,
+    mut history: ResMut<AppHistory>,
     editor_q: Query<Entity, With<StrategyEditorContent>>,
     mut undo_applied: EventWriter<UndoRedoApplied>,
 ) {
@@ -481,6 +499,9 @@ pub fn apply_strategy_snapshot_restore_system(
         return;
     }
     if let Some(snapshot) = pending_restore.snapshot.take() {
+        // buffer に書き込む snapshot が echo で返ってくるテキストなので、
+        // そのテキストを target としてセットし期待一致方式で echo を抑制する。
+        history.suppress_echo(snapshot.clone());
         buffer.source = snapshot;
         buffer.dirty = true;
         undo_applied.send(UndoRedoApplied);
