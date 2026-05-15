@@ -241,6 +241,21 @@ egui の中で `state.buffer` のような大きい String を編集するとき
   `tokio::sync::mpsc::UnboundedSender` でメッセージを送り、Bevy 側の system
   （`status_update_system` 参照）で `try_recv` → `ResMut` に反映する。
   `main.rs:80-127` がテンプレート。
+- **マウスホイール / ドラッグが「カメラ操作」と「パネル操作」の両方に効く**:
+  `bevy_pancam` の `do_camera_zoom` / `do_camera_movement` と、`bevy_cosmic_edit` の
+  `input_mouse` 等は **同じ `MouseWheel` / マウスイベントを別 system が独立に読む**。
+  `EventReader` は system ごとにカーソルが独立なので「片方が消費して終わり」にはならず、
+  両方が反応する。解決は「毎フレーム条件判定して `PanCam.enabled` を書き換える system を
+  追加し、`PanCamSystemSet` より `.before()` で前に走らせる」。`enabled = false` で
+  zoom/pan 両方止まる。`bevy_cosmic_edit` 側はエディタ entity の `ScrollEnabled`
+  component（`Enabled`/`Disabled`、`TextEdit2d` の required ではないので spawn 時に
+  明示付与が必要）で on/off する。`src/camera.rs::pancam_suppression_over_editor_system`
+  が実装例。
+- **ズーム時に編集パネルの表示行がズレる / スクロール位置が動く**: まず疑うのは上記の
+  入力二重消費（ホイールがズームとスクロールの両方に効く）。render shadow buffer の
+  layout を疑う前に、`info!` で `render_scale` と `buffer.scroll().line` を出して
+  「ユーザーがスクロールしていないのに scroll.line がズーム倍率と相関して動くか」を
+  確認する。スクショ目視推測で原因を追うとハマる。
 
 ## ground truth ソースの引き方
 

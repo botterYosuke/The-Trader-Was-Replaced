@@ -5,7 +5,10 @@ use crate::ui::floating_window::{FloatingWindowSpec, spawn_floating_window};
 use bevy::ecs::system::IntoObserverSystem;
 use bevy::prelude::*;
 use bevy_cosmic_edit::cosmic_text::{Attrs, AttrsOwned, Edit, Metrics, Shaping};
-use bevy_cosmic_edit::{CosmicBackgroundColor, CosmicFontSystem, CosmicRenderScale, CursorColor};
+use bevy_cosmic_edit::{
+    CosmicBackgroundColor, CosmicFontSystem, CosmicRenderScale, CosmicTextAlign, CursorColor,
+    ScrollEnabled,
+};
 use bevy_cosmic_edit::{CosmicTextChanged, prelude::*};
 
 // ── Bevy native 版 Strategy Editor ─────────────
@@ -139,6 +142,13 @@ pub fn spawn_strategy_editor_panel(commands: &mut Commands, font_system: &mut Co
                 last_supersample: 1.0,
             },
             CosmicRenderScale(1.0),
+            // コードエディタ用途では default の Center align だと表示が不安定なため TopLeft を明示。
+            CosmicTextAlign::TopLeft { padding: 8 },
+            // スクロールはデフォルト無効。camera.rs の pancam_suppression_over_editor_system が
+            // 「カーソルがエディタ上 かつ Ctrl 非押下」のフレームだけ Enabled に切り替える。
+            // TextEdit2d は ScrollEnabled を required component に含めないため、ここで明示付与しないと
+            // cosmic_edit の input_mouse が editor entity を丸ごとスキップし、スクロール切替が一切効かない。
+            ScrollEnabled::Disabled,
         ))
         .id();
 
@@ -200,14 +210,25 @@ pub fn spawn_strategy_editor_panel(commands: &mut Commands, font_system: &mut Co
 }
 
 pub fn update_strategy_editor_zoom_system(
-    camera_q: Query<&OrthographicProjection, (With<Camera2d>, Changed<OrthographicProjection>)>,
+    camera_q: Query<&OrthographicProjection, With<Camera2d>>,
     mut editor_q: Query<(&mut ZoomResponsiveEditor, &mut CosmicRenderScale)>,
+    mut last_camera_scale: Local<f32>,
 ) {
     let Ok(projection) = camera_q.get_single() else {
         return;
     };
 
     let camera_scale = projection.scale.max(0.01);
+
+    // Skip entirely when camera scale is stable and no editors exist.
+    // When editors exist we always iterate — the last_supersample guard inside the loop
+    // prevents redundant CosmicRenderScale mutations, which is important so newly-spawned
+    // editors (last_supersample = 1.0) get the correct scale on the very first frame
+    // even if the camera hasn't moved since the editor was added.
+    if editor_q.is_empty() && (*last_camera_scale - camera_scale).abs() < 0.001 {
+        return;
+    }
+    *last_camera_scale = camera_scale;
 
     for (mut responsive, mut render_scale) in &mut editor_q {
         let supersample = (1.0 / camera_scale).clamp(1.0, responsive.max_supersample);

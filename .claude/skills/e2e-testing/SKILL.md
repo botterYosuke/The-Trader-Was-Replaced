@@ -84,19 +84,21 @@ Start-Process -FilePath "uv" `
 
 ### 2.3 Rust GUI 起動（`.env` は読まれないので env を **明示的に** 渡す）
 
+ログをファイルに残したいなら **`Start-Process` の `-RedirectStandardOutput` / `-RedirectStandardError` を使う**。これは OS レベルのファイルリダイレクトなので、ツール呼び出しが終わってもプロセスが回り続ける限りログが書かれ続ける。env を明示渡しする必要があるときも `Start-Process` の前に `$env:XXX` をセットすれば child に継承される。
+
 ```powershell
-$psi = New-Object System.Diagnostics.ProcessStartInfo
-$psi.FileName = ".\target\debug\backcast.exe"
-$psi.WorkingDirectory = $PWD.Path
-$psi.UseShellExecute = $false
-$psi.EnvironmentVariables["BACKEND_ENABLED"]      = "true"
-$psi.EnvironmentVariables["BACKEND_TOKEN"]        = "testtoken"
-$psi.EnvironmentVariables["BACKEND_CATALOG_PATH"] = "artifacts\jquants-catalog"
-$psi.RedirectStandardOutput = $true
-$psi.RedirectStandardError  = $true
-$proc = [System.Diagnostics.Process]::Start($psi)
-# stdout/stderr を別ファイルにダンプしたいときは Start-Job で待ち受ける
+$env:RUST_LOG = "info"
+$env:BACKEND_ENABLED = "true"
+$env:BACKEND_TOKEN = "testtoken"
+$env:BACKEND_CATALOG_PATH = "artifacts\jquants-catalog"
+$p = Start-Process -FilePath ".\target\debug\backcast.exe" -WorkingDirectory $PWD.Path `
+  -RedirectStandardOutput "$env:TEMP\backcast_log.txt" `
+  -RedirectStandardError  "$env:TEMP\backcast_err.txt" -PassThru
 ```
+
+> ⚠️ **bevy / tracing のログは stdout ではなく stderr に出る**。`render_texture` 等に仕込んだ `info!` を読むときは `backcast_err.txt`（`-RedirectStandardError` 側）を見ること。`backcast_log.txt` は空のことが多い。
+>
+> ⚠️ **`ProcessStartInfo` + `Register-ObjectEvent` で OutputDataReceived を拾う方式は使うな**。PowerShell のイベントサブスクリプションはツール呼び出しのセッションが終わると死ぬため、起動直後の数秒しかログが取れない。必ず `Start-Process` の `-Redirect*` でファイルに直接書かせる。
 
 > ⚠️ **絶対に避けること**:
 > - `cargo run` 単体 → `.env` が読まれず `grpc: DISABLED` になる

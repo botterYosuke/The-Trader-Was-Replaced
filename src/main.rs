@@ -1,4 +1,4 @@
-use backcast::camera::setup_camera;
+use backcast::camera::{pancam_suppression_over_editor_system, setup_camera};
 use backcast::grid::GridPlugin;
 use backcast::trading::{
     BackendChannel, BackendStatus, InstrumentList, LastRunResult, PortfolioOrder,
@@ -8,7 +8,7 @@ use backcast::trading::{
 };
 use backcast::ui::UiPlugin;
 use bevy::prelude::*;
-use bevy_pancam::PanCamPlugin;
+use bevy_pancam::{PanCamPlugin, PanCamSystemSet};
 use engine::data_engine_client::DataEngineClient;
 use engine::{
     EngineKind, EngineStartConfig, ForceStopReplayRequest, GetPortfolioRequest, GetStateRequest,
@@ -52,6 +52,8 @@ async fn main() {
                 price_simulation_system,
                 backend_update_system,
                 status_update_system,
+                // PanCam の do_camera_zoom より前に走らせ、enabled フラグを先に確定させる。
+                pancam_suppression_over_editor_system.before(PanCamSystemSet),
             ),
         )
         .run();

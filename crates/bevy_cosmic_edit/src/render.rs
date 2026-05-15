@@ -75,6 +75,39 @@ fn draw_pixel(buffer: &mut [u8], width: i32, height: i32, x: i32, y: i32, color:
     buffer[offset + 3] = (out.alpha * 255.0) as u8;
 }
 
+/// Prepares a cloned [`cosmic_text::Buffer`] for high-res (`render_scale > 1.0`) rendering.
+///
+/// Scales **only** `metrics` and the buffer size — the GPU texture is enlarged and
+/// glyphs are rasterized at higher resolution, but the *logical layout* (which lines
+/// are visible, where wrapping happens) is unchanged. The shadow buffer is a
+/// high-resolution viewport; the scroll state that decides *which logical line to
+/// start drawing from* is copied from the original buffer as-is.
+///
+/// `Buffer.scroll` is deliberately **left untouched**. `Scroll::vertical` is a pixel
+/// offset *within* `Scroll::line` (see `cosmic_text::Scroll`), normally 0 for a
+/// line-stepped editor. `shape_until_scroll` advances `scroll.line` whenever
+/// `layout_height < scroll.vertical`. Scaling `scroll.vertical` by `render_scale`
+/// would balloon a tiny logical offset past the (also scaled) `layout_height` at
+/// high zoom, so `scroll.line` would jump by a zoom-dependent amount — that was the
+/// real cause of "the focused editor starts at a different line per zoom level".
+///
+/// Uses `set_metrics_and_size` (single call): `set_metrics` and `set_size` each
+/// delegate to it internally and each triggers its own `relayout` +
+/// `shape_until_scroll`, so the split form shapes the buffer twice for no benefit.
+fn scale_buffer_for_render(
+    buffer: &mut cosmic_text::Buffer,
+    font_system: &mut cosmic_text::FontSystem,
+    metrics: Metrics,
+    render_size: Vec2,
+) {
+    buffer.set_metrics_and_size(
+        font_system,
+        metrics,
+        Some(render_size.x),
+        Some(render_size.y),
+    );
+}
+
 /// Renders to the [CosmicRenderOutput]
 #[allow(unused_mut)] // for .set_redraw(false) commented out
 fn render_texture(
@@ -218,13 +251,12 @@ fn render_texture(
                 // Clone buffer from editor's internal state (focused path)
                 let shadow_buf = editor.with_buffer(|b| {
                     let mut clone = b.clone();
-                    clone.set_metrics(&mut font_system.0, scaled_metrics);
-                    clone.set_size(
+                    scale_buffer_for_render(
+                        &mut clone,
                         &mut font_system.0,
-                        Some(render_size.x),
-                        Some(render_size.y),
+                        scaled_metrics,
+                        render_size,
                     );
-                    clone.shape_until_scroll(&mut font_system.0, false);
                     clone
                 });
 
@@ -259,13 +291,12 @@ fn render_texture(
                 }
 
                 let mut shadow = buffer.0.clone();
-                shadow.set_metrics(&mut font_system.0, scaled_metrics);
-                shadow.set_size(
+                scale_buffer_for_render(
+                    &mut shadow,
                     &mut font_system.0,
-                    Some(render_size.x),
-                    Some(render_size.y),
+                    scaled_metrics,
+                    render_size,
                 );
-                shadow.shape_until_scroll(&mut font_system.0, false);
 
                 shadow.draw(
                     &mut font_system.0,
