@@ -77,11 +77,19 @@ fn draw_pixel(buffer: &mut [u8], width: i32, height: i32, x: i32, y: i32, color:
 
 /// Prepares a cloned [`cosmic_text::Buffer`] for high-res (`render_scale > 1.0`) rendering.
 ///
-/// Scales **only** `metrics` and the buffer size — the GPU texture is enlarged and
+/// Scales **only** metrics and the buffer size — the GPU texture is enlarged and
 /// glyphs are rasterized at higher resolution, but the *logical layout* (which lines
 /// are visible, where wrapping happens) is unchanged. The shadow buffer is a
 /// high-resolution viewport; the scroll state that decides *which logical line to
 /// start drawing from* is copied from the original buffer as-is.
+///
+/// The scaled metrics are derived from **this buffer's own current metrics** ×
+/// `render_scale`, NOT from the caller's `CosmicEditBuffer`. When focused, the
+/// source clone is the `editor`'s internal buffer (e.g. font 14 / line 18, no DPI
+/// applied); when unfocused, it's `CosmicEditBuffer` (e.g. font 28 / line 36,
+/// already DPI-scaled by `set_initial_scale`). Scaling each clone against its own
+/// metrics avoids the double-scale bug where the focused path would otherwise be
+/// handed the DPI-scaled 28/36 baseline.
 ///
 /// `Buffer.scroll` is deliberately **left untouched**. `Scroll::vertical` is a pixel
 /// offset *within* `Scroll::line` (see `cosmic_text::Scroll`), normally 0 for a
@@ -97,12 +105,14 @@ fn draw_pixel(buffer: &mut [u8], width: i32, height: i32, x: i32, y: i32, color:
 fn scale_buffer_for_render(
     buffer: &mut cosmic_text::Buffer,
     font_system: &mut cosmic_text::FontSystem,
-    metrics: Metrics,
+    render_scale: f32,
     render_size: Vec2,
 ) {
+    let m = buffer.metrics();
+    let scaled_metrics = Metrics::new(m.font_size * render_scale, m.line_height * render_scale);
     buffer.set_metrics_and_size(
         font_system,
-        metrics,
+        scaled_metrics,
         Some(render_size.x),
         Some(render_size.y),
     );
@@ -236,10 +246,6 @@ fn render_texture(
         if render_scale > 1.001 {
             // High-res path: clone the buffer, apply scaled metrics + size, shape, draw.
             // Original buffer/editor are NOT modified, so layout and hit-testing stay correct.
-            let scaled_metrics = {
-                let m = buffer.metrics();
-                Metrics::new(m.font_size * render_scale, m.line_height * render_scale)
-            };
 
             if let Some(mut editor) = editor {
                 if !editor.redraw() {
@@ -254,7 +260,7 @@ fn render_texture(
                     scale_buffer_for_render(
                         &mut clone,
                         &mut font_system.0,
-                        scaled_metrics,
+                        render_scale,
                         render_size,
                     );
                     clone
@@ -294,7 +300,7 @@ fn render_texture(
                 scale_buffer_for_render(
                     &mut shadow,
                     &mut font_system.0,
-                    scaled_metrics,
+                    render_scale,
                     render_size,
                 );
 
