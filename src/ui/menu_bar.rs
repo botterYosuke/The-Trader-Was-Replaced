@@ -268,6 +268,8 @@ pub fn handle_strategy_run_system(
             if let Err(e) = sender.tx.send(cmd) {
                 error!("failed to send RunStrategy command: {}", e);
             }
+        } else {
+            error!("RunStrategy: TransportCommandSender is None — backend not connected");
         }
     }
 }

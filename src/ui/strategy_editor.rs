@@ -1,3 +1,4 @@
+use crate::trading::{LastRunResult, RunState};
 use crate::ui::components::{
     OpenStrategyRequested, PanelKind, StrategyBuffer, StrategyRunRequested,
 };
@@ -197,7 +198,12 @@ pub fn spawn_strategy_editor_panel(commands: &mut Commands, font_system: &mut Co
         StrategyRunButton,
         |_trigger: Trigger<Pointer<Click>>,
          buffer: Res<StrategyBuffer>,
+         last_run: Res<LastRunResult>,
          mut run_events: EventWriter<StrategyRunRequested>| {
+            if matches!(last_run.state, RunState::Running) {
+                warn!("Run blocked: already running");
+                return;
+            }
             let can_run = buffer.cache_path.is_some() && !buffer.dirty;
             if !can_run {
                 return;
@@ -330,11 +336,13 @@ pub fn sync_editor_to_strategy_buffer_system(
 /// 早期 return するので、ここでは見た目だけ揃える役割。
 pub fn update_strategy_button_visuals_system(
     buffer: Res<StrategyBuffer>,
+    last_run: Res<LastRunResult>,
     mut save_q: Query<&mut Sprite, (With<StrategySaveButton>, Without<StrategyRunButton>)>,
     mut run_q: Query<&mut Sprite, (With<StrategyRunButton>, Without<StrategySaveButton>)>,
 ) {
     let can_save = buffer.cache_path.is_some() && buffer.dirty;
-    let can_run = buffer.cache_path.is_some() && !buffer.dirty;
+    let is_running = matches!(last_run.state, RunState::Running);
+    let can_run = buffer.cache_path.is_some() && !buffer.dirty && !is_running;
 
     for mut sprite in &mut save_q {
         sprite.color.set_alpha(if can_save {
