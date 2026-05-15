@@ -17,8 +17,8 @@ pub mod window;
 use crate::ui::buying_power::buying_power_panel_system;
 use crate::ui::chart::chart_render_system;
 use crate::ui::components::{
-    OpenStrategyRequested, PanelSpawnRequested, ScenarioMetadata, StrategyBuffer,
-    StrategyRunRequested, WindowManager,
+    OpenStrategyRequested, PanelSpawnRequested, PendingStrategyLoad, ScenarioMetadata,
+    StrategyBuffer, StrategyRunRequested, WindowManager,
 };
 use crate::ui::floating_window::panel_spawn_dispatcher_system;
 use crate::ui::footer::{
@@ -34,7 +34,10 @@ use crate::ui::orders::orders_panel_system;
 use crate::ui::positions::positions_panel_system;
 use crate::ui::run_result_panel::run_result_panel_system;
 use crate::ui::scenario_parser::parse_scenario_system;
-use crate::ui::sidebar::{panel_button_system, spawn_sidebar, update_sidebar_system};
+use crate::ui::sidebar::{
+    panel_button_system, process_pending_strategy_load_system, spawn_sidebar,
+    update_sidebar_system,
+};
 use crate::ui::strategy_editor::{
     sync_editor_to_strategy_buffer_system, sync_strategy_buffer_to_editor_system,
     update_strategy_button_visuals_system, update_strategy_editor_zoom_system,
@@ -56,6 +59,7 @@ impl Plugin for UiPlugin {
         ))
         .init_resource::<WindowManager>()
         .init_resource::<StrategyBuffer>()
+        .init_resource::<PendingStrategyLoad>()
         .add_event::<OpenStrategyRequested>()
         .add_event::<StrategyRunRequested>()
         .add_event::<PanelSpawnRequested>()
@@ -83,6 +87,7 @@ impl Plugin for UiPlugin {
                 update_sidebar_system,
                 panel_button_system,
                 panel_spawn_dispatcher_system,
+                process_pending_strategy_load_system.before(open_strategy_buffer_system),
             ),
         )
         .add_systems(

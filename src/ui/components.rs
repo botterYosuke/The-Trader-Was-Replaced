@@ -64,6 +64,15 @@ pub struct OpenStrategyRequested {
     pub path: std::path::PathBuf,
 }
 
+/// Strategy Editor が未スポーンの状態でファイルが選択されたとき、
+/// PanelSpawnRequested と同時に OpenStrategyRequested を発火すると
+/// editor entity がまだ存在せず buffer→editor 同期が空振りする。
+/// 1 フレーム遅延させて editor entity の出現を待つためのキュー。
+#[derive(Resource, Default, Debug, Clone)]
+pub struct PendingStrategyLoad {
+    pub path: Option<std::path::PathBuf>,
+}
+
 #[derive(Resource, Default, Debug, Clone)]
 pub struct StrategyBuffer {
     pub original_path: Option<std::path::PathBuf>,
