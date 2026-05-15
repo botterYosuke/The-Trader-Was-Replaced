@@ -1,4 +1,5 @@
 use crate::trading::{StrategyRunConfig, TransportCommand, TransportCommandSender};
+use crate::ui::app_state::{load_app_state, save_app_state, AppState};
 use crate::ui::components::ScenarioMetadata;
 use crate::ui::components::{
     MenuBarRoot, MenuButton, OpenStrategyRequested, StrategyBuffer, StrategyRunRequested,
@@ -138,6 +139,21 @@ pub fn menu_button_system(
     }
 }
 
+/// 起動時に app_state.json を読み、`last_strategy_path` が存在すれば
+/// `OpenStrategyRequested` を発火してストラテジーを自動復元する。
+/// Startup schedule で 1 回だけ実行される。
+pub fn restore_last_strategy_system(mut events: EventWriter<OpenStrategyRequested>) {
+    let state = load_app_state();
+    if let Some(path) = state.last_strategy_path {
+        if path.exists() {
+            info!("restore_last_strategy: firing OpenStrategyRequested for {:?}", path);
+            events.send(OpenStrategyRequested { path });
+        } else {
+            info!("restore_last_strategy: path {:?} not found, skipping", path);
+        }
+    }
+}
+
 pub fn log_open_strategy_requested_system(mut events: EventReader<OpenStrategyRequested>) {
     for event in events.read() {
         info!("open strategy selected: {:?}", event.path);
@@ -226,6 +242,15 @@ pub fn open_strategy_buffer_system(
                         error!("failed to compute cache path for {:?}", event.path);
                         buffer.cache_path = None;
                     }
+                }
+
+                // app_state.json に last_strategy_path を永続化する
+                let state = AppState {
+                    last_strategy_path: Some(event.path.clone()),
+                    ..AppState::default()
+                };
+                if let Err(e) = save_app_state(&state) {
+                    error!("failed to save app_state: {e}");
                 }
             }
             Err(err) => {

@@ -352,11 +352,11 @@ Phase 7.6 のスコープ外として放置。
 | 7.7 サブステップ | 内容 | 備考 |
 |---|---|---|
 | ~~**7.6 残課題**~~ | ✅ Load 時に Strategy Editor の .py 内容を復元 | `SidecarLayout.strategy_path` 追加。2026-05-15 完了 |
-| 7A | `app_state.json` で前回の `.py` を永続化 | |
-| 7B | 起動時に `last_strategy_path` を自動 open | |
-| 7C | Open 直後にサイドカー `.json` を自動 Load | |
-| 7D | ドラッグ/リサイズ後の 1 秒デバウンス自動保存 | |
-| 7E | viewport (camera pan/zoom) の保存・復元 | viewport は既に JSON に含まれ復元も動作中 (2026-05-15 確認) |
-| 7F | `selected_symbol` の保存・復元（スキーマ拡張あり） | |
+| 7A | ✅ `app_state.json` で前回の `.py` を永続化 | `src/ui/app_state.rs` 新規作成。2026-05-15 完了 |
+| 7B | ✅ 起動時に `last_strategy_path` を自動 open | `restore_last_strategy_system` を Startup に追加。2026-05-15 完了 |
+| 7C | ✅ Open 直後にサイドカー `.json` を自動 Load | `PendingLayoutLoad` + `watch_open_strategy_for_sidecar_system` + `auto_load_sidecar_system`。2026-05-15 完了 |
+| 7D | ✅ ドラッグ/リサイズ後の 1 秒デバウンス自動保存 | `AutoSaveState` + `mark_dirty_on_drag_system` (observer) + `debounced_autosave_system`。2026-05-15 完了 |
+| 7E | ✅ viewport (camera pan/zoom) の保存・復元 | viewport は既に JSON に含まれ復元も動作中。PanCam 競合なし確認。2026-05-15 完了 |
+| 7F | ✅ `selected_symbol` の保存・復元（スキーマ拡張あり） | `SidecarLayout.selected_symbol: Option<String>` 追加（`#[serde(default)]`）。収集・復元は将来フェーズで実装予定。2026-05-15 完了 |
 
 本フェーズ (7.6) では **手動操作 (Ctrl+S/Ctrl+Shift+S/Ctrl+O) と AppExit のみ**。「アプリを開き直したら前回の続きから始まる」体験は 7.7 で完成する。

@@ -1,3 +1,4 @@
+pub mod app_state;
 pub mod button;
 pub mod buying_power;
 pub mod chart;
@@ -29,7 +30,7 @@ use crate::ui::footer::{
 use crate::ui::menu_bar::{
     handle_strategy_run_system, log_open_strategy_requested_system,
     log_strategy_run_requested_system, menu_button_system, open_strategy_buffer_system,
-    spawn_menu_bar, update_strategy_status_label_system,
+    restore_last_strategy_system, spawn_menu_bar, update_strategy_status_label_system,
 };
 use crate::ui::orders::orders_panel_system;
 use crate::ui::positions::positions_panel_system;
@@ -66,7 +67,16 @@ impl Plugin for UiPlugin {
         .add_event::<StrategyRunRequested>()
         .add_event::<PanelSpawnRequested>()
         .init_resource::<ScenarioMetadata>()
-        .add_systems(Startup, (spawn_footer, spawn_menu_bar, spawn_sidebar))
+        .add_systems(
+            Startup,
+            (
+                spawn_footer,
+                spawn_menu_bar,
+                spawn_sidebar,
+                // 起動時に前回のストラテジーを復元する（OpenStrategyRequested 発火）
+                restore_last_strategy_system,
+            ),
+        )
         .add_systems(
             Update,
             (
