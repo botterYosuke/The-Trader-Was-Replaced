@@ -1,5 +1,5 @@
 use crate::ui::buying_power::spawn_buying_power_panel;
-use crate::ui::components::{PanelKind, PanelSpawnRequested, TitleBar, WindowManager, WindowRoot};
+use crate::ui::components::{CloseButton, PanelKind, PanelSpawnRequested, TitleBar, WindowManager, WindowRoot};
 use crate::ui::orders::spawn_orders_panel;
 use crate::ui::positions::spawn_positions_panel;
 use crate::ui::run_result_panel::spawn_run_result_panel;
@@ -131,6 +131,47 @@ pub fn spawn_floating_window(
         .spawn(Transform::from_xyz(0.0, -title_bar_half, 0.1))
         .id();
     commands.entity(root).add_child(content_area);
+
+    // ─── 7. Close button (× — タイトルバー右端。root 直下に置くことで
+    //        title_bar の Drag observer が伝播しないようにする) ───
+    const CLOSE_BTN_SIZE: f32 = 20.0;
+    const CLOSE_BTN_MARGIN: f32 = 8.0;
+    let close_btn_x = spec.size.x / 2.0 - CLOSE_BTN_SIZE / 2.0 - CLOSE_BTN_MARGIN;
+    let close_btn = commands
+        .spawn((
+            Sprite {
+                color: Color::srgba(0.6, 0.15, 0.15, 0.85),
+                custom_size: Some(Vec2::splat(CLOSE_BTN_SIZE)),
+                ..default()
+            },
+            Transform::from_xyz(close_btn_x, title_bar_y, 0.2),
+            CloseButton,
+        ))
+        .observe(
+            |trigger: Trigger<Pointer<Click>>,
+             parent_query: Query<&Parent>,
+             mut commands: Commands| {
+                // CloseButton の親が root なので 1 hop で辿れる
+                if let Ok(parent) = parent_query.get(trigger.entity()) {
+                    commands.entity(parent.get()).despawn_recursive();
+                }
+            },
+        )
+        .id();
+    commands.entity(root).add_child(close_btn);
+
+    // × テキスト（ボタンの子）
+    commands
+        .spawn((
+            Text2d::new("×"),
+            TextFont {
+                font_size: 14.0,
+                ..default()
+            },
+            TextColor(Color::WHITE),
+            Transform::from_xyz(0.0, 0.0, 0.1),
+        ))
+        .set_parent(close_btn);
 
     (root, content_area, title_bar)
 }

@@ -157,8 +157,13 @@ pub fn spawn_strategy_editor_panel(commands: &mut Commands, font_system: &mut Co
     commands.insert_resource(FocusedWidget(Some(editor)));
 
     // ── Save Cache / Run ボタンをタイトルバー右端に積む ───────────────
-    let title_bar_right_inner =
-        PANEL_SIZE.x / 2.0 - TITLE_BAR_BUTTON_SIZE.x / 2.0 - TITLE_BAR_BUTTON_GAP;
+    // floating_window.rs が右端に × ボタン(20px + margin 8px×2 = 36px) を置くため、
+    // タイトルバーボタンはその分だけ左に退避させる。
+    const CLOSE_BTN_RESERVED: f32 = 36.0; // 20(btn) + 8(margin_right) + 8(gap)
+    let title_bar_right_inner = PANEL_SIZE.x / 2.0
+        - TITLE_BAR_BUTTON_SIZE.x / 2.0
+        - TITLE_BAR_BUTTON_GAP
+        - CLOSE_BTN_RESERVED;
     let run_x = title_bar_right_inner;
     let save_x = run_x - TITLE_BAR_BUTTON_SIZE.x - TITLE_BAR_BUTTON_GAP;
 

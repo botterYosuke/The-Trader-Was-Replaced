@@ -185,7 +185,7 @@ pub fn panel_button_system(
     >,
     mut spawn_events: EventWriter<PanelSpawnRequested>,
     mut pending: ResMut<PendingStrategyLoad>,
-    existing: Query<&PanelKind, With<WindowRoot>>,
+    existing_kinds: Query<&PanelKind, With<WindowRoot>>,
 ) {
     for (interaction, mut bg, kind) in &mut query {
         match interaction {
@@ -193,9 +193,9 @@ pub fn panel_button_system(
                 bg.0 = BTN_PRESSED;
                 if matches!(kind, PanelKind::StrategyEditor) {
                     // Strategy Editor ボタンは「panel を 1 回だけ起動する」役割を兼ねる。
-                    // 既に開いている場合はダイアログを出さず無視する（二重起動防止）。
-                    // 再ロードしたいときは File メニューの "Open Strategy..." を使う。
-                    let panel_exists = existing.iter().any(|k| *k == PanelKind::StrategyEditor);
+                    // × ボタンで despawn 済みの場合は entity が無いので通常通り spawn される。
+                    // 既にパネルが存在する場合は二重起動防止のため無視する。
+                    let panel_exists = existing_kinds.iter().any(|k| *k == PanelKind::StrategyEditor);
                     if panel_exists {
                         info!("sidebar: strategy editor already open, ignoring click");
                         continue;
@@ -217,7 +217,12 @@ pub fn panel_button_system(
                     pending.path = Some(path);
                     spawn_events.send(PanelSpawnRequested { kind: *kind });
                 } else {
-                    spawn_events.send(PanelSpawnRequested { kind: *kind });
+                    // Strategy Editor 以外のパネルボタン:
+                    // × で despawn 済みなら entity が無いので spawn される。
+                    // 既に存在する場合は二重 spawn 防止のため skip。
+                    if !existing_kinds.iter().any(|k| k == kind) {
+                        spawn_events.send(PanelSpawnRequested { kind: *kind });
+                    }
                 }
             }
             Interaction::Hovered => bg.0 = BTN_HOVER,

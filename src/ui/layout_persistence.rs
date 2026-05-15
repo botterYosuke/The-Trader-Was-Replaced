@@ -73,6 +73,17 @@ pub struct AutoSaveState {
     pub last_change: Option<Instant>,
 }
 
+/// 起動時の sidecar 自動ロードをワンショットに制限するフラグ。
+///
+/// `watch_open_strategy_for_sidecar_system` がこのフラグを確認し、
+/// `done == true` なら以降の `OpenStrategyRequested` イベントを読み捨てる。
+/// これにより `apply_layout_system` が strategy_path を復元した後に
+/// 再び `OpenStrategyRequested` が発火しても sidecar ロードが無限ループしない。
+#[derive(Resource, Default)]
+pub struct SidecarAutoLoadState {
+    pub done: bool,
+}
+
 #[derive(Event, Debug, Clone)]
 pub struct LayoutSaveRequested;
 
@@ -415,10 +426,20 @@ fn debounced_autosave_system(
 
 /// `OpenStrategyRequested` を監視し、同名の `.json` が存在すれば
 /// `PendingLayoutLoad` にパスをセットする（1 フレーム遅延ロードのため）。
+///
+/// `SidecarAutoLoadState::done` が true の場合はイベントを読み捨てて即リターンする。
+/// これにより `apply_layout_system` が strategy_path 復元のために
+/// `OpenStrategyRequested` を再発火しても sidecar ロードが無限ループしない。
 fn watch_open_strategy_for_sidecar_system(
     mut events: EventReader<OpenStrategyRequested>,
+    mut state: ResMut<SidecarAutoLoadState>,
     mut pending: ResMut<PendingLayoutLoad>,
 ) {
+    if state.done {
+        // ワンショット済み: イベントを消費して次フレームに残さない
+        for _ in events.read() {}
+        return;
+    }
     for event in events.read() {
         let sidecar = event.path.with_extension("json");
         if sidecar.exists() {
@@ -427,6 +448,8 @@ fn watch_open_strategy_for_sidecar_system(
                 sidecar
             );
             pending.path = Some(sidecar);
+            // ワンショット: 以降の OpenStrategyRequested は sidecar ロードをスキップ
+            state.done = true;
         }
     }
 }
@@ -487,6 +510,7 @@ impl Plugin for LayoutPersistencePlugin {
         app.init_resource::<PendingLayoutApply>()
             .init_resource::<PendingLayoutLoad>()
             .init_resource::<AutoSaveState>()
+            .init_resource::<SidecarAutoLoadState>()
             .add_event::<LayoutSaveRequested>()
             .add_event::<LayoutSaveAsRequested>()
             .add_event::<LayoutLoadDialogRequested>()

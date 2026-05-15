@@ -99,6 +99,11 @@ pub struct SidebarRoot;
 #[derive(Component)]
 pub struct SidebarListLabel;
 
+/// floating window の × ボタンに貼るマーカー。
+/// Click observer がこの entity の祖先 WindowRoot を Visibility::Hidden にする。
+#[derive(Component)]
+pub struct CloseButton;
+
 #[derive(Resource, Default, Debug, Clone)]
 pub struct ScenarioMetadata {
     pub schema_version: Option<u32>,
