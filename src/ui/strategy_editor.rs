@@ -1,7 +1,7 @@
 use crate::trading::{LastRunResult, RunState};
 use crate::ui::components::{
-    OpenStrategyRequested, PanelKind, PanelSpawnRequested, PanelSpawnSource, StrategyBuffer,
-    StrategyRunRequested, WindowRoot,
+    OpenStrategyRequested, PanelKind, PanelSpawnRequested, PanelSpawnSource, RedoMenuRequested,
+    StrategyBuffer, StrategyRunRequested, UndoMenuRequested, WindowRoot,
 };
 use crate::ui::editor_history::{
     AppEditAction, AppHistory, PendingStrategySnapshotRestore, UndoRedoApplied,
@@ -369,23 +369,27 @@ pub fn undo_redo_system(
     time: Res<Time>,
     mut cooldown: Local<f32>,
     mut history: ResMut<AppHistory>,
+    mut undo_menu_ev: EventReader<UndoMenuRequested>,
+    mut redo_menu_ev: EventReader<RedoMenuRequested>,
     // UndoRedoApplied は apply_pending_app_edits_system がテキスト変更時のみ送る。
     // ここで送ると Window spawn/despawn undo でも editor set_text が走りカーソルリセットが起きる。
 ) {
+    let menu_undo = undo_menu_ev.read().next().is_some();
+    let menu_redo = redo_menu_ev.read().next().is_some();
+
     *cooldown = (*cooldown - time.delta_secs()).max(0.0);
-    if *cooldown > 0.0 {
+    if *cooldown > 0.0 && !menu_undo && !menu_redo {
         return;
     }
 
     let ctrl = keys.pressed(KeyCode::ControlLeft) || keys.pressed(KeyCode::ControlRight);
-    if !ctrl {
-        return;
-    }
     let shift = keys.pressed(KeyCode::ShiftLeft) || keys.pressed(KeyCode::ShiftRight);
 
-    let do_undo = keys.just_pressed(KeyCode::KeyZ) && !shift;
-    let do_redo = keys.just_pressed(KeyCode::KeyY)
-        || (keys.just_pressed(KeyCode::KeyZ) && shift);
+    let do_undo = menu_undo || (ctrl && keys.just_pressed(KeyCode::KeyZ) && !shift);
+    let do_redo = menu_redo
+        || (ctrl
+            && (keys.just_pressed(KeyCode::KeyY)
+                || (keys.just_pressed(KeyCode::KeyZ) && shift)));
 
     if do_undo {
         history.replaying_depth += 1;

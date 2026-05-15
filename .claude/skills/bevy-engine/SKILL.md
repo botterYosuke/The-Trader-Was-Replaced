@@ -269,6 +269,14 @@ egui の中で `state.buffer` のような大きい String を編集するとき
   のが正解。診断は `info!` で `buffer.metrics().font_size` と
   `editor.with_buffer(|b| b.metrics().font_size)` を同時に出すと一目瞭然。
   詳細は memory `cosmic-edit-buffer-metrics-dpi-trap.md`。
+- **Alt+F など修飾キーショートカットが bevy_cosmic_edit に「f」として書き込まれる**:
+  `ButtonInput<KeyCode>` で Alt+キーを検出して処理した後、**同フレームで**
+  `ResMut<Events<KeyboardInput>>` の `.clear()` を呼ぶことで `bevy_cosmic_edit` が
+  そのフレームの keyboard イベントを読めなくなる。`.clear()` は `EventReader` の
+  カーソルとは独立した一括削除なので、自分より前に読み終えた system には影響しない。
+  **実行順を守ること**: `.clear()` を呼ぶ system を `bevy_cosmic_edit` の input system
+  より `.before()` で前に走らせる（例: `.add_systems(Update, change_active_editor_sprite.after(menu_keyboard_system))`）。
+  `src/ui/menu_bar.rs::menu_keyboard_system` が実装例。
 
 ## ground truth ソースの引き方
 

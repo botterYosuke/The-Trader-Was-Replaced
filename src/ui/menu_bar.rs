@@ -2,28 +2,30 @@ use crate::trading::{StrategyRunConfig, TransportCommand, TransportCommandSender
 use crate::ui::app_state::{load_app_state, save_app_state, AppState};
 use crate::ui::components::ScenarioMetadata;
 use crate::ui::components::{
-    MenuBarRoot, MenuButton, OpenStrategyRequested, StrategyBuffer, StrategyRunRequested,
-    StrategyStatusLabel,
+    MenuBarRoot, MenuItem, MenuPopup, MenuTopLevel, OpenMenu, OpenStrategyRequested,
+    RedoMenuRequested, StrategyBuffer, StrategyRunRequested, StrategyStatusLabel,
+    UndoMenuRequested,
 };
 use crate::ui::layout_persistence::{
     LayoutLoadDialogRequested, LayoutSaveAsRequested, LayoutSaveRequested,
 };
+use bevy::input::keyboard::KeyboardInput;
 use bevy::prelude::*;
-use rfd::FileDialog;
 use sha2::{Digest, Sha256};
 
 const BTN_NORMAL: Color = Color::srgba(0.10, 0.10, 0.16, 1.0);
 const BTN_HOVER: Color = Color::srgba(0.20, 0.20, 0.30, 1.0);
 const BTN_PRESSED: Color = Color::srgba(0.30, 0.30, 0.48, 1.0);
 
-fn spawn_menu_btn(parent: &mut ChildBuilder, label: &str, action: MenuButton) {
+fn spawn_menu_item(parent: &mut ChildBuilder, label: &str, action: MenuItem) {
     parent
         .spawn((
             Button,
             Node {
-                padding: UiRect::axes(Val::Px(10.0), Val::Px(2.0)),
-                justify_content: JustifyContent::Center,
+                padding: UiRect::axes(Val::Px(10.0), Val::Px(4.0)),
+                justify_content: JustifyContent::FlexStart,
                 align_items: AlignItems::Center,
+                width: Val::Percent(100.0),
                 ..default()
             },
             BackgroundColor(BTN_NORMAL),
@@ -54,31 +56,107 @@ pub fn spawn_menu_bar(mut commands: Commands) {
                 align_items: AlignItems::Center,
                 column_gap: Val::Px(2.0),
                 padding: UiRect::horizontal(Val::Px(4.0)),
+                overflow: Overflow::visible(),
                 ..default()
             },
             BackgroundColor(Color::srgba(0.07, 0.07, 0.11, 0.95)),
             MenuBarRoot,
         ))
         .with_children(|p| {
+            // [ファイル ▾] トップレベルボタン
             p.spawn((
-                Text::new("File"),
-                TextFont {
-                    font_size: 12.0,
+                Button,
+                Node {
+                    overflow: Overflow::visible(),
+                    padding: UiRect::axes(Val::Px(10.0), Val::Px(2.0)),
+                    align_items: AlignItems::Center,
+                    position_type: PositionType::Relative,
                     ..default()
                 },
-                TextColor(Color::srgb(0.65, 0.65, 0.65)),
-            ));
+                BackgroundColor(BTN_NORMAL),
+                MenuTopLevel::File,
+            ))
+            .with_children(|p| {
+                p.spawn((
+                    Text::new("File(&F)"),
+                    TextFont {
+                        font_size: 12.0,
+                        ..default()
+                    },
+                    TextColor(Color::srgb(0.82, 0.82, 0.82)),
+                ));
+                // File popup
+                p.spawn((
+                    Node {
+                        display: Display::None,
+                        position_type: PositionType::Absolute,
+                        top: Val::Px(22.0),
+                        left: Val::Px(0.0),
+                        flex_direction: FlexDirection::Column,
+                        min_width: Val::Px(200.0),
+                        ..default()
+                    },
+                    BackgroundColor(Color::srgba(0.10, 0.10, 0.16, 0.98)),
+                    GlobalZIndex(100),
+                    MenuPopup(MenuTopLevel::File),
+                ))
+                .with_children(|p| {
+                    spawn_menu_item(p, "Save (Ctrl+S)", MenuItem::SaveLayout);
+                    spawn_menu_item(p, "Save As (Ctrl+Shift+S)", MenuItem::SaveLayoutAs);
+                    spawn_menu_item(p, "Load (Ctrl+O)", MenuItem::LoadLayout);
+                });
+            });
 
-            spawn_menu_btn(p, "Open Strategy...", MenuButton::OpenStrategy);
-            spawn_menu_btn(p, "Save (Ctrl+S)", MenuButton::SaveLayout);
-            spawn_menu_btn(p, "Save As (Ctrl+Shift+S)", MenuButton::SaveLayoutAs);
-            spawn_menu_btn(p, "Load (Ctrl+O)", MenuButton::LoadLayout);
+            // [編集 ▾] トップレベルボタン
+            p.spawn((
+                Button,
+                Node {
+                    overflow: Overflow::visible(),
+                    padding: UiRect::axes(Val::Px(10.0), Val::Px(2.0)),
+                    align_items: AlignItems::Center,
+                    position_type: PositionType::Relative,
+                    ..default()
+                },
+                BackgroundColor(BTN_NORMAL),
+                MenuTopLevel::Edit,
+            ))
+            .with_children(|p| {
+                p.spawn((
+                    Text::new("Edit(&E)"),
+                    TextFont {
+                        font_size: 12.0,
+                        ..default()
+                    },
+                    TextColor(Color::srgb(0.82, 0.82, 0.82)),
+                ));
+                // Edit popup
+                p.spawn((
+                    Node {
+                        display: Display::None,
+                        position_type: PositionType::Absolute,
+                        top: Val::Px(22.0),
+                        left: Val::Px(0.0),
+                        flex_direction: FlexDirection::Column,
+                        min_width: Val::Px(160.0),
+                        ..default()
+                    },
+                    BackgroundColor(Color::srgba(0.10, 0.10, 0.16, 0.98)),
+                    GlobalZIndex(100),
+                    MenuPopup(MenuTopLevel::Edit),
+                ))
+                .with_children(|p| {
+                    spawn_menu_item(p, "Undo (Ctrl+Z)", MenuItem::Undo);
+                    spawn_menu_item(p, "Redo (Ctrl+Y)", MenuItem::Redo);
+                });
+            });
 
+            // spacer
             p.spawn(Node {
                 flex_grow: 1.0,
                 ..default()
             });
 
+            // strategy status label
             p.spawn((
                 Text::new("strategy: none"),
                 TextFont {
@@ -91,46 +169,105 @@ pub fn spawn_menu_bar(mut commands: Commands) {
         });
 }
 
-#[allow(clippy::type_complexity)]
-pub fn menu_button_system(
+pub fn menu_top_level_system(
     mut query: Query<
-        (&Interaction, &mut BackgroundColor, &MenuButton),
+        (&Interaction, &mut BackgroundColor, &MenuTopLevel),
         (Changed<Interaction>, With<Button>),
     >,
-    mut open_strategy_events: EventWriter<OpenStrategyRequested>,
-    mut save_ev: EventWriter<LayoutSaveRequested>,
-    mut save_as_ev: EventWriter<LayoutSaveAsRequested>,
-    mut load_ev: EventWriter<LayoutLoadDialogRequested>,
+    mut open_menu: ResMut<OpenMenu>,
 ) {
-    for (interaction, mut bg, action) in &mut query {
+    for (interaction, mut bg, top) in &mut query {
         match interaction {
             Interaction::Pressed => {
                 bg.0 = BTN_PRESSED;
-                match action {
-                    MenuButton::OpenStrategy => {
-                        info!("menu: open strategy requested");
-                        if let Some(path) = FileDialog::new()
-                            .add_filter("Python strategy", &["py"])
-                            .set_directory("python/tests/data")
-                            .pick_file()
-                        {
-                            info!("menu: selected strategy: {:?}", path);
-                            open_strategy_events.send(OpenStrategyRequested { path });
-                        } else {
-                            info!("menu: open strategy canceled");
-                        }
-                    }
-                    MenuButton::SaveLayout => {
+                open_menu.0 = if open_menu.0 == Some(*top) {
+                    None
+                } else {
+                    Some(*top)
+                };
+            }
+            Interaction::Hovered => bg.0 = BTN_HOVER,
+            Interaction::None => bg.0 = BTN_NORMAL,
+        }
+    }
+}
+
+pub fn sync_menu_popup_visibility_system(
+    open_menu: Res<OpenMenu>,
+    mut popup_q: Query<(&MenuPopup, &mut Node)>,
+) {
+    if !open_menu.is_changed() {
+        return;
+    }
+    for (popup, mut node) in &mut popup_q {
+        node.display = if open_menu.0 == Some(popup.0) {
+            Display::Flex
+        } else {
+            Display::None
+        };
+    }
+}
+
+pub fn menu_keyboard_system(
+    keys: Res<ButtonInput<KeyCode>>,
+    mut open_menu: ResMut<OpenMenu>,
+    mut kb_events: ResMut<Events<KeyboardInput>>,
+) {
+    let alt = keys.pressed(KeyCode::AltLeft) || keys.pressed(KeyCode::AltRight);
+    if !alt {
+        return;
+    }
+    let handled = if keys.just_pressed(KeyCode::KeyF) {
+        open_menu.0 = if open_menu.0 == Some(MenuTopLevel::File) { None } else { Some(MenuTopLevel::File) };
+        true
+    } else if keys.just_pressed(KeyCode::KeyE) {
+        open_menu.0 = if open_menu.0 == Some(MenuTopLevel::Edit) { None } else { Some(MenuTopLevel::Edit) };
+        true
+    } else {
+        false
+    };
+    if handled {
+        kb_events.clear();
+    }
+}
+
+pub fn menu_item_system(
+    mut query: Query<
+        (&Interaction, &mut BackgroundColor, &MenuItem),
+        (Changed<Interaction>, With<Button>),
+    >,
+    mut open_menu: ResMut<OpenMenu>,
+    mut save_ev: EventWriter<LayoutSaveRequested>,
+    mut save_as_ev: EventWriter<LayoutSaveAsRequested>,
+    mut load_ev: EventWriter<LayoutLoadDialogRequested>,
+    mut undo_ev: EventWriter<UndoMenuRequested>,
+    mut redo_ev: EventWriter<RedoMenuRequested>,
+) {
+    for (interaction, mut bg, item) in &mut query {
+        match interaction {
+            Interaction::Pressed => {
+                bg.0 = BTN_PRESSED;
+                open_menu.0 = None;
+                match item {
+                    MenuItem::SaveLayout => {
                         info!("menu: save layout requested");
                         save_ev.send(LayoutSaveRequested);
                     }
-                    MenuButton::SaveLayoutAs => {
+                    MenuItem::SaveLayoutAs => {
                         info!("menu: save layout as requested");
                         save_as_ev.send(LayoutSaveAsRequested);
                     }
-                    MenuButton::LoadLayout => {
+                    MenuItem::LoadLayout => {
                         info!("menu: load layout requested");
                         load_ev.send(LayoutLoadDialogRequested);
+                    }
+                    MenuItem::Undo => {
+                        info!("menu: undo requested");
+                        undo_ev.send(UndoMenuRequested);
+                    }
+                    MenuItem::Redo => {
+                        info!("menu: redo requested");
+                        redo_ev.send(RedoMenuRequested);
                     }
                 }
             }

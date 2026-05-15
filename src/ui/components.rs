@@ -55,12 +55,25 @@ pub struct SpeedButton(pub u32);
 pub struct MenuBarRoot;
 
 #[derive(Component, Clone, Copy, Debug, PartialEq, Eq)]
-pub enum MenuButton {
-    OpenStrategy,
+pub enum MenuTopLevel {
+    File,
+    Edit,
+}
+
+#[derive(Component, Clone, Copy, Debug, PartialEq, Eq)]
+pub enum MenuItem {
     SaveLayout,
     SaveLayoutAs,
     LoadLayout,
+    Undo,
+    Redo,
 }
+
+#[derive(Component, Clone, Copy, Debug, PartialEq, Eq)]
+pub struct MenuPopup(pub MenuTopLevel);
+
+#[derive(Resource, Default)]
+pub struct OpenMenu(pub Option<MenuTopLevel>);
 
 #[derive(Event, Debug, Clone)]
 pub struct OpenStrategyRequested {
@@ -161,3 +174,9 @@ pub struct PanelSpawnRequested {
     pub kind: PanelKind,
     pub source: PanelSpawnSource,
 }
+
+#[derive(Event, Debug, Clone)]
+pub struct UndoMenuRequested;
+
+#[derive(Event, Debug, Clone)]
+pub struct RedoMenuRequested;

@@ -20,8 +20,8 @@ pub mod window;
 use crate::ui::buying_power::buying_power_panel_system;
 use crate::ui::chart::chart_render_system;
 use crate::ui::components::{
-    OpenStrategyRequested, PanelSpawnRequested, PendingStrategyLoad, ScenarioMetadata,
-    StrategyBuffer, StrategyRunRequested, WindowManager,
+    OpenMenu, OpenStrategyRequested, PanelSpawnRequested, PendingStrategyLoad, RedoMenuRequested,
+    ScenarioMetadata, StrategyBuffer, StrategyRunRequested, UndoMenuRequested, WindowManager,
 };
 use crate::ui::floating_window::panel_spawn_dispatcher_system;
 use crate::ui::footer::{
@@ -30,8 +30,9 @@ use crate::ui::footer::{
 };
 use crate::ui::menu_bar::{
     handle_strategy_run_system, log_open_strategy_requested_system,
-    log_strategy_run_requested_system, menu_button_system, open_strategy_buffer_system,
-    restore_last_strategy_system, spawn_menu_bar, update_strategy_status_label_system,
+    log_strategy_run_requested_system, menu_item_system, menu_keyboard_system,
+    menu_top_level_system, open_strategy_buffer_system, restore_last_strategy_system,
+    spawn_menu_bar, sync_menu_popup_visibility_system, update_strategy_status_label_system,
 };
 use crate::ui::orders::orders_panel_system;
 use crate::ui::positions::positions_panel_system;
@@ -69,10 +70,13 @@ impl Plugin for UiPlugin {
         .init_resource::<AppHistory>()
         .init_resource::<ActiveDrag>()
         .init_resource::<PendingStrategySnapshotRestore>()
+        .init_resource::<OpenMenu>()
         .add_event::<OpenStrategyRequested>()
         .add_event::<StrategyRunRequested>()
         .add_event::<PanelSpawnRequested>()
         .add_event::<UndoRedoApplied>()
+        .add_event::<UndoMenuRequested>()
+        .add_event::<RedoMenuRequested>()
         .init_resource::<ScenarioMetadata>()
         .add_systems(
             Startup,
@@ -95,7 +99,6 @@ impl Plugin for UiPlugin {
                 transport_button_system,
                 speed_button_system,
                 update_speed_buttons_system,
-                menu_button_system,
                 log_open_strategy_requested_system,
                 open_strategy_buffer_system,
                 update_strategy_status_label_system,
@@ -107,6 +110,15 @@ impl Plugin for UiPlugin {
                 panel_button_system,
                 panel_spawn_dispatcher_system,
                 process_pending_strategy_load_system.before(open_strategy_buffer_system),
+            ),
+        )
+        .add_systems(
+            Update,
+            (
+                menu_top_level_system,
+                menu_item_system,
+                menu_keyboard_system,
+                sync_menu_popup_visibility_system,
             ),
         )
         .add_systems(
@@ -127,6 +139,6 @@ impl Plugin for UiPlugin {
                 update_strategy_editor_zoom_system,
             ),
         )
-        .add_systems(Update, change_active_editor_sprite);
+        .add_systems(Update, change_active_editor_sprite.after(menu_keyboard_system));
     }
 }
