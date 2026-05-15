@@ -1,11 +1,12 @@
 use crate::trading::{
-    BackendStatus, ReplaySpeed, TradingData, TradingSettings, TransportCommand,
-    TransportCommandSender,
+    BackendStatus, LastRunResult, ReplaySpeed, RunState, TradingData, TradingSettings,
+    TransportCommand, TransportCommandSender,
 };
 use crate::ui::components::{
-    FooterRoot, GrpcStatusLabel, PauseResumeLabel, ReplayStateBadge, ReplayTimeLabel, SpeedButton,
-    TransportButton,
+    FooterRoot, GrpcStatusLabel, PauseResumeButton, PauseResumeLabel, ReplayStateBadge,
+    ReplayTimeLabel, SpeedButton, StrategyBuffer, StrategyRunRequested, TransportButton,
 };
+use crate::ui::strategy_editor::{flush_strategy_cache, StrategyAutoSaveState};
 use bevy::prelude::*;
 
 const BTN_NORMAL: Color = Color::srgba(0.12, 0.12, 0.18, 1.0);
@@ -14,6 +15,9 @@ const BTN_PRESSED: Color = Color::srgba(0.35, 0.35, 0.52, 1.0);
 const BTN_SPEED_SELECTED: Color = Color::srgba(0.18, 0.38, 0.58, 1.0);
 
 const SPEED_OPTIONS: &[u32] = &[1, 2, 5, 10, 50];
+
+const BUTTON_DISABLED_ALPHA: f32 = 0.35;
+const BUTTON_ENABLED_ALPHA: f32 = 1.0;
 
 fn spawn_transport_btn(parent: &mut ChildBuilder, label: &str, action: TransportButton) {
     parent
@@ -71,7 +75,12 @@ fn spawn_speed_btn(parent: &mut ChildBuilder, multiplier: u32, selected: bool) {
         });
 }
 
-pub fn spawn_footer(mut commands: Commands) {
+pub fn spawn_footer(mut commands: Commands, asset_server: Res<AssetServer>) {
+    // U+25B6 ▶ と U+25A0 ■ は Bevy デフォルトフォント (FiraMono subset) に無いため、
+    // Noto Sans Symbols 2 を読み込んで該当ボタンの Text にだけ適用する。
+    // 他のボタン (`|<` `<` `>` `1x` 等) は ASCII なのでデフォルトのままで OK。
+    let symbol_font: Handle<Font> = asset_server.load("fonts/NotoSansSymbols2-Regular.ttf");
+
     commands
         .spawn((
             Node {
@@ -93,7 +102,8 @@ pub fn spawn_footer(mut commands: Commands) {
             // Transport buttons
             spawn_transport_btn(p, "|<", TransportButton::JumpToStart);
             spawn_transport_btn(p, "<", TransportButton::StepBack);
-            // PauseResume: label gets PauseResumeLabel so update_footer_system can toggle it
+            // PauseResume: Button entity に PauseResumeButton marker、Text 子に PauseResumeLabel。
+            // 初期表示は IDLE 起動を想定し "▶" (Run)。RUNNING 遷移時に "||" に切替。
             p.spawn((
                 Button,
                 Node {
@@ -105,11 +115,13 @@ pub fn spawn_footer(mut commands: Commands) {
                 },
                 BackgroundColor(BTN_NORMAL),
                 TransportButton::PauseResume,
+                PauseResumeButton,
             ))
             .with_children(|pp| {
                 pp.spawn((
-                    Text::new("||"),
+                    Text::new("▶"),
                     TextFont {
+                        font: symbol_font.clone(),
                         font_size: 11.0,
                         ..default()
                     },
@@ -118,7 +130,30 @@ pub fn spawn_footer(mut commands: Commands) {
                 ));
             });
             spawn_transport_btn(p, ">", TransportButton::StepForward);
-            spawn_transport_btn(p, "■", TransportButton::ForceStop);
+            // ForceStop の "■" (U+25A0) は symbol_font が必要 (デフォルト font には無い)。
+            p.spawn((
+                Button,
+                Node {
+                    width: Val::Px(34.0),
+                    height: Val::Px(20.0),
+                    justify_content: JustifyContent::Center,
+                    align_items: AlignItems::Center,
+                    ..default()
+                },
+                BackgroundColor(BTN_NORMAL),
+                TransportButton::ForceStop,
+            ))
+            .with_children(|pp| {
+                pp.spawn((
+                    Text::new("■"),
+                    TextFont {
+                        font: symbol_font.clone(),
+                        font_size: 11.0,
+                        ..default()
+                    },
+                    TextColor(Color::srgb(0.85, 0.85, 0.85)),
+                ));
+            });
 
             // Separator
             p.spawn(Node {
@@ -173,6 +208,7 @@ pub fn update_footer_system(
     data: Res<TradingData>,
     status: Res<BackendStatus>,
     settings: Res<TradingSettings>,
+    buffer: Res<StrategyBuffer>,
     mut time_q: Query<
         &mut Text,
         (
@@ -200,9 +236,21 @@ pub fn update_footer_system(
             Without<PauseResumeLabel>,
         ),
     >,
-    mut pause_q: Query<&mut Text, With<PauseResumeLabel>>,
+    mut pause_q: Query<
+        (&mut Text, &mut TextColor),
+        (
+            With<PauseResumeLabel>,
+            Without<ReplayTimeLabel>,
+            Without<ReplayStateBadge>,
+            Without<GrpcStatusLabel>,
+        ),
+    >,
 ) {
-    if !data.is_changed() && !status.is_changed() && !settings.is_changed() {
+    if !data.is_changed()
+        && !status.is_changed()
+        && !settings.is_changed()
+        && !buffer.is_changed()
+    {
         return;
     }
 
@@ -246,14 +294,26 @@ pub fn update_footer_system(
         }
     }
 
-    // PauseResume label: show "▶" when PAUSED (resume action), "||" otherwise
-    let replay = data.replay_state.as_deref().unwrap_or("IDLE");
-    for mut text in &mut pause_q {
-        text.0 = if replay == "PAUSED" {
-            "▶".to_string()
-        } else {
-            "||".to_string()
+    // PauseResume label: RUNNING → "||" (Pause action), それ以外 → "▶" (Run/Resume action)。
+    // disabled 表現: IDLE/LOADED で cache_path 未設定なら半透明（Run できない）。
+    // RUNNING/PAUSED は常に enabled（Pause/Resume は cache_path 不要）。
+    let run_disabled = matches!(replay, "IDLE" | "LOADED") && buffer.cache_path.is_none();
+    for (mut text, mut color) in &mut pause_q {
+        let new_label = match replay {
+            "RUNNING" => "||",
+            _ => "▶",
         };
+        if text.0 != new_label {
+            text.0 = new_label.to_string();
+        }
+        let target_alpha = if run_disabled {
+            BUTTON_DISABLED_ALPHA
+        } else {
+            BUTTON_ENABLED_ALPHA
+        };
+        if (color.0.alpha() - target_alpha).abs() > f32::EPSILON {
+            color.0.set_alpha(target_alpha);
+        }
     }
 }
 
@@ -261,7 +321,11 @@ pub fn update_footer_system(
 pub fn transport_button_system(
     mut query: Query<
         (&Interaction, &mut BackgroundColor, &TransportButton),
-        (Changed<Interaction>, With<Button>),
+        (
+            Changed<Interaction>,
+            With<Button>,
+            Without<PauseResumeButton>,
+        ),
     >,
     data: Res<TradingData>,
     sender: Res<TransportCommandSender>,
@@ -273,17 +337,8 @@ pub fn transport_button_system(
                 let replay = data.replay_state.as_deref().unwrap_or("IDLE");
                 match action {
                     TransportButton::PauseResume => {
-                        let cmd = match replay {
-                            "RUNNING" => Some(TransportCommand::Pause),
-                            "PAUSED" => Some(TransportCommand::Resume),
-                            other => {
-                                info!("transport: pause_resume ignored (state={})", other);
-                                None
-                            }
-                        };
-                        if let Some(cmd) = cmd {
-                            let _ = sender.tx.send(cmd);
-                        }
+                        // PauseResume Button entity は With<PauseResumeButton> で除外済み。
+                        // ここには来ない想定だが、enum exhaustive match を保つため arm を残す。
                     }
                     TransportButton::StepForward => {
                         if replay == "PAUSED" {
@@ -357,5 +412,80 @@ pub fn update_speed_buttons_system(
         } else {
             BTN_NORMAL
         };
+    }
+}
+
+/// PauseResume Button 専用の入力ハンドラ。
+/// - replay 状態に応じて Pause / Resume / Run を分岐
+/// - hover/press の BackgroundColor 更新もここで担当（transport_button_system からは除外済み）
+///
+/// `transport_button_system` から分離する理由: Run フローには
+/// `StrategyBuffer` / `StrategyAutoSaveState` / `LastRunResult` / `StrategyRunRequested` という
+/// 別系統の依存が必要で、transport_button_system に詰め込むと責務が肥大化する。
+/// `With<PauseResumeButton>` で物理的に分離することで、関心を 1 system 1 ボタンに保つ。
+#[allow(clippy::type_complexity)]
+#[allow(clippy::too_many_arguments)]
+pub fn footer_pause_resume_system(
+    mut query: Query<
+        (&Interaction, &mut BackgroundColor),
+        (
+            Changed<Interaction>,
+            With<PauseResumeButton>,
+            With<Button>,
+        ),
+    >,
+    data: Res<TradingData>,
+    sender: Res<TransportCommandSender>,
+    mut buffer: ResMut<StrategyBuffer>,
+    last_run: Res<LastRunResult>,
+    mut auto_save: ResMut<StrategyAutoSaveState>,
+    mut run_events: EventWriter<StrategyRunRequested>,
+) {
+    for (interaction, mut bg) in &mut query {
+        match interaction {
+            Interaction::Pressed => {
+                bg.0 = BTN_PRESSED;
+                match data.replay_state.as_deref() {
+                    Some("RUNNING") => {
+                        if sender.tx.send(TransportCommand::Pause).is_err() {
+                            warn!("transport: pause send failed (receiver dropped)");
+                        }
+                    }
+                    Some("PAUSED") => {
+                        if sender.tx.send(TransportCommand::Resume).is_err() {
+                            warn!("transport: resume send failed (receiver dropped)");
+                        }
+                    }
+                    // None / Some("IDLE") / Some("LOADED") / 未知 → Run フロー。
+                    // strategy_editor.rs の Run observer と同じ手順で再実装。
+                    _ => {
+                        if matches!(last_run.state, RunState::Running) {
+                            warn!("Run blocked: already running");
+                            continue;
+                        }
+                        if buffer.dirty {
+                            match flush_strategy_cache(&mut buffer, &mut auto_save) {
+                                Ok(true) => {}
+                                Ok(false) => {
+                                    warn!("Run blocked: no cache_path set");
+                                    continue;
+                                }
+                                Err(e) => {
+                                    error!("strategy flush before run failed: {}", e);
+                                    continue;
+                                }
+                            }
+                        }
+                        let Some(path) = buffer.cache_path.clone() else {
+                            warn!("Run blocked: no cache_path set");
+                            continue;
+                        };
+                        run_events.send(StrategyRunRequested { cache_path: path });
+                    }
+                }
+            }
+            Interaction::Hovered => bg.0 = BTN_HOVER,
+            Interaction::None => bg.0 = BTN_NORMAL,
+        }
     }
 }

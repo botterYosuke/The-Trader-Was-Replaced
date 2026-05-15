@@ -96,6 +96,11 @@ $env:RUST_LOG = "info"
 $env:BACKEND_ENABLED = "true"
 $env:BACKEND_TOKEN = "testtoken"
 $env:BACKEND_CATALOG_PATH = "artifacts\jquants-catalog"
+# Bevy AssetServer は exe parent (`target/debug/assets/`) を見るが、本プロジェクトの
+# assets は repo root の `assets/` にあるため、BEVY_ASSET_ROOT で明示的に向け直す。
+# 未設定だとフッターの ▶/■ シンボルフォント (NotoSansSymbols2) と grid.wgsl が
+# `Path not found` で読めず、フッターのボタンが空白になる。
+$env:BEVY_ASSET_ROOT = $PWD.Path
 $p = Start-Process -FilePath ".\target\debug\backcast.exe" -WorkingDirectory $PWD.Path `
   -RedirectStandardOutput "$env:TEMP\backcast_log.txt" `
   -RedirectStandardError  "$env:TEMP\backcast_err.txt" -PassThru

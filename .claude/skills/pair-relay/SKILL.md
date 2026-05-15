@@ -57,9 +57,9 @@ Navigator → 司令塔: ✅ pass の 1 行 / または fail 要約 + 修正 dif
 | 層 | 担当 | 使うツール | 何をしないか |
 |---|---|---|---|
 | **User** | ゴール提示、E2E 動作確認、最終承認、方針修正 | (会話) | コードは書かない |
-| **司令塔 (Orchestrator)** | User からゴール受領、全体ステップ案の合意取り、Navigator/Driver を 1 ステップずつ spawn、Navigator 出力の**チェックリスト確認**（セルフレビュー全項目が通っているか）、Driver 編集結果の Read 確認、検証 Navigator からの結果受領、User への進捗報告 | `Agent`, `Read`, `Grep`, `Glob`, `Bash` | **Edit/Write/NotebookEdit 禁止**（Driver の仕事）。**diff の中身レビュー禁止**（derive / 命名 / マジックナンバー / 言語慣習等は Navigator のセルフレビュー責務 — 司令塔が再判定すると二重化して context が膨らむ）。**検証 Bash の一次実行を禁止**（検証モード Navigator の責務 — 司令塔が走らせると検証ログが司令塔に蓄積し長丁場で先に枯渇する。司令塔の Bash は git status 等の進行管理用途に限定）。User からのレビュー依頼で **自分で原因調査を始めない**（Navigator の仕事） |
+| **司令塔 (Orchestrator)** | User からゴール受領、全体ステップ案の合意取り、Navigator/Driver を 1 ステップずつ spawn、Navigator 出力の**チェックリスト確認**（セルフレビュー全項目が通っているか）、Driver 編集結果の Read 確認、検証 Navigator からの結果受領、User への進捗報告 | `Agent`, `Read`, `Grep`, `Glob`, `Bash` | **Edit/Write/NotebookEdit 禁止**（Driver の仕事）。**diff の中身レビュー禁止**（derive / 命名 / マジックナンバー / 言語慣習等は Navigator のセルフレビュー責務 — 司令塔が再判定すると二重化して context が膨らむ）。**検証 Bash の一次実行を禁止**（検証モード Navigator の責務 — 司令塔が走らせると検証ログが司令塔に蓄積し長丁場で先に枯渇する）。`Read`/`Grep`/`Glob`/`Bash` は **進行管理用途に限定** — ファイル存在確認、`git status` / `git diff --stat` / `ls` / `pwd` 等の副作用ゼロかつ出力小のコマンド、handoff doc 書き出し、User が貼ったパスの即時参照のみ。**原因調査・コード理解・実装分解用途では使わない**（すべて Navigator の仕事）。User からのレビュー依頼で **自分で原因調査を始めない**（Navigator の仕事） |
 | **Navigator サブエージェント** | (a) **diff 作成モード**: 「次の 1 件」を pair-nav 原則 (diff + なぜ + セルフレビュー全項目通過) で作って司令塔に返す。(b) **検証モード** (Driver 適用後の再 spawn): read-only Bash で検証を実行し、pass なら結果を、fail ならエラー要約 + 修正 diff (なぜ + セルフレビュー併記) を返す。pair-nav/SKILL.md と tdd-workflow/SKILL.md を読んで原則を体現 | `Read`, `Grep`, `Glob`, `Bash` (ソース非変更の検証コマンドのみ: cargo check / cargo test / pytest / ruff / mypy) | **Edit/Write 禁止**、**Agent も持たない**。Bash は副作用のある操作（git commit, rm, ファイル書き換え, ネットワーク, サーバ起動）に絶対使わない。提案 or 検証結果を返したら去る |
-| **Driver サブエージェント** | 司令塔から渡された diff を Edit/Write で適用し、`編集完了 (path)` の 1 行で報告 | `Edit`, `Write`, `Read` | 自発的判断で範囲を広げない、提案しない、Bash/Agent なし、司令塔・User と直接話さない |
+| **Driver サブエージェント** | 司令塔から渡された diff を Edit/Write で適用し、`編集完了 (path)` の 1 行で報告 | `Edit`, `Write`, `Read` | 自発的判断で範囲を広げない、提案しない、Bash/Agent なし、司令塔・User と直接話さない。`Read` は **触ってよいファイル内の挿入位置確認のみ** — 周辺コードの設計把握・類似実装の参照・範囲拡大判断には使わない（それは Navigator の仕事） |
 
 ## 標準ループ
 
@@ -67,6 +67,11 @@ Navigator → 司令塔: ✅ pass の 1 行 / または fail 要約 + 修正 dif
 (1) [司令塔]  User からゴール受領
               → 全体ステップ案を箇条書き (3〜7 ステップ) で User に確認
               → 承認後、ステップ 1 に着手
+              ※ ステップ案は **作業単位の粗い分割** までに留める
+                （例: "Step 1: struct と新規フィールド追加 / Step 2: 既存呼び出し側を更新 / Step 3: テスト追加"）。
+                技術的実装分解 — どの関数を切るか、どのテストから書くか、TDD かどうか、derive 群の選択、
+                use 統合の方針 — は **Navigator に委譲**する。司令塔がここに踏み込むと Navigator の責務が痩せ、
+                結果として司令塔 context に実装思考が積もる。
 
 (2) [司令塔]  ステップ N について Navigator サブエージェントを Agent ツールで spawn
               prompt に含める情報:
@@ -87,6 +92,9 @@ Navigator → 司令塔: ✅ pass の 1 行 / または fail 要約 + 修正 dif
               ├─ 自己検証ステータス (実行コマンド or skip 理由 / 結果) が記載されているか
               ├─ diff がブロック単位に分解され、各「なぜ」が併記されているか
               ├─ 範囲外編集の提案（触ってよいファイル外への変更）が紛れていないか
+              │   （**許可ファイル/許可ステップ外かどうか** のみを判定する。
+              │     コード品質・実装妥当性・設計判断は判定しない — それは Navigator のセルフレビュー責務。
+              │     司令塔は path 文字列マッチと「今ステップの要求範囲か」の照合だけ）
               └─ NG → 「セルフレビュー不備: 〜が欠落」とだけ伝えて Navigator を再 spawn → (2) へ
                   （中身の品質指摘は司令塔がやらない。やり直しは Navigator に任せる）
               → OK なら (4)
@@ -102,6 +110,9 @@ Navigator → 司令塔: ✅ pass の 1 行 / または fail 要約 + 修正 dif
               └─ ズレがあれば → Driver を再 spawn して再指示 → (4) へ
 
 (6) [司令塔]  **検証 Navigator** を spawn して read-only Bash で検証実行させる
+              ※ 検証モードの出力契約: **pass 時は検証のみ** ("✅ <コマンド>: pass" の 1〜2 行)。
+                **fail 時に限り**、原因要約 + 最小修正 diff + なぜ + セルフレビューを返す。
+                pass で返ってきた場合に「ついでに改善案」を返すのは契約違反（diff 作成モードの責務）。
               （司令塔自身は走らせない。Bash 実行ログが司令塔に蓄積すると長丁場で先に context が尽きる）
               prompt に含める情報:
                 - 役割: 検証モード Navigator (diff 作成ではなく、Driver 適用済みコードの検証)

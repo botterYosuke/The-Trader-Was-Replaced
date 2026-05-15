@@ -38,6 +38,12 @@ pub struct GrpcStatusLabel;
 #[derive(Component)]
 pub struct PauseResumeLabel;
 
+/// Marker for the footer PauseResume Button entity (NOT the Text child).
+/// `PauseResumeLabel` marks the inner Text node for label swapping; this one
+/// marks the Button entity itself so `footer_pause_resume_system` can query it.
+#[derive(Component)]
+pub struct PauseResumeButton;
+
 #[derive(Component, Clone, Copy, Debug)]
 pub enum TransportButton {
     JumpToStart,

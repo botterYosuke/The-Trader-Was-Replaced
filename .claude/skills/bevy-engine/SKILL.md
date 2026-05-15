@@ -28,6 +28,13 @@ description: |
   ⑧ `cosmic_edit`, `CosmicEditBuffer`, `CosmicEditor`, `TextEdit2d`, `FocusedWidget`,
     `CosmicBackgroundColor`, `CursorColor`, `CosmicTextChanged`, `set_text`, `with_buffer_mut`
     という語彙が出てきたとき
+  ⑨ フォント / グリフ / 文字化け関連: "font", "TextFont", "Handle<Font>", "AssetServer",
+    "豆腐", "mojibake", "□", "▶", "■", "glyph", "BEVY_ASSET_ROOT", "Path not found",
+    "assets/fonts/", "FiraMono", "NotoSansSymbols" が出たとき。
+    Bevy 0.15 同梱の FiraMono-subset は **Basic Latin のみ**で Geometric Shapes
+    (U+25A0–U+25FF: ▶ ■ ▷ □ 等) を**含まない**ため、これらを Text に使うと豆腐になる。
+    また direct exe 起動時 (target/debug/backcast.exe) は AssetServer が exe parent を
+    見るので `BEVY_ASSET_ROOT` で repo root を指定しないと assets/ が読めない。
 
   本プロジェクトは **Bevy 0.15** をピン留めしている（`Cargo.toml` の `bevy = "0.15"`）。
   一方 `.claude/skills/bevy-engine/src/` にミラーされている upstream は **0.19.0-dev** で、

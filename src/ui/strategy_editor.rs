@@ -1,14 +1,12 @@
-use crate::trading::{LastRunResult, RunState};
 use crate::ui::components::{
     OpenStrategyRequested, PanelKind, PanelSpawnRequested, PanelSpawnSource, RedoMenuRequested,
-    StrategyBuffer, StrategyRunRequested, UndoMenuRequested, WindowRoot,
+    StrategyBuffer, UndoMenuRequested, WindowRoot,
 };
 use crate::ui::editor_history::{
     AppEditAction, AppHistory, PendingStrategySnapshotRestore, UndoRedoApplied,
 };
 use crate::ui::floating_window::{FloatingWindowSpec, spawn_floating_window};
 use crate::ui::layout_persistence::PendingLayoutApply;
-use bevy::ecs::system::IntoObserverSystem;
 use bevy::prelude::*;
 use bevy_cosmic_edit::cosmic_text::{Attrs, AttrsOwned, Edit, Metrics, Shaping};
 use bevy_cosmic_edit::{
@@ -27,13 +25,6 @@ const EDITOR_LINE_HEIGHT: f32 = 18.0;
 const EDITOR_MAX_SUPERSAMPLE: f32 = 4.0;
 const ACCENT: Color = Color::srgba(0.63, 0.44, 1.0, 0.4); // SVG #a070ff (purple)
 const EDITOR_BG: Color = Color::srgba(0.02, 0.02, 0.04, 1.0);
-
-const TITLE_BAR_BUTTON_SIZE: Vec2 = Vec2::new(80.0, 24.0);
-const TITLE_BAR_BUTTON_GAP: f32 = 8.0;
-const TITLE_BAR_BUTTON_Z: f32 = 0.2;
-const BUTTON_ENABLED_ALPHA: f32 = 1.0;
-const BUTTON_DISABLED_ALPHA: f32 = 0.3;
-const RUN_BUTTON_COLOR: Color = Color::srgba(0.55, 0.35, 0.75, 1.0); // 紫系: ACCENT 寄り
 
 /// debounce 自動保存の進行状況を追跡する resource。
 /// `mark_strategy_dirty` で `last_change` を記録し、`debounced_strategy_autosave_system`
@@ -94,10 +85,6 @@ fn mark_strategy_dirty(
     auto_save.last_change = Some(std::time::Instant::now());
 }
 
-/// Run ボタン sprite に付けるマーカー。
-#[derive(Component)]
-pub struct StrategyRunButton;
-
 /// エディタ本体（TextEdit2d 付き sprite）を識別するマーカー。
 /// Sub-step 1.8c で `Query<&mut CosmicEditBuffer, With<StrategyEditorContent>>` で取りに行く。
 #[derive(Component)]
@@ -108,53 +95,6 @@ pub struct StrategyEditorContent;
 pub struct ZoomResponsiveEditor {
     max_supersample: f32,
     last_supersample: f32,
-}
-
-/// タイトルバー上に水平に並べるラベル付きボタン。
-///
-/// - `marker`: `StrategyRunButton` 等のマーカー component。後段の system が
-///   `Query<&mut Sprite, With<Marker>>` で alpha を更新する目印。
-/// - `on_click`: `Trigger<Pointer<Click>>` を取る observer クロージャ。
-///   有効/無効判定はクロージャ内で行う（observer subscribe をいじるより単純）。
-fn spawn_title_bar_button<Marker, F, B, ObsMarker>(
-    commands: &mut Commands,
-    title_bar: Entity,
-    local_pos: Vec2,
-    base_color: Color,
-    label: &str,
-    marker: Marker,
-    on_click: F,
-) where
-    Marker: Component,
-    F: IntoObserverSystem<Pointer<Click>, B, ObsMarker>,
-    B: Bundle,
-{
-    let button = commands
-        .spawn((
-            Sprite {
-                color: base_color,
-                custom_size: Some(TITLE_BAR_BUTTON_SIZE),
-                ..default()
-            },
-            Transform::from_xyz(local_pos.x, local_pos.y, TITLE_BAR_BUTTON_Z),
-            marker,
-        ))
-        .observe(on_click)
-        .id();
-
-    let text = commands
-        .spawn((
-            Text2d::new(label.to_string()),
-            TextFont {
-                font_size: 14.0,
-                ..default()
-            },
-            TextColor(Color::WHITE),
-            Transform::from_xyz(0.0, 0.0, 0.01),
-        ))
-        .id();
-    commands.entity(button).add_child(text);
-    commands.entity(title_bar).add_child(button);
 }
 
 /// dispatcher から呼ばれる spawn 関数。
@@ -213,54 +153,8 @@ pub fn spawn_strategy_editor_panel(commands: &mut Commands, font_system: &mut Co
     commands.entity(content_area).add_child(editor);
     commands.insert_resource(FocusedWidget(Some(editor)));
 
-    // ── Run ボタンをタイトルバー右端に配置 ───────────────
-    // floating_window.rs が右端に × ボタン(20px + margin 8px×2 = 36px) を置くため、
-    // タイトルバーボタンはその分だけ左に退避させる。
-    const CLOSE_BTN_RESERVED: f32 = 36.0; // 20(btn) + 8(margin_right) + 8(gap)
-    let title_bar_right_inner = PANEL_SIZE.x / 2.0
-        - TITLE_BAR_BUTTON_SIZE.x / 2.0
-        - TITLE_BAR_BUTTON_GAP
-        - CLOSE_BTN_RESERVED;
-    let run_x = title_bar_right_inner;
-
-    spawn_title_bar_button(
-        commands,
-        title_bar,
-        Vec2::new(run_x, 0.0),
-        RUN_BUTTON_COLOR,
-        "Run",
-        StrategyRunButton,
-        |_trigger: Trigger<Pointer<Click>>,
-         mut buffer: ResMut<StrategyBuffer>,
-         last_run: Res<LastRunResult>,
-         mut auto_save: ResMut<StrategyAutoSaveState>,
-         mut run_events: EventWriter<StrategyRunRequested>| {
-            if matches!(last_run.state, RunState::Running) {
-                warn!("Run blocked: already running");
-                return;
-            }
-            // dirty のときだけ即時 flush（debounce 待機をスキップ、バッファとファイルを一致させる）。
-            // クリーン状態の Run は cache が一致済みなので I/O を省く（FS 一時エラーで Run がブロックされる事故を防ぐ）。
-            if buffer.dirty {
-                match flush_strategy_cache(&mut buffer, &mut auto_save) {
-                    Ok(true) => {}
-                    Ok(false) => {
-                        warn!("Run blocked: no cache_path set");
-                        return;
-                    }
-                    Err(e) => {
-                        error!("strategy flush before run failed: {}", e);
-                        return;
-                    }
-                }
-            }
-            let Some(path) = buffer.cache_path.clone() else {
-                warn!("Run blocked: no cache_path set");
-                return;
-            };
-            run_events.send(StrategyRunRequested { cache_path: path });
-        },
-    );
+    // `title_bar` は floating_window 側で × ボタンを持つので追加配置はしない。
+    let _ = title_bar;
 }
 
 pub fn update_strategy_editor_zoom_system(
@@ -548,31 +442,6 @@ pub fn apply_strategy_snapshot_restore_system(
         history.suppress_echo(snapshot.clone());
         mark_strategy_dirty(&mut buffer, &mut auto_save, snapshot);
         undo_applied.send(UndoRedoApplied);
-    }
-}
-
-/// Run ボタンの有効/無効を視覚的に反映する system。
-///
-/// 毎フレーム `StrategyBuffer` と `LastRunResult` を read して、Run ボタン sprite の
-/// alpha を `BUTTON_ENABLED_ALPHA` / `BUTTON_DISABLED_ALPHA` に切り替える。
-///
-/// 自動保存（debounce）が dirty を任せて持つので、Run ボタンの有効判定は
-/// `cache_path` の有無と「実行中でないか」のみで行う。クリック時は observer 側で
-/// 即時 flush を試みてから StrategyRunRequested を発火する。
-pub fn update_strategy_button_visuals_system(
-    buffer: Res<StrategyBuffer>,
-    last_run: Res<LastRunResult>,
-    mut run_q: Query<&mut Sprite, With<StrategyRunButton>>,
-) {
-    let is_running = matches!(last_run.state, RunState::Running);
-    let can_run = buffer.cache_path.is_some() && !is_running;
-
-    for mut sprite in &mut run_q {
-        sprite.color.set_alpha(if can_run {
-            BUTTON_ENABLED_ALPHA
-        } else {
-            BUTTON_DISABLED_ALPHA
-        });
     }
 }
 

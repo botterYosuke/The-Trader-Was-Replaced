@@ -141,17 +141,18 @@ state: IDLE  grpc: OK
 ### 4. 戦略の実行
 
 1. メニューバー **`Open Strategy...`** → `.py` ファイルを選択
-2. Strategy Editor ウィンドウが開く → **`Run`** をクリック
-3. フッター `state: RUNNING` → 完了後 `IDLE` に戻る
-4. Run Result Panel が `Completed` になり、fills / pnl が表示される
-5. チャートエリアに最新バーの **candle（赤/緑）** が表示される
+2. Strategy Editor ウィンドウが開く
+3. フッター中央の **`▶`** ボタン（PauseResume）をクリックして Run を開始
+4. フッター `state: RUNNING` → ボタンが **`||`** に切り替わる（クリックで Pause、PAUSED 中は再度 **`▶`** で Resume）
+5. 完了後 `state: IDLE` に戻り、Run Result Panel が `Completed` になり fills / pnl が表示される
+6. チャートエリアに最新バーの **candle（赤/緑）** が表示される
 
 ### トラブルシューティング
 
 | 症状 | 原因 | 対処 |
 |---|---|---|
 | `grpc: DISABLED` | `BACKEND_ENABLED` 未設定 | `ProcessStartInfo` で明示的に渡す |
-| Run ボタンが反応しない | `grpc: DISABLED` のまま | backend 起動 → Rust アプリ再起動 |
+| フッターの ▶ ボタンが半透明 / 反応しない | `cache_path` 未設定、または `grpc: DISABLED` | Strategy Editor で cache を保存 → 必要なら backend 起動 → Rust アプリ再起動 |
 | 起動直後から `state: RUNNING` | `auto_start=True` になっている | `python/engine/__main__.py` を `auto_start=False` に修正 |
 | candle が表示されない | `open_time_ms` が backend から届いていない | `python/engine/core.py` の `KlineUpdate` に `open_time_ms=ts_ms` があるか確認 |
 

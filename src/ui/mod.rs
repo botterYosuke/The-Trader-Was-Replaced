@@ -25,8 +25,8 @@ use crate::ui::components::{
 };
 use crate::ui::floating_window::panel_spawn_dispatcher_system;
 use crate::ui::footer::{
-    spawn_footer, speed_button_system, transport_button_system, update_footer_system,
-    update_speed_buttons_system,
+    footer_pause_resume_system, spawn_footer, speed_button_system, transport_button_system,
+    update_footer_system, update_speed_buttons_system,
 };
 use crate::ui::menu_bar::{
     handle_strategy_run_system, log_open_strategy_requested_system,
@@ -46,8 +46,7 @@ use crate::ui::editor_history::{ActiveDrag, AppHistory, PendingStrategySnapshotR
 use crate::ui::strategy_editor::{
     StrategyAutoSaveState, apply_pending_app_edits_system, apply_strategy_snapshot_restore_system,
     debounced_strategy_autosave_system, sync_editor_to_strategy_buffer_system,
-    sync_strategy_buffer_to_editor_system, undo_redo_system, update_strategy_button_visuals_system,
-    update_strategy_editor_zoom_system,
+    sync_strategy_buffer_to_editor_system, undo_redo_system, update_strategy_editor_zoom_system,
 };
 use crate::ui::systems::{button_system, update_price_display, update_status_indicator};
 use bevy::prelude::*;
@@ -99,6 +98,7 @@ impl Plugin for UiPlugin {
                 chart_render_system,
                 update_footer_system,
                 transport_button_system,
+                footer_pause_resume_system.before(handle_strategy_run_system),
                 speed_button_system,
                 update_speed_buttons_system,
                 log_open_strategy_requested_system,
@@ -137,7 +137,6 @@ impl Plugin for UiPlugin {
                     .after(open_strategy_buffer_system)
                     .after(apply_pending_app_edits_system)
                     .after(apply_strategy_snapshot_restore_system),
-                update_strategy_button_visuals_system,
                 debounced_strategy_autosave_system,
                 update_strategy_editor_zoom_system,
             ),
