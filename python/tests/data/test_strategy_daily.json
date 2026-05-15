@@ -1,59 +1,97 @@
 {
   "schema_version": 1,
-  "scenario": {
-    "schema_version": 1,
-    "instrument": "1301.TSE",
-    "start": "2025-01-06",
-    "end": "2025-03-31",
-    "granularity": "Daily",
-    "initial_cash": 1000000
-  },
   "viewport": {
-    "pan_x": -100.95157,
-    "pan_y": -28.010271,
-    "zoom": 1.0725257
+    "pan_x": 66.32971,
+    "pan_y": 98.13926,
+    "zoom": 1.442566
   },
   "windows": [
+    {
+      "kind": "Orders",
+      "visible": true,
+      "position": [
+        126.89209,
+        -244.03381
+      ],
+      "size": [
+        360.0,
+        220.0
+      ],
+      "z": 190.0
+    },
+    {
+      "kind": "Chart",
+      "visible": true,
+      "position": [
+        675.3257,
+        160.12483
+      ],
+      "size": [
+        400.0,
+        500.0
+      ],
+      "z": 178.0
+    },
+    {
+      "kind": "BuyingPower",
+      "visible": true,
+      "position": [
+        297.24918,
+        175.73471
+      ],
+      "size": [
+        270.0,
+        130.0
+      ],
+      "z": 192.0
+    },
     {
       "kind": "RunResult",
       "visible": true,
       "position": [
-        402.5,
-        196.0
+        89.58447,
+        385.717
       ],
       "size": [
         280.0,
         160.0
       ],
-      "z": 18.0
-    },
-    {
-      "kind": "Positions",
-      "visible": true,
-      "position": [
-        294.0,
-        -119.0
-      ],
-      "size": [
-        280.0,
-        200.0
-      ],
-      "z": 16.0
+      "z": 184.0
     },
     {
       "kind": "StrategyEditor",
       "visible": true,
       "position": [
-        -153.52797,
-        9.641701
+        -208.45947,
+        75.223236
       ],
       "size": [
         500.0,
         400.0
       ],
-      "z": 108.0
+      "z": 202.0
+    },
+    {
+      "kind": "Positions",
+      "visible": true,
+      "position": [
+        267.55713,
+        -17.104317
+      ],
+      "size": [
+        280.0,
+        200.0
+      ],
+      "z": 196.0
     }
   ],
   "strategy_path": "C:\\Users\\sasai\\Documents\\The-Trader-Was-Replaced\\python\\tests\\data\\test_strategy_daily.py",
-  "selected_symbol": null
+  "scenario": {
+    "end": "2025-03-31",
+    "granularity": "Daily",
+    "initial_cash": 1000000,
+    "instrument": "1301.TSE",
+    "schema_version": 1,
+    "start": "2025-01-06"
+  }
 }
