@@ -3,45 +3,39 @@
   "evals": [
     {
       "id": 1,
-      "name": "new-rust-file-small-feature",
-      "prompt": "Rust の練習用ファイル c:/tmp/pair_relay_eval/demo.rs を新規作成して、Clone と Debug を derive した struct Point { x: f64, y: f64 } と、Point::origin() -> Point を返す関連関数を追加してほしい。ペアプロをエージェントでリレーしながらやってくれ。司令塔（あなた自身）が Navigator サブエージェントと Driver サブエージェントを順番に spawn する 2 層チェーンで進めて。Navigator は diff + なぜ を作る読み専、Driver は Edit/Write 専門。検証 (cargo check 相当の構文確認) は司令塔自身が Bash で実行して。",
-      "expected_output": "c:/tmp/pair_relay_eval/demo.rs に struct Point と origin 関連関数が書かれている。司令塔は自分で Edit/Write せず、Driver サブエージェントに Edit を実行させ、Navigator サブエージェントには diff + なぜ の作成だけを依頼している。検証コマンドは司令塔が Bash で実行している。User への報告は要約のみ。",
-      "files": []
+      "prompt": "あなたはpair-relayの司令塔です。`src/trading.rs`に`volume: f32`フィールドを`BackendTradingState`に追加するタスクを進めています（Step 1/3）。Navigatorから以下の出力が返ってきました。次に何をしますか？\n\n---\n\n## Navigator Step 1 出力\n\ndiff: src/trading.rs\n```diff\n--- a/src/trading.rs\n+++ b/src/trading.rs\n@@ -42,6 +42,8 @@\n     #[serde(default)]\n     pub close_time_ms: Option<i64>,\n+    #[serde(default)]\n+    pub volume: f32,\n }\n```\n\nなぜ: BackendTradingState に出来高(volume)を追加。既存フィールドとの整合を保つため`#[serde(default)]`を付与し、旧バックエンドからのレスポンスでも0.0にデシリアライズされるようにする。\n\n### セルフレビューチェックリスト\n[pass] pair-nav/SKILL.md Read済 → 冒頭で Read 実行済み\n[pass] tdd-workflow/SKILL.md Read済 → 冒頭で Read 実行済み\n[pass] 範囲: 触ってよいファイル外への変更なし → src/trading.rs のみ変更\n[pass] 形式: diff ブロック分解・各「なぜ」併記済 → 1ブロック・なぜ記載\n[pass] derive 群 (Debug/Clone/PartialEq 等) → 既存のDerive群に変更なし\n[pass] use 位置・統合: 既存 use と重複/未統合なし → use 変更なし\n[pass] 命名: 既存命名規約と整合 → snake_case で既存フィールドと統一\n[pass] マジックナンバー/文字列: 抽出 or 既定値の正当性 → デフォルト0.0はf32の自然なデフォルト\n[n/a] コメント: WHY のみ・WHAT/タスク参照なし → コメント追加なし\n\n### 自己検証ステータス\n- 実行コマンド: `cargo check`\n- 結果: pass (編集前ソースで環境がcleanであることを確認)",
+      "expected_output": "司令塔が契約遵守チェックOK→Driver spawn（またはそのための指示）を返す。Driverへの指示は「触ってよいファイル: src/trading.rs」とdiffのみ。司令塔自身はdiffの内容（derive群・命名・serde属性）について評価・コメントしない。Read/Grep/Glob使用ゼロ。",
+      "files": [],
+      "assertions": [
+        "司令塔がDriverにdiffを渡す指示を出力している（'Driver'/'pair-relay-driver'/'spawn'のいずれかのキーワードが含まれる）",
+        "司令塔の返答がderive/命名/serde属性について評価・コメントをしていない（'serde'/'derive'/'命名'等の言及がない、またはOK判定の文脈のみ）",
+        "司令塔がRead/Grep/Glob/Bashをこのターンで自ら実行しようとしていない（ツール呼び出し提案がない）",
+        "司令塔のユーザー向け出力が簡潔である（200文字以下の返答、または次のステップへの1行報告）"
+      ]
     },
     {
       "id": 2,
-      "name": "existing-file-diff-edit",
-      "prompt": "既存ファイル c:/tmp/pair_relay_eval/calc.py の add 関数を `(a: int, b: int) -> int` から `(*nums: int) -> int` に変えてほしい（全引数の合計を返す）。pair-relay の 2 層リレー (司令塔が Navigator/Driver を順次 spawn) で進めて、Navigator は必ず diff ブロック + 各「なぜ」スタイルで指示を出すこと。全文置換は禁止。",
-      "expected_output": "calc.py の add が `*nums: int` シグネチャに変わり sum(nums) を返している。Navigator の指示は diff ブロック単位で「削除/変更/追加」が分かれており、各ブロックに「なぜ」が併記されている。司令塔が直接 Edit していない（Driver subagent 経由）。",
-      "files": ["fixtures/calc.py"]
+      "prompt": "あなたはpair-relayの司令塔です。`src/trading.rs`に`volume: f32`フィールドを追加するタスクのStep 1でNavigatorの出力を受け取りました。契約遵守チェックをしたところ、セルフレビューチェックリストで「derive 群」の項目に1行根拠が欠けています（`[pass]`判定はあるが理由が空白）。どう対応しますか？\n\n---\n\n## Navigator Step 1 出力（問題あり）\n\ndiff: src/trading.rs\n```diff\n@@ -42,6 +42,8 @@\n     #[serde(default)]\n     pub close_time_ms: Option<i64>,\n+    #[serde(default)]\n+    pub volume: f32,\n }\n```\n\nなぜ: serde(default)付与でデシリアライズ互換性を確保。\n\n### セルフレビューチェックリスト\n[pass] pair-nav/SKILL.md Read済 → Read実行済み\n[pass] tdd-workflow/SKILL.md Read済 → Read実行済み\n[pass] 範囲: src/trading.rsのみ変更\n[pass] 形式: diffブロック分解・なぜ併記済\n[pass] derive 群 (Debug/Clone/PartialEq 等) →\n[pass] use 位置・統合: use変更なし\n[pass] 命名: snake_case統一\n[pass] マジックナンバー/文字列: f32デフォルト0.0正当\n[n/a] コメント: コメント追加なし\n\n### 自己検証ステータス\n- 実行コマンド: `cargo check`\n- 結果: pass",
+      "expected_output": "司令塔がNavigatorに対して「セルフレビュー不備: derive群の1行根拠が空白」という趣旨の短い返答（1〜2行）を送るだけ。diffの内容について実質的な評価・コメント・修正提案をしない。",
+      "files": [],
+      "assertions": [
+        "司令塔の返答に'セルフレビュー不備'または同等の不備指摘が含まれる",
+        "司令塔の返答が'derive'の欠落根拠を指摘している（'derive'/'1行根拠'/'根拠が空白'/'根拠欠落'等のキーワード）",
+        "司令塔がdiffの内容（serde属性の適切さ・volume命名・実装判断）について評価・追加コメントをしていない",
+        "司令塔の返答が3行以内（純粋なNG通知のみ）"
+      ]
     },
     {
       "id": 3,
-      "name": "handoff-swap-rehearsal",
-      "prompt": "Python モジュール c:/tmp/pair_relay_eval/pipeline.py を pair-relay で新規作成。load_csv, validate, transform, save の 4 関数 + main を 1 件ずつ実装。**(本来 handoff doc は長丁場や失敗ループ長引き時のみ発火する運用だが、この eval は仕組みのドリル目的で意図的に発火させる)** Step 2 完了時点で司令塔が意図的に handoff doc を生成し、新しい Navigator subagent を spawn するときの prompt に貼って残りを進めて。handoff doc は pair-relay-workspace/handoffs/ 配下に保存して。",
-      "expected_output": "pipeline.py に 4 関数 + main が実装されている。pair-relay-workspace/handoffs/ 配下に handoff doc (.md) が 1 つ以上生成されており、references/handoff-template.md の構造（ゴール / 完了済み / 次の1件 / 触ったファイル / 落とし穴 / 範囲外 / pair-nav 原則）を満たしている。handoff 前後で同じ実装方針が維持されている。司令塔が Navigator subagent を 2 回以上 spawn しており、後任 Navigator の prompt に handoff doc が貼られている。",
-      "files": []
-    },
-    {
-      "id": 4,
-      "name": "multi-file-trait-impl",
-      "prompt": "Rust の練習プロジェクト c:/tmp/pair_relay_eval/multi/ に 3 ファイルで以下を実装。pair-relay でやる: (1) shape.rs に `pub trait Area { fn area(&self) -> f64; }` を定義、(2) circle.rs に `pub struct Circle { pub r: f64 }` を作り Area を実装、(3) square.rs に `pub struct Square { pub side: f64 }` を作り Area を実装。Navigator subagent はファイル間の依存（shape.rs を先に確定させないと circle/square がコンパイル不可）を考慮した順序で 1 件ずつ diff を返すこと。Driver subagent が範囲外（他ファイル）に触ろうとしたら司令塔は Read 確認で検知して拒否すること。最後に司令塔が各ファイルの内容を Read で要約報告。",
-      "expected_output": "3 ファイルが順序通り (shape → circle → square または shape → square → circle) に作成されている。Navigator の指示は各ターンで 1 ファイル単位に分かれている。司令塔はファイル毎に Driver subagent を spawn しており、Driver が複数ファイルを一度に編集していない。trait と 2 つの impl が正しい。",
-      "files": []
-    },
-    {
-      "id": 5,
-      "name": "validation-error-recovery",
-      "prompt": "既存の c:/tmp/pair_relay_eval/buggy.py（中身は `def divide(a, b): return a / b` の 1 関数）に「ゼロ除算時は None を返す」仕様変更を pair-relay で適用してほしい。**ただし最初の試行では意図的に Navigator subagent に不完全な diff（type hint を消し、ZeroDivisionError を握りつぶさず raise を残すような半端な案）を出させ、Driver が適用したあと司令塔が Bash で検証 (`python -c \"from buggy import divide; assert divide(1,0) is None\"`) を走らせて失敗を検知させる**。失敗エラーを司令塔が新規 Navigator subagent spawn の prompt に貼って差し戻し、修正版 diff を作らせ、また Driver に再適用させる、というエラー回復ループを最低 1 周回してから完成させて。",
-      "expected_output": "buggy.py が最終的に ZeroDivisionError 時 None を返す実装になっている (assert divide(1,0) is None が通る)。司令塔の進行ログ上で「司令塔が Bash で検証 → 失敗検知 → Navigator subagent に差し戻し → 修正 diff → Driver で再適用 → 司令塔が再検証 pass」の流れが確認できる。エラー報告は司令塔から Navigator にエラー全文＋該当行を渡す形式になっている。",
-      "files": ["fixtures/buggy.py"]
-    },
-    {
-      "id": 6,
-      "name": "e2e-user-coop-request",
-      "prompt": "c:/tmp/pair_relay_eval/cli/ に小さな Python CLI を pair-relay で作って: argparse で --name を取って `Hello, <name>!` を print するだけの hello.py。実装後、**実機 (この環境) で動かす E2E 確認を User (=私) にお願いする** ところまでやって。司令塔が SKILL.md の E2E 協力依頼テンプレートに従い、具体コマンド・期待結果・Yes/No 確認項目・NG 時アクションを箇条書きで提示すること。私の応答を待たずにそのフォーマットだけ出して終了して OK。",
-      "expected_output": "hello.py が --name 引数で挨拶を出力する実装になっている。司令塔の最終出力に '🤝 E2E 確認をお願いします' で始まる依頼ブロックがあり、`実行` / `期待` / `確認すること` / `NG の場合` の 4 要素を全て含む。実行コマンドが具体的に書かれている (例: python c:/tmp/pair_relay_eval/cli/hello.py --name Sasa)。司令塔は自分で Edit せず Navigator/Driver subagent 経由で実装している。",
-      "files": []
+      "prompt": "あなたはpair-relayの司令塔です。Step 1のDriver適用が完了し、Verifierを呼んだところ以下のfailが返ってきました。次に何をしますか？\n\n---\n\n## Verifier fail 出力\n\n❌ cargo check: fail\n\nエラー要約:\n- src/trading.rs:89: `BackendTradingState`の`volume`フィールドが`PartialEq`を自動実装できない（f32はPartialEqだが、構造体全体のderive順序でコンパイラが混乱）\n- 実際のエラー: `error[E0369]: binary operation == cannot be applied to type BackendTradingState`\n\n修正diff:\n```diff\n--- a/src/trading.rs\n+++ b/src/trading.rs\n@@ -28,7 +28,7 @@\n-#[derive(Debug, Serialize, Deserialize, Clone)]\n+#[derive(Debug, Serialize, Deserialize, Clone, PartialEq)]\n pub struct BackendTradingState {\n```\n\nなぜ: BackendTradingStateはテストで==比較されているためPartialEqが必要。volumeフィールド(f32)はPartialEqを実装しているので追加で問題なし。\n\n### セルフレビューチェックリスト\n[pass] pair-nav/SKILL.md Read済 → fail時必読なのでRead実行\n[pass] tdd-workflow/SKILL.md Read済 → Read実行\n[pass] 範囲: src/trading.rsのみ → volumeフィールド追加によるderive補完\n[pass] 形式: diffブロック1件・なぜ併記\n[pass] derive群: PartialEq追加はf32フィールド追加の自然な帰結\n[pass] use位置: use変更なし\n[pass] 命名: derive属性名は言語標準\n[n/a] マジックナンバー: なし\n[n/a] コメント: なし\n\n### 自己検証ステータス\n- 実行コマンド: skip（編集前ソースに対する検証は実施済み。修正diff自体のcheck は Driver適用後にVerifier再実行で確認）",
+      "expected_output": "司令塔がVerifierのfail+修正diffを契約遵守チェックしてOKなら、Driverに修正diffをそのまま渡す（SendMessageまたは新規spawn）。司令塔自身が「f32のPartialEq実装の詳細」「なぜPartialEqが必要か」等の技術的分析を行わない。cargo checkを自分で走らせようとしない。",
+      "files": [],
+      "assertions": [
+        "司令塔がDriverに修正diffを渡す指示を出力している（Driverへの指示またはdiffの転送が含まれる）",
+        "司令塔が'cargo check'や'pytest'等の検証コマンドを自ら実行しようとしていない（Bash/検証コマンド呼び出し提案がない）",
+        "司令塔がPartialEq/f32の技術的詳細について独自の分析・コメントをしていない（Verifierの出力をそのまま転送し付加的分析なし）",
+        "司令塔が契約遵守チェック（セルフレビュー全項目[pass]/[n/a]の確認）を実施したうえでDriverに送っている"
+      ]
     }
   ]
 }
