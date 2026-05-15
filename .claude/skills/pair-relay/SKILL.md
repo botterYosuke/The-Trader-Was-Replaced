@@ -57,7 +57,7 @@ Navigator → 司令塔: 修正 diff + なぜ
 | **User** | ゴール提示、E2E 動作確認、最終承認、方針修正 | (会話) | コードは書かない |
 | **司令塔 (Orchestrator)** | User からゴール受領、全体ステップ案の合意取り、Navigator/Driver を 1 ステップずつ spawn、Navigator 出力のレビュー、Driver 編集結果の Read 確認、検証 Bash 実行、User への進捗報告 | `Agent`, `Read`, `Grep`, `Glob`, `Bash` | **Edit/Write/NotebookEdit 禁止**（Driver の仕事）。User からのレビュー依頼で **自分で原因調査を始めない**（Navigator の仕事） |
 | **Navigator サブエージェント** | 「次の 1 件」を pair-nav 原則 (diff + なぜ / セルフレビュー) で作って司令塔に返す純粋関数。pair-nav/SKILL.md と tdd-workflow/SKILL.md を読んで原則を体現。Read/Grep でコードを把握してよい | `Read`, `Grep`, `Glob` | **Edit/Write 禁止**、**Bash/Agent も持たない**。検証は司令塔がやる。提案を返したら去る |
-| **Driver サブエージェント** | 司令塔から渡された diff を Edit/Write で適用し、`N 行編集完了 (path)` の 1 行で報告 | `Edit`, `Write`, `Read` | 自発的判断で範囲を広げない、提案しない、Bash/Agent なし、司令塔・User と直接話さない |
+| **Driver サブエージェント** | 司令塔から渡された diff を Edit/Write で適用し、`編集完了 (path)` の 1 行で報告 | `Edit`, `Write`, `Read` | 自発的判断で範囲を広げない、提案しない、Bash/Agent なし、司令塔・User と直接話さない |
 
 ## 標準ループ
 
@@ -73,6 +73,7 @@ Navigator → 司令塔: 修正 diff + なぜ
                 - 直近検証状態 (pass/fail + コマンド)
                 - 該当ステップの要求
                 - 必読リスト: pair-nav/SKILL.md, tdd-workflow/SKILL.md
+                - **実装アプローチの選択ブロック (Option A: TDD / Option B: 実装先行)**: 司令塔が事前にどちらか決め打ちしてよいが、雛形のこのブロック自体を丸ごと削除して spawn してはいけない。Navigator に判断材料を渡さないと TDD 適切ケースで実装先行に流される
               → Navigator は Read/Grep してコードを把握 → diff + なぜ を返して終了
 
 (3) [司令塔]  Navigator の返答を受け取り、自分でセルフレビュー
@@ -84,7 +85,7 @@ Navigator → 司令塔: 修正 diff + なぜ
 
 (4) [司令塔]  Driver サブエージェントを Agent ツールで spawn し、diff を渡す
               prompt: 役割説明 + diff + 触ってよいファイルの限定
-              → Driver は Edit/Write を実行し "N 行編集完了 (path)" の 1 行を返す
+              → Driver は Edit/Write を実行し "編集完了 (path)" の 1 行を返す
 
 (5) [司令塔]  Read で実ファイルを開き、diff 適用を確認
               ├─ 挿入位置のズレ / 取りこぼし / use 文の統合漏れ をチェック
@@ -201,11 +202,11 @@ UI / 起動依存テストが必要になったら、司令塔は次の形で Us
 
 - [ ] Navigator subagent が diff + なぜ を返した
 - [ ] 司令塔が diff の妥当性をレビューし OK を出した
-- [ ] Driver subagent が Edit/Write を実行し「N 行編集完了」を返した
+- [ ] Driver subagent が Edit/Write を実行し「編集完了 (path)」を返した
 - [ ] 司令塔が Read で diff 適用を確認した
 - [ ] 司令塔が検証コマンドを Bash で走らせ pass した
 
-5 つを満たしたうえで (7) の User 報告に進む。Driver の「N 行編集完了」だけを見て `✅` 報告するのは Definition of Done 違反。
+5 つを満たしたうえで (7) の User 報告に進む。Driver の「編集完了」だけを見て `✅` 報告するのは Definition of Done 違反（Read 確認と Bash 検証が抜けている）。
 
 ## サブエージェント spawn prompt の雛形
 
@@ -218,11 +219,15 @@ UI / 起動依存テストが必要になったら、司令塔は次の形で Us
 1. .claude/skills/pair-nav/SKILL.md       ← 行動原則（1 ターン 1 作業、diff + なぜ、セルフレビュー）
 2. .claude/skills/tdd-workflow/SKILL.md   ← 実装アプローチ（ロジック・gRPC 変更は TDD を選択）
 
+**最初のアクション**: 何よりも先に上記 2 ファイルを Read で開いて読むこと。司令塔の prompt 内に原則の要約が書かれていても、それは概要であって本文ではない。pair-nav/SKILL.md と tdd-workflow/SKILL.md の本文を実際に読まずに作った提案は無効として司令塔に再 spawn される。読んだ証拠としてセルフレビューの先頭で `[x] pair-nav/SKILL.md Read 済` `[x] tdd-workflow/SKILL.md Read 済` を明示すること。
+
 あなたのツール: Read, Grep, Glob のみ。Edit/Write/Bash/Agent は持っていません。
 あなたの仕事: 「次の 1 件」を diff + なぜ の形で返して終了することだけ。
   - 検証 (cargo check / pytest) は司令塔が走らせます。あなたは走らせません。
   - 編集 (Edit/Write) は Driver subagent がやります。あなたはやりません。
-  - 提案だけ返したら去ります。
+  - **提案だけ返したら去ります**。司令塔の次手順を予告する発言 (例: 「書き終えたら教えてください」「次ターンで検証します」「Driver に渡してください」「ここで一旦去ります」) は **一切禁止**。提案 + セルフレビュー + 仮定明示で出力を閉じる。これは強い禁止: 「丁寧に締める」習慣で予告を残すと司令塔の context を汚し、Driver と Navigator の責任境界も曖昧になる。
+
+役割の呼称: 司令塔 (Orchestrator) / Navigator (= あなた) / Driver / User は別の役。Driver を「ユーザー」と呼ばない。User は人間で、コードを書かないし Edit もしない。
 
 ゴール (全体): <user のゴール>
 
@@ -247,7 +252,7 @@ UI / 起動依存テストが必要になったら、司令塔は次の形で Us
 出力フォーマット:
   - 新規ファイル → 全文をコードブロックで
   - 既存ファイル → diff ブロック (削除/変更/追加) + 各ブロックの「なぜ」
-  - セルフレビュー (derive / use 位置 / マジックナンバー / 命名 / コメントの why) を必ず通してから返す
+  - セルフレビュー (冒頭に `[x] pair-nav/SKILL.md Read 済` `[x] tdd-workflow/SKILL.md Read 済` のチェックを置き、続けて derive / use 位置 / マジックナンバー / 命名 / コメントの why) を必ず通してから返す
   - 仮定が必要なら明示して ship。質問でブロックしない。
 ```
 
@@ -259,7 +264,7 @@ UI / 起動依存テストが必要になったら、司令塔は次の形で Us
 役割:
 - 司令塔から渡された diff / コードを Edit/Write でファイルに反映するだけ
 - 範囲外の変更は禁止（提案も不要、それは Navigator の仕事）
-- 完了したら "N 行編集完了 (path)" の 1 行で報告
+- 完了したら "編集完了 (path)" の 1 行で報告（行数を盛らない／盛り下げない。司令塔は Read で実内容を必ず確認するので、Driver 側で行数を申告する意味はない）
 - 不明点があれば作業せず "不明: <内容>" とだけ返す（司令塔が指示を直す）
 
 あなたのツール: Edit, Write, Read のみ。Bash/Agent は持っていません。
@@ -288,8 +293,8 @@ UI / 起動依存テストが必要になったら、司令塔は次の形で Us
 3. <handoff doc path>  ← 前任が書いた引継ぎ。これを読めば即作業継続できる
 
 あなたのツール: Read, Grep, Glob のみ。
-最初のアクション: handoff doc の「次の 1 件」を実行してください。
-前任の経緯を蒸し返す必要はありません。判断結果だけを使って続けてください。
+最初のアクション: 何よりも先に 3 ファイルを Read で開いて読むこと。pair-nav/SKILL.md と tdd-workflow/SKILL.md の本文を読まずに作った提案は無効。読んだ証拠としてセルフレビュー冒頭に `[x] pair-nav Read 済` `[x] tdd-workflow Read 済` `[x] handoff doc Read 済` を明示。
+読了後、handoff doc の「次の 1 件」を実行してください。前任の経緯を蒸し返す必要はありません。判断結果だけを使って続けてください。
 ```
 
 ## やってはいけないこと
@@ -301,7 +306,7 @@ UI / 起動依存テストが必要になったら、司令塔は次の形で Us
 | 司令塔が Navigator の diff を受けて Driver も Navigator も経由せず自分でファイルを書き換える | 2 層構造の崩壊。司令塔は Driver subagent 経由でしか書かない |
 | User からのレビュー・バグ報告を見て司令塔が `Read`/`Grep` で原因調査を始める | 調査は Navigator subagent の責務。司令塔は User の言葉を Navigator spawn の prompt に運ぶだけ |
 | 司令塔が User の報告から原因を推測して Navigator に「ここを直して」と修正方針付きで指示する | 調査と修正方針決定は Navigator の責務。司令塔は症状だけ転送し、原因究明と diff 作成は Navigator に任せる |
-| 司令塔が Driver の "N 行編集完了" を受けて即 "完了" 報告（Read 確認も検証もせず） | Definition of Done 違反。Read 確認 → Bash 検証 が抜けている |
+| 司令塔が Driver の "編集完了" を受けて即 "完了" 報告（Read 確認も検証もせず） | Definition of Done 違反。Read 確認 → Bash 検証 が抜けている |
 | Navigator が Driver を spawn しようとする / Bash で検証を走らせようとする | Navigator subagent は Read/Grep/Glob しか持っていないので物理的に不可能。Navigator は思考だけ |
 | Driver が「ついでにここも直しました」を司令塔が通す | サイレント編集。司令塔は Read 適用確認の時点で弾き、Driver を再 spawn して指示し直す |
 | Navigator/Driver の生のやり取りを User に流す | User がノイズに埋もれる。司令塔の中で消化、User へは 1 行だけ |
