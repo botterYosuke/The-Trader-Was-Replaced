@@ -1,7 +1,7 @@
 use bevy::prelude::*;
 use bevy::window::PrimaryWindow;
-use bevy_cosmic_edit::prelude::CosmicPrimaryCamera;
 use bevy_cosmic_edit::ScrollEnabled;
+use bevy_cosmic_edit::prelude::CosmicPrimaryCamera;
 use bevy_pancam::{DirectionKeys, PanCam};
 
 use crate::ui::strategy_editor::StrategyEditorContent;
@@ -33,6 +33,7 @@ pub fn setup_camera(mut commands: Commands) {
 pub fn pancam_suppression_over_editor_system(
     windows: Query<&Window, With<PrimaryWindow>>,
     keys: Res<ButtonInput<KeyCode>>,
+    mouse: Res<ButtonInput<MouseButton>>,
     mut camera_q: Query<(&mut PanCam, &Camera, &GlobalTransform)>,
     editor_q: Query<(&GlobalTransform, &Sprite), With<StrategyEditorContent>>,
     mut scroll_q: Query<&mut ScrollEnabled, With<StrategyEditorContent>>,
@@ -47,9 +48,11 @@ pub fn pancam_suppression_over_editor_system(
     };
 
     // カーソルのスクリーン座標 → ワールド座標。ウィンドウ外 / 変換失敗時は None。
-    let cursor_world = window
-        .cursor_position()
-        .and_then(|screen_pos| camera.viewport_to_world_2d(camera_transform, screen_pos).ok());
+    let cursor_world = window.cursor_position().and_then(|screen_pos| {
+        camera
+            .viewport_to_world_2d(camera_transform, screen_pos)
+            .ok()
+    });
 
     // カーソルがいずれかの Strategy Editor スプライト矩形の内側にあるか（AABB 判定）。
     let over_editor = match cursor_world {
@@ -66,8 +69,9 @@ pub fn pancam_suppression_over_editor_system(
         None => false,
     };
 
-    // Ctrl 押下中はエディタ上でもカメラズームを優先するため PanCam を有効のままにする。
-    pancam.enabled = ctrl || !over_editor;
+    // 右/中ボタンドラッグ中はエディタ上でも強制的にパンを有効にする。
+    let dragging = mouse.pressed(MouseButton::Right) || mouse.pressed(MouseButton::Middle);
+    pancam.enabled = ctrl || !over_editor || dragging;
 
     // エディタスクロールが効くのは「エディタ上 かつ Ctrl 非押下」のフレームだけ。
     let editor_should_scroll = over_editor && !ctrl;
