@@ -1,10 +1,11 @@
 # Handoff Document Template
 
-退役するエージェント自身が書く。後任が **これだけ読めば即座に続けられる** こと。
-冗長な経緯禁止。**判断結果と次アクションだけ** 残す。
+Navigator subagent / Driver subagent / 司令塔 のいずれの引継ぎにも使う共用テンプレ。退役する側、または司令塔が長丁場で context を整理するときに書く。後任が **これだけ読めば即座に続けられる** こと。冗長な経緯禁止。**判断結果と次アクションだけ** 残す。
+
+なお pair-relay は 2 層構造（司令塔が Navigator と Driver を順次 spawn）であり、subagent 側に状態は残らない（SendMessage 利用可否で挙動分岐）。SendMessage が使えない環境ではこの handoff doc が「subagent 間の状態引き継ぎ」の唯一の手段になる。
 
 ```markdown
-# Handoff: <Navigator|Driver> @ <YYYY-MM-DD HH:MM>
+# Handoff: <Orchestrator|Navigator|Driver> @ <YYYY-MM-DD HH:MM>
 
 ## 1. ゴール (全体)
 <1〜2 行。User のゴールをそのまま、または要約>
@@ -17,14 +18,19 @@
 - [ ] Step 5: 未着手
 
 ## 3. 次の 1 件 (後任が真っ先にやる作業)
-<Navigator 引継ぎ → 次に出すべき指示の中身（diff + なぜ）または「Step 3 の検証結果を見て判断」など>
-<Driver 引継ぎ → 次に適用する diff (Navigator からまだ来ていなければ「Navigator 待ち」)>
+<司令塔自身の引継ぎ → 次に Navigator subagent に何を聞くか / Driver subagent に何を渡すか の 2 系統を明示>
+<Navigator 引継ぎ → 次に出すべき diff (+ なぜ) の方向性、または「司令塔の検証結果待ち」>
+<Driver 引継ぎ → 次に適用する diff (司令塔がまだ渡していなければ「司令塔の指示待ち」)>
 
 ## 4. 触ったファイルと現状
 | path | 状態 | 直近検証 |
 |---|---|---|
 | src/foo.rs | dirty (Step 2 で追加) | cargo check pass @ <時刻> |
 | src/bar.rs | clean | - |
+
+## 4b. Subagent 再開方針 (司令塔 handoff 時のみ)
+- Navigator: <SendMessage で継続再利用する / 毎回新規 spawn する>
+- Driver: <SendMessage で継続再利用する / 毎回新規 spawn する（既定）>
 
 ## 5. 既知の落とし穴 / User からの制約
 - <制約 1>
