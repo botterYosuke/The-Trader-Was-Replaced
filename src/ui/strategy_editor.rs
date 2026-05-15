@@ -33,13 +33,66 @@ const TITLE_BAR_BUTTON_GAP: f32 = 8.0;
 const TITLE_BAR_BUTTON_Z: f32 = 0.2;
 const BUTTON_ENABLED_ALPHA: f32 = 1.0;
 const BUTTON_DISABLED_ALPHA: f32 = 0.3;
-const SAVE_BUTTON_COLOR: Color = Color::srgba(0.25, 0.55, 0.35, 1.0); // 緑系: 保存
 const RUN_BUTTON_COLOR: Color = Color::srgba(0.55, 0.35, 0.75, 1.0); // 紫系: ACCENT 寄り
 
-/// Save Cache ボタン sprite に付けるマーカー。
-/// 毎フレーム `StrategyBuffer.dirty` を見て alpha を更新する system で query される。
-#[derive(Component)]
-pub struct StrategySaveButton;
+/// debounce 自動保存の進行状況を追跡する resource。
+/// `mark_strategy_dirty` で `last_change` を記録し、`debounced_strategy_autosave_system`
+/// が 1 秒経過後に `flush_strategy_cache` を呼んで cache_path へ書き出す。
+#[derive(Resource, Default)]
+pub struct StrategyAutoSaveState {
+    pub dirty: bool,
+    pub last_change: Option<std::time::Instant>,
+}
+
+/// `StrategyBuffer.source` を `cache_path` に書き出し、dirty 状態をクリアする。
+///
+/// 戻り値:
+/// - `Ok(true)`: 書き出し成功、`buffer.dirty` と `auto_save` の dirty/last_change をリセット
+/// - `Ok(false)`: `cache_path` 未設定でスキップ（state は不変）
+/// - `Err(e)`: I/O 失敗、state は不変（呼び出し側で error log / 再試行）
+pub fn flush_strategy_cache(
+    buffer: &mut StrategyBuffer,
+    auto_save: &mut StrategyAutoSaveState,
+) -> std::io::Result<bool> {
+    let Some(path) = buffer.cache_path.as_ref() else {
+        return Ok(false);
+    };
+    std::fs::write(path, &buffer.source)?;
+    buffer.dirty = false;
+    auto_save.dirty = false;
+    auto_save.last_change = None;
+    Ok(true)
+}
+
+/// debounce 判定。dirty かつ最後の変更から `debounce` 経過なら true。
+///
+/// `saturating_duration_since` を使うことで now < last_change（クロック逆転）でも panic しない。
+fn should_flush(
+    state: &StrategyAutoSaveState,
+    now: std::time::Instant,
+    debounce: std::time::Duration,
+) -> bool {
+    if !state.dirty {
+        return false;
+    }
+    let Some(last_change) = state.last_change else {
+        return false;
+    };
+    now.saturating_duration_since(last_change) >= debounce
+}
+
+/// エディタ入力 / undo/redo / snapshot restore でテキストが変わった瞬間に呼ぶ。
+/// buffer と auto_save の dirty 状態を一括更新して中間状態を作らない。
+fn mark_strategy_dirty(
+    buffer: &mut StrategyBuffer,
+    auto_save: &mut StrategyAutoSaveState,
+    new_source: String,
+) {
+    buffer.source = new_source;
+    buffer.dirty = true;
+    auto_save.dirty = true;
+    auto_save.last_change = Some(std::time::Instant::now());
+}
 
 /// Run ボタン sprite に付けるマーカー。
 #[derive(Component)]
@@ -58,9 +111,8 @@ pub struct ZoomResponsiveEditor {
 }
 
 /// タイトルバー上に水平に並べるラベル付きボタン。
-/// Strategy Editor の Save Cache / Run は同じ見た目ロジックなので 1 箇所に集約する。
 ///
-/// - `marker`: `StrategySaveButton` か `StrategyRunButton`。後段の system が
+/// - `marker`: `StrategyRunButton` 等のマーカー component。後段の system が
 ///   `Query<&mut Sprite, With<Marker>>` で alpha を更新する目印。
 /// - `on_click`: `Trigger<Pointer<Click>>` を取る observer クロージャ。
 ///   有効/無効判定はクロージャ内で行う（observer subscribe をいじるより単純）。
@@ -161,7 +213,7 @@ pub fn spawn_strategy_editor_panel(commands: &mut Commands, font_system: &mut Co
     commands.entity(content_area).add_child(editor);
     commands.insert_resource(FocusedWidget(Some(editor)));
 
-    // ── Save Cache / Run ボタンをタイトルバー右端に積む ───────────────
+    // ── Run ボタンをタイトルバー右端に配置 ───────────────
     // floating_window.rs が右端に × ボタン(20px + margin 8px×2 = 36px) を置くため、
     // タイトルバーボタンはその分だけ左に退避させる。
     const CLOSE_BTN_RESERVED: f32 = 36.0; // 20(btn) + 8(margin_right) + 8(gap)
@@ -170,34 +222,6 @@ pub fn spawn_strategy_editor_panel(commands: &mut Commands, font_system: &mut Co
         - TITLE_BAR_BUTTON_GAP
         - CLOSE_BTN_RESERVED;
     let run_x = title_bar_right_inner;
-    let save_x = run_x - TITLE_BAR_BUTTON_SIZE.x - TITLE_BAR_BUTTON_GAP;
-
-    spawn_title_bar_button(
-        commands,
-        title_bar,
-        Vec2::new(save_x, 0.0),
-        SAVE_BUTTON_COLOR,
-        "Save Cache",
-        StrategySaveButton,
-        |_trigger: Trigger<Pointer<Click>>, mut buffer: ResMut<StrategyBuffer>| {
-            let can_save = buffer.cache_path.is_some() && buffer.dirty;
-            if !can_save {
-                return;
-            }
-            let Some(path) = buffer.cache_path.clone() else {
-                return;
-            };
-            match std::fs::write(&path, &buffer.source) {
-                Ok(()) => {
-                    buffer.dirty = false;
-                    info!("strategy cache saved: {:?}", path);
-                }
-                Err(err) => {
-                    error!("failed to save strategy cache {:?}: {}", path, err);
-                }
-            }
-        },
-    );
 
     spawn_title_bar_button(
         commands,
@@ -207,20 +231,34 @@ pub fn spawn_strategy_editor_panel(commands: &mut Commands, font_system: &mut Co
         "Run",
         StrategyRunButton,
         |_trigger: Trigger<Pointer<Click>>,
-         buffer: Res<StrategyBuffer>,
+         mut buffer: ResMut<StrategyBuffer>,
          last_run: Res<LastRunResult>,
+         mut auto_save: ResMut<StrategyAutoSaveState>,
          mut run_events: EventWriter<StrategyRunRequested>| {
             if matches!(last_run.state, RunState::Running) {
                 warn!("Run blocked: already running");
                 return;
             }
-            let can_run = buffer.cache_path.is_some() && !buffer.dirty;
-            if !can_run {
+            // dirty のときだけ即時 flush（debounce 待機をスキップ、バッファとファイルを一致させる）。
+            // クリーン状態の Run は cache が一致済みなので I/O を省く（FS 一時エラーで Run がブロックされる事故を防ぐ）。
+            if buffer.dirty {
+                match flush_strategy_cache(&mut buffer, &mut auto_save) {
+                    Ok(true) => {}
+                    Ok(false) => {
+                        warn!("Run blocked: no cache_path set");
+                        return;
+                    }
+                    Err(e) => {
+                        error!("strategy flush before run failed: {}", e);
+                        return;
+                    }
+                }
+            }
+            let Some(path) = buffer.cache_path.clone() else {
+                warn!("Run blocked: no cache_path set");
                 return;
-            }
-            if let Some(path) = buffer.cache_path.clone() {
-                run_events.send(StrategyRunRequested { cache_path: path });
-            }
+            };
+            run_events.send(StrategyRunRequested { cache_path: path });
         },
     );
 }
@@ -329,6 +367,7 @@ pub fn sync_editor_to_strategy_buffer_system(
     editor_q: Query<Entity, With<StrategyEditorContent>>,
     mut buffer: ResMut<StrategyBuffer>,
     mut history: ResMut<AppHistory>,
+    mut auto_save: ResMut<StrategyAutoSaveState>,
 ) {
     for CosmicTextChanged((entity, new_text)) in events.read() {
         if !editor_q.contains(*entity) {
@@ -355,8 +394,7 @@ pub fn sync_editor_to_strategy_buffer_system(
         if !history.is_replaying() {
             history.push_text(buffer.source.clone(), new_text.clone());
         }
-        buffer.source = new_text.clone();
-        buffer.dirty = true;
+        mark_strategy_dirty(&mut buffer, &mut auto_save, new_text.clone());
     }
 }
 
@@ -428,6 +466,7 @@ pub fn apply_pending_app_edits_system(
     mut pending_layout: ResMut<PendingLayoutApply>,
     mut pending_restore: ResMut<PendingStrategySnapshotRestore>,
     mut undo_applied: EventWriter<UndoRedoApplied>,
+    mut auto_save: ResMut<StrategyAutoSaveState>,
 ) {
     if history.pending.queue.is_empty() {
         return;
@@ -441,8 +480,7 @@ pub fn apply_pending_app_edits_system(
                 // buffer に書き込む text が echo で返ってくるテキストなので、
                 // そのテキストを target としてセットし期待一致方式で echo を抑制する。
                 history.suppress_echo(text.clone());
-                buffer.source = text;
-                buffer.dirty = true;
+                mark_strategy_dirty(&mut buffer, &mut auto_save, text);
                 any_text = true;
             }
             AppEditAction::MoveWindow { kind, position } => {
@@ -495,6 +533,7 @@ pub fn apply_strategy_snapshot_restore_system(
     mut history: ResMut<AppHistory>,
     editor_q: Query<Entity, With<StrategyEditorContent>>,
     mut undo_applied: EventWriter<UndoRedoApplied>,
+    mut auto_save: ResMut<StrategyAutoSaveState>,
 ) {
     if pending_restore.snapshot.is_none() {
         return;
@@ -507,41 +546,338 @@ pub fn apply_strategy_snapshot_restore_system(
         // buffer に書き込む snapshot が echo で返ってくるテキストなので、
         // そのテキストを target としてセットし期待一致方式で echo を抑制する。
         history.suppress_echo(snapshot.clone());
-        buffer.source = snapshot;
-        buffer.dirty = true;
+        mark_strategy_dirty(&mut buffer, &mut auto_save, snapshot);
         undo_applied.send(UndoRedoApplied);
     }
 }
 
-/// Save Cache / Run ボタンの有効/無効を視覚的に反映する system。
+/// Run ボタンの有効/無効を視覚的に反映する system。
 ///
-/// 毎フレーム `StrategyBuffer` を read して、ボタン sprite の alpha を
-/// `BUTTON_ENABLED_ALPHA` / `BUTTON_DISABLED_ALPHA` に切り替える。
+/// 毎フレーム `StrategyBuffer` と `LastRunResult` を read して、Run ボタン sprite の
+/// alpha を `BUTTON_ENABLED_ALPHA` / `BUTTON_DISABLED_ALPHA` に切り替える。
 ///
-/// クリック自体は observer 側で `can_save` / `can_run` を再判定して
-/// 早期 return するので、ここでは見た目だけ揃える役割。
+/// 自動保存（debounce）が dirty を任せて持つので、Run ボタンの有効判定は
+/// `cache_path` の有無と「実行中でないか」のみで行う。クリック時は observer 側で
+/// 即時 flush を試みてから StrategyRunRequested を発火する。
 pub fn update_strategy_button_visuals_system(
     buffer: Res<StrategyBuffer>,
     last_run: Res<LastRunResult>,
-    mut save_q: Query<&mut Sprite, (With<StrategySaveButton>, Without<StrategyRunButton>)>,
-    mut run_q: Query<&mut Sprite, (With<StrategyRunButton>, Without<StrategySaveButton>)>,
+    mut run_q: Query<&mut Sprite, With<StrategyRunButton>>,
 ) {
-    let can_save = buffer.cache_path.is_some() && buffer.dirty;
     let is_running = matches!(last_run.state, RunState::Running);
-    let can_run = buffer.cache_path.is_some() && !buffer.dirty && !is_running;
+    let can_run = buffer.cache_path.is_some() && !is_running;
 
-    for mut sprite in &mut save_q {
-        sprite.color.set_alpha(if can_save {
-            BUTTON_ENABLED_ALPHA
-        } else {
-            BUTTON_DISABLED_ALPHA
-        });
-    }
     for mut sprite in &mut run_q {
         sprite.color.set_alpha(if can_run {
             BUTTON_ENABLED_ALPHA
         } else {
             BUTTON_DISABLED_ALPHA
         });
+    }
+}
+
+/// 1 秒 debounce で `StrategyBuffer` を `cache_path` に自動保存する system。
+///
+/// 毎フレーム `should_flush` で経過時間を判定し、満たしたときだけ `flush_strategy_cache` を呼ぶ。
+/// `cache_path` 未設定 (`Ok(false)`) のときは debounce タイマーをクリアして無限ループを防ぐ。
+/// I/O 失敗時は state を保持し、次の debounce 経過で再試行する。
+pub fn debounced_strategy_autosave_system(
+    mut buffer: ResMut<StrategyBuffer>,
+    mut auto_save: ResMut<StrategyAutoSaveState>,
+) {
+    const DEBOUNCE: std::time::Duration = std::time::Duration::from_secs(1);
+    if !should_flush(&auto_save, std::time::Instant::now(), DEBOUNCE) {
+        return;
+    }
+    match flush_strategy_cache(&mut buffer, &mut auto_save) {
+        Ok(true) => info!("strategy cache autosaved: {:?}", buffer.cache_path),
+        Ok(false) => {
+            auto_save.dirty = false;
+            auto_save.last_change = None;
+        }
+        Err(e) => error!("strategy cache autosave failed: {}", e),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::fs;
+    use std::time::{Duration, Instant};
+    use tempfile::TempDir;
+
+    #[test]
+    fn flush_returns_false_when_cache_path_is_none() {
+        let mut buffer = StrategyBuffer {
+            original_path: None,
+            cache_path: None,
+            source: "fn main() {}".to_string(),
+            dirty: true,
+        };
+        let mut auto_save = StrategyAutoSaveState {
+            dirty: true,
+            last_change: Some(Instant::now()),
+        };
+
+        let result = flush_strategy_cache(&mut buffer, &mut auto_save);
+
+        assert!(matches!(result, Ok(false)));
+        assert!(buffer.dirty);
+        assert!(auto_save.dirty);
+        assert!(auto_save.last_change.is_some());
+    }
+
+    #[test]
+    fn flush_writes_file_and_clears_state() {
+        let temp_dir = TempDir::new().unwrap();
+        let cache_path = temp_dir.path().join("strategy.rs");
+
+        let mut buffer = StrategyBuffer {
+            original_path: None,
+            cache_path: Some(cache_path.clone()),
+            source: "fn main() { println!(\"hello\"); }".to_string(),
+            dirty: true,
+        };
+        let mut auto_save = StrategyAutoSaveState {
+            dirty: true,
+            last_change: Some(Instant::now()),
+        };
+
+        let result = flush_strategy_cache(&mut buffer, &mut auto_save);
+
+        assert_eq!(result.unwrap(), true);
+        assert!(cache_path.exists());
+        let written = fs::read_to_string(&cache_path).unwrap();
+        assert_eq!(written, "fn main() { println!(\"hello\"); }");
+        assert!(!buffer.dirty);
+        assert!(!auto_save.dirty);
+        assert_eq!(auto_save.last_change, None);
+    }
+
+    #[test]
+    fn flush_returns_err_and_keeps_state_when_path_unwritable() {
+        let temp_dir = TempDir::new().unwrap();
+        let unwritable_path = temp_dir.path().join("does_not_exist").join("strategy.rs");
+
+        let mut buffer = StrategyBuffer {
+            original_path: None,
+            cache_path: Some(unwritable_path),
+            source: "fn main() {}".to_string(),
+            dirty: true,
+        };
+        let now = Instant::now();
+        let mut auto_save = StrategyAutoSaveState {
+            dirty: true,
+            last_change: Some(now),
+        };
+
+        let result = flush_strategy_cache(&mut buffer, &mut auto_save);
+
+        assert!(result.is_err());
+        assert!(buffer.dirty);
+        assert!(auto_save.dirty);
+        assert_eq!(auto_save.last_change, Some(now));
+    }
+
+    #[test]
+    fn should_flush_false_when_not_dirty() {
+        let state = StrategyAutoSaveState {
+            dirty: false,
+            last_change: Some(Instant::now()),
+        };
+        assert!(!should_flush(&state, Instant::now(), Duration::from_secs(1)));
+    }
+
+    #[test]
+    fn should_flush_false_when_last_change_none() {
+        let state = StrategyAutoSaveState {
+            dirty: true,
+            last_change: None,
+        };
+        assert!(!should_flush(&state, Instant::now(), Duration::from_secs(1)));
+    }
+
+    #[test]
+    fn should_flush_false_when_within_debounce() {
+        let now = Instant::now();
+        let state = StrategyAutoSaveState {
+            dirty: true,
+            last_change: Some(now),
+        };
+        assert!(!should_flush(&state, now, Duration::from_millis(500)));
+    }
+
+    #[test]
+    fn should_flush_true_when_debounce_elapsed() {
+        let last_change = Instant::now();
+        let now = last_change + Duration::from_secs(2);
+        let state = StrategyAutoSaveState {
+            dirty: true,
+            last_change: Some(last_change),
+        };
+        assert!(should_flush(&state, now, Duration::from_millis(500)));
+    }
+
+    #[test]
+    fn mark_strategy_dirty_updates_state() {
+        let mut buffer = StrategyBuffer {
+            original_path: None,
+            cache_path: None,
+            source: "old source".to_string(),
+            dirty: false,
+        };
+        let mut auto_save = StrategyAutoSaveState {
+            dirty: false,
+            last_change: None,
+        };
+
+        let new_source = "new source code".to_string();
+        mark_strategy_dirty(&mut buffer, &mut auto_save, new_source.clone());
+
+        assert_eq!(buffer.source, new_source);
+        assert!(buffer.dirty);
+        assert!(auto_save.dirty);
+        assert!(auto_save.last_change.is_some());
+    }
+
+    #[test]
+    fn apply_pending_app_edits_sets_autosave_dirty_on_strategy_source_action() {
+        let mut app = App::new();
+        app.init_resource::<StrategyBuffer>();
+        app.init_resource::<AppHistory>();
+        app.init_resource::<StrategyAutoSaveState>();
+        app.init_resource::<PendingLayoutApply>();
+        app.init_resource::<PendingStrategySnapshotRestore>();
+        app.add_event::<PanelSpawnRequested>();
+        app.add_event::<UndoRedoApplied>();
+        app.add_systems(Update, apply_pending_app_edits_system);
+
+        let new_text = "def strategy(): pass".to_string();
+        {
+            let mut history = app.world_mut().resource_mut::<AppHistory>();
+            history
+                .pending
+                .queue
+                .push_back(AppEditAction::SetStrategySource {
+                    text: new_text.clone(),
+                });
+        }
+
+        app.update();
+
+        let auto_save = app.world().resource::<StrategyAutoSaveState>();
+        assert!(auto_save.dirty);
+        assert!(auto_save.last_change.is_some());
+
+        let buffer = app.world().resource::<StrategyBuffer>();
+        assert!(buffer.dirty);
+        assert_eq!(buffer.source, new_text);
+    }
+
+    #[test]
+    fn apply_strategy_snapshot_restore_sets_autosave_dirty() {
+        let mut app = App::new();
+        app.init_resource::<StrategyBuffer>();
+        app.init_resource::<AppHistory>();
+        app.init_resource::<StrategyAutoSaveState>();
+        app.init_resource::<PendingStrategySnapshotRestore>();
+        app.add_event::<UndoRedoApplied>();
+        app.add_systems(Update, apply_strategy_snapshot_restore_system);
+
+        // system の `if editor_q.is_empty() { return; }` を通過させるため、
+        // StrategyEditorContent マーカーを持つ entity を 1 個 spawn する。
+        app.world_mut().spawn(StrategyEditorContent);
+
+        let snapshot_text = "restored_source = 123".to_string();
+        {
+            let mut pending = app
+                .world_mut()
+                .resource_mut::<PendingStrategySnapshotRestore>();
+            pending.snapshot = Some(snapshot_text.clone());
+        }
+
+        app.update();
+
+        let auto_save = app.world().resource::<StrategyAutoSaveState>();
+        assert!(auto_save.dirty);
+        assert!(auto_save.last_change.is_some());
+
+        let buffer = app.world().resource::<StrategyBuffer>();
+        assert!(buffer.dirty);
+        assert_eq!(buffer.source, snapshot_text);
+
+        let pending = app
+            .world()
+            .resource::<PendingStrategySnapshotRestore>();
+        assert!(pending.snapshot.is_none());
+    }
+
+    #[test]
+    fn debounced_autosave_system_flushes_when_debounce_elapsed() {
+        let mut app = App::new();
+        app.init_resource::<StrategyBuffer>();
+        app.init_resource::<StrategyAutoSaveState>();
+        app.add_systems(Update, debounced_strategy_autosave_system);
+
+        let tmp = TempDir::new().unwrap();
+        let cache_path = tmp.path().join("strategy.py");
+
+        {
+            let mut buffer = app.world_mut().resource_mut::<StrategyBuffer>();
+            buffer.source = "x = 1".to_string();
+            buffer.cache_path = Some(cache_path.clone());
+            buffer.dirty = true;
+        }
+        {
+            let mut auto_save = app.world_mut().resource_mut::<StrategyAutoSaveState>();
+            auto_save.dirty = true;
+            // debounce(1s) を確実に超える 2 秒前を last_change にする
+            auto_save.last_change = Some(Instant::now() - Duration::from_secs(2));
+        }
+
+        app.update();
+
+        assert!(cache_path.exists());
+        assert_eq!(fs::read_to_string(&cache_path).unwrap(), "x = 1");
+
+        let buffer = app.world().resource::<StrategyBuffer>();
+        let auto_save = app.world().resource::<StrategyAutoSaveState>();
+        assert!(!buffer.dirty);
+        assert!(!auto_save.dirty);
+        assert!(auto_save.last_change.is_none());
+    }
+
+    #[test]
+    fn debounced_autosave_system_skips_when_within_debounce() {
+        let mut app = App::new();
+        app.init_resource::<StrategyBuffer>();
+        app.init_resource::<StrategyAutoSaveState>();
+        app.add_systems(Update, debounced_strategy_autosave_system);
+
+        let tmp = TempDir::new().unwrap();
+        let cache_path = tmp.path().join("strategy.py");
+
+        {
+            let mut buffer = app.world_mut().resource_mut::<StrategyBuffer>();
+            buffer.source = "x = 1".to_string();
+            buffer.cache_path = Some(cache_path.clone());
+            buffer.dirty = true;
+        }
+        {
+            let mut auto_save = app.world_mut().resource_mut::<StrategyAutoSaveState>();
+            auto_save.dirty = true;
+            // 経過 0s で debounce 未満
+            auto_save.last_change = Some(Instant::now());
+        }
+
+        app.update();
+
+        assert!(!cache_path.exists());
+
+        let buffer = app.world().resource::<StrategyBuffer>();
+        let auto_save = app.world().resource::<StrategyAutoSaveState>();
+        assert!(buffer.dirty);
+        assert!(auto_save.dirty);
+        assert!(auto_save.last_change.is_some());
     }
 }

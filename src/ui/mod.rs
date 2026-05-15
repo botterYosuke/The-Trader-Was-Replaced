@@ -44,9 +44,10 @@ use crate::ui::sidebar::{
 };
 use crate::ui::editor_history::{ActiveDrag, AppHistory, PendingStrategySnapshotRestore, UndoRedoApplied};
 use crate::ui::strategy_editor::{
-    apply_pending_app_edits_system, apply_strategy_snapshot_restore_system,
-    sync_editor_to_strategy_buffer_system, sync_strategy_buffer_to_editor_system,
-    undo_redo_system, update_strategy_button_visuals_system, update_strategy_editor_zoom_system,
+    StrategyAutoSaveState, apply_pending_app_edits_system, apply_strategy_snapshot_restore_system,
+    debounced_strategy_autosave_system, sync_editor_to_strategy_buffer_system,
+    sync_strategy_buffer_to_editor_system, undo_redo_system, update_strategy_button_visuals_system,
+    update_strategy_editor_zoom_system,
 };
 use crate::ui::systems::{button_system, update_price_display, update_status_indicator};
 use bevy::prelude::*;
@@ -66,6 +67,7 @@ impl Plugin for UiPlugin {
         ))
         .init_resource::<WindowManager>()
         .init_resource::<StrategyBuffer>()
+        .init_resource::<StrategyAutoSaveState>()
         .init_resource::<PendingStrategyLoad>()
         .init_resource::<AppHistory>()
         .init_resource::<ActiveDrag>()
@@ -136,6 +138,7 @@ impl Plugin for UiPlugin {
                     .after(apply_pending_app_edits_system)
                     .after(apply_strategy_snapshot_restore_system),
                 update_strategy_button_visuals_system,
+                debounced_strategy_autosave_system,
                 update_strategy_editor_zoom_system,
             ),
         )
