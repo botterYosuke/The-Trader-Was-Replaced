@@ -39,7 +39,7 @@ from nautilus_trader.trading.strategy import Strategy
 
 # issue #42 Phase 5: LIVE_SCENARIO は live モードのフォーム prefill 用。
 # 同じ戦略ファイルを replay → demo → prod の順で動かす建前のため、
-# `instrument` は SCENARIO['instrument'] と一致させる。
+# `instrument` はサイドカー scenario の instrument と一致させる。
 # SCENARIO 本体は <strategy>.json の "scenario" キーで管理する（Phase 7.3）。
 LIVE_SCENARIO: dict = {
     "schema_version": 1,
