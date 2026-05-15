@@ -4,6 +4,9 @@ use crate::ui::components::{
     MenuBarRoot, MenuButton, OpenStrategyRequested, StrategyBuffer, StrategyRunRequested,
     StrategyStatusLabel,
 };
+use crate::ui::layout_persistence::{
+    LayoutLoadDialogRequested, LayoutSaveAsRequested, LayoutSaveRequested,
+};
 use bevy::prelude::*;
 use rfd::FileDialog;
 use sha2::{Digest, Sha256};
@@ -66,6 +69,9 @@ pub fn spawn_menu_bar(mut commands: Commands) {
             ));
 
             spawn_menu_btn(p, "Open Strategy...", MenuButton::OpenStrategy);
+            spawn_menu_btn(p, "Save (Ctrl+S)", MenuButton::SaveLayout);
+            spawn_menu_btn(p, "Save As (Ctrl+Shift+S)", MenuButton::SaveLayoutAs);
+            spawn_menu_btn(p, "Load (Ctrl+O)", MenuButton::LoadLayout);
 
             p.spawn(Node {
                 flex_grow: 1.0,
@@ -90,6 +96,9 @@ pub fn menu_button_system(
         (Changed<Interaction>, With<Button>),
     >,
     mut open_strategy_events: EventWriter<OpenStrategyRequested>,
+    mut save_ev: EventWriter<LayoutSaveRequested>,
+    mut save_as_ev: EventWriter<LayoutSaveAsRequested>,
+    mut load_ev: EventWriter<LayoutLoadDialogRequested>,
 ) {
     for (interaction, mut bg, action) in &mut query {
         match interaction {
@@ -108,6 +117,18 @@ pub fn menu_button_system(
                         } else {
                             info!("menu: open strategy canceled");
                         }
+                    }
+                    MenuButton::SaveLayout => {
+                        info!("menu: save layout requested");
+                        save_ev.send(LayoutSaveRequested);
+                    }
+                    MenuButton::SaveLayoutAs => {
+                        info!("menu: save layout as requested");
+                        save_as_ev.send(LayoutSaveAsRequested);
+                    }
+                    MenuButton::LoadLayout => {
+                        info!("menu: load layout requested");
+                        load_ev.send(LayoutLoadDialogRequested);
                     }
                 }
             }

@@ -19,10 +19,12 @@ description: |
     "Trigger::entity", "Trigger::target", "required components" など破壊的変更語彙が出たとき
   ⑤ 新しいパネル（floating window）を増やす／既存パネルを書き換える作業
   ⑥ bevy_egui::Window と Bevy world-space ウィンドウ（Sprite ベース）の選択で迷ったとき
-  ⑦ `pair-relay` / `pair-nav` で `src/ui/**` を触る作業に入るとき（Orchestrator または
-    Navigator サブエージェントがこのスキルを読まずに進めると、Bevy 0.15 固有の罠
-    — `add_systems` タプル 20 上限、`IntoObserverSystem` の import path、
-    `CosmicEditor` 経由の `with_buffer_mut`、Text2d Anchor の左寄せ — で必ずハマる）
+  ⑦ `pair-relay` / `pair-nav` で `src/ui/**` を触る作業に入るとき（**Orchestrator 自身が
+    このスキルを invoke して内容を把握してから** Navigator を spawn すること。
+    読まずに進めると Bevy 0.15 固有の罠
+    — `add_systems` タプル 20 上限、`app.add_observer()` vs `app.observe()`、
+    `IntoObserverSystem` の import path、`CosmicEditor` 経由の `with_buffer_mut`、
+    Text2d Anchor の左寄せ — で必ずハマる）
   ⑧ `cosmic_edit`, `CosmicEditBuffer`, `CosmicEditor`, `TextEdit2d`, `FocusedWidget`,
     `CosmicBackgroundColor`, `CursorColor`, `CosmicTextChanged`, `set_text`, `with_buffer_mut`
     という語彙が出てきたとき
@@ -195,6 +197,7 @@ commands.entity(parent).add_child(child);
 | Required components が前提 | tuple spawn でフル指定 | `Sprite` だけで足りる場合あり |
 | `time.delta_secs()` | `time.delta_seconds()` | 関数名変更 |
 | `OrthographicProjection` 直接 | 同じ（経由が違う） | 0.19 は `Projection` enum 経由 |
+| `app.observe(system)` | `app.add_observer(system)` | **App グローバル observer の登録。`app.observe()` は 0.15 に存在しない。エンティティローカルは `.observe(...)` のまま** |
 
 詳細は [references/0.15-vs-0.19.md](references/0.15-vs-0.19.md) を参照。
 

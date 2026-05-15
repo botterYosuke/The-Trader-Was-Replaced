@@ -4,6 +4,7 @@ pub mod chart;
 pub mod components;
 pub mod floating_window;
 pub mod footer;
+pub mod layout_persistence;
 pub mod menu_bar;
 pub mod orders;
 pub mod positions;
@@ -56,6 +57,7 @@ impl Plugin for UiPlugin {
             CosmicEditPlugin {
                 font_config: CosmicFontConfig::default(),
             },
+            crate::ui::layout_persistence::LayoutPersistencePlugin,
         ))
         .init_resource::<WindowManager>()
         .init_resource::<StrategyBuffer>()
