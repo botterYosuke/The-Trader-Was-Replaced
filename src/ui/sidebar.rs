@@ -1,7 +1,7 @@
 use crate::trading::InstrumentList;
 use crate::ui::components::{
-    OpenStrategyRequested, PanelKind, PanelSpawnRequested, PendingStrategyLoad, SidebarListLabel,
-    SidebarRoot, WindowRoot,
+    OpenStrategyRequested, PanelKind, PanelSpawnRequested, PanelSpawnSource, PendingStrategyLoad,
+    SidebarListLabel, SidebarRoot, WindowRoot,
 };
 use bevy::prelude::*;
 use rfd::FileDialog;
@@ -215,13 +215,13 @@ pub fn panel_button_system(
                     // panel をこのフレームで spawn 要求。entity 出現を待ってから
                     // OpenStrategyRequested を発火するため pending に積む。
                     pending.path = Some(path);
-                    spawn_events.send(PanelSpawnRequested { kind: *kind });
+                    spawn_events.send(PanelSpawnRequested { kind: *kind, source: PanelSpawnSource::User });
                 } else {
                     // Strategy Editor 以外のパネルボタン:
                     // × で despawn 済みなら entity が無いので spawn される。
                     // 既に存在する場合は二重 spawn 防止のため skip。
                     if !existing_kinds.iter().any(|k| k == kind) {
-                        spawn_events.send(PanelSpawnRequested { kind: *kind });
+                        spawn_events.send(PanelSpawnRequested { kind: *kind, source: PanelSpawnSource::User });
                     }
                 }
             }

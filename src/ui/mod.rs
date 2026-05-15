@@ -3,6 +3,7 @@ pub mod button;
 pub mod buying_power;
 pub mod chart;
 pub mod components;
+pub mod editor_history;
 pub mod floating_window;
 pub mod footer;
 pub mod layout_persistence;
@@ -40,9 +41,11 @@ use crate::ui::sidebar::{
     panel_button_system, process_pending_strategy_load_system, spawn_sidebar,
     update_sidebar_system,
 };
+use crate::ui::editor_history::{ActiveDrag, AppHistory, PendingStrategySnapshotRestore, UndoRedoApplied};
 use crate::ui::strategy_editor::{
+    apply_pending_app_edits_system, apply_strategy_snapshot_restore_system,
     sync_editor_to_strategy_buffer_system, sync_strategy_buffer_to_editor_system,
-    update_strategy_button_visuals_system, update_strategy_editor_zoom_system,
+    undo_redo_system, update_strategy_button_visuals_system, update_strategy_editor_zoom_system,
 };
 use crate::ui::systems::{button_system, update_price_display, update_status_indicator};
 use bevy::prelude::*;
@@ -63,9 +66,13 @@ impl Plugin for UiPlugin {
         .init_resource::<WindowManager>()
         .init_resource::<StrategyBuffer>()
         .init_resource::<PendingStrategyLoad>()
+        .init_resource::<AppHistory>()
+        .init_resource::<ActiveDrag>()
+        .init_resource::<PendingStrategySnapshotRestore>()
         .add_event::<OpenStrategyRequested>()
         .add_event::<StrategyRunRequested>()
         .add_event::<PanelSpawnRequested>()
+        .add_event::<UndoRedoApplied>()
         .init_resource::<ScenarioMetadata>()
         .add_systems(
             Startup,
@@ -108,8 +115,14 @@ impl Plugin for UiPlugin {
                 buying_power_panel_system,
                 positions_panel_system,
                 orders_panel_system,
-                sync_strategy_buffer_to_editor_system.after(open_strategy_buffer_system),
                 sync_editor_to_strategy_buffer_system,
+                undo_redo_system.after(sync_editor_to_strategy_buffer_system),
+                apply_pending_app_edits_system.after(undo_redo_system),
+                apply_strategy_snapshot_restore_system.after(apply_pending_app_edits_system),
+                sync_strategy_buffer_to_editor_system
+                    .after(open_strategy_buffer_system)
+                    .after(apply_pending_app_edits_system)
+                    .after(apply_strategy_snapshot_restore_system),
                 update_strategy_button_visuals_system,
                 update_strategy_editor_zoom_system,
             ),

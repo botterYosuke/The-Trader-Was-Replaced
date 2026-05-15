@@ -511,6 +511,7 @@ dependencies = [
  "tokio",
  "tonic",
  "tonic-build",
+ "undo",
 ]
 
 [[package]]
@@ -5667,6 +5668,16 @@ name = "typewit"
 version = "1.15.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "214ca0b2191785cbc06209b9ca1861e048e39b5ba33574b3cedd58363d5bb5f6"
+
+[[package]]
+name = "undo"
+version = "0.52.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "d1dfbb202cb07dd2a685c765aa040db18d8a0dbe7079cf57c275833521f67653"
+dependencies = [
+ "serde",
+ "slab",
+]
 
 [[package]]
 name = "unicode-bidi"

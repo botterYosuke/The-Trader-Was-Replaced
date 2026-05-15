@@ -1,8 +1,13 @@
 use crate::trading::{LastRunResult, RunState};
 use crate::ui::components::{
-    OpenStrategyRequested, PanelKind, StrategyBuffer, StrategyRunRequested,
+    OpenStrategyRequested, PanelKind, PanelSpawnRequested, PanelSpawnSource, StrategyBuffer,
+    StrategyRunRequested, WindowRoot,
+};
+use crate::ui::editor_history::{
+    AppEditAction, AppHistory, PendingStrategySnapshotRestore, UndoRedoApplied,
 };
 use crate::ui::floating_window::{FloatingWindowSpec, spawn_floating_window};
+use crate::ui::layout_persistence::PendingLayoutApply;
 use bevy::ecs::system::IntoObserverSystem;
 use bevy::prelude::*;
 use bevy_cosmic_edit::cosmic_text::{Attrs, AttrsOwned, Edit, Metrics, Shaping};
@@ -262,8 +267,29 @@ pub fn update_strategy_editor_zoom_system(
 /// system 順序: `open_strategy_buffer_system` が同じイベントを読んで `buffer.source` を
 /// 更新するので、本 system は必ず `.after(open_strategy_buffer_system)` で走らせる。
 /// `EventReader` は system ごとに独立した読み取りカーソルを持つため、両方とも同じイベントを読める。
+/// buffer.source の内容を cosmic_edit エディタに反映するヘルパー。
+fn apply_buffer_to_editor(
+    source: &str,
+    font_system: &mut CosmicFontSystem,
+    editor_q: &mut Query<
+        (&mut CosmicEditBuffer, Option<&mut CosmicEditor>),
+        With<StrategyEditorContent>,
+    >,
+) {
+    for (mut edit_buffer, editor_opt) in editor_q.iter_mut() {
+        edit_buffer.set_text(font_system, source, Attrs::new());
+        if let Some(mut editor) = editor_opt {
+            editor.with_buffer_mut(|b| {
+                b.set_text(font_system, source, Attrs::new(), Shaping::Advanced);
+                b.set_redraw(true);
+            });
+        }
+    }
+}
+
 pub fn sync_strategy_buffer_to_editor_system(
-    mut events: EventReader<OpenStrategyRequested>,
+    mut open_events: EventReader<OpenStrategyRequested>,
+    mut undo_events: EventReader<UndoRedoApplied>,
     buffer: Res<StrategyBuffer>,
     mut font_system: ResMut<CosmicFontSystem>,
     mut editor_q: Query<
@@ -271,37 +297,20 @@ pub fn sync_strategy_buffer_to_editor_system(
         With<StrategyEditorContent>,
     >,
 ) {
-    if events.is_empty() {
+    let has_open = !open_events.is_empty();
+    let has_undo = !undo_events.is_empty();
+    open_events.clear();
+    undo_events.clear();
+
+    if !has_open && !has_undo {
         return;
     }
-    events.clear();
 
-    if buffer.original_path.is_none() {
+    if has_open && buffer.original_path.is_none() {
         return;
     }
 
-    for (mut edit_buffer, editor_opt) in &mut editor_q {
-        // CosmicEditBuffer 側も更新しておく：focus が外れたとき focus.rs の
-        // drop_editor_unfocused が editor.lines を CosmicEditBuffer に書き戻すが、
-        // CosmicEditor が存在しない状態で再 focus したときの初期値はこちらが使われる。
-        // また editor 不在分岐（パネル開いただけでまだクリックしてない）でもこちらが正となる。
-        edit_buffer.set_text(&mut font_system, &buffer.source, Attrs::new());
-
-        // CosmicEditor が attach されている間、render は editor 内部の Buffer を参照し
-        // CosmicEditBuffer は無視される（widget.rs:84-86）。よって editor が居れば
-        // editor 内部の Buffer に対しても set_text を呼ぶ必要がある。
-        if let Some(mut editor) = editor_opt {
-            editor.with_buffer_mut(|b| {
-                b.set_text(
-                    &mut font_system,
-                    &buffer.source,
-                    Attrs::new(),
-                    Shaping::Advanced,
-                );
-                b.set_redraw(true);
-            });
-        }
-    }
+    apply_buffer_to_editor(&buffer.source, &mut font_system, &mut editor_q);
 }
 
 /// cosmic_edit エディタでユーザーが編集した内容を `StrategyBuffer.source` に書き戻し、
@@ -319,6 +328,7 @@ pub fn sync_editor_to_strategy_buffer_system(
     mut events: EventReader<CosmicTextChanged>,
     editor_q: Query<Entity, With<StrategyEditorContent>>,
     mut buffer: ResMut<StrategyBuffer>,
+    mut history: ResMut<AppHistory>,
 ) {
     for CosmicTextChanged((entity, new_text)) in events.read() {
         if !editor_q.contains(*entity) {
@@ -327,8 +337,153 @@ pub fn sync_editor_to_strategy_buffer_system(
         if buffer.source == *new_text {
             continue;
         }
+        // is_replaying 中でなければ Undo 履歴に記録する
+        if !history.is_replaying() {
+            history.push_text(buffer.source.clone(), new_text.clone());
+        }
         buffer.source = new_text.clone();
         buffer.dirty = true;
+    }
+}
+
+/// Ctrl+Z / Ctrl+Y / Ctrl+Shift+Z で Undo/Redo を実行する system。
+/// `replaying_depth` を +1 してから record.undo/redo を呼び、
+/// `UndoRedoApplied` イベントを送信する。
+/// `-1` は `apply_pending_app_edits_system` の drain 完了後に行う。
+pub fn undo_redo_system(
+    keys: Res<ButtonInput<KeyCode>>,
+    time: Res<Time>,
+    mut cooldown: Local<f32>,
+    mut history: ResMut<AppHistory>,
+    // UndoRedoApplied は apply_pending_app_edits_system がテキスト変更時のみ送る。
+    // ここで送ると Window spawn/despawn undo でも editor set_text が走りカーソルリセットが起きる。
+) {
+    *cooldown = (*cooldown - time.delta_secs()).max(0.0);
+    if *cooldown > 0.0 {
+        return;
+    }
+
+    let ctrl = keys.pressed(KeyCode::ControlLeft) || keys.pressed(KeyCode::ControlRight);
+    if !ctrl {
+        return;
+    }
+    let shift = keys.pressed(KeyCode::ShiftLeft) || keys.pressed(KeyCode::ShiftRight);
+
+    let do_undo = keys.just_pressed(KeyCode::KeyZ) && !shift;
+    let do_redo = keys.just_pressed(KeyCode::KeyY)
+        || (keys.just_pressed(KeyCode::KeyZ) && shift);
+
+    if do_undo {
+        history.replaying_depth += 1;
+        let changed = {
+            let AppHistory { record, pending, .. } = &mut *history;
+            record.undo(pending).is_some()
+        };
+        if !changed {
+            history.replaying_depth -= 1; // 何も起きなかったので即戻す
+        }
+        *cooldown = 0.1;
+    } else if do_redo {
+        history.replaying_depth += 1;
+        let changed = {
+            let AppHistory { record, pending, .. } = &mut *history;
+            record.redo(pending).is_some()
+        };
+        if !changed {
+            history.replaying_depth -= 1;
+        }
+        *cooldown = 0.1;
+    }
+}
+
+/// pending キューを drain して ECS に反映する system。
+/// `replaying_depth` を drain 完了後に -1 する。
+/// テキスト変更があった かつ replaying 中のときのみ `UndoRedoApplied` を送信する。
+/// （Window spawn/despawn undo ではエディタ set_text が走らないよう条件を絞る）
+pub fn apply_pending_app_edits_system(
+    mut history: ResMut<AppHistory>,
+    mut buffer: ResMut<StrategyBuffer>,
+    mut windows_q: Query<(Entity, &PanelKind, &mut Transform), With<WindowRoot>>,
+    mut commands: Commands,
+    mut spawn_ev: EventWriter<PanelSpawnRequested>,
+    mut pending_layout: ResMut<PendingLayoutApply>,
+    mut pending_restore: ResMut<PendingStrategySnapshotRestore>,
+    mut undo_applied: EventWriter<UndoRedoApplied>,
+) {
+    if history.pending.queue.is_empty() {
+        return;
+    }
+
+    let mut any_text = false; // テキスト変更があったかのフラグ
+    let actions: Vec<_> = history.pending.queue.drain(..).collect();
+    for action in actions {
+        match action {
+            AppEditAction::SetStrategySource { text } => {
+                buffer.source = text;
+                buffer.dirty = true;
+                any_text = true;
+            }
+            AppEditAction::MoveWindow { kind, position } => {
+                // Entity の代わりに PanelKind でパネルを検索
+                if let Some((_, _, mut tf)) = windows_q.iter_mut().find(|(_, k, _)| **k == kind) {
+                    tf.translation.x = position.x;
+                    tf.translation.y = position.y;
+                }
+            }
+            AppEditAction::SpawnWindow { layout, strategy_snapshot } => {
+                spawn_ev.send(PanelSpawnRequested {
+                    kind: layout.kind,
+                    source: PanelSpawnSource::UndoRedo,
+                });
+                // 翌フレームで位置・サイズ・z を復元（apply_pending_layout_system が処理）
+                pending_layout.windows.push(layout.clone());
+                // Strategy Editor の場合はアクションが持つ snapshot を復元
+                if layout.kind == PanelKind::StrategyEditor {
+                    if let Some(snap) = strategy_snapshot {
+                        pending_restore.snapshot = Some(snap);
+                    }
+                }
+            }
+            AppEditAction::DespawnWindow { kind } => {
+                if let Some((entity, _, _)) = windows_q.iter().find(|(_, k, _)| **k == kind) {
+                    commands.entity(entity).despawn_recursive();
+                }
+            }
+        }
+    }
+
+    // テキスト変更があり かつ replaying 中のときのみ UndoRedoApplied を送る
+    // （is_replaying チェックは replaying_depth -= 1 の前に行う）
+    if any_text && history.is_replaying() {
+        undo_applied.send(UndoRedoApplied);
+    }
+
+    // drain 完了後に replaying_depth をデクリメント（0 以下にはしない）
+    if history.replaying_depth > 0 {
+        history.replaying_depth -= 1;
+    }
+}
+
+/// `PendingStrategySnapshotRestore` にスナップショットが積まれていたら
+/// buffer.source を復元し、エディタに反映するトリガーとして `UndoRedoApplied` を発火する。
+/// StrategyEditorContent entity が生成されるまで待つ（2 段階遅延）。
+pub fn apply_strategy_snapshot_restore_system(
+    mut pending_restore: ResMut<PendingStrategySnapshotRestore>,
+    mut buffer: ResMut<StrategyBuffer>,
+    editor_q: Query<Entity, With<StrategyEditorContent>>,
+    mut undo_applied: EventWriter<UndoRedoApplied>,
+) {
+    if pending_restore.snapshot.is_none() {
+        return;
+    }
+    // StrategyEditor entity が生成されるまで待つ
+    if editor_q.is_empty() {
+        return;
+    }
+    if let Some(snapshot) = pending_restore.snapshot.take() {
+        buffer.source = snapshot;
+        buffer.dirty = true;
+        undo_applied.send(UndoRedoApplied);
     }
 }
 

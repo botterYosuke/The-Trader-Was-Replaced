@@ -142,9 +142,22 @@ impl PanelKind {
     }
 }
 
+/// パネル spawn の発生源を区別するための種別。
+/// `panel_spawn_dispatcher_system` が WindowSpawnEdit を push するかどうかの判定に使う。
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum PanelSpawnSource {
+    /// サイドバーのボタンなど、ユーザー操作による spawn。
+    User,
+    /// レイアウト JSON ロード時の自動 spawn。
+    LayoutLoad,
+    /// Undo/Redo による spawn。
+    UndoRedo,
+}
+
 /// パネルボタンが押されたとき発火するイベント。
 /// `panel_spawn_dispatcher_system` が受け取り、未スポーンなら spawn する。
 #[derive(Event, Debug, Clone)]
 pub struct PanelSpawnRequested {
     pub kind: PanelKind,
+    pub source: PanelSpawnSource,
 }

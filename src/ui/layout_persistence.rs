@@ -6,8 +6,8 @@ use std::path::PathBuf;
 use std::time::Instant;
 
 use crate::ui::components::{
-    OpenStrategyRequested, PanelKind, PanelSpawnRequested, PendingStrategyLoad, StrategyBuffer,
-    WindowManager, WindowRoot,
+    OpenStrategyRequested, PanelKind, PanelSpawnRequested, PanelSpawnSource, PendingStrategyLoad,
+    StrategyBuffer, WindowManager, WindowRoot,
 };
 
 pub const SCHEMA_VERSION: u32 = 1;
@@ -270,7 +270,7 @@ fn apply_layout_system(
             match found {
                 None => {
                     // ECS にまだ存在しない → spawn を要求し、翌フレームで位置適用
-                    spawn_ev.send(PanelSpawnRequested { kind: win_layout.kind });
+                    spawn_ev.send(PanelSpawnRequested { kind: win_layout.kind, source: PanelSpawnSource::LayoutLoad });
                     pending.windows.push(win_layout.clone());
                 }
                 Some((_, _, mut tf, mut sprite, mut vis)) => {

@@ -1,5 +1,7 @@
 use crate::ui::buying_power::spawn_buying_power_panel;
-use crate::ui::components::{CloseButton, PanelKind, PanelSpawnRequested, TitleBar, WindowManager, WindowRoot};
+use crate::ui::components::{CloseButton, PanelKind, PanelSpawnRequested, PanelSpawnSource, StrategyBuffer, TitleBar, WindowManager, WindowRoot};
+use crate::ui::editor_history::{ActiveDrag, AppHistory};
+use crate::ui::layout_persistence::WindowLayout;
 use crate::ui::orders::spawn_orders_panel;
 use crate::ui::positions::spawn_positions_panel;
 use crate::ui::run_result_panel::spawn_run_result_panel;
@@ -107,6 +109,36 @@ pub fn spawn_floating_window(
                 }
             },
         )
+        .observe(
+            |drag_start: Trigger<Pointer<DragStart>>,
+             parent_query: Query<&Parent>,
+             root_q: Query<&Transform, With<WindowRoot>>,
+             mut active_drag: ResMut<ActiveDrag>| {
+                if let Ok(parent) = parent_query.get(drag_start.entity()) {
+                    let root_entity = parent.get();
+                    if let Ok(tf) = root_q.get(root_entity) {
+                        active_drag.starts.insert(root_entity, tf.translation.truncate());
+                    }
+                }
+            },
+        )
+        .observe(
+            |drag_end: Trigger<Pointer<DragEnd>>,
+             parent_query: Query<&Parent>,
+             root_q: Query<(&Transform, &PanelKind), With<WindowRoot>>,
+             mut active_drag: ResMut<ActiveDrag>,
+             mut history: ResMut<AppHistory>| {
+                if let Ok(parent) = parent_query.get(drag_end.entity()) {
+                    let root_entity = parent.get();
+                    if let Some(before) = active_drag.starts.remove(&root_entity) {
+                        if let Ok((tf, kind)) = root_q.get(root_entity) {
+                            let after = tf.translation.truncate();
+                            history.push_window_move(*kind, before, after);
+                        }
+                    }
+                }
+            },
+        )
         .id();
     commands.entity(root).add_child(title_bar);
 
@@ -150,10 +182,32 @@ pub fn spawn_floating_window(
         .observe(
             |trigger: Trigger<Pointer<Click>>,
              parent_query: Query<&Parent>,
+             root_q: Query<(&PanelKind, &Transform, &Sprite), With<WindowRoot>>,
+             buffer: Res<StrategyBuffer>,
+             mut history: ResMut<AppHistory>,
              mut commands: Commands| {
                 // CloseButton の親が root なので 1 hop で辿れる
                 if let Ok(parent) = parent_query.get(trigger.entity()) {
-                    commands.entity(parent.get()).despawn_recursive();
+                    let root_entity = parent.get();
+                    // undo 履歴に despawn を記録（閉じた瞬間の位置・サイズ・z をスナップショット）
+                    if !history.is_replaying() {
+                        if let Ok((kind, tf, sprite)) = root_q.get(root_entity) {
+                            let layout = WindowLayout {
+                                kind: *kind,
+                                visible: true,
+                                position: [tf.translation.x, tf.translation.y],
+                                size: sprite.custom_size.map(|s| s.to_array()).unwrap_or([0.0, 0.0]),
+                                z: tf.translation.z,
+                            };
+                            let snapshot = if *kind == PanelKind::StrategyEditor {
+                                Some(buffer.source.clone())
+                            } else {
+                                None
+                            };
+                            history.push_window_despawn(layout, snapshot);
+                        }
+                    }
+                    commands.entity(root_entity).despawn_recursive();
                 }
             },
         )
@@ -179,11 +233,13 @@ pub fn spawn_floating_window(
 /// パネル spawn イベントを捌く dispatcher。
 /// - 同種の panel が既に world にあれば skip（"一回だけ spawn" ルール）
 /// - 無ければ各 PanelKind に対応する spawn 関数を呼ぶ（Sub-step 1.3+ で arm を埋める）
+/// - source が User かつ is_replaying でなければ WindowSpawnEdit を AppHistory に push する
 pub fn panel_spawn_dispatcher_system(
     mut events: EventReader<PanelSpawnRequested>,
     existing: Query<&PanelKind, With<WindowRoot>>,
     mut commands: Commands,
     mut font_system: ResMut<CosmicFontSystem>,
+    mut history: ResMut<AppHistory>,
 ) {
     for event in events.read() {
         let already = existing.iter().any(|k| *k == event.kind);
@@ -200,6 +256,19 @@ pub fn panel_spawn_dispatcher_system(
             PanelKind::StrategyEditor => {
                 spawn_strategy_editor_panel(&mut commands, &mut font_system)
             }
+        }
+        // User 操作による spawn のみ Undo スタックに記録する
+        // dispatcher は spawn 直後に entity の位置を読めない（commands は deferred）ため、
+        // デフォルト位置を仮値として渡す（redo 時はデフォルト位置に再 spawn される仕様として許容）。
+        if event.source == PanelSpawnSource::User && !history.is_replaying() {
+            let default_layout = WindowLayout {
+                kind: event.kind,
+                visible: true,
+                position: [0.0, 0.0],     // deferred spawn のため実位置は不明
+                size: [400.0, 300.0],     // デフォルトサイズの仮値
+                z: 10.0,
+            };
+            history.push_window_spawn(event.kind, default_layout);
         }
     }
 }
