@@ -71,6 +71,9 @@ if ($p) { Stop-Process -Id $p -Force }
 
 ```powershell
 $env:RUST_LOG = "info"
+# `engine_pb2_grpc.py` が `import engine_pb2` の flat import なので、proto ディレクトリを
+# PYTHONPATH に通さないと `ModuleNotFoundError: No module named 'engine_pb2'` で即死する。
+$env:PYTHONPATH = "$PWD\python\engine\proto"
 Start-Process -FilePath "uv" `
   -ArgumentList "run","python","-m","engine","--token","testtoken","--jquants-catalog-path","artifacts\jquants-catalog" `
   -RedirectStandardOutput "$env:TEMP\backend_log.txt" `
@@ -81,6 +84,8 @@ Start-Process -FilePath "uv" `
 `Starting gRPC server on port 19876` が `$env:TEMP\backend_log.txt` に出れば OK。
 
 > ⚠️ `python -m engine.server_grpc` ではなく **`python -m engine`**。前者には `__main__` が無く即エラー。
+>
+> ⚠️ **`PYTHONPATH` 必須**。`backend_err.txt` に `ModuleNotFoundError: No module named 'engine_pb2'` が出たら `$env:PYTHONPATH` を忘れている。proto 再生成で根治する余地もあるが、現状の `engine_pb2_grpc.py` は `import engine_pb2` flat import で生成されているため、環境変数で吸収するのが最速。
 
 ### 2.3 Rust GUI 起動（`.env` は読まれないので env を **明示的に** 渡す）
 

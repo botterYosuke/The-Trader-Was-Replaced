@@ -256,6 +256,16 @@ egui の中で `state.buffer` のような大きい String を編集するとき
   layout を疑う前に、`info!` で `render_scale` と `buffer.scroll().line` を出して
   「ユーザーがスクロールしていないのに scroll.line がズーム倍率と相関して動くか」を
   確認する。スクショ目視推測で原因を追うとハマる。
+- **ズームインで折り返し位置・行高が変わる（render_scale=1 では正常）**: bevy_cosmic_edit
+  の **DPI トラップ**。`set_initial_scale`（buffer.rs）が `CosmicEditBuffer` のメトリクス
+  を window scale factor 倍する（Windows 200% なら 14/18 → 28/36）。一方 focused 時に
+  実描画される `CosmicEditor` 内部 buffer（`editor.with_buffer(|b| b.metrics())` で取れる）
+  は DPI 倍されない。render shadow buffer 用のメトリクス計算で `buffer.metrics()`
+  （= `&mut CosmicEditBuffer`）を読むと、focused 側のクローン元（14/18）と基準が
+  食い違って二重スケールになる。**clone した buffer 自身のメトリクスを基準にスケールする**
+  のが正解。診断は `info!` で `buffer.metrics().font_size` と
+  `editor.with_buffer(|b| b.metrics().font_size)` を同時に出すと一目瞭然。
+  詳細は memory `cosmic-edit-buffer-metrics-dpi-trap.md`。
 
 ## ground truth ソースの引き方
 
