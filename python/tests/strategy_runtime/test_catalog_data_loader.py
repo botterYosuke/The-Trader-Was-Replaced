@@ -58,10 +58,9 @@ def test_instruments_from_scenario_v2():
     assert instruments_from_scenario(sc) == ["1301.TSE", "7203.TSE"]
 
 
-def test_instruments_from_scenario_v3_after_resolve():
+def test_instruments_from_scenario_v3():
     sc = {"schema_version": 3,
           "instruments": ["1301.TSE", "1332.TSE", "7203.TSE"],
-          "instruments_ref": "universe.json#/instruments",
           "start": "2025-01-06", "end": "2025-01-10",
           "granularity": "Minute", "initial_cash": 1_000_000}
     result = instruments_from_scenario(sc)

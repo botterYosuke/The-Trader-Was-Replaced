@@ -36,7 +36,7 @@ class StrategyLoadError(Exception):
 def load(path: str | Path) -> tuple[ModuleType, dict, Any]:  # Any = type[Strategy]
     """戦略 .py を読み込み ``(module, scenario, strategy_cls)`` を返す。
 
-    - SCENARIO は ast.literal_eval で安全抽出し resolve_refs まで適用する。
+    - SCENARIO は ast.literal_eval で安全抽出し validate まで適用する。
     - strategy_cls はインスタンス化しない（呼び出し元 engine_runner の責務）。
     - ``STRATEGY_PARAM_*`` 環境変数の適用は ``get_strategy_param_env()`` で
       取得した dict を engine_runner が StrategyConfig / __init__ kwargs に注入する。
@@ -45,7 +45,7 @@ def load(path: str | Path) -> tuple[ModuleType, dict, Any]:  # Any = type[Strate
         FileNotFoundError: path が存在しない場合。
         StrategyLoadError: Strategy サブクラスが 0 個または複数個、あるいは import 失敗。
         ValueError: SCENARIO が見つからない、またはリテラル dict でない場合。
-        ScenarioValidationError: resolve_refs での参照解決失敗。
+        ScenarioValidationError: validate での型・キー違反。
     """
     path = Path(path)
     if not path.exists():
@@ -67,7 +67,7 @@ def load(path: str | Path) -> tuple[ModuleType, dict, Any]:  # Any = type[Strate
         )
 
     # SCENARIO 抽出: サイドカー JSON 優先、なければ .py から legacy 抽出
-    # resolve_refs / normalize_scenario / validate は load_scenario 内で完結する
+    # normalize_scenario / validate は load_scenario 内で完結する
     from engine.strategy_runtime.scenario import load_scenario
     scenario = load_scenario(path)
 

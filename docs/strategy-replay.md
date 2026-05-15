@@ -80,8 +80,6 @@ stdout に `run_id` / `run_dir` / `equity_points` / `fills_count` などの summ
 > ```
 >
 > `.py` 内に `SCENARIO` が残っている外部戦略（本リポ外）は **Python CLI からのみ** legacy fallback で動く（WARN ログが出る）。GUI（Bevy）からは実行不可。
->
-> **GUI 制限**: v3 `instruments_ref`（`universe.json` 等への間接参照）は GUI 非対応。`instruments_ref` のみの sidecar では Run ボタンがグレーアウトする。CLI（`run_replay.ps1`）経由では動作する。
 
 ## Bevy GUI でのリプレイ実行
 

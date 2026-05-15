@@ -1,10 +1,9 @@
-"""engine.strategy_runtime.scenario — SCENARIO 定数の安全抽出・参照解決・検証。
+"""engine.strategy_runtime.scenario — SCENARIO 定数の安全抽出・検証。
 
 e-station の engine.scenario から write_back / libcst / LIVE_SCENARIO / path guard を
 除いた replay-only サブセット。公開 API:
 
     extract(path)                       -> Optional[dict]
-    resolve_refs(d, *, base_dir)        -> dict
     normalize_scenario(d)               -> dict
     load_scenario(strategy_path)        -> dict
     validate(d)                         -> None
@@ -106,104 +105,6 @@ def extract(path: Path) -> Optional[dict]:  # type: ignore[type-arg]
 
 
 # ---------------------------------------------------------------------------
-# resolve_refs
-# ---------------------------------------------------------------------------
-
-
-def _resolve_json_pointer(doc: object, pointer: str) -> object:
-    if pointer in ("", "#"):
-        return doc
-    if pointer.startswith("#/"):
-        pointer = pointer[1:]
-    if not pointer.startswith("/"):
-        raise ScenarioValidationError(
-            f"Invalid JSON Pointer: {pointer!r}", code="unresolved_ref"
-        )
-    tokens = pointer[1:].split("/")
-    current = doc
-    for token in tokens:
-        token = token.replace("~1", "/").replace("~0", "~")
-        try:
-            if isinstance(current, list):
-                current = current[int(token)]
-            elif isinstance(current, dict):
-                current = current[token]  # type: ignore[index]
-            else:
-                raise ScenarioValidationError(
-                    f"JSON Pointer traversal failed at {token!r}: not a dict or list",
-                    code="unresolved_ref",
-                )
-        except (KeyError, IndexError, ValueError) as exc:
-            raise ScenarioValidationError(
-                f"JSON Pointer traversal failed at {token!r}: {exc}",
-                code="unresolved_ref",
-            ) from exc
-    return current
-
-
-def resolve_refs(d: dict, *, base_dir: Path) -> dict:  # type: ignore[type-arg]
-    """v3 の instruments_ref を解決して instruments を追加した新 dict を返す。v1/v2 は no-op。"""
-    if d.get("schema_version") != 3:
-        return dict(d)
-
-    if "instruments" in d and "instruments_ref" in d:
-        raise ScenarioValidationError(
-            "SCENARIO['instruments'] and ['instruments_ref'] cannot coexist"
-        )
-
-    if "instruments_ref" not in d:
-        return dict(d)
-
-    ref: str = d["instruments_ref"]
-
-    if "#" in ref:
-        path_part, pointer_part = ref.split("#", 1)
-        pointer_part = "#" + pointer_part
-    else:
-        path_part = ref
-        pointer_part = ""
-
-    if not path_part:
-        raise ScenarioValidationError(
-            "instruments_ref with empty path (self-reference) is not supported",
-            code="unresolved_ref",
-        )
-
-    try:
-        file_path = base_dir / path_part
-        raw = file_path.read_text(encoding="utf-8")
-        doc = json.loads(raw)
-    except OSError as exc:
-        raise ScenarioValidationError(
-            f"instruments_ref: cannot read {path_part!r}: {exc}",
-            code="unresolved_ref",
-        ) from exc
-    except json.JSONDecodeError as exc:
-        raise ScenarioValidationError(
-            f"instruments_ref: invalid JSON in {path_part!r}: {exc}",
-            code="unresolved_ref",
-        ) from exc
-
-    resolved = _resolve_json_pointer(doc, pointer_part)
-
-    if not isinstance(resolved, list):
-        raise ScenarioValidationError(
-            f"instruments_ref resolved to {type(resolved).__name__}, expected list[str]",
-            code="unresolved_ref",
-        )
-    for i, item in enumerate(resolved):
-        if not isinstance(item, str):
-            raise ScenarioValidationError(
-                f"instruments_ref resolved list[{i}] must be str, got {type(item).__name__}",
-                code="unresolved_ref",
-            )
-
-    result = dict(d)
-    result["instruments"] = resolved
-    return result
-
-
-# ---------------------------------------------------------------------------
 # validate
 # ---------------------------------------------------------------------------
 
@@ -231,7 +132,7 @@ _V3_TYPES: dict[str, type] = {
     "granularity": str,
     "initial_cash": int,
 }
-_V3_OPTIONAL: frozenset[str] = frozenset({"instruments_ref", "strategy_init_kwargs"})
+_V3_OPTIONAL: frozenset[str] = frozenset({"strategy_init_kwargs"})
 
 
 def _check_keys(
@@ -275,7 +176,7 @@ def _check_str_list(d: dict, key: str) -> None:  # type: ignore[type-arg]
 def validate(d: dict) -> None:  # type: ignore[type-arg]
     """Scenario dict の runtime 検証。失敗時は ScenarioValidationError を raise。
 
-    v3 を渡す場合は resolve_refs 後の dict（instruments キー必須）を渡すこと。
+    v3 の optional key（strategy_init_kwargs）は型 unchecked（実利用側が解釈する）。
     """
     if not isinstance(d, dict):
         raise ScenarioValidationError(f"SCENARIO must be a dict, got {type(d).__name__}")
@@ -294,11 +195,6 @@ def validate(d: dict) -> None:  # type: ignore[type-arg]
         _check_keys(d, frozenset(_V3_TYPES), _V3_OPTIONAL)
         _check_types(d, {k: v for k, v in _V3_TYPES.items() if k != "instruments"})
         _check_str_list(d, "instruments")
-        if "instruments_ref" in d and not isinstance(d["instruments_ref"], str):
-            raise ScenarioValidationError(
-                f"SCENARIO['instruments_ref'] must be str, "
-                f"got {type(d['instruments_ref']).__name__}"
-            )
     else:
         raise ScenarioValidationError(
             f"SCENARIO schema_version must be 1, 2 or 3, got {sv!r}"
@@ -332,7 +228,7 @@ def normalize_scenario(d: dict) -> dict:  # type: ignore[type-arg]
 def load_scenario(strategy_path: Path) -> dict:  # type: ignore[type-arg]
     """サイドカー <strategy>.json の "scenario" キーを返す。
 
-    必ず resolve_refs → normalize_scenario → validate の順で通す。
+    必ず normalize_scenario → validate の順で通す。
 
     フォールバック順:
       1. <strategy>.json が存在し "scenario" キーがある → JSON ロード
@@ -352,7 +248,6 @@ def load_scenario(strategy_path: Path) -> dict:  # type: ignore[type-arg]
             raise ScenarioValidationError(f"invalid JSON in {sidecar}: {exc}") from exc
         if isinstance(doc, dict) and "scenario" in doc:
             d = doc["scenario"]
-            d = resolve_refs(d, base_dir=sidecar.parent)
             d = normalize_scenario(d)
             validate(d)
             return d
@@ -366,7 +261,6 @@ def load_scenario(strategy_path: Path) -> dict:  # type: ignore[type-arg]
                 "SCENARIO loaded from .py (legacy); migrate to %s",
                 sidecar.name,
             )
-            d = resolve_refs(d, base_dir=strategy_path.parent)
             d = normalize_scenario(d)
             validate(d)
             return d

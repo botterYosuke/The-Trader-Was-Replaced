@@ -27,9 +27,20 @@ _FIXTURE_UNIVERSE = Path(__file__).parent / "fixtures" / "universe_1301_jan0610.
 
 _STRATEGY_AVAILABLE = _STRATEGY_PATH.exists()
 
+
+def _has_instruments_ref(p: Path) -> bool:
+    try:
+        return "instruments_ref" in p.read_text(encoding="utf-8")
+    except OSError:
+        return False
+
+
+_STRATEGY_USES_REMOVED_REF = _STRATEGY_AVAILABLE and _has_instruments_ref(_STRATEGY_PATH)
+_STRATEGY_RUNNABLE = _STRATEGY_AVAILABLE and not _STRATEGY_USES_REMOVED_REF
+
 _SKIP_REASON = (
-    "Real strategy file not available. "
-    f"strategy={_STRATEGY_PATH.exists()}"
+    "Real strategy file not available, or still uses removed `instruments_ref`. "
+    f"available={_STRATEGY_AVAILABLE} uses_removed_ref={_STRATEGY_USES_REMOVED_REF}"
 )
 
 
@@ -40,7 +51,7 @@ _SKIP_REASON = (
 
 @pytest.mark.slow
 @pytest.mark.skipif(
-    not _STRATEGY_AVAILABLE,
+    not _STRATEGY_RUNNABLE,
     reason=_SKIP_REASON,
 )
 def test_order_flow_06_smoke_1instrument(tmp_path, ensure_slow_catalog):
@@ -58,6 +69,8 @@ def test_order_flow_06_smoke_1instrument(tmp_path, ensure_slow_catalog):
     module, scenario, strategy_cls = load(_STRATEGY_PATH)
 
     # Override scenario to just 1301.TSE / Jan 06-10
+    # NOTE: requires blacksheep order_flow_06.py without instruments_ref
+    # (instruments_ref support was removed; SCENARIO must use `instruments`).
     scenario = dict(
         scenario,
         instruments=["1301.TSE"],
@@ -66,8 +79,6 @@ def test_order_flow_06_smoke_1instrument(tmp_path, ensure_slow_catalog):
         granularity="Minute",
         initial_cash=1_000_000,
     )
-    # Remove instruments_ref so downstream doesn't re-resolve
-    scenario.pop("instruments_ref", None)
 
     # ── Load bars from real catalog ───────────────────────────────────────────
     from engine.strategy_runtime.catalog_data_loader import load_bars_for_scenario

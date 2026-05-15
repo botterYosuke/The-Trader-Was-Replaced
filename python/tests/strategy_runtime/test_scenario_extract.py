@@ -18,7 +18,6 @@ from engine.strategy_runtime.scenario import (
     extract,
     load_scenario,
     normalize_scenario,
-    resolve_refs,
     validate,
 )
 
@@ -68,39 +67,6 @@ def test_extract_order_flow_06_returns_dict():
     assert isinstance(sc, dict)
 
 
-@requires_of06
-def test_extract_order_flow_06_schema_v3_with_instruments_ref():
-    sc = extract(_OF06)
-    assert sc is not None
-    assert sc["schema_version"] == 3
-    assert "instruments_ref" in sc
-    assert isinstance(sc["instruments_ref"], str)
-
-
-# ---------------------------------------------------------------------------
-# resolve_refs — real files (requires universe JSON)
-# ---------------------------------------------------------------------------
-
-
-@requires_of06
-def test_resolve_refs_order_flow_06_produces_instruments_list():
-    sc = extract(_OF06)
-    assert sc is not None
-    resolved = resolve_refs(sc, base_dir=_OF06.parent)
-    assert "instruments" in resolved
-    assert isinstance(resolved["instruments"], list)
-    assert len(resolved["instruments"]) > 0
-    assert all(isinstance(x, str) for x in resolved["instruments"])
-
-
-@requires_of06
-def test_resolve_refs_preserves_instruments_ref_key():
-    sc = extract(_OF06)
-    assert sc is not None
-    resolved = resolve_refs(sc, base_dir=_OF06.parent)
-    assert "instruments_ref" in resolved
-
-
 # ---------------------------------------------------------------------------
 # validate — real files
 # ---------------------------------------------------------------------------
@@ -111,14 +77,6 @@ def test_validate_mean_reversion_01_passes():
     sc = extract(_MR01)
     assert sc is not None
     validate(sc)  # should not raise
-
-
-@requires_of06
-def test_validate_order_flow_06_passes_after_resolve():
-    sc = extract(_OF06)
-    assert sc is not None
-    resolved = resolve_refs(sc, base_dir=_OF06.parent)
-    validate(resolved)  # should not raise
 
 
 # ---------------------------------------------------------------------------
@@ -152,26 +110,6 @@ def test_extract_v1_inline(tmp_path: Path):
     assert sc["instrument"] == "1301.TSE"
 
 
-def test_extract_v3_instruments_ref_inline(tmp_path: Path):
-    p = _write_py(
-        tmp_path,
-        """\
-        SCENARIO = {
-            "schema_version": 3,
-            "instruments_ref": "universe.json#/instruments",
-            "start": "2025-01-06",
-            "end": "2025-01-10",
-            "granularity": "Minute",
-            "initial_cash": 1000000,
-        }
-        """,
-    )
-    sc = extract(p)
-    assert sc is not None
-    assert sc["schema_version"] == 3
-    assert sc["instruments_ref"] == "universe.json#/instruments"
-
-
 def test_extract_returns_none_when_no_scenario(tmp_path: Path):
     p = _write_py(tmp_path, "x = 1\n")
     assert extract(p) is None
@@ -202,50 +140,6 @@ def test_extract_raises_on_multiple_scenario(tmp_path: Path):
     )
     with pytest.raises(ScenarioValidationError):
         extract(p)
-
-
-# ---------------------------------------------------------------------------
-# resolve_refs — synthetic fixtures
-# ---------------------------------------------------------------------------
-
-
-def test_resolve_refs_v1_is_noop(tmp_path: Path):
-    sc = {"schema_version": 1, "instrument": "1301.TSE",
-          "start": "2025-01-06", "end": "2025-01-10",
-          "granularity": "Minute", "initial_cash": 1_000_000}
-    result = resolve_refs(sc, base_dir=tmp_path)
-    assert result == sc
-
-
-def test_resolve_refs_v3_with_local_json(tmp_path: Path):
-    universe = {"instruments": ["1301.TSE", "1332.TSE"]}
-    (tmp_path / "universe.json").write_text(json.dumps(universe), encoding="utf-8")
-
-    sc = {
-        "schema_version": 3,
-        "instruments_ref": "universe.json#/instruments",
-        "start": "2025-01-06",
-        "end": "2025-01-10",
-        "granularity": "Minute",
-        "initial_cash": 1_000_000,
-    }
-    result = resolve_refs(sc, base_dir=tmp_path)
-    assert result["instruments"] == ["1301.TSE", "1332.TSE"]
-    assert "instruments_ref" in result  # key preserved
-
-
-def test_resolve_refs_v3_missing_json_raises(tmp_path: Path):
-    sc = {
-        "schema_version": 3,
-        "instruments_ref": "no_such_file.json#/instruments",
-        "start": "2025-01-06",
-        "end": "2025-01-10",
-        "granularity": "Minute",
-        "initial_cash": 1_000_000,
-    }
-    with pytest.raises(ScenarioValidationError) as exc_info:
-        resolve_refs(sc, base_dir=tmp_path)
-    assert exc_info.value.code == "unresolved_ref"
 
 
 # ---------------------------------------------------------------------------
@@ -297,6 +191,46 @@ def test_validate_v1_bool_rejected_as_initial_cash():
 def test_validate_unknown_schema_version():
     with pytest.raises(ScenarioValidationError):
         validate({"schema_version": 99})
+
+
+def test_validate_v3_with_instruments_only_passes():
+    """v3 + instruments (no optional keys) should pass validation."""
+    validate({
+        "schema_version": 3,
+        "instruments": ["1301.TSE", "1332.TSE"],
+        "start": "2025-01-06",
+        "end": "2025-01-10",
+        "granularity": "Minute",
+        "initial_cash": 1_000_000,
+    })
+
+
+def test_validate_v3_with_strategy_init_kwargs_passes():
+    """v3 retains `strategy_init_kwargs` as its only optional key."""
+    validate({
+        "schema_version": 3,
+        "instruments": ["1301.TSE"],
+        "start": "2025-01-06",
+        "end": "2025-01-10",
+        "granularity": "Minute",
+        "initial_cash": 1_000_000,
+        "strategy_init_kwargs": {"lookback": 20, "threshold": 0.5},
+    })
+
+
+def test_validate_v3_rejects_instruments_ref():
+    """`instruments_ref` is removed; it must be rejected as an unknown key."""
+    with pytest.raises(ScenarioValidationError) as exc_info:
+        validate({
+            "schema_version": 3,
+            "instruments": ["1301.TSE"],
+            "instruments_ref": "universe.json#/instruments",
+            "start": "2025-01-06",
+            "end": "2025-01-10",
+            "granularity": "Minute",
+            "initial_cash": 1_000_000,
+        })
+    assert "unknown" in str(exc_info.value).lower()
 
 
 # ---------------------------------------------------------------------------

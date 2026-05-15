@@ -27,8 +27,19 @@ _BLACKSHEEP = Path(r"C:\Users\sasai\Documents\🐃_blacksheep")
 _MR01 = _BLACKSHEEP / "strategies" / "mean_reversion_01.py"
 _OF06 = _BLACKSHEEP / "strategies" / "order_flow_06.py"
 
+def _has_instruments_ref(p: Path) -> bool:
+    """True if the external strategy still uses the removed `instruments_ref` key."""
+    try:
+        return "instruments_ref" in p.read_text(encoding="utf-8")
+    except OSError:
+        return False
+
+
 requires_mr01 = pytest.mark.skipif(not _MR01.exists(), reason="mean_reversion_01.py not found")
-requires_of06 = pytest.mark.skipif(not _OF06.exists(), reason="order_flow_06.py not found")
+requires_of06 = pytest.mark.skipif(
+    not _OF06.exists() or _has_instruments_ref(_OF06),
+    reason="order_flow_06.py not found, or still uses removed `instruments_ref` (migrate to `instruments`)",
+)
 
 
 # ---------------------------------------------------------------------------
@@ -60,7 +71,7 @@ def test_load_order_flow_06_returns_tuple():
 
 
 @requires_of06
-def test_load_order_flow_06_scenario_has_instruments_after_resolve():
+def test_load_order_flow_06_scenario_has_instruments():
     _module, scenario, _cls = load(_OF06)
     assert "instruments" in scenario
     assert isinstance(scenario["instruments"], list)

@@ -20,11 +20,6 @@ struct ScenarioFile {
     /// v2/v3: 複数銘柄リスト（正規化済みキー）
     #[serde(default)]
     instruments: Option<Vec<String>>,
-    /// v3: 銘柄ユニバース参照（Rust では解決しない。F8 参照）。
-    /// deserialize はするが `ScenarioMetadata` には反映しない。
-    #[allow(dead_code)]
-    #[serde(default)]
-    instruments_ref: Option<String>,
     start: Option<String>,
     end: Option<String>,
     granularity: Option<String>,
@@ -43,7 +38,6 @@ enum StringOrList {
 /// `ScenarioMetadata` を更新するシステム。
 ///
 /// - ファイル不在 / "scenario" キーなし / JSON 破損 → `ScenarioMetadata::default()`（Run ボタングレーアウト）
-/// - v3 で `instruments_ref` のみ（`instruments` なし）→ `instruments` 空のまま（Run ブロック、仕様）
 pub fn parse_scenario_system(
     buffer: Res<StrategyBuffer>,
     mut scenario: ResMut<ScenarioMetadata>,
@@ -104,7 +98,6 @@ pub fn parse_scenario_system(
             StringOrList::Many(v) => v,
         }
     } else {
-        // instruments_ref のみ → 空（GUI では Run ブロック、F8 仕様）
         vec![]
     };
 
@@ -186,17 +179,6 @@ mod tests {
     fn test_malformed_json_returns_default_and_warns() {
         let result = serde_json::from_str::<SidecarRoot>("{not valid");
         assert!(result.is_err());
-    }
-
-    #[test]
-    fn test_v3_instruments_ref_only_returns_empty_instruments() {
-        // instruments_ref のみ → instruments/instrument 両方 None → GUI Run ブロック（仕様）
-        let json = r#"{"scenario": {"schema_version": 3, "instruments_ref": "universe.json#/instruments", "start": "2025-01-06", "end": "2025-01-10", "granularity": "Daily", "initial_cash": 1000000}}"#;
-        let root: SidecarRoot = serde_json::from_str(json).unwrap();
-        let sf = root.scenario.unwrap();
-        assert!(sf.instruments.is_none());
-        assert!(sf.instrument.is_none());
-        assert!(sf.instruments_ref.is_some());
     }
 
     #[test]
