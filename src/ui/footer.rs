@@ -1,9 +1,12 @@
-use bevy::prelude::*;
-use crate::trading::{BackendStatus, ReplaySpeed, TradingData, TradingSettings, TransportCommand, TransportCommandSender};
-use crate::ui::components::{
-    FooterRoot, GrpcStatusLabel, PauseResumeLabel, ReplayStateBadge, ReplayTimeLabel,
-    SpeedButton, TransportButton,
+use crate::trading::{
+    BackendStatus, ReplaySpeed, TradingData, TradingSettings, TransportCommand,
+    TransportCommandSender,
 };
+use crate::ui::components::{
+    FooterRoot, GrpcStatusLabel, PauseResumeLabel, ReplayStateBadge, ReplayTimeLabel, SpeedButton,
+    TransportButton,
+};
+use bevy::prelude::*;
 
 const BTN_NORMAL: Color = Color::srgba(0.12, 0.12, 0.18, 1.0);
 const BTN_HOVER: Color = Color::srgba(0.22, 0.22, 0.32, 1.0);
@@ -29,7 +32,10 @@ fn spawn_transport_btn(parent: &mut ChildBuilder, label: &str, action: Transport
         .with_children(|p| {
             p.spawn((
                 Text::new(label),
-                TextFont { font_size: 11.0, ..default() },
+                TextFont {
+                    font_size: 11.0,
+                    ..default()
+                },
                 TextColor(Color::srgb(0.85, 0.85, 0.85)),
             ));
         });
@@ -46,13 +52,20 @@ fn spawn_speed_btn(parent: &mut ChildBuilder, multiplier: u32, selected: bool) {
                 align_items: AlignItems::Center,
                 ..default()
             },
-            BackgroundColor(if selected { BTN_SPEED_SELECTED } else { BTN_NORMAL }),
+            BackgroundColor(if selected {
+                BTN_SPEED_SELECTED
+            } else {
+                BTN_NORMAL
+            }),
             SpeedButton(multiplier),
         ))
         .with_children(|p| {
             p.spawn((
                 Text::new(format!("{}x", multiplier)),
-                TextFont { font_size: 10.0, ..default() },
+                TextFont {
+                    font_size: 10.0,
+                    ..default()
+                },
                 TextColor(Color::srgb(0.75, 0.85, 1.0)),
             ));
         });
@@ -79,7 +92,7 @@ pub fn spawn_footer(mut commands: Commands) {
         .with_children(|p| {
             // Transport buttons
             spawn_transport_btn(p, "|<", TransportButton::JumpToStart);
-            spawn_transport_btn(p, "<",  TransportButton::StepBack);
+            spawn_transport_btn(p, "<", TransportButton::StepBack);
             // PauseResume: label gets PauseResumeLabel so update_footer_system can toggle it
             p.spawn((
                 Button,
@@ -92,19 +105,26 @@ pub fn spawn_footer(mut commands: Commands) {
                 },
                 BackgroundColor(BTN_NORMAL),
                 TransportButton::PauseResume,
-            )).with_children(|pp| {
+            ))
+            .with_children(|pp| {
                 pp.spawn((
                     Text::new("||"),
-                    TextFont { font_size: 11.0, ..default() },
+                    TextFont {
+                        font_size: 11.0,
+                        ..default()
+                    },
                     TextColor(Color::srgb(0.85, 0.85, 0.85)),
                     PauseResumeLabel,
                 ));
             });
-            spawn_transport_btn(p, ">",  TransportButton::StepForward);
+            spawn_transport_btn(p, ">", TransportButton::StepForward);
             spawn_transport_btn(p, "■", TransportButton::ForceStop);
 
             // Separator
-            p.spawn(Node { width: Val::Px(6.0), ..default() });
+            p.spawn(Node {
+                width: Val::Px(6.0),
+                ..default()
+            });
 
             // Speed selector: 1x is selected by default
             for &mult in SPEED_OPTIONS {
@@ -120,19 +140,28 @@ pub fn spawn_footer(mut commands: Commands) {
             // Status labels
             p.spawn((
                 Text::new("time: --"),
-                TextFont { font_size: 12.0, ..default() },
+                TextFont {
+                    font_size: 12.0,
+                    ..default()
+                },
                 TextColor(Color::srgb(0.55, 0.55, 0.55)),
                 ReplayTimeLabel,
             ));
             p.spawn((
                 Text::new("state: IDLE"),
-                TextFont { font_size: 12.0, ..default() },
+                TextFont {
+                    font_size: 12.0,
+                    ..default()
+                },
                 TextColor(Color::srgb(0.45, 0.45, 0.45)),
                 ReplayStateBadge,
             ));
             p.spawn((
                 Text::new("grpc: DISABLED"),
-                TextFont { font_size: 12.0, ..default() },
+                TextFont {
+                    font_size: 12.0,
+                    ..default()
+                },
                 TextColor(Color::srgb(0.40, 0.40, 0.40)),
                 GrpcStatusLabel,
             ));
@@ -145,15 +174,30 @@ pub fn update_footer_system(
     settings: Res<TradingSettings>,
     mut time_q: Query<
         &mut Text,
-        (With<ReplayTimeLabel>, Without<ReplayStateBadge>, Without<GrpcStatusLabel>, Without<PauseResumeLabel>),
+        (
+            With<ReplayTimeLabel>,
+            Without<ReplayStateBadge>,
+            Without<GrpcStatusLabel>,
+            Without<PauseResumeLabel>,
+        ),
     >,
     mut state_q: Query<
         (&mut Text, &mut TextColor),
-        (With<ReplayStateBadge>, Without<ReplayTimeLabel>, Without<GrpcStatusLabel>, Without<PauseResumeLabel>),
+        (
+            With<ReplayStateBadge>,
+            Without<ReplayTimeLabel>,
+            Without<GrpcStatusLabel>,
+            Without<PauseResumeLabel>,
+        ),
     >,
     mut grpc_q: Query<
         (&mut Text, &mut TextColor),
-        (With<GrpcStatusLabel>, Without<ReplayTimeLabel>, Without<ReplayStateBadge>, Without<PauseResumeLabel>),
+        (
+            With<GrpcStatusLabel>,
+            Without<ReplayTimeLabel>,
+            Without<ReplayStateBadge>,
+            Without<PauseResumeLabel>,
+        ),
     >,
     mut pause_q: Query<&mut Text, With<PauseResumeLabel>>,
 ) {
@@ -178,9 +222,9 @@ pub fn update_footer_system(
         text.0 = format!("state: {}", replay);
         color.0 = match replay {
             "RUNNING" => Color::srgb(0.20, 1.00, 0.45),
-            "PAUSED"  => Color::srgb(1.00, 0.75, 0.20),
-            "LOADED"  => Color::srgb(0.35, 0.70, 1.00),
-            _         => Color::srgb(0.45, 0.45, 0.45), // IDLE
+            "PAUSED" => Color::srgb(1.00, 0.75, 0.20),
+            "LOADED" => Color::srgb(0.35, 0.70, 1.00),
+            _ => Color::srgb(0.45, 0.45, 0.45), // IDLE
         };
     }
 
@@ -204,7 +248,11 @@ pub fn update_footer_system(
     // PauseResume label: show "▶" when PAUSED (resume action), "||" otherwise
     let replay = data.replay_state.as_deref().unwrap_or("IDLE");
     for mut text in &mut pause_q {
-        text.0 = if replay == "PAUSED" { "▶".to_string() } else { "||".to_string() };
+        text.0 = if replay == "PAUSED" {
+            "▶".to_string()
+        } else {
+            "||".to_string()
+        };
     }
 }
 
@@ -225,7 +273,7 @@ pub fn transport_button_system(
                     TransportButton::PauseResume => {
                         let cmd = match replay {
                             "RUNNING" => Some(TransportCommand::Pause),
-                            "PAUSED"  => Some(TransportCommand::Resume),
+                            "PAUSED" => Some(TransportCommand::Resume),
                             other => {
                                 info!("transport: pause_resume ignored (state={})", other);
                                 None
@@ -242,27 +290,23 @@ pub fn transport_button_system(
                             info!("transport: step_forward ignored (state={})", replay);
                         }
                     }
-                    TransportButton::JumpToStart => {
-                        match replay {
-                            "RUNNING" | "PAUSED" | "LOADED" => {
-                                let _ = sender.tx.send(TransportCommand::ForceStop);
-                            }
-                            other => info!("transport: jump_to_start ignored (state={})", other),
+                    TransportButton::JumpToStart => match replay {
+                        "RUNNING" | "PAUSED" | "LOADED" => {
+                            let _ = sender.tx.send(TransportCommand::ForceStop);
                         }
-                    }
-                    TransportButton::StepBack    => info!("transport: step_back (not yet wired)"),
-                    TransportButton::ForceStop => {
-                        match replay {
-                            "RUNNING" | "PAUSED" | "LOADED" => {
-                                let _ = sender.tx.send(TransportCommand::ForceStop);
-                            }
-                            other => info!("transport: force_stop ignored (state={})", other),
+                        other => info!("transport: jump_to_start ignored (state={})", other),
+                    },
+                    TransportButton::StepBack => info!("transport: step_back (not yet wired)"),
+                    TransportButton::ForceStop => match replay {
+                        "RUNNING" | "PAUSED" | "LOADED" => {
+                            let _ = sender.tx.send(TransportCommand::ForceStop);
                         }
-                    }
+                        other => info!("transport: force_stop ignored (state={})", other),
+                    },
                 }
             }
             Interaction::Hovered => bg.0 = BTN_HOVER,
-            Interaction::None    => bg.0 = BTN_NORMAL,
+            Interaction::None => bg.0 = BTN_NORMAL,
         }
     }
 }
@@ -283,7 +327,13 @@ pub fn speed_button_system(
                 bg.0 = BTN_SPEED_SELECTED;
             }
             Interaction::Hovered => bg.0 = BTN_HOVER,
-            Interaction::None    => bg.0 = if speed.current == *mult { BTN_SPEED_SELECTED } else { BTN_NORMAL },
+            Interaction::None => {
+                bg.0 = if speed.current == *mult {
+                    BTN_SPEED_SELECTED
+                } else {
+                    BTN_NORMAL
+                }
+            }
         }
     }
 }

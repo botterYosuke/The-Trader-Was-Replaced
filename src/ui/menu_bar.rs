@@ -1,9 +1,12 @@
+use crate::trading::{StrategyRunConfig, TransportCommand, TransportCommandSender};
+use crate::ui::components::ScenarioMetadata;
+use crate::ui::components::{
+    MenuBarRoot, MenuButton, OpenStrategyRequested, StrategyBuffer, StrategyRunRequested,
+    StrategyStatusLabel,
+};
 use bevy::prelude::*;
 use rfd::FileDialog;
 use sha2::{Digest, Sha256};
-use crate::ui::components::{MenuBarRoot, MenuButton, OpenStrategyRequested, StrategyBuffer, StrategyStatusLabel, StrategyRunRequested};
-use crate::trading::{StrategyRunConfig, TransportCommand, TransportCommandSender};
-use crate::ui::components::ScenarioMetadata;
 
 const BTN_NORMAL: Color = Color::srgba(0.10, 0.10, 0.16, 1.0);
 const BTN_HOVER: Color = Color::srgba(0.20, 0.20, 0.30, 1.0);
@@ -25,7 +28,10 @@ fn spawn_menu_btn(parent: &mut ChildBuilder, label: &str, action: MenuButton) {
         .with_children(|p| {
             p.spawn((
                 Text::new(label),
-                TextFont { font_size: 12.0, ..default() },
+                TextFont {
+                    font_size: 12.0,
+                    ..default()
+                },
                 TextColor(Color::srgb(0.82, 0.82, 0.82)),
             ));
         });
@@ -52,17 +58,26 @@ pub fn spawn_menu_bar(mut commands: Commands) {
         .with_children(|p| {
             p.spawn((
                 Text::new("File"),
-                TextFont { font_size: 12.0, ..default() },
+                TextFont {
+                    font_size: 12.0,
+                    ..default()
+                },
                 TextColor(Color::srgb(0.65, 0.65, 0.65)),
             ));
 
             spawn_menu_btn(p, "Open Strategy...", MenuButton::OpenStrategy);
 
-            p.spawn(Node { flex_grow: 1.0, ..default() });
+            p.spawn(Node {
+                flex_grow: 1.0,
+                ..default()
+            });
 
             p.spawn((
                 Text::new("strategy: none"),
-                TextFont { font_size: 12.0, ..default() },
+                TextFont {
+                    font_size: 12.0,
+                    ..default()
+                },
                 TextColor(Color::srgb(0.55, 0.55, 0.55)),
                 StrategyStatusLabel,
             ));
@@ -102,9 +117,7 @@ pub fn menu_button_system(
     }
 }
 
-pub fn log_open_strategy_requested_system(
-    mut events: EventReader<OpenStrategyRequested>,
-) {
+pub fn log_open_strategy_requested_system(mut events: EventReader<OpenStrategyRequested>) {
     for event in events.read() {
         info!("open strategy selected: {:?}", event.path);
     }
@@ -142,7 +155,11 @@ pub fn update_strategy_status_label_system(
                 .file_name()
                 .and_then(|s| s.to_str())
                 .unwrap_or("<unnamed>");
-            let cache = if buffer.cache_path.is_some() { " cached" } else { "" };
+            let cache = if buffer.cache_path.is_some() {
+                " cached"
+            } else {
+                ""
+            };
             let dirty = if buffer.dirty { " *" } else { "" };
             format!("strategy: {}{}{}", name, cache, dirty)
         }
@@ -197,9 +214,7 @@ pub fn open_strategy_buffer_system(
     }
 }
 
-pub fn log_strategy_run_requested_system(
-    mut events: EventReader<StrategyRunRequested>,
-) {
+pub fn log_strategy_run_requested_system(mut events: EventReader<StrategyRunRequested>) {
     for event in events.read() {
         info!("strategy run requested: {:?}", event.cache_path);
     }
@@ -238,7 +253,11 @@ pub fn handle_strategy_run_system(
 
         info!(
             "strategy run: RunStrategy strategy_file={:?} instruments={:?} start={:?} end={:?} granularity={:?}",
-            event.cache_path, run_config.instruments, run_config.start, run_config.end, run_config.granularity
+            event.cache_path,
+            run_config.instruments,
+            run_config.start,
+            run_config.end,
+            run_config.granularity
         );
 
         let cmd = TransportCommand::RunStrategy {

@@ -37,7 +37,7 @@ use crate::ui::scenario_parser::parse_scenario_system;
 use crate::ui::sidebar::{panel_button_system, spawn_sidebar, update_sidebar_system};
 use crate::ui::strategy_editor::{
     sync_editor_to_strategy_buffer_system, sync_strategy_buffer_to_editor_system,
-    update_strategy_button_visuals_system,
+    update_strategy_button_visuals_system, update_strategy_editor_zoom_system,
 };
 use crate::ui::systems::{button_system, update_price_display, update_status_indicator};
 use bevy::prelude::*;
@@ -94,6 +94,7 @@ impl Plugin for UiPlugin {
                 sync_strategy_buffer_to_editor_system.after(open_strategy_buffer_system),
                 sync_editor_to_strategy_buffer_system,
                 update_strategy_button_visuals_system,
+                update_strategy_editor_zoom_system,
             ),
         )
         .add_systems(Update, change_active_editor_sprite);

@@ -1,16 +1,21 @@
-use crate::ui::components::{OpenStrategyRequested, PanelKind, StrategyBuffer, StrategyRunRequested};
+use crate::ui::components::{
+    OpenStrategyRequested, PanelKind, StrategyBuffer, StrategyRunRequested,
+};
 use crate::ui::floating_window::{FloatingWindowSpec, spawn_floating_window};
 use bevy::ecs::system::IntoObserverSystem;
 use bevy::prelude::*;
-use bevy_cosmic_edit::{CosmicBackgroundColor, CosmicFontSystem, CursorColor};
 use bevy_cosmic_edit::cosmic_text::{Attrs, AttrsOwned, Edit, Metrics, Shaping};
-use bevy_cosmic_edit::{prelude::*, CosmicTextChanged};
+use bevy_cosmic_edit::{CosmicBackgroundColor, CosmicFontSystem, CosmicRenderScale, CursorColor};
+use bevy_cosmic_edit::{CosmicTextChanged, prelude::*};
 
 // ── Bevy native 版 Strategy Editor ─────────────
 
 const PANEL_SIZE: Vec2 = Vec2::new(500.0, 400.0);
 const PANEL_POSITION: Vec2 = Vec2::new(-300.0, 50.0);
 const EDITOR_SIZE: Vec2 = Vec2::new(440.0, 320.0);
+const EDITOR_FONT_SIZE: f32 = 14.0;
+const EDITOR_LINE_HEIGHT: f32 = 18.0;
+const EDITOR_MAX_SUPERSAMPLE: f32 = 4.0;
 const ACCENT: Color = Color::srgba(0.63, 0.44, 1.0, 0.4); // SVG #a070ff (purple)
 const EDITOR_BG: Color = Color::srgba(0.02, 0.02, 0.04, 1.0);
 
@@ -35,6 +40,13 @@ pub struct StrategyRunButton;
 /// Sub-step 1.8c で `Query<&mut CosmicEditBuffer, With<StrategyEditorContent>>` で取りに行く。
 #[derive(Component)]
 pub struct StrategyEditorContent;
+
+/// Tracks zoom state for the strategy editor to drive `CosmicRenderScale`.
+#[derive(Component)]
+pub struct ZoomResponsiveEditor {
+    max_supersample: f32,
+    last_supersample: f32,
+}
 
 /// タイトルバー上に水平に並べるラベル付きボタン。
 /// Strategy Editor の Save Cache / Run は同じ見た目ロジックなので 1 箇所に集約する。
@@ -106,7 +118,11 @@ pub fn spawn_strategy_editor_panel(commands: &mut Commands, font_system: &mut Co
                 color: Color::WHITE,
                 ..default()
             },
-            CosmicEditBuffer::new(font_system, Metrics::new(14.0, 18.0)).with_text(
+            CosmicEditBuffer::new(
+                font_system,
+                Metrics::new(EDITOR_FONT_SIZE, EDITOR_LINE_HEIGHT),
+            )
+            .with_text(
                 font_system,
                 "// strategy code\n",
                 Attrs::new().color(CosmicColor::rgb(220, 220, 220)),
@@ -118,6 +134,11 @@ pub fn spawn_strategy_editor_panel(commands: &mut Commands, font_system: &mut Co
             CosmicBackgroundColor(EDITOR_BG),
             Transform::from_xyz(0.0, 0.0, 0.1),
             StrategyEditorContent,
+            ZoomResponsiveEditor {
+                max_supersample: EDITOR_MAX_SUPERSAMPLE,
+                last_supersample: 1.0,
+            },
+            CosmicRenderScale(1.0),
         ))
         .id();
 
@@ -176,6 +197,26 @@ pub fn spawn_strategy_editor_panel(commands: &mut Commands, font_system: &mut Co
             }
         },
     );
+}
+
+pub fn update_strategy_editor_zoom_system(
+    camera_q: Query<&OrthographicProjection, (With<Camera2d>, Changed<OrthographicProjection>)>,
+    mut editor_q: Query<(&mut ZoomResponsiveEditor, &mut CosmicRenderScale)>,
+) {
+    let Ok(projection) = camera_q.get_single() else {
+        return;
+    };
+
+    let camera_scale = projection.scale.max(0.01);
+
+    for (mut responsive, mut render_scale) in &mut editor_q {
+        let supersample = (1.0 / camera_scale).clamp(1.0, responsive.max_supersample);
+        if (responsive.last_supersample - supersample).abs() < 0.01 {
+            continue;
+        }
+        responsive.last_supersample = supersample;
+        render_scale.0 = supersample;
+    }
 }
 
 /// `OpenStrategyRequested` イベント（ファイル → buffer に丸ごとロード）の直後に、
@@ -268,26 +309,24 @@ pub fn sync_editor_to_strategy_buffer_system(
 /// 早期 return するので、ここでは見た目だけ揃える役割。
 pub fn update_strategy_button_visuals_system(
     buffer: Res<StrategyBuffer>,
-    mut save_q: Query<
-        &mut Sprite,
-        (With<StrategySaveButton>, Without<StrategyRunButton>),
-    >,
-    mut run_q: Query<
-        &mut Sprite,
-        (With<StrategyRunButton>, Without<StrategySaveButton>),
-    >,
+    mut save_q: Query<&mut Sprite, (With<StrategySaveButton>, Without<StrategyRunButton>)>,
+    mut run_q: Query<&mut Sprite, (With<StrategyRunButton>, Without<StrategySaveButton>)>,
 ) {
     let can_save = buffer.cache_path.is_some() && buffer.dirty;
     let can_run = buffer.cache_path.is_some() && !buffer.dirty;
 
     for mut sprite in &mut save_q {
-        sprite
-            .color
-            .set_alpha(if can_save { BUTTON_ENABLED_ALPHA } else { BUTTON_DISABLED_ALPHA });
+        sprite.color.set_alpha(if can_save {
+            BUTTON_ENABLED_ALPHA
+        } else {
+            BUTTON_DISABLED_ALPHA
+        });
     }
     for mut sprite in &mut run_q {
-        sprite
-            .color
-            .set_alpha(if can_run { BUTTON_ENABLED_ALPHA } else { BUTTON_DISABLED_ALPHA });
+        sprite.color.set_alpha(if can_run {
+            BUTTON_ENABLED_ALPHA
+        } else {
+            BUTTON_DISABLED_ALPHA
+        });
     }
 }

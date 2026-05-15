@@ -1,8 +1,8 @@
 use bevy::prelude::*;
 use rand::Rng;
 use serde::{Deserialize, Serialize};
-use tokio::sync::mpsc;
 use std::time::{SystemTime, UNIX_EPOCH};
+use tokio::sync::mpsc;
 
 pub mod engine {
     tonic::include_proto!("engine");
@@ -112,8 +112,7 @@ impl TradingSettings {
                 .unwrap_or(false),
             backend_url: std::env::var("BACKEND_URL")
                 .unwrap_or_else(|_| "http://127.0.0.1:19876".to_string()),
-            token: std::env::var("BACKEND_TOKEN")
-                .unwrap_or_else(|_| "dev-token".to_string()),
+            token: std::env::var("BACKEND_TOKEN").unwrap_or_else(|_| "dev-token".to_string()),
             poll_interval_ms: std::env::var("BACKEND_POLL_INTERVAL_MS")
                 .ok()
                 .and_then(|v| v.parse().ok())
@@ -205,13 +204,13 @@ pub fn price_simulation_system(
         data.price += change;
         let price = data.price;
         data.history.push(price);
-        
+
         // Phase 5 fix: Use real Unix ms for timestamp_ms
         let now_ms = SystemTime::now()
             .duration_since(UNIX_EPOCH)
             .unwrap_or_default()
             .as_millis() as i64;
-            
+
         data.timestamp_ms = now_ms;
         data.history_points.push(HistoryPoint {
             timestamp_ms: now_ms,
@@ -241,7 +240,9 @@ pub fn backend_update_system(
         data.history = state.history;
 
         // Phase 5: timestamp_ms と history_points の同期
-        data.timestamp_ms = state.timestamp_ms.unwrap_or((state.timestamp * 1000.0) as i64);
+        data.timestamp_ms = state
+            .timestamp_ms
+            .unwrap_or((state.timestamp * 1000.0) as i64);
         data.history_points = state.history_points;
 
         // Phase 6: OHLC
@@ -260,12 +261,15 @@ pub fn backend_update_system(
         // もし history_points が空で history がある場合は補完
         if data.history_points.is_empty() && !data.history.is_empty() {
             let count = data.history.len();
-            data.history_points = data.history.iter().enumerate().map(|(i, &p)| {
-                HistoryPoint {
+            data.history_points = data
+                .history
+                .iter()
+                .enumerate()
+                .map(|(i, &p)| HistoryPoint {
                     timestamp_ms: data.timestamp_ms - ((count - 1 - i) as i64 * 1000),
                     price: p,
-                }
-            }).collect();
+                })
+                .collect();
         }
 
         // Defensive limit on Rust side
@@ -314,7 +318,9 @@ pub enum RunState {
     Idle,
     Running,
     Completed,
-    Failed { error: String },
+    Failed {
+        error: String,
+    },
 }
 
 #[derive(Resource, Default, Debug, Clone)]
@@ -419,7 +425,7 @@ mod tests {
     fn test_backend_update_logic() {
         let mut world = World::new();
         let (tx, rx) = mpsc::unbounded_channel();
-        
+
         world.insert_resource(TradingData::default());
         world.insert_resource(TradingSettings {
             backend_enabled: true,
@@ -433,8 +439,14 @@ mod tests {
             timestamp: 12345.67,
             timestamp_ms: Some(12345670),
             history_points: vec![
-                HistoryPoint { timestamp_ms: 12344670, price: 140.0 },
-                HistoryPoint { timestamp_ms: 12345670, price: 150.0 },
+                HistoryPoint {
+                    timestamp_ms: 12344670,
+                    price: 140.0,
+                },
+                HistoryPoint {
+                    timestamp_ms: 12345670,
+                    price: 150.0,
+                },
             ],
             ohlc_points: vec![],
             open: Some(145.0),
@@ -467,7 +479,7 @@ mod tests {
     fn test_backend_update_fallback_history_points() {
         let mut world = World::new();
         let (tx, rx) = mpsc::unbounded_channel();
-        
+
         world.insert_resource(TradingData::default());
         world.insert_resource(TradingSettings {
             backend_enabled: true,
@@ -508,7 +520,7 @@ mod tests {
     fn test_backend_update_defensive_cap() {
         let mut world = World::new();
         let (tx, rx) = mpsc::unbounded_channel();
-        
+
         world.insert_resource(TradingData::default());
         world.insert_resource(TradingSettings {
             backend_enabled: true,
@@ -522,7 +534,12 @@ mod tests {
             history: vec![1.0, 2.0, 3.0, 4.0, 5.0],
             timestamp: 100.0,
             timestamp_ms: Some(100000),
-            history_points: (0..5).map(|i| HistoryPoint { timestamp_ms: i * 1000, price: i as f32 }).collect(),
+            history_points: (0..5)
+                .map(|i| HistoryPoint {
+                    timestamp_ms: i * 1000,
+                    price: i as f32,
+                })
+                .collect(),
             ohlc_points: vec![],
             open: None,
             high: None,

@@ -1,6 +1,6 @@
 use bevy::prelude::*;
-use bevy::sprite::{Material2d, Material2dPlugin, AlphaMode2d};
 use bevy::render::render_resource::{AsBindGroup, ShaderRef};
+use bevy::sprite::{AlphaMode2d, Material2d, Material2dPlugin};
 
 pub struct GridPlugin;
 
@@ -44,14 +44,20 @@ fn setup_grid(
 }
 
 fn update_grid_position(
-    camera_query: Query<(&Transform, &OrthographicProjection), (With<Camera2d>, Or<(Changed<Transform>, Changed<OrthographicProjection>)>)>,
+    camera_query: Query<
+        (&Transform, &OrthographicProjection),
+        (
+            With<Camera2d>,
+            Or<(Changed<Transform>, Changed<OrthographicProjection>)>,
+        ),
+    >,
     mut grid_query: Query<&mut Transform, (With<MainGrid>, Without<Camera2d>)>,
 ) {
     if let Ok((camera_transform, projection)) = camera_query.get_single() {
         if let Ok(mut grid_transform) = grid_query.get_single_mut() {
             grid_transform.translation.x = camera_transform.translation.x;
             grid_transform.translation.y = camera_transform.translation.y;
-            
+
             // Ensure the grid quad is always large enough to cover the screen
             // 100000.0 is the base size. We scale it by the camera's zoom scale.
             grid_transform.scale = Vec3::splat(projection.scale.max(1.0));

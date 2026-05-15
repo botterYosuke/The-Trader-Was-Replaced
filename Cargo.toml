@@ -24,3 +24,6 @@ serial_test = "3.1"
 [build-dependencies]
 tonic-build = "0.12"
 protoc-bin-vendored = "3.0"
+
+[patch.crates-io]
+bevy_cosmic_edit = { path = "crates/bevy_cosmic_edit" }

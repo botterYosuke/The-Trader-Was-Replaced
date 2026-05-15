@@ -1,21 +1,22 @@
+use backcast::camera::setup_camera;
+use backcast::grid::GridPlugin;
 use backcast::trading::{
-    backend_update_system, engine, parse_summary_json, price_simulation_system, BackendChannel,
-    BackendStatus, InstrumentList, LastRunResult, PortfolioOrder, PortfolioPosition, PortfolioState,
-    ReplaySpeed, RunState, TradingData, TradingSettings, TransportCommand, TransportCommandSender,
+    BackendChannel, BackendStatus, InstrumentList, LastRunResult, PortfolioOrder,
+    PortfolioPosition, PortfolioState, ReplaySpeed, RunState, TradingData, TradingSettings,
+    TransportCommand, TransportCommandSender, backend_update_system, engine, parse_summary_json,
+    price_simulation_system,
 };
 use backcast::ui::UiPlugin;
-use backcast::grid::GridPlugin;
-use backcast::camera::setup_camera;
 use bevy::prelude::*;
 use bevy_pancam::PanCamPlugin;
-use tokio::sync::mpsc;
 use engine::data_engine_client::DataEngineClient;
 use engine::{
-    EngineStartConfig, EngineKind, ForceStopReplayRequest, GetPortfolioRequest, GetStateRequest,
+    EngineKind, EngineStartConfig, ForceStopReplayRequest, GetPortfolioRequest, GetStateRequest,
     ListInstrumentsRequest, LoadReplayDataRequest, PauseReplayRequest, ReplayGranularity,
     ResumeReplayRequest, SetReplaySpeedRequest, StartEngineRequest, StartEngineResponse,
     StepReplayRequest,
 };
+use tokio::sync::mpsc;
 
 // Bevy's compute task pool threads don't inherit the Tokio runtime context,
 // so we capture the handle here (before App::run takes over) and pass it as a resource.
@@ -45,11 +46,14 @@ async fn main() {
         .insert_resource(ReplaySpeed::default())
         .insert_resource(tokio_handle)
         .add_systems(Startup, (setup_camera, setup_backend_connection))
-        .add_systems(Update, (
-            price_simulation_system,
-            backend_update_system,
-            status_update_system,
-        ))
+        .add_systems(
+            Update,
+            (
+                price_simulation_system,
+                backend_update_system,
+                status_update_system,
+            ),
+        )
         .run();
 }
 
@@ -63,10 +67,19 @@ enum BackendStatusUpdate {
     Running(bool),
     Error(String),
     RunStarted,
-    RunComplete { run_id: String, summary_json: String },
-    RunFailed { error: String },
-    InstrumentsLoaded { ids: Vec<String> },
-    InstrumentLoadFailed { error: String },
+    RunComplete {
+        run_id: String,
+        summary_json: String,
+    },
+    RunFailed {
+        error: String,
+    },
+    InstrumentsLoaded {
+        ids: Vec<String>,
+    },
+    InstrumentLoadFailed {
+        error: String,
+    },
     PortfolioLoaded {
         buying_power: f64,
         cash: f64,
@@ -75,7 +88,6 @@ enum BackendStatusUpdate {
         orders: Vec<PortfolioOrder>,
     },
 }
-
 
 fn status_update_system(
     mut status: ResMut<BackendStatus>,
@@ -95,7 +107,10 @@ fn status_update_system(
             BackendStatusUpdate::RunStarted => {
                 last_run.state = RunState::Running;
             }
-            BackendStatusUpdate::RunComplete { run_id, summary_json } => {
+            BackendStatusUpdate::RunComplete {
+                run_id,
+                summary_json,
+            } => {
                 info!("RunComplete: run_id={} summary={}", run_id, summary_json);
                 last_run.parsed_summary = parse_summary_json(&summary_json);
                 last_run.run_id = Some(run_id);
@@ -114,7 +129,13 @@ fn status_update_system(
                 instrument_list.loaded = true;
                 instrument_list.error = Some(error);
             }
-            BackendStatusUpdate::PortfolioLoaded { buying_power, cash, equity, positions, orders } => {
+            BackendStatusUpdate::PortfolioLoaded {
+                buying_power,
+                cash,
+                equity,
+                positions,
+                orders,
+            } => {
                 portfolio.buying_power = buying_power;
                 portfolio.cash = cash;
                 portfolio.equity = equity;
@@ -147,7 +168,10 @@ fn setup_backend_connection(
         return;
     }
 
-    info!("Backend connection is enabled. Connecting to {}...", settings.backend_url);
+    info!(
+        "Backend connection is enabled. Connecting to {}...",
+        settings.backend_url
+    );
 
     let url = settings.backend_url.clone();
     let token = settings.token.clone();

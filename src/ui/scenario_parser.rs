@@ -1,10 +1,7 @@
-use bevy::prelude::*;
 use crate::ui::components::{ScenarioMetadata, StrategyBuffer};
+use bevy::prelude::*;
 
-pub fn parse_scenario_system(
-    buffer: Res<StrategyBuffer>,
-    mut meta: ResMut<ScenarioMetadata>,
-) {
+pub fn parse_scenario_system(buffer: Res<StrategyBuffer>, mut meta: ResMut<ScenarioMetadata>) {
     if !buffer.is_changed() {
         return;
     }

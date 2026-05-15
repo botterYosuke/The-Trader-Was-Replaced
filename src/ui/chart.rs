@@ -1,6 +1,6 @@
+use crate::trading::TradingData;
 use bevy::prelude::*;
 use bevy_vector_shapes::prelude::*;
-use crate::trading::TradingData;
 
 #[derive(Component)]
 pub struct ChartViewState {
@@ -48,14 +48,14 @@ fn draw_candle(
     let color = if close >= open {
         Color::srgb(0.0, 0.78, 0.31) // bullish green
     } else {
-        Color::srgb(0.9, 0.2, 0.2)   // bearish red
+        Color::srgb(0.9, 0.2, 0.2) // bearish red
     };
 
     let y_of = |p: f32| -chart_height / 2.0 + (p - min_price) / price_range * chart_height;
 
-    let y_high  = y_of(high);
-    let y_low   = y_of(low);
-    let y_open  = y_of(open);
+    let y_high = y_of(high);
+    let y_low = y_of(low);
+    let y_open = y_of(open);
     let y_close = y_of(close);
 
     painter.color = color;
@@ -64,13 +64,13 @@ fn draw_candle(
     painter.set_translation(chart_origin);
     painter.thickness = 1.5;
     painter.line(
-        Vec3::new(x_rel, y_low,  0.15),
+        Vec3::new(x_rel, y_low, 0.15),
         Vec3::new(x_rel, y_high, 0.15),
     );
 
     // Body: rect from open to close (min 1.5 px tall so doji is visible)
     let body_center_y = (y_open + y_close) / 2.0;
-    let body_height   = (y_close - y_open).abs().max(1.5);
+    let body_height = (y_close - y_open).abs().max(1.5);
     painter.set_translation(Vec3::new(
         chart_origin.x + x_rel,
         chart_origin.y + body_center_y,
@@ -117,22 +117,34 @@ pub fn chart_render_system(
 
             for p in history {
                 if p.timestamp_ms >= start_ts {
-                    if p.price < min { min = p.price; }
-                    if p.price > max { max = p.price; }
+                    if p.price < min {
+                        min = p.price;
+                    }
+                    if p.price > max {
+                        max = p.price;
+                    }
                     has_visible_data = true;
                 }
             }
             // Extend range to cover visible OHLC candles
             if visible_candles.len() >= 2 {
                 for pt in visible_candles {
-                    if pt.high > max { max = pt.high; }
-                    if pt.low  < min { min = pt.low; }
+                    if pt.high > max {
+                        max = pt.high;
+                    }
+                    if pt.low < min {
+                        min = pt.low;
+                    }
                     has_visible_data = true;
                 }
             } else if let (Some(high), Some(low)) = (trading_data.high, trading_data.low) {
                 // Fallback: extend for latest single candle
-                if high > max { max = high; }
-                if low  < min { min = low; }
+                if high > max {
+                    max = high;
+                }
+                if low < min {
+                    min = low;
+                }
                 has_visible_data = true;
             }
 
@@ -149,7 +161,9 @@ pub fn chart_render_system(
         }
 
         let price_range = state.max_price - state.min_price;
-        if price_range <= 0.0 { continue; }
+        if price_range <= 0.0 {
+            continue;
+        }
 
         let start_pos = transform.translation();
         painter.set_translation(start_pos);
@@ -170,7 +184,8 @@ pub fn chart_render_system(
                 continue;
             }
             let time_offset = p.timestamp_ms - state.latest_timestamp_ms;
-            let x = (time_offset as f32 / state.time_window_ms as f32) * state.width + (state.width / 2.0);
+            let x = (time_offset as f32 / state.time_window_ms as f32) * state.width
+                + (state.width / 2.0);
             let y = -state.height / 2.0 + (p.price - state.min_price) / price_range * state.height;
             let current_pos = Vec3::new(x - state.width / 2.0, y, 0.1);
 
@@ -214,7 +229,8 @@ pub fn chart_render_system(
                 trading_data.low,
                 trading_data.close,
             ) {
-                let candle_ts = trading_data.open_time_ms
+                let candle_ts = trading_data
+                    .open_time_ms
                     .unwrap_or(state.latest_timestamp_ms);
                 let x_rel = (candle_ts - state.latest_timestamp_ms) as f32
                     / state.time_window_ms as f32
@@ -251,15 +267,20 @@ mod tests {
         let mut world = World::new();
         let mut trading_data = TradingData::default();
         trading_data.history_points = vec![
-            HistoryPoint { timestamp_ms: 1000, price: 10.0 },
-            HistoryPoint { timestamp_ms: 2000, price: 20.0 },
+            HistoryPoint {
+                timestamp_ms: 1000,
+                price: 10.0,
+            },
+            HistoryPoint {
+                timestamp_ms: 2000,
+                price: 20.0,
+            },
         ];
         world.insert_resource(trading_data);
 
-        let _entity = world.spawn((
-            ChartViewState::default(),
-            GlobalTransform::default(),
-        )).id();
+        let _entity = world
+            .spawn((ChartViewState::default(), GlobalTransform::default()))
+            .id();
 
         let _schedule = Schedule::default();
     }
@@ -272,9 +293,18 @@ mod tests {
         state.latest_timestamp_ms = 2000;
 
         let history = vec![
-            HistoryPoint { timestamp_ms: 500,  price: 100.0 }, // out of window
-            HistoryPoint { timestamp_ms: 1500, price: 10.0  }, // in window
-            HistoryPoint { timestamp_ms: 2000, price: 20.0  }, // in window
+            HistoryPoint {
+                timestamp_ms: 500,
+                price: 100.0,
+            }, // out of window
+            HistoryPoint {
+                timestamp_ms: 1500,
+                price: 10.0,
+            }, // in window
+            HistoryPoint {
+                timestamp_ms: 2000,
+                price: 20.0,
+            }, // in window
         ];
 
         let mut min = f32::MAX;
@@ -284,8 +314,12 @@ mod tests {
 
         for p in &history {
             if p.timestamp_ms >= start_ts {
-                if p.price < min { min = p.price; }
-                if p.price > max { max = p.price; }
+                if p.price < min {
+                    min = p.price;
+                }
+                if p.price > max {
+                    max = p.price;
+                }
                 has_visible_data = true;
             }
         }
@@ -319,7 +353,7 @@ mod tests {
     #[test]
     fn test_candle_y_mapping() {
         let chart_height = 200.0_f32;
-        let min_price   = 100.0_f32;
+        let min_price = 100.0_f32;
         let price_range = 50.0_f32;
         let y_of = |p: f32| -chart_height / 2.0 + (p - min_price) / price_range * chart_height;
 
@@ -334,7 +368,7 @@ mod tests {
     #[test]
     fn test_candle_body_height_min() {
         // Doji body height must be at least 1.5 so it's always visible
-        let y_open  = 50.0_f32;
+        let y_open = 50.0_f32;
         let y_close = 50.0_f32; // same → doji
         let body_height = (y_close - y_open).abs().max(1.5);
         assert!(body_height >= 1.5);
@@ -343,11 +377,15 @@ mod tests {
     #[test]
     fn test_autoscale_extends_for_candle_high_low() {
         let high = 200.0_f32;
-        let low  = 50.0_f32;
+        let low = 50.0_f32;
         let mut max = 150.0_f32;
         let mut min = 80.0_f32;
-        if high > max { max = high; }
-        if low  < min { min = low; }
+        if high > max {
+            max = high;
+        }
+        if low < min {
+            min = low;
+        }
         assert_eq!(max, 200.0);
         assert_eq!(min, 50.0);
     }
@@ -362,7 +400,7 @@ mod tests {
 
         let x_oldest = (oldest_ots - newest_ots) as f32 / span_ms * (width / 2.0);
         let x_newest = (newest_ots - newest_ots) as f32 / span_ms * (width / 2.0);
-        let x_mid    = (2000_i64 - newest_ots) as f32 / span_ms * (width / 2.0);
+        let x_mid = (2000_i64 - newest_ots) as f32 / span_ms * (width / 2.0);
 
         assert!((x_oldest - (-width / 2.0)).abs() < 0.001);
         assert!((x_newest - 0.0).abs() < 0.001);

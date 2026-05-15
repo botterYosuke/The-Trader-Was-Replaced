@@ -1,6 +1,6 @@
-use bevy::prelude::*;
-use crate::trading::{TradingData, TradingSettings, BackendStatus};
+use crate::trading::{BackendStatus, TradingData, TradingSettings};
 use crate::ui::components::{PriceDisplay, StatusIndicator};
+use bevy::prelude::*;
 
 pub fn update_price_display(
     data: Res<TradingData>,
@@ -40,7 +40,11 @@ pub fn update_status_indicator(
 
 pub fn button_system(
     mut interaction_query: Query<
-        (&Interaction, &mut Sprite, &crate::ui::components::TradeButton),
+        (
+            &Interaction,
+            &mut Sprite,
+            &crate::ui::components::TradeButton,
+        ),
         (Changed<Interaction>, With<Button>),
     >,
 ) {
