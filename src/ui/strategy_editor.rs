@@ -414,6 +414,7 @@ pub fn undo_redo_system(
 /// `replaying_depth` を drain 完了後に -1 する。
 /// テキスト変更があった かつ replaying 中のときのみ `UndoRedoApplied` を送信する。
 /// （Window spawn/despawn undo ではエディタ set_text が走らないよう条件を絞る）
+#[allow(clippy::too_many_arguments)]
 pub fn apply_pending_app_edits_system(
     mut history: ResMut<AppHistory>,
     mut buffer: ResMut<StrategyBuffer>,
@@ -455,10 +456,10 @@ pub fn apply_pending_app_edits_system(
                 // 翌フレームで位置・サイズ・z を復元（apply_pending_layout_system が処理）
                 pending_layout.windows.push(layout.clone());
                 // Strategy Editor の場合はアクションが持つ snapshot を復元
-                if layout.kind == PanelKind::StrategyEditor {
-                    if let Some(snap) = strategy_snapshot {
-                        pending_restore.snapshot = Some(snap);
-                    }
+                if layout.kind == PanelKind::StrategyEditor
+                    && let Some(snap) = strategy_snapshot
+                {
+                    pending_restore.snapshot = Some(snap);
                 }
             }
             AppEditAction::DespawnWindow { kind } => {

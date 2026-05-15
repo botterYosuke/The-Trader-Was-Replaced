@@ -3,9 +3,11 @@
 e-station の engine.scenario から write_back / libcst / LIVE_SCENARIO / path guard を
 除いた replay-only サブセット。公開 API:
 
-    extract(path)                  -> Optional[dict]
-    resolve_refs(d, *, base_dir)   -> dict
-    validate(d)                    -> None
+    extract(path)                       -> Optional[dict]
+    resolve_refs(d, *, base_dir)        -> dict
+    normalize_scenario(d)               -> dict
+    load_scenario(strategy_path)        -> dict
+    validate(d)                         -> None
     ScenarioValidationError
 """
 
@@ -18,6 +20,18 @@ from pathlib import Path
 from typing import Optional
 
 log = logging.getLogger(__name__)
+
+# ---------------------------------------------------------------------------
+# Sidecar path helper
+# ---------------------------------------------------------------------------
+
+
+def _sidecar_path(strategy_path: Path) -> Path:
+    """foo.py → foo.json（stem ベースで拡張子を .json に換える）。
+    foo.bar.py → foo.bar.json（stem = "foo.bar"）。
+    """
+    return strategy_path.with_name(strategy_path.stem + ".json")
+
 
 _NON_LITERAL_ERROR = (
     "dict literal 以外（unpacking {**...} / comprehension / 関数呼び出しを含む dict）は "
@@ -267,10 +281,8 @@ def validate(d: dict) -> None:  # type: ignore[type-arg]
         raise ScenarioValidationError(f"SCENARIO must be a dict, got {type(d).__name__}")
 
     sv = d.get("schema_version")
-    # Normalize singular "instrument" key to "instruments" for v2/v3 files that use the old key.
-    if sv in (2, 3) and "instrument" in d and "instruments" not in d:
-        d = dict(d)
-        d["instruments"] = d.pop("instrument")
+    # NOTE: normalize_scenario() が呼び出し元（load_scenario / strategy_loader）で
+    # 適用済みであることを前提とする。ここでの重複正規化は削除済み。
     if sv == 1:
         _check_keys(d, frozenset(_V1_TYPES), frozenset())
         _check_types(d, _V1_TYPES)
@@ -291,3 +303,75 @@ def validate(d: dict) -> None:  # type: ignore[type-arg]
         raise ScenarioValidationError(
             f"SCENARIO schema_version must be 1, 2 or 3, got {sv!r}"
         )
+
+
+# ---------------------------------------------------------------------------
+# normalize_scenario
+# ---------------------------------------------------------------------------
+
+
+def normalize_scenario(d: dict) -> dict:  # type: ignore[type-arg]
+    """v2/v3 の "instrument"（単数）キーを "instruments"（複数）に正規化した新 dict を返す。
+
+    既に正規化済みの dict はそのまま返す（idempotent）。
+    v1 は "instrument" キーが正当なので変換しない。
+    """
+    sv = d.get("schema_version")
+    if sv in (2, 3) and "instrument" in d and "instruments" not in d:
+        out = dict(d)
+        out["instruments"] = out.pop("instrument")
+        return out
+    return d
+
+
+# ---------------------------------------------------------------------------
+# load_scenario
+# ---------------------------------------------------------------------------
+
+
+def load_scenario(strategy_path: Path) -> dict:  # type: ignore[type-arg]
+    """サイドカー <strategy>.json の "scenario" キーを返す。
+
+    必ず resolve_refs → normalize_scenario → validate の順で通す。
+
+    フォールバック順:
+      1. <strategy>.json が存在し "scenario" キーがある → JSON ロード
+      2. <strategy>.json が存在するが "scenario" キーがない → .py にフォールバック
+      3. <strategy>.py 内に SCENARIO がある → extract() に委譲 + WARN ログ
+      4. どちらも無ければ ValueError
+
+    Raises:
+        ScenarioValidationError: サイドカー JSON が壊れている場合
+        ValueError: SCENARIO が見つからない場合
+    """
+    sidecar = _sidecar_path(strategy_path)
+    if sidecar.exists():
+        try:
+            doc = json.loads(sidecar.read_text(encoding="utf-8"))
+        except json.JSONDecodeError as exc:
+            raise ScenarioValidationError(f"invalid JSON in {sidecar}: {exc}") from exc
+        if isinstance(doc, dict) and "scenario" in doc:
+            d = doc["scenario"]
+            d = resolve_refs(d, base_dir=sidecar.parent)
+            d = normalize_scenario(d)
+            validate(d)
+            return d
+        # サイドカーはあるが "scenario" キーが無い（layout-only サイドカー）
+        # → .py にフォールバック
+
+    if strategy_path.exists():
+        d = extract(strategy_path)
+        if d is not None:
+            log.warning(
+                "SCENARIO loaded from .py (legacy); migrate to %s",
+                sidecar.name,
+            )
+            d = resolve_refs(d, base_dir=strategy_path.parent)
+            d = normalize_scenario(d)
+            validate(d)
+            return d
+
+    raise ValueError(
+        f"SCENARIO not found: looked for 'scenario' key in {sidecar} "
+        f"and SCENARIO in {strategy_path}"
+    )

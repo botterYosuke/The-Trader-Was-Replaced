@@ -47,8 +47,6 @@ def load(path: str | Path) -> tuple[ModuleType, dict, Any]:  # Any = type[Strate
         ValueError: SCENARIO が見つからない、またはリテラル dict でない場合。
         ScenarioValidationError: resolve_refs での参照解決失敗。
     """
-    from engine.strategy_runtime.scenario import extract, resolve_refs
-
     path = Path(path)
     if not path.exists():
         raise FileNotFoundError(f"strategy file not found: {path}")
@@ -68,17 +66,10 @@ def load(path: str | Path) -> tuple[ModuleType, dict, Any]:  # Any = type[Strate
             f"failed to import {path}:\n{traceback.format_exc()}"
         )
 
-    # SCENARIO 抽出（モジュール実行後ではなく AST で安全抽出）
-    from engine.strategy_runtime.scenario import validate
-    scenario = extract(path)
-    if scenario is None:
-        raise ValueError(f"SCENARIO not found in {path}")
-    scenario = resolve_refs(scenario, base_dir=path.parent)
-    # Normalize singular "instrument" → "instruments" for v2/v3 files before validation.
-    if scenario.get("schema_version") in (2, 3) and "instrument" in scenario and "instruments" not in scenario:
-        scenario = dict(scenario)
-        scenario["instruments"] = scenario.pop("instrument")
-    validate(scenario)
+    # SCENARIO 抽出: サイドカー JSON 優先、なければ .py から legacy 抽出
+    # resolve_refs / normalize_scenario / validate は load_scenario 内で完結する
+    from engine.strategy_runtime.scenario import load_scenario
+    scenario = load_scenario(path)
 
     # Strategy サブクラス検索（このファイルで定義されたものだけ）
     try:

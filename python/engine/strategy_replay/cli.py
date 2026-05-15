@@ -31,7 +31,7 @@ def _build_parser() -> argparse.ArgumentParser:
         "--strategy",
         required=True,
         metavar="PATH",
-        help="Path to the strategy .py file (must contain SCENARIO and a Strategy subclass).",
+        help="Path to the strategy .py file (must contain a Strategy subclass; SCENARIO is loaded from the sidecar <strategy>.json (legacy: SCENARIO in .py)).",
     )
     run_p.add_argument(
         "--catalog",
@@ -138,6 +138,10 @@ def _cmd_run(args: argparse.Namespace) -> int:
         scenario = dict(scenario, start=args.start)
     if getattr(args, "end", None):
         scenario = dict(scenario, end=args.end)
+
+    # override 後に v2/v3 の "instrument" → "instruments" 正規化を通す
+    from engine.strategy_runtime.scenario import normalize_scenario
+    scenario = normalize_scenario(scenario)
 
     # ── Load bars ─────────────────────────────────────────────────────────────
     if args.bars_json:

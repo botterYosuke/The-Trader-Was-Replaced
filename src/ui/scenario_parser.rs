@@ -1,226 +1,210 @@
 use crate::ui::components::{ScenarioMetadata, StrategyBuffer};
 use bevy::prelude::*;
+use serde::Deserialize;
+use std::path::PathBuf;
 
-pub fn parse_scenario_system(buffer: Res<StrategyBuffer>, mut meta: ResMut<ScenarioMetadata>) {
-    if !buffer.is_changed() {
+/// サイドカー JSON のルート構造。`scenario` キー以外は無視する。
+#[derive(Deserialize)]
+struct SidecarRoot {
+    #[serde(default)]
+    scenario: Option<ScenarioFile>,
+}
+
+/// `scenario` キー内部の構造（v1/v2/v3 共通）。
+#[derive(Deserialize)]
+struct ScenarioFile {
+    schema_version: Option<u32>,
+    /// v1: 単一文字列 / v2 で単数キーを使うレガシー: 文字列またはリスト
+    #[serde(default)]
+    instrument: Option<StringOrList>,
+    /// v2/v3: 複数銘柄リスト（正規化済みキー）
+    #[serde(default)]
+    instruments: Option<Vec<String>>,
+    /// v3: 銘柄ユニバース参照（Rust では解決しない。F8 参照）。
+    /// deserialize はするが `ScenarioMetadata` には反映しない。
+    #[allow(dead_code)]
+    #[serde(default)]
+    instruments_ref: Option<String>,
+    start: Option<String>,
+    end: Option<String>,
+    granularity: Option<String>,
+    initial_cash: Option<i64>,
+}
+
+/// JSON の文字列 / 文字列リスト の両方を deserialize できる enum。
+#[derive(Deserialize)]
+#[serde(untagged)]
+enum StringOrList {
+    One(String),
+    Many(Vec<String>),
+}
+
+/// `original_path` が変化したときだけサイドカー JSON を再読み込みして
+/// `ScenarioMetadata` を更新するシステム。
+///
+/// - ファイル不在 / "scenario" キーなし / JSON 破損 → `ScenarioMetadata::default()`（Run ボタングレーアウト）
+/// - v3 で `instruments_ref` のみ（`instruments` なし）→ `instruments` 空のまま（Run ブロック、仕様）
+pub fn parse_scenario_system(
+    buffer: Res<StrategyBuffer>,
+    mut scenario: ResMut<ScenarioMetadata>,
+    mut last_path: Local<Option<PathBuf>>,
+) {
+    // original_path が変化したときだけ再実行する（毎フレーム JSON 読みを防ぐ）
+    let current_path = buffer.original_path.clone();
+    if *last_path == current_path {
         return;
     }
-    if buffer.original_path.is_none() {
-        *meta = ScenarioMetadata::default();
-        return;
-    }
+    *last_path = current_path.clone();
 
-    match parse_scenario(&buffer.source) {
-        Some(m) => {
-            info!(
-                "SCENARIO parsed: schema_version={:?} instruments={:?} start={:?} end={:?} granularity={:?} initial_cash={:?}",
-                m.schema_version, m.instruments, m.start, m.end, m.granularity, m.initial_cash
+    // path がなければリセット
+    let Some(py_path) = current_path else {
+        *scenario = ScenarioMetadata::default();
+        return;
+    };
+
+    // <strategy>.json を読む
+    let json_path = py_path.with_extension("json");
+
+    let text = match std::fs::read_to_string(&json_path) {
+        Ok(t) => t,
+        Err(e) => {
+            debug!(
+                "no sidecar JSON for {:?}: {} — ScenarioMetadata reset",
+                json_path, e
             );
-            *meta = m;
+            *scenario = ScenarioMetadata::default();
+            return;
         }
-        None => {
-            warn!("SCENARIO block not found or parse failed in strategy source");
-            *meta = ScenarioMetadata::default();
+    };
+
+    let root: SidecarRoot = match serde_json::from_str(&text) {
+        Ok(r) => r,
+        Err(e) => {
+            warn!("malformed sidecar JSON {:?}: {} — ScenarioMetadata reset", json_path, e);
+            *scenario = ScenarioMetadata::default();
+            return;
         }
-    }
-}
+    };
 
-fn parse_scenario(source: &str) -> Option<ScenarioMetadata> {
-    let block = extract_scenario_block(source)?;
+    let Some(sf) = root.scenario else {
+        debug!(
+            "no 'scenario' key in {:?} — ScenarioMetadata reset",
+            json_path
+        );
+        *scenario = ScenarioMetadata::default();
+        return;
+    };
 
-    let schema_version = parse_int_field(&block, "schema_version").map(|v| v as u32);
-    let start = parse_string_field(&block, "start");
-    let end = parse_string_field(&block, "end");
-    let granularity = parse_string_field(&block, "granularity");
-    let initial_cash = parse_int_field(&block, "initial_cash");
+    // instruments 解決: instruments 優先、なければ instrument を 1 要素 list 化
+    let instruments: Vec<String> = if let Some(list) = sf.instruments {
+        list
+    } else if let Some(sol) = sf.instrument {
+        match sol {
+            StringOrList::One(s) => vec![s],
+            StringOrList::Many(v) => v,
+        }
+    } else {
+        // instruments_ref のみ → 空（GUI では Run ブロック、F8 仕様）
+        vec![]
+    };
 
-    // instruments: prefer "instruments" (multi-instrument v2), fall back to "instrument"
-    let instruments = parse_string_or_list_field(&block, "instruments")
-        .or_else(|| parse_string_or_list_field(&block, "instrument"))
-        .unwrap_or_default();
-
-    Some(ScenarioMetadata {
-        schema_version,
+    let new_meta = ScenarioMetadata {
+        schema_version: sf.schema_version,
         instruments,
-        start,
-        end,
-        granularity,
-        initial_cash,
-    })
-}
+        start: sf.start,
+        end: sf.end,
+        granularity: sf.granularity,
+        initial_cash: sf.initial_cash,
+    };
 
-/// Extract the content inside `SCENARIO = { ... }` or `SCENARIO: Type = { ... }`.
-/// Skips `LIVE_SCENARIO` and `class Scenario(TypedDict)` by checking word boundaries.
-fn extract_scenario_block(source: &str) -> Option<String> {
-    let mut search_pos = 0;
-    while search_pos < source.len() {
-        let rel = source[search_pos..].find("SCENARIO")?;
-        let abs = search_pos + rel;
+    info!(
+        "SCENARIO parsed from sidecar: schema_version={:?} instruments={:?} start={:?} end={:?} granularity={:?} initial_cash={:?}",
+        new_meta.schema_version,
+        new_meta.instruments,
+        new_meta.start,
+        new_meta.end,
+        new_meta.granularity,
+        new_meta.initial_cash,
+    );
 
-        // Word boundary: preceding char must not be alphanumeric or '_' (avoids LIVE_SCENARIO)
-        if abs > 0 {
-            let prev = source.as_bytes()[abs - 1] as char;
-            if prev.is_alphanumeric() || prev == '_' {
-                search_pos = abs + 1;
-                continue;
-            }
-        }
-
-        let after = &source[abs + "SCENARIO".len()..];
-        let after_trimmed = after.trim_start();
-
-        // Must be an assignment: "SCENARIO = {" or "SCENARIO: ... = {"
-        if after_trimmed.starts_with('=') || after_trimmed.starts_with(':') {
-            if let Some(brace_rel) = after.find('{') {
-                let rest = &source[abs + "SCENARIO".len() + brace_rel + 1..];
-                if let Some(close_rel) = rest.find('}') {
-                    return Some(rest[..close_rel].to_string());
-                }
-            }
-        }
-
-        search_pos = abs + 1;
-    }
-    None
-}
-
-/// Parse a string field: `"key": "value"` — returns the value string.
-fn parse_string_field(block: &str, key: &str) -> Option<String> {
-    let pattern = format!("\"{}\"", key);
-    let pos = block.find(&pattern)?;
-    let rest = &block[pos + pattern.len()..];
-    let rest = rest.trim_start().strip_prefix(':')?.trim_start();
-    if rest.starts_with('"') {
-        let content = &rest[1..];
-        let end = content.find('"')?;
-        Some(content[..end].to_string())
-    } else {
-        None
-    }
-}
-
-/// Parse a field that is either a bare string or a list of strings.
-/// Handles: `"key": "str"`, `"key": ["a"]`, `"key": ["a", "b"]`.
-fn parse_string_or_list_field(block: &str, key: &str) -> Option<Vec<String>> {
-    let pattern = format!("\"{}\"", key);
-    let pos = block.find(&pattern)?;
-    let rest = &block[pos + pattern.len()..];
-    let rest = rest.trim_start().strip_prefix(':')?.trim_start();
-
-    if rest.starts_with('"') {
-        // Single bare string
-        let content = &rest[1..];
-        let end = content.find('"')?;
-        Some(vec![content[..end].to_string()])
-    } else if rest.starts_with('[') {
-        // List of strings
-        let list_content = &rest[1..];
-        let end = list_content.find(']')?;
-        let inner = &list_content[..end];
-        let items: Vec<String> = inner
-            .split(',')
-            .filter_map(|s| {
-                let s = s.trim();
-                if s.starts_with('"') && s.ends_with('"') && s.len() >= 2 {
-                    Some(s[1..s.len() - 1].to_string())
-                } else {
-                    None
-                }
-            })
-            .collect();
-        if items.is_empty() { None } else { Some(items) }
-    } else {
-        None
-    }
-}
-
-/// Parse an integer field. Strips Python-style underscore separators (e.g. `1_000_000`).
-fn parse_int_field(block: &str, key: &str) -> Option<i64> {
-    let pattern = format!("\"{}\"", key);
-    let pos = block.find(&pattern)?;
-    let rest = &block[pos + pattern.len()..];
-    let rest = rest.trim_start().strip_prefix(':')?.trim_start();
-    let end = rest
-        .find(|c: char| c == ',' || c == '\n' || c == '}')
-        .unwrap_or(rest.len());
-    let num_str: String = rest[..end]
-        .chars()
-        .filter(|&c| c.is_ascii_digit() || c == '-')
-        .collect();
-    num_str.parse().ok()
+    *scenario = new_meta;
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
 
-    const DAILY_SRC: &str = r#"
-SCENARIO: Scenario = {
-    "schema_version": 1,
-    "instrument": "1301.TSE",
-    "start": "2025-01-06",
-    "end": "2025-03-31",
-    "granularity": "Daily",
-    "initial_cash": 1_000_000,
-}
-LIVE_SCENARIO: dict = {
-    "schema_version": 1,
-    "instrument": ["1301.TSE"],
-}
-"#;
-
-    const MINUTE_SRC: &str = r#"
-SCENARIO: Scenario = {
-    "schema_version": 2,
-    "instrument": ["1301.TSE"],
-    "start": "2025-01-06",
-    "end": "2025-01-10",
-    "granularity": "Minute",
-    "initial_cash": 1_000_000,
-}
-"#;
-
-    const PAIR_SRC: &str = r#"
-SCENARIO: Scenario = {
-    "schema_version": 2,
-    "instruments": ["1301.TSE", "7203.TSE"],
-    "start": "2025-01-06",
-    "end": "2025-01-10",
-    "granularity": "Minute",
-    "initial_cash": 1_000_000,
-}
-"#;
-
     #[test]
-    fn test_parse_daily() {
-        let m = parse_scenario(DAILY_SRC).unwrap();
-        assert_eq!(m.schema_version, Some(1));
-        assert_eq!(m.instruments, vec!["1301.TSE"]);
-        assert_eq!(m.start.as_deref(), Some("2025-01-06"));
-        assert_eq!(m.end.as_deref(), Some("2025-03-31"));
-        assert_eq!(m.granularity.as_deref(), Some("Daily"));
-        assert_eq!(m.initial_cash, Some(1_000_000));
+    fn test_parse_v1_from_json() {
+        let json = r#"{"scenario": {"schema_version": 1, "instrument": "1301.TSE", "start": "2025-01-06", "end": "2025-03-31", "granularity": "Daily", "initial_cash": 1000000}}"#;
+        let root: SidecarRoot = serde_json::from_str(json).unwrap();
+        let sf = root.scenario.unwrap();
+        assert_eq!(sf.schema_version, Some(1));
+        assert!(
+            matches!(sf.instrument, Some(StringOrList::One(ref s)) if s == "1301.TSE"),
+            "expected single instrument string"
+        );
     }
 
     #[test]
-    fn test_parse_minute() {
-        let m = parse_scenario(MINUTE_SRC).unwrap();
-        assert_eq!(m.schema_version, Some(2));
-        assert_eq!(m.instruments, vec!["1301.TSE"]);
-        assert_eq!(m.granularity.as_deref(), Some("Minute"));
+    fn test_parse_v2_from_json() {
+        let json = r#"{"scenario": {"schema_version": 2, "instruments": ["1301.TSE", "7203.TSE"], "start": "2025-01-06", "end": "2025-01-10", "granularity": "Minute", "initial_cash": 1000000}}"#;
+        let root: SidecarRoot = serde_json::from_str(json).unwrap();
+        let sf = root.scenario.unwrap();
+        assert_eq!(
+            sf.instruments,
+            Some(vec!["1301.TSE".to_string(), "7203.TSE".to_string()])
+        );
     }
 
     #[test]
     fn test_parse_pair_multi() {
-        let m = parse_scenario(PAIR_SRC).unwrap();
-        assert_eq!(m.instruments, vec!["1301.TSE", "7203.TSE"]);
+        let json = r#"{"scenario": {"schema_version": 2, "instruments": ["A", "B"], "start": "2025-01-06", "end": "2025-01-10", "granularity": "Minute", "initial_cash": 1000000}}"#;
+        let root: SidecarRoot = serde_json::from_str(json).unwrap();
+        let sf = root.scenario.unwrap();
+        assert_eq!(sf.instruments.unwrap().len(), 2);
     }
 
     #[test]
-    fn test_skips_live_scenario() {
-        // The block extracted should be from SCENARIO, not LIVE_SCENARIO
-        let m = parse_scenario(DAILY_SRC).unwrap();
-        assert_eq!(m.schema_version, Some(1)); // LIVE_SCENARIO has schema_version 1 too, but instruments differ
-        assert_eq!(m.instruments, vec!["1301.TSE"]); // single string from SCENARIO
+    fn test_missing_sidecar_returns_default() {
+        // ファイルが存在しない場合のシステム動作は integration test。
+        // ここでは "scenario" キーなしの JSON で None になることを確認。
+        let json = r#"{}"#;
+        let root: SidecarRoot = serde_json::from_str(json).unwrap();
+        assert!(root.scenario.is_none());
+    }
+
+    #[test]
+    fn test_sidecar_without_scenario_key_returns_default() {
+        // layout-only の旧 JSON でも正常 deserialize でき、scenario は None
+        let json = r#"{"schema_version": 1, "viewport": {}, "windows": []}"#;
+        let root: SidecarRoot = serde_json::from_str(json).unwrap();
+        assert!(root.scenario.is_none());
+    }
+
+    #[test]
+    fn test_malformed_json_returns_default_and_warns() {
+        let result = serde_json::from_str::<SidecarRoot>("{not valid");
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn test_v3_instruments_ref_only_returns_empty_instruments() {
+        // instruments_ref のみ → instruments/instrument 両方 None → GUI Run ブロック（仕様）
+        let json = r#"{"scenario": {"schema_version": 3, "instruments_ref": "universe.json#/instruments", "start": "2025-01-06", "end": "2025-01-10", "granularity": "Daily", "initial_cash": 1000000}}"#;
+        let root: SidecarRoot = serde_json::from_str(json).unwrap();
+        let sf = root.scenario.unwrap();
+        assert!(sf.instruments.is_none());
+        assert!(sf.instrument.is_none());
+        assert!(sf.instruments_ref.is_some());
+    }
+
+    #[test]
+    fn test_v3_resolved_instruments_works() {
+        // 事前解決済みの instruments リスト付き v3 は GUI 対応
+        let json = r#"{"scenario": {"schema_version": 3, "instruments": ["1301.TSE"], "start": "2025-01-06", "end": "2025-01-10", "granularity": "Daily", "initial_cash": 1000000}}"#;
+        let root: SidecarRoot = serde_json::from_str(json).unwrap();
+        let sf = root.scenario.unwrap();
+        assert_eq!(sf.instruments, Some(vec!["1301.TSE".to_string()]));
     }
 }

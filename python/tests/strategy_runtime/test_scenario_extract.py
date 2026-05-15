@@ -7,6 +7,7 @@ present the tests are skipped (they live outside this repo).
 from __future__ import annotations
 
 import json
+import logging
 import textwrap
 from pathlib import Path
 
@@ -15,6 +16,8 @@ import pytest
 from engine.strategy_runtime.scenario import (
     ScenarioValidationError,
     extract,
+    load_scenario,
+    normalize_scenario,
     resolve_refs,
     validate,
 )
@@ -294,3 +297,127 @@ def test_validate_v1_bool_rejected_as_initial_cash():
 def test_validate_unknown_schema_version():
     with pytest.raises(ScenarioValidationError):
         validate({"schema_version": 99})
+
+
+# ---------------------------------------------------------------------------
+# load_scenario — synthetic fixtures
+# ---------------------------------------------------------------------------
+
+
+def test_load_scenario_prefers_sidecar(tmp_path: Path):
+    py = tmp_path / "strat.py"
+    py.write_text("# no SCENARIO here")
+    sidecar = tmp_path / "strat.json"
+    sidecar.write_text(json.dumps({
+        "scenario": {
+            "schema_version": 1,
+            "instrument": "1301.TSE",
+            "start": "2025-01-06",
+            "end": "2025-03-31",
+            "granularity": "Daily",
+            "initial_cash": 1000000,
+        }
+    }))
+    d = load_scenario(py)
+    assert d["instrument"] == "1301.TSE"
+
+
+def test_load_scenario_falls_back_to_py_with_warning(tmp_path: Path, caplog):
+    py = tmp_path / "strat.py"
+    py.write_text(textwrap.dedent("""
+        SCENARIO = {
+            "schema_version": 1,
+            "instrument": "1301.TSE",
+            "start": "2025-01-06",
+            "end": "2025-03-31",
+            "granularity": "Daily",
+            "initial_cash": 1000000,
+        }
+    """))
+    with caplog.at_level(logging.WARNING):
+        d = load_scenario(py)
+    assert "legacy" in caplog.text
+    assert d["instrument"] == "1301.TSE"
+
+
+def test_load_scenario_raises_when_both_absent(tmp_path: Path):
+    py = tmp_path / "strat.py"
+    py.write_text("# no SCENARIO")
+    with pytest.raises(ValueError):
+        load_scenario(py)
+
+
+def test_load_scenario_invalid_json_raises(tmp_path: Path):
+    py = tmp_path / "strat.py"
+    py.write_text("# no SCENARIO")
+    sidecar = tmp_path / "strat.json"
+    sidecar.write_text("{not valid json")
+    with pytest.raises(ScenarioValidationError):
+        load_scenario(py)
+
+
+def test_load_scenario_layout_only_json_falls_back_to_py(tmp_path: Path):
+    py = tmp_path / "strat.py"
+    py.write_text(textwrap.dedent("""
+        SCENARIO = {
+            "schema_version": 1,
+            "instrument": "1301.TSE",
+            "start": "2025-01-06",
+            "end": "2025-03-31",
+            "granularity": "Daily",
+            "initial_cash": 1000000,
+        }
+    """))
+    sidecar = tmp_path / "strat.json"
+    sidecar.write_text(json.dumps({"schema_version": 1, "viewport": {}, "windows": []}))
+    d = load_scenario(py)
+    assert d["instrument"] == "1301.TSE"
+
+
+def test_load_scenario_normalizes_v2_instrument_key(tmp_path: Path):
+    py = tmp_path / "strat.py"
+    py.write_text(textwrap.dedent("""
+        SCENARIO = {
+            "schema_version": 2,
+            "instrument": ["A", "B"],
+            "start": "2025-01-06",
+            "end": "2025-01-10",
+            "granularity": "Minute",
+            "initial_cash": 1000000,
+        }
+    """))
+    d = load_scenario(py)
+    assert "instruments" in d
+    assert d["instruments"] == ["A", "B"]
+    assert "instrument" not in d
+
+
+def test_normalize_scenario_idempotent():
+    d = {
+        "schema_version": 2,
+        "instruments": ["A", "B"],
+        "start": "2025-01-06",
+        "end": "2025-01-10",
+        "granularity": "Minute",
+        "initial_cash": 1000000,
+    }
+    d2 = normalize_scenario(d)
+    assert d2 is d  # 正規化済みはそのまま返る
+
+
+def test_load_scenario_with_complex_suffix(tmp_path: Path):
+    py = tmp_path / "foo.bar.py"
+    py.write_text("# no SCENARIO")
+    sidecar = tmp_path / "foo.bar.json"
+    sidecar.write_text(json.dumps({
+        "scenario": {
+            "schema_version": 1,
+            "instrument": "1301.TSE",
+            "start": "2025-01-06",
+            "end": "2025-03-31",
+            "granularity": "Daily",
+            "initial_cash": 1000000,
+        }
+    }))
+    d = load_scenario(py)
+    assert d["instrument"] == "1301.TSE"

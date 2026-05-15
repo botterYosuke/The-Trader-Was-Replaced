@@ -142,10 +142,10 @@ pub fn orders_panel_system(
     } else {
         ""
     };
-    if let Ok(mut t) = status_q.get_single_mut() {
-        if t.0 != status_text {
-            t.0 = status_text.to_string();
-        }
+    if let Ok(mut t) = status_q.get_single_mut()
+        && t.0 != status_text
+    {
+        t.0 = status_text.to_string();
     }
 
     // cells

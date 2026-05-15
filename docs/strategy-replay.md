@@ -4,7 +4,7 @@
 
 ## Quick start — `scripts/run_replay.ps1` ラッパー（推奨）
 
-戦略ファイルを渡すだけで「SCENARIO 読取 → catalog 自動構築 → リプレイ実行」をワンショットで行う。`.env` の `DEV_J_QUANTS_CACHE`（既定: `S:/j-quants`）を J-Quants CSV のソースとして使用する。
+戦略ファイルを渡すだけで「scenario 読取 → catalog 自動構築 → リプレイ実行」をワンショットで行う。`.env` の `DEV_J_QUANTS_CACHE`（既定: `S:/j-quants`）を J-Quants CSV のソースとして使用する。
 
 ```powershell
 .\scripts\run_replay.ps1 -Strategy python\tests\data\test_strategy_daily.py
@@ -25,7 +25,7 @@
 
 ### 1. ParquetDataCatalog を構築
 
-J-Quants CSV キャッシュ (`S:/j-quants`) から、戦略 SCENARIO の `instrument` / `start` / `end` / `granularity` をカバーする catalog を作成する。
+J-Quants CSV キャッシュ (`S:/j-quants`) から、戦略 scenario の `instrument` / `start` / `end` / `granularity` をカバーする catalog を作成する。
 
 ```powershell
 cd python
@@ -50,7 +50,7 @@ stdout に `run_id` / `run_dir` / `equity_points` / `fills_count` などの summ
 
 | Flag | 用途 |
 |---|---|
-| `--strategy PATH` | 戦略 `.py`（`SCENARIO` と Strategy サブクラスを含む） |
+| `--strategy PATH` | 戦略 `.py`（Strategy サブクラスを含む。SCENARIO は `<strategy>.json` の `scenario` キーに書く） |
 | `--catalog DIR` | ParquetDataCatalog のディレクトリ |
 | `--bars-json FILE` | catalog の代わりに JSON 合成 Bar を使う（オフラインテスト用） |
 | `--start / --end` | SCENARIO の期間を上書き（sweep スクリプト用） |
@@ -63,6 +63,25 @@ stdout に `run_id` / `run_dir` / `equity_points` / `fills_count` などの summ
 - [`python/tests/data/test_strategy_daily.py`](../python/tests/data/test_strategy_daily.py) — 1301.TSE / Daily / Buy-and-hold
 - [`python/tests/data/test_strategy_minute.py`](../python/tests/data/test_strategy_minute.py) — Minute 版
 - [`python/tests/data/test_strategy_trade.py`](../python/tests/data/test_strategy_trade.py) — Trade 版
+
+> **SCENARIO の書き方**: 各戦略の SCENARIO は `.py` 内ではなく、同名の `<strategy>.json` の `scenario` キーに書く。例:
+>
+> ```json
+> {
+>   "scenario": {
+>     "schema_version": 1,
+>     "instrument": "1301.TSE",
+>     "start": "2025-01-06",
+>     "end": "2025-03-31",
+>     "granularity": "Daily",
+>     "initial_cash": 1000000
+>   }
+> }
+> ```
+>
+> `.py` 内に `SCENARIO` が残っている外部戦略（本リポ外）は **Python CLI からのみ** legacy fallback で動く（WARN ログが出る）。GUI（Bevy）からは実行不可。
+>
+> **GUI 制限**: v3 `instruments_ref`（`universe.json` 等への間接参照）は GUI 非対応。`instruments_ref` のみの sidecar では Run ボタンがグレーアウトする。CLI（`run_replay.ps1`）経由では動作する。
 
 ## Bevy GUI でのリプレイ実行
 

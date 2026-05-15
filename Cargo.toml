@@ -21,6 +21,7 @@ undo = "0.52"
 
 [dev-dependencies]
 serial_test = "3.1"
+tempfile = "3"
 
 [build-dependencies]
 tonic-build = "0.12"

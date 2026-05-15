@@ -91,6 +91,7 @@ pub fn spawn_menu_bar(mut commands: Commands) {
         });
 }
 
+#[allow(clippy::type_complexity)]
 pub fn menu_button_system(
     mut query: Query<
         (&Interaction, &mut BackgroundColor, &MenuButton),
@@ -235,6 +236,13 @@ pub fn open_strategy_buffer_system(
                                 cache_path,
                                 buffer.source.len()
                             );
+                            // F7 対応: GUI Run は cache_path を backend に渡すため、
+                            // backend の load_scenario(cache_path) が <hash>__foo.json を
+                            // 探せるよう元 sidecar JSON を cache にもコピーする。
+                            // stale cleanup → コピーの順序が重要（元 sidecar 削除後の再 Open でも安全）。
+                            let original_sidecar = event.path.with_extension("json");
+                            let cache_sidecar = cache_path.with_extension("json");
+                            copy_sidecar_to_cache(&original_sidecar, &cache_sidecar);
                             buffer.cache_path = Some(cache_path);
                         }
                     }
@@ -317,5 +325,128 @@ pub fn handle_strategy_run_system(
         } else {
             error!("RunStrategy: TransportCommandSender is None — backend not connected");
         }
+    }
+}
+
+/// cache `.py` 書き込み直後に呼ぶ sidecar コピーロジック。
+///
+/// # 契約
+/// - `cache_sidecar` を**無条件に削除**してから（stale cleanup）、
+///   `original_sidecar` が存在する場合だけコピーする。
+/// - この順序により「元 sidecar 削除 → 再 Open」時に stale cache が残らない。
+pub(crate) fn copy_sidecar_to_cache(
+    original_sidecar: &std::path::Path,
+    cache_sidecar: &std::path::Path,
+) {
+    // (1) stale cache 削除 — 元 sidecar が無くなったケースも cover
+    if cache_sidecar.exists() {
+        let _ = std::fs::remove_file(cache_sidecar).map_err(|err| {
+            warn!(
+                "failed to remove stale cache sidecar {:?}: {}",
+                cache_sidecar, err
+            );
+        });
+    }
+
+    // (2) 元 sidecar があればコピー
+    if original_sidecar.exists() {
+        match std::fs::copy(original_sidecar, cache_sidecar) {
+            Ok(_) => info!(
+                "strategy sidecar cached: {:?} -> {:?}",
+                original_sidecar, cache_sidecar
+            ),
+            Err(err) => warn!(
+                "failed to copy sidecar JSON {:?}: {}",
+                original_sidecar, err
+            ),
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// tmp に `foo.py` + `foo.json` を作り、copy_sidecar_to_cache を呼ぶと
+    /// cache に `<hash>__foo.json` が存在し内容が一致することを検証
+    #[test]
+    fn test_copy_sidecar_copies_json_when_present() {
+        let tmp = tempfile::tempdir().unwrap();
+        let original_sidecar = tmp.path().join("foo.json");
+        let cache_dir = tempfile::tempdir().unwrap();
+        let cache_sidecar = cache_dir.path().join("abc123__foo.json");
+
+        std::fs::write(&original_sidecar, r#"{"scenario": {"schema_version": 1}}"#).unwrap();
+
+        copy_sidecar_to_cache(&original_sidecar, &cache_sidecar);
+
+        assert!(cache_sidecar.exists(), "cache sidecar should exist after copy");
+        let content = std::fs::read_to_string(&cache_sidecar).unwrap();
+        let orig_content = std::fs::read_to_string(&original_sidecar).unwrap();
+        assert_eq!(content, orig_content, "cache sidecar content should match original");
+    }
+
+    /// sidecar が存在しない場合でも、エラーにならず cache sidecar も作られない
+    #[test]
+    fn test_copy_sidecar_no_copy_when_absent() {
+        let tmp = tempfile::tempdir().unwrap();
+        let original_sidecar = tmp.path().join("no_such.json");
+        let cache_dir = tempfile::tempdir().unwrap();
+        let cache_sidecar = cache_dir.path().join("abc123__no_such.json");
+
+        // sidecar 不在でも panic しない
+        copy_sidecar_to_cache(&original_sidecar, &cache_sidecar);
+
+        assert!(
+            !cache_sidecar.exists(),
+            "cache sidecar should NOT exist when original is absent"
+        );
+    }
+
+    /// 元 sidecar を編集して再度 copy_sidecar_to_cache を呼ぶと cache sidecar も更新される
+    #[test]
+    fn test_copy_sidecar_overwrites_stale_cache() {
+        let tmp = tempfile::tempdir().unwrap();
+        let original_sidecar = tmp.path().join("foo.json");
+        let cache_dir = tempfile::tempdir().unwrap();
+        let cache_sidecar = cache_dir.path().join("abc123__foo.json");
+
+        // 1 回目: 古い内容でコピー
+        std::fs::write(&original_sidecar, r#"{"scenario": {"schema_version": 1}}"#).unwrap();
+        copy_sidecar_to_cache(&original_sidecar, &cache_sidecar);
+
+        // 元 sidecar を更新
+        let updated = r#"{"scenario": {"schema_version": 1, "instrument": "7203.TSE"}}"#;
+        std::fs::write(&original_sidecar, updated).unwrap();
+
+        // 2 回目: 更新後の内容でコピー
+        copy_sidecar_to_cache(&original_sidecar, &cache_sidecar);
+
+        let content = std::fs::read_to_string(&cache_sidecar).unwrap();
+        assert_eq!(content, updated, "cache sidecar should reflect updated original");
+    }
+
+    /// 元 sidecar を削除して再度 copy_sidecar_to_cache を呼ぶと
+    /// stale な cache sidecar が削除される（stale 残留防止）
+    #[test]
+    fn test_copy_sidecar_removes_stale_when_original_deleted() {
+        let tmp = tempfile::tempdir().unwrap();
+        let original_sidecar = tmp.path().join("foo.json");
+        let cache_dir = tempfile::tempdir().unwrap();
+        let cache_sidecar = cache_dir.path().join("abc123__foo.json");
+
+        // 1 回目: sidecar ありでコピー
+        std::fs::write(&original_sidecar, r#"{"scenario": {}}"#).unwrap();
+        copy_sidecar_to_cache(&original_sidecar, &cache_sidecar);
+        assert!(cache_sidecar.exists(), "cache sidecar should exist after first copy");
+
+        // 元 sidecar を削除してから再 Open を模倣
+        std::fs::remove_file(&original_sidecar).unwrap();
+        copy_sidecar_to_cache(&original_sidecar, &cache_sidecar);
+
+        assert!(
+            !cache_sidecar.exists(),
+            "stale cache sidecar should be removed when original is deleted"
+        );
     }
 }

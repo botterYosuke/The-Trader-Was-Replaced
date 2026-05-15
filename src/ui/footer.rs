@@ -168,6 +168,7 @@ pub fn spawn_footer(mut commands: Commands) {
         });
 }
 
+#[allow(clippy::type_complexity)]
 pub fn update_footer_system(
     data: Res<TradingData>,
     status: Res<BackendStatus>,
@@ -256,6 +257,7 @@ pub fn update_footer_system(
     }
 }
 
+#[allow(clippy::type_complexity)]
 pub fn transport_button_system(
     mut query: Query<
         (&Interaction, &mut BackgroundColor, &TransportButton),
@@ -311,6 +313,7 @@ pub fn transport_button_system(
     }
 }
 
+#[allow(clippy::type_complexity)]
 pub fn speed_button_system(
     mut query: Query<
         (&Interaction, &mut BackgroundColor, &SpeedButton),

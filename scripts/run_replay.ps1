@@ -47,17 +47,16 @@ Write-Host "=== strategy replay ===" -ForegroundColor Cyan
 Write-Host "strategy : $StrategyAbs"
 Write-Host "catalog  : $Catalog"
 
-# ── 1. SCENARIO 抽出 ──────────────────────────────────────────────────────────
+# ── 1. scenario 読み込み ──────────────────────────────────────────────────────
 $scenarioJson = & {
     Push-Location $PyRoot
     try {
         uv run python -c @"
 import json, sys
 from pathlib import Path
-from engine.strategy_runtime.scenario import extract, resolve_refs
+from engine.strategy_runtime.scenario import load_scenario
 p = Path(r'$StrategyAbs')
-d = extract(p)
-d = resolve_refs(d, base_dir=p.parent)
+d = load_scenario(p)
 print(json.dumps(d))
 "@
     } finally { Pop-Location }

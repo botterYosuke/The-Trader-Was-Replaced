@@ -38,6 +38,7 @@ pub fn update_status_indicator(
     }
 }
 
+#[allow(clippy::type_complexity)]
 pub fn button_system(
     mut interaction_query: Query<
         (

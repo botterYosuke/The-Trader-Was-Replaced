@@ -32,6 +32,7 @@ impl Default for ChartViewState {
 /// `chart_origin` is the painter world-space origin (entity translation).
 /// Wick covers high–low; body covers open–close.
 /// Green when close >= open, red when close < open.
+#[allow(clippy::too_many_arguments)]
 fn draw_candle(
     painter: &mut ShapePainter,
     chart_origin: Vec3,

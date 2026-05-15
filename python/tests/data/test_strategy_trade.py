@@ -21,37 +21,23 @@ GUI 付きで attach する場合は別ターミナルで先に `cargo run -- --
     - 教育用の最小実装です。スリッページ・手数料・リスク管理は含みません
     - 歩み値は 1 営業日でも数千〜数万 tick になり Daily/Minute より重いため、
       初回確認はまず単日（start == end）で動かすことを推奨します
+
+シナリオ設定は同名の ``test_strategy_trade.json`` の ``scenario`` キーで指定する。
 """
 
 from __future__ import annotations
 
-from typing import TypedDict
-
 from nautilus_trader.config import StrategyConfig
-
-
-class Scenario(TypedDict):
-    schema_version: int
-    instrument: list[str]
-    start: str
-    end: str
-    granularity: str
-    initial_cash: int
-
-
-SCENARIO: Scenario = {
-    "schema_version": 2,
-    "instrument": ["1301.TSE"],
-    "start": "2025-01-06",
-    "end": "2025-01-06",
-    "granularity": "Trade",
-    "initial_cash": 1_000_000,
-}
+from nautilus_trader.model.data import TradeTick
+from nautilus_trader.model.enums import OrderSide, TimeInForce
+from nautilus_trader.model.identifiers import InstrumentId
+from nautilus_trader.model.objects import Quantity
+from nautilus_trader.trading.strategy import Strategy
 
 
 # issue #42 Phase 5: LIVE_SCENARIO は live モードのフォーム prefill 用。
 # 同じ戦略ファイルを replay → demo → prod の順で動かす建前のため、
-# `instrument` は SCENARIO['instrument'] と一致させる。
+# `instrument` は scenario['instruments'] と一致させる。
 LIVE_SCENARIO: dict = {
     "schema_version": 2,
     "instrument": ["1301.TSE"],
@@ -59,11 +45,6 @@ LIVE_SCENARIO: dict = {
     "max_notional_jpy": 500_000,
     "venue": "tachibana",
 }
-from nautilus_trader.model.data import TradeTick
-from nautilus_trader.model.enums import OrderSide, TimeInForce
-from nautilus_trader.model.identifiers import InstrumentId
-from nautilus_trader.model.objects import Quantity
-from nautilus_trader.trading.strategy import Strategy
 
 
 class BuyAndHoldTradeStrategy(Strategy):

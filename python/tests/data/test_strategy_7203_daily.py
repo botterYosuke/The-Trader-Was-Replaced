@@ -2,21 +2,15 @@
 
 Does nothing; exists only to satisfy the strategy_file contract in StartEngine
 and verify that the engine runs to completion and returns to IDLE.
+
+Scenario settings are specified via the ``test_strategy_7203_daily.json`` sidecar
+(the ``scenario`` key).
 """
 from __future__ import annotations
 
 from nautilus_trader.config import StrategyConfig
 from nautilus_trader.model.data import Bar, BarType
 from nautilus_trader.trading.strategy import Strategy
-
-SCENARIO: dict = {
-    "schema_version": 1,
-    "instrument": "7203.TSE",
-    "start": "2024-07-01",
-    "end": "2024-07-02",
-    "granularity": "Daily",
-    "initial_cash": 1_000_000,
-}
 
 
 class PassthroughDailyStrategy(Strategy):

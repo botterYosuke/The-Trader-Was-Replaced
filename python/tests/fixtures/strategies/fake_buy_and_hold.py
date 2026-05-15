@@ -1,6 +1,7 @@
 """Fake buy-and-hold strategy fixture for engine_runner Step 3A tests.
 
-SCENARIO は最小構成 (単一銘柄 / Daily / initial_cash)。
+シナリオ設定 (単一銘柄 / Daily / initial_cash) は同名の ``fake_buy_and_hold.json``
+の ``scenario`` キーで指定する。
 策略は bar を subscribe するだけで注文を出さない。
 """
 
@@ -9,15 +10,6 @@ from __future__ import annotations
 from nautilus_trader.config import StrategyConfig
 from nautilus_trader.model.data import Bar, BarType
 from nautilus_trader.trading.strategy import Strategy
-
-SCENARIO = {
-    "schema_version": 1,
-    "instrument": "1301.TSE",
-    "granularity": "Daily",
-    "start": "2024-01-01",
-    "end": "2024-12-31",
-    "initial_cash": 10_000_000,
-}
 
 
 class FakeBuyAndHoldConfig(StrategyConfig, frozen=True):

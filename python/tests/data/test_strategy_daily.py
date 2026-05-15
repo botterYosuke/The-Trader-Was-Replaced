@@ -29,33 +29,18 @@ strategy_init_kwargs で初期化パラメータを上書きする場合は Pyth
 
 from __future__ import annotations
 
-from typing import TypedDict
-
 from nautilus_trader.config import StrategyConfig
-
-
-class Scenario(TypedDict):
-    schema_version: int
-    instrument: str
-    start: str
-    end: str
-    granularity: str
-    initial_cash: int
-
-
-SCENARIO: Scenario = {
-    "schema_version": 1,
-    "instrument": "1301.TSE",
-    "start": "2025-01-06",
-    "end": "2025-03-31",
-    "granularity": "Daily",
-    "initial_cash": 1_000_000,
-}
+from nautilus_trader.model.data import Bar, BarType
+from nautilus_trader.model.enums import OrderSide, TimeInForce
+from nautilus_trader.model.identifiers import InstrumentId
+from nautilus_trader.model.objects import Quantity
+from nautilus_trader.trading.strategy import Strategy
 
 
 # issue #42 Phase 5: LIVE_SCENARIO は live モードのフォーム prefill 用。
 # 同じ戦略ファイルを replay → demo → prod の順で動かす建前のため、
 # `instrument` は SCENARIO['instrument'] と一致させる。
+# SCENARIO 本体は <strategy>.json の "scenario" キーで管理する（Phase 7.3）。
 LIVE_SCENARIO: dict = {
     "schema_version": 1,
     "instrument": ["1301.TSE"],
@@ -63,11 +48,6 @@ LIVE_SCENARIO: dict = {
     "max_notional_jpy": 500_000,
     "venue": "tachibana",
 }
-from nautilus_trader.model.data import Bar, BarType
-from nautilus_trader.model.enums import OrderSide, TimeInForce
-from nautilus_trader.model.identifiers import InstrumentId
-from nautilus_trader.model.objects import Quantity
-from nautilus_trader.trading.strategy import Strategy
 
 
 class BuyAndHoldStrategy(Strategy):

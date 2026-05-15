@@ -148,7 +148,7 @@ pub struct BackendChannel {
     pub rx: mpsc::UnboundedReceiver<BackendTradingState>,
 }
 
-/// Scenario fields extracted from SCENARIO dict in the strategy .py file.
+/// Scenario fields loaded from the strategy's `<strategy>.json` sidecar.
 /// Kept in trading.rs to avoid ui → trading circular dependency.
 #[derive(Debug, Clone, Default)]
 pub struct StrategyRunConfig {

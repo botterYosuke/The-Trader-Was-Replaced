@@ -178,6 +178,7 @@ pub fn update_sidebar_system(
 
 /// パネルボタンが押されたら `PanelSpawnRequested` イベントを発火する。
 /// 実際のスポーンは `panel_spawn_dispatcher_system` 側で処理。
+#[allow(clippy::type_complexity)]
 pub fn panel_button_system(
     mut query: Query<
         (&Interaction, &mut BackgroundColor, &PanelKind),

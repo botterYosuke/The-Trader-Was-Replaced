@@ -1,8 +1,9 @@
 use backcast::trading::engine::{
-    EngineState, ForceStopReplayRequest, GetStateRequest, GetStateResponse, LoadReplayDataRequest,
-    PauseReplayRequest, ReplayControlResponse, ResumeReplayRequest, SetReplaySpeedRequest,
-    StartEngineRequest, StartEngineResponse, StartResponse, StepReplayRequest, StopEngineRequest,
-    StopReplayRequest, StopRequest, StopResponse,
+    EngineState, ForceStopReplayRequest, GetPortfolioRequest, GetPortfolioResponse,
+    GetStateRequest, GetStateResponse, ListInstrumentsRequest, ListInstrumentsResponse,
+    LoadReplayDataRequest, PauseReplayRequest, ReplayControlResponse, ResumeReplayRequest,
+    SetReplaySpeedRequest, StartEngineRequest, StartEngineResponse, StartResponse,
+    StepReplayRequest, StopEngineRequest, StopReplayRequest, StopRequest, StopResponse,
     data_engine_server::{DataEngine, DataEngineServer},
 };
 use backcast::trading::{BackendTradingState, StartRequest};
@@ -218,6 +219,38 @@ impl DataEngine for MyDataEngine {
         self.running
             .store(false, std::sync::atomic::Ordering::SeqCst);
         Ok(Response::new(StopResponse { success: true }))
+    }
+
+    async fn list_instruments(
+        &self,
+        request: Request<ListInstrumentsRequest>,
+    ) -> Result<Response<ListInstrumentsResponse>, Status> {
+        if request.into_inner().token != self.token {
+            return Err(Status::unauthenticated("Invalid token"));
+        }
+        Ok(Response::new(ListInstrumentsResponse {
+            success: true,
+            instrument_ids: vec![],
+            error_message: "".to_string(),
+        }))
+    }
+
+    async fn get_portfolio(
+        &self,
+        request: Request<GetPortfolioRequest>,
+    ) -> Result<Response<GetPortfolioResponse>, Status> {
+        if request.into_inner().token != self.token {
+            return Err(Status::unauthenticated("Invalid token"));
+        }
+        Ok(Response::new(GetPortfolioResponse {
+            success: true,
+            buying_power: 0.0,
+            cash: 0.0,
+            equity: 0.0,
+            positions: vec![],
+            orders: vec![],
+            error_message: "".to_string(),
+        }))
     }
 }
 

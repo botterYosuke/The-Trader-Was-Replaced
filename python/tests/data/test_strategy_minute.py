@@ -20,37 +20,23 @@ GUI 付きで attach する場合は別ターミナルで先に `cargo run -- --
     - 教育用の最小実装です。スリッページ・手数料・リスク管理は含みません
     - 1 週間（5 営業日）でおよそ 1,500 本の分足が流れます。データ範囲を
       広げる場合は実行時間とメモリに注意してください
+
+シナリオ設定は同名の ``test_strategy_minute.json`` の ``scenario`` キーで指定する。
 """
 
 from __future__ import annotations
 
-from typing import TypedDict
-
 from nautilus_trader.config import StrategyConfig
-
-
-class Scenario(TypedDict):
-    schema_version: int
-    instrument: list[str]
-    start: str
-    end: str
-    granularity: str
-    initial_cash: int
-
-
-SCENARIO: Scenario = {
-    "schema_version": 2,
-    "instrument": ["1301.TSE"],
-    "start": "2025-01-06",
-    "end": "2025-05-21",
-    "granularity": "Minute",
-    "initial_cash": 1_000_000,
-}
+from nautilus_trader.model.data import Bar, BarType
+from nautilus_trader.model.enums import OrderSide, TimeInForce
+from nautilus_trader.model.identifiers import InstrumentId
+from nautilus_trader.model.objects import Quantity
+from nautilus_trader.trading.strategy import Strategy
 
 
 # issue #42 Phase 5: LIVE_SCENARIO は live モードのフォーム prefill 用。
 # 同じ戦略ファイルを replay → demo → prod の順で動かす建前のため、
-# `instrument` は SCENARIO['instrument'] と一致させる。
+# `instrument` は scenario['instruments'] と一致させる。
 # `extract_live()` は AST で抽出するためトップレベル assignment であること。
 # kabu_station venue で動かす場合の例:
 #     LIVE_SCENARIO = {
@@ -67,11 +53,6 @@ LIVE_SCENARIO: dict = {
     "max_notional_jpy": 500_000,
     "venue": "tachibana",
 }
-from nautilus_trader.model.data import Bar, BarType
-from nautilus_trader.model.enums import OrderSide, TimeInForce
-from nautilus_trader.model.identifiers import InstrumentId
-from nautilus_trader.model.objects import Quantity
-from nautilus_trader.trading.strategy import Strategy
 
 
 class BuyAndHoldMinuteStrategy(Strategy):

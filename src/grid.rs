@@ -43,6 +43,7 @@ fn setup_grid(
     ));
 }
 
+#[allow(clippy::type_complexity)]
 fn update_grid_position(
     camera_query: Query<
         (&Transform, &OrthographicProjection),
@@ -53,14 +54,14 @@ fn update_grid_position(
     >,
     mut grid_query: Query<&mut Transform, (With<MainGrid>, Without<Camera2d>)>,
 ) {
-    if let Ok((camera_transform, projection)) = camera_query.get_single() {
-        if let Ok(mut grid_transform) = grid_query.get_single_mut() {
-            grid_transform.translation.x = camera_transform.translation.x;
-            grid_transform.translation.y = camera_transform.translation.y;
+    if let (Ok((camera_transform, projection)), Ok(mut grid_transform)) =
+        (camera_query.get_single(), grid_query.get_single_mut())
+    {
+        grid_transform.translation.x = camera_transform.translation.x;
+        grid_transform.translation.y = camera_transform.translation.y;
 
-            // Ensure the grid quad is always large enough to cover the screen
-            // 100000.0 is the base size. We scale it by the camera's zoom scale.
-            grid_transform.scale = Vec3::splat(projection.scale.max(1.0));
-        }
+        // Ensure the grid quad is always large enough to cover the screen
+        // 100000.0 is the base size. We scale it by the camera's zoom scale.
+        grid_transform.scale = Vec3::splat(projection.scale.max(1.0));
     }
 }

@@ -80,6 +80,50 @@ def test_load_order_flow_06_strategy_cls_is_strategy_subclass():
 
 
 def _write_strategy(tmp_path: Path, extra: str = "") -> Path:
+    """戦略 .py をサイドカー形式（.py + .json）で作成する。
+
+    SCENARIO は同梱 `.json` の "scenario" キーに書く（Phase 7.3 移行後の形式）。
+    """
+    import json
+
+    src = textwrap.dedent(
+        """\
+        from nautilus_trader.config import StrategyConfig
+        from nautilus_trader.trading.strategy import Strategy
+
+        class FakeStrategy(Strategy):
+            def __init__(self, **kwargs):
+                super().__init__(config=StrategyConfig(strategy_id="fake-01"))
+        """
+    )
+    if extra:
+        src += "\n" + textwrap.dedent(extra)
+    p = tmp_path / "fake_strategy.py"
+    p.write_text(src, encoding="utf-8")
+
+    # サイドカー JSON: scenario キーのみ（layout-only でも両方入りでもない scenario-only 形式）
+    sidecar = tmp_path / "fake_strategy.json"
+    sidecar.write_text(
+        json.dumps({
+            "scenario": {
+                "schema_version": 1,
+                "instrument": "1301.TSE",
+                "start": "2025-01-06",
+                "end": "2025-01-10",
+                "granularity": "Minute",
+                "initial_cash": 1000000,
+            }
+        }),
+        encoding="utf-8",
+    )
+    return p
+
+
+def _write_strategy_legacy_py(tmp_path: Path, extra: str = "") -> Path:
+    """レガシー形式（.py 内に SCENARIO）で戦略を作成する。
+
+    load_scenario の legacy fallback パスをテストするために残す。
+    """
     src = textwrap.dedent(
         """\
         from nautilus_trader.config import StrategyConfig
@@ -101,7 +145,7 @@ def _write_strategy(tmp_path: Path, extra: str = "") -> Path:
     )
     if extra:
         src += "\n" + textwrap.dedent(extra)
-    p = tmp_path / "fake_strategy.py"
+    p = tmp_path / "fake_strategy_legacy.py"
     p.write_text(src, encoding="utf-8")
     return p
 
@@ -122,17 +166,26 @@ def test_load_raises_file_not_found():
 
 
 def test_load_raises_when_no_strategy_subclass(tmp_path: Path):
+    import json
+
     p = tmp_path / "no_strategy.py"
     p.write_text(
         textwrap.dedent("""\
-        SCENARIO = {
-            "schema_version": 1, "instrument": "X.TSE",
-            "start": "2025-01-06", "end": "2025-01-10",
-            "granularity": "Minute", "initial_cash": 1,
-        }
         class NotAStrategy:
             pass
         """),
+        encoding="utf-8",
+    )
+    # サイドカー JSON で scenario を供給する（.py 内 SCENARIO は使わない）
+    sidecar = tmp_path / "no_strategy.json"
+    sidecar.write_text(
+        json.dumps({
+            "scenario": {
+                "schema_version": 1, "instrument": "X.TSE",
+                "start": "2025-01-06", "end": "2025-01-10",
+                "granularity": "Minute", "initial_cash": 1,
+            }
+        }),
         encoding="utf-8",
     )
     with pytest.raises(StrategyLoadError, match="no Strategy subclass"):
@@ -153,6 +206,23 @@ def test_load_raises_when_no_scenario(tmp_path: Path):
     )
     with pytest.raises(ValueError, match="SCENARIO not found"):
         load(p)
+
+
+def test_load_legacy_scenario_in_py_still_works(tmp_path: Path, caplog):
+    """レガシー形式（.py 内 SCENARIO）でも load() が動くことを確認する。
+
+    外部戦略の legacy fallback パスをテスト。WARN ログが出るが戻り値は正常。
+    """
+    import logging
+
+    from nautilus_trader.trading.strategy import Strategy
+
+    p = _write_strategy_legacy_py(tmp_path)
+    with caplog.at_level(logging.WARNING):
+        module, scenario, strategy_cls = load(p)
+    assert "legacy" in caplog.text
+    assert scenario["schema_version"] == 1
+    assert issubclass(strategy_cls, Strategy)
 
 
 # ---------------------------------------------------------------------------

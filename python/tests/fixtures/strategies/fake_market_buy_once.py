@@ -1,6 +1,9 @@
 """Fake strategy that submits one market buy on the first bar.
 
 Step 3B-1: fill 発生 → events.fills topic → write_fill の経路を固定する。
+
+Scenario settings are specified via the ``fake_market_buy_once.json`` sidecar
+(the ``scenario`` key).
 """
 
 from __future__ import annotations
@@ -11,15 +14,6 @@ from nautilus_trader.model.enums import OrderSide, TimeInForce
 from nautilus_trader.model.identifiers import InstrumentId
 from nautilus_trader.model.objects import Quantity
 from nautilus_trader.trading.strategy import Strategy
-
-SCENARIO = {
-    "schema_version": 1,
-    "instrument": "1301.TSE",
-    "granularity": "Daily",
-    "start": "2024-01-01",
-    "end": "2024-12-31",
-    "initial_cash": 10_000_000,
-}
 
 
 class FakeMarketBuyOnceConfig(StrategyConfig, frozen=True):

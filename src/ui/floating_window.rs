@@ -100,13 +100,11 @@ pub fn spawn_floating_window(
              mut query: Query<&mut Transform, With<WindowRoot>>,
              parent_query: Query<&Parent>,
              camera_query: Query<&OrthographicProjection, With<Camera2d>>| {
-                if let Ok(parent) = parent_query.get(drag.entity()) {
-                    if let Ok(mut transform) = query.get_mut(parent.get()) {
-                        let scale = camera_query.get_single().map(|p| p.scale).unwrap_or(1.0);
-                        transform.translation.x += drag.event().delta.x * scale;
-                        transform.translation.y -= drag.event().delta.y * scale;
-                    }
-                }
+                let Ok(parent) = parent_query.get(drag.entity()) else { return };
+                let Ok(mut transform) = query.get_mut(parent.get()) else { return };
+                let scale = camera_query.get_single().map(|p| p.scale).unwrap_or(1.0);
+                transform.translation.x += drag.event().delta.x * scale;
+                transform.translation.y -= drag.event().delta.y * scale;
             },
         )
         .observe(
@@ -114,12 +112,10 @@ pub fn spawn_floating_window(
              parent_query: Query<&Parent>,
              root_q: Query<&Transform, With<WindowRoot>>,
              mut active_drag: ResMut<ActiveDrag>| {
-                if let Ok(parent) = parent_query.get(drag_start.entity()) {
-                    let root_entity = parent.get();
-                    if let Ok(tf) = root_q.get(root_entity) {
-                        active_drag.starts.insert(root_entity, tf.translation.truncate());
-                    }
-                }
+                let Ok(parent) = parent_query.get(drag_start.entity()) else { return };
+                let root_entity = parent.get();
+                let Ok(tf) = root_q.get(root_entity) else { return };
+                active_drag.starts.insert(root_entity, tf.translation.truncate());
             },
         )
         .observe(
@@ -128,15 +124,12 @@ pub fn spawn_floating_window(
              root_q: Query<(&Transform, &PanelKind), With<WindowRoot>>,
              mut active_drag: ResMut<ActiveDrag>,
              mut history: ResMut<AppHistory>| {
-                if let Ok(parent) = parent_query.get(drag_end.entity()) {
-                    let root_entity = parent.get();
-                    if let Some(before) = active_drag.starts.remove(&root_entity) {
-                        if let Ok((tf, kind)) = root_q.get(root_entity) {
-                            let after = tf.translation.truncate();
-                            history.push_window_move(*kind, before, after);
-                        }
-                    }
-                }
+                let Ok(parent) = parent_query.get(drag_end.entity()) else { return };
+                let root_entity = parent.get();
+                let Some(before) = active_drag.starts.remove(&root_entity) else { return };
+                let Ok((tf, kind)) = root_q.get(root_entity) else { return };
+                let after = tf.translation.truncate();
+                history.push_window_move(*kind, before, after);
             },
         )
         .id();
@@ -187,28 +180,27 @@ pub fn spawn_floating_window(
              mut history: ResMut<AppHistory>,
              mut commands: Commands| {
                 // CloseButton の親が root なので 1 hop で辿れる
-                if let Ok(parent) = parent_query.get(trigger.entity()) {
-                    let root_entity = parent.get();
-                    // undo 履歴に despawn を記録（閉じた瞬間の位置・サイズ・z をスナップショット）
-                    if !history.is_replaying() {
-                        if let Ok((kind, tf, sprite)) = root_q.get(root_entity) {
-                            let layout = WindowLayout {
-                                kind: *kind,
-                                visible: true,
-                                position: [tf.translation.x, tf.translation.y],
-                                size: sprite.custom_size.map(|s| s.to_array()).unwrap_or([0.0, 0.0]),
-                                z: tf.translation.z,
-                            };
-                            let snapshot = if *kind == PanelKind::StrategyEditor {
-                                Some(buffer.source.clone())
-                            } else {
-                                None
-                            };
-                            history.push_window_despawn(layout, snapshot);
-                        }
-                    }
-                    commands.entity(root_entity).despawn_recursive();
+                let Ok(parent) = parent_query.get(trigger.entity()) else { return };
+                let root_entity = parent.get();
+                // undo 履歴に despawn を記録（閉じた瞬間の位置・サイズ・z をスナップショット）
+                if !history.is_replaying()
+                    && let Ok((kind, tf, sprite)) = root_q.get(root_entity)
+                {
+                    let layout = WindowLayout {
+                        kind: *kind,
+                        visible: true,
+                        position: [tf.translation.x, tf.translation.y],
+                        size: sprite.custom_size.map(|s| s.to_array()).unwrap_or([0.0, 0.0]),
+                        z: tf.translation.z,
+                    };
+                    let snapshot = if *kind == PanelKind::StrategyEditor {
+                        Some(buffer.source.clone())
+                    } else {
+                        None
+                    };
+                    history.push_window_despawn(layout, snapshot);
                 }
+                commands.entity(root_entity).despawn_recursive();
             },
         )
         .id();
