@@ -1,3 +1,4 @@
+# region region_001
 """バイアンドホールド戦略サンプル（動作確認・決定論性テスト用）。
 
 最初のバーで成行買いし、その後は保有し続ける最小戦略。
@@ -93,3 +94,13 @@ class BuyAndHoldStrategy(Strategy):
         self.submit_order(order)
         self._bought = True
         self.log.info(f"BUY: {self.lot_size} shares @ {bar.close}")
+# endregion region_001
+# region region_002
+asadsadasd
+# endregion region_002
+# region region_003
+asdasdasda
+# endregion region_003
+# region region_004
+vcvvv
+# endregion region_004

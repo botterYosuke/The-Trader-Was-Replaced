@@ -1,12 +1,11 @@
 use crate::trading::{StrategyRunConfig, TransportCommand, TransportCommandSender};
-use crate::ui::app_state::{load_app_state, save_app_state, AppState};
+use crate::ui::app_state::{AppState, load_app_state, save_app_state};
 use crate::ui::components::ScenarioMetadata;
 use crate::ui::components::{
-    MenuBarRoot, MenuItem, MenuPopup, MenuTopLevel, OpenMenu, PanelKind,
-    PanelSpawnRequested, PanelSpawnSource, PendingStrategyFragments, RedoMenuRequested,
-    RegionKeyAllocator, StrategyBuffer, StrategyEditorSpawnSpec, StrategyFileLoadRequested,
-    StrategyFragment, StrategyLoadMode, StrategyRunRequested,
-    StrategyStatusLabel, UndoMenuRequested, WindowRoot,
+    MenuBarRoot, MenuItem, MenuPopup, MenuTopLevel, OpenMenu, PanelKind, PanelSpawnRequested,
+    PanelSpawnSource, PendingStrategyFragments, RedoMenuRequested, RegionKeyAllocator,
+    StrategyBuffer, StrategyEditorSpawnSpec, StrategyFileLoadRequested, StrategyFragment,
+    StrategyLoadMode, StrategyRunRequested, StrategyStatusLabel, UndoMenuRequested, WindowRoot,
 };
 use crate::ui::layout_persistence::{
     LayoutLoadDialogRequested, LayoutLoadRequested, LayoutSaveAsRequested, LayoutSaveRequested,
@@ -104,9 +103,9 @@ pub fn spawn_menu_bar(mut commands: Commands) {
                     MenuPopup(MenuTopLevel::File),
                 ))
                 .with_children(|p| {
-                    spawn_menu_item(p, "Save Layout (Ctrl+S)", MenuItem::SaveLayout);
-                    spawn_menu_item(p, "Save Layout As (Ctrl+Shift+S)", MenuItem::SaveLayoutAs);
-                    spawn_menu_item(p, "Load Layout (Ctrl+O)", MenuItem::LoadLayout);
+                    spawn_menu_item(p, "Open (Ctrl+O)", MenuItem::LoadLayout);
+                    spawn_menu_item(p, "Save (Ctrl+S)", MenuItem::SaveLayout);
+                    spawn_menu_item(p, "Save As (Ctrl+Shift+S)", MenuItem::SaveLayoutAs);
                 });
             });
 
@@ -221,10 +220,18 @@ pub fn menu_keyboard_system(
         return;
     }
     let handled = if keys.just_pressed(KeyCode::KeyF) {
-        open_menu.0 = if open_menu.0 == Some(MenuTopLevel::File) { None } else { Some(MenuTopLevel::File) };
+        open_menu.0 = if open_menu.0 == Some(MenuTopLevel::File) {
+            None
+        } else {
+            Some(MenuTopLevel::File)
+        };
         true
     } else if keys.just_pressed(KeyCode::KeyE) {
-        open_menu.0 = if open_menu.0 == Some(MenuTopLevel::Edit) { None } else { Some(MenuTopLevel::Edit) };
+        open_menu.0 = if open_menu.0 == Some(MenuTopLevel::Edit) {
+            None
+        } else {
+            Some(MenuTopLevel::Edit)
+        };
         true
     } else {
         false
@@ -301,9 +308,7 @@ pub fn restore_last_strategy_system(mut events: EventWriter<StrategyFileLoadRequ
     }
 }
 
-pub fn log_strategy_file_load_requested_system(
-    mut events: EventReader<StrategyFileLoadRequested>,
-) {
+pub fn log_strategy_file_load_requested_system(mut events: EventReader<StrategyFileLoadRequested>) {
     for event in events.read() {
         info!(
             "strategy file load requested: path={:?} mode={:?}",
@@ -619,10 +624,16 @@ mod tests {
 
         copy_sidecar_to_cache(&original_sidecar, &cache_sidecar);
 
-        assert!(cache_sidecar.exists(), "cache sidecar should exist after copy");
+        assert!(
+            cache_sidecar.exists(),
+            "cache sidecar should exist after copy"
+        );
         let content = std::fs::read_to_string(&cache_sidecar).unwrap();
         let orig_content = std::fs::read_to_string(&original_sidecar).unwrap();
-        assert_eq!(content, orig_content, "cache sidecar content should match original");
+        assert_eq!(
+            content, orig_content,
+            "cache sidecar content should match original"
+        );
     }
 
     /// sidecar が存在しない場合でも、エラーにならず cache sidecar も作られない
@@ -662,7 +673,10 @@ mod tests {
         copy_sidecar_to_cache(&original_sidecar, &cache_sidecar);
 
         let content = std::fs::read_to_string(&cache_sidecar).unwrap();
-        assert_eq!(content, updated, "cache sidecar should reflect updated original");
+        assert_eq!(
+            content, updated,
+            "cache sidecar should reflect updated original"
+        );
     }
 
     /// 元 sidecar を削除して再度 copy_sidecar_to_cache を呼ぶと
@@ -677,7 +691,10 @@ mod tests {
         // 1 回目: sidecar ありでコピー
         std::fs::write(&original_sidecar, r#"{"scenario": {}}"#).unwrap();
         copy_sidecar_to_cache(&original_sidecar, &cache_sidecar);
-        assert!(cache_sidecar.exists(), "cache sidecar should exist after first copy");
+        assert!(
+            cache_sidecar.exists(),
+            "cache sidecar should exist after first copy"
+        );
 
         // 元 sidecar を削除してから再 Open を模倣
         std::fs::remove_file(&original_sidecar).unwrap();

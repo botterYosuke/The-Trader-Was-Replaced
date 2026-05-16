@@ -7,82 +7,60 @@
   },
   "windows": [
     {
-      "kind": "Orders",
-      "visible": true,
-      "position": [
-        126.89209,
-        -244.03381
-      ],
-      "size": [
-        360.0,
-        220.0
-      ],
-      "z": 190.0
-    },
-    {
-      "kind": "Chart",
-      "visible": true,
-      "position": [
-        675.3257,
-        160.12483
-      ],
-      "size": [
-        400.0,
-        500.0
-      ],
-      "z": 178.0
-    },
-    {
-      "kind": "BuyingPower",
-      "visible": true,
-      "position": [
-        297.24918,
-        175.73471
-      ],
-      "size": [
-        270.0,
-        130.0
-      ],
-      "z": 192.0
-    },
-    {
-      "kind": "RunResult",
-      "visible": true,
-      "position": [
-        89.58447,
-        385.717
-      ],
-      "size": [
-        280.0,
-        160.0
-      ],
-      "z": 184.0
-    },
-    {
       "kind": "StrategyEditor",
       "visible": true,
       "position": [
-        -208.45947,
-        75.223236
+        -292.78717,
+        -119.50151
       ],
       "size": [
         500.0,
         400.0
       ],
-      "z": 202.0
+      "z": 274.0,
+      "region_key": "region_002"
     },
     {
-      "kind": "Positions",
+      "kind": "StrategyEditor",
       "visible": true,
       "position": [
-        267.55713,
-        -17.104317
+        -281.30905,
+        314.68918
       ],
       "size": [
-        280.0,
-        200.0
+        500.0,
+        400.0
       ],
-      "z": 196.0
+      "z": 272.0,
+      "region_key": "region_001"
+    },
+    {
+      "kind": "StrategyEditor",
+      "visible": true,
+      "position": [
+        318.86115,
+        -104.35457
+      ],
+      "size": [
+        500.0,
+        400.0
+      ],
+      "z": 270.0,
+      "region_key": "region_003"
+    },
+    {
+      "kind": "StrategyEditor",
+      "visible": true,
+      "position": [
+        310.9267,
+        316.1534
+      ],
+      "size": [
+        500.0,
+        400.0
+      ],
+      "z": 268.0,
+      "region_key": "region_004"
     }
   ],
   "strategy_path": "C:\\Users\\sasai\\Documents\\The-Trader-Was-Replaced\\python\\tests\\data\\test_strategy_daily.py",
