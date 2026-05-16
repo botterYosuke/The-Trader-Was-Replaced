@@ -518,6 +518,11 @@ fn apply_layout_system(
     mut load_ev: EventWriter<StrategyFileLoadRequested>,
     mut sidecar_state: ResMut<SidecarAutoLoadState>,
     pending_fragments: Res<PendingStrategyFragments>,
+    // ワンショット loopback 抑制: 直近で scenario-only Open → sibling .py 発火 →
+    // handler が同じ JSON を再発火、までの 1 サイクルだけスキップする。
+    // pending_fragments.loaded_for_path のような恒久的状態に基づくと、
+    // 「同じ JSON を後から再 Open」したケースまで抑制されてしまうため。
+    mut pending_loopback: Local<Option<PathBuf>>,
 ) {
     for event in events.read() {
         let layout = match load_layout_from(&event.path) {
@@ -527,6 +532,29 @@ fn apply_layout_system(
                 continue;
             }
         };
+
+        // scenario-only JSON（windows / strategy_path 不在）を直接 Open された場合、
+        // sibling `<stem>.py` が存在すればそちらを UserOpen として委譲する。
+        // handler が同 JSON を再発火するため、その 1 回分だけ loopback 抑制する。
+        if layout.strategy_path.is_none() && layout.windows.is_none() {
+            if pending_loopback.as_ref() == Some(&event.path) {
+                *pending_loopback = None;
+                continue;
+            }
+            let sibling_py = event.path.with_extension("py");
+            if sibling_py.exists() {
+                info!(
+                    "scenario-only JSON {:?} opened directly; loading sibling strategy {:?}",
+                    event.path, sibling_py
+                );
+                load_ev.send(StrategyFileLoadRequested {
+                    path: sibling_py,
+                    mode: StrategyLoadMode::UserOpen,
+                });
+                *pending_loopback = Some(event.path.clone());
+                continue;
+            }
+        }
 
         // schema_version: None（不在）は ERROR を出さず debug ログに留める（F10: scenario-only JSON 対応）
         match layout.schema_version {

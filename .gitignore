@@ -14,3 +14,6 @@ python.egg-info/
 .claude/settings.local.json
 .claude/skills/pair-relay/pair-relay-workspace/
 .claude/worktrees/
+target-codex-review/
+target-codex-review-parse/
+target-codex-review-single/

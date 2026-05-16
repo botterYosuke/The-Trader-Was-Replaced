@@ -2,6 +2,7 @@ use crate::ui::components::{ScenarioMetadata, StrategyBuffer};
 use bevy::prelude::*;
 use serde::Deserialize;
 use std::path::PathBuf;
+use std::time::SystemTime;
 
 /// サイドカー JSON のルート構造。`scenario` キー以外は無視する。
 #[derive(Deserialize)]
@@ -42,13 +43,21 @@ pub fn parse_scenario_system(
     buffer: Res<StrategyBuffer>,
     mut scenario: ResMut<ScenarioMetadata>,
     mut last_path: Local<Option<PathBuf>>,
+    mut last_mtime: Local<Option<SystemTime>>,
 ) {
-    // original_path が変化したときだけ再実行する（毎フレーム JSON 読みを防ぐ）
+    // original_path 変化 or sidecar JSON の mtime 変化のいずれかで再実行する。
+    // mtime も見ることで、外部編集後の再 Open（path 不変）にも追従する。
     let current_path = buffer.original_path.clone();
-    if *last_path == current_path {
+    let current_mtime = current_path
+        .as_ref()
+        .map(|p| p.with_extension("json"))
+        .and_then(|jp| std::fs::metadata(&jp).ok())
+        .and_then(|m| m.modified().ok());
+    if *last_path == current_path && *last_mtime == current_mtime {
         return;
     }
     *last_path = current_path.clone();
+    *last_mtime = current_mtime;
 
     // path がなければリセット
     let Some(py_path) = current_path else {

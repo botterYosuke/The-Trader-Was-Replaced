@@ -475,16 +475,44 @@ pub fn handle_strategy_file_load_system(
         let sidecar_path = event.path.with_extension("json");
         let sidecar_exists = sidecar_path.exists();
 
-        match (event.mode, sidecar_exists) {
-            (StrategyLoadMode::LayoutRestore, _) => {}
-            (_, true) => {
+        // sidecar が「scenario-only」(windows キー不在) の場合、layout だけに委ねると
+        // どのパネルも spawn されない。peek して windows が無ければ fragments を直接 spawn。
+        let sidecar_has_windows = sidecar_exists
+            && std::fs::read_to_string(&sidecar_path)
+                .ok()
+                .and_then(|s| serde_json::from_str::<serde_json::Value>(&s).ok())
+                .and_then(|v| v.get("windows").cloned())
+                .map(|w| !w.is_null())
+                .unwrap_or(false);
+
+        match (event.mode, sidecar_exists, sidecar_has_windows) {
+            (StrategyLoadMode::LayoutRestore, _, _) => {}
+            (_, true, true) => {
                 info!(
-                    "strategy load: sidecar present, delegating spawn to layout {:?}",
+                    "strategy load: sidecar present with windows, delegating spawn to layout {:?}",
                     sidecar_path
                 );
                 layout_ev.send(LayoutLoadRequested { path: sidecar_path });
             }
-            (_, false) => {
+            (_, true, false) => {
+                info!(
+                    "strategy load: sidecar present but scenario-only (no windows), spawning fragments directly and firing layout for scenario metadata {:?}",
+                    sidecar_path
+                );
+                for (key, body) in &outcome.fragments {
+                    spawn_ev.send(PanelSpawnRequested {
+                        kind: PanelKind::StrategyEditor,
+                        source: PanelSpawnSource::LayoutLoad,
+                        strategy_spec: Some(StrategyEditorSpawnSpec {
+                            region_key: Some(key.clone()),
+                            source: Some(body.clone()),
+                            layout_source: PanelSpawnSource::LayoutLoad,
+                        }),
+                    });
+                }
+                layout_ev.send(LayoutLoadRequested { path: sidecar_path });
+            }
+            (_, false, _) => {
                 for (key, body) in &outcome.fragments {
                     spawn_ev.send(PanelSpawnRequested {
                         kind: PanelKind::StrategyEditor,
