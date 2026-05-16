@@ -1,83 +1,244 @@
 ---
 name: pair-relay
-description: ペアプロを「司令塔が Navigator → Driver の 2 サブエージェントを spawn」して回すオーケストレーション手法。司令塔は spawn とメッセージ運搬だけの郵便配達役。思考＋レビュー＋動作検証は Navigator、編集は Driver。Edit/Write/NotebookEdit を司令塔が叩く前に必ずこのスキル該当を確認。トリガー: 「pair-relay」「ペアプロをエージェントで」「ドライバーをエージェントに」「ナビをサブエージェントに」「リレー方式で実装」「司令塔で回して」「navigator と driver を分けて」「長丁場の実装を交代しながら」「レビュー指摘に対応して」「Findings を修正して」「指摘 N 件を直して」「複数 Severe/High を一括修正」など、駆動側もエージェント化したい意図のとき、またはレビュー指摘が複数件あって系統的に修正したいとき。
+description: 司令塔Agentが Navigator と Driver を分けて長い実装を進めるための運用スキル。司令塔は実装・レビュー・検証を自分で抱えず、Driver の完了報告やバグ報告を Navigator に渡し、Navigator の「次の 1 手」を Driver に渡す。Driver は .claude/agents/pair-relay-driver.md、Navigator は .claude/agents/pair-relay-navigator.md に従う。
 ---
 
 # Pair Relay
 
-司令塔が **Navigator → Driver** を **初回 1 回だけ spawn** し、以降は SendMessage で同じ 2 体を回す。Navigator は **propose (次の 1 件を作る)** と **verify (Driver 適用後をレビュー＋動作検証)** の 2 モードを兼任する。
+このスキルは、司令塔Agentが **Navigator** と **Driver** を分けて作業を回すためのものです。
 
+今回の実戦でうまく機能した形は次の通りです。
+
+```text
+司令塔Agent
+  ├─ Driver に「次の 1 手」を渡す
+  ├─ Driver の「書きました」報告を受け取る
+  ├─ その報告を Navigator に渡す
+  └─ Navigator の検証結果と次の 1 手を Driver に返す
 ```
-User ⇄ 司令塔
-        ├─ spawn (初回のみ) → Navigator  (propose: diff を作る / verify: Read + cargo check / pytest)
-        └─ spawn (初回のみ) → Driver     (Edit/Write で diff を貼る)
-```
 
-## 司令塔の責務
-
-**初回 spawn とメッセージ運搬のみ**。
-
-- ✅ 2 体を最初に spawn、以降は SendMessage で運ぶ
-- ✅ Navigator への SendMessage には **モード (propose / verify) を明示** する
-- ✅ subagent から `[respawn-request: <role>]` が返ってきたときのみ再 spawn (引継ぎを原文で貼る)
-- ✅ 受け取った出力は次の subagent にそのまま貼って渡す (加工しない)
-- ✅ **subagent ↔ User 仲介**: subagent は User と直接話せないので、subagent の方針確認は司令塔が User に聞いて運ぶ
-- ✅ User に 1 行進捗報告
-- ❌ 上記以外は全て禁止 (それぞれ Driver / Navigator の責務)
+司令塔Agentは、頭脳でも手でもありません。  
+司令塔Agentの価値は、情報を欠落させずに運び、役割の境界を守り、長い作業を小さな往復に保つことです。
 
 ## 役割
 
-| 層 | 担当 |
+| 役割 | 担当 |
 |---|---|
-| **User** | ゴール提示・E2E 確認・最終承認 |
-| **司令塔** | spawn 2 体・メッセージ運搬・User 対話 |
-| **Navigator** | propose: 次の 1 件 (diff + なぜ) / verify: レビュー + 動作検証 → `.claude/agents/pair-relay-navigator.md` |
-| **Driver** | diff を Edit/Write で貼る → `.claude/agents/pair-relay-driver.md` |
+| 司令塔Agent | Navigator と Driver の間の運搬、進行管理、ユーザーへの要約 |
+| Navigator | 設計判断、次の 1 手、レビュー、検証、差分整理 |
+| Driver | Navigator の指示を実装し、短く完了報告する |
+| Human / Owner | 最終承認、必要な手動 E2E、外部判断 |
+
+参照:
+
+- Navigator: `.claude/agents/pair-relay-navigator.md`
+- Driver: `.claude/agents/pair-relay-driver.md`
+
+## 司令塔Agentの責務
+
+司令塔Agentがやること:
+
+- Navigator に現在の状況を渡す
+- Navigator から返った「次の 1 手」を Driver に渡す
+- Driver の完了報告を Navigator に渡す
+- Navigator の検証結果を Driver または Human に渡す
+- context 逼迫時の respawn-request を処理する
+- 長い作業の区切りで、状況を短く要約する
+
+司令塔Agentがやらないこと:
+
+- 自分で実装しない
+- 自分で設計判断しない
+- 自分でコードレビューしない
+- 自分で `cargo check` / `cargo test` / grep 調査をしない
+- Navigator の指示を勝手に要約・改変しない
+- Driver の報告を勝手に丸めない
+
+例外は、Human への最終報告や、明らかな重複ログの圧縮だけです。作業判断に関わる情報は削らないでください。
 
 ## 標準ループ
 
+### 1. 開始
+
+司令塔Agentは、Navigator に以下を渡します。
+
+- ゴール
+- 計画書や関連ファイル
+- 既知の制約
+- Driver が別にいること
+- Driver には 1 件ずつ指示する方針
+
+Driver には、Navigator から最初の 1 手が来るまで待機させます。
+
+### 2. Navigator → Driver
+
+Navigator から返った「次の 1 手」を、原則そのまま Driver に渡します。
+
+渡す内容に含めるもの:
+
+- 対象ファイル
+- 対象関数や位置
+- 変更内容
+- 残すべき処理、触らない処理
+- 中間状態の注意
+
+司令塔Agentは、ここで勝手に複数手順をまとめません。
+
+### 3. Driver → Navigator
+
+Driver が「書きました」と返したら、その報告を Navigator に渡します。
+
+Driver の報告に含まれる注意点は重要です。
+
+例:
+
+- 「この瞬間 cargo check すると未定義シンボルになります」
+- 「既存関数はまだ他所から呼ばれているので削除不可です」
+- 「呼び出し元はまだありません」
+- 「Save 側だけ変更済みで Save As は未変更です」
+
+司令塔Agentは、これらを削らずに Navigator に渡します。
+
+### 4. Navigator の検証
+
+Navigator は必要に応じて以下を行います。
+
+- `rg` / diff で適用確認
+- `cargo check`
+- 対象 `cargo test`
+- 旧経路の残骸 grep
+- E2E 手順の指示
+- 差分整理
+
+司令塔Agentは、Navigator の結果を Driver または Human に運びます。
+
+## 良い進行パターン
+
+今回うまくいったリズム:
+
+```text
+Driver: 書きました。A を追加しました。B はまだ未変更です。
+司令塔 → Navigator: 上記をそのまま渡す。
+Navigator: 確認。次は B のこの 1 箇所だけ変更してください。
+司令塔 → Driver: Navigator の指示を渡す。
+Driver: 書きました。注意: C はまだ古い参照です。
+司令塔 → Navigator: 上記をそのまま渡す。
+Navigator: OK。次は C を差し替えます。
 ```
-(1) ゴール受領 → 初回 spawn (Navigator / Driver 各 1 回)
-    ※ Navigator にゴール全体を渡す。Driver は待機指示でよい
 
-  繰り返し:
-  (2) → Navigator [propose]  「次の 1 件 ((1 ループ = pair-nav の「1 ターン 1 作業」単位)) を」  ← diff + なぜ
-  (3) → Driver               (Navigator 出力を貼る)                                              ← "編集完了 (path)"
-  (4) → Navigator [verify]   (触ったファイルを伝える)                                            ← "✅ pass" or 要約 + 修正 diff
-       fail なら (3) へ戻る (修正 diff を Driver に貼る)
-  (5) User に 1 行進捗 → 次ステップへ
+この形を崩さないことが重要です。
 
-(6) 全工程完了 → 2〜3 行で総括
+## バグ報告の扱い
+
+手動 E2E 中にバグが出たら、司令塔Agentは症状・仮説・再現情報を Navigator にそのまま渡します。
+
+良いバグ報告:
+
+```text
+4 panel 全部 spawn されたが、位置が cache JSON の値に適用されていません。
+drag autosave は機能しています。
+
+仮説:
+apply_pending_layout_system の早期 return に引っかかっています。
+
+トレース:
+1. apply_cache_restore_system が fragments を populate
+2. panel_spawn_dispatcher_system が drain
+3. apply_pending_layout_system が waiting_for_strategy=true && empty で return
 ```
 
-Navigator は propose と verify で **同じ個体** を使い回す。context が維持されるので、verify 時にゴール再送は不要。SendMessage の冒頭に `[propose]` / `[verify]` のタグを 1 行付けてモードを伝える。
+Navigator はコードで照合し、最小の修正指示を返します。  
+司令塔Agentは、仮説を勝手に採用して Driver に直接修正させません。
 
-## subagent から `[respawn-request: <role>]` が返ってきたとき
+## 中間状態の扱い
 
-context 逼迫した subagent は通常応答の代わりに `[respawn-request: navigator|driver]` + 引継ぎを返す。司令塔の対応:
+長い実装では、一時的にビルド不能になる順序を通ることがあります。
 
-1. 同じ subagent_type で **新しい個体を spawn** (旧個体は破棄)
-2. 受け取った引継ぎ文章を **初回 spawn prompt にそのまま貼る** (加工しない)
-3. 新個体に作業再開を依頼してループに戻る
+Driver がそれを報告したら、司令塔Agentは Navigator に確認します。
 
-再 spawn は context 圧迫が解消するための正規ルート。アンチパターンの「再 spawn」は *要求なしの* 再 spawn を指す。
+例:
 
-## User から追加レビュー・バグ報告を受けたとき
+```text
+Driver:
+注意: この瞬間 import した cache_state_paths / sync_to_cache は未使用、
+かつ strategy_cache_path 呼び出しは未定義シンボルになります。
+次の Save 経路差し替えで解消する想定で進めて大丈夫ですか？
+```
 
-症状をそのまま Navigator (propose モード) に貼って渡す。司令塔は Read/Grep で推測しない。
+司令塔Agentは、この注意を削らず Navigator に渡します。  
+Navigator が「想定通り」と判断したら、そのまま次の 1 手へ進めます。
 
-## Navigator ↔ User 仲介の例
+## フォーマットと差分整理
 
-司令塔は User の言葉を **そのまま** Navigator に流す。要約・整形・「続けて」等の追記もしない。
+司令塔Agentは、format や restore の判断も Navigator に任せます。
 
-## やってはいけないこと
+今回の教訓:
 
-| アンチパターン | なぜダメか |
-|---|---|
-| Navigator / Driver の要求なしに再 spawn | context が捨てられ再送コスト |
-| 司令塔が Edit/Write | Driver の責務 |
-| 司令塔が diff を作る/中身レビュー | Navigator の責務 |
-| 司令塔が cargo check/pytest を走らす | Navigator (verify) の責務 (ログが context に積もる) |
-| 司令塔が Read/Grep で調査 | Navigator の責務 |
-| 生ログを User に流す | ノイズ。司令塔が消化して 1 行報告 |
-| propose と verify で別個体を spawn | 1 体で兼任。context を共有させる設計 |
+- 全体 `cargo fmt` は無関係ファイルを巻き込むことがある
+- 対象ファイルだけ `rustfmt --edition 2024` が有効なことがある
+- `mod.rs` の check は子 module まで見て既存未整形で落ちることがある
+- E2E で fixture が更新されることがあるため、最後に `git status` を分けて見る
+
+司令塔Agentは、Navigator が示した restore 対象だけ Driver または Human に渡します。
+
+## 完了報告
+
+完了時、司令塔Agentは以下を短くまとめます。
+
+- 何を実装したか
+- 検証結果
+- 手動 E2E の結果
+- 残す差分
+- 戻すべき検証副作用
+- 据え置きの無関係差分
+
+例:
+
+```text
+完了です。
+
+- cargo check: OK
+- cargo test: OK
+- E2E Step 1-8: PASS
+- 旧保存経路 grep: 残骸なし
+- 本実装差分: Cargo.toml / Cargo.lock / src/ui/...
+- 検証副作用: python/tests/data/test_strategy_daily.* は戻す候補
+```
+
+## respawn-request の扱い
+
+Navigator または Driver から次の形式が返ったら、司令塔Agentは同じ役割の新しい個体を spawn します。
+
+```text
+[respawn-request: navigator]
+```
+
+または:
+
+```text
+[respawn-request: driver]
+```
+
+対応手順:
+
+1. 同じ role の agent を新しく spawn する
+2. 返ってきた引き継ぎを、加工せず新 agent に渡す
+3. 新 agent からの返答を受けて標準ループに戻る
+
+司令塔Agentは、respawn-request がない限り、勝手に再 spawn しません。
+
+## 司令塔Agentの禁止事項
+
+- Navigator の代わりにコードを読む
+- Driver の代わりに編集する
+- Navigator の指示を「ついでに」増やす
+- Driver の警告を省略する
+- 失敗ログを丸ごと Human に流す
+- E2E 結果を曖昧にする
+- 無関係差分をまとめて戻す
+- `git reset --hard` を提案する
+
+## 合言葉
+
+運ぶ。混ぜない。削らない。急がせない。  
+Navigator には判断を、Driver には 1 手を、Human には事実を渡す。
