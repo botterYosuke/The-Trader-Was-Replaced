@@ -1,4 +1,6 @@
 use bevy::prelude::*;
+use std::collections::HashMap;
+use std::path::PathBuf;
 
 #[derive(Resource, Default)]
 pub struct WindowManager {
@@ -73,6 +75,9 @@ pub enum MenuItem {
     LoadLayout,
     Undo,
     Redo,
+    OpenStrategy,
+    SaveStrategy,
+    SaveStrategyAs,
 }
 
 #[derive(Component, Clone, Copy, Debug, PartialEq, Eq)]
@@ -81,26 +86,14 @@ pub struct MenuPopup(pub MenuTopLevel);
 #[derive(Resource, Default)]
 pub struct OpenMenu(pub Option<MenuTopLevel>);
 
-#[derive(Event, Debug, Clone)]
-pub struct OpenStrategyRequested {
-    pub path: std::path::PathBuf,
-}
-
-/// Strategy Editor が未スポーンの状態でファイルが選択されたとき、
-/// PanelSpawnRequested と同時に OpenStrategyRequested を発火すると
-/// editor entity がまだ存在せず buffer→editor 同期が空振りする。
-/// 1 フレーム遅延させて editor entity の出現を待つためのキュー。
-#[derive(Resource, Default, Debug, Clone)]
-pub struct PendingStrategyLoad {
-    pub path: Option<std::path::PathBuf>,
-}
 
 #[derive(Resource, Default, Debug, Clone)]
 pub struct StrategyBuffer {
-    pub original_path: Option<std::path::PathBuf>,
-    pub cache_path: Option<std::path::PathBuf>,
-    pub source: String,
-    pub dirty: bool,
+    pub original_path: Option<PathBuf>,
+    pub cache_path: Option<PathBuf>,
+    /// `merge_and_flush_to_cache` が成功したときのみ書き込む読み取り専用ビュー。
+    /// ステータスラベル表示とテストに使う。マージ済みソースのキャッシュは持たない。
+    pub last_merged_source: Option<String>,
 }
 
 #[derive(Component)]
@@ -179,6 +172,8 @@ pub enum PanelSpawnSource {
 pub struct PanelSpawnRequested {
     pub kind: PanelKind,
     pub source: PanelSpawnSource,
+    /// StrategyEditor spawn 時のみ Some。blank spawn は `StrategyEditorSpawnSpec::default()` を使う。
+    pub strategy_spec: Option<StrategyEditorSpawnSpec>,
 }
 
 #[derive(Event, Debug, Clone)]
@@ -186,3 +181,91 @@ pub struct UndoMenuRequested;
 
 #[derive(Event, Debug, Clone)]
 pub struct RedoMenuRequested;
+
+// ─── Strategy Editor multi-spawn 用型群 ───────────────────────────────────
+
+/// 各 StrategyEditor window が持つ一意キー。root entity と editor child entity の
+/// 両方に貼ることで、どちらからでも region_key で対応 entity を逆引きできる。
+#[derive(Component, Debug, Clone)]
+pub struct StrategyEditorId {
+    pub region_key: String,
+}
+
+/// root window entity にのみ置くソース断片。editor child は持たない（単一オーナー）。
+#[derive(Component, Debug, Clone, Default)]
+pub struct StrategyFragment {
+    pub source: String,
+    pub dirty: bool,
+}
+
+/// region_key の連番を管理する Resource。
+/// allocate() は常に新しいキーを返す。
+/// bump_to_at_least() はレイアウト復元時に既存の最大番号に合わせる。
+#[derive(Resource, Default)]
+pub struct RegionKeyAllocator {
+    pub next: u32,
+}
+
+impl RegionKeyAllocator {
+    pub fn allocate(&mut self) -> String {
+        self.next += 1;
+        format!("region_{:03}", self.next)
+    }
+
+    /// レイアウト復元時に既存 region_key の番号を追い越さないよう上限を合わせる。
+    pub fn bump_to_at_least(&mut self, n: u32) {
+        self.next = self.next.max(n);
+    }
+}
+
+/// ファイルロード後に各 region_key → source を保持する一時 Resource。
+/// `handle_strategy_file_load_system` が詰め、`panel_spawn_dispatcher_system` が drain する。
+/// drain 後のエントリは残らないので古いロードのゴミが残るリスクがない。
+#[derive(Resource, Default, Debug)]
+pub struct PendingStrategyFragments {
+    /// region_key → source body（マーカー行・末尾 \n を除く）
+    pub by_region_key: HashMap<String, String>,
+    /// このバッチを解析した .py パス。drain 時に不一致なら warn して skip する。
+    pub loaded_for_path: Option<PathBuf>,
+}
+
+/// ユーザー操作またはレイアウト復元でストラテジーファイルをロードするイベント。
+/// 旧 `OpenStrategyRequested` を置き換え、mode によって read→split→spawn の
+/// 判断木を `handle_strategy_file_load_system` 一か所に集約する。
+#[derive(Event, Debug, Clone)]
+pub struct StrategyFileLoadRequested {
+    pub path: PathBuf,
+    pub mode: StrategyLoadMode,
+}
+
+/// ファイルロードの発生元を区別する。
+/// handler 内部の分岐条件として使い、サイドカー適用・サプレスなどを切り替える。
+#[derive(Debug, Clone, Copy)]
+pub enum StrategyLoadMode {
+    /// File → Open Strategy: サイドカーが存在すれば適用、なければ全置換。
+    UserOpen,
+    /// レイアウト JSON の strategy_path フィールド由来。スポーン配置はレイアウトが決定済み。
+    LayoutRestore,
+    /// 起動時の last_strategy_path 復元。UserOpen と同じだがサイドカー echo は抑制。
+    StartupRestore,
+}
+
+/// File → Save Strategy (.py) / Save Strategy As... のどちらかを発火するイベント。
+/// `force_dialog: true` なら常にファイル選択ダイアログを開く（Save As）。
+#[derive(Event, Debug, Clone)]
+pub struct StrategySaveRequested {
+    pub force_dialog: bool,
+}
+
+/// `PanelSpawnRequested` に同梱して `panel_spawn_dispatcher_system` に渡す引数。
+/// StrategyEditor 以外の PanelKind には使わない（`strategy_spec: None` のまま）。
+#[derive(Debug, Clone)]
+pub struct StrategyEditorSpawnSpec {
+    /// None → `RegionKeyAllocator::allocate()` で払い出す。
+    pub region_key: Option<String>,
+    /// None → `PendingStrategyFragments` から drain。
+    /// Some("") → 明示的な空白 spawn。
+    /// Some(s) → そのまま使う。
+    pub source: Option<String>,
+    pub layout_source: PanelSpawnSource,
+}

@@ -6,8 +6,9 @@ use std::path::PathBuf;
 use std::time::Instant;
 
 use crate::ui::components::{
-    OpenStrategyRequested, PanelKind, PanelSpawnRequested, PanelSpawnSource, PendingStrategyLoad,
-    StrategyBuffer, WindowManager, WindowRoot,
+    PanelKind, PanelSpawnRequested, PanelSpawnSource, PendingStrategyFragments, StrategyBuffer,
+    StrategyEditorId, StrategyEditorSpawnSpec, StrategyFileLoadRequested, StrategyLoadMode,
+    WindowManager, WindowRoot,
 };
 
 pub const SCHEMA_VERSION: u32 = 1;
@@ -60,6 +61,10 @@ pub struct WindowLayout {
     pub position: [f32; 2],
     pub size: [f32; 2],
     pub z: f32,
+    /// StrategyEditor ウィンドウが持つ region キー。
+    /// None = 旧サイドカー JSON との後方互換（欠如フィールド）。
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub region_key: Option<String>,
 }
 
 /// JSON に記録されているが ECS にまだ存在しないパネルのレイアウト情報を
@@ -67,17 +72,12 @@ pub struct WindowLayout {
 #[derive(Resource, Default, Debug, Clone)]
 pub struct PendingLayoutApply {
     pub windows: Vec<WindowLayout>,
+    pub waiting_for_strategy: bool,
 }
 
-/// `OpenStrategyRequested` を受け取った同フレームは panel spawn が終わっていない可能性がある。
-/// sidecar JSON ロードを 1 フレーム遅延させるためのキュー。
-///
-/// `path` に Some が入っていると `auto_load_sidecar_system` が翌フレームで
-/// `LayoutLoadRequested` を発火し、自身を None にリセットする。
-#[derive(Resource, Default, Debug, Clone)]
-pub struct PendingLayoutLoad {
-    pub path: Option<std::path::PathBuf>,
-}
+// `PendingLayoutLoad` と sidecar 監視経路は Phase D で削除した。
+// 新設計: `handle_strategy_file_load_system`（menu_bar.rs）が `UserOpen`/`StartupRestore` で
+// サイドカー存在を判定して直接 `LayoutLoadRequested` を発火する。
 
 /// デバウンス自動保存の状態管理。
 ///
@@ -93,10 +93,9 @@ pub struct AutoSaveState {
 
 /// 起動時の sidecar 自動ロードをワンショットに制限するフラグ。
 ///
-/// `watch_open_strategy_for_sidecar_system` がこのフラグを確認し、
-/// `done == true` なら以降の `OpenStrategyRequested` イベントを読み捨てる。
-/// これにより `apply_layout_system` が strategy_path を復元した後に
-/// 再び `OpenStrategyRequested` が発火しても sidecar ロードが無限ループしない。
+/// `apply_layout_system` が `strategy_path` を読んで `StrategyFileLoadRequested { mode: LayoutRestore }`
+/// を発火した後、`handle_strategy_file_load_system` がさらに sidecar を発火し直すループを防ぐ。
+/// `done == true` のとき `apply_layout_system` は `strategy_path` 由来の追加発火を抑制する。
 #[derive(Resource, Default)]
 pub struct SidecarAutoLoadState {
     pub done: bool,
@@ -123,7 +122,10 @@ pub struct LayoutLoadRequested {
 /// `None` を渡すと `scenario` は `None`（Save As などで scenario を運ばない場合）。
 #[allow(clippy::type_complexity)]
 fn build_layout(
-    panels: &Query<(&PanelKind, &Transform, &Sprite, &Visibility), With<WindowRoot>>,
+    panels: &Query<
+        (&PanelKind, Option<&StrategyEditorId>, &Transform, &Sprite, &Visibility),
+        With<WindowRoot>,
+    >,
     camera: &Query<(&Transform, &OrthographicProjection), (With<Camera2d>, Without<WindowRoot>)>,
     buffer: &Res<StrategyBuffer>,
     preserve_scenario_from: Option<&std::path::Path>,
@@ -139,7 +141,7 @@ fn build_layout(
 
     let windows: Vec<WindowLayout> = panels
         .iter()
-        .map(|(kind, tf, sprite, vis)| {
+        .map(|(kind, id, tf, sprite, vis)| {
             let visible = !matches!(vis, Visibility::Hidden);
             WindowLayout {
                 kind: *kind,
@@ -147,6 +149,7 @@ fn build_layout(
                 position: [tf.translation.x, tf.translation.y],
                 size: sprite.custom_size.unwrap_or(Vec2::ZERO).to_array(),
                 z: tf.translation.z,
+                region_key: id.map(|i| i.region_key.clone()),
             }
         })
         .collect();
@@ -190,7 +193,10 @@ fn load_layout_from(path: &PathBuf) -> std::io::Result<SidecarLayout> {
 #[allow(clippy::type_complexity)]
 fn handle_save_layout_system(
     mut events: EventReader<LayoutSaveRequested>,
-    panels: Query<(&PanelKind, &Transform, &Sprite, &Visibility), With<WindowRoot>>,
+    panels: Query<
+        (&PanelKind, Option<&StrategyEditorId>, &Transform, &Sprite, &Visibility),
+        With<WindowRoot>,
+    >,
     camera: Query<(&Transform, &OrthographicProjection), (With<Camera2d>, Without<WindowRoot>)>,
     buffer: Res<StrategyBuffer>,
 ) {
@@ -221,7 +227,10 @@ fn handle_save_layout_system(
 #[allow(clippy::type_complexity)]
 fn handle_save_as_layout_system(
     mut events: EventReader<LayoutSaveAsRequested>,
-    panels: Query<(&PanelKind, &Transform, &Sprite, &Visibility), With<WindowRoot>>,
+    panels: Query<
+        (&PanelKind, Option<&StrategyEditorId>, &Transform, &Sprite, &Visibility),
+        With<WindowRoot>,
+    >,
     camera: Query<(&Transform, &OrthographicProjection), (With<Camera2d>, Without<WindowRoot>)>,
     buffer: Res<StrategyBuffer>,
 ) {
@@ -266,7 +275,10 @@ fn handle_load_dialog_system(
 fn apply_layout_system(
     mut commands: Commands,
     mut events: EventReader<LayoutLoadRequested>,
-    mut panels: Query<(Entity, &PanelKind, &mut Transform, &mut Sprite, &mut Visibility), With<WindowRoot>>,
+    mut panels: Query<
+        (Entity, &PanelKind, Option<&StrategyEditorId>, &mut Transform, &mut Sprite, &mut Visibility),
+        With<WindowRoot>,
+    >,
     mut camera: Query<
         (&mut Transform, &mut OrthographicProjection),
         (With<Camera2d>, Without<WindowRoot>),
@@ -274,7 +286,9 @@ fn apply_layout_system(
     mut wm: ResMut<WindowManager>,
     mut spawn_ev: EventWriter<PanelSpawnRequested>,
     mut pending: ResMut<PendingLayoutApply>,
-    mut pending_strategy: ResMut<PendingStrategyLoad>,
+    mut load_ev: EventWriter<StrategyFileLoadRequested>,
+    mut sidecar_state: ResMut<SidecarAutoLoadState>,
+    pending_fragments: Res<PendingStrategyFragments>,
 ) {
     for event in events.read() {
         let layout = match load_layout_from(&event.path) {
@@ -302,6 +316,57 @@ fn apply_layout_system(
             _ => {}
         }
 
+        if let Some(path_str) = &layout.strategy_path {
+            let path = std::path::PathBuf::from(path_str);
+            if path.exists() {
+                if let Some(user_path) = &pending_fragments.loaded_for_path {
+                    if user_path != &path {
+                        warn!(
+                            "apply_layout_system: sidecar strategy_path {:?} \
+                             differs from user-selected {:?}; ignoring sidecar path",
+                            path, user_path
+                        );
+                    } else {
+                        debug!(
+                            "apply_layout_system: skipping strategy_path reload \
+                             (already loaded via UserOpen: {:?})",
+                            path
+                        );
+                    }
+                } else if !sidecar_state.done {
+                    load_ev.send(StrategyFileLoadRequested {
+                        path,
+                        mode: StrategyLoadMode::LayoutRestore,
+                    });
+                    sidecar_state.done = true;
+                    // ウィンドウ spawn をキューして翌フレームまで defer する
+                    if let Some(win_layouts) = &layout.windows {
+                        pending.windows.extend(win_layouts.iter().cloned());
+                        pending.waiting_for_strategy = true;
+                    }
+                    // カメラは同フレーム内で適用可能
+                    if let (Some(vp), Ok((mut cam_tf, mut proj))) =
+                        (&layout.viewport, camera.get_single_mut())
+                    {
+                        cam_tf.translation.x = vp.pan_x;
+                        cam_tf.translation.y = vp.pan_y;
+                        proj.scale = vp.zoom;
+                    }
+                    info!(
+                        "layout apply deferred (waiting for strategy fragments): {:?}",
+                        event.path
+                    );
+                    continue;
+                } else {
+                    debug!(
+                        "apply_layout_system: skipping strategy_path reload (sidecar one-shot done)"
+                    );
+                }
+            } else {
+                warn!("layout load: strategy_path {:?} not found, skipping", path);
+            }
+        }
+
         // viewport: None → カメラを触らない（F10: scenario-only JSON で camera reset を防ぐ）
         if let (Some(vp), Ok((mut cam_tf, mut proj))) =
             (&layout.viewport, camera.get_single_mut())
@@ -316,20 +381,43 @@ fn apply_layout_system(
         if let Some(win_layouts) = &layout.windows {
             let mut new_max_z = wm.max_z;
             for win_layout in win_layouts {
+                let want_key: Option<String> = if win_layout.kind == PanelKind::StrategyEditor {
+                    Some(win_layout.region_key.clone().unwrap_or_else(|| "region_001".to_string()))
+                } else {
+                    None
+                };
                 let found = panels
                     .iter_mut()
-                    .find(|(_, kind, _, _, _)| **kind == win_layout.kind);
+                    .find(|(_, kind, id, _, _, _)| {
+                        if **kind != win_layout.kind {
+                            return false;
+                        }
+                        match (win_layout.kind, want_key.as_deref(), id.as_ref()) {
+                            (PanelKind::StrategyEditor, Some(k), Some(eid)) => eid.region_key == k,
+                            (PanelKind::StrategyEditor, _, _) => false,
+                            _ => true,
+                        }
+                    });
 
                 match found {
                     None => {
-                        // ECS にまだ存在しない → spawn を要求し、翌フレームで位置適用
+                        let strategy_spec = if win_layout.kind == PanelKind::StrategyEditor {
+                            Some(StrategyEditorSpawnSpec {
+                                region_key: want_key.clone(),
+                                source: None,
+                                layout_source: PanelSpawnSource::LayoutLoad,
+                            })
+                        } else {
+                            None
+                        };
                         spawn_ev.send(PanelSpawnRequested {
                             kind: win_layout.kind,
                             source: PanelSpawnSource::LayoutLoad,
+                            strategy_spec,
                         });
                         pending.windows.push(win_layout.clone());
                     }
-                    Some((_, _, mut tf, mut sprite, mut vis)) => {
+                    Some((_, _, _, mut tf, mut sprite, mut vis)) => {
                         tf.translation.x = win_layout.position[0];
                         tf.translation.y = win_layout.position[1];
                         tf.translation.z = win_layout.z;
@@ -350,21 +438,23 @@ fn apply_layout_system(
             // windows リストに含まれないパネルを despawn（Some([]) で全 despawn も含む）
             let to_despawn: Vec<Entity> = panels
                 .iter()
-                .filter(|(_, kind, _, _, _)| !win_layouts.iter().any(|w| w.kind == **kind))
-                .map(|(entity, _, _, _, _)| entity)
+                .filter(|(_, kind, id, _, _, _)| {
+                    !win_layouts.iter().any(|w| {
+                        if w.kind != **kind {
+                            return false;
+                        }
+                        if w.kind == PanelKind::StrategyEditor {
+                            let want = w.region_key.as_deref().unwrap_or("region_001");
+                            id.map(|i| i.region_key == want).unwrap_or(false)
+                        } else {
+                            true
+                        }
+                    })
+                })
+                .map(|(entity, _, _, _, _, _)| entity)
                 .collect();
             for entity in to_despawn {
                 commands.entity(entity).despawn_recursive();
-            }
-        }
-
-        // ストラテジーファイルの復元
-        if let Some(path_str) = &layout.strategy_path {
-            let path = std::path::PathBuf::from(path_str);
-            if path.exists() {
-                pending_strategy.path = Some(path);
-            } else {
-                warn!("layout load: strategy_path {:?} not found, skipping", path);
             }
         }
 
@@ -374,20 +464,40 @@ fn apply_layout_system(
 
 fn apply_pending_layout_system(
     mut pending: ResMut<PendingLayoutApply>,
-    mut panels: Query<(&PanelKind, &mut Transform, &mut Sprite, &mut Visibility), With<WindowRoot>>,
+    mut panels: Query<
+        (&PanelKind, Option<&StrategyEditorId>, &mut Transform, &mut Sprite, &mut Visibility),
+        With<WindowRoot>,
+    >,
     mut wm: ResMut<WindowManager>,
+    pending_fragments: Res<PendingStrategyFragments>,
 ) {
     if pending.windows.is_empty() {
         return;
+    }
+    if pending.waiting_for_strategy && pending_fragments.by_region_key.is_empty() {
+        return;
+    }
+    if pending.waiting_for_strategy && !pending_fragments.by_region_key.is_empty() {
+        pending.waiting_for_strategy = false;
     }
     let mut still_pending = vec![];
     for win_layout in pending.windows.drain(..) {
         let found = panels
             .iter_mut()
-            .find(|(kind, ..)| **kind == win_layout.kind);
+            .find(|(kind, id, ..)| {
+                if **kind != win_layout.kind {
+                    return false;
+                }
+                if win_layout.kind == PanelKind::StrategyEditor {
+                    let want = win_layout.region_key.as_deref().unwrap_or("region_001");
+                    id.map(|i| i.region_key == want).unwrap_or(false)
+                } else {
+                    true
+                }
+            });
         match found {
             None => still_pending.push(win_layout),
-            Some((_, mut tf, mut sprite, mut vis)) => {
+            Some((_, _, mut tf, mut sprite, mut vis)) => {
                 tf.translation.x = win_layout.position[0];
                 tf.translation.y = win_layout.position[1];
                 tf.translation.z = win_layout.z;
@@ -409,7 +519,10 @@ fn apply_pending_layout_system(
 #[allow(clippy::type_complexity)]
 fn save_layout_on_window_close(
     mut close_events: EventReader<WindowCloseRequested>,
-    panels: Query<(&PanelKind, &Transform, &Sprite, &Visibility), With<WindowRoot>>,
+    panels: Query<
+        (&PanelKind, Option<&StrategyEditorId>, &Transform, &Sprite, &Visibility),
+        With<WindowRoot>,
+    >,
     camera: Query<(&Transform, &OrthographicProjection), (With<Camera2d>, Without<WindowRoot>)>,
     buffer: Res<StrategyBuffer>,
 ) {
@@ -452,7 +565,10 @@ fn mark_dirty_on_drag_system(
 #[allow(clippy::type_complexity)]
 fn debounced_autosave_system(
     mut auto_save: ResMut<AutoSaveState>,
-    panels: Query<(&PanelKind, &Transform, &Sprite, &Visibility), With<WindowRoot>>,
+    panels: Query<
+        (&PanelKind, Option<&StrategyEditorId>, &Transform, &Sprite, &Visibility),
+        With<WindowRoot>,
+    >,
     camera: Query<(&Transform, &OrthographicProjection), (With<Camera2d>, Without<WindowRoot>)>,
     buffer: Res<StrategyBuffer>,
 ) {
@@ -482,48 +598,6 @@ fn debounced_autosave_system(
     }
     auto_save.dirty = false;
     auto_save.last_change = None;
-}
-
-/// `OpenStrategyRequested` を監視し、同名の `.json` が存在すれば
-/// `PendingLayoutLoad` にパスをセットする（1 フレーム遅延ロードのため）。
-///
-/// `SidecarAutoLoadState::done` が true の場合はイベントを読み捨てて即リターンする。
-/// これにより `apply_layout_system` が strategy_path 復元のために
-/// `OpenStrategyRequested` を再発火しても sidecar ロードが無限ループしない。
-fn watch_open_strategy_for_sidecar_system(
-    mut events: EventReader<OpenStrategyRequested>,
-    mut state: ResMut<SidecarAutoLoadState>,
-    mut pending: ResMut<PendingLayoutLoad>,
-) {
-    if state.done {
-        // ワンショット済み: イベントを消費して次フレームに残さない
-        for _ in events.read() {}
-        return;
-    }
-    for event in events.read() {
-        let sidecar = event.path.with_extension("json");
-        if sidecar.exists() {
-            info!(
-                "sidecar JSON found: {:?} — queueing PendingLayoutLoad",
-                sidecar
-            );
-            pending.path = Some(sidecar);
-            // ワンショット: 以降の OpenStrategyRequested は sidecar ロードをスキップ
-            state.done = true;
-        }
-    }
-}
-
-/// `PendingLayoutLoad` に path が入っていれば `LayoutLoadRequested` を発火し、
-/// resource をリセットする（1 フレーム後に実行されることで panel spawn 待ちを回避）。
-fn auto_load_sidecar_system(
-    mut pending: ResMut<PendingLayoutLoad>,
-    mut writer: EventWriter<LayoutLoadRequested>,
-) {
-    if let Some(path) = pending.path.take() {
-        info!("auto_load_sidecar: firing LayoutLoadRequested for {:?}", path);
-        writer.send(LayoutLoadRequested { path });
-    }
 }
 
 fn layout_shortcut_system(
@@ -568,7 +642,6 @@ pub struct LayoutPersistencePlugin;
 impl Plugin for LayoutPersistencePlugin {
     fn build(&self, app: &mut App) {
         app.init_resource::<PendingLayoutApply>()
-            .init_resource::<PendingLayoutLoad>()
             .init_resource::<AutoSaveState>()
             .init_resource::<SidecarAutoLoadState>()
             .add_event::<LayoutSaveRequested>()
@@ -585,11 +658,8 @@ impl Plugin for LayoutPersistencePlugin {
                     handle_load_dialog_system,
                     // デバウンス自動保存
                     debounced_autosave_system,
-                    // sidecar 監視 → pending セット → 翌フレームでロード
-                    watch_open_strategy_for_sidecar_system,
-                    auto_load_sidecar_system.after(watch_open_strategy_for_sidecar_system),
-                    apply_layout_system.after(auto_load_sidecar_system),
-                    apply_pending_layout_system,
+                    apply_layout_system,
+                    apply_pending_layout_system.after(apply_layout_system),
                     layout_shortcut_system,
                 ),
             )
@@ -618,6 +688,7 @@ mod tests {
                     position: [100.0, 200.0],
                     size: [400.0, 300.0],
                     z: 1.0,
+                    region_key: None,
                 },
                 WindowLayout {
                     kind: PanelKind::Orders,
@@ -625,6 +696,7 @@ mod tests {
                     position: [-50.0, 75.0],
                     size: [200.0, 150.0],
                     z: 2.0,
+                    region_key: None,
                 },
             ]),
             strategy_path: None,

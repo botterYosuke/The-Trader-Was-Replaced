@@ -1,6 +1,6 @@
 ---
 name: pair-relay
-description: ペアプロを「司令塔が Navigator → Driver → Verifier の 3 サブエージェントを spawn」して回すオーケストレーション手法。司令塔は spawn とメッセージ運搬だけの郵便配達役。思考は Navigator、編集は Driver、レビュー＋検証は Verifier。Edit/Write/NotebookEdit を司令塔が叩く前に必ずこのスキル該当を確認。トリガー: 「pair-relay」「ペアプロをエージェントで」「ドライバーをエージェントに」「ナビをサブエージェントに」「リレー方式で実装」「司令塔で回して」「navigator と driver を分けて」「長丁場の実装を交代しながら」など、駆動側もエージェント化したい意図のとき。
+description: ペアプロを「司令塔が Navigator → Driver → Verifier の 3 サブエージェントを spawn」して回すオーケストレーション手法。司令塔は spawn とメッセージ運搬だけの郵便配達役。思考は Navigator、編集は Driver、レビュー＋検証は Verifier。Edit/Write/NotebookEdit を司令塔が叩く前に必ずこのスキル該当を確認。トリガー: 「pair-relay」「ペアプロをエージェントで」「ドライバーをエージェントに」「ナビをサブエージェントに」「リレー方式で実装」「司令塔で回して」「navigator と driver を分けて」「長丁場の実装を交代しながら」「レビュー指摘に対応して」「Findings を修正して」「指摘 N 件を直して」「複数 Severe/High を一括修正」など、駆動側もエージェント化したい意図のとき、またはレビュー指摘が複数件あって系統的に修正したいとき。
 ---
 
 # Pair Relay

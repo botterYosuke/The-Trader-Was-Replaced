@@ -1,6 +1,6 @@
 ---
 name: rust-testing
-description: Rust testing patterns including unit tests, integration tests, async testing, property-based testing, mocking, and coverage. Follows TDD methodology.
+description: Rust testing patterns including unit tests, integration tests, async testing, property-based testing, mocking, and coverage. Follows TDD methodology. Trigger: "cargo test", "Rust テスト", "テストブロック修正", "test fails", "#[test]", "テスト破損", "旧テストを新 API に合わせる", "init_resource が欠落", "Bevy App テスト", "app.add_systems テスト".
 origin: ECC
 ---
 

@@ -1,10 +1,8 @@
 use crate::trading::InstrumentList;
 use crate::ui::components::{
-    OpenStrategyRequested, PanelKind, PanelSpawnRequested, PanelSpawnSource, PendingStrategyLoad,
-    SidebarListLabel, SidebarRoot, WindowRoot,
+    PanelKind, PanelSpawnRequested, PanelSpawnSource, SidebarListLabel, SidebarRoot, WindowRoot,
 };
 use bevy::prelude::*;
-use rfd::FileDialog;
 
 const SIDEBAR_WIDTH: f32 = 180.0;
 const FOOTER_HEIGHT: f32 = 28.0;
@@ -185,68 +183,25 @@ pub fn panel_button_system(
         (Changed<Interaction>, With<Button>),
     >,
     mut spawn_events: EventWriter<PanelSpawnRequested>,
-    mut pending: ResMut<PendingStrategyLoad>,
     existing_kinds: Query<&PanelKind, With<WindowRoot>>,
 ) {
     for (interaction, mut bg, kind) in &mut query {
         match interaction {
             Interaction::Pressed => {
                 bg.0 = BTN_PRESSED;
-                if matches!(kind, PanelKind::StrategyEditor) {
-                    // Strategy Editor ボタンは「panel を 1 回だけ起動する」役割を兼ねる。
-                    // × ボタンで despawn 済みの場合は entity が無いので通常通り spawn される。
-                    // 既にパネルが存在する場合は二重起動防止のため無視する。
-                    let panel_exists = existing_kinds.iter().any(|k| *k == PanelKind::StrategyEditor);
-                    if panel_exists {
-                        info!("sidebar: strategy editor already open, ignoring click");
-                        continue;
-                    }
-
-                    info!("sidebar: open strategy requested");
-                    let picked = FileDialog::new()
-                        .add_filter("Python strategy", &["py"])
-                        .set_directory("python/tests/data")
-                        .pick_file();
-                    let Some(path) = picked else {
-                        info!("sidebar: open strategy canceled");
-                        continue;
-                    };
-                    info!("sidebar: selected strategy: {:?}", path);
-
-                    // panel をこのフレームで spawn 要求。entity 出現を待ってから
-                    // OpenStrategyRequested を発火するため pending に積む。
-                    pending.path = Some(path);
-                    spawn_events.send(PanelSpawnRequested { kind: *kind, source: PanelSpawnSource::User });
-                } else {
-                    // Strategy Editor 以外のパネルボタン:
-                    // × で despawn 済みなら entity が無いので spawn される。
-                    // 既に存在する場合は二重 spawn 防止のため skip。
-                    if !existing_kinds.iter().any(|k| k == kind) {
-                        spawn_events.send(PanelSpawnRequested { kind: *kind, source: PanelSpawnSource::User });
-                    }
+                // StrategyEditor は複数開けるので duplicate チェックを skip。
+                // dispatcher が allocator から region_key を払い出して空エディタを生やす。
+                let allow_multi = matches!(kind, PanelKind::StrategyEditor);
+                if allow_multi || !existing_kinds.iter().any(|k| k == kind) {
+                    spawn_events.send(PanelSpawnRequested {
+                        kind: *kind,
+                        source: PanelSpawnSource::User,
+                        strategy_spec: None,
+                    });
                 }
             }
             Interaction::Hovered => bg.0 = BTN_HOVER,
             Interaction::None => bg.0 = BTN_NORMAL,
         }
     }
-}
-
-/// `panel_button_system` が積んだ pending を、editor entity が world に
-/// 出現したフレームで `OpenStrategyRequested` に変換する。
-/// 出現するまで pending は保持される。
-pub fn process_pending_strategy_load_system(
-    mut pending: ResMut<PendingStrategyLoad>,
-    editor_q: Query<&PanelKind, With<WindowRoot>>,
-    mut open_events: EventWriter<OpenStrategyRequested>,
-) {
-    let Some(path) = pending.path.take() else {
-        return;
-    };
-    let exists = editor_q.iter().any(|k| *k == PanelKind::StrategyEditor);
-    if !exists {
-        pending.path = Some(path);
-        return;
-    }
-    open_events.send(OpenStrategyRequested { path });
 }

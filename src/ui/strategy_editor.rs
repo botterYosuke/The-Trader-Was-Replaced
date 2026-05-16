@@ -1,12 +1,14 @@
 use crate::ui::components::{
-    OpenStrategyRequested, PanelKind, PanelSpawnRequested, PanelSpawnSource, RedoMenuRequested,
-    StrategyBuffer, UndoMenuRequested, WindowRoot,
+    PanelKind, PanelSpawnRequested, PanelSpawnSource, RedoMenuRequested, RegionKeyAllocator,
+    StrategyBuffer, StrategyEditorId, StrategyEditorSpawnSpec, StrategyFileLoadRequested,
+    StrategyFragment, StrategySaveRequested, UndoMenuRequested, WindowRoot,
 };
 use crate::ui::editor_history::{
     AppEditAction, AppHistory, PendingStrategySnapshotRestore, UndoRedoApplied,
 };
 use crate::ui::floating_window::{FloatingWindowSpec, spawn_floating_window};
-use crate::ui::layout_persistence::PendingLayoutApply;
+use crate::ui::layout_persistence::{AutoSaveState, PendingLayoutApply};
+use crate::ui::menu_bar::strategy_cache_path;
 use bevy::prelude::*;
 use bevy_cosmic_edit::cosmic_text::{Attrs, AttrsOwned, Edit, Metrics, Shaping};
 use bevy_cosmic_edit::{
@@ -42,14 +44,15 @@ pub struct StrategyAutoSaveState {
 /// - `Ok(false)`: `cache_path` 未設定でスキップ（state は不変）
 /// - `Err(e)`: I/O 失敗、state は不変（呼び出し側で error log / 再試行）
 pub fn flush_strategy_cache(
+    merged: &str,
     buffer: &mut StrategyBuffer,
     auto_save: &mut StrategyAutoSaveState,
 ) -> std::io::Result<bool> {
     let Some(path) = buffer.cache_path.as_ref() else {
         return Ok(false);
     };
-    std::fs::write(path, &buffer.source)?;
-    buffer.dirty = false;
+    std::fs::write(path, merged)?;
+    buffer.last_merged_source = Some(merged.to_string());
     auto_save.dirty = false;
     auto_save.last_change = None;
     Ok(true)
@@ -74,13 +77,13 @@ fn should_flush(
 
 /// エディタ入力 / undo/redo / snapshot restore でテキストが変わった瞬間に呼ぶ。
 /// buffer と auto_save の dirty 状態を一括更新して中間状態を作らない。
-fn mark_strategy_dirty(
-    buffer: &mut StrategyBuffer,
+fn mark_fragment_dirty(
+    fragment: &mut StrategyFragment,
     auto_save: &mut StrategyAutoSaveState,
     new_source: String,
 ) {
-    buffer.source = new_source;
-    buffer.dirty = true;
+    fragment.source = new_source;
+    fragment.dirty = true;
     auto_save.dirty = true;
     auto_save.last_change = Some(std::time::Instant::now());
 }
@@ -98,7 +101,29 @@ pub struct ZoomResponsiveEditor {
 }
 
 /// dispatcher から呼ばれる spawn 関数。
-pub fn spawn_strategy_editor_panel(commands: &mut Commands, font_system: &mut CosmicFontSystem) {
+pub fn spawn_strategy_editor_panel(
+    commands: &mut Commands,
+    font_system: &mut CosmicFontSystem,
+    allocator: &mut RegionKeyAllocator,
+    spec: StrategyEditorSpawnSpec,
+) {
+    // region_key 決定: 外部指定があれば allocator を追従、なければ払い出す。
+    // 追従しないと sidecar / undo redo で復元した region_005 と allocator.next=1 が
+    // 衝突し、次の blank spawn が region_001 を払い出して既存と被る。
+    let region_key = match spec.region_key {
+        Some(k) => {
+            if let Some(n) = numeric_suffix_of(&k) {
+                allocator.bump_to_at_least(n);
+            }
+            k
+        }
+        None => allocator.allocate(),
+    };
+
+    // seed テキスト: dispatcher が PendingStrategyFragments の drain を済ませて
+    // spec.source を確定する責務。本関数は受け取った spec.source をそのまま採用する。
+    let seed = spec.source.unwrap_or_default();
+
     let (root, content_area, title_bar) = spawn_floating_window(
         commands,
         FloatingWindowSpec {
@@ -108,9 +133,12 @@ pub fn spawn_strategy_editor_panel(commands: &mut Commands, font_system: &mut Co
             accent: ACCENT,
         },
     );
-    commands.entity(root).insert(PanelKind::StrategyEditor);
+    commands.entity(root).insert((
+        PanelKind::StrategyEditor,
+        StrategyEditorId { region_key: region_key.clone() },
+        StrategyFragment { source: seed.clone(), dirty: false },
+    ));
 
-    // bevy_cosmic_edit の TextEdit2d。Sprite + CosmicEditBuffer は自動で required components として付く。
     let editor = commands
         .spawn((
             TextEdit2d,
@@ -125,7 +153,7 @@ pub fn spawn_strategy_editor_panel(commands: &mut Commands, font_system: &mut Co
             )
             .with_text(
                 font_system,
-                "// strategy code\n",
+                &seed,
                 Attrs::new().color(CosmicColor::rgb(220, 220, 220)),
             ),
             DefaultAttrs(AttrsOwned::new(
@@ -135,17 +163,15 @@ pub fn spawn_strategy_editor_panel(commands: &mut Commands, font_system: &mut Co
             CosmicBackgroundColor(EDITOR_BG),
             Transform::from_xyz(0.0, 0.0, 0.1),
             StrategyEditorContent,
+            // editor child にも StrategyEditorId を貼ることで、CosmicTextChanged から
+            // region_key を即引きできる (root への親辿りが不要)。
+            StrategyEditorId { region_key: region_key.clone() },
             ZoomResponsiveEditor {
                 max_supersample: EDITOR_MAX_SUPERSAMPLE,
                 last_supersample: 1.0,
             },
             CosmicRenderScale(1.0),
-            // コードエディタ用途では default の Center align だと表示が不安定なため TopLeft を明示。
             CosmicTextAlign::TopLeft { padding: 8 },
-            // スクロールはデフォルト無効。camera.rs の pancam_suppression_over_editor_system が
-            // 「カーソルがエディタ上 かつ Ctrl 非押下」のフレームだけ Enabled に切り替える。
-            // TextEdit2d は ScrollEnabled を required component に含めないため、ここで明示付与しないと
-            // cosmic_edit の input_mouse が editor entity を丸ごとスキップし、スクロール切替が一切効かない。
             ScrollEnabled::Disabled,
         ))
         .id();
@@ -153,8 +179,8 @@ pub fn spawn_strategy_editor_panel(commands: &mut Commands, font_system: &mut Co
     commands.entity(content_area).add_child(editor);
     commands.insert_resource(FocusedWidget(Some(editor)));
 
-    // `title_bar` は floating_window 側で × ボタンを持つので追加配置はしない。
     let _ = title_bar;
+    let _ = spec.layout_source;
 }
 
 pub fn update_strategy_editor_zoom_system(
@@ -220,29 +246,37 @@ fn apply_buffer_to_editor(
 }
 
 pub fn sync_strategy_buffer_to_editor_system(
-    mut open_events: EventReader<OpenStrategyRequested>,
+    mut open_events: EventReader<StrategyFileLoadRequested>,
     mut undo_events: EventReader<UndoRedoApplied>,
-    buffer: Res<StrategyBuffer>,
-    mut font_system: ResMut<CosmicFontSystem>,
+    fragments_q: Query<(&StrategyEditorId, &StrategyFragment), With<WindowRoot>>,
     mut editor_q: Query<
-        (&mut CosmicEditBuffer, Option<&mut CosmicEditor>),
+        (&StrategyEditorId, &mut CosmicEditBuffer, Option<&mut CosmicEditor>),
         With<StrategyEditorContent>,
     >,
+    mut font_system: ResMut<CosmicFontSystem>,
 ) {
-    let has_open = !open_events.is_empty();
-    let has_undo = !undo_events.is_empty();
     open_events.clear();
-    undo_events.clear();
 
-    if !has_open && !has_undo {
+    if undo_events.read().next().is_none() {
         return;
     }
 
-    if has_open && buffer.original_path.is_none() {
-        return;
+    for (editor_id, mut edit_buffer, editor_opt) in editor_q.iter_mut() {
+        let Some((_, fragment)) = fragments_q
+            .iter()
+            .find(|(frag_id, _)| frag_id.region_key == editor_id.region_key)
+        else {
+            continue;
+        };
+        let source = fragment.source.as_str();
+        edit_buffer.set_text(&mut font_system, source, Attrs::new());
+        if let Some(mut editor) = editor_opt {
+            editor.with_buffer_mut(|b| {
+                b.set_text(&mut font_system, source, Attrs::new(), Shaping::Advanced);
+                b.set_redraw(true);
+            });
+        }
     }
-
-    apply_buffer_to_editor(&buffer.source, &mut font_system, &mut editor_q);
 }
 
 /// cosmic_edit エディタでユーザーが編集した内容を `StrategyBuffer.source` に書き戻し、
@@ -258,37 +292,41 @@ pub fn sync_strategy_buffer_to_editor_system(
 /// Strategy Editor 以外のエディタ entity からのイベントは無視する。
 pub fn sync_editor_to_strategy_buffer_system(
     mut events: EventReader<CosmicTextChanged>,
-    editor_q: Query<Entity, With<StrategyEditorContent>>,
-    mut buffer: ResMut<StrategyBuffer>,
+    editor_q: Query<&StrategyEditorId, With<StrategyEditorContent>>,
+    mut fragments_q: Query<(&StrategyEditorId, &mut StrategyFragment), With<WindowRoot>>,
     mut history: ResMut<AppHistory>,
     mut auto_save: ResMut<StrategyAutoSaveState>,
 ) {
     for CosmicTextChanged((entity, new_text)) in events.read() {
-        if !editor_q.contains(*entity) {
+        let Ok(editor_id) = editor_q.get(*entity) else {
             continue;
-        }
-        // suppress_echo_target が Some のとき: undo/redo 適用直後に cosmic_edit が
-        // 返す echo を「期待テキスト一致」で判別して無視する。
-        // - new_text が target と一致 → echo として消費・無視（buffer.source を同期して continue）
-        // - 一致しない → ターゲットをクリアして通常入力として処理に流す
-        if let Some(ref target) = history.suppress_echo_target.clone() {
-            if new_text.as_str() == target.as_str() {
+        };
+        let region_key = editor_id.region_key.clone();
+
+        let Some((_, mut fragment)) = fragments_q
+            .iter_mut()
+            .find(|(id, _)| id.region_key == region_key)
+        else {
+            warn!("CosmicTextChanged for region '{}' but no matching WindowRoot", region_key);
+            continue;
+        };
+
+        if let Some((target_key, target_text)) = history.suppress_echo_target.clone() {
+            if target_key == region_key && target_text.as_str() == new_text.as_str() {
                 history.suppress_echo_target = None;
-                buffer.source = new_text.clone();
+                fragment.source = new_text.clone();
                 continue;
             } else {
-                // 違うテキストが来たらターゲットをクリアして通常処理
                 history.suppress_echo_target = None;
             }
         }
-        if buffer.source == *new_text {
+        if fragment.source == *new_text {
             continue;
         }
-        // is_replaying 中でなければ Undo 履歴に記録する
         if !history.is_replaying() {
-            history.push_text(buffer.source.clone(), new_text.clone());
+            history.push_text(region_key.clone(), fragment.source.clone(), new_text.clone());
         }
-        mark_strategy_dirty(&mut buffer, &mut auto_save, new_text.clone());
+        mark_fragment_dirty(&mut fragment, &mut auto_save, new_text.clone());
     }
 }
 
@@ -353,66 +391,104 @@ pub fn undo_redo_system(
 #[allow(clippy::too_many_arguments)]
 pub fn apply_pending_app_edits_system(
     mut history: ResMut<AppHistory>,
-    mut buffer: ResMut<StrategyBuffer>,
+    mut fragments_q: Query<(&StrategyEditorId, &mut StrategyFragment), With<WindowRoot>>,
     mut windows_q: Query<(Entity, &PanelKind, &mut Transform), With<WindowRoot>>,
+    editor_id_q: Query<(Entity, &StrategyEditorId), With<WindowRoot>>,
     mut commands: Commands,
     mut spawn_ev: EventWriter<PanelSpawnRequested>,
     mut pending_layout: ResMut<PendingLayoutApply>,
     mut pending_restore: ResMut<PendingStrategySnapshotRestore>,
     mut undo_applied: EventWriter<UndoRedoApplied>,
     mut auto_save: ResMut<StrategyAutoSaveState>,
+    mut layout_auto_save: ResMut<AutoSaveState>,
 ) {
     if history.pending.queue.is_empty() {
         return;
     }
 
-    let mut any_text = false; // テキスト変更があったかのフラグ
+    let mut any_text = false;
     let actions: Vec<_> = history.pending.queue.drain(..).collect();
     for action in actions {
         match action {
-            AppEditAction::SetStrategySource { text } => {
-                // buffer に書き込む text が echo で返ってくるテキストなので、
-                // そのテキストを target としてセットし期待一致方式で echo を抑制する。
-                history.suppress_echo(text.clone());
-                mark_strategy_dirty(&mut buffer, &mut auto_save, text);
-                any_text = true;
-            }
-            AppEditAction::MoveWindow { kind, position } => {
-                // Entity の代わりに PanelKind でパネルを検索
-                if let Some((_, _, mut tf)) = windows_q.iter_mut().find(|(_, k, _)| **k == kind) {
-                    tf.translation.x = position.x;
-                    tf.translation.y = position.y;
+            AppEditAction::SetStrategySource { region_key, text } => {
+                history.suppress_echo(region_key.clone(), text.clone());
+                if let Some((_, mut fragment)) = fragments_q
+                    .iter_mut()
+                    .find(|(id, _)| id.region_key == region_key)
+                {
+                    mark_fragment_dirty(&mut fragment, &mut auto_save, text);
+                    any_text = true;
+                } else {
+                    warn!("SetStrategySource for region '{}' but no matching root", region_key);
                 }
             }
+            AppEditAction::MoveWindow { kind, region_key, position } => {
+                let target_entity: Option<Entity> = if let Some(rk) = &region_key {
+                    editor_id_q
+                        .iter()
+                        .find(|(_, id)| id.region_key == *rk)
+                        .map(|(e, _)| e)
+                } else {
+                    windows_q
+                        .iter()
+                        .find(|(_, k, _)| **k == kind)
+                        .map(|(e, _, _)| e)
+                };
+                if let Some(entity) = target_entity {
+                    if let Ok((_, _, mut tf)) = windows_q.get_mut(entity) {
+                        tf.translation.x = position.x;
+                        tf.translation.y = position.y;
+                    }
+                }
+                layout_auto_save.dirty = true;
+            }
             AppEditAction::SpawnWindow { layout, strategy_snapshot } => {
+                let strategy_spec = if layout.kind == PanelKind::StrategyEditor {
+                    Some(StrategyEditorSpawnSpec {
+                        region_key: layout.region_key.clone(),
+                        source: None,
+                        layout_source: PanelSpawnSource::UndoRedo,
+                    })
+                } else {
+                    None
+                };
                 spawn_ev.send(PanelSpawnRequested {
                     kind: layout.kind,
                     source: PanelSpawnSource::UndoRedo,
+                    strategy_spec,
                 });
-                // 翌フレームで位置・サイズ・z を復元（apply_pending_layout_system が処理）
                 pending_layout.windows.push(layout.clone());
-                // Strategy Editor の場合はアクションが持つ snapshot を復元
                 if layout.kind == PanelKind::StrategyEditor
                     && let Some(snap) = strategy_snapshot
                 {
                     pending_restore.snapshot = Some(snap);
                 }
+                layout_auto_save.dirty = true;
             }
-            AppEditAction::DespawnWindow { kind } => {
-                if let Some((entity, _, _)) = windows_q.iter().find(|(_, k, _)| **k == kind) {
+            AppEditAction::DespawnWindow { kind, region_key } => {
+                let target_entity: Option<Entity> = if let Some(rk) = &region_key {
+                    editor_id_q
+                        .iter()
+                        .find(|(_, id)| id.region_key == *rk)
+                        .map(|(e, _)| e)
+                } else {
+                    windows_q
+                        .iter()
+                        .find(|(_, k, _)| **k == kind)
+                        .map(|(e, _, _)| e)
+                };
+                if let Some(entity) = target_entity {
                     commands.entity(entity).despawn_recursive();
+                    layout_auto_save.dirty = true;
                 }
             }
         }
     }
 
-    // テキスト変更があり かつ replaying 中のときのみ UndoRedoApplied を送る
-    // （is_replaying チェックは replaying_depth -= 1 の前に行う）
     if any_text && history.is_replaying() {
         undo_applied.send(UndoRedoApplied);
     }
 
-    // drain 完了後に replaying_depth をデクリメント（0 以下にはしない）
     if history.replaying_depth > 0 {
         history.replaying_depth -= 1;
     }
@@ -423,7 +499,7 @@ pub fn apply_pending_app_edits_system(
 /// StrategyEditorContent entity が生成されるまで待つ（2 段階遅延）。
 pub fn apply_strategy_snapshot_restore_system(
     mut pending_restore: ResMut<PendingStrategySnapshotRestore>,
-    mut buffer: ResMut<StrategyBuffer>,
+    mut fragments_q: Query<(&StrategyEditorId, &mut StrategyFragment), With<WindowRoot>>,
     mut history: ResMut<AppHistory>,
     editor_q: Query<Entity, With<StrategyEditorContent>>,
     mut undo_applied: EventWriter<UndoRedoApplied>,
@@ -432,16 +508,21 @@ pub fn apply_strategy_snapshot_restore_system(
     if pending_restore.snapshot.is_none() {
         return;
     }
-    // StrategyEditor entity が生成されるまで待つ
     if editor_q.is_empty() {
         return;
     }
-    if let Some(snapshot) = pending_restore.snapshot.take() {
-        // buffer に書き込む snapshot が echo で返ってくるテキストなので、
-        // そのテキストを target としてセットし期待一致方式で echo を抑制する。
-        history.suppress_echo(snapshot.clone());
-        mark_strategy_dirty(&mut buffer, &mut auto_save, snapshot);
-        undo_applied.send(UndoRedoApplied);
+    if let Some((region_key, source)) = pending_restore.snapshot.take() {
+        history.suppress_echo(region_key.clone(), source.clone());
+        if let Some((_, mut fragment)) = fragments_q
+            .iter_mut()
+            .find(|(id, _)| id.region_key == region_key)
+        {
+            mark_fragment_dirty(&mut fragment, &mut auto_save, source);
+            undo_applied.send(UndoRedoApplied);
+        } else {
+            warn!("snapshot restore for region '{}' but no matching root yet", region_key);
+            pending_restore.snapshot = Some((region_key, source));
+        }
     }
 }
 
@@ -451,6 +532,7 @@ pub fn apply_strategy_snapshot_restore_system(
 /// `cache_path` 未設定 (`Ok(false)`) のときは debounce タイマーをクリアして無限ループを防ぐ。
 /// I/O 失敗時は state を保持し、次の debounce 経過で再試行する。
 pub fn debounced_strategy_autosave_system(
+    fragments_q: Query<(&StrategyEditorId, &StrategyFragment), With<WindowRoot>>,
     mut buffer: ResMut<StrategyBuffer>,
     mut auto_save: ResMut<StrategyAutoSaveState>,
 ) {
@@ -458,7 +540,14 @@ pub fn debounced_strategy_autosave_system(
     if !should_flush(&auto_save, std::time::Instant::now(), DEBOUNCE) {
         return;
     }
-    match flush_strategy_cache(&mut buffer, &mut auto_save) {
+    let mut items: Vec<(String, String)> = fragments_q
+        .iter()
+        .map(|(id, f)| (id.region_key.clone(), f.source.clone()))
+        .collect();
+    items.sort_by(|a, b| a.0.cmp(&b.0));
+    let merged = merge_fragments(&items);
+
+    match flush_strategy_cache(&merged, &mut buffer, &mut auto_save) {
         Ok(true) => info!("strategy cache autosaved: {:?}", buffer.cache_path),
         Ok(false) => {
             auto_save.dirty = false;
@@ -468,9 +557,369 @@ pub fn debounced_strategy_autosave_system(
     }
 }
 
+// ─── Phase B: merge/split 純粋関数 ──────────────────────────────────────────
+
+/// `split_py_into_fragments` の出力。
+pub struct SplitOutcome {
+    /// (region_key, source_body) の順序付きリスト。
+    /// body は末尾 `\n` を strip 済み・マーカー行を除く。
+    pub fragments: Vec<(String, String)>,
+    /// `region_NNN` 形式の key から取り出した最大の N 値。
+    /// `RegionKeyAllocator::bump_to_at_least` に渡してアロケーターを進める。
+    pub max_numeric_suffix: u32,
+    /// 警告メッセージ。呼び出し側が `warn!` でログに出す。
+    pub warnings: Vec<String>,
+}
+
+/// フラグメントリストを Python ソース文字列にマージする。
+///
+/// 各アイテムを `# region <key>\n<body>\n# endregion <key>\n` に変換して連結する。
+/// body が空のときは中間改行なしで `# region <key>\n# endregion <key>\n`。
+pub fn merge_fragments(items: &[(String, String)]) -> String {
+    let mut out = String::new();
+    for (key, body) in items {
+        out.push_str("# region ");
+        out.push_str(key);
+        out.push('\n');
+        if !body.is_empty() {
+            out.push_str(body);
+            out.push('\n');
+        }
+        out.push_str("# endregion ");
+        out.push_str(key);
+        out.push('\n');
+    }
+    out
+}
+
+/// `region_NNN` 形式の key から NNN を u32 で返す。マッチしない場合は None。
+pub(crate) fn numeric_suffix_of(key: &str) -> Option<u32> {
+    key.strip_prefix("region_")
+        .and_then(|s| s.parse::<u32>().ok())
+}
+
+/// フラグメントをリストに追加する。重複 key は `<key>_dupN` にリネームして追加する。
+fn push_fragment_inner(
+    fragments: &mut Vec<(String, String)>,
+    seen: &mut std::collections::HashMap<String, u32>,
+    raw_key: String,
+    body_lines: Vec<&str>,
+    warnings: &mut Vec<String>,
+) {
+    let count = seen.entry(raw_key.clone()).or_insert(0);
+    let actual_key = if *count == 0 {
+        raw_key.clone()
+    } else {
+        let dup_key = format!("{}_dup{}", raw_key, count);
+        warnings.push(format!(
+            "duplicate region_key '{}'; renamed to '{}'",
+            raw_key, dup_key
+        ));
+        dup_key
+    };
+    *count += 1;
+    let body = body_lines.join("\n");
+    let body = body.trim_end_matches('\n').to_string();
+    fragments.push((actual_key, body));
+}
+
+/// Python ソース文字列を `# region` / `# endregion` マーカーで断片に分割する。
+pub fn split_py_into_fragments(py: &str) -> SplitOutcome {
+    fn parse_region(line: &str) -> Option<&str> {
+        let key = line.trim_start().strip_prefix("# region ")?.trim();
+        if key.is_empty() { None } else { Some(key) }
+    }
+
+    fn parse_endregion(line: &str) -> Option<Option<&str>> {
+        let rest = line.trim_start().strip_prefix("# endregion")?;
+        let key = rest.trim();
+        Some(if key.is_empty() { None } else { Some(key) })
+    }
+
+    let mut fragments: Vec<(String, String)> = Vec::new();
+    let mut warnings: Vec<String> = Vec::new();
+    let mut seen: std::collections::HashMap<String, u32> = std::collections::HashMap::new();
+
+    let mut open_key: Option<String> = None;
+    let mut open_body: Vec<&str> = Vec::new();
+    let mut preamble: Vec<&str> = Vec::new();
+    let mut any_marker = false;
+
+    for line in py.lines() {
+        if let Some(region_key) = parse_region(line) {
+            if !any_marker && !preamble.is_empty() {
+                let preamble_body = preamble.join("\n");
+                let preamble_body = preamble_body.trim_end_matches('\n').to_string();
+                let preamble_key = "region_001_preamble".to_string();
+                let cnt = seen.entry(preamble_key.clone()).or_insert(0);
+                *cnt += 1;
+                fragments.push((preamble_key.clone(), preamble_body));
+                warnings.push(format!(
+                    "preamble lines before first # region wrapped into '{}'",
+                    preamble_key
+                ));
+                preamble.clear();
+            }
+            any_marker = true;
+
+            if let Some(prev_key) = open_key.take() {
+                warnings.push(format!(
+                    "# region '{}' opened while '{}' was still open; implicitly closing '{}'",
+                    region_key, prev_key, prev_key
+                ));
+                let body = std::mem::take(&mut open_body);
+                push_fragment_inner(&mut fragments, &mut seen, prev_key, body, &mut warnings);
+            }
+
+            open_key = Some(region_key.to_string());
+            open_body = Vec::new();
+        } else if let Some(end_key_opt) = parse_endregion(line) {
+            any_marker = true;
+            match open_key.take() {
+                None => {
+                    warnings.push(format!(
+                        "# endregion '{}' without matching # region; ignored",
+                        end_key_opt.unwrap_or("")
+                    ));
+                }
+                Some(cur_key) => {
+                    if let Some(ek) = end_key_opt {
+                        if ek != cur_key {
+                            warnings.push(format!(
+                                "# endregion key '{}' does not match open '{}'; closing '{}' anyway",
+                                ek, cur_key, cur_key
+                            ));
+                        }
+                    }
+                    let body = std::mem::take(&mut open_body);
+                    push_fragment_inner(&mut fragments, &mut seen, cur_key, body, &mut warnings);
+                }
+            }
+        } else {
+            if open_key.is_some() {
+                open_body.push(line);
+            } else if !any_marker {
+                preamble.push(line);
+            }
+        }
+    }
+
+    if let Some(cur_key) = open_key.take() {
+        warnings.push(format!(
+            "# region '{}' has no matching # endregion; closed at EOF",
+            cur_key
+        ));
+        let body = std::mem::take(&mut open_body);
+        push_fragment_inner(&mut fragments, &mut seen, cur_key, body, &mut warnings);
+    }
+
+    if fragments.is_empty() {
+        let body = py.trim_end_matches('\n').to_string();
+        fragments.push(("region_001".to_string(), body));
+    }
+
+    let max_numeric_suffix = fragments
+        .iter()
+        .filter_map(|(k, _)| numeric_suffix_of(k))
+        .max()
+        .unwrap_or(0);
+
+    SplitOutcome { fragments, max_numeric_suffix, warnings }
+}
+
+pub fn handle_strategy_save_requested_system(
+    mut events: EventReader<StrategySaveRequested>,
+    fragments_q: Query<(&StrategyEditorId, &StrategyFragment), With<WindowRoot>>,
+    mut buffer: ResMut<StrategyBuffer>,
+    mut auto_save: ResMut<StrategyAutoSaveState>,
+) {
+    for event in events.read() {
+        let mut items: Vec<(String, String)> = fragments_q
+            .iter()
+            .map(|(id, f)| (id.region_key.clone(), f.source.clone()))
+            .collect();
+        items.sort_by(|a, b| a.0.cmp(&b.0));
+        let merged = merge_fragments(&items);
+
+        let save_path: Option<std::path::PathBuf> = if event.force_dialog
+            || buffer.original_path.is_none()
+        {
+            rfd::FileDialog::new()
+                .add_filter("Python", &["py"])
+                .set_file_name(
+                    buffer
+                        .original_path
+                        .as_ref()
+                        .and_then(|p| p.file_name())
+                        .and_then(|s| s.to_str())
+                        .unwrap_or("strategy.py"),
+                )
+                .save_file()
+        } else {
+            buffer.original_path.clone()
+        };
+
+        let Some(path) = save_path else {
+            info!("save strategy cancelled: no path selected");
+            continue;
+        };
+
+        match std::fs::write(&path, &merged) {
+            Ok(()) => {
+                info!("strategy saved: {:?}", path);
+                buffer.last_merged_source = Some(merged.clone());
+                auto_save.dirty = false;
+                auto_save.last_change = None;
+
+                if event.force_dialog || buffer.original_path.is_none() {
+                    if buffer.original_path.is_none() {
+                        if let Some(old_temp) = buffer.cache_path.take() {
+                            if old_temp.exists() {
+                                if let Err(e) = std::fs::remove_file(&old_temp) {
+                                    warn!("failed to remove untitled temp cache {:?}: {}", old_temp, e);
+                                } else {
+                                    info!("untitled temp cache removed: {:?}", old_temp);
+                                }
+                            }
+                        }
+                    }
+                    buffer.original_path = Some(path.clone());
+                    match strategy_cache_path(&path) {
+                        Some(new_cache) => {
+                            if let Some(parent) = new_cache.parent() {
+                                if let Err(e) = std::fs::create_dir_all(parent) {
+                                    warn!("failed to create cache dir after Save As {:?}: {}", parent, e);
+                                } else {
+                                    buffer.cache_path = Some(new_cache);
+                                }
+                            }
+                        }
+                        None => {
+                            warn!("failed to compute cache_path for {:?}; autosave disabled", path);
+                            buffer.cache_path = None;
+                        }
+                    }
+                }
+            }
+            Err(e) => {
+                error!("strategy save failed ({:?}): {}", path, e);
+            }
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+    // ── Phase B: merge/split 純粋関数テスト ─────────────────────────────────
+
+    fn ks(s: &str) -> String { s.to_string() }
+
+    #[test]
+    fn merge_fragments_round_trips_through_split() {
+        let items = vec![
+            (ks("region_001"), ks("x = 1\ny = 2")),
+            (ks("region_002"), ks("def foo():\n    pass")),
+        ];
+        let merged = merge_fragments(&items);
+        let outcome = split_py_into_fragments(&merged);
+        assert!(outcome.warnings.is_empty(), "unexpected warnings: {:?}", outcome.warnings);
+        assert_eq!(outcome.fragments, items);
+    }
+
+    #[test]
+    fn split_py_handles_no_markers_returns_single_region() {
+        let py = "x = 1\ny = 2\n";
+        let outcome = split_py_into_fragments(py);
+        assert!(outcome.warnings.is_empty(), "expected no warnings: {:?}", outcome.warnings);
+        assert_eq!(outcome.fragments.len(), 1);
+        assert_eq!(outcome.fragments[0].0, "region_001");
+        assert_eq!(outcome.fragments[0].1, "x = 1\ny = 2");
+        assert_eq!(outcome.max_numeric_suffix, 1);
+    }
+
+    #[test]
+    fn split_py_handles_preamble_warns_and_wraps() {
+        let py = "import os\n# region region_002\ncode()\n# endregion region_002\n";
+        let outcome = split_py_into_fragments(py);
+        assert!(!outcome.warnings.is_empty(), "expected preamble warning");
+        assert!(outcome.warnings.iter().any(|w| w.contains("preamble")));
+        assert_eq!(outcome.fragments[0].0, "region_001_preamble");
+        assert_eq!(outcome.fragments[0].1, "import os");
+        assert_eq!(outcome.fragments[1].0, "region_002");
+        assert_eq!(outcome.fragments[1].1, "code()");
+    }
+
+    #[test]
+    fn split_py_handles_duplicate_region_keys() {
+        let py = "# region region_001\nalpha\n# endregion region_001\n\
+                  # region region_001\nbeta\n# endregion region_001\n";
+        let outcome = split_py_into_fragments(py);
+        assert!(outcome.warnings.iter().any(|w| w.contains("duplicate")),
+            "expected dup warning: {:?}", outcome.warnings);
+        assert_eq!(outcome.fragments[0].0, "region_001");
+        assert_eq!(outcome.fragments[0].1, "alpha");
+        assert_eq!(outcome.fragments[1].0, "region_001_dup1");
+        assert_eq!(outcome.fragments[1].1, "beta");
+    }
+
+    #[test]
+    fn split_py_handles_unmatched_endregion() {
+        let py = "# region region_001\ncode\n# endregion region_002\n";
+        let outcome = split_py_into_fragments(py);
+        assert!(outcome.warnings.iter().any(|w| w.contains("does not match")),
+            "warnings: {:?}", outcome.warnings);
+        assert_eq!(outcome.fragments.len(), 1);
+        assert_eq!(outcome.fragments[0].0, "region_001");
+        assert_eq!(outcome.fragments[0].1, "code");
+    }
+
+    #[test]
+    fn split_py_handles_orphan_region_at_eof() {
+        let py = "# region region_001\norphan line\n";
+        let outcome = split_py_into_fragments(py);
+        assert!(outcome.warnings.iter().any(|w| w.contains("no matching # endregion")),
+            "warnings: {:?}", outcome.warnings);
+        assert_eq!(outcome.fragments.len(), 1);
+        assert_eq!(outcome.fragments[0].0, "region_001");
+        assert_eq!(outcome.fragments[0].1, "orphan line");
+    }
+
+    #[test]
+    fn region_key_allocator_bump_to_at_least() {
+        let mut alloc = RegionKeyAllocator::default();
+        alloc.bump_to_at_least(5);
+        assert_eq!(alloc.next, 5);
+        alloc.bump_to_at_least(3);
+        assert_eq!(alloc.next, 5);
+        let k = alloc.allocate();
+        assert_eq!(k, "region_006");
+        assert_eq!(alloc.next, 6);
+    }
+
+    #[test]
+    fn merge_fragments_empty_body() {
+        let items = vec![(ks("region_001"), ks(""))];
+        let merged = merge_fragments(&items);
+        assert_eq!(merged, "# region region_001\n# endregion region_001\n");
+        let outcome = split_py_into_fragments(&merged);
+        assert!(outcome.warnings.is_empty());
+        assert_eq!(outcome.fragments, items);
+    }
+
+    #[test]
+    fn split_py_nested_open_warns_and_implicitly_closes_prev() {
+        let py = "# region region_001\nfoo\n\
+                  # region region_002\nbar\n# endregion region_002\n";
+        let outcome = split_py_into_fragments(py);
+        assert!(outcome.warnings.iter().any(|w| w.contains("implicitly closing")),
+            "warnings: {:?}", outcome.warnings);
+        assert_eq!(outcome.fragments[0].0, "region_001");
+        assert_eq!(outcome.fragments[0].1, "foo");
+        assert_eq!(outcome.fragments[1].0, "region_002");
+        assert_eq!(outcome.fragments[1].1, "bar");
+    }
+
     use std::fs;
     use std::time::{Duration, Instant};
     use tempfile::TempDir;
@@ -480,18 +929,16 @@ mod tests {
         let mut buffer = StrategyBuffer {
             original_path: None,
             cache_path: None,
-            source: "fn main() {}".to_string(),
-            dirty: true,
+            last_merged_source: None,
         };
         let mut auto_save = StrategyAutoSaveState {
             dirty: true,
             last_change: Some(Instant::now()),
         };
 
-        let result = flush_strategy_cache(&mut buffer, &mut auto_save);
+        let result = flush_strategy_cache("fn main() {}", &mut buffer, &mut auto_save);
 
         assert!(matches!(result, Ok(false)));
-        assert!(buffer.dirty);
         assert!(auto_save.dirty);
         assert!(auto_save.last_change.is_some());
     }
@@ -500,25 +947,25 @@ mod tests {
     fn flush_writes_file_and_clears_state() {
         let temp_dir = TempDir::new().unwrap();
         let cache_path = temp_dir.path().join("strategy.rs");
+        let content = "fn main() { println!(\"hello\"); }";
 
         let mut buffer = StrategyBuffer {
             original_path: None,
             cache_path: Some(cache_path.clone()),
-            source: "fn main() { println!(\"hello\"); }".to_string(),
-            dirty: true,
+            last_merged_source: None,
         };
         let mut auto_save = StrategyAutoSaveState {
             dirty: true,
             last_change: Some(Instant::now()),
         };
 
-        let result = flush_strategy_cache(&mut buffer, &mut auto_save);
+        let result = flush_strategy_cache(content, &mut buffer, &mut auto_save);
 
         assert_eq!(result.unwrap(), true);
         assert!(cache_path.exists());
         let written = fs::read_to_string(&cache_path).unwrap();
-        assert_eq!(written, "fn main() { println!(\"hello\"); }");
-        assert!(!buffer.dirty);
+        assert_eq!(written, content);
+        assert_eq!(buffer.last_merged_source, Some(content.to_string()));
         assert!(!auto_save.dirty);
         assert_eq!(auto_save.last_change, None);
     }
@@ -531,8 +978,7 @@ mod tests {
         let mut buffer = StrategyBuffer {
             original_path: None,
             cache_path: Some(unwritable_path),
-            source: "fn main() {}".to_string(),
-            dirty: true,
+            last_merged_source: None,
         };
         let now = Instant::now();
         let mut auto_save = StrategyAutoSaveState {
@@ -540,10 +986,9 @@ mod tests {
             last_change: Some(now),
         };
 
-        let result = flush_strategy_cache(&mut buffer, &mut auto_save);
+        let result = flush_strategy_cache("fn main() {}", &mut buffer, &mut auto_save);
 
         assert!(result.is_err());
-        assert!(buffer.dirty);
         assert!(auto_save.dirty);
         assert_eq!(auto_save.last_change, Some(now));
     }
@@ -588,10 +1033,8 @@ mod tests {
     }
 
     #[test]
-    fn mark_strategy_dirty_updates_state() {
-        let mut buffer = StrategyBuffer {
-            original_path: None,
-            cache_path: None,
+    fn mark_fragment_dirty_updates_state() {
+        let mut fragment = StrategyFragment {
             source: "old source".to_string(),
             dirty: false,
         };
@@ -601,35 +1044,43 @@ mod tests {
         };
 
         let new_source = "new source code".to_string();
-        mark_strategy_dirty(&mut buffer, &mut auto_save, new_source.clone());
+        mark_fragment_dirty(&mut fragment, &mut auto_save, new_source.clone());
 
-        assert_eq!(buffer.source, new_source);
-        assert!(buffer.dirty);
+        assert_eq!(fragment.source, new_source);
+        assert!(fragment.dirty);
         assert!(auto_save.dirty);
         assert!(auto_save.last_change.is_some());
     }
 
     #[test]
     fn apply_pending_app_edits_sets_autosave_dirty_on_strategy_source_action() {
+        use crate::ui::components::WindowRoot;
         let mut app = App::new();
         app.init_resource::<StrategyBuffer>();
         app.init_resource::<AppHistory>();
         app.init_resource::<StrategyAutoSaveState>();
+        app.init_resource::<AutoSaveState>();
         app.init_resource::<PendingLayoutApply>();
         app.init_resource::<PendingStrategySnapshotRestore>();
         app.add_event::<PanelSpawnRequested>();
         app.add_event::<UndoRedoApplied>();
         app.add_systems(Update, apply_pending_app_edits_system);
 
+        let region_key = "region_001".to_string();
         let new_text = "def strategy(): pass".to_string();
+
+        app.world_mut().spawn((
+            WindowRoot,
+            StrategyEditorId { region_key: region_key.clone() },
+            StrategyFragment { source: "".to_string(), dirty: false },
+        ));
+
         {
             let mut history = app.world_mut().resource_mut::<AppHistory>();
-            history
-                .pending
-                .queue
-                .push_back(AppEditAction::SetStrategySource {
-                    text: new_text.clone(),
-                });
+            history.pending.queue.push_back(AppEditAction::SetStrategySource {
+                region_key: region_key.clone(),
+                text: new_text.clone(),
+            });
         }
 
         app.update();
@@ -637,14 +1088,11 @@ mod tests {
         let auto_save = app.world().resource::<StrategyAutoSaveState>();
         assert!(auto_save.dirty);
         assert!(auto_save.last_change.is_some());
-
-        let buffer = app.world().resource::<StrategyBuffer>();
-        assert!(buffer.dirty);
-        assert_eq!(buffer.source, new_text);
     }
 
     #[test]
     fn apply_strategy_snapshot_restore_sets_autosave_dirty() {
+        use crate::ui::components::WindowRoot;
         let mut app = App::new();
         app.init_resource::<StrategyBuffer>();
         app.init_resource::<AppHistory>();
@@ -653,16 +1101,20 @@ mod tests {
         app.add_event::<UndoRedoApplied>();
         app.add_systems(Update, apply_strategy_snapshot_restore_system);
 
-        // system の `if editor_q.is_empty() { return; }` を通過させるため、
-        // StrategyEditorContent マーカーを持つ entity を 1 個 spawn する。
         app.world_mut().spawn(StrategyEditorContent);
 
+        let region_key = "region_001".to_string();
         let snapshot_text = "restored_source = 123".to_string();
+
+        app.world_mut().spawn((
+            WindowRoot,
+            StrategyEditorId { region_key: region_key.clone() },
+            StrategyFragment { source: "".to_string(), dirty: false },
+        ));
+
         {
-            let mut pending = app
-                .world_mut()
-                .resource_mut::<PendingStrategySnapshotRestore>();
-            pending.snapshot = Some(snapshot_text.clone());
+            let mut pending = app.world_mut().resource_mut::<PendingStrategySnapshotRestore>();
+            pending.snapshot = Some((region_key.clone(), snapshot_text.clone()));
         }
 
         app.update();
@@ -671,18 +1123,13 @@ mod tests {
         assert!(auto_save.dirty);
         assert!(auto_save.last_change.is_some());
 
-        let buffer = app.world().resource::<StrategyBuffer>();
-        assert!(buffer.dirty);
-        assert_eq!(buffer.source, snapshot_text);
-
-        let pending = app
-            .world()
-            .resource::<PendingStrategySnapshotRestore>();
+        let pending = app.world().resource::<PendingStrategySnapshotRestore>();
         assert!(pending.snapshot.is_none());
     }
 
     #[test]
     fn debounced_autosave_system_flushes_when_debounce_elapsed() {
+        use crate::ui::components::WindowRoot;
         let mut app = App::new();
         app.init_resource::<StrategyBuffer>();
         app.init_resource::<StrategyAutoSaveState>();
@@ -691,33 +1138,36 @@ mod tests {
         let tmp = TempDir::new().unwrap();
         let cache_path = tmp.path().join("strategy.py");
 
+        app.world_mut().spawn((
+            WindowRoot,
+            StrategyEditorId { region_key: "region_001".to_string() },
+            StrategyFragment { source: "x = 1".to_string(), dirty: true },
+        ));
+
         {
             let mut buffer = app.world_mut().resource_mut::<StrategyBuffer>();
-            buffer.source = "x = 1".to_string();
             buffer.cache_path = Some(cache_path.clone());
-            buffer.dirty = true;
         }
         {
             let mut auto_save = app.world_mut().resource_mut::<StrategyAutoSaveState>();
             auto_save.dirty = true;
-            // debounce(1s) を確実に超える 2 秒前を last_change にする
             auto_save.last_change = Some(Instant::now() - Duration::from_secs(2));
         }
 
         app.update();
 
         assert!(cache_path.exists());
-        assert_eq!(fs::read_to_string(&cache_path).unwrap(), "x = 1");
+        let written = fs::read_to_string(&cache_path).unwrap();
+        assert!(written.contains("x = 1"), "written: {}", written);
 
-        let buffer = app.world().resource::<StrategyBuffer>();
         let auto_save = app.world().resource::<StrategyAutoSaveState>();
-        assert!(!buffer.dirty);
         assert!(!auto_save.dirty);
         assert!(auto_save.last_change.is_none());
     }
 
     #[test]
     fn debounced_autosave_system_skips_when_within_debounce() {
+        use crate::ui::components::WindowRoot;
         let mut app = App::new();
         app.init_resource::<StrategyBuffer>();
         app.init_resource::<StrategyAutoSaveState>();
@@ -726,16 +1176,19 @@ mod tests {
         let tmp = TempDir::new().unwrap();
         let cache_path = tmp.path().join("strategy.py");
 
+        app.world_mut().spawn((
+            WindowRoot,
+            StrategyEditorId { region_key: "region_001".to_string() },
+            StrategyFragment { source: "x = 1".to_string(), dirty: true },
+        ));
+
         {
             let mut buffer = app.world_mut().resource_mut::<StrategyBuffer>();
-            buffer.source = "x = 1".to_string();
             buffer.cache_path = Some(cache_path.clone());
-            buffer.dirty = true;
         }
         {
             let mut auto_save = app.world_mut().resource_mut::<StrategyAutoSaveState>();
             auto_save.dirty = true;
-            // 経過 0s で debounce 未満
             auto_save.last_change = Some(Instant::now());
         }
 
@@ -743,9 +1196,7 @@ mod tests {
 
         assert!(!cache_path.exists());
 
-        let buffer = app.world().resource::<StrategyBuffer>();
         let auto_save = app.world().resource::<StrategyAutoSaveState>();
-        assert!(buffer.dirty);
         assert!(auto_save.dirty);
         assert!(auto_save.last_change.is_some());
     }

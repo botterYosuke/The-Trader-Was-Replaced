@@ -20,8 +20,9 @@ pub mod window;
 use crate::ui::buying_power::buying_power_panel_system;
 use crate::ui::chart::chart_render_system;
 use crate::ui::components::{
-    OpenMenu, OpenStrategyRequested, PanelSpawnRequested, PendingStrategyLoad, RedoMenuRequested,
-    ScenarioMetadata, StrategyBuffer, StrategyRunRequested, UndoMenuRequested, WindowManager,
+    OpenMenu, PanelSpawnRequested, PendingStrategyFragments, RedoMenuRequested,
+    RegionKeyAllocator, ScenarioMetadata, StrategyBuffer, StrategyFileLoadRequested,
+    StrategyRunRequested, StrategySaveRequested, UndoMenuRequested, WindowManager,
 };
 use crate::ui::floating_window::panel_spawn_dispatcher_system;
 use crate::ui::footer::{
@@ -29,24 +30,22 @@ use crate::ui::footer::{
     update_footer_system, update_speed_buttons_system,
 };
 use crate::ui::menu_bar::{
-    handle_strategy_run_system, log_open_strategy_requested_system,
-    log_strategy_run_requested_system, menu_item_system, menu_keyboard_system,
-    menu_top_level_system, open_strategy_buffer_system, restore_last_strategy_system,
-    spawn_menu_bar, sync_menu_popup_visibility_system, update_strategy_status_label_system,
+    handle_strategy_file_load_system, handle_strategy_run_system,
+    log_strategy_file_load_requested_system, log_strategy_run_requested_system, menu_item_system,
+    menu_keyboard_system, menu_top_level_system, restore_last_strategy_system, spawn_menu_bar,
+    sync_menu_popup_visibility_system, update_strategy_status_label_system,
 };
 use crate::ui::orders::orders_panel_system;
 use crate::ui::positions::positions_panel_system;
 use crate::ui::run_result_panel::run_result_panel_system;
 use crate::ui::scenario_parser::parse_scenario_system;
-use crate::ui::sidebar::{
-    panel_button_system, process_pending_strategy_load_system, spawn_sidebar,
-    update_sidebar_system,
-};
+use crate::ui::sidebar::{panel_button_system, spawn_sidebar, update_sidebar_system};
 use crate::ui::editor_history::{ActiveDrag, AppHistory, PendingStrategySnapshotRestore, UndoRedoApplied};
 use crate::ui::strategy_editor::{
     StrategyAutoSaveState, apply_pending_app_edits_system, apply_strategy_snapshot_restore_system,
-    debounced_strategy_autosave_system, sync_editor_to_strategy_buffer_system,
-    sync_strategy_buffer_to_editor_system, undo_redo_system, update_strategy_editor_zoom_system,
+    debounced_strategy_autosave_system, handle_strategy_save_requested_system,
+    sync_editor_to_strategy_buffer_system, sync_strategy_buffer_to_editor_system, undo_redo_system,
+    update_strategy_editor_zoom_system,
 };
 use crate::ui::systems::{button_system, update_price_display, update_status_indicator};
 use bevy::prelude::*;
@@ -67,12 +66,14 @@ impl Plugin for UiPlugin {
         .init_resource::<WindowManager>()
         .init_resource::<StrategyBuffer>()
         .init_resource::<StrategyAutoSaveState>()
-        .init_resource::<PendingStrategyLoad>()
+        .init_resource::<RegionKeyAllocator>()
+        .init_resource::<PendingStrategyFragments>()
         .init_resource::<AppHistory>()
         .init_resource::<ActiveDrag>()
         .init_resource::<PendingStrategySnapshotRestore>()
         .init_resource::<OpenMenu>()
-        .add_event::<OpenStrategyRequested>()
+        .add_event::<StrategyFileLoadRequested>()
+        .add_event::<StrategySaveRequested>()
         .add_event::<StrategyRunRequested>()
         .add_event::<PanelSpawnRequested>()
         .add_event::<UndoRedoApplied>()
@@ -85,7 +86,7 @@ impl Plugin for UiPlugin {
                 spawn_footer,
                 spawn_menu_bar,
                 spawn_sidebar,
-                // 起動時に前回のストラテジーを復元する（OpenStrategyRequested 発火）
+                // 起動時に前回のストラテジーを復元する（StrategyFileLoadRequested { StartupRestore } 発火）
                 restore_last_strategy_system,
             ),
         )
@@ -101,8 +102,8 @@ impl Plugin for UiPlugin {
                 footer_pause_resume_system.before(handle_strategy_run_system),
                 speed_button_system,
                 update_speed_buttons_system,
-                log_open_strategy_requested_system,
-                open_strategy_buffer_system,
+                log_strategy_file_load_requested_system,
+                handle_strategy_file_load_system,
                 update_strategy_status_label_system,
                 run_result_panel_system,
                 log_strategy_run_requested_system,
@@ -111,7 +112,6 @@ impl Plugin for UiPlugin {
                 update_sidebar_system,
                 panel_button_system,
                 panel_spawn_dispatcher_system,
-                process_pending_strategy_load_system.before(open_strategy_buffer_system),
             ),
         )
         .add_systems(
@@ -134,10 +134,11 @@ impl Plugin for UiPlugin {
                 apply_pending_app_edits_system.after(undo_redo_system),
                 apply_strategy_snapshot_restore_system.after(apply_pending_app_edits_system),
                 sync_strategy_buffer_to_editor_system
-                    .after(open_strategy_buffer_system)
+                    .after(handle_strategy_file_load_system)
                     .after(apply_pending_app_edits_system)
                     .after(apply_strategy_snapshot_restore_system),
                 debounced_strategy_autosave_system,
+                handle_strategy_save_requested_system,
                 update_strategy_editor_zoom_system,
             ),
         )

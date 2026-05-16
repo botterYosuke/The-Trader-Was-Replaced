@@ -4,9 +4,10 @@ use crate::trading::{
 };
 use crate::ui::components::{
     FooterRoot, GrpcStatusLabel, PauseResumeButton, PauseResumeLabel, ReplayStateBadge,
-    ReplayTimeLabel, SpeedButton, StrategyBuffer, StrategyRunRequested, TransportButton,
+    ReplayTimeLabel, SpeedButton, StrategyBuffer, StrategyEditorId, StrategyFragment,
+    StrategyRunRequested, TransportButton, WindowRoot,
 };
-use crate::ui::strategy_editor::{flush_strategy_cache, StrategyAutoSaveState};
+use crate::ui::strategy_editor::{flush_strategy_cache, merge_fragments, StrategyAutoSaveState};
 use bevy::prelude::*;
 
 const BTN_NORMAL: Color = Color::srgba(0.12, 0.12, 0.18, 1.0);
@@ -440,6 +441,7 @@ pub fn footer_pause_resume_system(
     last_run: Res<LastRunResult>,
     mut auto_save: ResMut<StrategyAutoSaveState>,
     mut run_events: EventWriter<StrategyRunRequested>,
+    fragments_q: Query<(&StrategyEditorId, &StrategyFragment), With<WindowRoot>>,
 ) {
     for (interaction, mut bg) in &mut query {
         match interaction {
@@ -463,17 +465,21 @@ pub fn footer_pause_resume_system(
                             warn!("Run blocked: already running");
                             continue;
                         }
-                        if buffer.dirty {
-                            match flush_strategy_cache(&mut buffer, &mut auto_save) {
-                                Ok(true) => {}
-                                Ok(false) => {
-                                    warn!("Run blocked: no cache_path set");
-                                    continue;
-                                }
-                                Err(e) => {
-                                    error!("strategy flush before run failed: {}", e);
-                                    continue;
-                                }
+                        let mut items: Vec<(String, String)> = fragments_q
+                            .iter()
+                            .map(|(id, f)| (id.region_key.clone(), f.source.clone()))
+                            .collect();
+                        items.sort_by(|a, b| a.0.cmp(&b.0));
+                        let merged = merge_fragments(&items);
+                        match flush_strategy_cache(&merged, &mut buffer, &mut auto_save) {
+                            Ok(true) => {}
+                            Ok(false) => {
+                                warn!("Run blocked: no cache_path set");
+                                continue;
+                            }
+                            Err(e) => {
+                                error!("strategy flush before run failed: {}", e);
+                                continue;
                             }
                         }
                         let Some(path) = buffer.cache_path.clone() else {

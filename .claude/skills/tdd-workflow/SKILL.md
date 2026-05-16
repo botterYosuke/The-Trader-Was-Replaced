@@ -1,6 +1,6 @@
 ---
 name: tdd-workflow
-description: Use this skill when writing new features, fixing bugs, or refactoring code in The-Trader-Was-Replaced. Enforces test-driven development for both Python (pytest) and Rust (cargo test) layers. Trigger whenever the user says "implement", "add feature", "fix bug", "refactor", "write tests", or is about to touch any file in python/engine/, src/, or python/tests/.
+description: Use this skill when writing new features, fixing bugs, or refactoring code in The-Trader-Was-Replaced. Enforces test-driven development for both Python (pytest) and Rust (cargo test) layers. Trigger whenever the user says "implement", "add feature", "fix bug", "refactor", "write tests", or is about to touch any file in python/engine/, src/, or python/tests/. 日本語トリガー: 「実装して」「バグ修正」「リファクタ」「テスト書いて」「src/ を変更」「レビュー指摘を修正」「コンパイルエラー修正」「テスト破損を直す」「cargo test が落ちた」など。
 origin: ECC (customized for The-Trader-Was-Replaced)
 ---
 

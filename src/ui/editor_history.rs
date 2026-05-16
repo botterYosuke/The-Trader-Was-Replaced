@@ -28,14 +28,14 @@ use crate::ui::layout_persistence::WindowLayout;
 #[derive(Debug, Clone)]
 pub enum AppEditAction {
     /// Strategy Editor のテキストを指定文字列に置き換える。
-    SetStrategySource { text: String },
+    SetStrategySource { region_key: String, text: String },
     /// 指定 kind のウィンドウを指定位置に移動する（PanelKind で検索するため entity 不要）。
-    MoveWindow { kind: PanelKind, position: Vec2 },
+    MoveWindow { kind: PanelKind, region_key: Option<String>, position: Vec2 },
     /// 指定 layout のパネルを spawn する（undo 時の WindowDespawn の逆など）。
     /// layout に位置・サイズ・z が含まれるため、復元位置が正確になる。
-    SpawnWindow { layout: WindowLayout, strategy_snapshot: Option<String> },
+    SpawnWindow { layout: WindowLayout, strategy_snapshot: Option<(String, String)> },
     /// 指定 kind のパネルを despawn する（PanelKind で検索するため entity 不要）。
-    DespawnWindow { kind: PanelKind },
+    DespawnWindow { kind: PanelKind, region_key: Option<String> },
 }
 
 /// `Edit::Target` として `Record` に渡す pending キュー。
@@ -58,6 +58,8 @@ impl PendingAppEdits {
 /// テキスト編集の before/after を保持するコマンド。
 #[derive(Debug, Clone)]
 pub struct TextEdit {
+    /// このテキスト編集が属する StrategyEditor の region_key。
+    pub region_key: String,
     pub before: String,
     pub after: String,
     /// 直前の TextEdit からの経過時間（マージ判定に使う）。
@@ -68,6 +70,8 @@ pub struct TextEdit {
 #[derive(Debug, Clone)]
 pub struct WindowMoveEdit {
     pub kind: PanelKind,
+    /// StrategyEditor の場合に使う region 特定キー。Chart 等は None。
+    pub region_key: Option<String>,
     pub before: Vec2,
     pub after: Vec2,
 }
@@ -87,8 +91,8 @@ pub struct WindowDespawnEdit {
     /// 閉じた瞬間の完全なレイアウトスナップショット（kind・position・size・z を含む）。
     /// undo 時にこの位置・サイズ・z でパネルを再 spawn する。
     pub layout: WindowLayout,
-    /// × で閉じた瞬間の buffer.source。undo で Strategy Editor を再 spawn するときに復元。
-    pub strategy_snapshot: Option<String>,
+    /// (region_key, source) のタプル。undo で Strategy Editor を再 spawn するときに両方必要。
+    pub strategy_snapshot: Option<(String, String)>,
 }
 
 /// Undo/Redo スタックに積む編集コマンドの種別。
@@ -119,12 +123,14 @@ impl Edit for AppEdit {
         match self {
             AppEdit::Text(t) => {
                 target.push(AppEditAction::SetStrategySource {
+                    region_key: t.region_key.clone(),
                     text: t.after.clone(),
                 });
             }
             AppEdit::WindowMove(w) => {
                 target.push(AppEditAction::MoveWindow {
                     kind: w.kind,
+                    region_key: w.region_key.clone(),
                     position: w.after,
                 });
             }
@@ -136,7 +142,10 @@ impl Edit for AppEdit {
                 });
             }
             AppEdit::WindowDespawn(d) => {
-                target.push(AppEditAction::DespawnWindow { kind: d.layout.kind });
+                target.push(AppEditAction::DespawnWindow {
+                    kind: d.layout.kind,
+                    region_key: d.layout.region_key.clone(),
+                });
             }
         }
     }
@@ -146,18 +155,23 @@ impl Edit for AppEdit {
         match self {
             AppEdit::Text(t) => {
                 target.push(AppEditAction::SetStrategySource {
+                    region_key: t.region_key.clone(),
                     text: t.before.clone(),
                 });
             }
             AppEdit::WindowMove(w) => {
                 target.push(AppEditAction::MoveWindow {
                     kind: w.kind,
+                    region_key: w.region_key.clone(),
                     position: w.before,
                 });
             }
             AppEdit::WindowSpawn(s) => {
                 // spawn を undo → despawn（PanelKind で検索）
-                target.push(AppEditAction::DespawnWindow { kind: s.kind });
+                target.push(AppEditAction::DespawnWindow {
+                    kind: s.kind,
+                    region_key: s.layout.region_key.clone(),
+                });
             }
             AppEdit::WindowDespawn(d) => {
                 // despawn を undo → spawn 再現（閉じた瞬間の layout + snapshot を渡す）
@@ -213,7 +227,7 @@ pub struct AppHistory {
     pub record: Record<AppEdit>,
     pub pending: PendingAppEdits,
     pub replaying_depth: u32,
-    pub suppress_echo_target: Option<String>,
+    pub suppress_echo_target: Option<(String, String)>,
 }
 
 impl Default for AppHistory {
@@ -240,17 +254,18 @@ impl AppHistory {
     /// `sync_editor_to_strategy_buffer_system` が `new_text == target` のとき
     /// だけ echo を消費・無視し、異なるテキストが来た場合はターゲットをクリアして
     /// 通常入力として履歴に積む。
-    pub fn suppress_echo(&mut self, target: String) {
-        self.suppress_echo_target = Some(target);
+    pub fn suppress_echo(&mut self, region_key: String, text: String) {
+        self.suppress_echo_target = Some((region_key, text));
     }
 
     /// TextEdit を Record に push する。
     /// `is_replaying()` が true のときは何もしない。
-    pub fn push_text(&mut self, before: String, after: String) {
+    pub fn push_text(&mut self, region_key: String, before: String, after: String) {
         if self.is_replaying() {
             return;
         }
         let edit = AppEdit::Text(TextEdit {
+            region_key,
             before,
             after,
             timestamp: Instant::now(),
@@ -264,7 +279,7 @@ impl AppHistory {
     }
 
     /// WindowMoveEdit を Record に push する。
-    pub fn push_window_move(&mut self, kind: PanelKind, before: Vec2, after: Vec2) {
+    pub fn push_window_move(&mut self, kind: PanelKind, region_key: Option<String>, before: Vec2, after: Vec2) {
         if self.is_replaying() {
             return;
         }
@@ -273,6 +288,7 @@ impl AppHistory {
         }
         let edit = AppEdit::WindowMove(WindowMoveEdit {
             kind,
+            region_key,
             before,
             after,
         });
@@ -295,7 +311,7 @@ impl AppHistory {
     /// WindowDespawnEdit を Record に push する。
     /// `layout` は閉じた瞬間の完全スナップショット（position・size・z を含む）。
     /// undo 時にこの位置でパネルを再 spawn する。
-    pub fn push_window_despawn(&mut self, layout: WindowLayout, strategy_snapshot: Option<String>) {
+    pub fn push_window_despawn(&mut self, layout: WindowLayout, strategy_snapshot: Option<(String, String)>) {
         if self.is_replaying() {
             return;
         }
@@ -320,7 +336,7 @@ pub struct UndoRedoApplied;
 /// `apply_strategy_snapshot_restore_system` が翌フレーム以降に処理する。
 #[derive(Resource, Default, Debug)]
 pub struct PendingStrategySnapshotRestore {
-    pub snapshot: Option<String>,
+    pub snapshot: Option<(String, String)>,
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -344,6 +360,7 @@ mod tests {
 
     fn make_text_edit(before: &str, after: &str) -> AppEdit {
         AppEdit::Text(TextEdit {
+            region_key: "region_001".to_string(),
             before: before.to_string(),
             after: after.to_string(),
             timestamp: Instant::now(),
@@ -359,7 +376,7 @@ mod tests {
         edit.edit(&mut pending);
         assert_eq!(pending.queue.len(), 1);
         match &pending.queue[0] {
-            AppEditAction::SetStrategySource { text } => assert_eq!(text, "after"),
+            AppEditAction::SetStrategySource { text, .. } => assert_eq!(text, "after"),
             _ => panic!("expected SetStrategySource"),
         }
     }
@@ -371,7 +388,7 @@ mod tests {
         edit.undo(&mut pending);
         assert_eq!(pending.queue.len(), 1);
         match &pending.queue[0] {
-            AppEditAction::SetStrategySource { text } => assert_eq!(text, "before"),
+            AppEditAction::SetStrategySource { text, .. } => assert_eq!(text, "before"),
             _ => panic!("expected SetStrategySource"),
         }
     }
@@ -404,7 +421,7 @@ mod tests {
         record.undo(&mut pending);
         assert_eq!(pending.queue.len(), 1);
         match &pending.queue[0] {
-            AppEditAction::SetStrategySource { text } => assert_eq!(text, "hello"),
+            AppEditAction::SetStrategySource { text, .. } => assert_eq!(text, "hello"),
             _ => panic!("expected SetStrategySource(hello)"),
         }
         pending.queue.clear();
@@ -413,7 +430,7 @@ mod tests {
         record.redo(&mut pending);
         assert_eq!(pending.queue.len(), 1);
         match &pending.queue[0] {
-            AppEditAction::SetStrategySource { text } => assert_eq!(text, "hello world"),
+            AppEditAction::SetStrategySource { text, .. } => assert_eq!(text, "hello world"),
             _ => panic!("expected SetStrategySource(hello world)"),
         }
     }
@@ -461,7 +478,7 @@ mod tests {
     fn test_push_text_suppressed_while_replaying() {
         let mut history = AppHistory::default();
         history.replaying_depth = 1;
-        history.push_text("before".to_string(), "after".to_string());
+        history.push_text("region_001".to_string(), "before".to_string(), "after".to_string());
         assert_eq!(history.record.len(), 0);
     }
 
@@ -474,12 +491,14 @@ mod tests {
 
         // 同一 Instant で作成（< 500ms は確実）
         let edit1 = AppEdit::Text(TextEdit {
+            region_key: "region_001".to_string(),
             before: "".to_string(),
             after: "hel".to_string(),
             timestamp: Instant::now(),
         });
         // 少し後（数μs 以内）で 差分 2 文字・改行なし・末尾 l（英字）= マージ
         let edit2 = AppEdit::Text(TextEdit {
+            region_key: "region_001".to_string(),
             before: "hel".to_string(),
             after: "hello".to_string(),
             timestamp: Instant::now(),
@@ -502,6 +521,7 @@ mod tests {
         let text_edit = make_text_edit("a", "ab");
         let move_edit = AppEdit::WindowMove(WindowMoveEdit {
             kind: PanelKind::Chart,
+            region_key: None,
             before: Vec2::ZERO,
             after: Vec2::new(100.0, 0.0),
         });
@@ -522,13 +542,14 @@ mod tests {
         let mut pending = PendingAppEdits::default();
         let mut edit = AppEdit::WindowMove(WindowMoveEdit {
             kind: PanelKind::Chart,
+            region_key: None,
             before: Vec2::new(10.0, 20.0),
             after: Vec2::new(100.0, 200.0),
         });
 
         edit.edit(&mut pending);
         match &pending.queue[0] {
-            AppEditAction::MoveWindow { kind: k, position: p } => {
+            AppEditAction::MoveWindow { kind: k, position: p, .. } => {
                 assert_eq!(*k, PanelKind::Chart);
                 assert_eq!(*p, Vec2::new(100.0, 200.0));
             }
@@ -538,7 +559,7 @@ mod tests {
 
         edit.undo(&mut pending);
         match &pending.queue[0] {
-            AppEditAction::MoveWindow { kind: k, position: p } => {
+            AppEditAction::MoveWindow { kind: k, position: p, .. } => {
                 assert_eq!(*k, PanelKind::Chart);
                 assert_eq!(*p, Vec2::new(10.0, 20.0));
             }
@@ -555,6 +576,7 @@ mod tests {
             position: [0.0, 0.0],
             size: [100.0, 100.0],
             z: 10.0,
+            region_key: None,
         }
     }
 
@@ -569,7 +591,7 @@ mod tests {
         edit.undo(&mut pending);
         assert_eq!(pending.queue.len(), 1);
         match &pending.queue[0] {
-            AppEditAction::DespawnWindow { kind } => assert_eq!(*kind, PanelKind::Chart),
+            AppEditAction::DespawnWindow { kind, .. } => assert_eq!(*kind, PanelKind::Chart),
             _ => panic!("expected DespawnWindow"),
         }
     }
@@ -604,11 +626,13 @@ mod tests {
         let mut pending = PendingAppEdits::default();
 
         let edit1 = AppEdit::Text(TextEdit {
+            region_key: "region_001".to_string(),
             before: "".to_string(),
             after: "hello".to_string(),
             timestamp: Instant::now(),
         });
         let edit2 = AppEdit::Text(TextEdit {
+            region_key: "region_001".to_string(),
             before: "hello".to_string(),
             after: "hello ".to_string(), // 末尾にスペース追加
             timestamp: Instant::now(),
@@ -630,11 +654,13 @@ mod tests {
 
         // ':' を追加
         let e1 = AppEdit::Text(TextEdit {
+            region_key: "region_001".to_string(),
             before: "".to_string(),
             after: "foo".to_string(),
             timestamp: Instant::now(),
         });
         let e2 = AppEdit::Text(TextEdit {
+            region_key: "region_001".to_string(),
             before: "foo".to_string(),
             after: "foo:".to_string(),
             timestamp: Instant::now(),
@@ -648,11 +674,13 @@ mod tests {
         let mut record2: Record<AppEdit> = Record::new();
         // '(' を追加
         let e3 = AppEdit::Text(TextEdit {
+            region_key: "region_001".to_string(),
             before: "".to_string(),
             after: "fn".to_string(),
             timestamp: Instant::now(),
         });
         let e4 = AppEdit::Text(TextEdit {
+            region_key: "region_001".to_string(),
             before: "fn".to_string(),
             after: "fn(".to_string(),
             timestamp: Instant::now(),
@@ -671,11 +699,13 @@ mod tests {
         let mut pending = PendingAppEdits::default();
 
         let edit1 = AppEdit::Text(TextEdit {
+            region_key: "region_001".to_string(),
             before: "".to_string(),
             after: "hello".to_string(),
             timestamp: Instant::now(),
         });
         let edit2 = AppEdit::Text(TextEdit {
+            region_key: "region_001".to_string(),
             before: "hello".to_string(),
             after: "hello\nworld".to_string(), // 改行追加
             timestamp: Instant::now(),
@@ -697,11 +727,13 @@ mod tests {
 
         let large_text = "a".repeat(100); // 100 文字の paste
         let edit1 = AppEdit::Text(TextEdit {
+            region_key: "region_001".to_string(),
             before: "".to_string(),
             after: "start".to_string(),
             timestamp: Instant::now(),
         });
         let edit2 = AppEdit::Text(TextEdit {
+            region_key: "region_001".to_string(),
             before: "start".to_string(),
             after: format!("start{}", large_text), // 差分 100 文字
             timestamp: Instant::now(),
@@ -724,6 +756,7 @@ mod tests {
         let mut pending = PendingAppEdits::default();
 
         let edit1 = AppEdit::Text(TextEdit {
+            region_key: "region_001".to_string(),
             before: "".to_string(),
             after: "hello".to_string(),
             timestamp: Instant::now(),
@@ -734,6 +767,7 @@ mod tests {
         std::thread::sleep(Duration::from_millis(600));
 
         let edit2 = AppEdit::Text(TextEdit {
+            region_key: "region_001".to_string(),
             before: "hello".to_string(),
             after: "hello world".to_string(),
             timestamp: Instant::now(),

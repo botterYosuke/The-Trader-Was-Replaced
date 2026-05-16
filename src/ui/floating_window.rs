@@ -1,5 +1,9 @@
 use crate::ui::buying_power::spawn_buying_power_panel;
-use crate::ui::components::{CloseButton, PanelKind, PanelSpawnRequested, PanelSpawnSource, StrategyBuffer, TitleBar, WindowManager, WindowRoot};
+use crate::ui::components::{
+    CloseButton, PanelKind, PanelSpawnRequested, PanelSpawnSource, PendingStrategyFragments,
+    RegionKeyAllocator, StrategyBuffer, StrategyEditorId, StrategyEditorSpawnSpec, StrategyFragment,
+    TitleBar, WindowManager, WindowRoot,
+};
 use crate::ui::editor_history::{ActiveDrag, AppHistory};
 use crate::ui::layout_persistence::WindowLayout;
 use crate::ui::orders::spawn_orders_panel;
@@ -121,15 +125,16 @@ pub fn spawn_floating_window(
         .observe(
             |drag_end: Trigger<Pointer<DragEnd>>,
              parent_query: Query<&Parent>,
-             root_q: Query<(&Transform, &PanelKind), With<WindowRoot>>,
+             root_q: Query<(&Transform, &PanelKind, Option<&StrategyEditorId>), With<WindowRoot>>,
              mut active_drag: ResMut<ActiveDrag>,
              mut history: ResMut<AppHistory>| {
                 let Ok(parent) = parent_query.get(drag_end.entity()) else { return };
                 let root_entity = parent.get();
                 let Some(before) = active_drag.starts.remove(&root_entity) else { return };
-                let Ok((tf, kind)) = root_q.get(root_entity) else { return };
+                let Ok((tf, kind, editor_id)) = root_q.get(root_entity) else { return };
                 let after = tf.translation.truncate();
-                history.push_window_move(*kind, before, after);
+                let region_key = editor_id.map(|id| id.region_key.clone());
+                history.push_window_move(*kind, region_key, before, after);
             },
         )
         .id();
@@ -175,28 +180,35 @@ pub fn spawn_floating_window(
         .observe(
             |trigger: Trigger<Pointer<Click>>,
              parent_query: Query<&Parent>,
-             root_q: Query<(&PanelKind, &Transform, &Sprite), With<WindowRoot>>,
-             buffer: Res<StrategyBuffer>,
+             root_q: Query<
+                 (
+                     &PanelKind,
+                     &Transform,
+                     &Sprite,
+                     Option<&StrategyEditorId>,
+                     Option<&StrategyFragment>,
+                 ),
+                 With<WindowRoot>,
+             >,
              mut history: ResMut<AppHistory>,
              mut commands: Commands| {
-                // CloseButton の親が root なので 1 hop で辿れる
                 let Ok(parent) = parent_query.get(trigger.entity()) else { return };
                 let root_entity = parent.get();
-                // undo 履歴に despawn を記録（閉じた瞬間の位置・サイズ・z をスナップショット）
                 if !history.is_replaying()
-                    && let Ok((kind, tf, sprite)) = root_q.get(root_entity)
+                    && let Ok((kind, tf, sprite, editor_id, fragment)) = root_q.get(root_entity)
                 {
+                    let region_key = editor_id.map(|id| id.region_key.clone());
                     let layout = WindowLayout {
                         kind: *kind,
+                        region_key,
                         visible: true,
                         position: [tf.translation.x, tf.translation.y],
                         size: sprite.custom_size.map(|s| s.to_array()).unwrap_or([0.0, 0.0]),
                         z: tf.translation.z,
                     };
-                    let snapshot = if *kind == PanelKind::StrategyEditor {
-                        Some(buffer.source.clone())
-                    } else {
-                        None
+                    let snapshot = match (editor_id, fragment) {
+                        (Some(id), Some(f)) => Some((id.region_key.clone(), f.source.clone())),
+                        _ => None,
                     };
                     history.push_window_despawn(layout, snapshot);
                 }
@@ -222,6 +234,13 @@ pub fn spawn_floating_window(
     (root, content_area, title_bar)
 }
 
+fn untitled_cache_path(region_key: &str) -> Option<std::path::PathBuf> {
+    let dir = dirs::cache_dir()?
+        .join("the-trader-was-replaced")
+        .join("untitled");
+    Some(dir.join(format!("{}.py", region_key)))
+}
+
 /// パネル spawn イベントを捌く dispatcher。
 /// - 同種の panel が既に world にあれば skip（"一回だけ spawn" ルール）
 /// - 無ければ各 PanelKind に対応する spawn 関数を呼ぶ（Sub-step 1.3+ で arm を埋める）
@@ -231,14 +250,18 @@ pub fn panel_spawn_dispatcher_system(
     existing: Query<&PanelKind, With<WindowRoot>>,
     mut commands: Commands,
     mut font_system: ResMut<CosmicFontSystem>,
+    mut allocator: ResMut<RegionKeyAllocator>,
     mut history: ResMut<AppHistory>,
+    mut pending_fragments: ResMut<PendingStrategyFragments>,
+    mut buffer: ResMut<StrategyBuffer>,
 ) {
     for event in events.read() {
         let already = existing.iter().any(|k| *k == event.kind);
-        if already {
+        if already && !matches!(event.kind, PanelKind::StrategyEditor) {
             info!("panel already spawned, skipped: {:?}", event.kind);
             continue;
         }
+        let mut spawned_region_key: Option<String> = None;
         match event.kind {
             PanelKind::BuyingPower => spawn_buying_power_panel(&mut commands),
             PanelKind::RunResult => spawn_run_result_panel(&mut commands),
@@ -246,18 +269,54 @@ pub fn panel_spawn_dispatcher_system(
             PanelKind::Orders => spawn_orders_panel(&mut commands),
             PanelKind::Chart => spawn_chart_panel(&mut commands),
             PanelKind::StrategyEditor => {
-                spawn_strategy_editor_panel(&mut commands, &mut font_system)
+                let spec = event.strategy_spec.clone().unwrap_or_else(|| {
+                    let key = allocator.allocate();
+                    if let Some(temp_path) = untitled_cache_path(&key) {
+                        if let Some(parent) = temp_path.parent() {
+                            match std::fs::create_dir_all(parent) {
+                                Ok(()) => {
+                                    buffer.cache_path = Some(temp_path);
+                                    buffer.original_path = None;
+                                }
+                                Err(e) => {
+                                    warn!(
+                                        "untitled cache dir creation failed: {}, Run will be blocked",
+                                        e
+                                    );
+                                }
+                            }
+                        }
+                    }
+                    StrategyEditorSpawnSpec {
+                        region_key: Some(key),
+                        source: Some(String::new()),
+                        layout_source: event.source,
+                    }
+                });
+                let spec = if spec.source.is_none() {
+                    let source = spec
+                        .region_key
+                        .as_deref()
+                        .and_then(|k| pending_fragments.by_region_key.remove(k))
+                        .unwrap_or_default();
+                    StrategyEditorSpawnSpec {
+                        source: Some(source),
+                        ..spec
+                    }
+                } else {
+                    spec
+                };
+                spawned_region_key = spec.region_key.clone();
+                spawn_strategy_editor_panel(&mut commands, &mut font_system, &mut allocator, spec);
             }
         }
-        // User 操作による spawn のみ Undo スタックに記録する
-        // dispatcher は spawn 直後に entity の位置を読めない（commands は deferred）ため、
-        // デフォルト位置を仮値として渡す（redo 時はデフォルト位置に再 spawn される仕様として許容）。
         if event.source == PanelSpawnSource::User && !history.is_replaying() {
             let default_layout = WindowLayout {
                 kind: event.kind,
+                region_key: spawned_region_key,
                 visible: true,
-                position: [0.0, 0.0],     // deferred spawn のため実位置は不明
-                size: [400.0, 300.0],     // デフォルトサイズの仮値
+                position: [0.0, 0.0],
+                size: [400.0, 300.0],
                 z: 10.0,
             };
             history.push_window_spawn(event.kind, default_layout);
