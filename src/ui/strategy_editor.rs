@@ -1,14 +1,13 @@
 use crate::ui::components::{
     PanelKind, PanelSpawnRequested, PanelSpawnSource, RedoMenuRequested, RegionKeyAllocator,
     StrategyBuffer, StrategyEditorId, StrategyEditorSpawnSpec, StrategyFileLoadRequested,
-    StrategyFragment, StrategySaveRequested, UndoMenuRequested, WindowRoot,
+    StrategyFragment, UndoMenuRequested, WindowRoot,
 };
 use crate::ui::editor_history::{
     AppEditAction, AppHistory, PendingStrategySnapshotRestore, UndoRedoApplied,
 };
 use crate::ui::floating_window::{FloatingWindowSpec, spawn_floating_window};
 use crate::ui::layout_persistence::{AutoSaveState, PendingLayoutApply};
-use crate::ui::menu_bar::strategy_cache_path;
 use bevy::prelude::*;
 use bevy_cosmic_edit::cosmic_text::{Attrs, AttrsOwned, Edit, Metrics, Shaping};
 use bevy_cosmic_edit::{
@@ -712,89 +711,6 @@ pub fn split_py_into_fragments(py: &str) -> SplitOutcome {
     SplitOutcome { fragments, max_numeric_suffix, warnings }
 }
 
-pub fn handle_strategy_save_requested_system(
-    mut events: EventReader<StrategySaveRequested>,
-    mut fragments_q: Query<(&StrategyEditorId, &mut StrategyFragment), With<WindowRoot>>,
-    mut buffer: ResMut<StrategyBuffer>,
-    mut auto_save: ResMut<StrategyAutoSaveState>,
-) {
-    for event in events.read() {
-        let mut items: Vec<(String, String)> = fragments_q
-            .iter()
-            .map(|(id, f)| (id.region_key.clone(), f.source.clone()))
-            .collect();
-        items.sort_by(|a, b| a.0.cmp(&b.0));
-        let merged = merge_fragments(&items);
-
-        let save_path: Option<std::path::PathBuf> = if event.force_dialog
-            || buffer.original_path.is_none()
-        {
-            rfd::FileDialog::new()
-                .add_filter("Python", &["py"])
-                .set_file_name(
-                    buffer
-                        .original_path
-                        .as_ref()
-                        .and_then(|p| p.file_name())
-                        .and_then(|s| s.to_str())
-                        .unwrap_or("strategy.py"),
-                )
-                .save_file()
-        } else {
-            buffer.original_path.clone()
-        };
-
-        let Some(path) = save_path else {
-            info!("save strategy cancelled: no path selected");
-            continue;
-        };
-
-        match std::fs::write(&path, &merged) {
-            Ok(()) => {
-                info!("strategy saved: {:?}", path);
-                for (_, mut fragment) in fragments_q.iter_mut() {
-                    fragment.dirty = false;
-                }
-                buffer.last_merged_source = Some(merged.clone());
-                auto_save.dirty = false;
-                auto_save.last_change = None;
-
-                if event.force_dialog || buffer.original_path.is_none() {
-                    if buffer.original_path.is_none() {
-                        if let Some(old_temp) = buffer.cache_path.take() {
-                            if old_temp.exists() {
-                                if let Err(e) = std::fs::remove_file(&old_temp) {
-                                    warn!("failed to remove untitled temp cache {:?}: {}", old_temp, e);
-                                } else {
-                                    info!("untitled temp cache removed: {:?}", old_temp);
-                                }
-                            }
-                        }
-                    }
-                    buffer.original_path = Some(path.clone());
-                    match strategy_cache_path(&path) {
-                        Some(new_cache) => {
-                            if let Some(parent) = new_cache.parent() {
-                                if let Err(e) = std::fs::create_dir_all(parent) {
-                                    warn!("failed to create cache dir after Save As {:?}: {}", parent, e);
-                                } else {
-                                    buffer.cache_path = Some(new_cache);
-                                }
-                            }
-                        }
-                        None => {
-                            warn!("failed to compute cache_path for {:?}; autosave disabled", path);
-                            buffer.cache_path = None;
-                        }
-                    }
-                }
-            }
-            Err(e) => {
-                error!("strategy save failed ({:?}): {}", path, e);
-            }
-        }
-    }
-}
 
 #[cfg(test)]
 mod tests {

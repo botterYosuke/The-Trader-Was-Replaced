@@ -239,19 +239,12 @@ pub struct StrategyFileLoadRequested {
 /// handler 内部の分岐条件として使い、サイドカー適用・サプレスなどを切り替える。
 #[derive(Debug, Clone, Copy)]
 pub enum StrategyLoadMode {
-    /// File → Open Strategy: サイドカーが存在すれば適用、なければ全置換。
+    /// ユーザーが Load Layout から .py を選択したときのロードモード。サイドカーが存在すれば適用、なければ全置換。
     UserOpen,
     /// レイアウト JSON の strategy_path フィールド由来。スポーン配置はレイアウトが決定済み。
     LayoutRestore,
     /// 起動時の last_strategy_path 復元。UserOpen と同じだがサイドカー echo は抑制。
     StartupRestore,
-}
-
-/// File → Save Strategy (.py) / Save Strategy As... のどちらかを発火するイベント。
-/// `force_dialog: true` なら常にファイル選択ダイアログを開く（Save As）。
-#[derive(Event, Debug, Clone)]
-pub struct StrategySaveRequested {
-    pub force_dialog: bool,
 }
 
 /// `PanelSpawnRequested` に同梱して `panel_spawn_dispatcher_system` に渡す引数。

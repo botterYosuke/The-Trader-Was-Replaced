@@ -22,7 +22,7 @@ use crate::ui::chart::chart_render_system;
 use crate::ui::components::{
     OpenMenu, PanelSpawnRequested, PendingStrategyFragments, RedoMenuRequested,
     RegionKeyAllocator, ScenarioMetadata, StrategyBuffer, StrategyFileLoadRequested,
-    StrategyRunRequested, StrategySaveRequested, UndoMenuRequested, WindowManager,
+    StrategyRunRequested, UndoMenuRequested, WindowManager,
 };
 use crate::ui::floating_window::panel_spawn_dispatcher_system;
 use crate::ui::footer::{
@@ -43,7 +43,7 @@ use crate::ui::sidebar::{panel_button_system, spawn_sidebar, update_sidebar_syst
 use crate::ui::editor_history::{ActiveDrag, AppHistory, PendingStrategySnapshotRestore, UndoRedoApplied};
 use crate::ui::strategy_editor::{
     StrategyAutoSaveState, apply_pending_app_edits_system, apply_strategy_snapshot_restore_system,
-    debounced_strategy_autosave_system, handle_strategy_save_requested_system,
+    debounced_strategy_autosave_system,
     sync_editor_to_strategy_buffer_system, sync_strategy_buffer_to_editor_system, undo_redo_system,
     update_strategy_editor_zoom_system,
 };
@@ -73,7 +73,6 @@ impl Plugin for UiPlugin {
         .init_resource::<PendingStrategySnapshotRestore>()
         .init_resource::<OpenMenu>()
         .add_event::<StrategyFileLoadRequested>()
-        .add_event::<StrategySaveRequested>()
         .add_event::<StrategyRunRequested>()
         .add_event::<PanelSpawnRequested>()
         .add_event::<UndoRedoApplied>()
@@ -138,7 +137,6 @@ impl Plugin for UiPlugin {
                     .after(apply_pending_app_edits_system)
                     .after(apply_strategy_snapshot_restore_system),
                 debounced_strategy_autosave_system,
-                handle_strategy_save_requested_system,
                 update_strategy_editor_zoom_system,
             ),
         )
