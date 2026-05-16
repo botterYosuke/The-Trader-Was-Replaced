@@ -27,7 +27,9 @@ description: |
     Text2d Anchor の左寄せ — で必ずハマる）
   ⑧ `cosmic_edit`, `CosmicEditBuffer`, `CosmicEditor`, `TextEdit2d`, `FocusedWidget`,
     `CosmicBackgroundColor`, `CursorColor`, `CosmicTextChanged`, `set_text`, `with_buffer_mut`
-    という語彙が出てきたとき
+    という語彙が出てきたとき、または「focused で文字が小さい」「unfocused で文字が大きい」
+    「フォントサイズが 2 種類」「DPI スケールが反映されない」「set_initial_scale」
+    「Added<CosmicEditBuffer>」と言われたとき
   ⑨ フォント / グリフ / 文字化け関連: "font", "TextFont", "Handle<Font>", "AssetServer",
     "豆腐", "mojibake", "□", "▶", "■", "glyph", "BEVY_ASSET_ROOT", "Path not found",
     "assets/fonts/", "FiraMono", "NotoSansSymbols" が出たとき。
@@ -275,6 +277,22 @@ egui の中で `state.buffer` のような大きい String を編集するとき
   食い違って二重スケールになる。**clone した buffer 自身のメトリクスを基準にスケールする**
   のが正解。診断は `info!` で `buffer.metrics().font_size` と
   `editor.with_buffer(|b| b.metrics().font_size)` を同時に出すと一目瞭然。
+  詳細は memory `cosmic-edit-buffer-metrics-dpi-trap.md`。
+- **focused エディタと unfocused エディタでフォントサイズが 2 種類になる（focused が小さい）**:
+  `set_initial_scale`（`First` スケジュール、`Added<CosmicEditBuffer>` フィルタ）と
+  `add_editor_to_focused`（`PostUpdate`）の**フレーム跨ぎ競合**。
+  entity が spawn された「同フレームの PostUpdate」で `add_editor_to_focused` が先に走り、
+  DPI スケール前の (14,18) で `CosmicEditor` を生成する。翌フレームの `First` で
+  `set_initial_scale` が `CosmicEditBuffer` を (28,36) にスケールするが、
+  **`CosmicEditor` 内部 buffer は触らない**ため、両者の metrics がズレる。
+  修正は `set_initial_scale` のクエリに `Option<&mut CosmicEditor>` を追加し、存在すれば
+  `ed.with_buffer_mut(|buf| buf.set_metrics(&mut font_system.0, m))` で同時スケール。
+  診断ログパターン:
+  ```
+  add_editor_to_focused  entity=112v1  buffer_metrics=(14.0, 18.0)   ← DPI 前
+  set_initial_scale      entity=112v1  scale=2.00  after=(28.0,36.0)
+  drop_editor_unfocused  entity=112v1  buffer=(28.0,36.0) editor=(14.0,18.0)  ← ズレ
+  ```
   詳細は memory `cosmic-edit-buffer-metrics-dpi-trap.md`。
 - **Alt+F など修飾キーショートカットが bevy_cosmic_edit に「f」として書き込まれる**:
   `ButtonInput<KeyCode>` で Alt+キーを検出して処理した後、**同フレームで**
