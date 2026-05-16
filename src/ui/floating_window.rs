@@ -275,18 +275,21 @@ pub fn panel_spawn_dispatcher_system(
             PanelKind::StrategyEditor => {
                 let spec = event.strategy_spec.clone().unwrap_or_else(|| {
                     let key = allocator.allocate();
-                    if let Some(temp_path) = untitled_cache_path(&key) {
-                        if let Some(parent) = temp_path.parent() {
-                            match std::fs::create_dir_all(parent) {
-                                Ok(()) => {
-                                    buffer.cache_path = Some(temp_path);
-                                    buffer.original_path = None;
-                                }
-                                Err(e) => {
-                                    warn!(
-                                        "untitled cache dir creation failed: {}, Run will be blocked",
-                                        e
-                                    );
+                    // strategy がロード済みの場合は既存の cache_path を使う。
+                    // original_path は絶対に None に上書きしない（ScenarioMetadata がリセットされる）。
+                    if buffer.original_path.is_none() && buffer.cache_path.is_none() {
+                        if let Some(temp_path) = untitled_cache_path(&key) {
+                            if let Some(parent) = temp_path.parent() {
+                                match std::fs::create_dir_all(parent) {
+                                    Ok(()) => {
+                                        buffer.cache_path = Some(temp_path);
+                                    }
+                                    Err(e) => {
+                                        warn!(
+                                            "untitled cache dir creation failed: {}, Run will be blocked",
+                                            e
+                                        );
+                                    }
                                 }
                             }
                         }
