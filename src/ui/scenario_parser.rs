@@ -1,8 +1,8 @@
-use crate::ui::components::{ScenarioMetadata, StrategyBuffer};
+use crate::ui::components::{
+    ScenarioFileWatchState, ScenarioLoadedFromFile, ScenarioMetadata, StrategyBuffer,
+};
 use bevy::prelude::*;
 use serde::Deserialize;
-use std::path::PathBuf;
-use std::time::SystemTime;
 
 /// サイドカー JSON のルート構造。`scenario` キー以外は無視する。
 #[derive(Deserialize)]
@@ -42,30 +42,26 @@ enum StringOrList {
 pub fn parse_scenario_system(
     buffer: Res<StrategyBuffer>,
     mut scenario: ResMut<ScenarioMetadata>,
-    mut last_path: Local<Option<PathBuf>>,
-    mut last_mtime: Local<Option<SystemTime>>,
+    mut watch: ResMut<ScenarioFileWatchState>,
+    mut loaded_events: EventWriter<ScenarioLoadedFromFile>,
 ) {
-    // original_path 変化 or sidecar JSON の mtime 変化のいずれかで再実行する。
-    // mtime も見ることで、外部編集後の再 Open（path 不変）にも追従する。
     let current_path = buffer.original_path.clone();
     let current_mtime = current_path
         .as_ref()
         .map(|p| p.with_extension("json"))
         .and_then(|jp| std::fs::metadata(&jp).ok())
         .and_then(|m| m.modified().ok());
-    if *last_path == current_path && *last_mtime == current_mtime {
+    if watch.last_path == current_path && watch.last_mtime == current_mtime {
         return;
     }
-    *last_path = current_path.clone();
-    *last_mtime = current_mtime;
+    watch.last_path = current_path.clone();
+    watch.last_mtime = current_mtime;
 
-    // path がなければリセット
     let Some(py_path) = current_path else {
         *scenario = ScenarioMetadata::default();
         return;
     };
 
-    // <strategy>.json を読む
     let json_path = py_path.with_extension("json");
 
     let text = match std::fs::read_to_string(&json_path) {
@@ -98,7 +94,6 @@ pub fn parse_scenario_system(
         return;
     };
 
-    // instruments 解決: instruments 優先、なければ instrument を 1 要素 list 化
     let instruments: Vec<String> = if let Some(list) = sf.instruments {
         list
     } else if let Some(sol) = sf.instrument {
@@ -110,31 +105,49 @@ pub fn parse_scenario_system(
         vec![]
     };
 
+    let has_instruments_ref = serde_json::from_str::<serde_json::Value>(&text)
+        .ok()
+        .and_then(|v| {
+            v.get("scenario")
+                .and_then(|s| s.get("instruments_ref"))
+                .map(|_| true)
+        })
+        .unwrap_or(false);
+
     let new_meta = ScenarioMetadata {
         schema_version: sf.schema_version,
-        instruments,
+        instruments: instruments.clone(),
         start: sf.start,
-        end: sf.end,
+        end: sf.end.clone(),
         granularity: sf.granularity,
         initial_cash: sf.initial_cash,
     };
 
     info!(
-        "SCENARIO parsed from sidecar: schema_version={:?} instruments={:?} start={:?} end={:?} granularity={:?} initial_cash={:?}",
+        "SCENARIO parsed from sidecar: schema_version={:?} instruments={:?} start={:?} end={:?} granularity={:?} initial_cash={:?} has_instruments_ref={}",
         new_meta.schema_version,
         new_meta.instruments,
         new_meta.start,
         new_meta.end,
         new_meta.granularity,
         new_meta.initial_cash,
+        has_instruments_ref,
     );
 
     *scenario = new_meta;
+
+    loaded_events.send(ScenarioLoadedFromFile {
+        source_path: json_path,
+        instruments,
+        end: sf.end,
+        has_instruments_ref,
+    });
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::ui::components::ScenarioLoadedFromFile;
 
     #[test]
     fn test_parse_v1_from_json() {
@@ -197,5 +210,208 @@ mod tests {
         let root: SidecarRoot = serde_json::from_str(json).unwrap();
         let sf = root.scenario.unwrap();
         assert_eq!(sf.instruments, Some(vec!["1301.TSE".to_string()]));
+    }
+
+    /// Integration-style: tempdir に <stem>.py と <stem>.json を置き、
+    /// StrategyBuffer.original_path をセットして `parse_scenario_system` を 1 tick 回す。
+    /// instruments が正しく ScenarioMetadata に反映されることを確認する。
+    #[test]
+    fn test_system_parses_instruments_from_sidecar() {
+        let dir = tempfile::tempdir().unwrap();
+        let py_path = dir.path().join("strat.py");
+        let json_path = dir.path().join("strat.json");
+        std::fs::write(&py_path, "# dummy").unwrap();
+        std::fs::write(
+            &json_path,
+            r#"{"scenario": {"schema_version": 2, "instruments": ["1301.TSE", "7203.TSE"], "start": "2025-01-06", "end": "2025-01-10", "granularity": "Daily", "initial_cash": 1000000}}"#,
+        )
+        .unwrap();
+
+        let mut app = App::new();
+        app.insert_resource(StrategyBuffer {
+            original_path: Some(py_path),
+            cache_path: None,
+            last_merged_source: None,
+        });
+        app.init_resource::<ScenarioMetadata>();
+        app.init_resource::<ScenarioFileWatchState>();
+        app.add_event::<ScenarioLoadedFromFile>();
+        app.add_systems(Update, parse_scenario_system);
+        app.update();
+
+        let meta = app.world().resource::<ScenarioMetadata>();
+        assert_eq!(meta.schema_version, Some(2));
+        assert_eq!(meta.instruments, vec!["1301.TSE".to_string(), "7203.TSE".to_string()]);
+        assert_eq!(meta.granularity.as_deref(), Some("Daily"));
+    }
+
+    /// v1 単数 instrument が 1 要素 list に正規化されることを system 経由で確認。
+    #[test]
+    fn test_system_normalizes_v1_single_instrument() {
+        let dir = tempfile::tempdir().unwrap();
+        let py_path = dir.path().join("strat.py");
+        let json_path = dir.path().join("strat.json");
+        std::fs::write(&py_path, "# dummy").unwrap();
+        std::fs::write(
+            &json_path,
+            r#"{"scenario": {"schema_version": 1, "instrument": "1301.TSE", "start": "2025-01-06", "end": "2025-03-31", "granularity": "Daily", "initial_cash": 1000000}}"#,
+        )
+        .unwrap();
+
+        let mut app = App::new();
+        app.insert_resource(StrategyBuffer {
+            original_path: Some(py_path),
+            cache_path: None,
+            last_merged_source: None,
+        });
+        app.init_resource::<ScenarioMetadata>();
+        app.init_resource::<ScenarioFileWatchState>();
+        app.add_event::<ScenarioLoadedFromFile>();
+        app.add_systems(Update, parse_scenario_system);
+        app.update();
+
+        let meta = app.world().resource::<ScenarioMetadata>();
+        assert_eq!(meta.instruments, vec!["1301.TSE".to_string()]);
+    }
+
+    /// sidecar JSON 不在の場合 ScenarioMetadata がデフォルト（instruments 空）に
+    /// リセットされることを system 経由で確認。
+    #[test]
+    fn test_system_resets_when_sidecar_missing() {
+        let dir = tempfile::tempdir().unwrap();
+        let py_path = dir.path().join("no_sidecar.py");
+        std::fs::write(&py_path, "# dummy").unwrap();
+        // .json は作らない
+
+        let mut app = App::new();
+        // 事前に instruments が詰まった状態を入れておき、reset されることを確認
+        app.insert_resource(ScenarioMetadata {
+            schema_version: Some(99),
+            instruments: vec!["STALE".to_string()],
+            start: Some("old".to_string()),
+            end: None,
+            granularity: None,
+            initial_cash: None,
+        });
+        app.insert_resource(StrategyBuffer {
+            original_path: Some(py_path),
+            cache_path: None,
+            last_merged_source: None,
+        });
+        app.init_resource::<ScenarioFileWatchState>();
+        app.add_event::<ScenarioLoadedFromFile>();
+        app.add_systems(Update, parse_scenario_system);
+        app.update();
+
+        let meta = app.world().resource::<ScenarioMetadata>();
+        assert_eq!(meta.schema_version, None);
+        assert!(meta.instruments.is_empty());
+        assert!(meta.start.is_none());
+    }
+
+    // ===== Step 2 Red tests: event emission + watch state + instruments_ref =====
+
+    /// 初回読込時に `ScenarioLoadedFromFile` が 1 回発火し、
+    /// instruments/end/source_path がそのまま乗ることを確認。
+    #[test]
+    fn test_system_emits_loaded_event_on_first_read() {
+        let dir = tempfile::tempdir().unwrap();
+        let py_path = dir.path().join("strat.py");
+        let json_path = dir.path().join("strat.json");
+        std::fs::write(&py_path, "# dummy").unwrap();
+        std::fs::write(
+            &json_path,
+            r#"{"scenario": {"schema_version": 2, "instruments": ["1301.TSE"], "start": "2025-01-06", "end": "2025-01-10", "granularity": "Daily", "initial_cash": 1000000}}"#,
+        )
+        .unwrap();
+
+        let mut app = App::new();
+        app.insert_resource(StrategyBuffer {
+            original_path: Some(py_path.clone()),
+            cache_path: None,
+            last_merged_source: None,
+        });
+        app.init_resource::<ScenarioMetadata>();
+        app.init_resource::<ScenarioFileWatchState>();
+        app.add_event::<ScenarioLoadedFromFile>();
+        app.add_systems(Update, parse_scenario_system);
+        app.update();
+
+        let events = app.world().resource::<Events<ScenarioLoadedFromFile>>();
+        let mut reader = events.get_cursor();
+        let collected: Vec<_> = reader.read(events).cloned().collect();
+        assert_eq!(collected.len(), 1, "expected exactly one ScenarioLoadedFromFile event on first read");
+        let ev = &collected[0];
+        assert_eq!(ev.source_path, py_path.with_extension("json"));
+        assert_eq!(ev.instruments, vec!["1301.TSE".to_string()]);
+        assert_eq!(ev.end.as_deref(), Some("2025-01-10"));
+        assert!(!ev.has_instruments_ref, "plain instruments list must not set has_instruments_ref");
+    }
+
+    /// mtime 不変なら 2 tick 目以降は再発火しないこと (ScenarioFileWatchState の Resource 格上げ確認)。
+    #[test]
+    fn test_system_does_not_reemit_when_mtime_unchanged() {
+        let dir = tempfile::tempdir().unwrap();
+        let py_path = dir.path().join("strat.py");
+        let json_path = dir.path().join("strat.json");
+        std::fs::write(&py_path, "# dummy").unwrap();
+        std::fs::write(
+            &json_path,
+            r#"{"scenario": {"schema_version": 2, "instruments": ["A"], "start": "2025-01-06", "end": "2025-01-10", "granularity": "Daily", "initial_cash": 1000000}}"#,
+        )
+        .unwrap();
+
+        let mut app = App::new();
+        app.insert_resource(StrategyBuffer {
+            original_path: Some(py_path),
+            cache_path: None,
+            last_merged_source: None,
+        });
+        app.init_resource::<ScenarioMetadata>();
+        app.init_resource::<ScenarioFileWatchState>();
+        app.add_event::<ScenarioLoadedFromFile>();
+        app.add_systems(Update, parse_scenario_system);
+
+        app.update(); // 1 回目: 発火
+        app.world_mut().resource_mut::<Events<ScenarioLoadedFromFile>>().clear();
+        app.update(); // 2 回目: 発火してはいけない
+
+        let events = app.world().resource::<Events<ScenarioLoadedFromFile>>();
+        let mut reader = events.get_cursor();
+        let collected: Vec<_> = reader.read(events).cloned().collect();
+        assert!(collected.is_empty(), "no re-emit expected when mtime unchanged, got {} events", collected.len());
+    }
+
+    /// sidecar JSON の scenario 直下に `instruments_ref` キーがあれば
+    /// 発火イベントの `has_instruments_ref = true` になること。
+    #[test]
+    fn test_system_detects_instruments_ref_key() {
+        let dir = tempfile::tempdir().unwrap();
+        let py_path = dir.path().join("strat.py");
+        let json_path = dir.path().join("strat.json");
+        std::fs::write(&py_path, "# dummy").unwrap();
+        std::fs::write(
+            &json_path,
+            r#"{"scenario": {"schema_version": 3, "instruments": ["1301.TSE"], "instruments_ref": "universe/foo.json", "start": "2025-01-06", "end": "2025-01-10", "granularity": "Daily", "initial_cash": 1000000}}"#,
+        )
+        .unwrap();
+
+        let mut app = App::new();
+        app.insert_resource(StrategyBuffer {
+            original_path: Some(py_path),
+            cache_path: None,
+            last_merged_source: None,
+        });
+        app.init_resource::<ScenarioMetadata>();
+        app.init_resource::<ScenarioFileWatchState>();
+        app.add_event::<ScenarioLoadedFromFile>();
+        app.add_systems(Update, parse_scenario_system);
+        app.update();
+
+        let events = app.world().resource::<Events<ScenarioLoadedFromFile>>();
+        let mut reader = events.get_cursor();
+        let collected: Vec<_> = reader.read(events).cloned().collect();
+        assert_eq!(collected.len(), 1);
+        assert!(collected[0].has_instruments_ref, "instruments_ref key must set has_instruments_ref=true");
     }
 }

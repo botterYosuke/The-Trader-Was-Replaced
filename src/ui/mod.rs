@@ -16,6 +16,11 @@ pub mod strategy_editor;
 pub mod systems;
 pub mod window;
 
+pub use components::{
+    ChartInstrument, InstrumentRegistry, ScenarioFileWatchState, ScenarioInstrumentsWritebackState,
+    ScenarioLoadedFromFile,
+};
+
 use crate::ui::buying_power::buying_power_panel_system;
 use crate::ui::chart::chart_render_system;
 use crate::ui::components::{
@@ -40,6 +45,7 @@ use crate::ui::menu_bar::{
 use crate::ui::orders::orders_panel_system;
 use crate::ui::positions::positions_panel_system;
 use crate::ui::run_result_panel::run_result_panel_system;
+use crate::ui::components::sync_registry_from_scenario_loaded_system;
 use crate::ui::scenario_parser::parse_scenario_system;
 use crate::ui::sidebar::{panel_button_system, spawn_sidebar, update_sidebar_system};
 use crate::ui::strategy_editor::{
@@ -79,6 +85,10 @@ impl Plugin for UiPlugin {
         .add_event::<UndoMenuRequested>()
         .add_event::<RedoMenuRequested>()
         .init_resource::<ScenarioMetadata>()
+        .init_resource::<InstrumentRegistry>()
+        .init_resource::<ScenarioFileWatchState>()
+        .init_resource::<ScenarioInstrumentsWritebackState>()
+        .add_event::<ScenarioLoadedFromFile>()
         .add_systems(
             Startup,
             (
@@ -107,7 +117,7 @@ impl Plugin for UiPlugin {
                 run_result_panel_system,
                 log_strategy_run_requested_system,
                 handle_strategy_run_system,
-                parse_scenario_system,
+                (parse_scenario_system, sync_registry_from_scenario_loaded_system).chain(),
                 update_sidebar_system,
                 panel_button_system,
                 panel_spawn_dispatcher_system,

@@ -1,6 +1,7 @@
 use bevy::prelude::*;
 use std::collections::HashMap;
 use std::path::PathBuf;
+use std::time::SystemTime;
 
 #[derive(Resource, Default)]
 pub struct WindowManager {
@@ -257,4 +258,259 @@ pub struct StrategyEditorSpawnSpec {
     /// Some(s) → そのまま使う。
     pub source: Option<String>,
     pub layout_source: PanelSpawnSource,
+}
+
+// ─── Phase 7.5a: Instrument 寿命連動 ──────────────────────────────────────
+
+/// scenario JSON `scenario.instruments` を Bevy 側で保持する registry。
+/// 表示順を維持しつつ dedup する。`editable=false` のときは
+/// `instruments_ref` を持つ sidecar により編集ロック中であることを示す。
+#[derive(Resource, Default, Debug, Clone)]
+pub struct InstrumentRegistry {
+    pub ids: Vec<String>,
+    pub editable: bool,
+}
+
+impl InstrumentRegistry {
+    /// 新しい id を末尾に追加する。既に含まれていれば false。
+    pub fn add(&mut self, id: &str) -> bool {
+        if self.contains(id) {
+            return false;
+        }
+        self.ids.push(id.to_string());
+        true
+    }
+
+    /// id を取り除く。存在しなければ false。
+    pub fn remove(&mut self, id: &str) -> bool {
+        if let Some(pos) = self.ids.iter().position(|s| s == id) {
+            self.ids.remove(pos);
+            true
+        } else {
+            false
+        }
+    }
+
+    pub fn contains(&self, id: &str) -> bool {
+        self.ids.iter().any(|s| s == id)
+    }
+
+    /// registry の中身を新しい id 列で置き換える。順序は引数のまま、重複は最初の出現だけ残す。
+    /// Returns true if the contents actually changed.
+    pub fn replace_all(&mut self, ids: &[String]) -> bool {
+        let mut deduped: Vec<String> = Vec::with_capacity(ids.len());
+        for id in ids {
+            if !deduped.iter().any(|s| s == id) {
+                deduped.push(id.clone());
+            }
+        }
+        if deduped == self.ids {
+            false
+        } else {
+            self.ids = deduped;
+            true
+        }
+    }
+
+    /// 現在の id 列を slice で借りる（writeback / 比較用）。
+    pub fn as_slice(&self) -> &[String] {
+        &self.ids
+    }
+}
+
+/// `parse_scenario_system` がサイドカー JSON の読み込み成功時のみ発火する。
+/// registry → JSON writeback 経路では発火させない（同期方向の一方向化）。
+#[derive(Event, Debug, Clone)]
+pub struct ScenarioLoadedFromFile {
+    pub source_path: PathBuf,
+    pub instruments: Vec<String>,
+    pub end: Option<String>,
+    pub has_instruments_ref: bool,
+}
+
+/// `parse_scenario_system` の Local だった `last_path` / `last_mtime` を
+/// Resource に格上げしたもの。writeback 後に `last_mtime` を転記して
+/// 不要な再 trigger を抑止する（計画書 R5）。
+#[derive(Resource, Default, Debug, Clone)]
+pub struct ScenarioFileWatchState {
+    pub last_path: Option<PathBuf>,
+    pub last_mtime: Option<SystemTime>,
+}
+
+/// Chart window の `WindowRoot` に貼るマーカー。
+/// close observer 内で逆引きして `InstrumentRegistry::remove` に渡す。
+#[derive(Component, Debug, Clone)]
+pub struct ChartInstrument {
+    pub instrument_id: String,
+}
+
+/// writeback system と Run 直前 inline flush の dirty/flush 管理。
+/// `is_changed()` の race を避けるため明示 revision を使う。
+#[derive(Resource, Default, Debug, Clone)]
+pub struct ScenarioInstrumentsWritebackState {
+    pub revision: u64,
+    pub flushed_revision: u64,
+    pub last_error: Option<String>,
+}
+
+#[cfg(test)]
+mod instrument_registry_tests {
+    use super::*;
+
+    #[test]
+    fn test_add_appends_when_absent() {
+        let mut r = InstrumentRegistry::default();
+        assert!(r.add("1301.TSE"));
+        assert_eq!(r.ids, vec!["1301.TSE".to_string()]);
+    }
+
+    #[test]
+    fn test_add_dedup_returns_false() {
+        let mut r = InstrumentRegistry::default();
+        assert!(r.add("1301.TSE"));
+        assert!(!r.add("1301.TSE"));
+        assert_eq!(r.ids.len(), 1);
+    }
+
+    #[test]
+    fn test_add_preserves_order() {
+        let mut r = InstrumentRegistry::default();
+        r.add("A");
+        r.add("B");
+        r.add("C");
+        assert_eq!(r.ids, vec!["A".to_string(), "B".to_string(), "C".to_string()]);
+    }
+
+    #[test]
+    fn test_remove_existing_returns_true() {
+        let mut r = InstrumentRegistry::default();
+        r.add("A");
+        r.add("B");
+        assert!(r.remove("A"));
+        assert_eq!(r.ids, vec!["B".to_string()]);
+    }
+
+    #[test]
+    fn test_remove_absent_returns_false() {
+        let mut r = InstrumentRegistry::default();
+        r.add("A");
+        assert!(!r.remove("Z"));
+        assert_eq!(r.ids, vec!["A".to_string()]);
+    }
+
+    #[test]
+    fn test_contains() {
+        let mut r = InstrumentRegistry::default();
+        r.add("A");
+        assert!(r.contains("A"));
+        assert!(!r.contains("B"));
+    }
+
+    #[test]
+    fn test_default_is_not_editable() {
+        let r = InstrumentRegistry::default();
+        assert!(!r.editable);
+        assert!(r.ids.is_empty());
+    }
+
+    #[test]
+    fn test_replace_all_dedups_preserving_order() {
+        let mut reg = InstrumentRegistry::default();
+        let changed = reg.replace_all(&[
+            "AAPL".to_string(),
+            "MSFT".to_string(),
+            "AAPL".to_string(),
+        ]);
+        assert!(changed);
+        assert_eq!(reg.as_slice(), &["AAPL".to_string(), "MSFT".to_string()]);
+    }
+
+    #[test]
+    fn test_replace_all_returns_false_when_identical() {
+        let mut reg = InstrumentRegistry::default();
+        reg.replace_all(&["AAPL".to_string()]);
+        let changed = reg.replace_all(&["AAPL".to_string()]);
+        assert!(!changed);
+    }
+}
+
+/// `ScenarioLoadedFromFile` を受け、registry を JSON 由来の内容で置き換える。
+/// `editable = !has_instruments_ref`。ファイル由来の代入は writeback の
+/// revision を flushed と同値に保ち、Run 直前 inline flush を起動させない（計画書 §3.2）。
+pub fn sync_registry_from_scenario_loaded_system(
+    mut events: EventReader<ScenarioLoadedFromFile>,
+    mut registry: ResMut<InstrumentRegistry>,
+    mut writeback: ResMut<ScenarioInstrumentsWritebackState>,
+) {
+    for ev in events.read() {
+        registry.replace_all(&ev.instruments);
+        registry.editable = !ev.has_instruments_ref;
+        writeback.revision = writeback.flushed_revision;
+        writeback.last_error = None;
+    }
+}
+
+#[cfg(test)]
+mod sync_registry_from_scenario_loaded_tests {
+    use super::*;
+
+    fn build_app() -> App {
+        let mut app = App::new();
+        app.add_event::<ScenarioLoadedFromFile>()
+            .init_resource::<InstrumentRegistry>()
+            .init_resource::<ScenarioInstrumentsWritebackState>()
+            .add_systems(Update, sync_registry_from_scenario_loaded_system);
+        app
+    }
+
+    #[test]
+    fn replaces_and_marks_locked_when_has_instruments_ref_true() {
+        let mut app = build_app();
+        app.world_mut().send_event(ScenarioLoadedFromFile {
+            source_path: std::path::PathBuf::from("dummy.py"),
+            instruments: vec!["7203.T".into(), "9984.T".into()],
+            end: None,
+            has_instruments_ref: true,
+        });
+        app.update();
+        let reg = app.world().resource::<InstrumentRegistry>();
+        assert_eq!(reg.as_slice(), &["7203.T".to_string(), "9984.T".to_string()]);
+        assert!(!reg.editable, "instruments_ref ありは編集ロック");
+    }
+
+    #[test]
+    fn replaces_and_marks_editable_when_has_instruments_ref_false() {
+        let mut app = build_app();
+        {
+            let mut reg = app.world_mut().resource_mut::<InstrumentRegistry>();
+            reg.replace_all(&["AAPL".to_string()]);
+        }
+        app.world_mut().send_event(ScenarioLoadedFromFile {
+            source_path: std::path::PathBuf::from("dummy.py"),
+            instruments: vec!["7203.T".into()],
+            end: None,
+            has_instruments_ref: false,
+        });
+        app.update();
+        let reg = app.world().resource::<InstrumentRegistry>();
+        assert_eq!(reg.as_slice(), &["7203.T".to_string()]);
+        assert!(reg.editable, "instruments_ref 無しは編集可");
+    }
+
+    #[test]
+    fn file_load_does_not_bump_writeback_revision() {
+        let mut app = build_app();
+        app.world_mut().resource_mut::<ScenarioInstrumentsWritebackState>().flushed_revision = 5;
+        app.world_mut().resource_mut::<ScenarioInstrumentsWritebackState>().revision = 5;
+        app.world_mut().send_event(ScenarioLoadedFromFile {
+            source_path: std::path::PathBuf::from("dummy.py"),
+            instruments: vec!["7203.T".into()],
+            end: None,
+            has_instruments_ref: false,
+        });
+        app.update();
+        let wb = app.world().resource::<ScenarioInstrumentsWritebackState>();
+        assert_eq!(wb.revision, wb.flushed_revision, "ファイル由来は flushed と同値に保つ");
+        assert!(wb.last_error.is_none());
+    }
 }
