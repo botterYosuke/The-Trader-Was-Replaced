@@ -7,9 +7,11 @@ use std::time::Instant;
 
 use crate::ui::components::{
     PanelKind, PanelSpawnRequested, PanelSpawnSource, PendingStrategyFragments, StrategyBuffer,
-    StrategyEditorId, StrategyEditorSpawnSpec, StrategyFileLoadRequested, StrategyLoadMode,
-    WindowManager, WindowRoot,
+    StrategyEditorId, StrategyEditorSpawnSpec, StrategyFileLoadRequested, StrategyFragment,
+    StrategyLoadMode, WindowManager, WindowRoot,
 };
+use crate::ui::menu_bar::strategy_cache_path;
+use crate::ui::strategy_editor::{merge_fragments, StrategyAutoSaveState};
 
 pub const SCHEMA_VERSION: u32 = 1;
 
@@ -141,7 +143,7 @@ fn build_layout(
         With<WindowRoot>,
     >,
     camera: &Query<(&Transform, &OrthographicProjection), (With<Camera2d>, Without<WindowRoot>)>,
-    buffer: &Res<StrategyBuffer>,
+    buffer: &StrategyBuffer,
     preserve_scenario_from: Option<&std::path::Path>,
 ) -> SidecarLayout {
     let viewport = camera
@@ -212,10 +214,15 @@ fn handle_save_layout_system(
         With<WindowRoot>,
     >,
     camera: Query<(&Transform, &OrthographicProjection), (With<Camera2d>, Without<WindowRoot>)>,
-    buffer: Res<StrategyBuffer>,
+    mut buffer: ResMut<StrategyBuffer>,
+    mut fragments_q: Query<(&StrategyEditorId, &mut StrategyFragment), With<WindowRoot>>,
+    mut strategy_auto_save: ResMut<StrategyAutoSaveState>,
 ) {
     for _ in events.read() {
-        let path = if let Some(orig) = &buffer.original_path {
+        let was_new = buffer.original_path.is_none();
+
+        // ダイアログ（初回保存）の場合は先にパスを確定させる
+        let json_path = if let Some(orig) = &buffer.original_path {
             orig.with_extension("json")
         } else {
             match FileDialog::new()
@@ -230,10 +237,47 @@ fn handle_save_layout_system(
             }
         };
 
-        let layout = build_layout(&panels, &camera, &buffer, buffer.original_path.as_deref());
-        match save_layout_to(&path, &layout) {
-            Ok(()) => info!("layout saved to {:?}", path),
-            Err(e) => error!("layout save failed: {e}"),
+        let py_path = json_path.with_extension("py");
+
+        // Fix(High): build_layout の前に original_path を新パスへ更新しておく。
+        // これで JSON の strategy_path フィールドが正しい .py を指す。
+        if was_new {
+            buffer.original_path = Some(py_path.clone());
+            buffer.cache_path = strategy_cache_path(&py_path);
+        }
+
+        let layout = build_layout(&panels, &camera, &*buffer, buffer.original_path.as_deref());
+        match save_layout_to(&json_path, &layout) {
+            Ok(()) => info!("layout saved to {:?}", json_path),
+            Err(e) => {
+                error!("layout save failed: {e}");
+                // ロールバック: original_path を None に戻す（初回 save の場合）
+                if was_new {
+                    buffer.original_path = None;
+                    buffer.cache_path = None;
+                }
+                continue;
+            }
+        }
+
+        let mut items: Vec<(String, String)> = fragments_q
+            .iter()
+            .map(|(id, frag)| (id.region_key.clone(), frag.source.clone()))
+            .collect();
+        if !items.is_empty() {
+            items.sort_by(|a, b| a.0.cmp(&b.0));
+            let merged = merge_fragments(&items);
+            match std::fs::write(&py_path, &merged) {
+                Ok(()) => {
+                    info!("strategy .py saved to {:?}", py_path);
+                    for (_, mut frag) in fragments_q.iter_mut() {
+                        frag.dirty = false;
+                    }
+                    strategy_auto_save.dirty = false;
+                    strategy_auto_save.last_change = None;
+                }
+                Err(e) => error!("strategy .py save failed: {e}"),
+            }
         }
     }
 }
@@ -246,10 +290,12 @@ fn handle_save_as_layout_system(
         With<WindowRoot>,
     >,
     camera: Query<(&Transform, &OrthographicProjection), (With<Camera2d>, Without<WindowRoot>)>,
-    buffer: Res<StrategyBuffer>,
+    mut buffer: ResMut<StrategyBuffer>,
+    mut fragments_q: Query<(&StrategyEditorId, &mut StrategyFragment), With<WindowRoot>>,
+    mut strategy_auto_save: ResMut<StrategyAutoSaveState>,
 ) {
     for _ in events.read() {
-        let path = match FileDialog::new()
+        let json_path = match FileDialog::new()
             .add_filter("Layout JSON", &["json"])
             .save_file()
         {
@@ -260,11 +306,50 @@ fn handle_save_as_layout_system(
             }
         };
 
+        let py_path = json_path.with_extension("py");
+
+        // Fix(High): buffer を先に新パスへ更新 → build_layout の strategy_path が正しくなる
+        let old_original = buffer.original_path.clone();
+        let old_cache = buffer.cache_path.clone();
+        buffer.original_path = Some(py_path.clone());
+        buffer.cache_path = strategy_cache_path(&py_path);
+
         // Save As は別ファイルへの保存なので scenario を運ばない（None）
-        let layout = build_layout(&panels, &camera, &buffer, None);
-        match save_layout_to(&path, &layout) {
-            Ok(()) => info!("layout saved-as to {:?}", path),
-            Err(e) => error!("layout save-as failed: {e}"),
+        let layout = build_layout(&panels, &camera, &*buffer, None);
+        match save_layout_to(&json_path, &layout) {
+            Ok(()) => info!("layout saved-as to {:?}", json_path),
+            Err(e) => {
+                error!("layout save-as failed: {e}");
+                // ロールバック
+                buffer.original_path = old_original;
+                buffer.cache_path = old_cache;
+                continue;
+            }
+        }
+
+        let mut items: Vec<(String, String)> = fragments_q
+            .iter()
+            .map(|(id, frag)| (id.region_key.clone(), frag.source.clone()))
+            .collect();
+        if !items.is_empty() {
+            items.sort_by(|a, b| a.0.cmp(&b.0));
+            let merged = merge_fragments(&items);
+            match std::fs::write(&py_path, &merged) {
+                Ok(()) => {
+                    info!("strategy .py saved-as to {:?}", py_path);
+                    for (_, mut frag) in fragments_q.iter_mut() {
+                        frag.dirty = false;
+                    }
+                    strategy_auto_save.dirty = false;
+                    strategy_auto_save.last_change = None;
+                }
+                Err(e) => {
+                    // Fix(Medium): .py 保存失敗時は buffer を元に戻す
+                    error!("strategy .py save-as failed: {e}");
+                    buffer.original_path = old_original;
+                    buffer.cache_path = old_cache;
+                }
+            }
         }
     }
 }
@@ -582,7 +667,7 @@ fn save_layout_on_window_close(
             continue;
         };
         let path = orig.with_extension("json");
-        let layout = build_layout(&panels, &camera, &buffer, buffer.original_path.as_deref());
+        let layout = build_layout(&panels, &camera, &*buffer, buffer.original_path.as_deref());
         match save_layout_to(&path, &layout) {
             Ok(()) => info!("layout auto-saved to {:?}", path),
             Err(e) => error!("layout auto-save failed: {e}"),
@@ -620,7 +705,7 @@ fn debounced_autosave_system(
         return;
     };
     let path = orig.with_extension("json");
-    let layout = build_layout(&panels, &camera, &buffer, buffer.original_path.as_deref());
+    let layout = build_layout(&panels, &camera, &*buffer, buffer.original_path.as_deref());
     match save_layout_to(&path, &layout) {
         Ok(()) => info!("debounced autosave → {:?}", path),
         Err(e) => error!("debounced autosave failed: {e}"),

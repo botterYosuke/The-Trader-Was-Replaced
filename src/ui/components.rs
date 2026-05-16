@@ -75,9 +75,6 @@ pub enum MenuItem {
     LoadLayout,
     Undo,
     Redo,
-    OpenStrategy,
-    SaveStrategy,
-    SaveStrategyAs,
 }
 
 #[derive(Component, Clone, Copy, Debug, PartialEq, Eq)]

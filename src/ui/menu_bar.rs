@@ -5,7 +5,7 @@ use crate::ui::components::{
     MenuBarRoot, MenuItem, MenuPopup, MenuTopLevel, OpenMenu, PanelKind,
     PanelSpawnRequested, PanelSpawnSource, PendingStrategyFragments, RedoMenuRequested,
     RegionKeyAllocator, StrategyBuffer, StrategyEditorSpawnSpec, StrategyFileLoadRequested,
-    StrategyFragment, StrategyLoadMode, StrategyRunRequested, StrategySaveRequested,
+    StrategyFragment, StrategyLoadMode, StrategyRunRequested,
     StrategyStatusLabel, UndoMenuRequested, WindowRoot,
 };
 use crate::ui::layout_persistence::{
@@ -104,9 +104,6 @@ pub fn spawn_menu_bar(mut commands: Commands) {
                     MenuPopup(MenuTopLevel::File),
                 ))
                 .with_children(|p| {
-                    spawn_menu_item(p, "Open Strategy (.py)...", MenuItem::OpenStrategy);
-                    spawn_menu_item(p, "Save Strategy (.py)", MenuItem::SaveStrategy);
-                    spawn_menu_item(p, "Save Strategy As...", MenuItem::SaveStrategyAs);
                     spawn_menu_item(p, "Save Layout (Ctrl+S)", MenuItem::SaveLayout);
                     spawn_menu_item(p, "Save Layout As (Ctrl+Shift+S)", MenuItem::SaveLayoutAs);
                     spawn_menu_item(p, "Load Layout (Ctrl+O)", MenuItem::LoadLayout);
@@ -248,8 +245,6 @@ pub fn menu_item_system(
     mut load_ev: EventWriter<LayoutLoadDialogRequested>,
     mut undo_ev: EventWriter<UndoMenuRequested>,
     mut redo_ev: EventWriter<RedoMenuRequested>,
-    mut open_strategy_ev: EventWriter<StrategyFileLoadRequested>,
-    mut save_strategy_ev: EventWriter<StrategySaveRequested>,
 ) {
     for (interaction, mut bg, item) in &mut query {
         match interaction {
@@ -276,28 +271,6 @@ pub fn menu_item_system(
                     MenuItem::Redo => {
                         info!("menu: redo requested");
                         redo_ev.send(RedoMenuRequested);
-                    }
-                    MenuItem::OpenStrategy => {
-                        info!("menu: open strategy requested");
-                        if let Some(path) = rfd::FileDialog::new()
-                            .add_filter("Python", &["py"])
-                            .pick_file()
-                        {
-                            open_strategy_ev.send(StrategyFileLoadRequested {
-                                path,
-                                mode: StrategyLoadMode::UserOpen,
-                            });
-                        } else {
-                            info!("open strategy cancelled: no file selected");
-                        }
-                    }
-                    MenuItem::SaveStrategy => {
-                        info!("menu: save strategy requested");
-                        save_strategy_ev.send(StrategySaveRequested { force_dialog: false });
-                    }
-                    MenuItem::SaveStrategyAs => {
-                        info!("menu: save strategy as requested");
-                        save_strategy_ev.send(StrategySaveRequested { force_dialog: true });
                     }
                 }
             }
