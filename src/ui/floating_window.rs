@@ -127,7 +127,8 @@ pub fn spawn_floating_window(
              parent_query: Query<&Parent>,
              root_q: Query<(&Transform, &PanelKind, Option<&StrategyEditorId>), With<WindowRoot>>,
              mut active_drag: ResMut<ActiveDrag>,
-             mut history: ResMut<AppHistory>| {
+             mut history: ResMut<AppHistory>,
+             mut auto_save: ResMut<crate::ui::layout_persistence::AutoSaveState>| {
                 let Ok(parent) = parent_query.get(drag_end.entity()) else { return };
                 let root_entity = parent.get();
                 let Some(before) = active_drag.starts.remove(&root_entity) else { return };
@@ -135,6 +136,7 @@ pub fn spawn_floating_window(
                 let after = tf.translation.truncate();
                 let region_key = editor_id.map(|id| id.region_key.clone());
                 history.push_window_move(*kind, region_key, before, after);
+                auto_save.mark_layout_changed(std::time::Instant::now());
             },
         )
         .id();
@@ -191,6 +193,7 @@ pub fn spawn_floating_window(
                  With<WindowRoot>,
              >,
              mut history: ResMut<AppHistory>,
+             mut auto_save: ResMut<crate::ui::layout_persistence::AutoSaveState>,
              mut commands: Commands| {
                 let Ok(parent) = parent_query.get(trigger.entity()) else { return };
                 let root_entity = parent.get();
@@ -211,6 +214,7 @@ pub fn spawn_floating_window(
                         _ => None,
                     };
                     history.push_window_despawn(layout, snapshot);
+                    auto_save.mark_layout_changed(std::time::Instant::now());
                 }
                 commands.entity(root_entity).despawn_recursive();
             },

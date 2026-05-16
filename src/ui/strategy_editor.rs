@@ -225,26 +225,6 @@ pub fn update_strategy_editor_zoom_system(
 /// system 順序: `open_strategy_buffer_system` が同じイベントを読んで `buffer.source` を
 /// 更新するので、本 system は必ず `.after(open_strategy_buffer_system)` で走らせる。
 /// `EventReader` は system ごとに独立した読み取りカーソルを持つため、両方とも同じイベントを読める。
-/// buffer.source の内容を cosmic_edit エディタに反映するヘルパー。
-fn apply_buffer_to_editor(
-    source: &str,
-    font_system: &mut CosmicFontSystem,
-    editor_q: &mut Query<
-        (&mut CosmicEditBuffer, Option<&mut CosmicEditor>),
-        With<StrategyEditorContent>,
-    >,
-) {
-    for (mut edit_buffer, editor_opt) in editor_q.iter_mut() {
-        edit_buffer.set_text(font_system, source, Attrs::new());
-        if let Some(mut editor) = editor_opt {
-            editor.with_buffer_mut(|b| {
-                b.set_text(font_system, source, Attrs::new(), Shaping::Advanced);
-                b.set_redraw(true);
-            });
-        }
-    }
-}
-
 pub fn sync_strategy_buffer_to_editor_system(
     mut open_events: EventReader<StrategyFileLoadRequested>,
     mut undo_events: EventReader<UndoRedoApplied>,
@@ -532,7 +512,7 @@ pub fn apply_strategy_snapshot_restore_system(
 /// `cache_path` 未設定 (`Ok(false)`) のときは debounce タイマーをクリアして無限ループを防ぐ。
 /// I/O 失敗時は state を保持し、次の debounce 経過で再試行する。
 pub fn debounced_strategy_autosave_system(
-    fragments_q: Query<(&StrategyEditorId, &StrategyFragment), With<WindowRoot>>,
+    mut fragments_q: Query<(&StrategyEditorId, &mut StrategyFragment), With<WindowRoot>>,
     mut buffer: ResMut<StrategyBuffer>,
     mut auto_save: ResMut<StrategyAutoSaveState>,
 ) {
@@ -548,7 +528,12 @@ pub fn debounced_strategy_autosave_system(
     let merged = merge_fragments(&items);
 
     match flush_strategy_cache(&merged, &mut buffer, &mut auto_save) {
-        Ok(true) => info!("strategy cache autosaved: {:?}", buffer.cache_path),
+        Ok(true) => {
+            for (_, mut fragment) in fragments_q.iter_mut() {
+                fragment.dirty = false;
+            }
+            info!("strategy cache autosaved: {:?}", buffer.cache_path);
+        }
         Ok(false) => {
             auto_save.dirty = false;
             auto_save.last_change = None;
@@ -729,7 +714,7 @@ pub fn split_py_into_fragments(py: &str) -> SplitOutcome {
 
 pub fn handle_strategy_save_requested_system(
     mut events: EventReader<StrategySaveRequested>,
-    fragments_q: Query<(&StrategyEditorId, &StrategyFragment), With<WindowRoot>>,
+    mut fragments_q: Query<(&StrategyEditorId, &mut StrategyFragment), With<WindowRoot>>,
     mut buffer: ResMut<StrategyBuffer>,
     mut auto_save: ResMut<StrategyAutoSaveState>,
 ) {
@@ -767,6 +752,9 @@ pub fn handle_strategy_save_requested_system(
         match std::fs::write(&path, &merged) {
             Ok(()) => {
                 info!("strategy saved: {:?}", path);
+                for (_, mut fragment) in fragments_q.iter_mut() {
+                    fragment.dirty = false;
+                }
                 buffer.last_merged_source = Some(merged.clone());
                 auto_save.dirty = false;
                 auto_save.last_change = None;
@@ -1163,6 +1151,41 @@ mod tests {
         let auto_save = app.world().resource::<StrategyAutoSaveState>();
         assert!(!auto_save.dirty);
         assert!(auto_save.last_change.is_none());
+    }
+
+    #[test]
+    fn debounced_autosave_system_clears_fragment_dirty_after_flush() {
+        // Medium fix: autosave 成功時は fragment.dirty も false にしないと
+        // menu_bar の dirty_count が 0 にならず "*" 表示が残る。
+        use crate::ui::components::WindowRoot;
+        let mut app = App::new();
+        app.init_resource::<StrategyBuffer>();
+        app.init_resource::<StrategyAutoSaveState>();
+        app.add_systems(Update, debounced_strategy_autosave_system);
+
+        let tmp = TempDir::new().unwrap();
+        let cache_path = tmp.path().join("strategy.py");
+
+        let entity = app.world_mut().spawn((
+            WindowRoot,
+            StrategyEditorId { region_key: "region_001".to_string() },
+            StrategyFragment { source: "x = 1".to_string(), dirty: true },
+        )).id();
+
+        {
+            let mut buffer = app.world_mut().resource_mut::<StrategyBuffer>();
+            buffer.cache_path = Some(cache_path.clone());
+        }
+        {
+            let mut auto_save = app.world_mut().resource_mut::<StrategyAutoSaveState>();
+            auto_save.dirty = true;
+            auto_save.last_change = Some(Instant::now() - Duration::from_secs(2));
+        }
+
+        app.update();
+
+        let fragment = app.world().get::<StrategyFragment>(entity).unwrap();
+        assert!(!fragment.dirty, "fragment.dirty should be cleared after autosave flush");
     }
 
     #[test]

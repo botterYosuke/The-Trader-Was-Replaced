@@ -130,7 +130,7 @@ pub struct ScenarioMetadata {
 /// 6 種類すべての floating window を区別するための種別タグ。
 /// サイドバーのボタン entity と、spawn された panel root entity の両方に貼る。
 /// Sub-step 1.2 で「既に spawn 済みかどうか」を判定するのにも使う。
-#[derive(Component, Clone, Copy, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[derive(Component, Clone, Copy, Debug, PartialEq, Eq, Hash, serde::Serialize, serde::Deserialize)]
 pub enum PanelKind {
     Chart,
     StrategyEditor,

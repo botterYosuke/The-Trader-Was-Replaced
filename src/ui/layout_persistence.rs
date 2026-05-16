@@ -73,6 +73,11 @@ pub struct WindowLayout {
 pub struct PendingLayoutApply {
     pub windows: Vec<WindowLayout>,
     pub waiting_for_strategy: bool,
+    /// 既に `PanelSpawnRequested` を発火した window の識別キー集合。
+    /// dispatcher の spawn は次フレームの `panels` query に反映されるので、
+    /// その間に `apply_pending_layout_system` が再走しても二重 spawn しないためのガード。
+    /// キー: (PanelKind, region_key)。StrategyEditor 以外は region_key=None で 1 件のみ。
+    pub spawn_requested: std::collections::HashSet<(PanelKind, Option<String>)>,
 }
 
 // `PendingLayoutLoad` と sidecar 監視経路は Phase D で削除した。
@@ -89,6 +94,15 @@ pub struct AutoSaveState {
     pub dirty: bool,
     /// 最後に dirty になった時刻
     pub last_change: Option<Instant>,
+}
+
+impl AutoSaveState {
+    /// レイアウト変更 (drag / close など) を検知したことを記録する。
+    /// 呼び出し側で「対象が WindowRoot か」を判定済みであることを前提とする。
+    pub fn mark_layout_changed(&mut self, now: Instant) {
+        self.dirty = true;
+        self.last_change = Some(now);
+    }
 }
 
 /// 起動時の sidecar 自動ロードをワンショットに制限するフラグ。
@@ -401,20 +415,23 @@ fn apply_layout_system(
 
                 match found {
                     None => {
-                        let strategy_spec = if win_layout.kind == PanelKind::StrategyEditor {
-                            Some(StrategyEditorSpawnSpec {
-                                region_key: want_key.clone(),
-                                source: None,
-                                layout_source: PanelSpawnSource::LayoutLoad,
-                            })
-                        } else {
-                            None
-                        };
-                        spawn_ev.send(PanelSpawnRequested {
-                            kind: win_layout.kind,
-                            source: PanelSpawnSource::LayoutLoad,
-                            strategy_spec,
-                        });
+                        let dedupe_key = (win_layout.kind, want_key.clone());
+                        if pending.spawn_requested.insert(dedupe_key) {
+                            let strategy_spec = if win_layout.kind == PanelKind::StrategyEditor {
+                                Some(StrategyEditorSpawnSpec {
+                                    region_key: want_key.clone(),
+                                    source: None,
+                                    layout_source: PanelSpawnSource::LayoutLoad,
+                                })
+                            } else {
+                                None
+                            };
+                            spawn_ev.send(PanelSpawnRequested {
+                                kind: win_layout.kind,
+                                source: PanelSpawnSource::LayoutLoad,
+                                strategy_spec,
+                            });
+                        }
                         pending.windows.push(win_layout.clone());
                     }
                     Some((_, _, _, mut tf, mut sprite, mut vis)) => {
@@ -470,6 +487,7 @@ fn apply_pending_layout_system(
     >,
     mut wm: ResMut<WindowManager>,
     pending_fragments: Res<PendingStrategyFragments>,
+    mut spawn_ev: EventWriter<PanelSpawnRequested>,
 ) {
     if pending.windows.is_empty() {
         return;
@@ -481,7 +499,8 @@ fn apply_pending_layout_system(
         pending.waiting_for_strategy = false;
     }
     let mut still_pending = vec![];
-    for win_layout in pending.windows.drain(..) {
+    let windows = std::mem::take(&mut pending.windows);
+    for win_layout in windows {
         let found = panels
             .iter_mut()
             .find(|(kind, id, ..)| {
@@ -496,7 +515,31 @@ fn apply_pending_layout_system(
                 }
             });
         match found {
-            None => still_pending.push(win_layout),
+            None => {
+                let region_key = if win_layout.kind == PanelKind::StrategyEditor {
+                    Some(win_layout.region_key.clone().unwrap_or_else(|| "region_001".to_string()))
+                } else {
+                    None
+                };
+                let dedupe_key = (win_layout.kind, region_key.clone());
+                if pending.spawn_requested.insert(dedupe_key) {
+                    let strategy_spec = if win_layout.kind == PanelKind::StrategyEditor {
+                        Some(StrategyEditorSpawnSpec {
+                            region_key,
+                            source: None,
+                            layout_source: PanelSpawnSource::LayoutLoad,
+                        })
+                    } else {
+                        None
+                    };
+                    spawn_ev.send(PanelSpawnRequested {
+                        kind: win_layout.kind,
+                        source: PanelSpawnSource::LayoutLoad,
+                        strategy_spec,
+                    });
+                }
+                still_pending.push(win_layout);
+            }
             Some((_, _, mut tf, mut sprite, mut vis)) => {
                 tf.translation.x = win_layout.position[0];
                 tf.translation.y = win_layout.position[1];
@@ -514,6 +557,9 @@ fn apply_pending_layout_system(
         }
     }
     pending.windows = still_pending;
+    if pending.windows.is_empty() {
+        pending.spawn_requested.clear();
+    }
 }
 
 #[allow(clippy::type_complexity)]
@@ -542,23 +588,6 @@ fn save_layout_on_window_close(
             Err(e) => error!("layout auto-save failed: {e}"),
         }
     }
-}
-
-/// パネルのドラッグ終了を検知して `AutoSaveState` を dirty にする。
-///
-/// `despawn_recursive()` 実装なので `Changed<Visibility>` は使わず、
-/// `Pointer<DragEnd>` だけを監視する。
-fn mark_dirty_on_drag_system(
-    mut trigger: Trigger<Pointer<DragEnd>>,
-    windows: Query<(), With<WindowRoot>>,
-    mut auto_save: ResMut<AutoSaveState>,
-) {
-    // DragEnd が WindowRoot を持つ entity で発生したときのみ dirty にする
-    if windows.get(trigger.entity()).is_ok() {
-        auto_save.dirty = true;
-        auto_save.last_change = Some(Instant::now());
-    }
-    trigger.propagate(false);
 }
 
 /// dirty かつ最終変更から 1 秒以上経過していたら sidecar JSON に自動保存する。
@@ -648,8 +677,6 @@ impl Plugin for LayoutPersistencePlugin {
             .add_event::<LayoutSaveAsRequested>()
             .add_event::<LayoutLoadDialogRequested>()
             .add_event::<LayoutLoadRequested>()
-            // グローバル observer: WindowRoot の DragEnd で dirty フラグを立てる
-            .add_observer(mark_dirty_on_drag_system)
             .add_systems(
                 Update,
                 (
@@ -671,6 +698,29 @@ impl Plugin for LayoutPersistencePlugin {
 mod tests {
     use super::*;
     use crate::ui::components::PanelKind;
+
+    #[test]
+    fn mark_layout_changed_sets_dirty_and_timestamp() {
+        let mut state = AutoSaveState::default();
+        assert!(!state.dirty);
+        assert!(state.last_change.is_none());
+
+        let now = Instant::now();
+        state.mark_layout_changed(now);
+
+        assert!(state.dirty, "dirty must be true after layout change");
+        assert_eq!(state.last_change, Some(now));
+    }
+
+    #[test]
+    fn mark_layout_changed_updates_timestamp_on_subsequent_calls() {
+        let mut state = AutoSaveState::default();
+        let t1 = Instant::now();
+        state.mark_layout_changed(t1);
+        let t2 = t1 + std::time::Duration::from_millis(500);
+        state.mark_layout_changed(t2);
+        assert_eq!(state.last_change, Some(t2));
+    }
 
     #[test]
     fn sidecar_layout_round_trip() {
