@@ -3,7 +3,7 @@
 
 最初のバーで成行買いし、その後は保有し続ける最小戦略。
 numpy / pandas は使わず、追加依存は不要です。
-
+1234
 起動（headless / in-process）:
 
     uv run python -m engine.replay_session run \
@@ -96,11 +96,11 @@ class BuyAndHoldStrategy(Strategy):
         self.log.info(f"BUY: {self.lot_size} shares @ {bar.close}")
 # endregion region_001
 # region region_002
-asadsadasd
+asadsadasd+
 # endregion region_002
 # region region_003
 asdasdasda
 # endregion region_003
 # region region_004
-vcvvv
+vcvvv1
 # endregion region_004

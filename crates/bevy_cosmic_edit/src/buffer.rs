@@ -216,18 +216,28 @@ pub(crate) fn add_font_system(
     }
 }
 
-/// Initialises [`CosmicEditBuffer`] scale factor
+/// Initialises [`CosmicEditBuffer`] scale factor.
+/// Also updates [`CosmicEditor`]'s internal buffer if it already exists on the entity.
+/// This handles the race where `add_editor_to_focused` (PostUpdate) runs before this
+/// system (First) fires for a newly-added buffer in the next frame.
 pub(crate) fn set_initial_scale(
     window_q: Query<&Window, With<PrimaryWindow>>,
-    mut cosmic_query: Query<&mut CosmicEditBuffer, Added<CosmicEditBuffer>>,
+    mut cosmic_query: Query<
+        (&mut CosmicEditBuffer, Option<&mut CosmicEditor>),
+        Added<CosmicEditBuffer>,
+    >,
     mut font_system: ResMut<CosmicFontSystem>,
 ) {
     if let Ok(window) = window_q.get_single() {
         let w_scale = window.scale_factor();
 
-        for mut b in &mut cosmic_query.iter_mut() {
+        for (mut b, maybe_ed) in &mut cosmic_query.iter_mut() {
             let m = b.metrics().scale(w_scale);
             b.set_metrics(&mut font_system, m);
+            if let Some(mut ed) = maybe_ed {
+                ed.with_buffer_mut(|buf| buf.set_metrics(&mut font_system.0, m));
+                ed.set_redraw(true);
+            }
         }
     }
 }

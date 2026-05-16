@@ -1,4 +1,3 @@
-pub mod app_state;
 pub mod button;
 pub mod buying_power;
 pub mod chart;
@@ -20,9 +19,12 @@ pub mod window;
 use crate::ui::buying_power::buying_power_panel_system;
 use crate::ui::chart::chart_render_system;
 use crate::ui::components::{
-    OpenMenu, PanelSpawnRequested, PendingStrategyFragments, RedoMenuRequested,
-    RegionKeyAllocator, ScenarioMetadata, StrategyBuffer, StrategyFileLoadRequested,
-    StrategyRunRequested, UndoMenuRequested, WindowManager,
+    OpenMenu, PanelSpawnRequested, PendingStrategyFragments, RedoMenuRequested, RegionKeyAllocator,
+    ScenarioMetadata, StrategyBuffer, StrategyFileLoadRequested, StrategyRunRequested,
+    UndoMenuRequested, WindowManager,
+};
+use crate::ui::editor_history::{
+    ActiveDrag, AppHistory, PendingStrategySnapshotRestore, UndoRedoApplied,
 };
 use crate::ui::floating_window::panel_spawn_dispatcher_system;
 use crate::ui::footer::{
@@ -40,12 +42,10 @@ use crate::ui::positions::positions_panel_system;
 use crate::ui::run_result_panel::run_result_panel_system;
 use crate::ui::scenario_parser::parse_scenario_system;
 use crate::ui::sidebar::{panel_button_system, spawn_sidebar, update_sidebar_system};
-use crate::ui::editor_history::{ActiveDrag, AppHistory, PendingStrategySnapshotRestore, UndoRedoApplied};
 use crate::ui::strategy_editor::{
     StrategyAutoSaveState, apply_pending_app_edits_system, apply_strategy_snapshot_restore_system,
-    debounced_strategy_autosave_system,
-    sync_editor_to_strategy_buffer_system, sync_strategy_buffer_to_editor_system, undo_redo_system,
-    update_strategy_editor_zoom_system,
+    debounced_strategy_autosave_system, sync_editor_to_strategy_buffer_system,
+    sync_strategy_buffer_to_editor_system, undo_redo_system, update_strategy_editor_zoom_system,
 };
 use crate::ui::systems::{button_system, update_price_display, update_status_indicator};
 use bevy::prelude::*;
@@ -85,7 +85,7 @@ impl Plugin for UiPlugin {
                 spawn_footer,
                 spawn_menu_bar,
                 spawn_sidebar,
-                // 起動時に前回のストラテジーを復元する（StrategyFileLoadRequested { StartupRestore } 発火）
+                // 起動時に固定 cache から復元する（CacheRestoreRequested 発火）
                 restore_last_strategy_system,
             ),
         )
@@ -140,6 +140,9 @@ impl Plugin for UiPlugin {
                 update_strategy_editor_zoom_system,
             ),
         )
-        .add_systems(Update, change_active_editor_sprite.after(menu_keyboard_system));
+        .add_systems(
+            Update,
+            change_active_editor_sprite.after(menu_keyboard_system),
+        );
     }
 }

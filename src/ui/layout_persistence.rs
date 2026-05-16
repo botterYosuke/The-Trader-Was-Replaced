@@ -6,12 +6,14 @@ use std::path::PathBuf;
 use std::time::Instant;
 
 use crate::ui::components::{
-    PanelKind, PanelSpawnRequested, PanelSpawnSource, PendingStrategyFragments, StrategyBuffer,
-    StrategyEditorId, StrategyEditorSpawnSpec, StrategyFileLoadRequested, StrategyFragment,
-    StrategyLoadMode, WindowManager, WindowRoot,
+    PanelKind, PanelSpawnRequested, PanelSpawnSource, PendingStrategyFragments, RegionKeyAllocator,
+    StrategyBuffer, StrategyEditorId, StrategyEditorSpawnSpec, StrategyFileLoadRequested,
+    StrategyFragment, StrategyLoadMode, WindowManager, WindowRoot,
 };
-use crate::ui::menu_bar::strategy_cache_path;
-use crate::ui::strategy_editor::{merge_fragments, StrategyAutoSaveState};
+use crate::ui::menu_bar::{cache_state_paths, sync_to_cache};
+use crate::ui::strategy_editor::{
+    StrategyAutoSaveState, flush_strategy_cache, merge_fragments, split_py_into_fragments,
+};
 
 pub const SCHEMA_VERSION: u32 = 1;
 
@@ -82,9 +84,8 @@ pub struct PendingLayoutApply {
     pub spawn_requested: std::collections::HashSet<(PanelKind, Option<String>)>,
 }
 
-// `PendingLayoutLoad` と sidecar 監視経路は Phase D で削除した。
-// 新設計: `handle_strategy_file_load_system`（menu_bar.rs）が `UserOpen`/`StartupRestore` で
-// サイドカー存在を判定して直接 `LayoutLoadRequested` を発火する。
+// 通常 Open は `LayoutLoadRequested` で original sidecar を読む。
+// 起動復元は `CacheRestoreRequested` で fixed cache を読むため、original `.py` は再読込しない。
 
 /// デバウンス自動保存の状態管理。
 ///
@@ -131,15 +132,26 @@ pub struct LayoutLoadRequested {
     pub path: PathBuf,
 }
 
+#[derive(Event, Debug, Clone)]
+pub struct CacheRestoreRequested {
+    pub layout: SidecarLayout,
+}
+
 /// ECS 状態から `SidecarLayout` を組み立てる。
 ///
 /// `preserve_scenario_from` に `Some(path)` を渡すと、その `path.with_extension("json")`
 /// から既存 `scenario` キーを回収して新 layout に含める（F1 対応）。
-/// `None` を渡すと `scenario` は `None`（Save As などで scenario を運ばない場合）。
+/// `None` を渡すと `scenario` は `None` のままになる。
 #[allow(clippy::type_complexity)]
 fn build_layout(
     panels: &Query<
-        (&PanelKind, Option<&StrategyEditorId>, &Transform, &Sprite, &Visibility),
+        (
+            &PanelKind,
+            Option<&StrategyEditorId>,
+            &Transform,
+            &Sprite,
+            &Visibility,
+        ),
         With<WindowRoot>,
     >,
     camera: &Query<(&Transform, &OrthographicProjection), (With<Camera2d>, Without<WindowRoot>)>,
@@ -202,15 +214,114 @@ fn save_layout_to(path: &PathBuf, layout: &SidecarLayout) -> std::io::Result<()>
 
 fn load_layout_from(path: &PathBuf) -> std::io::Result<SidecarLayout> {
     let text = std::fs::read_to_string(path)?;
-    serde_json::from_str(&text)
-        .map_err(|e| std::io::Error::new(std::io::ErrorKind::InvalidData, e))
+    serde_json::from_str(&text).map_err(|e| std::io::Error::new(std::io::ErrorKind::InvalidData, e))
+}
+
+fn apply_cache_restore_system(
+    mut events: EventReader<CacheRestoreRequested>,
+    mut buffer: ResMut<StrategyBuffer>,
+    mut allocator: ResMut<RegionKeyAllocator>,
+    mut pending_fragments: ResMut<PendingStrategyFragments>,
+    mut camera: Query<
+        (&mut Transform, &mut OrthographicProjection),
+        (With<Camera2d>, Without<WindowRoot>),
+    >,
+    mut pending: ResMut<PendingLayoutApply>,
+    mut spawn_ev: EventWriter<PanelSpawnRequested>,
+) {
+    for event in events.read() {
+        let Some((_, cache_py)) = cache_state_paths() else {
+            error!("cache restore failed: cache_dir not found");
+            continue;
+        };
+        let source = match std::fs::read_to_string(&cache_py) {
+            Ok(source) => source,
+            Err(e) => {
+                error!("cache restore failed: could not read {:?}: {e}", cache_py);
+                continue;
+            }
+        };
+
+        let outcome = split_py_into_fragments(&source);
+        for warning in &outcome.warnings {
+            warn!("cache restore split warning ({:?}): {}", cache_py, warning);
+        }
+
+        buffer.original_path = event.layout.strategy_path.as_ref().map(PathBuf::from);
+        buffer.cache_path = Some(cache_py.clone());
+        buffer.last_merged_source = None;
+
+        allocator.bump_to_at_least(outcome.max_numeric_suffix);
+        pending_fragments.by_region_key.clear();
+        pending_fragments.loaded_for_path = buffer.original_path.clone();
+        for (key, body) in &outcome.fragments {
+            pending_fragments
+                .by_region_key
+                .insert(key.clone(), body.clone());
+        }
+
+        if let (Some(vp), Ok((mut cam_tf, mut proj))) =
+            (&event.layout.viewport, camera.get_single_mut())
+        {
+            cam_tf.translation.x = vp.pan_x;
+            cam_tf.translation.y = vp.pan_y;
+            proj.scale = vp.zoom;
+        }
+
+        if let Some(win_layouts) = &event.layout.windows {
+            pending.windows.extend(win_layouts.iter().cloned());
+
+            for win_layout in win_layouts {
+                let region_key = if win_layout.kind == PanelKind::StrategyEditor {
+                    Some(
+                        win_layout
+                            .region_key
+                            .clone()
+                            .unwrap_or_else(|| "region_001".to_string()),
+                    )
+                } else {
+                    None
+                };
+                let dedupe_key = (win_layout.kind, region_key.clone());
+                if pending.spawn_requested.insert(dedupe_key) {
+                    let strategy_spec = if win_layout.kind == PanelKind::StrategyEditor {
+                        Some(StrategyEditorSpawnSpec {
+                            region_key,
+                            source: None,
+                            layout_source: PanelSpawnSource::LayoutLoad,
+                        })
+                    } else {
+                        None
+                    };
+                    spawn_ev.send(PanelSpawnRequested {
+                        kind: win_layout.kind,
+                        source: PanelSpawnSource::LayoutLoad,
+                        strategy_spec,
+                    });
+                }
+            }
+        }
+
+        info!(
+            "cache restore loaded strategy fragments: cache={:?}, original={:?}, regions={}",
+            cache_py,
+            buffer.original_path,
+            outcome.fragments.len()
+        );
+    }
 }
 
 #[allow(clippy::type_complexity)]
 fn handle_save_layout_system(
     mut events: EventReader<LayoutSaveRequested>,
     panels: Query<
-        (&PanelKind, Option<&StrategyEditorId>, &Transform, &Sprite, &Visibility),
+        (
+            &PanelKind,
+            Option<&StrategyEditorId>,
+            &Transform,
+            &Sprite,
+            &Visibility,
+        ),
         With<WindowRoot>,
     >,
     camera: Query<(&Transform, &OrthographicProjection), (With<Camera2d>, Without<WindowRoot>)>,
@@ -243,7 +354,7 @@ fn handle_save_layout_system(
         // これで JSON の strategy_path フィールドが正しい .py を指す。
         if was_new {
             buffer.original_path = Some(py_path.clone());
-            buffer.cache_path = strategy_cache_path(&py_path);
+            buffer.cache_path = cache_state_paths().map(|(_, cache_py)| cache_py);
         }
 
         let layout = build_layout(&panels, &camera, &*buffer, buffer.original_path.as_deref());
@@ -270,6 +381,9 @@ fn handle_save_layout_system(
             match std::fs::write(&py_path, &merged) {
                 Ok(()) => {
                     info!("strategy .py saved to {:?}", py_path);
+                    if let Err(e) = sync_to_cache(&py_path) {
+                        error!("failed to sync saved strategy to cache: {e}");
+                    }
                     for (_, mut frag) in fragments_q.iter_mut() {
                         frag.dirty = false;
                     }
@@ -286,7 +400,13 @@ fn handle_save_layout_system(
 fn handle_save_as_layout_system(
     mut events: EventReader<LayoutSaveAsRequested>,
     panels: Query<
-        (&PanelKind, Option<&StrategyEditorId>, &Transform, &Sprite, &Visibility),
+        (
+            &PanelKind,
+            Option<&StrategyEditorId>,
+            &Transform,
+            &Sprite,
+            &Visibility,
+        ),
         With<WindowRoot>,
     >,
     camera: Query<(&Transform, &OrthographicProjection), (With<Camera2d>, Without<WindowRoot>)>,
@@ -312,10 +432,10 @@ fn handle_save_as_layout_system(
         let old_original = buffer.original_path.clone();
         let old_cache = buffer.cache_path.clone();
         buffer.original_path = Some(py_path.clone());
-        buffer.cache_path = strategy_cache_path(&py_path);
+        buffer.cache_path = cache_state_paths().map(|(_, cache_py)| cache_py);
 
-        // Save As は別ファイルへの保存なので scenario を運ばない（None）
-        let layout = build_layout(&panels, &camera, &*buffer, None);
+        let cache_json = cache_state_paths().map(|(cache_json, _)| cache_json);
+        let layout = build_layout(&panels, &camera, &*buffer, cache_json.as_deref());
         match save_layout_to(&json_path, &layout) {
             Ok(()) => info!("layout saved-as to {:?}", json_path),
             Err(e) => {
@@ -337,6 +457,9 @@ fn handle_save_as_layout_system(
             match std::fs::write(&py_path, &merged) {
                 Ok(()) => {
                     info!("strategy .py saved-as to {:?}", py_path);
+                    if let Err(e) = sync_to_cache(&py_path) {
+                        error!("failed to sync saved-as strategy to cache: {e}");
+                    }
                     for (_, mut frag) in fragments_q.iter_mut() {
                         frag.dirty = false;
                     }
@@ -375,7 +498,14 @@ fn apply_layout_system(
     mut commands: Commands,
     mut events: EventReader<LayoutLoadRequested>,
     mut panels: Query<
-        (Entity, &PanelKind, Option<&StrategyEditorId>, &mut Transform, &mut Sprite, &mut Visibility),
+        (
+            Entity,
+            &PanelKind,
+            Option<&StrategyEditorId>,
+            &mut Transform,
+            &mut Sprite,
+            &mut Visibility,
+        ),
         With<WindowRoot>,
     >,
     mut camera: Query<
@@ -467,8 +597,7 @@ fn apply_layout_system(
         }
 
         // viewport: None → カメラを触らない（F10: scenario-only JSON で camera reset を防ぐ）
-        if let (Some(vp), Ok((mut cam_tf, mut proj))) =
-            (&layout.viewport, camera.get_single_mut())
+        if let (Some(vp), Ok((mut cam_tf, mut proj))) = (&layout.viewport, camera.get_single_mut())
         {
             cam_tf.translation.x = vp.pan_x;
             cam_tf.translation.y = vp.pan_y;
@@ -481,22 +610,25 @@ fn apply_layout_system(
             let mut new_max_z = wm.max_z;
             for win_layout in win_layouts {
                 let want_key: Option<String> = if win_layout.kind == PanelKind::StrategyEditor {
-                    Some(win_layout.region_key.clone().unwrap_or_else(|| "region_001".to_string()))
+                    Some(
+                        win_layout
+                            .region_key
+                            .clone()
+                            .unwrap_or_else(|| "region_001".to_string()),
+                    )
                 } else {
                     None
                 };
-                let found = panels
-                    .iter_mut()
-                    .find(|(_, kind, id, _, _, _)| {
-                        if **kind != win_layout.kind {
-                            return false;
-                        }
-                        match (win_layout.kind, want_key.as_deref(), id.as_ref()) {
-                            (PanelKind::StrategyEditor, Some(k), Some(eid)) => eid.region_key == k,
-                            (PanelKind::StrategyEditor, _, _) => false,
-                            _ => true,
-                        }
-                    });
+                let found = panels.iter_mut().find(|(_, kind, id, _, _, _)| {
+                    if **kind != win_layout.kind {
+                        return false;
+                    }
+                    match (win_layout.kind, want_key.as_deref(), id.as_ref()) {
+                        (PanelKind::StrategyEditor, Some(k), Some(eid)) => eid.region_key == k,
+                        (PanelKind::StrategyEditor, _, _) => false,
+                        _ => true,
+                    }
+                });
 
                 match found {
                     None => {
@@ -567,7 +699,13 @@ fn apply_layout_system(
 fn apply_pending_layout_system(
     mut pending: ResMut<PendingLayoutApply>,
     mut panels: Query<
-        (&PanelKind, Option<&StrategyEditorId>, &mut Transform, &mut Sprite, &mut Visibility),
+        (
+            &PanelKind,
+            Option<&StrategyEditorId>,
+            &mut Transform,
+            &mut Sprite,
+            &mut Visibility,
+        ),
         With<WindowRoot>,
     >,
     mut wm: ResMut<WindowManager>,
@@ -586,23 +724,26 @@ fn apply_pending_layout_system(
     let mut still_pending = vec![];
     let windows = std::mem::take(&mut pending.windows);
     for win_layout in windows {
-        let found = panels
-            .iter_mut()
-            .find(|(kind, id, ..)| {
-                if **kind != win_layout.kind {
-                    return false;
-                }
-                if win_layout.kind == PanelKind::StrategyEditor {
-                    let want = win_layout.region_key.as_deref().unwrap_or("region_001");
-                    id.map(|i| i.region_key == want).unwrap_or(false)
-                } else {
-                    true
-                }
-            });
+        let found = panels.iter_mut().find(|(kind, id, ..)| {
+            if **kind != win_layout.kind {
+                return false;
+            }
+            if win_layout.kind == PanelKind::StrategyEditor {
+                let want = win_layout.region_key.as_deref().unwrap_or("region_001");
+                id.map(|i| i.region_key == want).unwrap_or(false)
+            } else {
+                true
+            }
+        });
         match found {
             None => {
                 let region_key = if win_layout.kind == PanelKind::StrategyEditor {
-                    Some(win_layout.region_key.clone().unwrap_or_else(|| "region_001".to_string()))
+                    Some(
+                        win_layout
+                            .region_key
+                            .clone()
+                            .unwrap_or_else(|| "region_001".to_string()),
+                    )
                 } else {
                     None
                 };
@@ -651,25 +792,54 @@ fn apply_pending_layout_system(
 fn save_layout_on_window_close(
     mut close_events: EventReader<WindowCloseRequested>,
     panels: Query<
-        (&PanelKind, Option<&StrategyEditorId>, &Transform, &Sprite, &Visibility),
+        (
+            &PanelKind,
+            Option<&StrategyEditorId>,
+            &Transform,
+            &Sprite,
+            &Visibility,
+        ),
         With<WindowRoot>,
     >,
     camera: Query<(&Transform, &OrthographicProjection), (With<Camera2d>, Without<WindowRoot>)>,
-    buffer: Res<StrategyBuffer>,
+    mut buffer: ResMut<StrategyBuffer>,
+    mut fragments_q: Query<(&StrategyEditorId, &mut StrategyFragment), With<WindowRoot>>,
+    mut strategy_auto_save: ResMut<StrategyAutoSaveState>,
 ) {
     // Bevy 0.15 の winit は WindowCloseRequested を EventWriter 経由で送る。
     // add_observer が期待する trigger_targets() では送られないため observer は発火しない。
     // EventReader + add_systems(Update, ...) なら同フレーム内で確実に受信でき、
     // window entity が削除される前にセーブが完了する。
     for _ in close_events.read() {
-        let Some(orig) = &buffer.original_path else {
-            info!("layout auto-save skipped: no original_path");
+        let mut items: Vec<(String, String)> = fragments_q
+            .iter()
+            .map(|(id, frag)| (id.region_key.clone(), frag.source.clone()))
+            .collect();
+        if !items.is_empty() {
+            items.sort_by(|a, b| a.0.cmp(&b.0));
+            let merged = merge_fragments(&items);
+            match flush_strategy_cache(&merged, &mut buffer, &mut strategy_auto_save) {
+                Ok(true) => {
+                    for (_, mut frag) in fragments_q.iter_mut() {
+                        frag.dirty = false;
+                    }
+                    info!(
+                        "strategy cache flushed on window close: {:?}",
+                        buffer.cache_path
+                    );
+                }
+                Ok(false) => warn!("strategy cache flush skipped on window close: no cache_path"),
+                Err(e) => error!("strategy cache flush on window close failed: {e}"),
+            }
+        }
+
+        let Some((cache_json, _)) = cache_state_paths() else {
+            error!("layout auto-save failed: cache_dir not found");
             continue;
         };
-        let path = orig.with_extension("json");
         let layout = build_layout(&panels, &camera, &*buffer, buffer.original_path.as_deref());
-        match save_layout_to(&path, &layout) {
-            Ok(()) => info!("layout auto-saved to {:?}", path),
+        match save_layout_to(&cache_json, &layout) {
+            Ok(()) => info!("layout auto-saved to {:?}", cache_json),
             Err(e) => error!("layout auto-save failed: {e}"),
         }
     }
@@ -680,7 +850,13 @@ fn save_layout_on_window_close(
 fn debounced_autosave_system(
     mut auto_save: ResMut<AutoSaveState>,
     panels: Query<
-        (&PanelKind, Option<&StrategyEditorId>, &Transform, &Sprite, &Visibility),
+        (
+            &PanelKind,
+            Option<&StrategyEditorId>,
+            &Transform,
+            &Sprite,
+            &Visibility,
+        ),
         With<WindowRoot>,
     >,
     camera: Query<(&Transform, &OrthographicProjection), (With<Camera2d>, Without<WindowRoot>)>,
@@ -697,17 +873,15 @@ fn debounced_autosave_system(
         return;
     }
 
-    // sidecar JSON は strategy ファイルと同名 .json
-    let Some(orig) = &buffer.original_path else {
-        // strategy 未選択時は自動保存しない
+    let Some((cache_json, _)) = cache_state_paths() else {
+        error!("debounced autosave failed: cache_dir not found");
         auto_save.dirty = false;
         auto_save.last_change = None;
         return;
     };
-    let path = orig.with_extension("json");
     let layout = build_layout(&panels, &camera, &*buffer, buffer.original_path.as_deref());
-    match save_layout_to(&path, &layout) {
-        Ok(()) => info!("debounced autosave → {:?}", path),
+    match save_layout_to(&cache_json, &layout) {
+        Ok(()) => info!("debounced autosave → {:?}", cache_json),
         Err(e) => error!("debounced autosave failed: {e}"),
     }
     auto_save.dirty = false;
@@ -762,6 +936,7 @@ impl Plugin for LayoutPersistencePlugin {
             .add_event::<LayoutSaveAsRequested>()
             .add_event::<LayoutLoadDialogRequested>()
             .add_event::<LayoutLoadRequested>()
+            .add_event::<CacheRestoreRequested>()
             .add_systems(
                 Update,
                 (
@@ -770,6 +945,7 @@ impl Plugin for LayoutPersistencePlugin {
                     handle_load_dialog_system,
                     // デバウンス自動保存
                     debounced_autosave_system,
+                    apply_cache_restore_system,
                     apply_layout_system,
                     apply_pending_layout_system.after(apply_layout_system),
                     layout_shortcut_system,
@@ -841,7 +1017,10 @@ mod tests {
         let json = serde_json::to_string_pretty(&layout).unwrap();
         let restored: SidecarLayout = serde_json::from_str(&json).unwrap();
         assert_eq!(layout.schema_version, restored.schema_version);
-        assert_eq!(layout.windows.as_ref().map(|v| v.len()), restored.windows.as_ref().map(|v| v.len()));
+        assert_eq!(
+            layout.windows.as_ref().map(|v| v.len()),
+            restored.windows.as_ref().map(|v| v.len())
+        );
         assert!(restored.scenario.is_none());
     }
 
@@ -851,9 +1030,18 @@ mod tests {
     fn test_deserialize_scenario_only_sidecar() {
         let json = r#"{"scenario": {"schema_version": 1, "instrument": "1301.TSE", "start": "2025-01-06", "end": "2025-03-31", "granularity": "Daily", "initial_cash": 1000000}}"#;
         let layout: SidecarLayout = serde_json::from_str(json).unwrap();
-        assert!(layout.windows.is_none(), "windows must be None for scenario-only sidecar");
-        assert!(layout.viewport.is_none(), "viewport must be None for scenario-only sidecar");
-        assert!(layout.scenario.is_some(), "scenario field must be preserved");
+        assert!(
+            layout.windows.is_none(),
+            "windows must be None for scenario-only sidecar"
+        );
+        assert!(
+            layout.viewport.is_none(),
+            "viewport must be None for scenario-only sidecar"
+        );
+        assert!(
+            layout.scenario.is_some(),
+            "scenario field must be preserved"
+        );
     }
 
     /// 既存 layout-only JSON（旧形式）が今まで通り読めること
@@ -901,28 +1089,29 @@ mod tests {
         };
         let json = serde_json::to_string_pretty(&layout).unwrap();
         let restored: SidecarLayout = serde_json::from_str(&json).unwrap();
-        assert!(restored.scenario.is_some(), "scenario must survive round-trip");
+        assert!(
+            restored.scenario.is_some(),
+            "scenario must survive round-trip"
+        );
         let sc = restored.scenario.unwrap();
         assert_eq!(sc["instrument"], "1301.TSE");
     }
 
-    /// Save As は scenario を運ばない（None を渡した場合）
+    /// scenario が None の場合は JSON に scenario キーを書かない。
     #[test]
-    fn test_save_as_does_not_carry_scenario() {
-        // preserve_scenario_from: None の場合、scenario フィールドは None
+    fn test_layout_omits_scenario_when_none() {
         let layout = SidecarLayout {
             schema_version: Some(1),
             viewport: Some(ViewportState::default()),
             windows: Some(vec![]),
             strategy_path: None,
             selected_symbol: None,
-            scenario: None, // Save As は scenario を運ばない
+            scenario: None,
         };
         let json = serde_json::to_string_pretty(&layout).unwrap();
-        // JSON 文字列に "scenario" キーが含まれないこと（skip_serializing_if = None）
         assert!(
             !json.contains("\"scenario\""),
-            "Save As should not carry scenario key"
+            "layout should omit scenario key when scenario is None"
         );
     }
 
@@ -948,7 +1137,10 @@ mod tests {
             .and_then(|s| serde_json::from_str::<serde_json::Value>(&s).ok())
             .and_then(|v| v.get("scenario").cloned());
 
-        assert!(scenario.is_some(), "scenario must be recovered from existing sidecar");
+        assert!(
+            scenario.is_some(),
+            "scenario must be recovered from existing sidecar"
+        );
         assert_eq!(scenario.unwrap()["instrument"], "7203.TSE");
 
         std::fs::remove_file(&json_path).ok();

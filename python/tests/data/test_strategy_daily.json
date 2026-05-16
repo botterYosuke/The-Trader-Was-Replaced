@@ -10,57 +10,57 @@
       "kind": "StrategyEditor",
       "visible": true,
       "position": [
-        -292.78717,
-        -119.50151
+        195.52142,
+        40.62332
       ],
       "size": [
         500.0,
         400.0
       ],
-      "z": 274.0,
+      "z": 38.0,
       "region_key": "region_002"
     },
     {
       "kind": "StrategyEditor",
       "visible": true,
       "position": [
-        -281.30905,
-        314.68918
+        -300.0,
+        50.0
       ],
       "size": [
         500.0,
         400.0
       ],
-      "z": 272.0,
-      "region_key": "region_001"
+      "z": 10.0,
+      "region_key": "region_004"
     },
     {
       "kind": "StrategyEditor",
       "visible": true,
       "position": [
-        318.86115,
-        -104.35457
+        -180.26703,
+        -179.368
       ],
       "size": [
         500.0,
         400.0
       ],
-      "z": 270.0,
+      "z": 20.0,
       "region_key": "region_003"
     },
     {
       "kind": "StrategyEditor",
       "visible": true,
       "position": [
-        310.9267,
-        316.1534
+        -168.7265,
+        236.81229
       ],
       "size": [
         500.0,
         400.0
       ],
-      "z": 268.0,
-      "region_key": "region_004"
+      "z": 16.0,
+      "region_key": "region_001"
     }
   ],
   "strategy_path": "C:\\Users\\sasai\\Documents\\The-Trader-Was-Replaced\\python\\tests\\data\\test_strategy_daily.py",

@@ -1,5 +1,4 @@
 use crate::trading::{StrategyRunConfig, TransportCommand, TransportCommandSender};
-use crate::ui::app_state::{AppState, load_app_state, save_app_state};
 use crate::ui::components::ScenarioMetadata;
 use crate::ui::components::{
     MenuBarRoot, MenuItem, MenuPopup, MenuTopLevel, OpenMenu, PanelKind, PanelSpawnRequested,
@@ -8,12 +7,12 @@ use crate::ui::components::{
     StrategyLoadMode, StrategyRunRequested, StrategyStatusLabel, UndoMenuRequested, WindowRoot,
 };
 use crate::ui::layout_persistence::{
-    LayoutLoadDialogRequested, LayoutLoadRequested, LayoutSaveAsRequested, LayoutSaveRequested,
+    CacheRestoreRequested, LayoutLoadDialogRequested, LayoutLoadRequested, LayoutSaveAsRequested,
+    LayoutSaveRequested, SidecarLayout,
 };
 use crate::ui::strategy_editor::split_py_into_fragments;
 use bevy::input::keyboard::KeyboardInput;
 use bevy::prelude::*;
-use sha2::{Digest, Sha256};
 
 const BTN_NORMAL: Color = Color::srgba(0.10, 0.10, 0.16, 1.0);
 const BTN_HOVER: Color = Color::srgba(0.20, 0.20, 0.30, 1.0);
@@ -287,25 +286,42 @@ pub fn menu_item_system(
     }
 }
 
-/// 起動時に app_state.json を読み、`last_strategy_path` が存在すれば
-/// `OpenStrategyRequested` を発火してストラテジーを自動復元する。
+/// 起動時に固定 cache `%LocalAppData%/.../app_state.json` を読み、
+/// `CacheRestoreRequested` を発火して復元処理に流す。
 /// Startup schedule で 1 回だけ実行される。
-pub fn restore_last_strategy_system(mut events: EventWriter<StrategyFileLoadRequested>) {
-    let state = load_app_state();
-    if let Some(path) = state.last_strategy_path {
-        if path.exists() {
-            info!(
-                "restore_last_strategy: firing StrategyFileLoadRequested (StartupRestore) for {:?}",
-                path
-            );
-            events.send(StrategyFileLoadRequested {
-                path,
-                mode: StrategyLoadMode::StartupRestore,
-            });
-        } else {
-            info!("restore_last_strategy: path {:?} not found, skipping", path);
-        }
+pub fn restore_last_strategy_system(mut events: EventWriter<CacheRestoreRequested>) {
+    let Some((cache_json, _)) = cache_state_paths() else {
+        info!("restore_from_cache: cache_dir not found, skipping");
+        return;
+    };
+    if !cache_json.exists() {
+        info!(
+            "restore_from_cache: cache JSON {:?} not found, skipping",
+            cache_json
+        );
+        return;
     }
+
+    let text = match std::fs::read_to_string(&cache_json) {
+        Ok(text) => text,
+        Err(e) => {
+            error!("restore_from_cache: failed to read {:?}: {e}", cache_json);
+            return;
+        }
+    };
+    let layout = match serde_json::from_str::<SidecarLayout>(&text) {
+        Ok(layout) => layout,
+        Err(e) => {
+            error!("restore_from_cache: failed to parse {:?}: {e}", cache_json);
+            return;
+        }
+    };
+
+    info!(
+        "restore_from_cache: firing CacheRestoreRequested from {:?}",
+        cache_json
+    );
+    events.send(CacheRestoreRequested { layout });
 }
 
 pub fn log_strategy_file_load_requested_system(mut events: EventReader<StrategyFileLoadRequested>) {
@@ -317,22 +333,9 @@ pub fn log_strategy_file_load_requested_system(mut events: EventReader<StrategyF
     }
 }
 
-pub(crate) fn strategy_cache_path(original: &std::path::Path) -> Option<std::path::PathBuf> {
-    let abs = original.canonicalize().ok()?;
-    let hash_bytes = {
-        let mut h = Sha256::new();
-        h.update(abs.to_string_lossy().as_bytes());
-        h.finalize()
-    };
-    let hash: String = hash_bytes.iter().map(|b| format!("{:02x}", b)).collect();
-    let prefix = &hash[..16];
-    let filename = original.file_name()?.to_string_lossy();
-    let cache_name = format!("{}__{}", prefix, filename);
-
-    let dir = dirs::cache_dir()?
-        .join("the-trader-was-replaced")
-        .join("strategy_buffers");
-    Some(dir.join(cache_name))
+pub(crate) fn cache_state_paths() -> Option<(std::path::PathBuf, std::path::PathBuf)> {
+    let dir = dirs::cache_dir()?.join("the-trader-was-replaced");
+    Some((dir.join("app_state.json"), dir.join("app_state.py")))
 }
 
 pub fn update_strategy_status_label_system(
@@ -430,22 +433,18 @@ pub fn handle_strategy_file_load_system(
         buffer.original_path = Some(event.path.clone());
         buffer.last_merged_source = None;
 
-        let cache_path_opt = strategy_cache_path(&event.path);
-        match &cache_path_opt {
-            Some(cache_path) => {
-                if let Some(cache_dir) = cache_path.parent() {
+        match cache_state_paths() {
+            Some((_, cache_py)) => {
+                if let Some(cache_dir) = cache_py.parent() {
                     if let Err(err) = std::fs::create_dir_all(cache_dir) {
                         error!("failed to create cache dir {:?}: {}", cache_dir, err);
                         buffer.cache_path = None;
                     } else {
-                        let original_sidecar = event.path.with_extension("json");
-                        let cache_sidecar = cache_path.with_extension("json");
-                        copy_sidecar_to_cache(&original_sidecar, &cache_sidecar);
-                        buffer.cache_path = Some(cache_path.clone());
+                        buffer.cache_path = Some(cache_py.clone());
                         info!(
                             "strategy file loaded: original={:?}, cache={:?}, regions={}",
                             event.path,
-                            cache_path,
+                            cache_py,
                             outcome.fragments.len()
                         );
                     }
@@ -454,7 +453,7 @@ pub fn handle_strategy_file_load_system(
                 }
             }
             None => {
-                error!("failed to compute cache path for {:?}", event.path);
+                error!("failed to compute cache state paths");
                 buffer.cache_path = None;
             }
         }
@@ -500,13 +499,12 @@ pub fn handle_strategy_file_load_system(
             }
         }
 
-        if matches!(event.mode, StrategyLoadMode::UserOpen) {
-            let state = AppState {
-                last_strategy_path: Some(event.path.clone()),
-                ..AppState::default()
-            };
-            if let Err(e) = save_app_state(&state) {
-                error!("failed to save app_state: {e}");
+        if matches!(
+            event.mode,
+            StrategyLoadMode::UserOpen | StrategyLoadMode::LayoutRestore
+        ) {
+            if let Err(e) = sync_to_cache(&event.path) {
+                error!("failed to sync strategy to cache: {e}");
             }
         }
     }
@@ -570,6 +568,26 @@ pub fn handle_strategy_run_system(
             error!("RunStrategy: TransportCommandSender is None — backend not connected");
         }
     }
+}
+
+pub(crate) fn sync_to_cache(original_py: &std::path::Path) -> std::io::Result<()> {
+    let Some((cache_json, cache_py)) = cache_state_paths() else {
+        return Err(std::io::Error::new(
+            std::io::ErrorKind::NotFound,
+            "cache_dir not found",
+        ));
+    };
+
+    if let Some(cache_dir) = cache_py.parent() {
+        std::fs::create_dir_all(cache_dir)?;
+    }
+
+    std::fs::copy(original_py, &cache_py)?;
+
+    let original_sidecar = original_py.with_extension("json");
+    copy_sidecar_to_cache(&original_sidecar, &cache_json);
+
+    Ok(())
 }
 
 /// cache `.py` 書き込み直後に呼ぶ sidecar コピーロジック。

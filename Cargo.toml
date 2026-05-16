@@ -15,7 +15,6 @@ serde = { version = "1.0", features = ["derive"] }
 serde_json = "1.0"
 rfd = "0.17.2"
 dirs = "6.0.0"
-sha2 = "0.11.0"
 bevy_cosmic_edit = "0.26"
 undo = "0.52"
 

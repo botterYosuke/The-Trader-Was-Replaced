@@ -83,7 +83,6 @@ pub struct MenuPopup(pub MenuTopLevel);
 #[derive(Resource, Default)]
 pub struct OpenMenu(pub Option<MenuTopLevel>);
 
-
 #[derive(Resource, Default, Debug, Clone)]
 pub struct StrategyBuffer {
     pub original_path: Option<PathBuf>,
@@ -127,7 +126,9 @@ pub struct ScenarioMetadata {
 /// 6 種類すべての floating window を区別するための種別タグ。
 /// サイドバーのボタン entity と、spawn された panel root entity の両方に貼る。
 /// Sub-step 1.2 で「既に spawn 済みかどうか」を判定するのにも使う。
-#[derive(Component, Clone, Copy, Debug, PartialEq, Eq, Hash, serde::Serialize, serde::Deserialize)]
+#[derive(
+    Component, Clone, Copy, Debug, PartialEq, Eq, Hash, serde::Serialize, serde::Deserialize,
+)]
 pub enum PanelKind {
     Chart,
     StrategyEditor,
@@ -243,8 +244,6 @@ pub enum StrategyLoadMode {
     UserOpen,
     /// レイアウト JSON の strategy_path フィールド由来。スポーン配置はレイアウトが決定済み。
     LayoutRestore,
-    /// 起動時の last_strategy_path 復元。UserOpen と同じだがサイドカー echo は抑制。
-    StartupRestore,
 }
 
 /// `PanelSpawnRequested` に同梱して `panel_spawn_dispatcher_system` に渡す引数。

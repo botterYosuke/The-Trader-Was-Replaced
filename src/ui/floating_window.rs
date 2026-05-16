@@ -1,11 +1,12 @@
 use crate::ui::buying_power::spawn_buying_power_panel;
 use crate::ui::components::{
     CloseButton, PanelKind, PanelSpawnRequested, PanelSpawnSource, PendingStrategyFragments,
-    RegionKeyAllocator, StrategyBuffer, StrategyEditorId, StrategyEditorSpawnSpec, StrategyFragment,
-    TitleBar, WindowManager, WindowRoot,
+    RegionKeyAllocator, StrategyBuffer, StrategyEditorId, StrategyEditorSpawnSpec,
+    StrategyFragment, TitleBar, WindowManager, WindowRoot,
 };
 use crate::ui::editor_history::{ActiveDrag, AppHistory};
 use crate::ui::layout_persistence::WindowLayout;
+use crate::ui::menu_bar::cache_state_paths;
 use crate::ui::orders::spawn_orders_panel;
 use crate::ui::positions::spawn_positions_panel;
 use crate::ui::run_result_panel::spawn_run_result_panel;
@@ -104,8 +105,12 @@ pub fn spawn_floating_window(
              mut query: Query<&mut Transform, With<WindowRoot>>,
              parent_query: Query<&Parent>,
              camera_query: Query<&OrthographicProjection, With<Camera2d>>| {
-                let Ok(parent) = parent_query.get(drag.entity()) else { return };
-                let Ok(mut transform) = query.get_mut(parent.get()) else { return };
+                let Ok(parent) = parent_query.get(drag.entity()) else {
+                    return;
+                };
+                let Ok(mut transform) = query.get_mut(parent.get()) else {
+                    return;
+                };
                 let scale = camera_query.get_single().map(|p| p.scale).unwrap_or(1.0);
                 transform.translation.x += drag.event().delta.x * scale;
                 transform.translation.y -= drag.event().delta.y * scale;
@@ -116,23 +121,38 @@ pub fn spawn_floating_window(
              parent_query: Query<&Parent>,
              root_q: Query<&Transform, With<WindowRoot>>,
              mut active_drag: ResMut<ActiveDrag>| {
-                let Ok(parent) = parent_query.get(drag_start.entity()) else { return };
+                let Ok(parent) = parent_query.get(drag_start.entity()) else {
+                    return;
+                };
                 let root_entity = parent.get();
-                let Ok(tf) = root_q.get(root_entity) else { return };
-                active_drag.starts.insert(root_entity, tf.translation.truncate());
+                let Ok(tf) = root_q.get(root_entity) else {
+                    return;
+                };
+                active_drag
+                    .starts
+                    .insert(root_entity, tf.translation.truncate());
             },
         )
         .observe(
             |drag_end: Trigger<Pointer<DragEnd>>,
              parent_query: Query<&Parent>,
-             root_q: Query<(&Transform, &PanelKind, Option<&StrategyEditorId>), With<WindowRoot>>,
+             root_q: Query<
+                (&Transform, &PanelKind, Option<&StrategyEditorId>),
+                With<WindowRoot>,
+            >,
              mut active_drag: ResMut<ActiveDrag>,
              mut history: ResMut<AppHistory>,
              mut auto_save: ResMut<crate::ui::layout_persistence::AutoSaveState>| {
-                let Ok(parent) = parent_query.get(drag_end.entity()) else { return };
+                let Ok(parent) = parent_query.get(drag_end.entity()) else {
+                    return;
+                };
                 let root_entity = parent.get();
-                let Some(before) = active_drag.starts.remove(&root_entity) else { return };
-                let Ok((tf, kind, editor_id)) = root_q.get(root_entity) else { return };
+                let Some(before) = active_drag.starts.remove(&root_entity) else {
+                    return;
+                };
+                let Ok((tf, kind, editor_id)) = root_q.get(root_entity) else {
+                    return;
+                };
                 let after = tf.translation.truncate();
                 let region_key = editor_id.map(|id| id.region_key.clone());
                 history.push_window_move(*kind, region_key, before, after);
@@ -183,19 +203,21 @@ pub fn spawn_floating_window(
             |trigger: Trigger<Pointer<Click>>,
              parent_query: Query<&Parent>,
              root_q: Query<
-                 (
-                     &PanelKind,
-                     &Transform,
-                     &Sprite,
-                     Option<&StrategyEditorId>,
-                     Option<&StrategyFragment>,
-                 ),
-                 With<WindowRoot>,
-             >,
+                (
+                    &PanelKind,
+                    &Transform,
+                    &Sprite,
+                    Option<&StrategyEditorId>,
+                    Option<&StrategyFragment>,
+                ),
+                With<WindowRoot>,
+            >,
              mut history: ResMut<AppHistory>,
              mut auto_save: ResMut<crate::ui::layout_persistence::AutoSaveState>,
              mut commands: Commands| {
-                let Ok(parent) = parent_query.get(trigger.entity()) else { return };
+                let Ok(parent) = parent_query.get(trigger.entity()) else {
+                    return;
+                };
                 let root_entity = parent.get();
                 if !history.is_replaying()
                     && let Ok((kind, tf, sprite, editor_id, fragment)) = root_q.get(root_entity)
@@ -206,7 +228,10 @@ pub fn spawn_floating_window(
                         region_key,
                         visible: true,
                         position: [tf.translation.x, tf.translation.y],
-                        size: sprite.custom_size.map(|s| s.to_array()).unwrap_or([0.0, 0.0]),
+                        size: sprite
+                            .custom_size
+                            .map(|s| s.to_array())
+                            .unwrap_or([0.0, 0.0]),
                         z: tf.translation.z,
                     };
                     let snapshot = match (editor_id, fragment) {
@@ -238,11 +263,8 @@ pub fn spawn_floating_window(
     (root, content_area, title_bar)
 }
 
-fn untitled_cache_path(region_key: &str) -> Option<std::path::PathBuf> {
-    let dir = dirs::cache_dir()?
-        .join("the-trader-was-replaced")
-        .join("untitled");
-    Some(dir.join(format!("{}.py", region_key)))
+fn fixed_strategy_cache_path() -> Option<std::path::PathBuf> {
+    cache_state_paths().map(|(_, cache_py)| cache_py)
 }
 
 /// パネル spawn イベントを捌く dispatcher。
@@ -278,7 +300,7 @@ pub fn panel_spawn_dispatcher_system(
                     // strategy がロード済みの場合は既存の cache_path を使う。
                     // original_path は絶対に None に上書きしない（ScenarioMetadata がリセットされる）。
                     if buffer.original_path.is_none() && buffer.cache_path.is_none() {
-                        if let Some(temp_path) = untitled_cache_path(&key) {
+                        if let Some(temp_path) = fixed_strategy_cache_path() {
                             if let Some(parent) = temp_path.parent() {
                                 match std::fs::create_dir_all(parent) {
                                     Ok(()) => {
@@ -286,7 +308,7 @@ pub fn panel_spawn_dispatcher_system(
                                     }
                                     Err(e) => {
                                         warn!(
-                                            "untitled cache dir creation failed: {}, Run will be blocked",
+                                            "fixed strategy cache dir creation failed: {}, Run will be blocked",
                                             e
                                         );
                                     }
