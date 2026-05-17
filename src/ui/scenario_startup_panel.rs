@@ -63,6 +63,14 @@ impl GranularityChoice {
     }
 }
 
+/// The panel must reject edits while a replay is starting and also when no
+/// cache sidecar is configured: without a writeback target, accepting input
+/// would leave `writeback_pending` permanently stuck and silently diverge
+/// in-memory `ScenarioMetadata` from disk.
+fn is_panel_disabled(progress: &ReplayStartupProgress, paths: &ScenarioWritebackPaths) -> bool {
+    progress.visible || paths.cache_sidecar.is_none()
+}
+
 /// Validate one of the date input fields. `field_name` is used to build a
 /// human-readable "{field_name} must not be empty" error.
 fn validate_date_field(field_name: &str, s: &str) -> Result<NaiveDate, String> {
@@ -390,8 +398,9 @@ pub fn commit_startup_params_to_scenario_system(
     mut params: ResMut<ScenarioStartupParams>,
     mut metadata: ResMut<ScenarioMetadata>,
     progress: Res<ReplayStartupProgress>,
+    paths: Res<ScenarioWritebackPaths>,
 ) {
-    if progress.visible {
+    if is_panel_disabled(&progress, &paths) {
         for _ in events.read() {}
         return;
     }
@@ -464,7 +473,11 @@ pub fn commit_startup_params_to_scenario_system(
         };
     }
 
-    if any_committed {
+    // Only schedule a cache writeback when the batch leaves the form in a
+    // fully valid state. Otherwise the cache would record a partial edit
+    // (e.g. start updated but end invalid) — the plan requires that invalid
+    // input never modifies the cache JSON.
+    if any_committed && !params.errors.any() {
         params.dirty = false;
         params.writeback_pending = true;
     }
@@ -537,8 +550,9 @@ pub fn scenario_startup_param_input_system(
     mut commit_w: EventWriter<ScenarioStartupParamCommit>,
     mut params: ResMut<ScenarioStartupParams>,
     progress: Res<ReplayStartupProgress>,
+    paths: Res<ScenarioWritebackPaths>,
 ) {
-    if progress.visible {
+    if is_panel_disabled(&progress, &paths) {
         for _ in events.read() {}
         return;
     }
@@ -584,8 +598,9 @@ pub fn scenario_startup_granularity_button_system(
     mut commit_w: EventWriter<ScenarioStartupParamCommit>,
     mut params: ResMut<ScenarioStartupParams>,
     progress: Res<ReplayStartupProgress>,
+    paths: Res<ScenarioWritebackPaths>,
 ) {
-    if progress.visible {
+    if is_panel_disabled(&progress, &paths) {
         return;
     }
 
@@ -614,6 +629,7 @@ pub fn scenario_startup_granularity_button_system(
 pub fn update_scenario_startup_param_ui_system(
     params: Res<ScenarioStartupParams>,
     progress: Res<ReplayStartupProgress>,
+    paths: Res<ScenarioWritebackPaths>,
     mut daily_bg_q: Query<
         &mut BackgroundColor,
         (
@@ -630,7 +646,11 @@ pub fn update_scenario_startup_param_ui_system(
     >,
     mut label_q: Query<(&ScenarioStartupErrorLabel, &mut Text)>,
 ) {
-    let alpha = if progress.visible { 0.5 } else { 1.0 };
+    let alpha = if is_panel_disabled(&progress, &paths) {
+        0.5
+    } else {
+        1.0
+    };
     let active = Color::srgba(0.20, 0.35, 0.60, alpha);
     let inactive = Color::srgba(0.10, 0.10, 0.16, alpha);
 
@@ -746,6 +766,12 @@ mod tests {
         app.init_resource::<ScenarioMetadata>()
             .init_resource::<ScenarioStartupParams>()
             .init_resource::<ReplayStartupProgress>()
+            // A dummy cache path keeps the panel enabled; tests that exercise
+            // the cache-unavailable path override this with `cache_sidecar:
+            // None`.
+            .insert_resource(ScenarioWritebackPaths {
+                cache_sidecar: Some(std::path::PathBuf::from("/tmp/dummy_cache.json")),
+            })
             .add_event::<ScenarioStartupParamCommit>()
             .add_systems(
                 Update,
@@ -775,6 +801,32 @@ mod tests {
         assert_eq!(params.granularity, GranularityChoice::Minute);
         assert_eq!(params.initial_cash, "100000");
         assert!(params.errors.granularity.is_none());
+    }
+
+    /// #9 sub-spec: while the user is mid-edit (`params.dirty == true`),
+    /// a `ScenarioMetadata` change must NOT clobber the in-flight UI strings.
+    /// Without this guard, every metadata reparse during typing would snap
+    /// the input field back to the parsed value.
+    #[test]
+    fn test_9_sync_skipped_while_dirty() {
+        let mut app = make_app();
+        {
+            let mut params = app.world_mut().resource_mut::<ScenarioStartupParams>();
+            params.dirty = true;
+            params.start = "2099-12-31".into();
+        }
+        {
+            let mut meta = app.world_mut().resource_mut::<ScenarioMetadata>();
+            meta.start = Some("2024-01-01".into());
+            meta.granularity = Some("Daily".into());
+        }
+        app.update();
+
+        let params = app.world().resource::<ScenarioStartupParams>();
+        assert_eq!(
+            params.start, "2099-12-31",
+            "in-flight UI value must not be overwritten by metadata sync while dirty"
+        );
     }
 
     #[test]
@@ -880,19 +932,104 @@ mod tests {
         assert!(meta.start.is_none(), "metadata must not be mutated");
     }
 
+    /// #12: when `ScenarioWritebackPaths.cache_sidecar == None`, the writeback
+    /// system must early-return without touching `writeback_pending` (so no
+    /// retry loop fires) and without panicking. Run itself is not blocked by
+    /// the missing cache path — `errors.any()` stays `false`.
     #[test]
-    fn test_12_cache_unavailable_compile_only() {
-        let mut app = make_app();
+    fn test_12_cache_unavailable_writeback_is_noop() {
+        let mut app = App::new();
+        app.init_resource::<ScenarioMetadata>()
+            .init_resource::<ScenarioStartupParams>()
+            .init_resource::<ReplayStartupProgress>()
+            .insert_resource(ScenarioWritebackPaths {
+                cache_sidecar: None,
+            })
+            .add_systems(Update, write_startup_params_to_cache_sidecar_system);
+
         {
-            let mut meta = app.world_mut().resource_mut::<ScenarioMetadata>();
-            meta.start = Some("2024-01-01".into());
-            meta.granularity = Some("Daily".into());
+            let mut params = app.world_mut().resource_mut::<ScenarioStartupParams>();
+            params.start = "2024-05-01".into();
+            params.end = "2024-06-01".into();
+            params.granularity = GranularityChoice::Daily;
+            params.initial_cash = "1000".into();
+            params.writeback_pending = true;
         }
+
+        // Should not panic, should not flip writeback_pending (no path to write to).
         app.update();
 
         let params = app.world().resource::<ScenarioStartupParams>();
-        assert_eq!(params.start, "2024-01-01");
-        assert_eq!(params.granularity, GranularityChoice::Daily);
+        assert!(
+            params.writeback_pending,
+            "writeback_pending must stay true when cache_sidecar is None (no path to flush to)"
+        );
+        assert!(
+            !params.errors.any(),
+            "missing cache sidecar must not flip into a Run-blocking error"
+        );
+    }
+
+    /// When a batch commits successful fields but leaves any error (e.g. a
+    /// cross-field violation, or a sibling field that failed validation), the
+    /// cache writeback must NOT be scheduled — otherwise the cache JSON would
+    /// record a partial edit that contradicts the on-screen error.
+    #[test]
+    fn writeback_pending_not_set_when_batch_leaves_errors() {
+        let mut app = make_app();
+        // Valid start, then end that's *before* start → cross_field fires.
+        app.world_mut()
+            .send_event(ScenarioStartupParamCommit::Start("2024-06-01".into()));
+        app.world_mut()
+            .send_event(ScenarioStartupParamCommit::End("2024-01-01".into()));
+        app.update();
+
+        let params = app.world().resource::<ScenarioStartupParams>();
+        assert!(
+            params.errors.cross_field.is_some(),
+            "precondition: cross_field error should fire"
+        );
+        assert!(
+            !params.writeback_pending,
+            "writeback_pending must not be set while any error remains"
+        );
+
+        // Valid date + invalid cash → cash error remains, no writeback scheduled.
+        let mut app = make_app();
+        app.world_mut()
+            .send_event(ScenarioStartupParamCommit::Start("2024-01-01".into()));
+        app.world_mut()
+            .send_event(ScenarioStartupParamCommit::InitialCash("not-a-number".into()));
+        app.update();
+        let params = app.world().resource::<ScenarioStartupParams>();
+        assert!(params.errors.initial_cash.is_some());
+        assert!(
+            !params.writeback_pending,
+            "partial-error batch must not request a writeback"
+        );
+    }
+
+    /// When `cache_sidecar` is `None` the panel is effectively read-only: commit
+    /// events drain without touching `ScenarioMetadata` or `params.dirty`. This
+    /// prevents `writeback_pending` from getting permanently stuck (the writer
+    /// system early-returns on missing path, so nothing would ever clear it).
+    #[test]
+    fn panel_disabled_when_cache_sidecar_unavailable() {
+        let mut app = make_app();
+        // Override make_app's dummy path with None.
+        app.insert_resource(ScenarioWritebackPaths {
+            cache_sidecar: None,
+        });
+        app.world_mut()
+            .send_event(ScenarioStartupParamCommit::Start("2024-01-01".into()));
+        app.update();
+
+        let params = app.world().resource::<ScenarioStartupParams>();
+        let meta = app.world().resource::<ScenarioMetadata>();
+        assert!(meta.start.is_none(), "metadata must not mutate");
+        assert!(!params.dirty, "dirty must stay false");
+        assert!(!params.writeback_pending, "writeback_pending must stay false");
+        assert!(params.errors.start.is_none(), "errors must stay untouched");
     }
 
     /// Cross-field error must clear when one date becomes invalid (otherwise
