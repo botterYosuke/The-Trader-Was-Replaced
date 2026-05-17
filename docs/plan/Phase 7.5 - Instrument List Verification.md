@@ -617,6 +617,12 @@ cargo check --tests 2>&1 | Select-String -Pattern "warning|error"
 
 (a) が同期方向の一方向化と整合性が高い。
 
+**完了 (2026-05-17)**:
+- 実装: 方針 (a) を採用。`ScenarioClearedFromFile` event を新設し、`parse_scenario_system` の 4 reset 経路（scenario key 不在 / parse 失敗 / etc.）から発火。`sync_registry_from_scenario_cleared_system` を chain に追加し `registry.editable = true` に戻す
+- 検証: `cargo test --lib` 128 passed / 0 failed、`cargo check --lib` warning 0、Red test `test_editable_resets_to_true_when_switching_to_sidecar_without_scenario` PASS
+- 差分: 3 ファイル (`src/ui/components.rs` event 定義 + sync system、`src/ui/scenario_parser.rs` 4 reset 経路で cleared 発火 + test 6 + Red test、`src/ui/mod.rs` event 登録 + chain 拡張)
+- commit: <pending>
+
 ### 9.3 未使用 buffer 引数 2 件（低優先）
 
 `cargo check` で warning 2 件:

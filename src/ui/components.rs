@@ -344,6 +344,16 @@ pub struct ScenarioLoadedFromFile {
     pub has_instruments_ref: bool,
 }
 
+/// `parse_scenario_system` がサイドカー JSON を **読まなかった / scenario キーが無い**
+/// と判定し、`ScenarioMetadata` を default に戻したときに発火する。
+/// 同期方向は file → registry の一方向。registry → file では発火させない。
+/// 計画書 §9.2: locked sidecar から scenario なし sidecar に切替えても
+/// `registry.editable` / `registry.ids` が残存しないようにするため。
+#[derive(Event, Debug, Clone)]
+pub struct ScenarioClearedFromFile {
+    pub source_path: Option<PathBuf>,
+}
+
 /// `parse_scenario_system` の Local だった `last_path` / `last_mtime` を
 /// Resource に格上げしたもの。writeback 後に `last_mtime` を転記して
 /// 不要な再 trigger を抑止する（計画書 R5）。
@@ -468,6 +478,22 @@ pub fn sync_registry_from_scenario_loaded_system(
     for ev in events.read() {
         registry.replace_all(&ev.instruments);
         registry.editable = !ev.has_instruments_ref;
+        writeback.revision = writeback.flushed_revision;
+        writeback.last_error = None;
+    }
+}
+
+/// `ScenarioClearedFromFile` を受け、registry を「scenario 不在 / 編集可」状態に戻す。
+/// `ScenarioLoadedFromFile` 側と同じく writeback.revision は flushed と同値に保ち、
+/// このリセットを起点にした再 writeback ループを起こさない（計画書 §9.2 Green）。
+pub fn sync_registry_from_scenario_cleared_system(
+    mut events: EventReader<ScenarioClearedFromFile>,
+    mut registry: ResMut<InstrumentRegistry>,
+    mut writeback: ResMut<ScenarioInstrumentsWritebackState>,
+) {
+    for _ev in events.read() {
+        registry.replace_all(&[]);
+        registry.editable = true;
         writeback.revision = writeback.flushed_revision;
         writeback.last_error = None;
     }
@@ -1168,6 +1194,7 @@ mod writeback_scenario_instruments_tests {
         app.init_resource::<ScenarioFileWatchState>();
         app.init_resource::<ScenarioMetadata>();
         app.add_event::<ScenarioLoadedFromFile>();
+        app.add_event::<ScenarioClearedFromFile>();
 
         app.add_systems(Update, parse_scenario_system);
         app.update();
@@ -1511,6 +1538,7 @@ mod writeback_scenario_instruments_tests {
         app.init_resource::<ScenarioInstrumentsWritebackState>();
         app.add_event::<StrategyFileLoadRequested>();
         app.add_event::<ScenarioLoadedFromFile>();
+        app.add_event::<ScenarioClearedFromFile>();
         app.add_event::<LayoutLoadRequested>();
         app.add_event::<PanelSpawnRequested>();
 
@@ -1584,6 +1612,7 @@ mod writeback_scenario_instruments_tests {
         app.init_resource::<ScenarioInstrumentsWritebackState>();
         app.add_event::<StrategyFileLoadRequested>();
         app.add_event::<ScenarioLoadedFromFile>();
+        app.add_event::<ScenarioClearedFromFile>();
         app.add_event::<LayoutLoadRequested>();
         app.add_event::<PanelSpawnRequested>();
 
@@ -1698,6 +1727,7 @@ mod writeback_scenario_instruments_tests {
         app.add_event::<StrategyFileLoadRequested>();
         app.add_event::<StrategyRunRequested>();
         app.add_event::<ScenarioLoadedFromFile>();
+        app.add_event::<ScenarioClearedFromFile>();
         app.add_event::<LayoutLoadRequested>();
         app.add_event::<PanelSpawnRequested>();
 

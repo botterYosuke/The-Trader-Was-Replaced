@@ -46,7 +46,8 @@ use crate::ui::orders::orders_panel_system;
 use crate::ui::positions::positions_panel_system;
 use crate::ui::run_result_panel::run_result_panel_system;
 use crate::ui::components::{
-    mark_registry_dirty_system, sync_registry_from_scenario_loaded_system,
+    ScenarioClearedFromFile, mark_registry_dirty_system,
+    sync_registry_from_scenario_cleared_system, sync_registry_from_scenario_loaded_system,
     sync_scenario_metadata_from_registry_system, writeback_scenario_instruments_system,
 };
 use crate::ui::scenario_parser::parse_scenario_system;
@@ -98,6 +99,7 @@ impl Plugin for UiPlugin {
             cache_sidecar: crate::ui::menu_bar::cache_state_paths().map(|(json, _)| json),
         })
         .add_event::<ScenarioLoadedFromFile>()
+        .add_event::<ScenarioClearedFromFile>()
         .add_systems(
             Startup,
             (
@@ -129,6 +131,7 @@ impl Plugin for UiPlugin {
                 (
                     parse_scenario_system,
                     sync_registry_from_scenario_loaded_system,
+                    sync_registry_from_scenario_cleared_system,
                     mark_registry_dirty_system,
                     sync_scenario_metadata_from_registry_system,
                     writeback_scenario_instruments_system,

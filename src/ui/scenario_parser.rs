@@ -1,5 +1,6 @@
 use crate::ui::components::{
-    ScenarioFileWatchState, ScenarioLoadedFromFile, ScenarioMetadata, StrategyBuffer,
+    ScenarioClearedFromFile, ScenarioFileWatchState, ScenarioLoadedFromFile, ScenarioMetadata,
+    StrategyBuffer,
 };
 use bevy::prelude::*;
 use serde::Deserialize;
@@ -44,6 +45,7 @@ pub fn parse_scenario_system(
     mut scenario: ResMut<ScenarioMetadata>,
     mut watch: ResMut<ScenarioFileWatchState>,
     mut loaded_events: EventWriter<ScenarioLoadedFromFile>,
+    mut cleared_events: EventWriter<ScenarioClearedFromFile>,
 ) {
     let current_path = buffer.original_path.clone();
     let current_mtime = current_path
@@ -58,6 +60,7 @@ pub fn parse_scenario_system(
     watch.last_mtime = current_mtime;
 
     let Some(py_path) = current_path else {
+        cleared_events.send(ScenarioClearedFromFile { source_path: None });
         *scenario = ScenarioMetadata::default();
         return;
     };
@@ -71,6 +74,9 @@ pub fn parse_scenario_system(
                 "no sidecar JSON for {:?}: {} — ScenarioMetadata reset",
                 json_path, e
             );
+            cleared_events.send(ScenarioClearedFromFile {
+                source_path: Some(json_path.clone()),
+            });
             *scenario = ScenarioMetadata::default();
             return;
         }
@@ -80,6 +86,9 @@ pub fn parse_scenario_system(
         Ok(r) => r,
         Err(e) => {
             warn!("malformed sidecar JSON {:?}: {} — ScenarioMetadata reset", json_path, e);
+            cleared_events.send(ScenarioClearedFromFile {
+                source_path: Some(json_path.clone()),
+            });
             *scenario = ScenarioMetadata::default();
             return;
         }
@@ -90,6 +99,9 @@ pub fn parse_scenario_system(
             "no 'scenario' key in {:?} — ScenarioMetadata reset",
             json_path
         );
+        cleared_events.send(ScenarioClearedFromFile {
+            source_path: Some(json_path.clone()),
+        });
         *scenario = ScenarioMetadata::default();
         return;
     };
@@ -236,6 +248,7 @@ mod tests {
         app.init_resource::<ScenarioMetadata>();
         app.init_resource::<ScenarioFileWatchState>();
         app.add_event::<ScenarioLoadedFromFile>();
+        app.add_event::<ScenarioClearedFromFile>();
         app.add_systems(Update, parse_scenario_system);
         app.update();
 
@@ -267,6 +280,7 @@ mod tests {
         app.init_resource::<ScenarioMetadata>();
         app.init_resource::<ScenarioFileWatchState>();
         app.add_event::<ScenarioLoadedFromFile>();
+        app.add_event::<ScenarioClearedFromFile>();
         app.add_systems(Update, parse_scenario_system);
         app.update();
 
@@ -300,6 +314,7 @@ mod tests {
         });
         app.init_resource::<ScenarioFileWatchState>();
         app.add_event::<ScenarioLoadedFromFile>();
+        app.add_event::<ScenarioClearedFromFile>();
         app.add_systems(Update, parse_scenario_system);
         app.update();
 
@@ -334,6 +349,7 @@ mod tests {
         app.init_resource::<ScenarioMetadata>();
         app.init_resource::<ScenarioFileWatchState>();
         app.add_event::<ScenarioLoadedFromFile>();
+        app.add_event::<ScenarioClearedFromFile>();
         app.add_systems(Update, parse_scenario_system);
         app.update();
 
@@ -370,6 +386,7 @@ mod tests {
         app.init_resource::<ScenarioMetadata>();
         app.init_resource::<ScenarioFileWatchState>();
         app.add_event::<ScenarioLoadedFromFile>();
+        app.add_event::<ScenarioClearedFromFile>();
         app.add_systems(Update, parse_scenario_system);
 
         app.update(); // 1 回目: 発火
@@ -405,6 +422,7 @@ mod tests {
         app.init_resource::<ScenarioMetadata>();
         app.init_resource::<ScenarioFileWatchState>();
         app.add_event::<ScenarioLoadedFromFile>();
+        app.add_event::<ScenarioClearedFromFile>();
         app.add_systems(Update, parse_scenario_system);
         app.update();
 
@@ -413,5 +431,84 @@ mod tests {
         let collected: Vec<_> = reader.read(events).cloned().collect();
         assert_eq!(collected.len(), 1);
         assert!(collected[0].has_instruments_ref, "instruments_ref key must set has_instruments_ref=true");
+    }
+
+    // ===== §9.2 Red test: registry.editable leak across sidecar switch =====
+
+    /// Fixture B (instruments_ref locked) を読んで registry.editable=false に
+    /// 落ちた後、scenario キー不在の別 sidecar を Open すると
+    /// `ScenarioLoadedFromFile` が発火しないため `editable=false` が残存することを
+    /// schedule レベルで再現する。修正後 (ScenarioClearedFromFile 発火 +
+    /// sync 側で editable=true 復元) で PASS になる想定。
+    #[test]
+    fn test_editable_resets_to_true_when_switching_to_sidecar_without_scenario() {
+        use crate::ui::components::{
+            InstrumentRegistry, ScenarioClearedFromFile, ScenarioInstrumentsWritebackState,
+            sync_registry_from_scenario_cleared_system, sync_registry_from_scenario_loaded_system,
+        };
+
+        let dir = tempfile::tempdir().unwrap();
+
+        // sidecar A: instruments_ref ありで editable=false に落とす
+        let py_a = dir.path().join("locked.py");
+        let json_a = dir.path().join("locked.json");
+        std::fs::write(&py_a, "# dummy").unwrap();
+        std::fs::write(
+            &json_a,
+            r#"{"scenario": {"schema_version": 3, "instruments": ["1301.TSE"], "instruments_ref": "universe/foo.json", "start": "2025-01-06", "end": "2025-01-10", "granularity": "Daily", "initial_cash": 1000000}}"#,
+        )
+        .unwrap();
+
+        // sidecar B: scenario キーなしの legacy layout JSON
+        let py_b = dir.path().join("legacy.py");
+        let json_b = dir.path().join("legacy.json");
+        std::fs::write(&py_b, "# dummy").unwrap();
+        std::fs::write(&json_b, r#"{"window_layout": []}"#).unwrap();
+
+        let mut app = App::new();
+        app.insert_resource(StrategyBuffer {
+            original_path: Some(py_a.clone()),
+            cache_path: None,
+            last_merged_source: None,
+        });
+        app.init_resource::<ScenarioMetadata>();
+        app.init_resource::<ScenarioFileWatchState>();
+        app.init_resource::<InstrumentRegistry>();
+        app.init_resource::<ScenarioInstrumentsWritebackState>();
+        app.add_event::<ScenarioLoadedFromFile>();
+        app.add_event::<ScenarioClearedFromFile>();
+        app.add_systems(
+            Update,
+            (
+                parse_scenario_system,
+                sync_registry_from_scenario_loaded_system,
+                sync_registry_from_scenario_cleared_system,
+            )
+                .chain(),
+        );
+
+        // tick 1: locked sidecar を読み editable=false が伝播する
+        app.update();
+        {
+            let reg = app.world().resource::<InstrumentRegistry>();
+            assert!(!reg.editable, "precondition: instruments_ref で editable=false に落ちる");
+        }
+
+        // sidecar B へ切り替え (StrategyBuffer.original_path を差し替え)
+        app.world_mut().resource_mut::<StrategyBuffer>().original_path = Some(py_b.clone());
+
+        // tick 2: parse_scenario_system は scenario キー不在で event を出さない
+        //         → sync system が呼ばれず editable=false が残存 (= 現状のバグ)
+        app.update();
+
+        let reg = app.world().resource::<InstrumentRegistry>();
+        assert!(
+            reg.editable,
+            "scenario なし sidecar に切り替えたら editable は true に戻るべき (§9.2)"
+        );
+        assert!(
+            reg.as_slice().is_empty(),
+            "scenario なし sidecar では registry も空 (instruments クリア) になるべき"
+        );
     }
 }
