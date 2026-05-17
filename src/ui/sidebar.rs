@@ -3,6 +3,7 @@ use crate::ui::components::{
     SidebarAddInstrumentButton, SidebarInstrumentRemoveButton, SidebarInstrumentRow,
     SidebarInstrumentsList, SidebarInstrumentsWarning, SidebarRoot, WindowRoot,
 };
+use crate::ui::instrument_picker::spawn_picker_dropdown;
 use bevy::prelude::*;
 
 const SIDEBAR_WIDTH: f32 = 180.0;
@@ -250,6 +251,8 @@ pub fn update_sidebar_system(
                     margin: UiRect::axes(Val::Px(6.0), Val::Px(4.0)),
                     justify_content: JustifyContent::Center,
                     align_items: AlignItems::Center,
+                    position_type: PositionType::Relative,
+                    overflow: Overflow::visible(),
                     ..default()
                 },
                 BackgroundColor(row_btn_bg),
@@ -264,6 +267,7 @@ pub fn update_sidebar_system(
                     },
                     TextColor(BTN_TEXT),
                 ));
+                spawn_picker_dropdown(btn);
             });
     });
 

@@ -43,9 +43,8 @@ use crate::ui::footer::{
     update_footer_system, update_speed_buttons_system,
 };
 use crate::ui::instrument_picker::{
-    add_instrument_button_system, force_close_picker_on_lock_system,
-    picker_close_when_invisible_system, picker_list_rebuild_system, picker_searchbox_input_system,
-    picker_sync_visible_on_window_removed_system,
+    add_instrument_button_system, force_close_picker_on_lock_system, picker_list_rebuild_system,
+    picker_row_click_system, picker_searchbox_input_system, sync_picker_dropdown_visibility_system,
 };
 use crate::ui::menu_bar::{
     handle_strategy_file_load_system, handle_strategy_run_system,
@@ -156,8 +155,6 @@ impl Plugin for UiPlugin {
                 update_sidebar_system,
                 instrument_remove_button_system,
                 add_instrument_button_system.after(sync_registry_from_scenario_loaded_system),
-                picker_close_when_invisible_system,
-                picker_sync_visible_on_window_removed_system,
                 force_close_picker_on_lock_system.after(mark_registry_dirty_system),
             ),
         )
@@ -172,6 +169,8 @@ impl Plugin for UiPlugin {
                 picker_list_rebuild_system
                     .after(picker_searchbox_input_system)
                     .after(force_close_picker_on_lock_system),
+                sync_picker_dropdown_visibility_system,
+                picker_row_click_system,
             ),
         )
         .add_systems(

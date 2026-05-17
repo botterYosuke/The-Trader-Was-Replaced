@@ -11,15 +11,13 @@
 use bevy::input::keyboard::{Key, KeyboardInput};
 use bevy::prelude::Interaction;
 use bevy::prelude::*;
-use bevy::sprite::Anchor;
 use chrono::NaiveDate;
 use std::time::{Duration, Instant};
 
 use crate::trading::{AvailableInstruments, BackendStatus, TransportCommand, TransportCommandSender};
 use crate::ui::components::{
-    InstrumentRegistry, LayoutExcluded, ScenarioMetadata, SidebarAddInstrumentButton,
+    InstrumentRegistry, ScenarioMetadata, SidebarAddInstrumentButton,
 };
-use crate::ui::floating_window::{FloatingWindowSpec, spawn_floating_window};
 
 // ---------------------------------------------------------------------------
 // Resource
@@ -42,9 +40,6 @@ pub struct InstrumentPickerState {
 pub struct InstrumentPickerWindow;
 
 #[derive(Component, Debug, Default, Clone, Copy)]
-pub struct InstrumentPickerSearchBox;
-
-#[derive(Component, Debug, Default, Clone, Copy)]
 pub struct InstrumentPickerListContainer;
 
 #[derive(Component, Debug, Clone)]
@@ -58,58 +53,88 @@ pub struct InstrumentPickerAddButton {
     pub instrument_id: String,
 }
 
+/// Dropdown popup Node 自身の marker。`[+ Add]` ボタン直下に spawn される。
+/// `sync_picker_dropdown_visibility_system` が `picker.visible` に応じて Display を切り替える。
+#[derive(Component, Debug, Default, Clone, Copy)]
+pub struct InstrumentPickerDropdown;
+
+/// 検索クエリを表示する UI `Text` の marker。
+/// `picker_searchbox_input_system` が `picker.query` を差分書き込みする。
+#[derive(Component, Debug, Default, Clone, Copy)]
+pub struct InstrumentPickerSearchText;
+
 // ---------------------------------------------------------------------------
 // Spawn helper
 // ---------------------------------------------------------------------------
 
-/// Picker window を spawn する。
-/// 既存 `spawn_floating_window` chrome に乗せ、root には `InstrumentPickerWindow` + `LayoutExcluded` を attach する
-/// （§3.6 / R10: layout persistence からは除外）。
+/// `[+ Add]` ボタン直下に spawn する dropdown popup Node。
 ///
-/// 戻り値: `(root, content_area, title_bar)`
-/// - `content_area` には D-3 で searchbox、D-4 で list を子として貼る。
-/// - `title_bar` は close button 追加など chrome 拡張のために返しているが、D-1 時点では未使用でよい。
-pub fn spawn_picker_window(commands: &mut Commands) -> (Entity, Entity, Entity) {
-    let (root, content_area, title_bar) = spawn_floating_window(
-        commands,
-        FloatingWindowSpec {
-            title: "Add Instrument".to_string(),
-            size: Vec2::new(360.0, 480.0),
-            position: Vec2::new(0.0, 0.0),
-            accent: Color::srgba(0.4, 0.7, 1.0, 0.8),
-        },
-    );
-    commands.entity(root).insert((
-        InstrumentPickerWindow,
-        LayoutExcluded,
-        Name::new("InstrumentPickerWindow"),
-    ));
-    commands
+/// `menu_bar.rs` の File popup と同じ流派:
+/// - `display: Display::None` で start し、`sync_picker_dropdown_visibility_system`
+///   が `picker.visible` に応じて Flex/None を切り替える (後続手で追加)。
+/// - `position_type: Absolute` で親 (= Add ボタン Node) の **右** (`left: 100%`)、
+///   上端揃え (`top: 0`) に配置。menu_bar は下に開くが、Sidebar 内なので右に出す。
+/// - `GlobalZIndex(100)` で他 UI より前面に。
+///
+/// 子構成:
+/// - 上段: `InstrumentPickerSearchText` を持つ `Text` (現 query 表示)。
+/// - 下段: `InstrumentPickerListContainer` を持つ Node (行 Button を後で picker_list_rebuild_system が spawn)。
+///
+/// 注意: 呼び出し側 (sidebar の Add ボタン spawn 内) は次手で配線する。
+/// 現時点では未配線なので `#[allow(dead_code)]`。
+pub fn spawn_picker_dropdown(parent: &mut ChildBuilder) {
+    parent
         .spawn((
-            Text2d::new(String::new()),
-            TextFont {
-                font_size: 18.0,
+            Node {
+                display: Display::None,
+                position_type: PositionType::Absolute,
+                top: Val::Px(0.0),
+                left: Val::Percent(100.0),
+                flex_direction: FlexDirection::Column,
+                min_width: Val::Px(240.0),
+                padding: UiRect::all(Val::Px(4.0)),
                 ..default()
             },
-            TextColor(Color::WHITE),
-            Anchor::CenterLeft,
-            Transform::from_xyz(-160.0, 200.0, 0.1),
-            InstrumentPickerSearchBox,
-            Name::new("InstrumentPickerSearchBox"),
+            BackgroundColor(Color::srgba(0.10, 0.10, 0.16, 0.98)),
+            GlobalZIndex(100),
+            InstrumentPickerDropdown,
+            Name::new("InstrumentPickerDropdown"),
         ))
-        .set_parent(content_area);
-    commands
-        .spawn((
-            InstrumentPickerListContainer,
-            Transform::from_xyz(0.0, 0.0, 0.05),
-            GlobalTransform::default(),
-            Visibility::Visible,
-            InheritedVisibility::default(),
-            ViewVisibility::default(),
-            Name::new("InstrumentPickerListContainer"),
-        ))
-        .set_parent(content_area);
-    (root, content_area, title_bar)
+        .with_children(|p| {
+            // 上段: 検索クエリ表示 Text (差分書き込み対象)
+            p.spawn((
+                Node {
+                    width: Val::Percent(100.0),
+                    padding: UiRect::axes(Val::Px(6.0), Val::Px(3.0)),
+                    margin: UiRect::bottom(Val::Px(2.0)),
+                    ..default()
+                },
+                BackgroundColor(Color::srgba(0.06, 0.06, 0.10, 1.0)),
+            ))
+            .with_children(|sb| {
+                sb.spawn((
+                    Text::new(String::new()),
+                    TextFont {
+                        font_size: 12.0,
+                        ..default()
+                    },
+                    TextColor(Color::WHITE),
+                    InstrumentPickerSearchText,
+                    Name::new("InstrumentPickerSearchText"),
+                ));
+            });
+
+            // 下段: 行 Button の親 container
+            p.spawn((
+                Node {
+                    width: Val::Percent(100.0),
+                    flex_direction: FlexDirection::Column,
+                    ..default()
+                },
+                InstrumentPickerListContainer,
+                Name::new("InstrumentPickerListContainer"),
+            ));
+        });
 }
 
 // ---------------------------------------------------------------------------
@@ -133,7 +158,6 @@ pub(crate) fn parse_scenario_end(meta: &ScenarioMetadata) -> Option<NaiveDate> {
 /// C-2-c スコープ: open 処理 + 100ms debounce 付きで
 /// `TransportCommand::FetchAvailableInstruments` を発行する。
 pub fn add_instrument_button_system(
-    mut commands: Commands,
     mut picker: ResMut<InstrumentPickerState>,
     registry: Res<InstrumentRegistry>,
     scenario_meta: Res<ScenarioMetadata>,
@@ -150,12 +174,14 @@ pub fn add_instrument_button_system(
         if *interaction != Interaction::Pressed {
             continue;
         }
-        let end_date = parse_scenario_end(&scenario_meta);
         let was_visible = picker.visible;
-        picker.visible = true;
-        if !was_visible {
-            let _ = spawn_picker_window(&mut commands);
+        if was_visible {
+            // トグル: 再押下で閉じる。fetch/query reset は走らせない。
+            picker.visible = false;
+            continue;
         }
+        let end_date = parse_scenario_end(&scenario_meta);
+        picker.visible = true;
         picker.end_date = end_date;
         picker.query.clear();
         let now = Instant::now();
@@ -204,41 +230,48 @@ pub fn add_instrument_button_system(
     }
 }
 
-/// Picker state が `visible=false` のとき、残存する `InstrumentPickerWindow` entity を despawn する。
+/// `[+ Add]` ボタン直下の dropdown popup の Display を `picker.visible` に同期する。
 ///
-/// 検出方式: state SoT を尊重し、「`!visible` かつ entity が存在する」即時条件で命中させる。
-/// Query が `With<InstrumentPickerWindow>` 限定なので、despawn 後の次フレームは自然に空になり
-/// 再 despawn は発生しない。前フレーム値を保持する `Local` は不要。
-pub fn picker_close_when_invisible_system(
-    mut commands: Commands,
+/// trigger 条件:
+/// - `picker.is_changed()`: visible トグルを拾う通常経路。
+/// - `!added_dropdown_q.is_empty()`: registry 変更で sidebar list descendants が
+///   despawn → 新しい Add ボタンと共に dropdown が再 spawn された直後フレーム。
+///   この場合 `picker.is_changed()` は立たないので Added<...> 側で命中させる。
+///
+/// 動作: `picker.visible` に応じて `node.display = Flex / None`。
+pub fn sync_picker_dropdown_visibility_system(
     picker: Res<InstrumentPickerState>,
-    windows: Query<Entity, With<InstrumentPickerWindow>>,
+    added_dropdown_q: Query<(), Added<InstrumentPickerDropdown>>,
+    mut dropdown_q: Query<&mut Node, With<InstrumentPickerDropdown>>,
 ) {
-    if picker.visible {
+    if !(picker.is_changed() || !added_dropdown_q.is_empty()) {
         return;
     }
-    for entity in &windows {
-        commands.entity(entity).despawn_recursive();
+    let target = if picker.visible {
+        Display::Flex
+    } else {
+        Display::None
+    };
+    for mut node in &mut dropdown_q {
+        if node.display != target {
+            node.display = target;
+        }
     }
 }
 
-/// `InstrumentPickerWindow` entity が消滅したフレームに `picker.visible = false` を立てて
-/// state を SoT に再同期する。
+/// Picker dropdown 内の row (`[+ Add]` 候補) クリックを拾い、
+/// `handle_picker_row_click` に委譲する production system。
 ///
-/// 想定経路: 既存 `spawn_floating_window` の CloseButton observer が root を
-/// `despawn_recursive` した次フレームに `Removed<InstrumentPickerWindow>` が発火する。
-/// これがないと × クリック後も `picker.visible=true` のまま残り、Add ボタンの
-/// debounce や搜索 input system が「見えない window」前提で走ってしまう。
-///
-/// 注意: `picker_close_when_invisible_system` (state→entity) とは方向が逆。
-/// 両者が両立して双方向 sync を成立させる。
-pub fn picker_sync_visible_on_window_removed_system(
-    mut removed: RemovedComponents<InstrumentPickerWindow>,
+/// `spawn_picker_row_ui` で spawn された Button 群が対象。
+/// Bevy の `Changed<Interaction>` filter により Pressed エッジのみハンドル。
+pub fn picker_row_click_system(
+    interactions: Query<(&Interaction, &InstrumentPickerAddButton), (Changed<Interaction>, With<Button>)>,
+    mut registry: ResMut<InstrumentRegistry>,
     mut picker: ResMut<InstrumentPickerState>,
 ) {
-    if removed.read().next().is_some() {
-        if picker.visible {
-            picker.visible = false;
+    for (interaction, btn) in interactions.iter() {
+        if matches!(interaction, Interaction::Pressed) {
+            handle_picker_row_click(&btn.instrument_id, &mut registry, &mut picker, Instant::now());
         }
     }
 }
@@ -263,13 +296,13 @@ pub fn force_close_picker_on_lock_system(
     }
 }
 
-/// Picker visible 中だけ KeyboardInput を読み、query を更新し searchbox Text2d に差分反映する。
+/// Picker visible 中だけ KeyboardInput を読み、query を更新し searchbox UI Text に差分反映する。
 /// 文字入力は `kb_events.clear()` で消費し cosmic_edit / menu_bar への二重配送を防ぐ
 /// （`menu_keyboard_system` と同じパターン、§D-3-b）。
 pub fn picker_searchbox_input_system(
     mut picker: ResMut<InstrumentPickerState>,
     mut kb_events: ResMut<Events<KeyboardInput>>,
-    mut searchbox_q: Query<&mut Text2d, With<InstrumentPickerSearchBox>>,
+    mut searchbox_q: Query<&mut Text, With<InstrumentPickerSearchText>>,
 ) {
     if !picker.visible {
         return;
@@ -321,11 +354,11 @@ pub fn picker_searchbox_input_system(
     }
 }
 
-/// 1 行 entity を spawn して container の子にする。
-/// label には placeholder / error / spinner / "No matches" / instrument_id 等を渡す。
-/// already_added=true のときは背景を灰色にする（ボタン無効視覚化）。
-/// instrument_id が Some のときだけ Row/AddButton component を付ける。
-fn spawn_picker_row(
+/// UI Node 版の picker 行 spawn。Sprite/Text2d 版 `spawn_picker_row` の置換候補。
+/// 行 entity は Button + Node で、container (Node, FlexDirection::Column) の子になる。
+/// クリックは observer ではなく `picker_row_click_system` が Interaction 経由で処理する。
+#[allow(dead_code)]
+fn spawn_picker_row_ui(
     commands: &mut Commands,
     container: Entity,
     idx: usize,
@@ -333,23 +366,23 @@ fn spawn_picker_row(
     instrument_id: Option<&str>,
     already_added: bool,
 ) {
-    let y = 170.0 - (idx as f32) * 26.0;
     let bg = if already_added {
         Color::srgba(0.25, 0.25, 0.25, 0.6)
     } else {
         Color::srgba(0.15, 0.35, 0.55, 0.6)
     };
     let mut e = commands.spawn((
-        Sprite {
-            color: bg,
-            custom_size: Some(Vec2::new(320.0, 24.0)),
+        Button,
+        Node {
+            width: Val::Percent(100.0),
+            height: Val::Px(24.0),
+            padding: UiRect::axes(Val::Px(8.0), Val::Px(0.0)),
+            margin: UiRect::bottom(Val::Px(2.0)),
+            align_items: AlignItems::Center,
+            justify_content: JustifyContent::FlexStart,
             ..default()
         },
-        Transform::from_xyz(0.0, y, 0.06),
-        GlobalTransform::default(),
-        Visibility::Visible,
-        InheritedVisibility::default(),
-        ViewVisibility::default(),
+        BackgroundColor(bg),
         Name::new(format!("InstrumentPickerRow#{idx}")),
     ));
     if let Some(id) = instrument_id {
@@ -362,29 +395,17 @@ fn spawn_picker_row(
                 instrument_id: id.to_string(),
             },
         ));
-        if !already_added {
-            let id_owned = id.to_string();
-            e.observe(
-                move |_trigger: Trigger<Pointer<Down>>,
-                      mut registry: ResMut<InstrumentRegistry>,
-                      mut picker: ResMut<InstrumentPickerState>| {
-                    handle_picker_row_click(&id_owned, &mut registry, &mut picker, Instant::now());
-                },
-            );
-        }
     }
     let row_entity = e.id();
     commands.entity(row_entity).set_parent(container);
     commands
         .spawn((
-            Text2d::new(label.to_string()),
+            Text::new(label.to_string()),
             TextFont {
                 font_size: 14.0,
                 ..default()
             },
             TextColor(Color::WHITE),
-            Anchor::CenterLeft,
-            Transform::from_xyz(-150.0, 0.0, 0.01),
         ))
         .set_parent(row_entity);
 }
@@ -448,7 +469,7 @@ pub fn picker_list_rebuild_system(
 
     // 1) end 未設定 → placeholder
     let Some(end) = picker.end_date else {
-        spawn_picker_row(
+        spawn_picker_row_ui(
             &mut commands,
             container,
             0,
@@ -462,7 +483,7 @@ pub fn picker_list_rebuild_system(
     // 2) error（同 end_date の失敗のみ表示）
     if let Some((d, msg)) = &available.last_error {
         if *d == end {
-            spawn_picker_row(
+            spawn_picker_row_ui(
                 &mut commands,
                 container,
                 0,
@@ -476,14 +497,14 @@ pub fn picker_list_rebuild_system(
 
     // 3) fetch in-flight → spinner
     if available.in_flight.contains(&end) {
-        spawn_picker_row(&mut commands, container, 0, "Loading...", None, false);
+        spawn_picker_row_ui(&mut commands, container, 0, "Loading...", None, false);
         return;
     }
 
     // 4) data
     let Some(ids) = available.by_end_date.get(&end) else {
         // request 未発火（picker_request_system 待ち）。spinner と同じ扱いにしておく。
-        spawn_picker_row(&mut commands, container, 0, "Loading...", None, false);
+        spawn_picker_row_ui(&mut commands, container, 0, "Loading...", None, false);
         return;
     };
 
@@ -495,13 +516,13 @@ pub fn picker_list_rebuild_system(
     filtered.sort();
 
     if filtered.is_empty() {
-        spawn_picker_row(&mut commands, container, 0, "No matches", None, false);
+        spawn_picker_row_ui(&mut commands, container, 0, "No matches", None, false);
         return;
     }
 
     for (idx, id) in filtered.iter().take(15).enumerate() {
         let already = registry.contains(id);
-        spawn_picker_row(
+        spawn_picker_row_ui(
             &mut commands,
             container,
             idx,
@@ -717,68 +738,78 @@ mod tests {
         );
     }
 
-    /// §5.4 項目 5-a 回帰 pin: picker close → 再 open で list がブランクにならないこと。
-    /// rebuild system は container 新規 spawn を trigger に含む必要がある。
+    /// §5.4 項目 5-a 回帰 pin (dropdown 版): picker close → 再 open で
+    /// dropdown の Display が None → Flex に追従すること。world-space window 廃止後は
+    /// list 再構築自体は sidebar 配下の container 存在に依存するため、
+    /// ここでは visible トグル → Display sync のラウンドトリップのみを pin する。
     #[test]
     fn test_picker_list_rebuilds_on_reopen_after_close() {
         let mut app = make_app();
-        let d = NaiveDate::from_ymd_opt(2024, 12, 31).unwrap();
-        // backend response 相当を事前に投入
-        app.world_mut()
-            .resource_mut::<AvailableInstruments>()
-            .by_end_date
-            .insert(d, vec!["7203.TSE".to_string(), "9984.TSE".to_string()]);
+
+        // sidebar 全体を spawn せず、dropdown entity だけを直接 spawn する。
+        // 初期 Display は spawn_picker_dropdown と同じ Display::None。
+        let dropdown = app
+            .world_mut()
+            .spawn((
+                Node {
+                    display: Display::None,
+                    ..Default::default()
+                },
+                InstrumentPickerDropdown,
+            ))
+            .id();
 
         app.add_systems(
             Update,
             (
                 add_instrument_button_system,
-                picker_close_when_invisible_system,
-                picker_list_rebuild_system,
+                sync_picker_dropdown_visibility_system,
             )
                 .chain(),
         );
 
-        // 1) 初回 open
+        // 1) 初回 open: Add ボタン押下 → picker.visible = true → Display::Flex
         let btn = app
             .world_mut()
             .spawn((SidebarAddInstrumentButton, Interaction::Pressed))
             .id();
         app.update();
-        // change detection を消費するため Interaction::None で 1 tick
         *app.world_mut().get_mut::<Interaction>(btn).unwrap() = Interaction::None;
         app.update();
         {
-            let world = app.world_mut();
-            let mut q = world.query::<&InstrumentPickerRow>();
-            let count = q.iter(world).count();
-            assert_eq!(count, 2, "初回 open で 2 行 spawn");
+            let node = app.world().get::<Node>(dropdown).unwrap();
+            assert_eq!(
+                node.display,
+                Display::Flex,
+                "初回 open で dropdown が Flex 表示になる"
+            );
         }
 
-        // 2) close
+        // 2) close: visible = false → Display::None
         app.world_mut()
             .resource_mut::<InstrumentPickerState>()
             .visible = false;
         app.update();
         {
-            let world = app.world_mut();
-            let mut q = world.query::<&InstrumentPickerWindow>();
-            assert_eq!(q.iter(world).count(), 0, "close で window 消失");
+            let node = app.world().get::<Node>(dropdown).unwrap();
+            assert_eq!(
+                node.display,
+                Display::None,
+                "close で dropdown が None に戻る"
+            );
         }
 
-        // 3) 再 open
+        // 3) 再 open: 再 Pressed → Display::Flex
         *app.world_mut().get_mut::<Interaction>(btn).unwrap() = Interaction::Pressed;
         app.update();
         *app.world_mut().get_mut::<Interaction>(btn).unwrap() = Interaction::None;
         app.update();
 
-        // 4) cache hit 経路でも list が再構築されていること（regression pin）
-        let world = app.world_mut();
-        let mut q = world.query::<&InstrumentPickerRow>();
-        let count = q.iter(world).count();
+        let node = app.world().get::<Node>(dropdown).unwrap();
         assert_eq!(
-            count, 2,
-            "再 open で list ブランクにならないこと（cache hit 経路）"
+            node.display,
+            Display::Flex,
+            "再 open で dropdown が再び Flex 表示になる (regression pin)"
         );
     }
 }
