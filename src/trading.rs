@@ -346,6 +346,17 @@ pub struct AvailableInstruments {
     pub last_error: Option<(NaiveDate, String)>,
 }
 
+/// `1301` → `1301.TSE`（既定 venue `TSE` 付与）。Phase 7.5a 現行挙動を pin。
+/// 規則変更は Phase 8 universe 統合まで凍結（計画書 §0.5 Q1）。
+pub fn code_to_instrument_id(code: &str) -> String {
+    format!("{}.TSE", code)
+}
+
+/// `1301.TSE` → `1301`。venue suffix を剥がすだけ。
+pub fn instrument_id_to_code(instrument_id: &str) -> String {
+    instrument_id.split('.').next().unwrap_or("").to_string()
+}
+
 #[derive(Debug, Clone, Default)]
 pub struct PortfolioPosition {
     pub symbol: String,
@@ -567,5 +578,37 @@ mod tests {
         assert_eq!(data.history, vec![3.0, 4.0, 5.0]);
         assert_eq!(data.history_points.len(), 3);
         assert_eq!(data.history_points.last().unwrap().price, 4.0); // Wait, history_points in state was 0..5, so last is 4.0
+    }
+
+    #[test]
+    fn test_code_to_instrument_id_round_trip_4_digit() {
+        let id = code_to_instrument_id("1301");
+        assert_eq!(id, "1301.TSE");
+        assert_eq!(instrument_id_to_code(&id), "1301");
+    }
+
+    #[test]
+    fn test_code_to_instrument_id_round_trip_5_digit() {
+        let id = code_to_instrument_id("13010");
+        assert_eq!(id, "13010.TSE");
+        assert_eq!(instrument_id_to_code(&id), "13010");
+    }
+
+    #[test]
+    fn test_available_instruments_replaces_old_instrument_list() {
+        let av = AvailableInstruments::default();
+        assert!(av.by_end_date.is_empty());
+        assert!(av.in_flight.is_empty());
+        assert!(av.last_error.is_none());
+    }
+
+    #[test]
+    fn test_available_instruments_shape_does_not_reintroduce_old_or_bidirectional_state() {
+        use std::collections::{HashMap, HashSet};
+        let _av = AvailableInstruments {
+            by_end_date: HashMap::new(),
+            in_flight: HashSet::new(),
+            last_error: None,
+        };
     }
 }
