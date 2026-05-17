@@ -232,11 +232,11 @@ StopReplay()         → * → STOPPING → IDLE
 |---|---|---|
 | `src/menu.rs`, `src/native_menu.rs`, `src/widget_menu_bar.rs` | `src/ui/menu_bar.rs` (新規) | bevy_ui Node の Flexbox で再構築。File → "Open Replay Data..." だけは Phase 7 で必須、他は枠のみ |
 | `src/modal/replay_form.rs` (720 行) | (採用しない) | 起動パラメータは戦略ファイル内 `SCENARIO` dict から読み取るため、別モーダルでの入力は不要。File→Open 直後に `StrategyEditorWindow` が開く |
-| — (新規) | `src/ui/floating/strategy_editor.rs` (新規) | monaco-editor 相当のコードエディタを載せた floating window。Python シンタックスハイライト + 行番号 + 折りたたみ + `[Load & Start]` ボタン |
+| — (新規) | `src/ui/strategy_editor.rs` (新規) | monaco-editor 相当のコードエディタを載せた floating window。Python シンタックスハイライト + 行番号 + 折りたたみ + `[Load & Start]` ボタン |
 | `src/screen/dashboard/sidebar.rs` | `src/ui/sidebar.rs` (新規) | bevy_ui 左固定パネル。Tickers list と Settings の二段 |
-| `src/screen/dashboard/panel/buying_power.rs` | `src/ui/floating/buying_power.rs` | world-space floating window |
-| `src/screen/dashboard/panel/positions.rs` | `src/ui/floating/positions.rs` | 同上。Text2d でテーブルを描画 |
-| `src/screen/dashboard/panel/orders.rs` | `src/ui/floating/orders.rs` | 同上 |
+| `src/screen/dashboard/panel/buying_power.rs` | `src/ui/buying_power.rs` | world-space floating window |
+| `src/screen/dashboard/panel/positions.rs` | `src/ui/positions.rs` | 同上。Text2d でテーブルを描画 |
+| `src/screen/dashboard/panel/orders.rs` | `src/ui/orders.rs` | 同上 |
 | `src/screen/dashboard/panel/ladder.rs` (1382 行) | (Phase 8 へ延期) | リプレイ Daily/Minute バーには depth が無いため Phase 8 で Live マーケットデータと併せて移植 |
 | `src/chart/kline.rs` (2052 行) | 既存 `src/ui/chart.rs` を拡張 | ろうそく足モードを追加（現在は line chart のみ）|
 | `src/handlers/replay.rs`, `src/handlers/engine.rs` | `src/trading.rs` 内に gRPC クライアント拡張 | 制御 RPC 群を Tonic で叩く Bevy system に |
@@ -316,7 +316,7 @@ StopReplay()         → * → STOPPING → IDLE
 
 各 floating window は既存の `spawn_trader_window` パターン（`WindowRoot`/`TitleBar`/`Draggable`/`bring-to-front`）を踏襲して `src/ui/floating/{name}.rs` に分離する。共通化のため `spawn_floating_window(commands, title, size, content_builder)` ヘルパーを切り出す。
 
-- **StrategyEditorWindow** ([src/ui/floating/strategy_editor.rs]) — monaco-editor 相当のコードエディタ。File→Open でファイルパスを受け取り、ファイル内容を読み込んで表示・編集。
+- **StrategyEditorWindow** ([src/ui/strategy_editor.rs]) — monaco-editor 相当のコードエディタ。File→Open でファイルパスを受け取り、ファイル内容を読み込んで表示・編集。
   - 機能: Python シンタックスハイライト / 行番号 / 行折りたたみ / Find & Replace / Undo-Redo / オートインデント
   - ヘッダ: ファイル名表示、`[Save]` / `[▶ Run]` / `[Revert]`、ダーティマーク（`●` 印）
   - **UI 状態の保存場所（採用方針）**: floating window の位置・サイズ・z-order・可視性、infinite canvas の pan / zoom、選択銘柄などの **UI 状態は戦略 `.py` と同名の `.json` ファイル（サイドカー）に保存**する。`.py` + `.json` を 1 組の入力ファイルとして扱う。このアプリは **3 つの ExecutionMode** を持つ（Phase 8 §0.5.2 参照）:
@@ -382,21 +382,26 @@ StopReplay()         → * → STOPPING → IDLE
 ```
 src/ui/
 ├── mod.rs                       # plugin 構成を screen/world/modal 3 層に
-├── components.rs                # 既存 + ReplayPhase, PortfolioStateRes など
-├── window.rs                    # 既存。spawn_floating_window ヘルパー切り出し
-├── chart.rs                     # 既存。ろうそく足モード追加
-├── button.rs                    # 既存
-├── menu_bar.rs        [NEW]
-├── sidebar.rs         [NEW]
-├── footer.rs          [NEW]
-└── floating/
-    ├── mod.rs         [NEW]
-    ├── strategy_editor.rs [NEW]   # monaco 相当のコードエディタ floating window
-    ├── kline.rs       [NEW]   # KlineChartWindow ラッパ（chart.rs を組む）
-    ├── buying_power.rs [NEW]
-    ├── positions.rs   [NEW]
-    └── orders.rs      [NEW]
-    # ladder.rs は Phase 8 で追加（Live depth ソース接続時）
+├── components.rs                # ReplayPhase, PortfolioState, イベント・コンポーネント定義
+├── window.rs                    # chart panel spawn / instrument chart sync
+├── chart.rs                     # ローソク足 + line chart（複数 candle 対応済み）
+├── button.rs                    # spawn_button ヘルパー
+├── systems.rs                   # price display / status indicator 汎用 system
+├── floating_window.rs           # spawn_floating_window ヘルパー
+├── scenario_parser.rs           # SCENARIO dict パース system
+├── editor_history.rs            # Undo/Redo 履歴管理（AppHistory / AppEditAction）
+├── menu_bar.rs
+├── sidebar.rs
+├── footer.rs
+├── strategy_editor.rs           # egui コードエディタ floating window（当初 floating/ 以下予定）
+├── buying_power.rs              # BuyingPowerPanel
+├── positions.rs                 # PositionsPanel（Text2d テーブル）
+├── orders.rs                    # OrdersPanel（Text2d テーブル）
+├── run_result_panel.rs          # Run 結果表示 egui floating window
+├── instrument_picker.rs         # 銘柄ピッカー dropdown
+└── layout_persistence.rs        # UI_LAYOUT .json サイドカー永続化（LayoutPersistencePlugin）
+# floating/ サブディレクトリは作成せず、全ファイルを src/ui/ 直下にフラット配置
+# ladder.rs は Phase 8 で追加（Live depth ソース接続時）
 
 src/trading.rs                   # gRPC: GetPortfolio / Pause/Resume/Step/SetSpeed 追加
 python/engine/models.py          # TradingState に replay_state: Optional[str] 追加
@@ -480,11 +485,12 @@ $psi.WorkingDirectory = $PWD.Path
 $psi.UseShellExecute = $false
 $psi.EnvironmentVariables["BACKEND_ENABLED"] = "true"
 $psi.EnvironmentVariables["BACKEND_TOKEN"] = "testtoken"
-$psi.EnvironmentVariables["BACKEND_CATALOG_PATH"] = "artifacts\jquants-catalog"
+$psi.EnvironmentVariables["ARTIFACTS_PATH"] = $PWD.Path + "\artifacts"
 [System.Diagnostics.Process]::Start($psi) | Out-Null
 ```
 
 > `cargo run` 単体や `$env:BACKEND_ENABLED="true"; cargo run` では `.env` が読まれず `grpc: DISABLED` になる。`ProcessStartInfo.EnvironmentVariables` で直接渡すこと。WSL/Bash 経由では GUI が早期終了するため必ず PowerShell から起動。
+> `ARTIFACTS_PATH` を設定すると Rust が `{ARTIFACTS_PATH}/jquants-catalog` を catalog パスとして自動的に構築する（旧 `BACKEND_CATALOG_PATH` は廃止）。
 
 **ステップ 3: UI 操作（ユーザーが実行）**
 
@@ -924,14 +930,14 @@ MVP コアの「Open Strategy → Run → Pause / Resume / StepForward / ForceSt
 
 | 項目 | 状態 | 推奨 |
 |---|---|---|
-| Sidebar: 銘柄一覧 (`ListInstruments` RPC) | Bevy screen-space 左固定 UI に置換済み（loading/error/empty/list + Settings stub）| Phase 7 継続 |
+| Sidebar: 銘柄一覧 (`ListInstruments` RPC) | 実装済み・E2E 確認済み（Bevy screen-space 左固定 UI、loading/error/empty/list + Settings stub） | 完了 |
 | KlineChartWindow: ローソク足対応 (`chart.rs` 拡張) | 複数 candle 実装済み（ohlc_points 履歴から最大 50 本描画） | 完了 |
-| Footer: SpeedSelector UI (SetReplaySpeed は proto 済み) | E2E 実装済み（1x/2x/5x/10x/50x、選択ハイライト確認済み） | Phase 7 継続 |
+| Footer: SpeedSelector UI (SetReplaySpeed は proto 済み) | 実装済み・E2E 確認済み（1x/2x/5x/10x/50x、選択ハイライト確認済み） | 完了 |
 | Footer: ProgressBar + パーセント | 未実装 | Phase 8 でも可 |
-| BuyingPowerPanel / PositionsPanel / OrdersPanel | 未実装 | GetPortfolio RPC と同時に |
-| GetPortfolio RPC (`python/engine/server_grpc.py`) | 未実装 | BuyingPower 等の前提 |
+| BuyingPowerPanel / PositionsPanel / OrdersPanel | 実装済み（`src/ui/buying_power.rs` / `positions.rs` / `orders.rs`） | 完了 |
+| GetPortfolio RPC (`python/engine/server_grpc.py`) | 実装済み（Rust `main.rs` でポーリング、`PortfolioState` Resource に反映） | 完了 |
 | ListInstruments RPC | 実装済み（instrument IDs only、metadata は延期） | 完了 |
-| UI_LAYOUT 永続化 (`.json` サイドカー) | 未実装 | Phase 8 でも可 |
+| UI_LAYOUT 永続化 (`.json` サイドカー) | 実装済み（`src/ui/layout_persistence.rs` — `SidecarLayout` / `LayoutPersistencePlugin`） | 完了 |
 
 #### ➡️ 明示延期（変更なし）
 
