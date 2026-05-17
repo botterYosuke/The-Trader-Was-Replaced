@@ -895,7 +895,7 @@ StartEngine ok, state=RUNNING
 
 - `.env` は Rust アプリ / backend ともに自動読み込みされない
 - backend: `uv run python -m engine --token testtoken --jquants-catalog-path artifacts\jquants-catalog`
-- Rust アプリ: `ProcessStartInfo.EnvironmentVariables` で `BACKEND_ENABLED=true` / `BACKEND_TOKEN=testtoken` / `BACKEND_CATALOG_PATH=artifacts\jquants-catalog` を明示的に渡す
+- Rust アプリ: `ProcessStartInfo.EnvironmentVariables` で `BACKEND_ENABLED=true` / `BACKEND_TOKEN=testtoken` / `ARTIFACTS_PATH={repo}\artifacts` を明示的に渡す（旧 `BACKEND_CATALOG_PATH` は廃止。Rust が `{ARTIFACTS_PATH}/jquants-catalog` を自動構築する）
 - `cargo run` 単体・`Start-Process` 単体では env が引き継がれず `grpc: DISABLED` になる
 
 ### 2026-05-14 Phase 7 Closeout Checklist

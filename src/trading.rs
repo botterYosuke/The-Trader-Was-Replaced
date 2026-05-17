@@ -102,7 +102,7 @@ pub struct TradingSettings {
     pub token: String,
     pub poll_interval_ms: u64,
     pub max_history_points: usize,
-    /// Path to ParquetDataCatalog used by LoadReplayData. Set via BACKEND_CATALOG_PATH env var.
+    /// Path to ParquetDataCatalog used by LoadReplayData. Derived from ARTIFACTS_PATH env var as `{ARTIFACTS_PATH}/jquants-catalog`.
     pub catalog_path: Option<String>,
 }
 
@@ -170,6 +170,10 @@ pub enum TransportCommand {
     RunStrategy {
         strategy_file: std::path::PathBuf,
         config: StrategyRunConfig,
+        /// UI transport 内だけの相関 ID。backend/proto には送らず、
+        /// BackendStatusUpdate と照合して stale な status update が新しい
+        /// startup window を閉じないようにするために使う。
+        startup_id: u64,
     },
     FetchAvailableInstruments {
         end_date: NaiveDate,

@@ -91,7 +91,7 @@ stdout に `run_id` / `run_dir` / `equity_points` / `fills_count` などの summ
 |---|---|
 | backend デフォルトポート | `19876` |
 | 認証トークン | `BACKEND_TOKEN=testtoken`（`.env` 参照） |
-| catalog パス | `artifacts\jquants-catalog`（`BACKEND_CATALOG_PATH` 参照） |
+| catalog パス | `{ARTIFACTS_PATH}/jquants-catalog`（`ARTIFACTS_PATH` env var から自動構築、デフォルト: `{cwd}/artifacts`） |
 
 ### 1. Backend 起動
 
@@ -122,11 +122,12 @@ $psi.WorkingDirectory = $PWD.Path
 $psi.UseShellExecute = $false
 $psi.EnvironmentVariables["BACKEND_ENABLED"] = "true"
 $psi.EnvironmentVariables["BACKEND_TOKEN"] = "testtoken"
-$psi.EnvironmentVariables["BACKEND_CATALOG_PATH"] = "artifacts\jquants-catalog"
+$psi.EnvironmentVariables["ARTIFACTS_PATH"] = $PWD.Path + "\artifacts"
 [System.Diagnostics.Process]::Start($psi) | Out-Null
 ```
 
 > `cargo run` 単体や `Start-Process` 単体では `.env` が読まれず `grpc: DISABLED` になる。`ProcessStartInfo.EnvironmentVariables` で直接渡すのが確実。
+> `ARTIFACTS_PATH` は catalog のベースディレクトリ（Rust が `{ARTIFACTS_PATH}/jquants-catalog` を自動構築する）。省略するとリポジトリ直下の `artifacts/` がデフォルト。
 
 ### 3. 正常起動の確認
 
