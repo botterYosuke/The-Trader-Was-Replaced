@@ -550,7 +550,7 @@ pub fn handle_strategy_run_system(
     scenario: Res<ScenarioMetadata>,
     sender: Option<Res<TransportCommandSender>>,
     registry: Res<InstrumentRegistry>,
-    buffer: Res<StrategyBuffer>,
+    _buffer: Res<StrategyBuffer>,
     paths: Res<ScenarioWritebackPaths>,
 ) {
     for event in events.read() {

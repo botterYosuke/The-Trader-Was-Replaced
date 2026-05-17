@@ -536,14 +536,20 @@ fn handle_save_layout_system(
             match std::fs::write(&py_path, &merged) {
                 Ok(()) => {
                     info!("strategy .py saved to {:?}", py_path);
-                    if let Err(e) = sync_to_cache(&py_path) {
-                        error!("failed to sync saved strategy to cache: {e}");
+                    match sync_to_cache(&py_path) {
+                        Ok(()) => {
+                            for (_, mut frag) in fragments_q.iter_mut() {
+                                frag.dirty = false;
+                            }
+                            strategy_auto_save.dirty = false;
+                            strategy_auto_save.last_change = None;
+                            buffer.cache_path = cache_state_paths().map(|(_, cache_py)| cache_py);
+                        }
+                        Err(e) => {
+                            error!("failed to sync saved strategy to cache: {e}");
+                            buffer.cache_path = None;
+                        }
                     }
-                    for (_, mut frag) in fragments_q.iter_mut() {
-                        frag.dirty = false;
-                    }
-                    strategy_auto_save.dirty = false;
-                    strategy_auto_save.last_change = None;
                 }
                 Err(e) => error!("strategy .py save failed: {e}"),
             }
@@ -647,14 +653,20 @@ fn handle_save_as_layout_system(
             match std::fs::write(&py_path, &merged) {
                 Ok(()) => {
                     info!("strategy .py saved-as to {:?}", py_path);
-                    if let Err(e) = sync_to_cache(&py_path) {
-                        error!("failed to sync saved-as strategy to cache: {e}");
+                    match sync_to_cache(&py_path) {
+                        Ok(()) => {
+                            for (_, mut frag) in fragments_q.iter_mut() {
+                                frag.dirty = false;
+                            }
+                            strategy_auto_save.dirty = false;
+                            strategy_auto_save.last_change = None;
+                            buffer.cache_path = cache_state_paths().map(|(_, cache_py)| cache_py);
+                        }
+                        Err(e) => {
+                            error!("failed to sync saved-as strategy to cache: {e}");
+                            buffer.cache_path = None;
+                        }
                     }
-                    for (_, mut frag) in fragments_q.iter_mut() {
-                        frag.dirty = false;
-                    }
-                    strategy_auto_save.dirty = false;
-                    strategy_auto_save.last_change = None;
                 }
                 Err(e) => {
                     // Fix(Medium): .py 保存失敗時は buffer を元に戻す
@@ -1500,6 +1512,394 @@ mod tests {
         assert!(
             app.world().get_entity(chart).is_ok(),
             "ChartInstrument 付き root は layout に含まれなくても despawn されない"
+        );
+    }
+
+    #[test]
+    fn save_layout_writes_registry_to_original_sidecar() {
+        use bevy::prelude::*;
+        use crate::ui::components::{
+            InstrumentRegistry, ScenarioMetadata, ScenarioWritebackPaths, StrategyBuffer,
+        };
+
+        let dir = tempfile::tempdir().unwrap();
+        let py_path = dir.path().join("strat.py");
+        let json_path = dir.path().join("strat.json");
+        let cache_json_path = dir.path().join("cache.json");
+        let initial = r#"{"scenario":{"schema_version":2,"instruments":["1301.TSE","7203.TSE"],"start":"2025-01-06","end":"2025-01-10","granularity":"Minute","initial_cash":1000000}}"#;
+        std::fs::write(&py_path, "# dummy\n").unwrap();
+        std::fs::write(&json_path, initial).unwrap();
+        std::fs::write(&cache_json_path, initial).unwrap();
+
+        let mut app = App::new();
+        app.insert_resource(StrategyBuffer {
+            original_path: Some(py_path.clone()),
+            cache_path: None,
+            last_merged_source: None,
+        });
+        app.insert_resource(ScenarioWritebackPaths {
+            cache_sidecar: Some(cache_json_path.clone()),
+        });
+        let mut reg = InstrumentRegistry::default();
+        reg.ids = vec!["1301.TSE".to_string()];
+        reg.editable = true;
+        app.insert_resource(reg);
+        app.init_resource::<ScenarioMetadata>();
+        app.init_resource::<StrategyAutoSaveState>();
+
+        app.add_event::<LayoutSaveRequested>();
+        app.world_mut().spawn((
+            Camera2d,
+            Transform::default(),
+            OrthographicProjection::default_2d(),
+        ));
+
+        app.add_systems(Update, handle_save_layout_system);
+        app.world_mut().send_event(LayoutSaveRequested);
+        app.update();
+
+        let body = std::fs::read_to_string(&json_path).unwrap();
+        let v: serde_json::Value = serde_json::from_str(&body).unwrap();
+        let got: Vec<String> = v["scenario"]["instruments"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|x| x.as_str().unwrap().to_string())
+            .collect();
+        assert_eq!(got, vec!["1301.TSE".to_string()]);
+    }
+
+    #[test]
+    fn save_layout_skip_when_scenario_required_fields_missing() {
+        use bevy::prelude::*;
+        use crate::ui::components::{
+            InstrumentRegistry, ScenarioMetadata, ScenarioWritebackPaths, StrategyBuffer,
+        };
+
+        let dir = tempfile::tempdir().unwrap();
+        let py_path = dir.path().join("strat.py");
+        let json_path = dir.path().join("strat.json");
+        let cache_json_path = dir.path().join("cache.json");
+        std::fs::write(&py_path, "# dummy\n").unwrap();
+        std::fs::write(&json_path, "{}").unwrap();
+        std::fs::write(&cache_json_path, "{}").unwrap();
+
+        let mut app = App::new();
+        app.insert_resource(StrategyBuffer {
+            original_path: Some(py_path.clone()),
+            cache_path: None,
+            last_merged_source: None,
+        });
+        app.insert_resource(ScenarioWritebackPaths {
+            cache_sidecar: Some(cache_json_path.clone()),
+        });
+        let mut reg = InstrumentRegistry::default();
+        reg.ids = vec!["1301.TSE".to_string()];
+        reg.editable = true;
+        app.insert_resource(reg);
+        app.init_resource::<ScenarioMetadata>();
+        app.init_resource::<StrategyAutoSaveState>();
+
+        app.add_event::<LayoutSaveRequested>();
+        app.world_mut().spawn((
+            Camera2d,
+            Transform::default(),
+            OrthographicProjection::default_2d(),
+        ));
+
+        app.add_systems(Update, handle_save_layout_system);
+        app.world_mut().send_event(LayoutSaveRequested);
+        app.update();
+
+        let body = std::fs::read_to_string(&json_path).unwrap();
+        assert_eq!(body, "{}", "scenario 欠落時は元 .json を上書きしない");
+
+        let buffer = app.world().resource::<StrategyBuffer>();
+        assert_eq!(buffer.original_path.as_deref(), Some(py_path.as_path()));
+    }
+
+    /// A2: cache_sidecar = None でも元 sidecar (buffer.original_path.with_extension("json"))
+    /// に registry 内容で writeback できる。
+    #[test]
+    fn save_layout_continues_when_cache_sidecar_path_none() {
+        use bevy::prelude::*;
+        use crate::ui::components::{
+            InstrumentRegistry, ScenarioMetadata, ScenarioWritebackPaths, StrategyBuffer,
+        };
+
+        let dir = tempfile::tempdir().unwrap();
+        let py_path = dir.path().join("strat.py");
+        let json_path = dir.path().join("strat.json");
+        let initial = r#"{"scenario":{"schema_version":2,"instruments":["1301.TSE","7203.TSE"],"start":"2025-01-06","end":"2025-01-10","granularity":"Minute","initial_cash":1000000}}"#;
+        std::fs::write(&py_path, "# dummy\n").unwrap();
+        std::fs::write(&json_path, initial).unwrap();
+
+        let mut app = App::new();
+        app.insert_resource(StrategyBuffer {
+            original_path: Some(py_path.clone()),
+            cache_path: None,
+            last_merged_source: None,
+        });
+        app.insert_resource(ScenarioWritebackPaths {
+            cache_sidecar: None,
+        });
+        let mut reg = InstrumentRegistry::default();
+        reg.ids = vec!["6758.TSE".to_string()];
+        reg.editable = true;
+        app.insert_resource(reg);
+        app.init_resource::<ScenarioMetadata>();
+        app.init_resource::<StrategyAutoSaveState>();
+
+        app.add_event::<LayoutSaveRequested>();
+        app.world_mut().spawn((
+            Camera2d,
+            Transform::default(),
+            OrthographicProjection::default_2d(),
+        ));
+
+        app.add_systems(Update, handle_save_layout_system);
+        app.world_mut().send_event(LayoutSaveRequested);
+        app.update();
+
+        // cache_sidecar 関連 path が None のまま
+        let paths_res = app.world().resource::<ScenarioWritebackPaths>();
+        assert!(paths_res.cache_sidecar.is_none());
+
+        // 元 sidecar に registry が反映されている
+        let body = std::fs::read_to_string(&json_path).unwrap();
+        let v: serde_json::Value = serde_json::from_str(&body).unwrap();
+        let got: Vec<String> = v["scenario"]["instruments"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|x| x.as_str().unwrap().to_string())
+            .collect();
+        assert_eq!(got, vec!["6758.TSE".to_string()]);
+    }
+
+    /// A4: cache JSON が壊れているとき、ScenarioMetadata から最小 v2 を再構築する経路で
+    /// 元 sidecar 側に registry 値が届く。
+    #[test]
+    fn save_layout_fallback_to_original_sidecar_when_cache_corrupt() {
+        use bevy::prelude::*;
+        use crate::ui::components::{
+            InstrumentRegistry, ScenarioMetadata, ScenarioWritebackPaths, StrategyBuffer,
+        };
+
+        let dir = tempfile::tempdir().unwrap();
+        let py_path = dir.path().join("strat.py");
+        let json_path = dir.path().join("strat.json");
+        let cache_json_path = dir.path().join("cache.json");
+        let initial = r#"{"scenario":{"schema_version":2,"instruments":["1301.TSE","7203.TSE"],"start":"2025-01-06","end":"2025-01-10","granularity":"Minute","initial_cash":1000000}}"#;
+        std::fs::write(&py_path, "# dummy\n").unwrap();
+        std::fs::write(&json_path, initial).unwrap();
+        std::fs::write(&cache_json_path, "{ not json").unwrap();
+
+        let mut app = App::new();
+        app.insert_resource(StrategyBuffer {
+            original_path: Some(py_path.clone()),
+            cache_path: None,
+            last_merged_source: None,
+        });
+        app.insert_resource(ScenarioWritebackPaths {
+            cache_sidecar: Some(cache_json_path.clone()),
+        });
+        let mut reg = InstrumentRegistry::default();
+        reg.ids = vec!["9984.TSE".to_string()];
+        reg.editable = true;
+        app.insert_resource(reg);
+        // ScenarioMetadata を埋めておく: cache 不正で preserve が None になっても
+        // build_layout_for_explicit_save が ScenarioMetadata から最小 v2 を再構築する。
+        let mut meta = ScenarioMetadata::default();
+        meta.schema_version = Some(2);
+        meta.start = Some("2025-01-06".to_string());
+        meta.end = Some("2025-01-10".to_string());
+        meta.granularity = Some("Minute".to_string());
+        meta.initial_cash = Some(1000000);
+        app.insert_resource(meta);
+        app.init_resource::<StrategyAutoSaveState>();
+
+        app.add_event::<LayoutSaveRequested>();
+        app.world_mut().spawn((
+            Camera2d,
+            Transform::default(),
+            OrthographicProjection::default_2d(),
+        ));
+
+        app.add_systems(Update, handle_save_layout_system);
+        app.world_mut().send_event(LayoutSaveRequested);
+        app.update();
+
+        // 元 sidecar 側に registry 値が反映されている
+        // (NOTE: cache 自体が修復されるかは実装依存なので assert しない)
+        let body = std::fs::read_to_string(&json_path).unwrap();
+        let v: serde_json::Value = serde_json::from_str(&body).unwrap();
+        let got: Vec<String> = v["scenario"]["instruments"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|x| x.as_str().unwrap().to_string())
+            .collect();
+        assert_eq!(got, vec!["9984.TSE".to_string()]);
+    }
+
+    /// A5: registry.editable = false (instruments_ref ロック) のとき、
+    /// 元 sidecar の `instruments_ref` 形状を破壊しない。
+    #[test]
+    fn save_layout_preserves_instruments_ref_shape() {
+        use bevy::prelude::*;
+        use crate::ui::components::{
+            InstrumentRegistry, ScenarioMetadata, ScenarioWritebackPaths, StrategyBuffer,
+        };
+
+        let dir = tempfile::tempdir().unwrap();
+        let py_path = dir.path().join("strat.py");
+        let json_path = dir.path().join("strat.json");
+        // scenario.instruments_ref を持つ最小 sidecar (instruments キーは持たない)
+        let initial = r#"{"scenario":{"schema_version":3,"instruments_ref":"universe/foo.json","start":"2025-01-06","end":"2025-01-10","granularity":"Daily","initial_cash":1000000}}"#;
+        std::fs::write(&py_path, "# dummy\n").unwrap();
+        std::fs::write(&json_path, initial).unwrap();
+
+        let mut app = App::new();
+        app.insert_resource(StrategyBuffer {
+            original_path: Some(py_path.clone()),
+            cache_path: None,
+            last_merged_source: None,
+        });
+        // cache_sidecar=None にして fallback (元 sidecar) を preserve 源にする
+        app.insert_resource(ScenarioWritebackPaths {
+            cache_sidecar: None,
+        });
+        let mut reg = InstrumentRegistry::default();
+        reg.ids = vec!["1301.TSE".to_string(), "7203.TSE".to_string()];
+        reg.editable = false; // instruments_ref ロック
+        app.insert_resource(reg);
+        app.init_resource::<ScenarioMetadata>();
+        app.init_resource::<StrategyAutoSaveState>();
+
+        app.add_event::<LayoutSaveRequested>();
+        app.world_mut().spawn((
+            Camera2d,
+            Transform::default(),
+            OrthographicProjection::default_2d(),
+        ));
+
+        app.add_systems(Update, handle_save_layout_system);
+        app.world_mut().send_event(LayoutSaveRequested);
+        app.update();
+
+        let body = std::fs::read_to_string(&json_path).unwrap();
+        let v: serde_json::Value = serde_json::from_str(&body).unwrap();
+        let scenario = &v["scenario"];
+        assert!(
+            scenario.get("instruments_ref").is_some(),
+            "instruments_ref must be preserved"
+        );
+        assert_eq!(scenario["instruments_ref"], "universe/foo.json");
+        assert!(
+            scenario.get("instruments").is_none(),
+            "registry must not flatten into instruments key when editable=false"
+        );
+    }
+
+    /// A6: handle_save_layout_system 経路で
+    ///   - 元 strat.json の instruments が registry の最新値で上書きされる (writeback 効いている)
+    ///   - scenario 内の original-only field (例: marker_original) は cache restore 仕様により落ちるのが仕様
+    ///   - cache_sidecar 側の preserve 対象フィールド (marker_cache) は writeback 後も保持される
+    ///   - 元 .py が byte 不変
+    ///   - cache_sidecar JSON は KC4-a の pre-flush 仕様により registry 最新値で上書きされる
+    ///     (A2/A4/A5 系と一貫)
+    #[test]
+    fn save_layout_writes_registry_and_preserves_markers_and_py_bytes() {
+        use bevy::prelude::*;
+        use crate::ui::components::{
+            InstrumentRegistry, ScenarioMetadata, ScenarioWritebackPaths, StrategyBuffer,
+        };
+
+        let dir = tempfile::tempdir().unwrap();
+        let py_path = dir.path().join("strat.py");
+        let json_path = dir.path().join("strat.json");
+        let cache_json_path = dir.path().join("cache.json");
+
+        // 元 strat.json: 古い instruments + marker_original を保持
+        let original_json = r#"{"scenario":{"schema_version":2,"instruments":["OLD1.TSE","OLD2.TSE"],"start":"2025-01-06","end":"2025-01-10","granularity":"Minute","initial_cash":1000000,"marker_original":"keep-me"}}"#;
+        // cache_sidecar: 別の古い instruments + cache 側固有マーカーを持つファイル
+        let cache_json = r#"{"scenario":{"schema_version":2,"instruments":["CACHE_OLD.TSE"],"start":"2025-01-06","end":"2025-01-10","granularity":"Minute","initial_cash":1000000,"marker_cache":"from_cache"}}"#;
+        let py_bytes: &[u8] = b"# original python body\nprint('hi')\n";
+        std::fs::write(&py_path, py_bytes).unwrap();
+        std::fs::write(&json_path, original_json).unwrap();
+        std::fs::write(&cache_json_path, cache_json).unwrap();
+
+        let mut app = App::new();
+        app.insert_resource(StrategyBuffer {
+            original_path: Some(py_path.clone()),
+            cache_path: None,
+            last_merged_source: None,
+        });
+        app.insert_resource(ScenarioWritebackPaths {
+            cache_sidecar: Some(cache_json_path.clone()),
+        });
+        let mut reg = InstrumentRegistry::default();
+        reg.ids = vec!["NEW1.TSE".to_string(), "NEW2.TSE".to_string()];
+        reg.editable = true;
+        app.insert_resource(reg);
+        app.init_resource::<ScenarioMetadata>();
+        app.init_resource::<StrategyAutoSaveState>();
+
+        app.add_event::<LayoutSaveRequested>();
+        app.world_mut().spawn((
+            Camera2d,
+            Transform::default(),
+            OrthographicProjection::default_2d(),
+        ));
+
+        app.add_systems(Update, handle_save_layout_system);
+        app.world_mut().send_event(LayoutSaveRequested);
+        app.update();
+
+        // ① 元 strat.json の instruments が registry の最新値で上書きされている
+        let body = std::fs::read_to_string(&json_path).unwrap();
+        let v: serde_json::Value = serde_json::from_str(&body).unwrap();
+        let got: Vec<String> = v["scenario"]["instruments"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|x| x.as_str().unwrap().to_string())
+            .collect();
+        assert_eq!(
+            got,
+            vec!["NEW1.TSE".to_string(), "NEW2.TSE".to_string()],
+            "registry must be written back to original sidecar"
+        );
+
+        // ② scenario 内の original-only field は cache restore 仕様により落ちる (regression 固定)
+        assert!(
+            v["scenario"].get("marker_original").map_or(true, |x| x.is_null()),
+            "marker_original from source strat.json must NOT survive writeback (cache is source of truth)"
+        );
+        // ②' cache_sidecar 側マーカーは preserve される
+        assert_eq!(
+            v["scenario"]["marker_cache"], serde_json::json!("from_cache"),
+            "marker from cache_sidecar must be preserved through writeback"
+        );
+
+        // ③ 元 .py が byte 不変
+        let py_after = std::fs::read(&py_path).unwrap();
+        assert_eq!(py_after.as_slice(), py_bytes, "original .py must be byte-identical");
+
+        // ④ cache_sidecar は KC4-a 仕様により registry 最新値で上書きされる
+        let cache_body = std::fs::read_to_string(&cache_json_path).unwrap();
+        let cv: serde_json::Value = serde_json::from_str(&cache_body).unwrap();
+        let cache_got: Vec<String> = cv["scenario"]["instruments"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|x| x.as_str().unwrap().to_string())
+            .collect();
+        assert_eq!(
+            cache_got,
+            vec!["NEW1.TSE".to_string(), "NEW2.TSE".to_string()],
+            "cache_sidecar must be flushed with registry latest values (KC4-a)"
         );
     }
 }
