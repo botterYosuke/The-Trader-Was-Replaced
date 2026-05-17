@@ -514,3 +514,901 @@ mod sync_registry_from_scenario_loaded_tests {
         assert!(wb.last_error.is_none());
     }
 }
+
+/// `InstrumentRegistry` の change detection を見て `writeback.revision` を +1 する。
+/// ファイルロード由来の代入は §3.2 の `sync_registry_from_scenario_loaded_system` が
+/// 同 tick 内で `revision = flushed_revision` に戻すため、ここで inc されてもループしない
+/// (writeback 成功時に再び `flushed_revision = revision` で追随する)。計画書 §3.3。
+pub fn mark_registry_dirty_system(
+    registry: Res<InstrumentRegistry>,
+    mut writeback: ResMut<ScenarioInstrumentsWritebackState>,
+) {
+    if !registry.is_changed() {
+        return;
+    }
+    writeback.revision += 1;
+}
+
+#[cfg(test)]
+mod mark_registry_dirty_tests {
+    use super::*;
+
+    fn build_app() -> App {
+        let mut app = App::new();
+        app.init_resource::<InstrumentRegistry>()
+            .init_resource::<ScenarioInstrumentsWritebackState>()
+            .add_systems(Update, mark_registry_dirty_system);
+        app
+    }
+
+    #[test]
+    fn test_registry_change_increments_writeback_revision() {
+        let mut app = build_app();
+        app.update();
+        let baseline = app.world().resource::<ScenarioInstrumentsWritebackState>().revision;
+
+        {
+            let mut reg = app.world_mut().resource_mut::<InstrumentRegistry>();
+            reg.replace_all(&["7203.T".to_string()]);
+        }
+        app.update();
+
+        let wb = app.world().resource::<ScenarioInstrumentsWritebackState>();
+        assert_eq!(wb.revision, baseline + 1, "registry mutate で revision が +1");
+        assert_eq!(wb.flushed_revision, 0, "flushed_revision は据え置き");
+    }
+
+    #[test]
+    fn test_unchanged_registry_does_not_increment() {
+        let mut app = build_app();
+        app.update();
+        let baseline = app.world().resource::<ScenarioInstrumentsWritebackState>().revision;
+
+        app.update();
+        app.update();
+
+        let wb = app.world().resource::<ScenarioInstrumentsWritebackState>();
+        assert_eq!(wb.revision, baseline, "registry 未変更なら inc しない");
+    }
+}
+
+// ─── Phase 7.5b: scenario.instruments writeback ───────────────────────────
+
+/// scenario.instruments の永続化 target path 群。
+/// `cache_sidecar` = `cache_state_paths().0`（= `<cache>/app_state.json`）。
+/// 元 sidecar path は `StrategyBuffer.original_path` から `.with_extension("json")` で導出するので
+/// ここには持たない。production では `UiPlugin` 起動時に挿入する。
+#[derive(Resource, Default, Debug, Clone)]
+pub struct ScenarioWritebackPaths {
+    pub cache_sidecar: Option<PathBuf>,
+}
+
+/// registry が dirty (`revision != flushed_revision`) かつ `editable == true` のときに、
+/// 元 sidecar (`<original_path stem>.json`) と cache sidecar (`paths.cache_sidecar`) の
+/// `scenario.instruments` だけを registry.ids で置換する。
+pub fn writeback_scenario_instruments_system(
+    registry: Res<InstrumentRegistry>,
+    buffer: Res<StrategyBuffer>,
+    paths: Res<ScenarioWritebackPaths>,
+    mut writeback: ResMut<ScenarioInstrumentsWritebackState>,
+    mut watch: ResMut<ScenarioFileWatchState>,
+) {
+    if !registry.editable {
+        return;
+    }
+    if writeback.revision == writeback.flushed_revision {
+        return;
+    }
+
+    match flush_sidecars_now(
+        registry.as_slice(),
+        buffer.original_path.as_deref(),
+        paths.cache_sidecar.as_deref(),
+    ) {
+        Ok(new_mtime) => {
+            writeback.flushed_revision = writeback.revision;
+            writeback.last_error = None;
+            if let Some(m) = new_mtime {
+                watch.last_mtime = Some(m);
+            }
+        }
+        Err(msg) => {
+            writeback.last_error = Some(msg);
+        }
+    }
+}
+
+/// 計画書 §3.4 / §3.5: writeback 本体ロジックを system 外から呼べる pure 関数として切り出したもの。
+/// `writeback_scenario_instruments_system` (revision ベース dirty 判定) と
+/// `handle_strategy_run_system` 内 inline flush (revision 無関係に「今書く」) の両方が共有する。
+///
+/// 戻り値: `Ok(Some(mtime))` = 元 sidecar の write 成功時の新 mtime（watch state 転記用）。
+///         `Ok(None)`         = cache sidecar のみ書いた、または元 sidecar が無い。
+///         `Err(msg)`         = いずれかの target で失敗。`last_error` 用文字列。
+///
+/// `editable == false` のときは呼び出し側で skip する想定（この関数は ref チェックしない）。
+pub fn flush_sidecars_now(
+    registry_ids: &[String],
+    original_py: Option<&std::path::Path>,
+    cache_sidecar: Option<&std::path::Path>,
+) -> Result<Option<SystemTime>, String> {
+    let mut targets: Vec<PathBuf> = Vec::with_capacity(2);
+    if let Some(p) = original_py {
+        targets.push(p.with_extension("json"));
+    }
+    if let Some(p) = cache_sidecar {
+        if !targets.iter().any(|t| t == p) {
+            targets.push(p.to_path_buf());
+        }
+    }
+    if targets.is_empty() {
+        return Err("no writeback target".to_string());
+    }
+
+    let new_ids: Vec<serde_json::Value> = registry_ids
+        .iter()
+        .map(|s| serde_json::Value::String(s.clone()))
+        .collect();
+
+    let mut original_mtime: Option<SystemTime> = None;
+    for path in &targets {
+        if let Err(e) = rewrite_scenario_instruments_atomic(path, &new_ids) {
+            return Err(format!("writeback {path:?}: {e}"));
+        }
+        if let Some(orig_py) = original_py {
+            if path == &orig_py.with_extension("json") {
+                if let Ok(meta) = std::fs::metadata(path) {
+                    if let Ok(m) = meta.modified() {
+                        original_mtime = Some(m);
+                    }
+                }
+            }
+        }
+    }
+    Ok(original_mtime)
+}
+
+fn rewrite_scenario_instruments_atomic(
+    path: &std::path::Path,
+    new_ids: &[serde_json::Value],
+) -> std::io::Result<()> {
+    let raw = std::fs::read_to_string(path)?;
+    let mut value: serde_json::Value = serde_json::from_str(&raw)
+        .map_err(|e| std::io::Error::new(std::io::ErrorKind::InvalidData, e))?;
+
+    {
+        let scenario = value
+            .get_mut("scenario")
+            .and_then(|v| v.as_object_mut())
+            .ok_or_else(|| {
+                std::io::Error::new(
+                    std::io::ErrorKind::InvalidData,
+                    "missing scenario object",
+                )
+            })?;
+
+        // v1 → v2 正規化:
+        // - schema_version が None または 1 で、legacy `instrument` キー（単数 or list）がある場合、
+        //   `instrument` を削除して `schema_version=2` にセットする。
+        let needs_normalize = {
+            let ver = scenario.get("schema_version").and_then(|v| v.as_u64());
+            let has_legacy_instrument = scenario.contains_key("instrument");
+            has_legacy_instrument && matches!(ver, None | Some(1))
+        };
+        if needs_normalize {
+            scenario.remove("instrument");
+            scenario.insert(
+                "schema_version".to_string(),
+                serde_json::Value::Number(2u64.into()),
+            );
+            warn!("normalized v1 sidecar to v2: {:?}", path);
+        }
+
+        scenario.insert(
+            "instruments".to_string(),
+            serde_json::Value::Array(new_ids.to_vec()),
+        );
+    }
+
+    let serialized = serde_json::to_string_pretty(&value)
+        .map_err(|e| std::io::Error::new(std::io::ErrorKind::InvalidData, e))?;
+
+    let dir = path.parent().ok_or_else(|| {
+        std::io::Error::new(std::io::ErrorKind::InvalidInput, "path has no parent")
+    })?;
+    let file_name = path
+        .file_name()
+        .and_then(|s| s.to_str())
+        .ok_or_else(|| {
+            std::io::Error::new(std::io::ErrorKind::InvalidInput, "path has no filename")
+        })?;
+    let tmp = dir.join(format!(
+        ".{}.tmp-{}-{}",
+        file_name,
+        std::process::id(),
+        rand::random::<u32>()
+    ));
+    std::fs::write(&tmp, serialized.as_bytes())?;
+    std::fs::rename(&tmp, path)?;
+    Ok(())
+}
+
+#[cfg(test)]
+mod writeback_scenario_instruments_tests {
+    use super::*;
+    use std::fs;
+
+    /// 計画書 §3.4 / §5.1「永続化」最上段:
+    /// registry が dirty(=revision != flushed_revision) の状態で
+    /// `writeback_scenario_instruments_system` を 1 tick 回すと、
+    /// **元 sidecar と cache sidecar の両方** の `scenario.instruments` が
+    /// registry.ids で置換される。
+    #[test]
+    fn test_writeback_updates_both_original_and_cache_sidecars() {
+        let dir = tempfile::tempdir().unwrap();
+        let original_py = dir.path().join("strat.py");
+        let original_json = dir.path().join("strat.json");
+        let cache_json = dir.path().join("cache_app_state.json");
+
+        fs::write(&original_py, "# dummy").unwrap();
+        let initial = r#"{"scenario": {"schema_version": 2, "instruments": ["OLD.T"], "start": "2025-01-06", "end": "2025-01-10", "granularity": "Daily", "initial_cash": 1000000}}"#;
+        fs::write(&original_json, initial).unwrap();
+        fs::write(&cache_json, initial).unwrap();
+
+        let mut app = App::new();
+        app.insert_resource(StrategyBuffer {
+            original_path: Some(original_py.clone()),
+            cache_path: None,
+            last_merged_source: None,
+        });
+        app.insert_resource(ScenarioWritebackPaths {
+            cache_sidecar: Some(cache_json.clone()),
+        });
+        app.init_resource::<InstrumentRegistry>();
+        app.init_resource::<ScenarioInstrumentsWritebackState>();
+        app.init_resource::<ScenarioFileWatchState>();
+        {
+            let mut reg = app.world_mut().resource_mut::<InstrumentRegistry>();
+            reg.replace_all(&["1301.TSE".to_string(), "7203.TSE".to_string()]);
+            reg.editable = true;
+        }
+        {
+            let mut wb = app.world_mut().resource_mut::<ScenarioInstrumentsWritebackState>();
+            wb.revision = 1;
+            wb.flushed_revision = 0;
+        }
+        app.add_systems(Update, writeback_scenario_instruments_system);
+        app.update();
+
+        let updated_original: serde_json::Value =
+            serde_json::from_str(&fs::read_to_string(&original_json).unwrap()).unwrap();
+        let updated_cache: serde_json::Value =
+            serde_json::from_str(&fs::read_to_string(&cache_json).unwrap()).unwrap();
+
+        assert_eq!(
+            updated_original["scenario"]["instruments"],
+            serde_json::json!(["1301.TSE", "7203.TSE"]),
+            "original sidecar must reflect new instruments"
+        );
+        assert_eq!(
+            updated_cache["scenario"]["instruments"],
+            serde_json::json!(["1301.TSE", "7203.TSE"]),
+            "cache sidecar must reflect new instruments"
+        );
+
+        let wb = app.world().resource::<ScenarioInstrumentsWritebackState>();
+        assert_eq!(wb.flushed_revision, wb.revision, "flushed_revision must catch up on success");
+        assert!(wb.last_error.is_none());
+    }
+
+    /// 計画書 §5.1「永続化」: `scenario.instruments` 以外のキー
+    /// (start / end / granularity / initial_cash / schema_version) は
+    /// 1 文字も変えない。
+    #[test]
+    fn test_writeback_only_touches_scenario_instruments_field() {
+        let dir = tempfile::tempdir().unwrap();
+        let original_py = dir.path().join("strat.py");
+        let original_json = dir.path().join("strat.json");
+        let cache_json = dir.path().join("cache_app_state.json");
+
+        fs::write(&original_py, "# dummy").unwrap();
+        let initial = r#"{"scenario":{"schema_version":2,"instruments":["OLD.T"],"start":"2025-01-06","end":"2025-01-10","granularity":"Daily","initial_cash":1000000,"custom_extra":"keep-me"},"viewport":{"x":42},"windows":[{"id":"w1"}]}"#;
+        fs::write(&original_json, initial).unwrap();
+        fs::write(&cache_json, initial).unwrap();
+
+        let mut app = App::new();
+        app.insert_resource(StrategyBuffer {
+            original_path: Some(original_py.clone()),
+            cache_path: None,
+            last_merged_source: None,
+        });
+        app.insert_resource(ScenarioWritebackPaths {
+            cache_sidecar: Some(cache_json.clone()),
+        });
+        app.init_resource::<InstrumentRegistry>();
+        app.init_resource::<ScenarioInstrumentsWritebackState>();
+        app.init_resource::<ScenarioFileWatchState>();
+        {
+            let mut reg = app.world_mut().resource_mut::<InstrumentRegistry>();
+            reg.replace_all(&["NEW.T".to_string()]);
+            reg.editable = true;
+        }
+        {
+            let mut wb = app.world_mut().resource_mut::<ScenarioInstrumentsWritebackState>();
+            wb.revision = 1;
+            wb.flushed_revision = 0;
+        }
+        app.add_systems(Update, writeback_scenario_instruments_system);
+        app.update();
+
+        let updated: serde_json::Value =
+            serde_json::from_str(&fs::read_to_string(&original_json).unwrap()).unwrap();
+
+        assert_eq!(updated["scenario"]["instruments"], serde_json::json!(["NEW.T"]));
+        assert_eq!(updated["scenario"]["schema_version"], serde_json::json!(2));
+        assert_eq!(updated["scenario"]["start"], serde_json::json!("2025-01-06"));
+        assert_eq!(updated["scenario"]["end"], serde_json::json!("2025-01-10"));
+        assert_eq!(updated["scenario"]["granularity"], serde_json::json!("Daily"));
+        assert_eq!(updated["scenario"]["initial_cash"], serde_json::json!(1000000));
+        assert_eq!(updated["scenario"]["custom_extra"], serde_json::json!("keep-me"));
+        assert_eq!(updated["viewport"], serde_json::json!({"x": 42}));
+        assert_eq!(updated["windows"], serde_json::json!([{"id": "w1"}]));
+    }
+
+    /// 計画書 §5.1「Schema 互換」:
+    /// v1 単数 `instrument: "1301.TSE"` を持つ sidecar に対し registry に
+    /// 銘柄が入った状態で writeback → `schema_version=2`,
+    /// `instrument` キー削除, `instruments: [...]` 書き込み。
+    #[test]
+    fn test_writeback_normalizes_v1_to_v2() {
+        let dir = tempfile::tempdir().unwrap();
+        let original_py = dir.path().join("strat.py");
+        let original_json = dir.path().join("strat.json");
+        let cache_json = dir.path().join("cache_app_state.json");
+
+        fs::write(&original_py, "# dummy").unwrap();
+        let initial = r#"{"scenario":{"schema_version":1,"instrument":"1301.TSE","start":"2025-01-06","end":"2025-01-10","granularity":"Daily","initial_cash":1000000}}"#;
+        fs::write(&original_json, initial).unwrap();
+        fs::write(&cache_json, initial).unwrap();
+
+        let mut app = App::new();
+        app.insert_resource(StrategyBuffer {
+            original_path: Some(original_py.clone()),
+            cache_path: None,
+            last_merged_source: None,
+        });
+        app.insert_resource(ScenarioWritebackPaths {
+            cache_sidecar: Some(cache_json.clone()),
+        });
+        app.init_resource::<InstrumentRegistry>();
+        app.init_resource::<ScenarioInstrumentsWritebackState>();
+        app.init_resource::<ScenarioFileWatchState>();
+        {
+            let mut reg = app.world_mut().resource_mut::<InstrumentRegistry>();
+            reg.replace_all(&["1301.TSE".to_string(), "7203.TSE".to_string()]);
+            reg.editable = true;
+        }
+        {
+            let mut wb = app.world_mut().resource_mut::<ScenarioInstrumentsWritebackState>();
+            wb.revision = 1;
+            wb.flushed_revision = 0;
+        }
+        app.add_systems(Update, writeback_scenario_instruments_system);
+        app.update();
+
+        let updated: serde_json::Value =
+            serde_json::from_str(&fs::read_to_string(&original_json).unwrap()).unwrap();
+
+        assert_eq!(updated["scenario"]["schema_version"], serde_json::json!(2));
+        assert_eq!(
+            updated["scenario"]["instruments"],
+            serde_json::json!(["1301.TSE", "7203.TSE"])
+        );
+        assert!(
+            updated["scenario"].get("instrument").is_none()
+                || updated["scenario"]["instrument"].is_null(),
+            "legacy 'instrument' key must be removed, got: {:?}",
+            updated["scenario"].get("instrument")
+        );
+
+        let cache: serde_json::Value =
+            serde_json::from_str(&fs::read_to_string(&cache_json).unwrap()).unwrap();
+        assert_eq!(cache["scenario"]["schema_version"], serde_json::json!(2));
+        assert!(cache["scenario"].get("instrument").is_none());
+    }
+
+    /// 計画書 §5.1「Schema 互換」:
+    /// legacy で `instrument: ["A","B"]`（list 形式）の sidecar も
+    /// v2 正規化される。
+    #[test]
+    fn test_writeback_handles_legacy_instrument_as_list() {
+        let dir = tempfile::tempdir().unwrap();
+        let original_py = dir.path().join("strat.py");
+        let original_json = dir.path().join("strat.json");
+        let cache_json = dir.path().join("cache_app_state.json");
+
+        fs::write(&original_py, "# dummy").unwrap();
+        let initial = r#"{"scenario":{"instrument":["A","B"],"start":"2025-01-06","end":"2025-01-10","granularity":"Daily","initial_cash":1000000}}"#;
+        fs::write(&original_json, initial).unwrap();
+        fs::write(&cache_json, initial).unwrap();
+
+        let mut app = App::new();
+        app.insert_resource(StrategyBuffer {
+            original_path: Some(original_py.clone()),
+            cache_path: None,
+            last_merged_source: None,
+        });
+        app.insert_resource(ScenarioWritebackPaths {
+            cache_sidecar: Some(cache_json.clone()),
+        });
+        app.init_resource::<InstrumentRegistry>();
+        app.init_resource::<ScenarioInstrumentsWritebackState>();
+        app.init_resource::<ScenarioFileWatchState>();
+        {
+            let mut reg = app.world_mut().resource_mut::<InstrumentRegistry>();
+            reg.replace_all(&["NEW.T".to_string()]);
+            reg.editable = true;
+        }
+        {
+            let mut wb = app.world_mut().resource_mut::<ScenarioInstrumentsWritebackState>();
+            wb.revision = 1;
+            wb.flushed_revision = 0;
+        }
+        app.add_systems(Update, writeback_scenario_instruments_system);
+        app.update();
+
+        let updated: serde_json::Value =
+            serde_json::from_str(&fs::read_to_string(&original_json).unwrap()).unwrap();
+
+        assert_eq!(updated["scenario"]["schema_version"], serde_json::json!(2));
+        assert_eq!(updated["scenario"]["instruments"], serde_json::json!(["NEW.T"]));
+        assert!(
+            updated["scenario"].get("instrument").is_none(),
+            "legacy 'instrument' key (list form) must be removed"
+        );
+    }
+
+    /// 計画書 §3.3: `registry.editable = false`（= instruments_ref ロック中）の間は
+    /// dirty(revision != flushed_revision) でも writeback system は no-op。
+    /// 元 sidecar / cache sidecar の bytes は不変で、`flushed_revision` も据え置き。
+    #[test]
+    fn test_instruments_ref_locks_writeback() {
+        let dir = tempfile::tempdir().unwrap();
+        let original_py = dir.path().join("strat.py");
+        let original_json = dir.path().join("strat.json");
+        let cache_json = dir.path().join("cache_app_state.json");
+
+        fs::write(&original_py, "# dummy").unwrap();
+        let initial = r#"{"scenario": {"schema_version": 2, "instruments": ["LOCKED.T"], "start": "2025-01-06", "end": "2025-01-10", "granularity": "Daily", "initial_cash": 1000000}}"#;
+        fs::write(&original_json, initial).unwrap();
+        fs::write(&cache_json, initial).unwrap();
+
+        let original_bytes = fs::read(&original_json).unwrap();
+        let cache_bytes = fs::read(&cache_json).unwrap();
+
+        let mut app = App::new();
+        app.insert_resource(StrategyBuffer {
+            original_path: Some(original_py.clone()),
+            cache_path: None,
+            last_merged_source: None,
+        });
+        app.insert_resource(ScenarioWritebackPaths {
+            cache_sidecar: Some(cache_json.clone()),
+        });
+        app.init_resource::<InstrumentRegistry>();
+        app.init_resource::<ScenarioInstrumentsWritebackState>();
+        app.init_resource::<ScenarioFileWatchState>();
+        {
+            let mut reg = app.world_mut().resource_mut::<InstrumentRegistry>();
+            reg.replace_all(&["NEW.T".to_string()]);
+            reg.editable = false;
+        }
+        {
+            let mut wb = app.world_mut().resource_mut::<ScenarioInstrumentsWritebackState>();
+            wb.revision = 7;
+            wb.flushed_revision = 0;
+        }
+        app.add_systems(Update, writeback_scenario_instruments_system);
+        app.update();
+
+        assert_eq!(fs::read(&original_json).unwrap(), original_bytes, "locked: original must be byte-identical");
+        assert_eq!(fs::read(&cache_json).unwrap(), cache_bytes, "locked: cache must be byte-identical");
+
+        let wb = app.world().resource::<ScenarioInstrumentsWritebackState>();
+        assert_eq!(wb.flushed_revision, 0, "locked: flushed_revision must stay");
+        assert!(wb.last_error.is_none(), "locked: no error path");
+    }
+
+    /// 計画書 §3.4: writeback target が書き込み不能だと `flushed_revision` は据え置きで
+    /// `last_error` がセットされ、次フレームで有効 path に差し替えれば自動再試行が成功する。
+    #[test]
+    fn test_writeback_failure_keeps_revision_and_retries() {
+        let dir = tempfile::tempdir().unwrap();
+        let original_py = dir.path().join("strat.py");
+        let original_json = dir.path().join("strat.json");
+        let bad_cache = dir.path().join("nonexistent_subdir").join("app_state.json");
+        let good_cache = dir.path().join("app_state.json");
+
+        fs::write(&original_py, "# dummy").unwrap();
+        let initial = r#"{"scenario": {"schema_version": 2, "instruments": ["OLD.T"], "start": "2025-01-06", "end": "2025-01-10", "granularity": "Daily", "initial_cash": 1000000}}"#;
+        fs::write(&original_json, initial).unwrap();
+        fs::write(&good_cache, initial).unwrap();
+
+        let mut app = App::new();
+        app.insert_resource(StrategyBuffer {
+            original_path: Some(original_py.clone()),
+            cache_path: None,
+            last_merged_source: None,
+        });
+        app.insert_resource(ScenarioWritebackPaths {
+            cache_sidecar: Some(bad_cache.clone()),
+        });
+        app.init_resource::<InstrumentRegistry>();
+        app.init_resource::<ScenarioInstrumentsWritebackState>();
+        app.init_resource::<ScenarioFileWatchState>();
+        {
+            let mut reg = app.world_mut().resource_mut::<InstrumentRegistry>();
+            reg.replace_all(&["RETRY.T".to_string()]);
+            reg.editable = true;
+        }
+        {
+            let mut wb = app.world_mut().resource_mut::<ScenarioInstrumentsWritebackState>();
+            wb.revision = 3;
+            wb.flushed_revision = 0;
+        }
+        app.add_systems(Update, writeback_scenario_instruments_system);
+
+        app.update();
+        {
+            let wb = app.world().resource::<ScenarioInstrumentsWritebackState>();
+            assert_eq!(wb.flushed_revision, 0, "failure: flushed_revision must stay");
+            assert!(wb.last_error.is_some(), "failure: last_error must be set");
+        }
+
+        {
+            let mut paths = app.world_mut().resource_mut::<ScenarioWritebackPaths>();
+            paths.cache_sidecar = Some(good_cache.clone());
+        }
+        app.update();
+
+        let wb = app.world().resource::<ScenarioInstrumentsWritebackState>();
+        assert_eq!(wb.flushed_revision, wb.revision, "retry: flushed_revision must catch up");
+        assert!(wb.last_error.is_none(), "retry: last_error must clear on success");
+
+        let updated_good: serde_json::Value =
+            serde_json::from_str(&fs::read_to_string(&good_cache).unwrap()).unwrap();
+        assert_eq!(
+            updated_good["scenario"]["instruments"],
+            serde_json::json!(["RETRY.T"]),
+            "retry: good cache sidecar must reflect new instruments"
+        );
+    }
+
+    /// 計画書 §3.4: writeback 成功時に `ScenarioFileWatchState.last_mtime` を新 mtime に
+    /// 転記しているため、次 tick で `parse_scenario_system` を回しても
+    /// 自分が書いた sidecar を「外部変更」と誤検知せず `ScenarioLoadedFromFile` を発火しない。
+    #[test]
+    fn test_writeback_does_not_retrigger_scenario_reload() {
+        use crate::ui::components::{ScenarioLoadedFromFile, ScenarioMetadata};
+        use crate::ui::scenario_parser::parse_scenario_system;
+
+        let dir = tempfile::tempdir().unwrap();
+        let original_py = dir.path().join("strat.py");
+        let original_json = dir.path().join("strat.json");
+
+        fs::write(&original_py, "# dummy").unwrap();
+        let initial = r#"{"scenario": {"schema_version": 2, "instruments": ["OLD.T"], "start": "2025-01-06", "end": "2025-01-10", "granularity": "Daily", "initial_cash": 1000000}}"#;
+        fs::write(&original_json, initial).unwrap();
+
+        let mut app = App::new();
+        app.insert_resource(StrategyBuffer {
+            original_path: Some(original_py.clone()),
+            cache_path: None,
+            last_merged_source: None,
+        });
+        app.insert_resource(ScenarioWritebackPaths {
+            cache_sidecar: None,
+        });
+        app.init_resource::<InstrumentRegistry>();
+        app.init_resource::<ScenarioInstrumentsWritebackState>();
+        app.init_resource::<ScenarioFileWatchState>();
+        app.init_resource::<ScenarioMetadata>();
+        app.add_event::<ScenarioLoadedFromFile>();
+
+        app.add_systems(Update, parse_scenario_system);
+        app.update();
+        app.world_mut().resource_mut::<Events<ScenarioLoadedFromFile>>().clear();
+
+        {
+            let mut reg = app.world_mut().resource_mut::<InstrumentRegistry>();
+            reg.replace_all(&["NEW.T".to_string()]);
+            reg.editable = true;
+        }
+        {
+            let mut wb = app.world_mut().resource_mut::<ScenarioInstrumentsWritebackState>();
+            wb.revision = 1;
+            wb.flushed_revision = 0;
+        }
+
+        app.add_systems(Update, (writeback_scenario_instruments_system, parse_scenario_system).chain());
+        app.update();
+
+        let events = app.world().resource::<Events<ScenarioLoadedFromFile>>();
+        let mut cursor = events.get_cursor();
+        let collected: Vec<_> = cursor.read(events).collect();
+        assert!(
+            collected.is_empty(),
+            "writeback must transcribe last_mtime so parse_scenario_system does not refire ScenarioLoadedFromFile (got {} events)",
+            collected.len()
+        );
+    }
+
+    /// 計画書 §3.5 / §5.1: `handle_strategy_run_system` は RunStrategy 送信直前に
+    /// registry.editable && flush_sidecars_now() を実行する。
+    #[test]
+    fn test_run_inline_flush_writes_both_sidecars() {
+        use crate::trading::{TransportCommand, TransportCommandSender};
+        use crate::ui::components::StrategyRunRequested;
+        use crate::ui::menu_bar::handle_strategy_run_system;
+
+        let dir = tempfile::tempdir().unwrap();
+        let original_py = dir.path().join("strat.py");
+        let original_json = dir.path().join("strat.json");
+        let cache_sidecar = dir.path().join("cache_app_state.json");
+
+        fs::write(&original_py, "# dummy").unwrap();
+        let initial = r#"{"scenario": {"schema_version": 2, "instruments": ["OLD.T"], "start": "2025-01-06", "end": "2025-01-10", "granularity": "Daily", "initial_cash": 1000000}}"#;
+        fs::write(&original_json, initial).unwrap();
+        fs::write(&cache_sidecar, initial).unwrap();
+
+        let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel::<TransportCommand>();
+
+        let mut app = App::new();
+        app.add_event::<StrategyRunRequested>();
+        app.insert_resource(StrategyBuffer {
+            original_path: Some(original_py.clone()),
+            cache_path: None,
+            last_merged_source: None,
+        });
+        app.insert_resource(ScenarioWritebackPaths {
+            cache_sidecar: Some(cache_sidecar.clone()),
+        });
+        app.insert_resource(TransportCommandSender { tx });
+        app.init_resource::<InstrumentRegistry>();
+        app.insert_resource(ScenarioMetadata {
+            instruments: vec!["A.T".to_string(), "B.T".to_string()],
+            start: Some("2025-01-06".to_string()),
+            end: Some("2025-01-10".to_string()),
+            granularity: Some("Daily".to_string()),
+            initial_cash: Some(1_000_000),
+            ..Default::default()
+        });
+        {
+            let mut reg = app.world_mut().resource_mut::<InstrumentRegistry>();
+            reg.replace_all(&["A.T".to_string(), "B.T".to_string()]);
+            reg.editable = true;
+        }
+
+        app.add_systems(Update, handle_strategy_run_system);
+
+        app.world_mut().send_event(StrategyRunRequested {
+            cache_path: original_py.clone(),
+        });
+        app.update();
+
+        let updated_orig: serde_json::Value =
+            serde_json::from_str(&fs::read_to_string(&original_json).unwrap()).unwrap();
+        assert_eq!(
+            updated_orig["scenario"]["instruments"],
+            serde_json::json!(["A.T", "B.T"]),
+        );
+        let updated_cache: serde_json::Value =
+            serde_json::from_str(&fs::read_to_string(&cache_sidecar).unwrap()).unwrap();
+        assert_eq!(
+            updated_cache["scenario"]["instruments"],
+            serde_json::json!(["A.T", "B.T"]),
+        );
+
+        let cmd = rx.try_recv().expect("RunStrategy must be sent after flush");
+        match cmd {
+            TransportCommand::RunStrategy { strategy_file, .. } => {
+                assert_eq!(strategy_file, original_py);
+            }
+            other => panic!("expected RunStrategy, got {:?}", other),
+        }
+    }
+
+    /// 計画書 §3.5: inline flush は idempotent。
+    #[test]
+    fn test_run_inline_flush_is_idempotent() {
+        use crate::trading::{TransportCommand, TransportCommandSender};
+        use crate::ui::components::StrategyRunRequested;
+        use crate::ui::menu_bar::handle_strategy_run_system;
+
+        let dir = tempfile::tempdir().unwrap();
+        let original_py = dir.path().join("strat.py");
+        let original_json = dir.path().join("strat.json");
+        let cache_sidecar = dir.path().join("cache_app_state.json");
+
+        fs::write(&original_py, "# dummy").unwrap();
+        let already_flushed = r#"{"scenario": {"schema_version": 2, "instruments": ["A.T", "B.T"], "start": "2025-01-06", "end": "2025-01-10", "granularity": "Daily", "initial_cash": 1000000}}"#;
+        fs::write(&original_json, already_flushed).unwrap();
+        fs::write(&cache_sidecar, already_flushed).unwrap();
+
+        let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel::<TransportCommand>();
+
+        let mut app = App::new();
+        app.add_event::<StrategyRunRequested>();
+        app.insert_resource(StrategyBuffer {
+            original_path: Some(original_py.clone()),
+            cache_path: None,
+            last_merged_source: None,
+        });
+        app.insert_resource(ScenarioWritebackPaths {
+            cache_sidecar: Some(cache_sidecar.clone()),
+        });
+        app.insert_resource(TransportCommandSender { tx });
+        app.init_resource::<InstrumentRegistry>();
+        app.insert_resource(ScenarioMetadata {
+            instruments: vec!["A.T".to_string(), "B.T".to_string()],
+            start: Some("2025-01-06".to_string()),
+            end: Some("2025-01-10".to_string()),
+            granularity: Some("Daily".to_string()),
+            initial_cash: Some(1_000_000),
+            ..Default::default()
+        });
+        {
+            let mut reg = app.world_mut().resource_mut::<InstrumentRegistry>();
+            reg.replace_all(&["A.T".to_string(), "B.T".to_string()]);
+            reg.editable = true;
+        }
+
+        app.add_systems(Update, handle_strategy_run_system);
+
+        app.world_mut().send_event(StrategyRunRequested {
+            cache_path: original_py.clone(),
+        });
+        app.update();
+        let _ = rx.try_recv().expect("first RunStrategy must be sent");
+
+        app.world_mut().send_event(StrategyRunRequested {
+            cache_path: original_py.clone(),
+        });
+        app.update();
+        let cmd = rx.try_recv().expect("second RunStrategy must be sent (inline flush is idempotent)");
+        match cmd {
+            TransportCommand::RunStrategy { strategy_file, .. } => {
+                assert_eq!(strategy_file, original_py);
+            }
+            other => panic!("expected RunStrategy on second run, got {:?}", other),
+        }
+
+        let updated: serde_json::Value =
+            serde_json::from_str(&fs::read_to_string(&original_json).unwrap()).unwrap();
+        assert_eq!(
+            updated["scenario"]["instruments"],
+            serde_json::json!(["A.T", "B.T"]),
+        );
+    }
+
+    /// 計画書 §3.5: inline flush 失敗時は RunStrategy 未送信、event は消費。
+    #[test]
+    fn test_run_blocked_when_inline_flush_fails() {
+        use crate::trading::{TransportCommand, TransportCommandSender};
+        use crate::ui::components::StrategyRunRequested;
+        use crate::ui::menu_bar::handle_strategy_run_system;
+
+        let dir = tempfile::tempdir().unwrap();
+        let original_py = dir.path().join("strat.py");
+        fs::write(&original_py, "# dummy").unwrap();
+        // sibling json は作らない → read_to_string で NotFound → flush_sidecars_now が Err
+
+        let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel::<TransportCommand>();
+
+        let mut app = App::new();
+        app.add_event::<StrategyRunRequested>();
+        app.insert_resource(StrategyBuffer {
+            original_path: Some(original_py.clone()),
+            cache_path: None,
+            last_merged_source: None,
+        });
+        app.insert_resource(ScenarioWritebackPaths {
+            cache_sidecar: None,
+        });
+        app.insert_resource(TransportCommandSender { tx });
+        app.init_resource::<InstrumentRegistry>();
+        app.insert_resource(ScenarioMetadata {
+            instruments: vec!["A.T".to_string()],
+            start: Some("2025-01-06".to_string()),
+            end: Some("2025-01-10".to_string()),
+            granularity: Some("Daily".to_string()),
+            initial_cash: Some(1_000_000),
+            ..Default::default()
+        });
+        {
+            let mut reg = app.world_mut().resource_mut::<InstrumentRegistry>();
+            reg.replace_all(&["A.T".to_string()]);
+            reg.editable = true;
+        }
+
+        app.add_systems(Update, handle_strategy_run_system);
+
+        app.world_mut().send_event(StrategyRunRequested {
+            cache_path: original_py.clone(),
+        });
+        app.update();
+
+        assert!(
+            rx.try_recv().is_err(),
+            "RunStrategy must NOT be sent when inline flush fails"
+        );
+
+        app.update();
+        assert!(
+            rx.try_recv().is_err(),
+            "event must be drained even on flush failure (no replay on next tick)"
+        );
+    }
+
+    /// 計画書 §3.5 退化検知: handler は registry.is_changed() ガードを入れない。
+    #[test]
+    fn test_run_does_not_use_is_changed_guard() {
+        use crate::trading::{TransportCommand, TransportCommandSender};
+        use crate::ui::components::StrategyRunRequested;
+        use crate::ui::menu_bar::handle_strategy_run_system;
+
+        let dir = tempfile::tempdir().unwrap();
+        let original_py = dir.path().join("strat.py");
+        let original_json = dir.path().join("strat.json");
+        fs::write(&original_py, "# dummy").unwrap();
+        let initial = r#"{"scenario": {"schema_version": 2, "instruments": ["OLD.T"], "start": "2025-01-06", "end": "2025-01-10", "granularity": "Daily", "initial_cash": 1000000}}"#;
+        fs::write(&original_json, initial).unwrap();
+
+        let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel::<TransportCommand>();
+
+        let mut app = App::new();
+        app.add_event::<StrategyRunRequested>();
+        app.insert_resource(StrategyBuffer {
+            original_path: Some(original_py.clone()),
+            cache_path: None,
+            last_merged_source: None,
+        });
+        app.insert_resource(ScenarioWritebackPaths {
+            cache_sidecar: None,
+        });
+        app.insert_resource(TransportCommandSender { tx });
+        app.init_resource::<InstrumentRegistry>();
+        app.insert_resource(ScenarioMetadata {
+            instruments: vec!["NEW.T".to_string()],
+            start: Some("2025-01-06".to_string()),
+            end: Some("2025-01-10".to_string()),
+            granularity: Some("Daily".to_string()),
+            initial_cash: Some(1_000_000),
+            ..Default::default()
+        });
+
+        app.add_systems(Update, handle_strategy_run_system);
+
+        app.update();
+
+        {
+            let mut reg = app.world_mut().resource_mut::<InstrumentRegistry>();
+            reg.replace_all(&["NEW.T".to_string()]);
+            reg.editable = true;
+        }
+        app.world_mut().send_event(StrategyRunRequested {
+            cache_path: original_py.clone(),
+        });
+        app.update();
+
+        let cmd = rx.try_recv().expect(
+            "RunStrategy must be sent even when registry was just mutated in the same tick",
+        );
+        match cmd {
+            TransportCommand::RunStrategy { strategy_file, .. } => {
+                assert_eq!(strategy_file, original_py);
+            }
+            other => panic!("expected RunStrategy, got {:?}", other),
+        }
+    }
+}
