@@ -1,4 +1,7 @@
-use crate::trading::{StrategyRunConfig, TransportCommand, TransportCommandSender};
+use crate::trading::{
+    LastRunResult, RunState, StrategyRunConfig, TradingData, TransportCommand,
+    TransportCommandSender,
+};
 use crate::ui::components::ScenarioMetadata;
 use crate::ui::components::{
     InstrumentRegistry, MenuBarRoot, MenuItem, MenuPopup, MenuTopLevel, OpenMenu, PanelKind,
@@ -11,6 +14,7 @@ use crate::ui::layout_persistence::{
     CacheRestoreRequested, LayoutLoadDialogRequested, LayoutLoadRequested, LayoutSaveAsRequested,
     LayoutSaveRequested, SidecarLayout,
 };
+use crate::replay::{ReplayStartupPhase, ReplayStartupProgress};
 use crate::ui::strategy_editor::split_py_into_fragments;
 use bevy::input::keyboard::KeyboardInput;
 use bevy::prelude::*;
@@ -544,12 +548,17 @@ pub fn log_strategy_run_requested_system(mut events: EventReader<StrategyRunRequ
     }
 }
 
+#[allow(clippy::too_many_arguments)]
 pub fn handle_strategy_run_system(
     mut events: EventReader<StrategyRunRequested>,
     scenario: Res<ScenarioMetadata>,
     sender: Option<Res<TransportCommandSender>>,
     registry: Res<InstrumentRegistry>,
     paths: Res<ScenarioWritebackPaths>,
+    mut progress: ResMut<ReplayStartupProgress>,
+    trading_data: Res<TradingData>,
+    real_time: Res<Time<Real>>,
+    mut last_run: ResMut<LastRunResult>,
 ) {
     for event in events.read() {
         if scenario.instruments.is_empty() {
@@ -596,17 +605,39 @@ pub fn handle_strategy_run_system(
             run_config.granularity
         );
 
+        let startup_id = progress.next_startup_id;
+
         let cmd = TransportCommand::RunStrategy {
             strategy_file: event.cache_path.clone(),
             config: run_config,
+            startup_id,
         };
-        if let Some(sender) = &sender {
-            if let Err(e) = sender.tx.send(cmd) {
-                error!("failed to send RunStrategy command: {}", e);
-            }
-        } else {
+
+        let Some(sender) = sender.as_ref() else {
             error!("RunStrategy: TransportCommandSender is None — backend not connected");
+            continue;
+        };
+        if let Err(e) = sender.tx.send(cmd) {
+            error!("failed to send RunStrategy command: {}", e);
+            continue;
         }
+
+        // 送信成功後に progress を更新（失敗時は触らない）
+        let detail = event
+            .cache_path
+            .file_name()
+            .and_then(|s| s.to_str())
+            .map(|s| s.to_string());
+        progress.next_startup_id = startup_id.wrapping_add(1);
+        progress.startup_id = startup_id;
+        progress.visible = true;
+        progress.phase = ReplayStartupPhase::CommandAccepted;
+        progress.detail = detail;
+        progress.error = None;
+        progress.started_at_elapsed = Some(real_time.elapsed());
+        progress.baseline_timestamp_ms = Some(trading_data.timestamp_ms);
+        progress.start_engine_accepted = false;
+        last_run.state = RunState::Running;
     }
 }
 
@@ -762,5 +793,104 @@ mod tests {
             !cache_sidecar.exists(),
             "stale cache sidecar should be removed when original is deleted"
         );
+    }
+
+    // --- Step D tests ---
+
+    fn make_valid_scenario() -> ScenarioMetadata {
+        ScenarioMetadata {
+            schema_version: Some(1),
+            instruments: vec!["7203.TSE".to_string()],
+            start: Some("2024-01-01".to_string()),
+            end: Some("2024-01-02".to_string()),
+            granularity: Some("1m".to_string()),
+            initial_cash: Some(1_000_000),
+        }
+    }
+
+    fn build_app_for_run(
+        scenario: ScenarioMetadata,
+        with_sender: bool,
+    ) -> (App, Option<tokio::sync::mpsc::UnboundedReceiver<TransportCommand>>) {
+        let mut app = App::new();
+        app.init_resource::<Time<Real>>();
+        app.insert_resource(scenario);
+        app.insert_resource(InstrumentRegistry::default());
+        app.insert_resource(ScenarioWritebackPaths::default());
+        app.init_resource::<ReplayStartupProgress>();
+        app.insert_resource(TradingData::default());
+        app.insert_resource(LastRunResult::default());
+        app.add_event::<StrategyRunRequested>();
+        app.add_systems(Update, handle_strategy_run_system);
+
+        let rx = if with_sender {
+            let (tx, rx) = tokio::sync::mpsc::unbounded_channel::<TransportCommand>();
+            app.insert_resource(TransportCommandSender { tx });
+            Some(rx)
+        } else {
+            None
+        };
+        (app, rx)
+    }
+
+    #[test]
+    fn test_handle_strategy_run_writes_progress_on_send_success() {
+        let (mut app, mut rx) = build_app_for_run(make_valid_scenario(), true);
+        app.world_mut()
+            .send_event(StrategyRunRequested {
+                cache_path: std::path::PathBuf::from("/tmp/foo.py"),
+            });
+        app.update();
+
+        let progress = app.world().resource::<ReplayStartupProgress>();
+        assert!(progress.visible, "progress should be visible after success");
+        assert_eq!(progress.phase, ReplayStartupPhase::CommandAccepted);
+        assert_eq!(progress.startup_id, 0);
+        assert_eq!(progress.next_startup_id, 1);
+        assert!(progress.error.is_none());
+        assert!(!progress.start_engine_accepted);
+
+        let last_run = app.world().resource::<LastRunResult>();
+        assert!(matches!(last_run.state, RunState::Running));
+
+        let rx = rx.as_mut().unwrap();
+        let cmd = rx.try_recv().expect("RunStrategy command should be sent");
+        match cmd {
+            TransportCommand::RunStrategy { startup_id, .. } => {
+                assert_eq!(startup_id, 0);
+            }
+            other => panic!("unexpected command: {:?}", other),
+        }
+    }
+
+    #[test]
+    fn test_handle_strategy_run_no_sender_keeps_progress_idle() {
+        let (mut app, _rx) = build_app_for_run(make_valid_scenario(), false);
+        app.world_mut()
+            .send_event(StrategyRunRequested {
+                cache_path: std::path::PathBuf::from("/tmp/foo.py"),
+            });
+        app.update();
+
+        let progress = app.world().resource::<ReplayStartupProgress>();
+        assert!(!progress.visible);
+        assert_eq!(progress.phase, ReplayStartupPhase::Idle);
+
+        let last_run = app.world().resource::<LastRunResult>();
+        assert!(matches!(last_run.state, RunState::Idle));
+    }
+
+    #[test]
+    fn test_handle_strategy_run_invalid_scenario_keeps_progress_idle() {
+        let (mut app, _rx) = build_app_for_run(ScenarioMetadata::default(), true);
+        app.world_mut()
+            .send_event(StrategyRunRequested {
+                cache_path: std::path::PathBuf::from("/tmp/foo.py"),
+            });
+        app.update();
+
+        let progress = app.world().resource::<ReplayStartupProgress>();
+        assert!(!progress.visible);
+        assert_eq!(progress.phase, ReplayStartupPhase::Idle);
     }
 }

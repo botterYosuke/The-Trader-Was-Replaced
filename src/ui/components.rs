@@ -2243,6 +2243,7 @@ mod writeback_scenario_instruments_tests {
             TransportCommand::RunStrategy {
                 strategy_file,
                 config,
+                startup_id: _,
             } => {
                 assert_eq!(strategy_file, py_path);
                 assert_eq!(

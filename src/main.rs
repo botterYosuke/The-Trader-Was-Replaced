@@ -6,6 +6,7 @@ use backcast::trading::{
     TransportCommand, TransportCommandSender, backend_update_system, engine, parse_summary_json,
     price_simulation_system,
 };
+use backcast::replay::{ReplayStartupPhase, ReplayStartupProgress};
 use backcast::ui::UiPlugin;
 use bevy::prelude::*;
 use bevy_pancam::{PanCamPlugin, PanCamSystemSet};
@@ -23,6 +24,14 @@ use tokio::sync::mpsc;
 // so we capture the handle here (before App::run takes over) and pass it as a resource.
 #[derive(Resource, Clone)]
 struct TokioHandle(tokio::runtime::Handle);
+
+fn parse_replay_granularity(s: &str) -> Result<i32, String> {
+    match s {
+        "Daily" => Ok(ReplayGranularity::Daily as i32),
+        "Minute" => Ok(ReplayGranularity::Minute as i32),
+        other => Err(format!("unknown granularity: {:?}", other)),
+    }
+}
 
 #[tokio::main]
 async fn main() {
@@ -42,6 +51,7 @@ async fn main() {
         .insert_resource(TradingSettings::default())
         .insert_resource(BackendStatus::default())
         .insert_resource(LastRunResult::default())
+        .init_resource::<ReplayStartupProgress>()
         .insert_resource(AvailableInstruments::default())
         .insert_resource(PortfolioState::default())
         .insert_resource(ReplaySpeed::default())
@@ -65,16 +75,29 @@ struct StatusUpdateChannel {
     rx: mpsc::UnboundedReceiver<BackendStatusUpdate>,
 }
 
+enum BackendStartupStage {
+    ResettingReplay,
+    LoadingData,
+    StartingStrategy,
+    WaitingForFirstTick,
+}
+
 enum BackendStatusUpdate {
     Connected(bool),
     Running(bool),
     Error(String),
     RunStarted,
+    ReplayStartup {
+        startup_id: u64,
+        stage: BackendStartupStage,
+    },
     RunComplete {
+        startup_id: Option<u64>,
         run_id: String,
         summary_json: String,
     },
     RunFailed {
+        startup_id: Option<u64>,
         error: String,
     },
     PortfolioLoaded {
@@ -100,51 +123,104 @@ fn status_update_system(
     mut last_run: ResMut<LastRunResult>,
     mut portfolio: ResMut<PortfolioState>,
     mut available: ResMut<AvailableInstruments>,
+    mut progress: ResMut<ReplayStartupProgress>,
 ) {
     while let Ok(update) = channel.rx.try_recv() {
-        match update {
-            BackendStatusUpdate::Connected(c) => status.connected = c,
-            BackendStatusUpdate::Running(r) => status.running = r,
-            BackendStatusUpdate::Error(e) => {
-                status.last_error = Some(e);
-                status.connected = false;
+        apply_status_update(
+            update,
+            &mut status,
+            &mut last_run,
+            &mut portfolio,
+            &mut available,
+            &mut progress,
+        );
+    }
+}
+
+fn apply_status_update(
+    update: BackendStatusUpdate,
+    status: &mut BackendStatus,
+    last_run: &mut LastRunResult,
+    portfolio: &mut PortfolioState,
+    available: &mut AvailableInstruments,
+    progress: &mut ReplayStartupProgress,
+) {
+    match update {
+        BackendStatusUpdate::Connected(c) => status.connected = c,
+        BackendStatusUpdate::Running(r) => status.running = r,
+        BackendStatusUpdate::Error(e) => {
+            status.last_error = Some(e);
+            status.connected = false;
+        }
+        BackendStatusUpdate::RunStarted => {
+            last_run.state = RunState::Running;
+        }
+        BackendStatusUpdate::ReplayStartup { startup_id, stage } => {
+            if progress.visible && progress.startup_id == startup_id {
+                progress.phase = match stage {
+                    BackendStartupStage::ResettingReplay => ReplayStartupPhase::ResettingReplay,
+                    BackendStartupStage::LoadingData => ReplayStartupPhase::LoadingData,
+                    BackendStartupStage::StartingStrategy => ReplayStartupPhase::StartingStrategy,
+                    BackendStartupStage::WaitingForFirstTick => {
+                        ReplayStartupPhase::WaitingForFirstTick
+                    }
+                };
+                if matches!(stage, BackendStartupStage::WaitingForFirstTick) {
+                    progress.start_engine_accepted = true;
+                }
             }
-            BackendStatusUpdate::RunStarted => {
-                last_run.state = RunState::Running;
+        }
+        BackendStatusUpdate::RunComplete {
+            startup_id,
+            run_id,
+            summary_json,
+        } => {
+            info!("RunComplete: run_id={} summary={}", run_id, summary_json);
+            last_run.parsed_summary = parse_summary_json(&summary_json);
+            last_run.run_id = Some(run_id);
+            last_run.summary_json = Some(summary_json);
+            last_run.state = RunState::Completed;
+
+            if let Some(sid) = startup_id
+                && progress.visible
+                && progress.startup_id == sid
+            {
+                progress.visible = false;
+                progress.phase = ReplayStartupPhase::Idle;
+                progress.detail = None;
+                progress.baseline_timestamp_ms = None;
+                progress.started_at_elapsed = None;
+                progress.start_engine_accepted = false;
             }
-            BackendStatusUpdate::RunComplete {
-                run_id,
-                summary_json,
-            } => {
-                info!("RunComplete: run_id={} summary={}", run_id, summary_json);
-                last_run.parsed_summary = parse_summary_json(&summary_json);
-                last_run.run_id = Some(run_id);
-                last_run.summary_json = Some(summary_json);
-                last_run.state = RunState::Completed;
+        }
+        BackendStatusUpdate::RunFailed { startup_id, error } => {
+            if let Some(sid) = startup_id
+                && progress.visible
+                && progress.startup_id == sid
+            {
+                progress.error = Some(error.clone());
             }
-            BackendStatusUpdate::RunFailed { error } => {
-                last_run.state = RunState::Failed { error };
-            }
-            BackendStatusUpdate::PortfolioLoaded {
-                buying_power,
-                cash,
-                equity,
-                positions,
-                orders,
-            } => {
-                portfolio.buying_power = buying_power;
-                portfolio.cash = cash;
-                portfolio.equity = equity;
-                portfolio.positions = positions;
-                portfolio.orders = orders;
-                portfolio.loaded = true;
-            }
-            BackendStatusUpdate::AvailableInstrumentsLoaded { end_date, ids } => {
-                apply_available_loaded(&mut available, end_date, ids);
-            }
-            BackendStatusUpdate::AvailableInstrumentsFetchFailed { end_date, error } => {
-                apply_available_failed(&mut available, end_date, error);
-            }
+            last_run.state = RunState::Failed { error };
+        }
+        BackendStatusUpdate::PortfolioLoaded {
+            buying_power,
+            cash,
+            equity,
+            positions,
+            orders,
+        } => {
+            portfolio.buying_power = buying_power;
+            portfolio.cash = cash;
+            portfolio.equity = equity;
+            portfolio.positions = positions;
+            portfolio.orders = orders;
+            portfolio.loaded = true;
+        }
+        BackendStatusUpdate::AvailableInstrumentsLoaded { end_date, ids } => {
+            apply_available_loaded(available, end_date, ids);
+        }
+        BackendStatusUpdate::AvailableInstrumentsFetchFailed { end_date, error } => {
+            apply_available_failed(available, end_date, error);
         }
     }
 }
@@ -274,7 +350,7 @@ fn setup_backend_connection(
                             Err(e) => error!("SetReplaySpeed {}x failed: {}", mult, e),
                         }
                     }
-                    TransportCommand::RunStrategy { strategy_file, config } => {
+                    TransportCommand::RunStrategy { strategy_file, config, startup_id } => {
                         // Spawn on a separate task so the main loop can process
                         // Pause/Resume/StepForward while StartEngine is running.
                         let mut run_client = client.clone();
@@ -285,16 +361,45 @@ fn setup_backend_connection(
                             let strategy_file_str = strategy_file.to_string_lossy().to_string();
 
                             // Step 0: ForceStop to ensure IDLE before LoadReplayData
-                            let _ = run_client.force_stop_replay(tonic::Request::new(ForceStopReplayRequest {
+                            let _ = run_status_tx.send(BackendStatusUpdate::ReplayStartup {
+                                startup_id, stage: BackendStartupStage::ResettingReplay,
+                            });
+                            match run_client.force_stop_replay(tonic::Request::new(ForceStopReplayRequest {
                                 request_id: String::new(),
                                 token: run_token.clone(),
-                            })).await;
+                            })).await {
+                                Ok(r) => {
+                                    let inner = r.into_inner();
+                                    if !inner.success {
+                                        let msg = format!("ForceStopReplay: {} {}", inner.error_code, inner.error_message);
+                                        error!("{}", msg);
+                                        let _ = run_status_tx.send(BackendStatusUpdate::RunFailed {
+                                            startup_id: Some(startup_id),
+                                            error: msg,
+                                        });
+                                        return;
+                                    }
+                                    info!("ForceStopReplay ok");
+                                }
+                                Err(e) => {
+                                    let msg = format!("ForceStopReplay gRPC error: {}", e);
+                                    error!("{}", msg);
+                                    let _ = run_status_tx.send(BackendStatusUpdate::RunFailed {
+                                        startup_id: Some(startup_id),
+                                        error: msg,
+                                    });
+                                    return;
+                                }
+                            }
 
-                            let granularity_i32 = match config.granularity.as_str() {
-                                "Daily"  => Some(ReplayGranularity::Daily as i32),
-                                "Minute" => Some(ReplayGranularity::Minute as i32),
-                                other => {
-                                    error!("RunStrategy: unknown granularity {:?}, aborting", other);
+                            let granularity_i32 = match parse_replay_granularity(&config.granularity) {
+                                Ok(v) => Some(v),
+                                Err(msg) => {
+                                    error!("RunStrategy: {}, aborting", msg);
+                                    let _ = run_status_tx.send(BackendStatusUpdate::RunFailed {
+                                        startup_id: Some(startup_id),
+                                        error: msg,
+                                    });
                                     return;
                                 }
                             };
@@ -304,6 +409,9 @@ fn setup_backend_connection(
                                 config.instruments, config.start, config.end, config.granularity, run_catalog
                             );
                             let _ = run_status_tx.send(BackendStatusUpdate::RunStarted);
+                            let _ = run_status_tx.send(BackendStatusUpdate::ReplayStartup {
+                                startup_id, stage: BackendStartupStage::LoadingData,
+                            });
 
                             // Step 1: LoadReplayData (IDLE → LOADED)
                             let load_req = tonic::Request::new(LoadReplayDataRequest {
@@ -322,7 +430,7 @@ fn setup_backend_connection(
                                     if !inner.success {
                                         let msg = format!("LoadReplayData: {} {}", inner.error_code, inner.error_message);
                                         error!("{}", msg);
-                                        let _ = run_status_tx.send(BackendStatusUpdate::RunFailed { error: msg });
+                                        let _ = run_status_tx.send(BackendStatusUpdate::RunFailed { startup_id: Some(startup_id), error: msg });
                                         return;
                                     }
                                     info!("LoadReplayData ok, state={:?}", inner.current_state);
@@ -330,13 +438,16 @@ fn setup_backend_connection(
                                 Err(e) => {
                                     let msg = format!("LoadReplayData gRPC error: {}", e);
                                     error!("{}", msg);
-                                    let _ = run_status_tx.send(BackendStatusUpdate::RunFailed { error: msg });
+                                    let _ = run_status_tx.send(BackendStatusUpdate::RunFailed { startup_id: Some(startup_id), error: msg });
                                     return;
                                 }
                             }
 
                             // Step 2: StartEngine (LOADED → RUNNING → COMPLETED)
                             info!("RunStrategy: step2 StartEngine strategy_file={:?}", strategy_file_str);
+                            let _ = run_status_tx.send(BackendStatusUpdate::ReplayStartup {
+                                startup_id, stage: BackendStartupStage::StartingStrategy,
+                            });
                             let start_req = tonic::Request::new(StartEngineRequest {
                                 request_id: String::new(),
                                 engine: EngineKind::Nautilus as i32,
@@ -360,8 +471,12 @@ fn setup_backend_connection(
                                     let inner: StartEngineResponse = r.into_inner();
                                     if inner.success {
                                         info!("StartEngine ok, state={:?}", inner.current_state);
+                                        let _ = run_status_tx.send(BackendStatusUpdate::ReplayStartup {
+                                            startup_id, stage: BackendStartupStage::WaitingForFirstTick,
+                                        });
                                         if let (Some(rid), Some(sj)) = (inner.run_id.as_deref(), inner.summary_json.as_deref()) {
                                             let _ = run_status_tx.send(BackendStatusUpdate::RunComplete {
+                                                startup_id: Some(startup_id),
                                                 run_id: rid.to_owned(),
                                                 summary_json: sj.to_owned(),
                                             });
@@ -405,13 +520,13 @@ fn setup_backend_connection(
                                             inner.error_message.as_deref().unwrap_or(""),
                                         );
                                         error!("{}", msg);
-                                        let _ = run_status_tx.send(BackendStatusUpdate::RunFailed { error: msg });
+                                        let _ = run_status_tx.send(BackendStatusUpdate::RunFailed { startup_id: Some(startup_id), error: msg });
                                     }
                                 }
                                 Err(e) => {
                                     let msg = format!("StartEngine gRPC error: {}", e);
                                     error!("{}", msg);
-                                    let _ = run_status_tx.send(BackendStatusUpdate::RunFailed { error: msg });
+                                    let _ = run_status_tx.send(BackendStatusUpdate::RunFailed { startup_id: Some(startup_id), error: msg });
                                 }
                             }
                         });
@@ -504,12 +619,42 @@ fn setup_backend_connection(
 
 #[cfg(test)]
 mod tests {
-    use super::{apply_available_failed, apply_available_loaded};
-    use backcast::trading::AvailableInstruments;
+    use super::{
+        BackendStartupStage, BackendStatusUpdate, ReplayGranularity, ReplayStartupPhase,
+        ReplayStartupProgress, apply_available_failed, apply_available_loaded,
+        apply_status_update, parse_replay_granularity,
+    };
+    use backcast::trading::{
+        AvailableInstruments, BackendStatus, LastRunResult, PortfolioState, RunState,
+    };
     use chrono::NaiveDate;
 
     fn d(s: &str) -> NaiveDate {
         NaiveDate::parse_from_str(s, "%Y-%m-%d").unwrap()
+    }
+
+    fn fresh_progress(startup_id: u64, visible: bool) -> ReplayStartupProgress {
+        ReplayStartupProgress {
+            visible,
+            startup_id,
+            ..ReplayStartupProgress::default()
+        }
+    }
+
+    fn apply(update: BackendStatusUpdate, progress: &mut ReplayStartupProgress) -> LastRunResult {
+        let mut status = BackendStatus::default();
+        let mut last_run = LastRunResult::default();
+        let mut portfolio = PortfolioState::default();
+        let mut available = AvailableInstruments::default();
+        apply_status_update(
+            update,
+            &mut status,
+            &mut last_run,
+            &mut portfolio,
+            &mut available,
+            progress,
+        );
+        last_run
     }
 
     #[test]
@@ -554,5 +699,193 @@ mod tests {
             Some(["NEW1".to_string(), "NEW2".to_string()].as_slice()),
         );
         assert!(!av.in_flight.contains(&date));
+    }
+
+    // --- ReplayStartup arm (#3, #3b, #3c, #3d) ---
+
+    #[test]
+    fn apply_replay_startup_phase_when_matching() {
+        let mut progress = fresh_progress(7, true);
+        apply(
+            BackendStatusUpdate::ReplayStartup {
+                startup_id: 7,
+                stage: BackendStartupStage::LoadingData,
+            },
+            &mut progress,
+        );
+        assert_eq!(progress.phase, ReplayStartupPhase::LoadingData);
+        assert!(!progress.start_engine_accepted);
+    }
+
+    #[test]
+    fn apply_replay_startup_ignored_when_not_visible() {
+        let mut progress = fresh_progress(7, false);
+        apply(
+            BackendStatusUpdate::ReplayStartup {
+                startup_id: 7,
+                stage: BackendStartupStage::LoadingData,
+            },
+            &mut progress,
+        );
+        assert_eq!(progress.phase, ReplayStartupPhase::Idle);
+    }
+
+    #[test]
+    fn apply_replay_startup_ignored_when_startup_id_mismatch() {
+        let mut progress = fresh_progress(7, true);
+        apply(
+            BackendStatusUpdate::ReplayStartup {
+                startup_id: 9,
+                stage: BackendStartupStage::LoadingData,
+            },
+            &mut progress,
+        );
+        assert_eq!(progress.phase, ReplayStartupPhase::Idle);
+    }
+
+    #[test]
+    fn apply_replay_startup_waiting_sets_start_engine_accepted() {
+        let mut progress = fresh_progress(7, true);
+        apply(
+            BackendStatusUpdate::ReplayStartup {
+                startup_id: 7,
+                stage: BackendStartupStage::WaitingForFirstTick,
+            },
+            &mut progress,
+        );
+        assert_eq!(progress.phase, ReplayStartupPhase::WaitingForFirstTick);
+        assert!(progress.start_engine_accepted);
+    }
+
+    // --- RunFailed arm (#4, #4b, #4c) ---
+
+    #[test]
+    fn apply_run_failed_sets_progress_error_when_matching() {
+        let mut progress = fresh_progress(7, true);
+        let last_run = apply(
+            BackendStatusUpdate::RunFailed {
+                startup_id: Some(7),
+                error: "boom".into(),
+            },
+            &mut progress,
+        );
+        assert_eq!(progress.error.as_deref(), Some("boom"));
+        assert_eq!(
+            last_run.state,
+            RunState::Failed {
+                error: "boom".into()
+            }
+        );
+    }
+
+    #[test]
+    fn apply_run_failed_with_none_startup_id_only_updates_last_run() {
+        let mut progress = fresh_progress(7, true);
+        let last_run = apply(
+            BackendStatusUpdate::RunFailed {
+                startup_id: None,
+                error: "boom".into(),
+            },
+            &mut progress,
+        );
+        assert!(progress.error.is_none());
+        assert_eq!(
+            last_run.state,
+            RunState::Failed {
+                error: "boom".into()
+            }
+        );
+    }
+
+    #[test]
+    fn apply_run_failed_with_mismatched_startup_id_ignored() {
+        let mut progress = fresh_progress(7, true);
+        let last_run = apply(
+            BackendStatusUpdate::RunFailed {
+                startup_id: Some(9),
+                error: "boom".into(),
+            },
+            &mut progress,
+        );
+        assert!(progress.error.is_none());
+        assert_eq!(
+            last_run.state,
+            RunState::Failed {
+                error: "boom".into()
+            }
+        );
+    }
+
+    // --- RunComplete arm (#7, #7b) ---
+
+    #[test]
+    fn apply_run_complete_resets_progress_when_matching() {
+        let mut progress = ReplayStartupProgress {
+            visible: true,
+            startup_id: 7,
+            phase: ReplayStartupPhase::WaitingForFirstTick,
+            detail: Some("loading".into()),
+            baseline_timestamp_ms: Some(1234),
+            started_at_elapsed: Some(std::time::Duration::from_secs(1)),
+            start_engine_accepted: true,
+            ..ReplayStartupProgress::default()
+        };
+        apply(
+            BackendStatusUpdate::RunComplete {
+                startup_id: Some(7),
+                run_id: "r1".into(),
+                summary_json: "{}".into(),
+            },
+            &mut progress,
+        );
+        assert!(!progress.visible);
+        assert_eq!(progress.phase, ReplayStartupPhase::Idle);
+        assert!(progress.detail.is_none());
+        assert!(progress.baseline_timestamp_ms.is_none());
+        assert!(progress.started_at_elapsed.is_none());
+        assert!(!progress.start_engine_accepted);
+    }
+
+    #[test]
+    fn apply_run_complete_with_stale_startup_id_keeps_progress() {
+        let mut progress = ReplayStartupProgress {
+            visible: true,
+            startup_id: 7,
+            phase: ReplayStartupPhase::WaitingForFirstTick,
+            start_engine_accepted: true,
+            ..ReplayStartupProgress::default()
+        };
+        apply(
+            BackendStatusUpdate::RunComplete {
+                startup_id: Some(9),
+                run_id: "r1".into(),
+                summary_json: "{}".into(),
+            },
+            &mut progress,
+        );
+        assert!(progress.visible);
+        assert_eq!(progress.phase, ReplayStartupPhase::WaitingForFirstTick);
+        assert!(progress.start_engine_accepted);
+    }
+
+    #[test]
+    fn parse_replay_granularity_daily() {
+        assert_eq!(parse_replay_granularity("Daily").unwrap(), ReplayGranularity::Daily as i32);
+    }
+
+    #[test]
+    fn parse_replay_granularity_minute() {
+        assert_eq!(parse_replay_granularity("Minute").unwrap(), ReplayGranularity::Minute as i32);
+    }
+
+    #[test]
+    fn parse_replay_granularity_unknown_returns_err() {
+        let err = parse_replay_granularity("Hourly").unwrap_err();
+        assert!(err.contains("Hourly"));
+    }
+
+    #[test]
+    fn parse_replay_granularity_empty_returns_err() {
+        assert!(parse_replay_granularity("").is_err());
     }
 }
