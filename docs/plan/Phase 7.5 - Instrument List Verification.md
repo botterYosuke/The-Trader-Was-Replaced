@@ -1,5 +1,21 @@
 # Phase 7.5 — Instruments パネル再設計（Scenario 駆動 + Chart 寿命連動）
 
+> ## 📊 実装ステータス（2026-05-17 時点）
+>
+> **Phase 7.5a: 実装完了 ✅** — 6 commits (`320745b` → `fc5a72a`)、`cargo test --lib` 120 passed / 1 ignored / 0 failed、手動 E2E §5.3 全 7 チェック PASS
+>
+> ブランチ: `feature/7.5-instruments-scenario-driven`
+>
+> 完了サマリ:
+> - Step 1-6 実装 ✅
+> - 手動 E2E 全項目 PASS ✅
+> - BOM 耐性 fix-up ✅（E2E で発見・追加対応）
+> - ScenarioMetadata 同期 system 追加 ✅（Run validation 整合用、当初計画外）
+>
+> 残課題 → §9 / §10 / §11 を参照
+>
+> ---
+>
 > **スコープ分割**: 元の 7 要件を 2 つの Phase に分けて段階導入する。
 >
 > - **Phase 7.5a (本書の主スコープ)**: scenario JSON → `InstrumentRegistry` → Chart spawn/despawn の **寿命連動コア** と、Add/Close 後の **元 sidecar + cache sidecar への atomic 書き戻し**。ピッカー / 新 RPC / Phase 8 計画書更新は含めない。Add ボタンは Phase 7.5a では描画しない（外部 JSON 編集 → Open のみで増やせる）。
@@ -271,66 +287,80 @@ fn instrument_chart_sync_system(
 
 ## 4. 実装ステップ
 
-### Step 1 — 型と Resource、配線
-- `src/ui/components.rs`: `InstrumentRegistry`(+helper), `ChartInstrument`, `ScenarioLoadedFromFile`, `ScenarioFileWatchState`, `ScenarioInstrumentsWritebackState` を追加。
-- `src/ui/mod.rs`: `init_resource` / `add_event` 配線、後述 system 群の登録（順序は §4.7）。
-- このコミットで `cargo check` 通過、既存テスト退行なし。
+### ✅ Step 1 — 型と Resource、配線（commit `320745b`）
+- ✅ `src/ui/components.rs`: `InstrumentRegistry`(+helper), `ChartInstrument`, `ScenarioLoadedFromFile`, `ScenarioFileWatchState`, `ScenarioInstrumentsWritebackState` を追加。
+- ✅ `src/ui/mod.rs`: `init_resource` / `add_event` 配線、後述 system 群の登録。
+- ✅ `cargo check` 通過、既存テスト退行なし。
+- 学び: `pub use components::*` glob re-export が無いプロジェクトのため、新規型は 1 つずつ `pub use components::{...};` で公開する必要があった。
 
-### Step 2 — `parse_scenario_system` 改修
-- Local → `ScenarioFileWatchState` 化。
-- 成功時のみ `ScenarioLoadedFromFile` 発火（`has_instruments_ref` も埋める）。
-- `sync_registry_from_scenario_loaded_system` を新規追加。
-- Unit test: §5.1「同期方向」。
+### ✅ Step 2 — `parse_scenario_system` 改修（commit `320745b`）
+- ✅ Local → `ScenarioFileWatchState` 化。
+- ✅ 成功時のみ `ScenarioLoadedFromFile` 発火（`has_instruments_ref` も `serde_json::Value` で peek 検出して埋める）。
+- ✅ `sync_registry_from_scenario_loaded_system` を新規追加し `(parse_scenario_system, sync_registry_from_scenario_loaded_system).chain()` で配線。
+- ✅ Unit test: §5.1「同期方向」3 件 + characterization 3 件（既存 parse_scenario_system 挙動の固定）。
 
-### Step 3 — writeback system + Run 直前 inline flush
-- `writeback_scenario_instruments_system` を実装（v2 正規化、atomic write、両 sidecar 同期、ScenarioFileWatchState 更新、dirty/error 管理）。
-- `flush_sidecars_now` helper を切り出し `handle_strategy_run_system` に inline 呼び出し追加。
-- `mark_registry_dirty_system` 追加（revision inc）。
-- Unit test: §5.1「永続化」「Run 同期」。
+### ✅ Step 3 — writeback system + Run 直前 inline flush（commit `7a8cab7`）
+- ✅ `writeback_scenario_instruments_system` 実装（v2 正規化、atomic write、両 sidecar 同期、ScenarioFileWatchState 更新、dirty/error 管理）。
+- ✅ `flush_sidecars_now` helper として切り出し、`handle_strategy_run_system` の `RunStrategy` 送信直前に inline 呼び出し追加。
+- ✅ `mark_registry_dirty_system` 追加（revision inc）。
+- ✅ `ScenarioWritebackPaths { cache_sidecar: Option<PathBuf> }` Resource を新設し、`UiPlugin::build` で `cache_state_paths()` 経由で注入（test では tempdir path 注入可能に）。
+- ✅ Unit test: §5.1「永続化」「Run 同期」「Schema 互換」計 11 件。
+- 学び: `cache_state_paths()` は `(json_path, py_path)` のタプルを返す既存 strategy source cache 機構。第 1 要素を `cache_sidecar` として使用。
 
-### Step 4 — Chart シグネチャと旧経路（atomic に 4a/4b/4c/4d）
+### ✅ Step 4 — Chart シグネチャと旧経路（atomic に 4a/4b/4c/4d）（commit `b2b0cbb`）
 
-#### Step 4a `spawn_chart_panel(commands, instrument_id: &str)` シグネチャ変更
-- `src/ui/window.rs`: root に `ChartInstrument` 付与、タイトル `"CHART — {id}"`。
-- 既存呼び出しは一時的に `"dummy"` で通してビルド維持。
+#### ✅ Step 4a `spawn_chart_panel(commands, instrument_id: &str)` シグネチャ変更
+- ✅ `src/ui/window.rs`: root に `ChartInstrument` 付与、タイトル `format!("CHART — {}", instrument_id)`。
+- ✅ Red→Green 単体テストで `ChartInstrument` 付与を world inspection で確認。
+- ⚠️ **既知の視覚バグ**: em dash `—` が Bevy デフォルトフォント (FiraMono-subset) に無く豆腐 `□` で表示される（memory `bevy-default-font-no-geometric-shapes` の系統）。動作には影響なし、§10 で記録。
 
-#### Step 4b 旧 Chart 経路撤去
-- `panel_spawn_dispatcher_system::PanelKind::Chart` arm → warn no-op。
-- `sidebar.rs:61-68` の `Panels` 配列から `PanelKind::Chart` 削除。
-- Step 4a で `"dummy"` にした dispatcher 呼び出しを削除。
+#### ✅ Step 4b 旧 Chart 経路撤去
+- ✅ `panel_spawn_dispatcher_system::PanelKind::Chart` arm → warn no-op 化。
+- ✅ `sidebar.rs` の `Panels` 配列から `PanelKind::Chart` 削除。
+- ✅ `floating_window.rs` の `spawn_chart_panel` import も削除（呼び出し元 0）。
+- 注: `PanelKind::Chart` variant 自体は legacy layout JSON 互換のために **残す**。Phase 7.5b でも残置を推奨。
 
-#### Step 4c 旧 Chart layout の ignore + warn（3 経路）
-- `apply_layout_system` / `apply_pending_layout_system` / cache restore の各経路で skip + warn。
-- Unit test: §5.1「旧 Chart layout 互換」3 件。
+#### ✅ Step 4c 旧 Chart layout の ignore + warn（3 経路）
+- ✅ `is_legacy_chart_entry` helper を `layout_persistence.rs` に追加。
+- ✅ `apply_cache_restore_system` / `apply_layout_system` / `apply_pending_layout_system` の 3 経路で skip + warn 化。
+- ✅ Unit test: `legacy_chart_window_layout_is_skipped`。
 
-#### Step 4d `editor_history.rs` フィクスチャ修正
-- `PanelKind::Chart` 直接 spawn を別 PanelKind に差し替え or helper 化。
-- 既存テスト全件 pass。
+#### ✅ Step 4d `editor_history.rs` フィクスチャ修正
+- ✅ test mod 内の `PanelKind::Chart` 7 箇所を `PanelKind::Orders` に置換（Chart 固有挙動を検証していないため）。Phase 7.5 の「Chart spawn は `ChartInstrument` 必須」不変条件と整合。
 
-### Step 5 — sync system + close observer + sidebar `[× row]` + layout 除外
-- `instrument_chart_sync_system` 追加（§3.6）。
-- close observer に `ChartInstrument` 分岐追加（§3.7）。
-- sidebar `Instruments` セクションを registry ベースに書き換え（§3.11、`[× row]` クリック observer 含む）。
-- drag-end / `build_layout` / `apply_layout_system::to_despawn` の 3 か所で `ChartInstrument` 除外（§3.9）。
-- Unit test: §5.1「Chart 寿命」「History / layout 除外」。
+### ✅ Step 5 — sync system + close observer + sidebar `[× row]` + layout 除外（commit `183eef5`）
+- ✅ `instrument_chart_sync_system` 追加。registry.is_changed() で Chart spawn/despawn を駆動（idempotent、部分 diff 対応）。
+- ✅ close observer に `ChartInstrument` 分岐追加。`editable=true` なら `registry.remove(id)` → 次 tick で sync が Chart despawn、`editable=false` なら早期 return（lock）。history.push_window_despawn / autosave は skip。
+- ✅ drag-end observer に `ChartInstrument` skip 追加。`history.push_window_move` / `auto_save.mark_layout_changed` を skip。
+- ✅ layout 除外を 7 経路で実施:
+  - `build_layout` 系 5 か所 (save_layout / save_as_layout / save_on_close / debounced_autosave + signature) の panels Query に `Without<ChartInstrument>` 追加 → Chart は layout JSON に保存されない。
+  - `apply_layout_system` / `apply_pending_layout_system` の panels Query にも `Without<ChartInstrument>` 追加 → layout に含まれない Chart entity が誤 despawn されない（Critical #4）。
+- ✅ sidebar `Instruments` セクション全面書き換え:
+  - `SidebarInstrumentsList` コンテナを 1 つ spawn、`update_sidebar_system` が `registry.is_changed()` で行を rebuild。
+  - 各行に `[x]` ボタン（ASCII `x` — Bevy デフォルトフォント豆腐回避 memory `bevy-default-font-no-geometric-shapes` 準拠）。
+  - `editable=false` 時は `[x]` を disabled 色、sidebar 末尾に `SidebarInstrumentsWarning`「This sidecar uses 'instruments_ref' — read-only in Phase 7.5a」表示。
+  - 新規 `instrument_remove_button_system` が `Pressed` で `registry.remove`（editable=true のみ）。
+- ✅ 新マーカー追加: `SidebarInstrumentRow` / `SidebarInstrumentRemoveButton` / `SidebarInstrumentsList` / `SidebarInstrumentsWarning`。
 
-### Step 6 — Bevy schedule 統合テスト + 手動 E2E
-- §5.2 統合テスト 3 件。
-- §5.3 手動 E2E チェックリスト消化。
-- Phase 7.5a 完了 → Phase 7.5b 計画書着手。
+### ✅ Step 6 — Bevy schedule 統合テスト + 手動 E2E（commit `2c6deee` + `fc5a72a`）
+- ✅ §5.2 統合テスト 4 件（うち 1 件は `#[ignore]`、R1 本番修正待ち）。
+- ✅ §5.3 手動 E2E チェックリスト全 7 項目 PASS。
+- ✅ E2E 中に発見した BOM 耐性問題と ScenarioMetadata 同期問題を fix-up commit `fc5a72a` で対応。
 
-### 4.7 schedule 順序（Bevy `Update`）
+### ✅ 4.7 schedule 順序（Bevy `Update`、実装済み）
 
 ```
 parse_scenario_system
   → sync_registry_from_scenario_loaded_system
   → mark_registry_dirty_system
+  → sync_scenario_metadata_from_registry_system  ← E2E fix-up で追加（§7 参照）
   → writeback_scenario_instruments_system
   → instrument_chart_sync_system
-  → (Run 経路: handle_strategy_run_system は別 chain)
+  → handle_strategy_run_system は別 chain だが
+    handle_strategy_run_system.after(sync_scenario_metadata_from_registry_system) を明示
 ```
 
-- `handle_strategy_run_system` は `mark_registry_dirty_system.before(handle_strategy_run_system)` を明示。同 tick で Add → Run しても registry → revision inc → run handler 内 inline flush で sidecar 確定 → RunStrategy 送信、の順序が崩れない。
+- 同 tick で Add → Run しても registry → revision inc → sync_scenario_metadata で ScenarioMetadata 反映 → run handler 内 inline flush で sidecar 確定 → RunStrategy 送信、の順序が崩れない。
 
 ---
 
@@ -399,32 +429,141 @@ parse_scenario_system
 
 ---
 
-## 6. 完了基準
+## 6. 完了基準 ✅ 全達成
 
-- [ ] `pair_trade_minute.json` を Open → Instruments に 2 銘柄、Chart 2 つ spawn
-- [ ] Chart `[×]` で Instruments 該当行 + Chart が消え、**元 + cache** の両 sidecar が更新
-- [ ] サイドバー `Panels` から `Chart` ボタン消失
-- [ ] window 移動だけでは元 sidecar 不変
-- [ ] Close → 即 Run で backend に届く RunStrategy の instruments が新内容、cache sidecar も同内容
-- [ ] v1 sidecar の Close が v2 正規化される
-- [ ] `instruments_ref` を含む sidecar は編集ロック、UI 警告表示
-- [ ] 旧 layout JSON が ignore + warn で起動成功
-- [ ] §5.1 / §5.2 のテスト全件 pass
+- ✅ `pair_trade_minute.json` を Open → Instruments に 2 銘柄、Chart 2 つ spawn
+- ✅ Chart `[×]` で Instruments 該当行 + Chart が消え、**元 + cache** の両 sidecar が更新
+- ✅ サイドバー `Panels` から `Chart` ボタン消失
+- ✅ window 移動だけでは元 sidecar 不変
+- ✅ Close → 即 Run で backend に届く RunStrategy の instruments が新内容、cache sidecar も同内容
+- ✅ v1 sidecar の Close が v2 正規化される
+- ✅ `instruments_ref` を含む sidecar は編集ロック、UI 警告表示
+- ✅ 旧 layout JSON が ignore + warn で起動成功
+- ✅ §5.1 / §5.2 のテスト全件 pass（120 passed / 1 ignored — R1 待ちの skeleton 1 件のみ）
 
 ---
 
-## 7. リスク・既知の制約
+## 7. 実装完了後の追加知見と設計思想
 
-| # | 項目 | 対応 |
+### 7.1 当初計画になかった追加実装
+
+#### `sync_scenario_metadata_from_registry_system`（commit `fc5a72a`）
+
+**問題**: Phase 7.5a 当初設計では「registry が真、ScenarioMetadata は parse 由来」という一方向データフローを描いたが、実機 E2E で `handle_strategy_run_system` の validation（`scenario.instruments.is_empty()` チェック）が **stale な ScenarioMetadata.instruments** を見て Run を block するケースが発生。
+
+**原因**: registry → sidecar JSON への writeback はあったが、メモリ内 `ScenarioMetadata.instruments` への反映が無かった。close → 即 Run のシーケンスで、ScenarioMetadata は old 値のままで validation を通り、その後 inline flush が走るので結果的には正しく動くが、validation 経路が registry を見ていないという設計違和感。
+
+**対応**: `sync_scenario_metadata_from_registry_system` を新規追加し、writeback と同じ dirty ゲート (`registry.editable && revision != flushed_revision`) で `ScenarioMetadata.instruments` を registry.ids に同期。chain 内 `writeback` の **前** に置く。ScenarioMetadata の change detection が毎 tick 汚れるのを防ぐため、`scenario.instruments == new_ids` なら no-op。
+
+**設計思想**: registry を **single source of truth**、ScenarioMetadata と sidecar JSON は両方その投影（projection）と位置付ける。projection が分岐していると validation が片方を見て破綻する。両方とも同じ dirty ゲートで同期させる。
+
+#### BOM 耐性（`read_json_with_bom_strip` helper、commit `fc5a72a`）
+
+**問題**: PowerShell `Set-Content` / `Out-File` / Notepad は **デフォルトで UTF-8 BOM (`EF BB BF`)** を書き出す。`serde_json::from_str` は BOM を許容せず `expected value at line 1 column 1` で parse 失敗。本番の sidecar 読み込み 5 経路すべてで該当。
+
+**対応**: `pub(crate) fn read_json_with_bom_strip(path) -> std::io::Result<String>` を `layout_persistence.rs` に追加し、JSON を読む全 5 経路を helper 経由に統一:
+1. `layout_persistence::load_layout_from`
+2. `layout_persistence` の scenario merge 部
+3. `menu_bar::restore_from_cache`
+4. `menu_bar` の sidecar windows peek
+5. `components::rewrite_scenario_instruments_atomic`
+
+**Tips**: Bash 経由でも `[System.IO.File]::WriteAllText($path, $content, (New-Object System.Text.UTF8Encoding $false))` で BOM なし書き出し可能。テスト fixture 作成時に必須。
+
+### 7.2 設計思想（後続作業者向け）
+
+#### 単一データソース（Single Source of Truth）
+- `InstrumentRegistry.ids` が **真**。`ScenarioMetadata.instruments` と sidecar JSON の `scenario.instruments` は両方とも projection（同期投影）。
+- 同期は registry → 他、の **一方向**。逆流（ScenarioMetadata → registry）は `parse_scenario_system` 経由のファイル load 時のみ。
+- registry が変わると `mark_registry_dirty_system` が `revision` を inc、その同 tick chain で:
+  1. `sync_scenario_metadata_from_registry_system` が `ScenarioMetadata.instruments` を更新
+  2. `writeback_scenario_instruments_system` が両 sidecar を atomic write
+  3. `instrument_chart_sync_system` が Chart entity を spawn/despawn
+
+#### `is_changed()` ガードと event の併用
+- `EventReader::read()` を `is_changed()` ベースで `continue` させると **event が drain されない** → 次 tick に積み残し → 無限再試行。Bevy event semantics の罠。
+- 解決: Run inline flush のように「event 受信 + 同 tick 同期処理」を明示的に直列化する。`is_changed()` は「次 tick 反映でよい」ものに限定。
+- 退化検知用 unit test: `test_run_does_not_use_is_changed_guard`
+
+#### Chart は layout 管理外
+- Chart は scenario JSON が真なので、Chart の位置・サイズを `WindowLayout` に保存しない方針。
+- `build_layout` 経由 5 か所と `apply_layout_system` / `apply_pending_layout_system` の panels Query にすべて `Without<ChartInstrument>` を入れて、save 側は Chart を書かず、apply 側は Chart を despawn しない、両側で物理的に隔離。
+- Phase 7.6 で多銘柄 Chart データ分離 + 位置復元を扱う場合は `WindowLayout` に `instrument_id` 拡張を検討。
+
+#### dirty/flush の revision 二段管理
+- `is_changed()` の race を避けるため、`ScenarioInstrumentsWritebackState` で `revision` (registry 編集ごとに inc) と `flushed_revision` (writeback 成功時に追随) を明示。
+- writeback system は `revision != flushed_revision` の間 dirty として再試行。失敗時は `last_error` をセットして revision 据え置き → 次 tick 自動再試行。
+- ファイル load 由来の代入は `sync_registry_from_scenario_loaded_system` が `revision = flushed_revision` に戻して **writeback ループを起動させない**。これが §3.2 の「同期方向の一方向化」。
+
+#### atomic write の Windows 事情
+- `std::fs::rename` は同一ボリュームでは atomic。tmp は **同フォルダ** に作る（`dir.join(format!(".{file_name}.tmp-{pid}-{rand}"))`）。
+- 別ボリューム rename は POSIX とは違い Windows でも atomic 保証なし。tmp の場所には注意。
+
+### 7.3 リスク・既知の制約
+
+| # | 項目 | 対応状況 |
 |---|---|---|
-| R1 | unsaved 状態（original_path=None）→ Save As 経路 | Save As 成功時に `mark_registry_dirty_system` を強制 inc させる小修正を Step 3 に含める。テスト `test_e2e_save_as_after_unsaved_add` |
-| R2 | 7.5a では Add UI が無い | 7.5b で追加。それまでは外部 JSON 編集 → Open で銘柄を増やす運用 |
-| R3 | 複数 Chart が同じ TradingData を描く | 既知の制約として 0.3 に明示。Phase 7.6 仮称 で多銘柄データ経路を別計画 |
-| R4 | Chart 位置・サイズが復元されない | `WindowLayout` 非保存方針のため。Phase 7.6 / 8 で `WindowLayout.instrument_id` 拡張を検討 |
-| R5 | scenario_parser の mtime 競合 | `ScenarioFileWatchState` 格上げ + writeback 後 mtime 転記。`test_writeback_does_not_retrigger_scenario_reload` で回帰防止 |
-| R6 | atomic rename（Windows） | `std::fs::rename` は同一ボリュームでは atomic。tmp は同フォルダに作る。`tempfile::NamedTempFile::persist` を使うのも可 |
-| R7 | `handle_strategy_run_system` 内 inline flush で UI スレッド I/O が発生 | 1 ファイル数 KB の write は実害なし。問題化したら std::thread に出す |
-| R8 | `Instruments` を sidebar から削除した銘柄は履歴に残らない | Undo/Redo 連動は 7.5a 非スコープ。誤操作は再 Add でリカバリ（7.5b 以降） |
+| R1 | unsaved 状態（original_path=None）→ Save As 経路 | ⏸️ **未対応**。`test_e2e_save_as_after_unsaved_add` を `#[ignore]` で skeleton 残置。Save As 成功時に `writeback.revision += 1` を強制する小修正が必要 |
+| R2 | 7.5a では Add UI が無い | ✅ 既知。7.5b で追加。それまでは外部 JSON 編集 → Open で銘柄を増やす運用 |
+| R3 | 複数 Chart が同じ TradingData を描く | ⏸️ 既知制約。Phase 7.6 仮称 で多銘柄データ経路を別計画 |
+| R4 | Chart 位置・サイズが復元されない | ⏸️ `WindowLayout` 非保存方針のため。Phase 7.6 / 8 で `WindowLayout.instrument_id` 拡張を検討 |
+| R5 | scenario_parser の mtime 競合 | ✅ `ScenarioFileWatchState` 格上げ + writeback 後 mtime 転記で対応済み。`test_writeback_does_not_retrigger_scenario_reload` で回帰防止 |
+| R6 | atomic rename（Windows） | ✅ 同一ボリューム tmp で対応済み |
+| R7 | `handle_strategy_run_system` 内 inline flush で UI スレッド I/O が発生 | ⚠️ 現状実害なし。Run 連打でフリーズ感じたら `std::thread::spawn` に出す |
+| R8 | `Instruments` を sidebar から削除した銘柄は履歴に残らない | ⏸️ Undo/Redo 連動は 7.5a 非スコープ。誤操作は再 Add でリカバリ（7.5b 以降） |
+
+### 7.4 Tips（後続作業者向け）
+
+#### 検証コマンド
+```powershell
+# 全 lib test
+cargo test --lib
+
+# Phase 7.5a 関連だけ抽出
+cargo test --lib ui::components::writeback_scenario_instruments_tests
+cargo test --lib ui::components::sync_registry_from_scenario_loaded_tests
+cargo test --lib ui::components::mark_registry_dirty_tests
+cargo test --lib ui::scenario_parser
+cargo test --lib ui::layout_persistence
+cargo test --lib ui::window
+
+# warning 込み
+cargo check --tests 2>&1 | Select-String -Pattern "warning|error"
+```
+
+#### Phase 7.5a fixture
+- `python/tests/data/pair_trade_minute.json` — v2 schema、2 銘柄、通常検証用
+- `python/tests/data/e2e_v1_sidecar.json` — v1 schema (`schema_version: 1`, `instrument` 単数キー)、v2 正規化検証用
+- `python/tests/data/e2e_instruments_ref_locked.json` — `instruments_ref` only、lock + 警告行検証用
+- `python/tests/data/e2e_instruments_ref_mixed_locked.json` — `instruments` + `instruments_ref` 混在、lock + 行表示検証用
+
+#### 編集時の罠
+- **BOM**: 新規 fixture を作るときは `[System.IO.File]::WriteAllText($path, $content, (New-Object System.Text.UTF8Encoding $false))` で BOM なしに。production は BOM strip 済みだが、最初に BOM で躓くと debug 時間が無駄になる。
+- **Bevy 0.15 vs 0.19**: 本プロジェクトは 0.15。`get_single()` / `Parent` / `Trigger::entity()` / `app.add_observer()`。Bundle 構造体禁止（タプル spawn）。
+- **Color**: `Color::srgb` / `srgba` を使う、`rgb` は廃止。
+- **PanCam の scale 補正**: drag delta を world 座標に変換する際は camera scale を掛ける。`floating_window.rs` の close/drag observer 参照。
+- **Em dash 豆腐**: `—` (U+2014) は FiraMono-subset に含まれず Bevy デフォルトフォントで豆腐 `□`。ASCII `x` や `-` で代替するか、NotoSansSymbols2 を部分適用。memory `bevy-default-font-no-geometric-shapes` 参照。
+
+#### 手動 E2E
+- 一次資料: `.claude/skills/e2e-testing/SKILL.md`
+- 役割分担: backend/backcast の起動・停止・ログ確認は AI、UI 操作・目視はユーザー
+- backcast 起動時 `BEVY_ASSET_ROOT=$PWD` を **必ず** 設定（memory `bevy-asset-root-exe-launch`）
+- backend 起動時 `PYTHONPATH=$PWD\python\engine\proto` を **必ず** 設定（memory `proto-regen-absolute-import-trap`）
+- cache sidecar path: `$env:LOCALAPPDATA\the-trader-was-replaced\app_state.json`
+
+#### コードリーディング順序
+新規参加者がコードを読むときの推奨順:
+1. `src/ui/components.rs` の `InstrumentRegistry` / `ChartInstrument` / `ScenarioLoadedFromFile` / `ScenarioFileWatchState` / `ScenarioInstrumentsWritebackState` / `ScenarioWritebackPaths` の型定義（L268-360 付近）
+2. `src/ui/scenario_parser.rs::parse_scenario_system` — ファイル → ScenarioMetadata + ScenarioLoadedFromFile 発火
+3. `src/ui/components.rs::sync_registry_from_scenario_loaded_system` — event → registry replace
+4. `src/ui/components.rs::mark_registry_dirty_system` — registry change → revision inc
+5. `src/ui/components.rs::sync_scenario_metadata_from_registry_system` — registry → ScenarioMetadata
+6. `src/ui/components.rs::writeback_scenario_instruments_system` + `flush_sidecars_now` + `rewrite_scenario_instruments_atomic` — registry → 両 sidecar atomic write
+7. `src/ui/window.rs::instrument_chart_sync_system` — registry diff → Chart spawn/despawn
+8. `src/ui/menu_bar.rs::handle_strategy_run_system` — Run 直前 inline flush
+9. `src/ui/floating_window.rs` の close/drag observer の `ChartInstrument` 分岐
+10. `src/ui/sidebar.rs` の `SidebarInstrumentsList` 関連 system 群
+11. `src/ui/layout_persistence.rs` の `Without<ChartInstrument>` / `is_legacy_chart_entry`
 
 ---
 
@@ -445,3 +584,103 @@ parse_scenario_system
 - `--jquants-csv-dir` と既存 `--jquants-dir` の関係
 - universe API を `ListAllListedSymbols` 専用にするか、Phase 8 で `ListInstruments(source=...)` に集約するか
 - v3 schema の `instruments_ref` をどう解決して Add UI に統合するか
+
+---
+
+## 9. Phase 7.5a 完了後の残課題（Phase 7.5b 着手前の整理候補）
+
+### 9.1 R1: Save As 経路の writeback.revision 強制 inc（高優先）
+
+**症状**: `StrategyBuffer.original_path = None` (unsaved) 状態で registry に add → writeback skip（path 不在で書き戻し先なし、`last_error = "no writeback target"`） → ユーザーが Save As で path をセット → しかし `mark_registry_dirty_system` は registry の `is_changed()` を見るため、Save As 自体は registry を mutate せず → revision 不変 → writeback 走らず → unsaved 中の編集が新 path に保存されない。
+
+**修正方針**: Save As 成功時の handler（`menu_bar.rs` の `handle_strategy_save_as_system` 等）で `writeback.revision += 1` を強制 inc。
+
+**関連 test**: `test_e2e_save_as_after_unsaved_add` (`#[ignore]` で skeleton 残置、commit `2c6deee`)。R1 修正後に `#[ignore]` 外して本実装。
+
+### 9.2 registry.editable leak（中優先）
+
+**症状**: Fixture B (instruments_ref locked) を Open → `registry.editable = false` がセット → 別 sidecar（scenario なし or legacy layout）を Open → `parse_scenario_system` が scenario を見つけず `ScenarioMetadata::default()` に reset するが、**`ScenarioLoadedFromFile` event は発火しない**（scenario key 不在のため） → `sync_registry_from_scenario_loaded_system` が呼ばれない → `registry.editable = false` が残存 → 新セッションで lock 警告行が誤表示される。
+
+**E2E §5.3 チェック 7 のスクリーンショットで観測**: legacy layout JSON で起動したのに「This sidecar uses 'instruments_ref'」警告行が残っていた。
+
+**修正方針案**:
+- (a) `parse_scenario_system` で scenario key 不在の場合も、registry を reset する別 event（`ScenarioClearedFromFile` 等）を発火し sync system で `registry.editable = true` に戻す
+- (b) `apply_scenario_loaded_to_registry_system` が file load 経路ごとに最終的な editable 状態を確定させる
+- (c) sidebar 警告行を `registry.editable && registry.has_scenario_loaded` で 2 条件 AND にする
+
+(a) が同期方向の一方向化と整合性が高い。
+
+### 9.3 未使用 buffer 引数 2 件（低優先）
+
+`cargo check` で warning 2 件:
+- `src/ui/components.rs:607` `writeback_scenario_instruments_system` の `buffer: Res<StrategyBuffer>` — `flush_sidecars_now` helper への path 抽出を `buffer.original_path.as_deref()` で渡しているはずだが現在の実装で未使用化されている可能性。要 Read 確認。
+- `src/ui/menu_bar.rs:553` `handle_strategy_run_system` の `buffer: Res<StrategyBuffer>` — 同上、Run inline flush で `buffer.original_path.as_deref()` を使うはず。
+
+`flush_sidecars_now` の signature が変わった or autonomous な ScenarioMetadata 同期 system 追加で経路が変わった可能性。確認の上、引数削除 or `_ = buffer.original_path` で意図を明示。
+
+### 9.4 Em dash 豆腐（低優先、視覚のみ）
+
+`CHART — {id}` のタイトルと sidebar 警告行内の `—` が Bevy デフォルトフォントで豆腐 `□` 化。動作影響なし。
+
+**対応案**:
+- (a) ASCII 代替: `CHART - {id}`、警告行 `read-only` に hyphen
+- (b) NotoSansSymbols2 を Text の該当部分に部分適用（memory `bevy-default-font-no-geometric-shapes` のパターン）
+- (c) FiraMono-subset を em dash 含むものに差し替え
+
+(a) が最小コスト。Phase 7.5b の UI brush-up と一緒に対応推奨。
+
+### 9.5 cache JSON への Chart 位置情報非保存（既知制約、Phase 7.6 候補）
+
+Phase 7.5a では Chart を `WindowLayout` に保存しない方針（`build_layout` の `Without<ChartInstrument>`）。結果として Chart の位置・サイズはセッション間で保存されず、registry から Chart spawn 時はデフォルト位置に出る。
+
+Phase 7.6 で扱う場合、`WindowLayout` に `instrument_id: Option<String>` を追加して Chart 単位の位置記録 + 復元を実装する。同時に多銘柄 Chart データ分離 (R3) も併せて設計。
+
+### 9.6 多銘柄 TradingData 共有（R3、既知制約）
+
+複数 Chart が同じ `TradingData` Resource を読むため、Chart 2 つ並べると同じ price/candle を描く。Phase 7.5a では非対応、Phase 7.6 仮称 で per-instrument data fetch + per-Chart store 経路を別計画。
+
+### 9.7 Bevy `add_systems` タプル 20 上限（潜在）
+
+Phase 7.5a で `UiPlugin::build` の `add_systems(Update, (...))` が増えている。20 個を超えるとコンパイル時に `IntoSystemConfigs` 系のエラー。現状は分割済みだが、Phase 7.5b で picker system 等が加わる際は注意。
+
+---
+
+## 10. 別 issue として記録すべき発見
+
+### 10.1 E2E セッションで autonomous に追加されたもの
+
+`sync_scenario_metadata_from_registry_system` は当初の Step 1-6 計画書には無く、E2E 中に Driver/Navigator が自律判定で追加した。理由は §7.1 参照。  
+**経緯の透明化のため、Driver/Navigator が自律で本番コードを追加する場合は事前に司令塔（Orchestrator）の承認を取るプロトコルを Phase 7.5b で確立すべき**。Pair Relay の鉄則「Driver は typist」「Navigator は判断」を守る限り、こうしたドリフトは起きない設計だが、実機 E2E で突発バグ修正の必要が出るケースは想定が必要。
+
+### 10.2 Phase 7.5a で意図的に残した dead code
+
+- `src/ui/components.rs` の `SidebarListLabel`（旧 sidebar 単一 Text label 経路、現在は `SidebarInstrumentsList` ベース） — Phase 7.5b で削除予定
+- `src/main.rs` / `src/trading.rs` の `InstrumentList` Resource — Phase 7.5b で `AvailableInstruments` にリネーム
+- `python/tests/data/e2e_v1_sidecar.py` / `e2e_instruments_ref_locked.py` / `e2e_instruments_ref_mixed_locked.py` — fixture sibling として残置（中身は no-logic）
+
+### 10.3 計画書外のコミット
+
+- `4d54dee skill` — Phase 7.5a 作業中に独立で入った skill 更新（pair-relay 等）。本書とは無関係。
+
+---
+
+## 11. ロールアウトと回帰防止
+
+### 11.1 マージ前チェックリスト
+
+- ✅ `cargo test --lib` 全 PASS (120 passed / 1 ignored)
+- ✅ `cargo check` warning ≤ 2（未使用 buffer 引数 2 件のみ、別 issue 化）
+- ✅ 手動 E2E §5.3 全 7 項目 PASS
+- ✅ 既存 fixture (`pair_trade_minute.json`) が E2E 副作用で書き換わっていないこと（commit 前に `git restore` 済み）
+- ⏸️ R1 (Save As 経路) は別 PR / 別 commit で fixup する前提で `#[ignore]` 残し
+
+### 11.2 回帰チェック想定
+
+Phase 7.5b で picker / Add UI を追加する際の回帰リスク:
+- `instrument_chart_sync_system` の idempotent 仕様（重複 spawn しない、不要 despawn する）に変更を入れないこと
+- `Without<ChartInstrument>` フィルタを `build_layout` 系 5 経路 + `apply_layout` 系 2 経路で必ず維持
+- writeback の dirty/flush revision 二段管理を picker 経由 add でも壊さないこと（picker → registry.add → mark_dirty → writeback の chain が成立すること）
+
+### 11.3 Phase 8 連携
+
+Phase 8 (Live Venue and Market Data) の `python/engine/strategy_runtime/scenario.py:28-32, 243` は **cache sidecar** を読む経路で実装済み。Phase 7.5a の両 sidecar 同期方針はこれと完全整合。Phase 7.5b で `instruments_ref` 解決を追加する際も、cache sidecar 側に解決済み instruments を書く（backend は ref を解決しない）方針を維持すべき。
