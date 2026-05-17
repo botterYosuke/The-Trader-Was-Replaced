@@ -531,9 +531,15 @@ mod tests {
         let date = d("2025-01-15");
         av.in_flight.insert(date);
         apply_available_failed(&mut av, date, "grpc unavailable".into());
-        assert!(!av.in_flight.contains(&date), "in_flight must be cleared on failure too");
+        assert!(
+            !av.in_flight.contains(&date),
+            "in_flight must be cleared on failure too"
+        );
         assert_eq!(av.last_error, Some((date, "grpc unavailable".into())));
-        assert!(!av.by_end_date.contains_key(&date), "cache must not be populated on failure");
+        assert!(
+            !av.by_end_date.contains_key(&date),
+            "cache must not be populated on failure"
+        );
     }
 
     #[test]

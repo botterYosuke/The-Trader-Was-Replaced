@@ -29,6 +29,11 @@ use crate::ui::components::{
     ScenarioMetadata, StrategyBuffer, StrategyFileLoadRequested, StrategyRunRequested,
     UndoMenuRequested, WindowManager,
 };
+use crate::ui::components::{
+    ScenarioClearedFromFile, mark_registry_dirty_system,
+    sync_registry_from_scenario_cleared_system, sync_registry_from_scenario_loaded_system,
+    sync_scenario_metadata_from_registry_system, writeback_scenario_instruments_system,
+};
 use crate::ui::editor_history::{
     ActiveDrag, AppHistory, PendingStrategySnapshotRestore, UndoRedoApplied,
 };
@@ -36,6 +41,11 @@ use crate::ui::floating_window::panel_spawn_dispatcher_system;
 use crate::ui::footer::{
     footer_pause_resume_system, spawn_footer, speed_button_system, transport_button_system,
     update_footer_system, update_speed_buttons_system,
+};
+use crate::ui::instrument_picker::{
+    add_instrument_button_system, force_close_picker_on_lock_system,
+    picker_close_when_invisible_system, picker_list_rebuild_system, picker_searchbox_input_system,
+    picker_sync_visible_on_window_removed_system,
 };
 use crate::ui::menu_bar::{
     handle_strategy_file_load_system, handle_strategy_run_system,
@@ -46,20 +56,9 @@ use crate::ui::menu_bar::{
 use crate::ui::orders::orders_panel_system;
 use crate::ui::positions::positions_panel_system;
 use crate::ui::run_result_panel::run_result_panel_system;
-use crate::ui::components::{
-    ScenarioClearedFromFile, mark_registry_dirty_system,
-    sync_registry_from_scenario_cleared_system, sync_registry_from_scenario_loaded_system,
-    sync_scenario_metadata_from_registry_system, writeback_scenario_instruments_system,
-};
 use crate::ui::scenario_parser::parse_scenario_system;
-use crate::ui::window::instrument_chart_sync_system;
 use crate::ui::sidebar::{
     instrument_remove_button_system, panel_button_system, spawn_sidebar, update_sidebar_system,
-};
-use crate::ui::instrument_picker::{
-    add_instrument_button_system, picker_close_when_invisible_system,
-    picker_list_rebuild_system, picker_searchbox_input_system,
-    picker_sync_visible_on_window_removed_system, force_close_picker_on_lock_system,
 };
 use crate::ui::strategy_editor::{
     StrategyAutoSaveState, apply_pending_app_edits_system, apply_strategy_snapshot_restore_system,
@@ -67,6 +66,7 @@ use crate::ui::strategy_editor::{
     sync_strategy_buffer_to_editor_system, undo_redo_system, update_strategy_editor_zoom_system,
 };
 use crate::ui::systems::{button_system, update_price_display, update_status_indicator};
+use crate::ui::window::instrument_chart_sync_system;
 use bevy::prelude::*;
 use bevy_cosmic_edit::{CosmicEditPlugin, CosmicFontConfig, prelude::change_active_editor_sprite};
 use bevy_vector_shapes::Shape2dPlugin;

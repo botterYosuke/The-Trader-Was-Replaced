@@ -134,8 +134,13 @@ pub fn spawn_strategy_editor_panel(
     );
     commands.entity(root).insert((
         PanelKind::StrategyEditor,
-        StrategyEditorId { region_key: region_key.clone() },
-        StrategyFragment { source: seed.clone(), dirty: false },
+        StrategyEditorId {
+            region_key: region_key.clone(),
+        },
+        StrategyFragment {
+            source: seed.clone(),
+            dirty: false,
+        },
     ));
 
     let editor = commands
@@ -164,7 +169,9 @@ pub fn spawn_strategy_editor_panel(
             StrategyEditorContent,
             // editor child にも StrategyEditorId を貼ることで、CosmicTextChanged から
             // region_key を即引きできる (root への親辿りが不要)。
-            StrategyEditorId { region_key: region_key.clone() },
+            StrategyEditorId {
+                region_key: region_key.clone(),
+            },
             ZoomResponsiveEditor {
                 max_supersample: EDITOR_MAX_SUPERSAMPLE,
                 last_supersample: 1.0,
@@ -229,7 +236,11 @@ pub fn sync_strategy_buffer_to_editor_system(
     mut undo_events: EventReader<UndoRedoApplied>,
     fragments_q: Query<(&StrategyEditorId, &StrategyFragment), With<WindowRoot>>,
     mut editor_q: Query<
-        (&StrategyEditorId, &mut CosmicEditBuffer, Option<&mut CosmicEditor>),
+        (
+            &StrategyEditorId,
+            &mut CosmicEditBuffer,
+            Option<&mut CosmicEditor>,
+        ),
         With<StrategyEditorContent>,
     >,
     mut font_system: ResMut<CosmicFontSystem>,
@@ -286,7 +297,10 @@ pub fn sync_editor_to_strategy_buffer_system(
             .iter_mut()
             .find(|(id, _)| id.region_key == region_key)
         else {
-            warn!("CosmicTextChanged for region '{}' but no matching WindowRoot", region_key);
+            warn!(
+                "CosmicTextChanged for region '{}' but no matching WindowRoot",
+                region_key
+            );
             continue;
         };
 
@@ -303,7 +317,11 @@ pub fn sync_editor_to_strategy_buffer_system(
             continue;
         }
         if !history.is_replaying() {
-            history.push_text(region_key.clone(), fragment.source.clone(), new_text.clone());
+            history.push_text(
+                region_key.clone(),
+                fragment.source.clone(),
+                new_text.clone(),
+            );
         }
         mark_fragment_dirty(&mut fragment, &mut auto_save, new_text.clone());
     }
@@ -337,13 +355,14 @@ pub fn undo_redo_system(
     let do_undo = menu_undo || (ctrl && keys.just_pressed(KeyCode::KeyZ) && !shift);
     let do_redo = menu_redo
         || (ctrl
-            && (keys.just_pressed(KeyCode::KeyY)
-                || (keys.just_pressed(KeyCode::KeyZ) && shift)));
+            && (keys.just_pressed(KeyCode::KeyY) || (keys.just_pressed(KeyCode::KeyZ) && shift)));
 
     if do_undo {
         history.replaying_depth += 1;
         let changed = {
-            let AppHistory { record, pending, .. } = &mut *history;
+            let AppHistory {
+                record, pending, ..
+            } = &mut *history;
             record.undo(pending).is_some()
         };
         if !changed {
@@ -353,7 +372,9 @@ pub fn undo_redo_system(
     } else if do_redo {
         history.replaying_depth += 1;
         let changed = {
-            let AppHistory { record, pending, .. } = &mut *history;
+            let AppHistory {
+                record, pending, ..
+            } = &mut *history;
             record.redo(pending).is_some()
         };
         if !changed {
@@ -398,10 +419,17 @@ pub fn apply_pending_app_edits_system(
                     mark_fragment_dirty(&mut fragment, &mut auto_save, text);
                     any_text = true;
                 } else {
-                    warn!("SetStrategySource for region '{}' but no matching root", region_key);
+                    warn!(
+                        "SetStrategySource for region '{}' but no matching root",
+                        region_key
+                    );
                 }
             }
-            AppEditAction::MoveWindow { kind, region_key, position } => {
+            AppEditAction::MoveWindow {
+                kind,
+                region_key,
+                position,
+            } => {
                 let target_entity: Option<Entity> = if let Some(rk) = &region_key {
                     editor_id_q
                         .iter()
@@ -421,7 +449,10 @@ pub fn apply_pending_app_edits_system(
                 }
                 layout_auto_save.dirty = true;
             }
-            AppEditAction::SpawnWindow { layout, strategy_snapshot } => {
+            AppEditAction::SpawnWindow {
+                layout,
+                strategy_snapshot,
+            } => {
                 let strategy_spec = if layout.kind == PanelKind::StrategyEditor {
                     Some(StrategyEditorSpawnSpec {
                         region_key: layout.region_key.clone(),
@@ -499,7 +530,10 @@ pub fn apply_strategy_snapshot_restore_system(
             mark_fragment_dirty(&mut fragment, &mut auto_save, source);
             undo_applied.send(UndoRedoApplied);
         } else {
-            warn!("snapshot restore for region '{}' but no matching root yet", region_key);
+            warn!(
+                "snapshot restore for region '{}' but no matching root yet",
+                region_key
+            );
             pending_restore.snapshot = Some((region_key, source));
         }
     }
@@ -708,16 +742,21 @@ pub fn split_py_into_fragments(py: &str) -> SplitOutcome {
         .max()
         .unwrap_or(0);
 
-    SplitOutcome { fragments, max_numeric_suffix, warnings }
+    SplitOutcome {
+        fragments,
+        max_numeric_suffix,
+        warnings,
+    }
 }
-
 
 #[cfg(test)]
 mod tests {
     use super::*;
     // ── Phase B: merge/split 純粋関数テスト ─────────────────────────────────
 
-    fn ks(s: &str) -> String { s.to_string() }
+    fn ks(s: &str) -> String {
+        s.to_string()
+    }
 
     #[test]
     fn merge_fragments_round_trips_through_split() {
@@ -727,7 +766,11 @@ mod tests {
         ];
         let merged = merge_fragments(&items);
         let outcome = split_py_into_fragments(&merged);
-        assert!(outcome.warnings.is_empty(), "unexpected warnings: {:?}", outcome.warnings);
+        assert!(
+            outcome.warnings.is_empty(),
+            "unexpected warnings: {:?}",
+            outcome.warnings
+        );
         assert_eq!(outcome.fragments, items);
     }
 
@@ -735,7 +778,11 @@ mod tests {
     fn split_py_handles_no_markers_returns_single_region() {
         let py = "x = 1\ny = 2\n";
         let outcome = split_py_into_fragments(py);
-        assert!(outcome.warnings.is_empty(), "expected no warnings: {:?}", outcome.warnings);
+        assert!(
+            outcome.warnings.is_empty(),
+            "expected no warnings: {:?}",
+            outcome.warnings
+        );
         assert_eq!(outcome.fragments.len(), 1);
         assert_eq!(outcome.fragments[0].0, "region_001");
         assert_eq!(outcome.fragments[0].1, "x = 1\ny = 2");
@@ -759,8 +806,11 @@ mod tests {
         let py = "# region region_001\nalpha\n# endregion region_001\n\
                   # region region_001\nbeta\n# endregion region_001\n";
         let outcome = split_py_into_fragments(py);
-        assert!(outcome.warnings.iter().any(|w| w.contains("duplicate")),
-            "expected dup warning: {:?}", outcome.warnings);
+        assert!(
+            outcome.warnings.iter().any(|w| w.contains("duplicate")),
+            "expected dup warning: {:?}",
+            outcome.warnings
+        );
         assert_eq!(outcome.fragments[0].0, "region_001");
         assert_eq!(outcome.fragments[0].1, "alpha");
         assert_eq!(outcome.fragments[1].0, "region_001_dup1");
@@ -771,8 +821,14 @@ mod tests {
     fn split_py_handles_unmatched_endregion() {
         let py = "# region region_001\ncode\n# endregion region_002\n";
         let outcome = split_py_into_fragments(py);
-        assert!(outcome.warnings.iter().any(|w| w.contains("does not match")),
-            "warnings: {:?}", outcome.warnings);
+        assert!(
+            outcome
+                .warnings
+                .iter()
+                .any(|w| w.contains("does not match")),
+            "warnings: {:?}",
+            outcome.warnings
+        );
         assert_eq!(outcome.fragments.len(), 1);
         assert_eq!(outcome.fragments[0].0, "region_001");
         assert_eq!(outcome.fragments[0].1, "code");
@@ -782,8 +838,14 @@ mod tests {
     fn split_py_handles_orphan_region_at_eof() {
         let py = "# region region_001\norphan line\n";
         let outcome = split_py_into_fragments(py);
-        assert!(outcome.warnings.iter().any(|w| w.contains("no matching # endregion")),
-            "warnings: {:?}", outcome.warnings);
+        assert!(
+            outcome
+                .warnings
+                .iter()
+                .any(|w| w.contains("no matching # endregion")),
+            "warnings: {:?}",
+            outcome.warnings
+        );
         assert_eq!(outcome.fragments.len(), 1);
         assert_eq!(outcome.fragments[0].0, "region_001");
         assert_eq!(outcome.fragments[0].1, "orphan line");
@@ -816,8 +878,14 @@ mod tests {
         let py = "# region region_001\nfoo\n\
                   # region region_002\nbar\n# endregion region_002\n";
         let outcome = split_py_into_fragments(py);
-        assert!(outcome.warnings.iter().any(|w| w.contains("implicitly closing")),
-            "warnings: {:?}", outcome.warnings);
+        assert!(
+            outcome
+                .warnings
+                .iter()
+                .any(|w| w.contains("implicitly closing")),
+            "warnings: {:?}",
+            outcome.warnings
+        );
         assert_eq!(outcome.fragments[0].0, "region_001");
         assert_eq!(outcome.fragments[0].1, "foo");
         assert_eq!(outcome.fragments[1].0, "region_002");
@@ -903,7 +971,11 @@ mod tests {
             dirty: false,
             last_change: Some(Instant::now()),
         };
-        assert!(!should_flush(&state, Instant::now(), Duration::from_secs(1)));
+        assert!(!should_flush(
+            &state,
+            Instant::now(),
+            Duration::from_secs(1)
+        ));
     }
 
     #[test]
@@ -912,7 +984,11 @@ mod tests {
             dirty: true,
             last_change: None,
         };
-        assert!(!should_flush(&state, Instant::now(), Duration::from_secs(1)));
+        assert!(!should_flush(
+            &state,
+            Instant::now(),
+            Duration::from_secs(1)
+        ));
     }
 
     #[test]
@@ -975,16 +1051,24 @@ mod tests {
 
         app.world_mut().spawn((
             WindowRoot,
-            StrategyEditorId { region_key: region_key.clone() },
-            StrategyFragment { source: "".to_string(), dirty: false },
+            StrategyEditorId {
+                region_key: region_key.clone(),
+            },
+            StrategyFragment {
+                source: "".to_string(),
+                dirty: false,
+            },
         ));
 
         {
             let mut history = app.world_mut().resource_mut::<AppHistory>();
-            history.pending.queue.push_back(AppEditAction::SetStrategySource {
-                region_key: region_key.clone(),
-                text: new_text.clone(),
-            });
+            history
+                .pending
+                .queue
+                .push_back(AppEditAction::SetStrategySource {
+                    region_key: region_key.clone(),
+                    text: new_text.clone(),
+                });
         }
 
         app.update();
@@ -1012,12 +1096,19 @@ mod tests {
 
         app.world_mut().spawn((
             WindowRoot,
-            StrategyEditorId { region_key: region_key.clone() },
-            StrategyFragment { source: "".to_string(), dirty: false },
+            StrategyEditorId {
+                region_key: region_key.clone(),
+            },
+            StrategyFragment {
+                source: "".to_string(),
+                dirty: false,
+            },
         ));
 
         {
-            let mut pending = app.world_mut().resource_mut::<PendingStrategySnapshotRestore>();
+            let mut pending = app
+                .world_mut()
+                .resource_mut::<PendingStrategySnapshotRestore>();
             pending.snapshot = Some((region_key.clone(), snapshot_text.clone()));
         }
 
@@ -1044,8 +1135,13 @@ mod tests {
 
         app.world_mut().spawn((
             WindowRoot,
-            StrategyEditorId { region_key: "region_001".to_string() },
-            StrategyFragment { source: "x = 1".to_string(), dirty: true },
+            StrategyEditorId {
+                region_key: "region_001".to_string(),
+            },
+            StrategyFragment {
+                source: "x = 1".to_string(),
+                dirty: true,
+            },
         ));
 
         {
@@ -1082,11 +1178,19 @@ mod tests {
         let tmp = TempDir::new().unwrap();
         let cache_path = tmp.path().join("strategy.py");
 
-        let entity = app.world_mut().spawn((
-            WindowRoot,
-            StrategyEditorId { region_key: "region_001".to_string() },
-            StrategyFragment { source: "x = 1".to_string(), dirty: true },
-        )).id();
+        let entity = app
+            .world_mut()
+            .spawn((
+                WindowRoot,
+                StrategyEditorId {
+                    region_key: "region_001".to_string(),
+                },
+                StrategyFragment {
+                    source: "x = 1".to_string(),
+                    dirty: true,
+                },
+            ))
+            .id();
 
         {
             let mut buffer = app.world_mut().resource_mut::<StrategyBuffer>();
@@ -1101,7 +1205,10 @@ mod tests {
         app.update();
 
         let fragment = app.world().get::<StrategyFragment>(entity).unwrap();
-        assert!(!fragment.dirty, "fragment.dirty should be cleared after autosave flush");
+        assert!(
+            !fragment.dirty,
+            "fragment.dirty should be cleared after autosave flush"
+        );
     }
 
     #[test]
@@ -1117,8 +1224,13 @@ mod tests {
 
         app.world_mut().spawn((
             WindowRoot,
-            StrategyEditorId { region_key: "region_001".to_string() },
-            StrategyFragment { source: "x = 1".to_string(), dirty: true },
+            StrategyEditorId {
+                region_key: "region_001".to_string(),
+            },
+            StrategyFragment {
+                source: "x = 1".to_string(),
+                dirty: true,
+            },
         ));
 
         {

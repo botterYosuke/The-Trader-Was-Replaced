@@ -1,7 +1,7 @@
 use crate::ui::components::{
-    InstrumentRegistry, PanelKind, PanelSpawnRequested, PanelSpawnSource, SidebarAddInstrumentButton,
-    SidebarInstrumentRemoveButton, SidebarInstrumentRow, SidebarInstrumentsList,
-    SidebarInstrumentsWarning, SidebarRoot, WindowRoot,
+    InstrumentRegistry, PanelKind, PanelSpawnRequested, PanelSpawnSource,
+    SidebarAddInstrumentButton, SidebarInstrumentRemoveButton, SidebarInstrumentRow,
+    SidebarInstrumentsList, SidebarInstrumentsWarning, SidebarRoot, WindowRoot,
 };
 use bevy::prelude::*;
 

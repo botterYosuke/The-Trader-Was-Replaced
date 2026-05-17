@@ -1,11 +1,11 @@
 use crate::trading::{StrategyRunConfig, TransportCommand, TransportCommandSender};
 use crate::ui::components::ScenarioMetadata;
 use crate::ui::components::{
-    flush_sidecars_now, InstrumentRegistry, MenuBarRoot, MenuItem, MenuPopup, MenuTopLevel,
-    OpenMenu, PanelKind, PanelSpawnRequested, PanelSpawnSource, PendingStrategyFragments,
-    RedoMenuRequested, RegionKeyAllocator, ScenarioWritebackPaths, StrategyBuffer,
-    StrategyEditorSpawnSpec, StrategyFileLoadRequested, StrategyFragment, StrategyLoadMode,
-    StrategyRunRequested, StrategyStatusLabel, UndoMenuRequested, WindowRoot,
+    InstrumentRegistry, MenuBarRoot, MenuItem, MenuPopup, MenuTopLevel, OpenMenu, PanelKind,
+    PanelSpawnRequested, PanelSpawnSource, PendingStrategyFragments, RedoMenuRequested,
+    RegionKeyAllocator, ScenarioWritebackPaths, StrategyBuffer, StrategyEditorSpawnSpec,
+    StrategyFileLoadRequested, StrategyFragment, StrategyLoadMode, StrategyRunRequested,
+    StrategyStatusLabel, UndoMenuRequested, WindowRoot, flush_sidecars_now,
 };
 use crate::ui::layout_persistence::{
     CacheRestoreRequested, LayoutLoadDialogRequested, LayoutLoadRequested, LayoutSaveAsRequested,
@@ -572,11 +572,9 @@ pub fn handle_strategy_run_system(
 
         // 計画書 §3.5: Run 直前 inline flush。
         if registry.editable {
-            if let Err(e) = flush_sidecars_now(
-                registry.as_slice(),
-                None,
-                paths.cache_sidecar.as_deref(),
-            ) {
+            if let Err(e) =
+                flush_sidecars_now(registry.as_slice(), None, paths.cache_sidecar.as_deref())
+            {
                 error!("Run blocked: sidecar flush failed: {}", e);
                 continue;
             }

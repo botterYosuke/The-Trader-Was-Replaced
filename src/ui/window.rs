@@ -122,7 +122,11 @@ mod tests {
         let world = app.world_mut();
         let mut q = world.query_filtered::<&ChartInstrument, With<WindowRoot>>();
         let found: Vec<&ChartInstrument> = q.iter(world).collect();
-        assert_eq!(found.len(), 1, "expected exactly 1 ChartInstrument on a WindowRoot");
+        assert_eq!(
+            found.len(),
+            1,
+            "expected exactly 1 ChartInstrument on a WindowRoot"
+        );
         assert_eq!(found[0].instrument_id, "1301.TSE");
     }
 
@@ -144,7 +148,11 @@ mod tests {
         let world = app.world_mut();
         let mut q = world.query_filtered::<&ChartInstrument, With<WindowRoot>>();
         let found: Vec<&ChartInstrument> = q.iter(world).collect();
-        assert_eq!(found.len(), 1, "registry の 1 銘柄に対し Chart が 1 entity spawn される");
+        assert_eq!(
+            found.len(),
+            1,
+            "registry の 1 銘柄に対し Chart が 1 entity spawn される"
+        );
         assert_eq!(found[0].instrument_id, "1301.TSE");
     }
 
@@ -169,7 +177,11 @@ mod tests {
 
         let world = app.world_mut();
         let mut q = world.query_filtered::<&ChartInstrument, With<WindowRoot>>();
-        assert_eq!(q.iter(world).count(), 0, "registry を空にすると Chart が despawn される");
+        assert_eq!(
+            q.iter(world).count(),
+            0,
+            "registry を空にすると Chart が despawn される"
+        );
     }
 
     #[test]
@@ -191,7 +203,11 @@ mod tests {
         let world = app.world_mut();
         let mut q = world.query_filtered::<&ChartInstrument, With<WindowRoot>>();
         let ids: Vec<&str> = q.iter(world).map(|c| c.instrument_id.as_str()).collect();
-        assert_eq!(ids.len(), 2, "is_changed() で early return、重複 spawn しない");
+        assert_eq!(
+            ids.len(),
+            2,
+            "is_changed() で early return、重複 spawn しない"
+        );
         assert!(ids.contains(&"1301.TSE"));
         assert!(ids.contains(&"7203.TSE"));
     }

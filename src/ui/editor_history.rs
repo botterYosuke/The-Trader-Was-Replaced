@@ -30,12 +30,22 @@ pub enum AppEditAction {
     /// Strategy Editor のテキストを指定文字列に置き換える。
     SetStrategySource { region_key: String, text: String },
     /// 指定 kind のウィンドウを指定位置に移動する（PanelKind で検索するため entity 不要）。
-    MoveWindow { kind: PanelKind, region_key: Option<String>, position: Vec2 },
+    MoveWindow {
+        kind: PanelKind,
+        region_key: Option<String>,
+        position: Vec2,
+    },
     /// 指定 layout のパネルを spawn する（undo 時の WindowDespawn の逆など）。
     /// layout に位置・サイズ・z が含まれるため、復元位置が正確になる。
-    SpawnWindow { layout: WindowLayout, strategy_snapshot: Option<(String, String)> },
+    SpawnWindow {
+        layout: WindowLayout,
+        strategy_snapshot: Option<(String, String)>,
+    },
     /// 指定 kind のパネルを despawn する（PanelKind で検索するため entity 不要）。
-    DespawnWindow { kind: PanelKind, region_key: Option<String> },
+    DespawnWindow {
+        kind: PanelKind,
+        region_key: Option<String>,
+    },
 }
 
 /// `Edit::Target` として `Record` に渡す pending キュー。
@@ -194,9 +204,7 @@ impl Edit for AppEdit {
             let diff_len = other_t.after.len().abs_diff(self_t.after.len());
             let added_newline = other_t.after.contains('\n') && !self_t.after.contains('\n');
 
-            if elapsed <= TEXT_MERGE_WINDOW_MS
-                && diff_len <= TEXT_MERGE_MAX_DIFF
-                && !added_newline
+            if elapsed <= TEXT_MERGE_WINDOW_MS && diff_len <= TEXT_MERGE_MAX_DIFF && !added_newline
             {
                 // after を更新してマージ。timestamp はそのまま（最初のキーストロークを基準にする）
                 self_t.after = other_t.after.clone();
@@ -279,7 +287,13 @@ impl AppHistory {
     }
 
     /// WindowMoveEdit を Record に push する。
-    pub fn push_window_move(&mut self, kind: PanelKind, region_key: Option<String>, before: Vec2, after: Vec2) {
+    pub fn push_window_move(
+        &mut self,
+        kind: PanelKind,
+        region_key: Option<String>,
+        before: Vec2,
+        after: Vec2,
+    ) {
         if self.is_replaying() {
             return;
         }
@@ -311,11 +325,18 @@ impl AppHistory {
     /// WindowDespawnEdit を Record に push する。
     /// `layout` は閉じた瞬間の完全スナップショット（position・size・z を含む）。
     /// undo 時にこの位置でパネルを再 spawn する。
-    pub fn push_window_despawn(&mut self, layout: WindowLayout, strategy_snapshot: Option<(String, String)>) {
+    pub fn push_window_despawn(
+        &mut self,
+        layout: WindowLayout,
+        strategy_snapshot: Option<(String, String)>,
+    ) {
         if self.is_replaying() {
             return;
         }
-        let edit = AppEdit::WindowDespawn(WindowDespawnEdit { layout, strategy_snapshot });
+        let edit = AppEdit::WindowDespawn(WindowDespawnEdit {
+            layout,
+            strategy_snapshot,
+        });
         self.record.edit(&mut self.pending, edit);
         self.pending.queue.clear();
     }
@@ -415,7 +436,11 @@ mod tests {
         record.edit(&mut pending, make_text_edit("hello", "hello world"));
         pending.queue.clear();
 
-        assert_eq!(record.len(), 2, "500ms 超過によりマージが抑止されて 2 エントリになるはず");
+        assert_eq!(
+            record.len(),
+            2,
+            "500ms 超過によりマージが抑止されて 2 エントリになるはず"
+        );
 
         // undo → "hello" が pending に積まれる
         record.undo(&mut pending);
@@ -478,7 +503,11 @@ mod tests {
     fn test_push_text_suppressed_while_replaying() {
         let mut history = AppHistory::default();
         history.replaying_depth = 1;
-        history.push_text("region_001".to_string(), "before".to_string(), "after".to_string());
+        history.push_text(
+            "region_001".to_string(),
+            "before".to_string(),
+            "after".to_string(),
+        );
         assert_eq!(history.record.len(), 0);
     }
 
@@ -549,7 +578,11 @@ mod tests {
 
         edit.edit(&mut pending);
         match &pending.queue[0] {
-            AppEditAction::MoveWindow { kind: k, position: p, .. } => {
+            AppEditAction::MoveWindow {
+                kind: k,
+                position: p,
+                ..
+            } => {
                 assert_eq!(*k, PanelKind::Orders);
                 assert_eq!(*p, Vec2::new(100.0, 200.0));
             }
@@ -559,7 +592,11 @@ mod tests {
 
         edit.undo(&mut pending);
         match &pending.queue[0] {
-            AppEditAction::MoveWindow { kind: k, position: p, .. } => {
+            AppEditAction::MoveWindow {
+                kind: k,
+                position: p,
+                ..
+            } => {
                 assert_eq!(*k, PanelKind::Orders);
                 assert_eq!(*p, Vec2::new(10.0, 20.0));
             }
@@ -609,7 +646,10 @@ mod tests {
         edit.undo(&mut pending);
         assert_eq!(pending.queue.len(), 1);
         match &pending.queue[0] {
-            AppEditAction::SpawnWindow { layout, strategy_snapshot } => {
+            AppEditAction::SpawnWindow {
+                layout,
+                strategy_snapshot,
+            } => {
                 assert_eq!(layout.kind, PanelKind::StrategyEditor);
                 assert!(strategy_snapshot.is_none());
             }
@@ -744,7 +784,11 @@ mod tests {
         record.edit(&mut pending, edit2);
         pending.queue.clear();
 
-        assert_eq!(record.len(), 2, "大きな paste (差分 100 文字) はマージされない");
+        assert_eq!(
+            record.len(),
+            2,
+            "大きな paste (差分 100 文字) はマージされない"
+        );
     }
 
     #[test]

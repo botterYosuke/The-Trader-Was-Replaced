@@ -85,7 +85,10 @@ pub fn parse_scenario_system(
     let root: SidecarRoot = match serde_json::from_str(&text) {
         Ok(r) => r,
         Err(e) => {
-            warn!("malformed sidecar JSON {:?}: {} — ScenarioMetadata reset", json_path, e);
+            warn!(
+                "malformed sidecar JSON {:?}: {} — ScenarioMetadata reset",
+                json_path, e
+            );
             cleared_events.send(ScenarioClearedFromFile {
                 source_path: Some(json_path.clone()),
             });
@@ -254,7 +257,10 @@ mod tests {
 
         let meta = app.world().resource::<ScenarioMetadata>();
         assert_eq!(meta.schema_version, Some(2));
-        assert_eq!(meta.instruments, vec!["1301.TSE".to_string(), "7203.TSE".to_string()]);
+        assert_eq!(
+            meta.instruments,
+            vec!["1301.TSE".to_string(), "7203.TSE".to_string()]
+        );
         assert_eq!(meta.granularity.as_deref(), Some("Daily"));
     }
 
@@ -356,12 +362,19 @@ mod tests {
         let events = app.world().resource::<Events<ScenarioLoadedFromFile>>();
         let mut reader = events.get_cursor();
         let collected: Vec<_> = reader.read(events).cloned().collect();
-        assert_eq!(collected.len(), 1, "expected exactly one ScenarioLoadedFromFile event on first read");
+        assert_eq!(
+            collected.len(),
+            1,
+            "expected exactly one ScenarioLoadedFromFile event on first read"
+        );
         let ev = &collected[0];
         assert_eq!(ev.source_path, py_path.with_extension("json"));
         assert_eq!(ev.instruments, vec!["1301.TSE".to_string()]);
         assert_eq!(ev.end.as_deref(), Some("2025-01-10"));
-        assert!(!ev.has_instruments_ref, "plain instruments list must not set has_instruments_ref");
+        assert!(
+            !ev.has_instruments_ref,
+            "plain instruments list must not set has_instruments_ref"
+        );
     }
 
     /// mtime 不変なら 2 tick 目以降は再発火しないこと (ScenarioFileWatchState の Resource 格上げ確認)。
@@ -390,13 +403,19 @@ mod tests {
         app.add_systems(Update, parse_scenario_system);
 
         app.update(); // 1 回目: 発火
-        app.world_mut().resource_mut::<Events<ScenarioLoadedFromFile>>().clear();
+        app.world_mut()
+            .resource_mut::<Events<ScenarioLoadedFromFile>>()
+            .clear();
         app.update(); // 2 回目: 発火してはいけない
 
         let events = app.world().resource::<Events<ScenarioLoadedFromFile>>();
         let mut reader = events.get_cursor();
         let collected: Vec<_> = reader.read(events).cloned().collect();
-        assert!(collected.is_empty(), "no re-emit expected when mtime unchanged, got {} events", collected.len());
+        assert!(
+            collected.is_empty(),
+            "no re-emit expected when mtime unchanged, got {} events",
+            collected.len()
+        );
     }
 
     /// sidecar JSON の scenario 直下に `instruments_ref` キーがあれば
@@ -430,7 +449,10 @@ mod tests {
         let mut reader = events.get_cursor();
         let collected: Vec<_> = reader.read(events).cloned().collect();
         assert_eq!(collected.len(), 1);
-        assert!(collected[0].has_instruments_ref, "instruments_ref key must set has_instruments_ref=true");
+        assert!(
+            collected[0].has_instruments_ref,
+            "instruments_ref key must set has_instruments_ref=true"
+        );
     }
 
     // ===== §9.2 Red test: registry.editable leak across sidecar switch =====
@@ -491,11 +513,16 @@ mod tests {
         app.update();
         {
             let reg = app.world().resource::<InstrumentRegistry>();
-            assert!(!reg.editable, "precondition: instruments_ref で editable=false に落ちる");
+            assert!(
+                !reg.editable,
+                "precondition: instruments_ref で editable=false に落ちる"
+            );
         }
 
         // sidecar B へ切り替え (StrategyBuffer.original_path を差し替え)
-        app.world_mut().resource_mut::<StrategyBuffer>().original_path = Some(py_b.clone());
+        app.world_mut()
+            .resource_mut::<StrategyBuffer>()
+            .original_path = Some(py_b.clone());
 
         // tick 2: parse_scenario_system は scenario キー不在で event を出さない
         //         → sync system が呼ばれず editable=false が残存 (= 現状のバグ)

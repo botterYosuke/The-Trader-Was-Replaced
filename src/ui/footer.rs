@@ -7,7 +7,7 @@ use crate::ui::components::{
     ReplayTimeLabel, SpeedButton, StrategyBuffer, StrategyEditorId, StrategyFragment,
     StrategyRunRequested, TransportButton, WindowRoot,
 };
-use crate::ui::strategy_editor::{flush_strategy_cache, merge_fragments, StrategyAutoSaveState};
+use crate::ui::strategy_editor::{StrategyAutoSaveState, flush_strategy_cache, merge_fragments};
 use bevy::prelude::*;
 
 const BTN_NORMAL: Color = Color::srgba(0.12, 0.12, 0.18, 1.0);
@@ -247,10 +247,7 @@ pub fn update_footer_system(
         ),
     >,
 ) {
-    if !data.is_changed()
-        && !status.is_changed()
-        && !settings.is_changed()
-        && !buffer.is_changed()
+    if !data.is_changed() && !status.is_changed() && !settings.is_changed() && !buffer.is_changed()
     {
         return;
     }
@@ -429,11 +426,7 @@ pub fn update_speed_buttons_system(
 pub fn footer_pause_resume_system(
     mut query: Query<
         (&Interaction, &mut BackgroundColor),
-        (
-            Changed<Interaction>,
-            With<PauseResumeButton>,
-            With<Button>,
-        ),
+        (Changed<Interaction>, With<PauseResumeButton>, With<Button>),
     >,
     data: Res<TradingData>,
     sender: Res<TransportCommandSender>,

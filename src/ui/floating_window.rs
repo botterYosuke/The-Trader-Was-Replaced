@@ -137,7 +137,12 @@ pub fn spawn_floating_window(
             |drag_end: Trigger<Pointer<DragEnd>>,
              parent_query: Query<&Parent>,
              root_q: Query<
-                (&Transform, &PanelKind, Option<&StrategyEditorId>, Option<&ChartInstrument>),
+                (
+                    &Transform,
+                    &PanelKind,
+                    Option<&StrategyEditorId>,
+                    Option<&ChartInstrument>,
+                ),
                 With<WindowRoot>,
             >,
              mut active_drag: ResMut<ActiveDrag>,
