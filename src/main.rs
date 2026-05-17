@@ -8,6 +8,11 @@ use backcast::trading::{
 };
 use backcast::replay::{ReplayStartupPhase, ReplayStartupProgress};
 use backcast::ui::UiPlugin;
+use backcast::ui::replay_startup_window::{
+    animate_replay_startup_bar_system, auto_hide_replay_startup_window_system,
+    replay_startup_close_button_system, replay_startup_timeout_system,
+    spawn_replay_startup_window, update_replay_startup_window_system,
+};
 use bevy::prelude::*;
 use bevy_pancam::{PanCamPlugin, PanCamSystemSet};
 use chrono::NaiveDate;
@@ -56,13 +61,18 @@ async fn main() {
         .insert_resource(PortfolioState::default())
         .insert_resource(ReplaySpeed::default())
         .insert_resource(tokio_handle)
-        .add_systems(Startup, (setup_camera, setup_backend_connection))
+        .add_systems(Startup, (setup_camera, setup_backend_connection, spawn_replay_startup_window))
         .add_systems(
             Update,
             (
                 price_simulation_system,
                 backend_update_system,
                 status_update_system,
+                update_replay_startup_window_system,
+                animate_replay_startup_bar_system,
+                auto_hide_replay_startup_window_system.after(status_update_system),
+                replay_startup_close_button_system,
+                replay_startup_timeout_system,
                 // PanCam の do_camera_zoom より前に走らせ、enabled フラグを先に確定させる。
                 pancam_suppression_over_editor_system.before(PanCamSystemSet),
             ),

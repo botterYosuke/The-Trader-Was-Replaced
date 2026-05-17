@@ -952,3 +952,28 @@ if progress.visible
 - `src/replay/startup_progress.rs` (new) → `ReplayStartupProgress` / `ReplayStartupPhase` / 4 marker components
 - `src/replay/mod.rs` (new) → 上記の re-export
 - `src/lib.rs` → `pub mod replay;` 追加
+
+### Steps G / H / I / J 完了マーク (2026-05-18)
+
+- ✅ Step G: src/ui/replay_startup_window.rs 実装（G1: spawn + update + close, G2: animate + auto-hide + timeout）
+- ✅ Step H: ScenarioStartupParams / GranularityChoice を src/ui/components.rs に追加
+- ✅ Step I: src/ui/scenario_startup_panel.rs 実装（I1: spawn + sync, I2a: input 受け取り, I2b: validation + commit, I3a: writeback helper, I3b: update_ui, I3c: disabled enforcement）
+- ✅ Step J: handle_strategy_run_system で ScenarioStartupParams.errors.any() ガードと startup_id 採番 + main.rs への system 配線完了
+
+### 実装中に得た知見
+
+- BufferExtras は cosmic-edit から re-export されていない: bevy_cosmic_edit から直接見えないため、buffer 内部の lines 取得は vendored crate 側の BufferExtras ではなく buffer.lines 経由の fallback で対応した。今後 cosmic-edit 周りの実装で BufferExtras を期待しないこと。
+- change_active_editor_ui が未登録だった: scenario_startup_panel で 3 つの CosmicEditor を切り替えるとき、focus 移譲の system が wiring 漏れだった。src/ui/mod.rs で追加登録。strategy_editor だけで使われていた前提が崩れたケース。
+- test init 追従漏れ: handle_strategy_run_system の test に TradingData / LastRunResult / Time<Real> を init し忘れて panic した。新 Res<...> 引数を追加したら test 側の World::insert_resource も必ず追従する。
+- cosmic-edit DPI トラップは vendored crate 側で fix 済み: [cosmic-edit-buffer-metrics-dpi-trap](memory) の二重 scale 問題は vendored cosmic-edit 側で対処済みのため、scenario_startup_panel 側は CosmicRenderScale(1.0) を渡すだけで十分だった。Buffer Metrics を手動で DPI 倍する必要はない。
+- lib/bin クレート分離による wiring 場所: status_update_system は src/main.rs (bin crate) にあるため、auto_hide_replay_startup_window_system.after(status_update_system) の ordering は src/main.rs の add_systems で書く必要がある（lib 側の UiPlugin 内では status_update_system を import できない）。
+- tests 内のローカル add_systems を本番配線と勘違いしない: 各 system の unit test は test 用 App に最小限 system を add_systems するが、これは本番の main.rs 側 wiring とは独立。test が通っても本番に system が登録されていなければ動かない。Step J で animate_replay_startup_bar_system が test pass しているのに本番 main.rs に未登録だったのはこのパターン。
+
+### 分割の経緯
+
+Steps G/H/I/J は当初 G/H/I/J の 4 step 想定だったが、実装中に以下のように細分化した。
+
+- G1/G2: G を「spawn + update + close（最小描画）」と「animate + auto-hide + timeout（動的挙動）」に分割。最小描画が動く状態で一度コミット境界を作るため。
+- I1: spawn + sync（form 表示と ScenarioMetadata → params 反映）を最初に独立させ、まず panel が表示されることだけ確認。
+- I2a/I2b: input system を「raw input 受け取り（commit イベント抽出）」と「validation + commit（errors / ScenarioMetadata / writeback_pending 設定）」に 2 段分割。validation ロジックが大きく、commit と一体だと test 困難なため。
+- I3a/I3b/I3c: writeback helper（cache JSON への 4 field 上書き）/ update_ui（disabled 表示 + error text）/ disabled enforcement（visible 中の commit skip）を独立コミット。I3a は I3b 抜きでも内部状態として正しく動くため境界を作りやすい。

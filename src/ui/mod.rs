@@ -10,8 +10,10 @@ pub mod layout_persistence;
 pub mod menu_bar;
 pub mod orders;
 pub mod positions;
+pub mod replay_startup_window;
 pub mod run_result_panel;
 pub mod scenario_parser;
+pub mod scenario_startup_panel;
 pub mod sidebar;
 pub mod strategy_editor;
 pub mod systems;
@@ -56,6 +58,14 @@ use crate::ui::orders::orders_panel_system;
 use crate::ui::positions::positions_panel_system;
 use crate::ui::run_result_panel::run_result_panel_system;
 use crate::ui::scenario_parser::parse_scenario_system;
+use crate::ui::scenario_startup_panel::{
+    ScenarioStartupParamCommit, commit_startup_params_to_scenario_system,
+    scenario_startup_granularity_button_system, scenario_startup_param_input_system,
+    spawn_scenario_startup_input_fields, spawn_scenario_startup_panel,
+    sync_startup_param_editors_text_system, sync_startup_params_from_scenario_system,
+    update_scenario_startup_param_ui_system, write_startup_params_to_cache_sidecar_system,
+};
+use crate::ui::components::ScenarioStartupParams;
 use crate::ui::sidebar::{
     instrument_remove_button_system, panel_button_system, spawn_sidebar, update_sidebar_system,
 };
@@ -67,7 +77,10 @@ use crate::ui::strategy_editor::{
 use crate::ui::systems::{button_system, update_price_display, update_status_indicator};
 use crate::ui::window::instrument_chart_sync_system;
 use bevy::prelude::*;
-use bevy_cosmic_edit::{CosmicEditPlugin, CosmicFontConfig, prelude::change_active_editor_sprite};
+use bevy_cosmic_edit::{
+    CosmicEditPlugin, CosmicFontConfig,
+    prelude::{change_active_editor_sprite, change_active_editor_ui},
+};
 use bevy_vector_shapes::Shape2dPlugin;
 
 pub struct UiPlugin;
@@ -97,7 +110,9 @@ impl Plugin for UiPlugin {
         .add_event::<UndoRedoApplied>()
         .add_event::<UndoMenuRequested>()
         .add_event::<RedoMenuRequested>()
+        .add_event::<ScenarioStartupParamCommit>()
         .init_resource::<ScenarioMetadata>()
+        .init_resource::<ScenarioStartupParams>()
         .init_resource::<InstrumentRegistry>()
         .init_resource::<ScenarioFileWatchState>()
         .init_resource::<ScenarioReadTarget>()
@@ -113,6 +128,8 @@ impl Plugin for UiPlugin {
                 spawn_footer,
                 spawn_menu_bar,
                 spawn_sidebar,
+                spawn_scenario_startup_panel.after(spawn_sidebar),
+                spawn_scenario_startup_input_fields.after(spawn_scenario_startup_panel),
                 // 起動時に固定 cache から復元する（CacheRestoreRequested 発火）
                 restore_last_strategy_system,
             ),
@@ -134,7 +151,9 @@ impl Plugin for UiPlugin {
                 update_strategy_status_label_system,
                 run_result_panel_system,
                 log_strategy_run_requested_system,
-                handle_strategy_run_system.after(sync_scenario_metadata_from_registry_system),
+                handle_strategy_run_system
+                    .after(sync_scenario_metadata_from_registry_system)
+                    .after(write_startup_params_to_cache_sidecar_system),
                 panel_button_system,
                 panel_spawn_dispatcher_system,
             ),
@@ -143,6 +162,8 @@ impl Plugin for UiPlugin {
             Update,
             (
                 (
+                    scenario_startup_param_input_system,
+                    scenario_startup_granularity_button_system,
                     parse_scenario_system,
                     sync_registry_from_scenario_loaded_system,
                     sync_registry_from_scenario_cleared_system,
@@ -150,6 +171,12 @@ impl Plugin for UiPlugin {
                     sync_scenario_metadata_from_registry_system,
                     writeback_scenario_instruments_system,
                     instrument_chart_sync_system,
+                    // ── 新規: scenario startup params (I2b) ──
+                    sync_startup_params_from_scenario_system,
+                    commit_startup_params_to_scenario_system,
+                    write_startup_params_to_cache_sidecar_system,
+                    sync_startup_param_editors_text_system,
+                    update_scenario_startup_param_ui_system,
                 )
                     .chain(),
                 update_sidebar_system,
@@ -194,7 +221,10 @@ impl Plugin for UiPlugin {
         )
         .add_systems(
             Update,
-            change_active_editor_sprite
+            (
+                change_active_editor_sprite,
+                change_active_editor_ui,
+            )
                 .after(menu_keyboard_system)
                 .after(picker_searchbox_input_system),
         );

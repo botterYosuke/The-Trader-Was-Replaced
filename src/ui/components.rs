@@ -885,6 +885,7 @@ fn rewrite_scenario_instruments_atomic(
 #[cfg(test)]
 mod writeback_scenario_instruments_tests {
     use super::*;
+    use crate::replay::ReplayStartupProgress;
     use std::fs;
 
     /// 計画書 §3.4 / §5.1「永続化」最上段:
@@ -1398,6 +1399,11 @@ mod writeback_scenario_instruments_tests {
         });
         app.insert_resource(TransportCommandSender { tx });
         app.init_resource::<InstrumentRegistry>();
+        app.init_resource::<ScenarioStartupParams>();
+        app.init_resource::<ReplayStartupProgress>();
+        app.init_resource::<crate::trading::TradingData>();
+        app.init_resource::<crate::trading::LastRunResult>();
+        app.init_resource::<bevy::time::Time<bevy::time::Real>>();
         app.insert_resource(ScenarioMetadata {
             instruments: vec!["A.T".to_string(), "B.T".to_string()],
             start: Some("2025-01-06".to_string()),
@@ -1472,6 +1478,11 @@ mod writeback_scenario_instruments_tests {
         });
         app.insert_resource(TransportCommandSender { tx });
         app.init_resource::<InstrumentRegistry>();
+        app.init_resource::<ScenarioStartupParams>();
+        app.init_resource::<ReplayStartupProgress>();
+        app.init_resource::<crate::trading::TradingData>();
+        app.init_resource::<crate::trading::LastRunResult>();
+        app.init_resource::<bevy::time::Time<bevy::time::Real>>();
         app.insert_resource(ScenarioMetadata {
             instruments: vec!["A.T".to_string(), "B.T".to_string()],
             start: Some("2025-01-06".to_string()),
@@ -1547,6 +1558,11 @@ mod writeback_scenario_instruments_tests {
         });
         app.insert_resource(TransportCommandSender { tx });
         app.init_resource::<InstrumentRegistry>();
+        app.init_resource::<ScenarioStartupParams>();
+        app.init_resource::<ReplayStartupProgress>();
+        app.init_resource::<crate::trading::TradingData>();
+        app.init_resource::<crate::trading::LastRunResult>();
+        app.init_resource::<bevy::time::Time<bevy::time::Real>>();
         app.insert_resource(ScenarioMetadata {
             instruments: vec!["A.T".to_string()],
             start: Some("2025-01-06".to_string()),
@@ -1608,6 +1624,11 @@ mod writeback_scenario_instruments_tests {
         });
         app.insert_resource(TransportCommandSender { tx });
         app.init_resource::<InstrumentRegistry>();
+        app.init_resource::<ScenarioStartupParams>();
+        app.init_resource::<ReplayStartupProgress>();
+        app.init_resource::<crate::trading::TradingData>();
+        app.init_resource::<crate::trading::LastRunResult>();
+        app.init_resource::<bevy::time::Time<bevy::time::Real>>();
         app.insert_resource(ScenarioMetadata {
             instruments: vec!["NEW.T".to_string()],
             start: Some("2025-01-06".to_string()),
@@ -2103,6 +2124,11 @@ mod writeback_scenario_instruments_tests {
             last_error: None,
         });
         app.init_resource::<InstrumentRegistry>();
+        app.init_resource::<ScenarioStartupParams>();
+        app.init_resource::<ReplayStartupProgress>();
+        app.init_resource::<crate::trading::TradingData>();
+        app.init_resource::<crate::trading::LastRunResult>();
+        app.init_resource::<bevy::time::Time<bevy::time::Real>>();
         app.init_resource::<ScenarioMetadata>();
         app.init_resource::<ScenarioFileWatchState>();
         app.init_resource::<ScenarioReadTarget>();
@@ -2467,6 +2493,11 @@ mod writeback_scenario_instruments_tests {
         });
         app.insert_resource(TransportCommandSender { tx });
         app.init_resource::<InstrumentRegistry>();
+        app.init_resource::<ScenarioStartupParams>();
+        app.init_resource::<ReplayStartupProgress>();
+        app.init_resource::<crate::trading::TradingData>();
+        app.init_resource::<crate::trading::LastRunResult>();
+        app.init_resource::<bevy::time::Time<bevy::time::Real>>();
         app.init_resource::<ScenarioMetadata>();
         app.init_resource::<ScenarioFileWatchState>();
         app.init_resource::<ScenarioReadTarget>();
@@ -2733,4 +2764,97 @@ mod tests {
         let target = ScenarioReadTarget(Some(path.clone()));
         assert_eq!(target.0, Some(path));
     }
+
+    #[test]
+    fn scenario_startup_params_errors_any_detects_some_fields() {
+        let none_errors = ScenarioStartupParamsErrors::default();
+        assert!(!none_errors.any());
+
+        let start_only = ScenarioStartupParamsErrors {
+            start: Some("bad".to_string()),
+            ..Default::default()
+        };
+        assert!(start_only.any());
+
+        let cross_only = ScenarioStartupParamsErrors {
+            cross_field: Some("bad".to_string()),
+            ..Default::default()
+        };
+        assert!(cross_only.any());
+    }
+}
+
+#[derive(Default, Debug, Clone, Copy, PartialEq, Eq)]
+pub enum GranularityChoice {
+    #[default]
+    Daily,
+    Minute,
+}
+
+#[derive(Default, Debug, Clone)]
+pub struct ScenarioStartupParamsErrors {
+    pub start: Option<String>,
+    pub end: Option<String>,
+    pub granularity: Option<String>,
+    pub initial_cash: Option<String>,
+    pub cross_field: Option<String>,
+}
+
+impl ScenarioStartupParamsErrors {
+    pub fn any(&self) -> bool {
+        self.start.is_some()
+            || self.end.is_some()
+            || self.granularity.is_some()
+            || self.initial_cash.is_some()
+            || self.cross_field.is_some()
+    }
+}
+
+#[derive(Resource, Default, Debug, Clone)]
+pub struct ScenarioStartupParams {
+    pub start: String,
+    pub end: String,
+    pub granularity: GranularityChoice,
+    pub initial_cash: String,
+    pub dirty: bool,
+    pub writeback_pending: bool,
+    pub errors: ScenarioStartupParamsErrors,
+}
+
+// ── Scenario Startup Panel markers (Phase 7.6 / I3a) ──────────────────────
+#[derive(Component)]
+pub struct ScenarioStartupPanelRoot;
+
+#[derive(Component)]
+pub struct ScenarioStartupStartFieldHost;
+
+#[derive(Component)]
+pub struct ScenarioStartupEndFieldHost;
+
+#[derive(Component)]
+pub struct ScenarioStartupCashFieldHost;
+
+#[derive(Component)]
+pub struct ScenarioStartupGranularityDailyButton;
+
+#[derive(Component)]
+pub struct ScenarioStartupGranularityMinuteButton;
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum ScenarioStartupField {
+    Start,
+    End,
+    Granularity,
+    InitialCash,
+    CrossField,
+}
+
+#[derive(Component)]
+pub struct ScenarioStartupErrorLabel {
+    pub field: ScenarioStartupField,
+}
+
+#[derive(Component, Debug, Clone, Copy)]
+pub struct ScenarioStartupFieldEditor {
+    pub field: ScenarioStartupField,
 }

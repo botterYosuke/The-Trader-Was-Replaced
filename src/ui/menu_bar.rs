@@ -6,9 +6,10 @@ use crate::ui::components::ScenarioMetadata;
 use crate::ui::components::{
     InstrumentRegistry, MenuBarRoot, MenuItem, MenuPopup, MenuTopLevel, OpenMenu, PanelKind,
     PanelSpawnRequested, PanelSpawnSource, PendingStrategyFragments, RedoMenuRequested,
-    RegionKeyAllocator, ScenarioReadTarget, ScenarioWritebackPaths, StrategyBuffer,
-    StrategyEditorSpawnSpec, StrategyFileLoadRequested, StrategyFragment, StrategyLoadMode,
-    StrategyRunRequested, StrategyStatusLabel, UndoMenuRequested, WindowRoot, flush_sidecars_now,
+    RegionKeyAllocator, ScenarioReadTarget, ScenarioStartupParams, ScenarioWritebackPaths,
+    StrategyBuffer, StrategyEditorSpawnSpec, StrategyFileLoadRequested, StrategyFragment,
+    StrategyLoadMode, StrategyRunRequested, StrategyStatusLabel, UndoMenuRequested, WindowRoot,
+    flush_sidecars_now,
 };
 use crate::ui::layout_persistence::{
     CacheRestoreRequested, LayoutLoadDialogRequested, LayoutLoadRequested, LayoutSaveAsRequested,
@@ -559,8 +560,13 @@ pub fn handle_strategy_run_system(
     trading_data: Res<TradingData>,
     real_time: Res<Time<Real>>,
     mut last_run: ResMut<LastRunResult>,
+    startup_params: Res<ScenarioStartupParams>,
 ) {
     for event in events.read() {
+        if startup_params.errors.any() {
+            error!("Run blocked: scenario startup params have errors");
+            continue;
+        }
         if scenario.instruments.is_empty() {
             error!("Run blocked: SCENARIO has no instruments");
             continue;
@@ -699,6 +705,7 @@ pub(crate) fn copy_sidecar_to_cache(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::ui::components::ScenarioStartupParamsErrors;
 
     /// tmp に `foo.py` + `foo.json` を作り、copy_sidecar_to_cache を呼ぶと
     /// cache に `<hash>__foo.json` が存在し内容が一致することを検証
@@ -818,6 +825,7 @@ mod tests {
         app.insert_resource(InstrumentRegistry::default());
         app.insert_resource(ScenarioWritebackPaths::default());
         app.init_resource::<ReplayStartupProgress>();
+        app.init_resource::<ScenarioStartupParams>();
         app.insert_resource(TradingData::default());
         app.insert_resource(LastRunResult::default());
         app.add_event::<StrategyRunRequested>();
@@ -892,5 +900,34 @@ mod tests {
         let progress = app.world().resource::<ReplayStartupProgress>();
         assert!(!progress.visible);
         assert_eq!(progress.phase, ReplayStartupPhase::Idle);
+    }
+
+    #[test]
+    fn handle_strategy_run_system_blocks_when_startup_params_have_errors() {
+        let (mut app, mut rx) = build_app_for_run(make_valid_scenario(), true);
+        // errors を設定して Run を block させる
+        app.world_mut().resource_mut::<ScenarioStartupParams>().errors =
+            ScenarioStartupParamsErrors {
+                granularity: Some("unknown granularity".to_string()),
+                ..Default::default()
+            };
+        app.world_mut()
+            .send_event(StrategyRunRequested {
+                cache_path: std::path::PathBuf::from("/tmp/foo.py"),
+            });
+        app.update();
+
+        let progress = app.world().resource::<ReplayStartupProgress>();
+        assert!(!progress.visible, "Run must be blocked when errors.any()");
+        assert_eq!(progress.phase, ReplayStartupPhase::Idle);
+
+        let rx = rx.as_mut().unwrap();
+        assert!(
+            rx.try_recv().is_err(),
+            "no RunStrategy command should be sent"
+        );
+
+        let last_run = app.world().resource::<LastRunResult>();
+        assert!(matches!(last_run.state, RunState::Idle));
     }
 }

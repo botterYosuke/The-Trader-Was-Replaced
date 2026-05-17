@@ -240,6 +240,8 @@ egui の中で `state.buffer` のような大きい String を編集するとき
 
 ## トラブルシュート
 
+- **"could not access system parameter Res<'_, T>" で test が panic**:
+  既存 system のシグネチャに `Res<T>` / `ResMut<T>` を追加した直後、その system を `app.update()` で踏む既存テスト全てが panic する典型。本番側 (`main.rs` / `UiPlugin::build`) は `init_resource` 済みでも、test 側の `App` builder は手動 init していないので追従漏れする。同 system を踏むテスト全部に `app.init_resource::<T>();` を追加すること。**最初の panic ログには 1 つの Res 名しか出ないが、その Res を init した後にも別の Res で同じ panic が出る**（Phase 7.6 では `ReplayStartupProgress` → `TradingData` → `LastRunResult` → `Time<Real>` → `ScenarioStartupParams` と 5 段階で追従漏れが連続発覚）。signature 拡張時は本番側で App build に並んでいる全 Res を確認してから 1 ターンでまとめて init するのが安全。
 - **"the trait `Bundle` is not implemented for `(Sprite, Transform, ...)`"**:
   ほぼ全部 `Component` で derive されているはずなので、構成要素のどれかが Component
   でない（または import 漏れ）。`use bevy::prelude::*;` を確認。
