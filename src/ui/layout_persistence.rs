@@ -574,7 +574,14 @@ fn handle_save_layout_system(
                         }
                     }
                 }
-                Err(e) => error!("strategy .py save failed: {e}"),
+                Err(e) => {
+                    error!("strategy .py save failed: {e}");
+                    if was_new {
+                        buffer.original_path = None;
+                        buffer.cache_path = None;
+                        scenario_target.0 = None;
+                    }
+                }
             }
         }
     }
@@ -664,10 +671,6 @@ fn handle_save_as_layout_system(
         match save_layout_to(&json_path, &layout) {
             Ok(()) => {
                 info!("layout saved-as to {:?}", json_path);
-                // 計画書 §9.1 R1: Save As 確定 (buffer.original_path 更新済 + JSON 書込成功) で
-                // writeback revision を強制 inc。registry 不変でも次 tick の writeback system が
-                // 新パス側 sidecar へ flush する。
-                crate::ui::components::bump_writeback_for_save_as(&mut writeback);
                 scenario_target.0 = Some(json_path.clone());
             }
             Err(e) => {
@@ -691,6 +694,7 @@ fn handle_save_as_layout_system(
                     info!("strategy .py saved-as to {:?}", py_path);
                     match sync_to_cache(&py_path) {
                         Ok(()) => {
+                            crate::ui::components::bump_writeback_for_save_as(&mut writeback);
                             for (_, mut frag) in fragments_q.iter_mut() {
                                 frag.dirty = false;
                             }
