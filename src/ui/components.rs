@@ -163,6 +163,14 @@ pub enum PanelKind {
     Orders,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum PanelRestoreDriver {
+    /// Restored from SidecarLayout.windows entries.
+    WindowLayout,
+    /// Restored from scenario/instrument state, outside the windows list.
+    ScenarioInstruments,
+}
+
 impl PanelKind {
     /// サイドバーのボタンに表示する文字列。
     pub fn label(self) -> &'static str {
@@ -173,6 +181,27 @@ impl PanelKind {
             PanelKind::RunResult => "Run Result",
             PanelKind::Positions => "Positions",
             PanelKind::Orders => "Orders",
+        }
+    }
+
+    /// Declares which state owns restore/spawn for this panel kind.
+    ///
+    /// Important asymmetry: Chart is driven by scenario.instruments via
+    /// InstrumentRegistry and is intentionally absent from SidecarLayout.windows.
+    /// StrategyEditor is not scenario-driven; it needs a windows entry, except for
+    /// the cache-restore fallback that opens an editor when app_state.py fragments
+    /// exist but app_state.json has no windows section.
+    ///
+    /// Keep this match exhaustive so future PanelKind additions must choose a
+    /// restore owner explicitly.
+    pub fn restore_driver(self) -> PanelRestoreDriver {
+        match self {
+            PanelKind::Chart => PanelRestoreDriver::ScenarioInstruments,
+            PanelKind::StrategyEditor
+            | PanelKind::BuyingPower
+            | PanelKind::RunResult
+            | PanelKind::Positions
+            | PanelKind::Orders => PanelRestoreDriver::WindowLayout,
         }
     }
 }
@@ -694,8 +723,8 @@ pub fn writeback_scenario_instruments_system(
         return;
     }
 
-    let is_cache_target = target.0.as_deref() == paths.cache_sidecar.as_deref()
-        && target.0.is_some();
+    let is_cache_target =
+        target.0.as_deref() == paths.cache_sidecar.as_deref() && target.0.is_some();
     match flush_sidecars_now(registry.as_slice(), None, paths.cache_sidecar.as_deref()) {
         Ok(new_mtime) => {
             writeback.flushed_revision = writeback.revision;
@@ -2673,6 +2702,23 @@ mod writeback_scenario_instruments_tests {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn panel_restore_driver_documents_layout_vs_scenario_ownership() {
+        assert_eq!(
+            PanelKind::Chart.restore_driver(),
+            PanelRestoreDriver::ScenarioInstruments
+        );
+        for kind in [
+            PanelKind::StrategyEditor,
+            PanelKind::BuyingPower,
+            PanelKind::RunResult,
+            PanelKind::Positions,
+            PanelKind::Orders,
+        ] {
+            assert_eq!(kind.restore_driver(), PanelRestoreDriver::WindowLayout);
+        }
+    }
 
     #[test]
     fn scenario_read_target_default_is_none() {
