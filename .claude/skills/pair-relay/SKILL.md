@@ -1,6 +1,6 @@
 ---
 name: pair-relay
-description: 司令塔Agentが Navigator と Driver を分けて長い実装を進めるための運用スキル。司令塔は実装・レビュー・検証を自分で抱えず、Driver の完了報告やバグ報告を Navigator に渡し、Navigator の「次の 1 手」を Driver に渡す。Driver は .claude/agents/pair-relay-driver.md、Navigator は .claude/agents/pair-relay-navigator.md に従う。
+description: 司令塔Agentが Navigator と Driver を分けて長い実装を進めるための運用スキル。司令塔は実装・レビュー・検証を自分で抱えず、Driver の完了報告やバグ報告を Navigator に渡し、Navigator の「次の 1 手」を Driver に渡す。Driver は .claude/agents/pair-relay-driver.md、Navigator は .claude/agents/pair-relay-navigator.md に従う。トリガー: 「/pair-relay」「計画書を実装してください」「プランを実装」「段階的に実装」「複数ファイルにまたがる実装」「長い実装」「フェーズを実装」「TDD で実装」と言われたとき。複数ファイル・複数レイヤー（Rust + Python）にまたがる実装や、プランファイルを渡されて実装を指示されたときに優先的に発動すること。
 ---
 
 # Pair Relay

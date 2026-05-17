@@ -1,6 +1,6 @@
 ---
 name: rust-testing
-description: Rust testing patterns including unit tests, integration tests, async testing, property-based testing, mocking, and coverage. Follows TDD methodology. Trigger: "cargo test", "Rust テスト", "テストブロック修正", "test fails", "#[test]", "テスト破損", "旧テストを新 API に合わせる", "init_resource が欠落", "Bevy App テスト", "app.add_systems テスト".
+description: Rust testing patterns including unit tests, integration tests, async testing, property-based testing, mocking, and coverage. Follows TDD methodology. Trigger: "cargo test", "Rust テスト", "テストブロック修正", "test fails", "#[test]", "テスト破損", "旧テストを新 API に合わせる", "init_resource が欠落", "Bevy App テスト", "app.add_systems テスト", "serial_test", "env var test", "RAII guard", "EnvGuard", "環境変数テスト", "std::env::set_var", "serial". pair-relay の Navigator が Rust テストを書く前にこのスキルを参照すると、RAII guard パターン・serial_test 直列化・unsafe env var 操作の落とし穴を回避できる。
 origin: ECC
 ---
 
