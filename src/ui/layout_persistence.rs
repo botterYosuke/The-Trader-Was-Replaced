@@ -6,7 +6,7 @@ use std::path::PathBuf;
 use std::time::Instant;
 
 use crate::ui::components::{
-    ChartInstrument, PanelKind, PanelSpawnRequested, PanelSpawnSource, PendingStrategyFragments,
+    LayoutExcluded, PanelKind, PanelSpawnRequested, PanelSpawnSource, PendingStrategyFragments,
     RegionKeyAllocator, StrategyBuffer, StrategyEditorId, StrategyEditorSpawnSpec,
     StrategyFileLoadRequested, StrategyFragment, StrategyLoadMode, WindowManager, WindowRoot,
 };
@@ -168,7 +168,7 @@ fn build_layout(
             &Sprite,
             &Visibility,
         ),
-        (With<WindowRoot>, Without<ChartInstrument>),
+        (With<WindowRoot>, Without<LayoutExcluded>),
     >,
     camera: &Query<(&Transform, &OrthographicProjection), (With<Camera2d>, Without<WindowRoot>)>,
     buffer: &StrategyBuffer,
@@ -241,7 +241,7 @@ fn build_layout_for_explicit_save(
             &Sprite,
             &Visibility,
         ),
-        (With<WindowRoot>, Without<ChartInstrument>),
+        (With<WindowRoot>, Without<LayoutExcluded>),
     >,
     camera: &Query<(&Transform, &OrthographicProjection), (With<Camera2d>, Without<WindowRoot>)>,
     buffer: &StrategyBuffer,
@@ -441,7 +441,7 @@ fn handle_save_layout_system(
             &Sprite,
             &Visibility,
         ),
-        (With<WindowRoot>, Without<ChartInstrument>),
+        (With<WindowRoot>, Without<LayoutExcluded>),
     >,
     camera: Query<(&Transform, &OrthographicProjection), (With<Camera2d>, Without<WindowRoot>)>,
     mut buffer: ResMut<StrategyBuffer>,
@@ -568,7 +568,7 @@ fn handle_save_as_layout_system(
             &Sprite,
             &Visibility,
         ),
-        (With<WindowRoot>, Without<ChartInstrument>),
+        (With<WindowRoot>, Without<LayoutExcluded>),
     >,
     camera: Query<(&Transform, &OrthographicProjection), (With<Camera2d>, Without<WindowRoot>)>,
     mut buffer: ResMut<StrategyBuffer>,
@@ -715,7 +715,7 @@ fn apply_layout_system(
             &mut Sprite,
             &mut Visibility,
         ),
-        (With<WindowRoot>, Without<ChartInstrument>),
+        (With<WindowRoot>, Without<LayoutExcluded>),
     >,
     mut camera: Query<
         (&mut Transform, &mut OrthographicProjection),
@@ -946,7 +946,7 @@ fn apply_pending_layout_system(
             &mut Sprite,
             &mut Visibility,
         ),
-        (With<WindowRoot>, Without<ChartInstrument>),
+        (With<WindowRoot>, Without<LayoutExcluded>),
     >,
     mut wm: ResMut<WindowManager>,
     pending_fragments: Res<PendingStrategyFragments>,
@@ -1042,7 +1042,7 @@ fn save_layout_on_window_close(
             &Sprite,
             &Visibility,
         ),
-        (With<WindowRoot>, Without<ChartInstrument>),
+        (With<WindowRoot>, Without<LayoutExcluded>),
     >,
     camera: Query<(&Transform, &OrthographicProjection), (With<Camera2d>, Without<WindowRoot>)>,
     mut buffer: ResMut<StrategyBuffer>,
@@ -1101,7 +1101,7 @@ fn debounced_autosave_system(
             &Sprite,
             &Visibility,
         ),
-        (With<WindowRoot>, Without<ChartInstrument>),
+        (With<WindowRoot>, Without<LayoutExcluded>),
     >,
     camera: Query<(&Transform, &OrthographicProjection), (With<Camera2d>, Without<WindowRoot>)>,
     buffer: Res<StrategyBuffer>,
@@ -1435,6 +1435,7 @@ mod tests {
             Sprite { custom_size: Some(Vec2::new(400.0, 300.0)), ..default() },
             Visibility::Visible,
             ChartInstrument { instrument_id: "7203.TSE".to_string() },
+            LayoutExcluded,
         ));
 
         app.world_mut().spawn((
@@ -1448,7 +1449,7 @@ mod tests {
         let mut state: SystemState<(
             Query<
                 (&PanelKind, Option<&StrategyEditorId>, &Transform, &Sprite, &Visibility),
-                (With<WindowRoot>, Without<ChartInstrument>),
+                (With<WindowRoot>, Without<LayoutExcluded>),
             >,
             Query<(&Transform, &OrthographicProjection), (With<Camera2d>, Without<WindowRoot>)>,
             Res<StrategyBuffer>,
@@ -1489,6 +1490,7 @@ mod tests {
             Sprite { custom_size: Some(Vec2::new(400.0, 300.0)), ..default() },
             Visibility::Visible,
             ChartInstrument { instrument_id: "7203.TSE".to_string() },
+            LayoutExcluded,
         )).id();
 
         let tmp = std::env::temp_dir().join(format!(

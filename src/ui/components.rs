@@ -370,6 +370,13 @@ pub struct ChartInstrument {
     pub instrument_id: String,
 }
 
+/// Layout persistence の query から除外する marker。
+/// Chart window や Instrument Picker window など、レイアウト保存・復元の
+/// 対象にしたくない root に貼る。`ChartInstrument` や picker spawn と
+/// 必ず同時に insert すること（計画書 Phase 7.5b §3.6 / §3.7 / R10）。
+#[derive(Component, Debug, Default, Clone, Copy)]
+pub struct LayoutExcluded;
+
 /// writeback system と Run 直前 inline flush の dirty/flush 管理。
 /// `is_changed()` の race を避けるため明示 revision を使う。
 #[derive(Resource, Default, Debug, Clone)]

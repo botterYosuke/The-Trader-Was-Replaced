@@ -1,7 +1,7 @@
 use backcast::camera::{pancam_suppression_over_editor_system, setup_camera};
 use backcast::grid::GridPlugin;
 use backcast::trading::{
-    BackendChannel, BackendStatus, InstrumentList, LastRunResult, PortfolioOrder,
+    AvailableInstruments, BackendChannel, BackendStatus, LastRunResult, PortfolioOrder,
     PortfolioPosition, PortfolioState, ReplaySpeed, RunState, TradingData, TradingSettings,
     TransportCommand, TransportCommandSender, backend_update_system, engine, parse_summary_json,
     price_simulation_system,
@@ -9,10 +9,11 @@ use backcast::trading::{
 use backcast::ui::UiPlugin;
 use bevy::prelude::*;
 use bevy_pancam::{PanCamPlugin, PanCamSystemSet};
+use chrono::NaiveDate;
 use engine::data_engine_client::DataEngineClient;
 use engine::{
     EngineKind, EngineStartConfig, ForceStopReplayRequest, GetPortfolioRequest, GetStateRequest,
-    ListInstrumentsRequest, LoadReplayDataRequest, PauseReplayRequest, ReplayGranularity,
+    ListAllListedSymbolsRequest, LoadReplayDataRequest, PauseReplayRequest, ReplayGranularity,
     ResumeReplayRequest, SetReplaySpeedRequest, StartEngineRequest, StartEngineResponse,
     StepReplayRequest,
 };
@@ -41,7 +42,7 @@ async fn main() {
         .insert_resource(TradingSettings::default())
         .insert_resource(BackendStatus::default())
         .insert_resource(LastRunResult::default())
-        .insert_resource(InstrumentList::default())
+        .insert_resource(AvailableInstruments::default())
         .insert_resource(PortfolioState::default())
         .insert_resource(ReplaySpeed::default())
         .insert_resource(tokio_handle)
@@ -76,12 +77,6 @@ enum BackendStatusUpdate {
     RunFailed {
         error: String,
     },
-    InstrumentsLoaded {
-        ids: Vec<String>,
-    },
-    InstrumentLoadFailed {
-        error: String,
-    },
     PortfolioLoaded {
         buying_power: f64,
         cash: f64,
@@ -89,14 +84,22 @@ enum BackendStatusUpdate {
         positions: Vec<PortfolioPosition>,
         orders: Vec<PortfolioOrder>,
     },
+    AvailableInstrumentsLoaded {
+        end_date: NaiveDate,
+        ids: Vec<String>,
+    },
+    AvailableInstrumentsFetchFailed {
+        end_date: NaiveDate,
+        error: String,
+    },
 }
 
 fn status_update_system(
     mut status: ResMut<BackendStatus>,
     mut channel: ResMut<StatusUpdateChannel>,
     mut last_run: ResMut<LastRunResult>,
-    mut instrument_list: ResMut<InstrumentList>,
     mut portfolio: ResMut<PortfolioState>,
+    mut available: ResMut<AvailableInstruments>,
 ) {
     while let Ok(update) = channel.rx.try_recv() {
         match update {
@@ -122,15 +125,6 @@ fn status_update_system(
             BackendStatusUpdate::RunFailed { error } => {
                 last_run.state = RunState::Failed { error };
             }
-            BackendStatusUpdate::InstrumentsLoaded { ids } => {
-                instrument_list.ids = ids;
-                instrument_list.loaded = true;
-                instrument_list.error = None;
-            }
-            BackendStatusUpdate::InstrumentLoadFailed { error } => {
-                instrument_list.loaded = true;
-                instrument_list.error = Some(error);
-            }
             BackendStatusUpdate::PortfolioLoaded {
                 buying_power,
                 cash,
@@ -145,8 +139,32 @@ fn status_update_system(
                 portfolio.orders = orders;
                 portfolio.loaded = true;
             }
+            BackendStatusUpdate::AvailableInstrumentsLoaded { end_date, ids } => {
+                apply_available_loaded(&mut available, end_date, ids);
+            }
+            BackendStatusUpdate::AvailableInstrumentsFetchFailed { end_date, error } => {
+                apply_available_failed(&mut available, end_date, error);
+            }
         }
     }
+}
+
+fn apply_available_loaded(
+    available: &mut AvailableInstruments,
+    end_date: NaiveDate,
+    ids: Vec<String>,
+) {
+    available.by_end_date.insert(end_date, ids);
+    available.in_flight.remove(&end_date);
+}
+
+fn apply_available_failed(
+    available: &mut AvailableInstruments,
+    end_date: NaiveDate,
+    error: String,
+) {
+    available.last_error = Some((end_date, error));
+    available.in_flight.remove(&end_date);
 }
 
 fn setup_backend_connection(
@@ -200,27 +218,6 @@ fn setup_backend_connection(
         // Backend manages its own lifecycle; no explicit Start call needed.
         info!("Backend connection established.");
         let _ = status_tx.send(BackendStatusUpdate::Running(true));
-
-        // Load instrument list once on connect. May be empty if catalog not yet ready.
-        match client.list_instruments(tonic::Request::new(ListInstrumentsRequest {
-            token: token.clone(),
-            source: None,
-        })).await {
-            Ok(r) => {
-                let inner = r.into_inner();
-                if inner.success {
-                    info!("ListInstruments: {:?}", inner.instrument_ids);
-                    let _ = status_tx.send(BackendStatusUpdate::InstrumentsLoaded { ids: inner.instrument_ids });
-                } else {
-                    warn!("ListInstruments: {}", inner.error_message);
-                    let _ = status_tx.send(BackendStatusUpdate::InstrumentLoadFailed { error: inner.error_message });
-                }
-            }
-            Err(e) => {
-                warn!("ListInstruments gRPC error: {}", e);
-                let _ = status_tx.send(BackendStatusUpdate::InstrumentLoadFailed { error: e.to_string() });
-            }
-        }
 
         loop {
             // Drain transport commands before polling state so the UI feels responsive.
@@ -419,6 +416,50 @@ fn setup_backend_connection(
                             }
                         });
                     }
+                    TransportCommand::FetchAvailableInstruments { end_date } => {
+                        let mut fetch_client = client.clone();
+                        let fetch_token = token.clone();
+                        let fetch_status_tx = status_tx.clone();
+                        tokio::spawn(async move {
+                            let end_date_str = end_date.format("%Y-%m-%d").to_string();
+                            let req = tonic::Request::new(ListAllListedSymbolsRequest {
+                                token: fetch_token,
+                                end_date: end_date_str.clone(),
+                            });
+                            match fetch_client.list_all_listed_symbols(req).await {
+                                Ok(resp) => {
+                                    let inner = resp.into_inner();
+                                    if inner.success {
+                                        if !inner.resolved_end_date.is_empty()
+                                            && inner.resolved_end_date != end_date_str
+                                        {
+                                            info!(
+                                                "ListAllListedSymbols: backend clamped end_date {} -> {} ({} ids)",
+                                                end_date_str,
+                                                inner.resolved_end_date,
+                                                inner.instrument_ids.len()
+                                            );
+                                        }
+                                        let _ = fetch_status_tx.send(BackendStatusUpdate::AvailableInstrumentsLoaded {
+                                            end_date,
+                                            ids: inner.instrument_ids,
+                                        });
+                                    } else {
+                                        let _ = fetch_status_tx.send(BackendStatusUpdate::AvailableInstrumentsFetchFailed {
+                                            end_date,
+                                            error: inner.error_message,
+                                        });
+                                    }
+                                }
+                                Err(e) => {
+                                    let _ = fetch_status_tx.send(BackendStatusUpdate::AvailableInstrumentsFetchFailed {
+                                        end_date,
+                                        error: e.to_string(),
+                                    });
+                                }
+                            }
+                        });
+                    }
                 }
             }
 
@@ -459,4 +500,53 @@ fn setup_backend_connection(
             tokio::time::sleep(tokio::time::Duration::from_millis(interval)).await;
         }
     });
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{apply_available_failed, apply_available_loaded};
+    use backcast::trading::AvailableInstruments;
+    use chrono::NaiveDate;
+
+    fn d(s: &str) -> NaiveDate {
+        NaiveDate::parse_from_str(s, "%Y-%m-%d").unwrap()
+    }
+
+    #[test]
+    fn test_available_loaded_clears_in_flight() {
+        let mut av = AvailableInstruments::default();
+        let date = d("2025-01-15");
+        av.in_flight.insert(date);
+        apply_available_loaded(&mut av, date, vec!["7203".into(), "9984".into()]);
+        assert!(!av.in_flight.contains(&date), "in_flight must be cleared");
+        assert_eq!(
+            av.by_end_date.get(&date).map(Vec::as_slice),
+            Some(["7203".to_string(), "9984".to_string()].as_slice()),
+        );
+    }
+
+    #[test]
+    fn test_available_failed_sets_last_error() {
+        let mut av = AvailableInstruments::default();
+        let date = d("2025-01-15");
+        av.in_flight.insert(date);
+        apply_available_failed(&mut av, date, "grpc unavailable".into());
+        assert!(!av.in_flight.contains(&date), "in_flight must be cleared on failure too");
+        assert_eq!(av.last_error, Some((date, "grpc unavailable".into())));
+        assert!(!av.by_end_date.contains_key(&date), "cache must not be populated on failure");
+    }
+
+    #[test]
+    fn test_available_loaded_overwrites_existing() {
+        let mut av = AvailableInstruments::default();
+        let date = d("2025-01-15");
+        av.by_end_date.insert(date, vec!["OLD".into()]);
+        av.in_flight.insert(date);
+        apply_available_loaded(&mut av, date, vec!["NEW1".into(), "NEW2".into()]);
+        assert_eq!(
+            av.by_end_date.get(&date).map(Vec::as_slice),
+            Some(["NEW1".to_string(), "NEW2".to_string()].as_slice()),
+        );
+        assert!(!av.in_flight.contains(&date));
+    }
 }

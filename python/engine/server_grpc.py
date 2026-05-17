@@ -1,7 +1,12 @@
+import json
 import logging
+import os
+import re
 import threading
 import time
 from concurrent import futures
+from datetime import datetime, timezone
+from pathlib import Path
 from typing import Optional
 
 import grpc
@@ -10,6 +15,113 @@ from .core import DataEngine
 from .proto import engine_pb2, engine_pb2_grpc
 from .replay import BaseReplayProvider
 from .jquants_loader import JQuantsLoader
+
+
+_INSTRUMENT_ID_RE = re.compile(r"^(.+?)-\d+-[A-Z]")
+
+
+def _artifact_path_for(end_date: str) -> Path:
+    return Path("artifacts") / "instrument-lists" / f"listed-symbols-{end_date}.json"
+
+
+def _read_artifact(end_date: str) -> Optional[list[str]]:
+    path = _artifact_path_for(end_date)
+    if not path.exists():
+        return None
+    try:
+        data = json.loads(path.read_text(encoding="utf-8"))
+    except Exception as exc:
+        logging.warning("ListAllListedSymbols: artifact read failed: %s", exc)
+        return None
+    if not isinstance(data, dict):
+        return None
+    if data.get("schema_version") != 1:
+        return None
+    if data.get("end_date") != end_date:
+        return None
+    ids = data.get("instrument_ids")
+    if not isinstance(ids, list) or not all(isinstance(x, str) for x in ids):
+        return None
+    return ids
+
+
+def _write_artifact_atomic(end_date: str, instrument_ids: list[str], catalog_path: Optional[str]) -> None:
+    path = _artifact_path_for(end_date)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    payload = {
+        "schema_version": 1,
+        "end_date": end_date,
+        "source": "nautilus_catalog",
+        "catalog_path": str(catalog_path) if catalog_path else "",
+        "generated_at": datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ"),
+        "instrument_ids": instrument_ids,
+    }
+    tmp = path.with_suffix(path.suffix + ".tmp")
+    tmp.write_text(json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8")
+    os.replace(tmp, path)
+
+
+def _resolve_date_bounds_from_catalog(catalog_path: str) -> Optional[tuple[str, str]]:
+    """Return (oldest_date, latest_date) as 'YYYY-MM-DD' from catalog parquet stats."""
+    bar_dir = Path(catalog_path) / "data" / "bar"
+    if not bar_dir.exists():
+        return None
+    oldest_ns: Optional[int] = None
+    latest_ns: Optional[int] = None
+    try:
+        import pyarrow.parquet as pq
+        for entry in bar_dir.iterdir():
+            if not entry.is_dir() or entry.name == "backup":
+                continue
+            for pq_file in entry.glob("*.parquet"):
+                try:
+                    meta = pq.read_metadata(str(pq_file))
+                    schema = meta.schema
+                    for i in range(meta.num_row_groups):
+                        rg = meta.row_group(i)
+                        for c in range(rg.num_columns):
+                            col = rg.column(c)
+                            name = schema.column(c).name
+                            if name in ("ts_event", "ts_init") and col.statistics is not None:
+                                mn = col.statistics.min
+                                mx = col.statistics.max
+                                if isinstance(mn, int):
+                                    if oldest_ns is None or mn < oldest_ns:
+                                        oldest_ns = mn
+                                if isinstance(mx, int):
+                                    if latest_ns is None or mx > latest_ns:
+                                        latest_ns = mx
+                except Exception:
+                    continue
+    except Exception as exc:
+        logging.warning("ListAllListedSymbols: catalog scan stats failed: %s", exc)
+    if oldest_ns is None or latest_ns is None or latest_ns <= 0:
+        return None
+
+    def _to_date(ns: int) -> str:
+        secs = ns / 1_000_000_000
+        return datetime.fromtimestamp(secs, tz=timezone.utc).strftime("%Y-%m-%d")
+
+    return _to_date(oldest_ns), _to_date(latest_ns)
+
+
+def _resolve_latest_end_date_from_catalog(catalog_path: str) -> Optional[str]:
+    bounds = _resolve_date_bounds_from_catalog(catalog_path)
+    return bounds[1] if bounds else None
+
+
+def _scan_catalog_instruments(catalog_path: str) -> list[str]:
+    bar_dir = Path(catalog_path) / "data" / "bar"
+    if not bar_dir.exists():
+        return []
+    seen: set[str] = set()
+    for entry in bar_dir.iterdir():
+        if not entry.is_dir() or entry.name == "backup":
+            continue
+        m = _INSTRUMENT_ID_RE.match(entry.name)
+        if m:
+            seen.add(m.group(1))
+    return sorted(seen)
 
 
 class GrpcDataEngineServer(
@@ -436,6 +548,95 @@ class GrpcDataEngineServer(
                 success=False,
                 error_message=str(exc),
             )
+
+    def ListAllListedSymbols(self, request, context):
+        if request.token != self.token:
+            context.abort(grpc.StatusCode.UNAUTHENTICATED, "Invalid token")
+
+        end_date = (request.end_date or "").strip()
+        catalog_path = (
+            self.engine.last_replay_catalog_path or self.engine._jquants_catalog_path
+        )
+
+        resolved_end_date = end_date
+        if not resolved_end_date:
+            if catalog_path:
+                resolved_end_date = _resolve_latest_end_date_from_catalog(catalog_path) or ""
+            if not resolved_end_date:
+                resolved_end_date = datetime.now(timezone.utc).strftime("%Y-%m-%d")
+        else:
+            try:
+                datetime.strptime(resolved_end_date, "%Y-%m-%d")
+            except ValueError as exc:
+                return engine_pb2.ListAllListedSymbolsResponse(
+                    success=False,
+                    error_message=f"Invalid end_date '{resolved_end_date}': {exc}",
+                )
+
+        before_oldest = False
+        if end_date and catalog_path:
+            bounds = _resolve_date_bounds_from_catalog(catalog_path)
+            if bounds is not None:
+                oldest_date, latest_date = bounds
+                if resolved_end_date > latest_date:
+                    resolved_end_date = latest_date
+                if resolved_end_date < oldest_date:
+                    before_oldest = True
+
+        if before_oldest:
+            try:
+                _write_artifact_atomic(resolved_end_date, [], catalog_path)
+            except Exception as exc:
+                logging.warning("ListAllListedSymbols: artifact write failed: %s", exc)
+            logging.info(
+                "ListAllListedSymbols: end_date=%s before catalog oldest -> empty ids",
+                resolved_end_date,
+            )
+            return engine_pb2.ListAllListedSymbolsResponse(
+                success=True,
+                instrument_ids=[],
+                resolved_end_date=resolved_end_date,
+            )
+
+        cached = _read_artifact(resolved_end_date)
+        if cached is not None:
+            logging.info("ListAllListedSymbols: artifact hit end_date=%s count=%d", resolved_end_date, len(cached))
+            return engine_pb2.ListAllListedSymbolsResponse(
+                success=True,
+                instrument_ids=cached,
+                resolved_end_date=resolved_end_date,
+            )
+
+        if not catalog_path:
+            return engine_pb2.ListAllListedSymbolsResponse(
+                success=False,
+                error_message="No catalog_path available",
+                resolved_end_date=resolved_end_date,
+            )
+
+        try:
+            ids = _scan_catalog_instruments(catalog_path)
+        except Exception as exc:
+            logging.error("ListAllListedSymbols: scan failed: %s", exc)
+            return engine_pb2.ListAllListedSymbolsResponse(
+                success=False,
+                error_message=str(exc),
+                resolved_end_date=resolved_end_date,
+            )
+
+        ids = sorted(set(ids))
+
+        try:
+            _write_artifact_atomic(resolved_end_date, ids, catalog_path)
+        except Exception as exc:
+            logging.warning("ListAllListedSymbols: artifact write failed: %s", exc)
+
+        logging.info("ListAllListedSymbols: miss->write end_date=%s count=%d", resolved_end_date, len(ids))
+        return engine_pb2.ListAllListedSymbolsResponse(
+            success=True,
+            instrument_ids=ids,
+            resolved_end_date=resolved_end_date,
+        )
 
 
 def advance_loop(engine: DataEngine, interval: float = 1.0):

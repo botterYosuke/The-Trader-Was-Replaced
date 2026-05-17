@@ -5,6 +5,7 @@ pub mod components;
 pub mod editor_history;
 pub mod floating_window;
 pub mod footer;
+pub mod instrument_picker;
 pub mod layout_persistence;
 pub mod menu_bar;
 pub mod orders;
@@ -85,6 +86,7 @@ impl Plugin for UiPlugin {
         .init_resource::<ActiveDrag>()
         .init_resource::<PendingStrategySnapshotRestore>()
         .init_resource::<OpenMenu>()
+        .init_resource::<crate::ui::instrument_picker::InstrumentPickerState>()
         .add_event::<StrategyFileLoadRequested>()
         .add_event::<StrategyRunRequested>()
         .add_event::<PanelSpawnRequested>()

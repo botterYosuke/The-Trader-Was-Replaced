@@ -171,6 +171,11 @@ class DataEngineStub(object):
                 request_serializer=engine__pb2.ListInstrumentsRequest.SerializeToString,
                 response_deserializer=engine__pb2.ListInstrumentsResponse.FromString,
                 _registered_method=True)
+        self.ListAllListedSymbols = channel.unary_unary(
+                '/engine.DataEngine/ListAllListedSymbols',
+                request_serializer=engine__pb2.ListAllListedSymbolsRequest.SerializeToString,
+                response_deserializer=engine__pb2.ListAllListedSymbolsResponse.FromString,
+                _registered_method=True)
         self.GetPortfolio = channel.unary_unary(
                 '/engine.DataEngine/GetPortfolio',
                 request_serializer=engine__pb2.GetPortfolioRequest.SerializeToString,
@@ -262,6 +267,12 @@ class DataEngineServicer(object):
         context.set_details('Method not implemented!')
         raise NotImplementedError('Method not implemented!')
 
+    def ListAllListedSymbols(self, request, context):
+        """Missing associated documentation comment in .proto file."""
+        context.set_code(grpc.StatusCode.UNIMPLEMENTED)
+        context.set_details('Method not implemented!')
+        raise NotImplementedError('Method not implemented!')
+
     def GetPortfolio(self, request, context):
         """Portfolio
         """
@@ -336,6 +347,11 @@ def add_DataEngineServicer_to_server(servicer, server):
                     servicer.ListInstruments,
                     request_deserializer=engine__pb2.ListInstrumentsRequest.FromString,
                     response_serializer=engine__pb2.ListInstrumentsResponse.SerializeToString,
+            ),
+            'ListAllListedSymbols': grpc.unary_unary_rpc_method_handler(
+                    servicer.ListAllListedSymbols,
+                    request_deserializer=engine__pb2.ListAllListedSymbolsRequest.FromString,
+                    response_serializer=engine__pb2.ListAllListedSymbolsResponse.SerializeToString,
             ),
             'GetPortfolio': grpc.unary_unary_rpc_method_handler(
                     servicer.GetPortfolio,
@@ -694,6 +710,33 @@ class DataEngine(object):
             '/engine.DataEngine/ListInstruments',
             engine__pb2.ListInstrumentsRequest.SerializeToString,
             engine__pb2.ListInstrumentsResponse.FromString,
+            options,
+            channel_credentials,
+            insecure,
+            call_credentials,
+            compression,
+            wait_for_ready,
+            timeout,
+            metadata,
+            _registered_method=True)
+
+    @staticmethod
+    def ListAllListedSymbols(request,
+            target,
+            options=(),
+            channel_credentials=None,
+            call_credentials=None,
+            insecure=False,
+            compression=None,
+            wait_for_ready=None,
+            timeout=None,
+            metadata=None):
+        return grpc.experimental.unary_unary(
+            request,
+            target,
+            '/engine.DataEngine/ListAllListedSymbols',
+            engine__pb2.ListAllListedSymbolsRequest.SerializeToString,
+            engine__pb2.ListAllListedSymbolsResponse.FromString,
             options,
             channel_credentials,
             insecure,

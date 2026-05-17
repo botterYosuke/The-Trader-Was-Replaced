@@ -1,6 +1,8 @@
 use bevy::prelude::*;
+use chrono::NaiveDate;
 use rand::Rng;
 use serde::{Deserialize, Serialize};
+use std::collections::{HashMap, HashSet};
 use std::time::{SystemTime, UNIX_EPOCH};
 use tokio::sync::mpsc;
 
@@ -170,6 +172,9 @@ pub enum TransportCommand {
         strategy_file: std::path::PathBuf,
         config: StrategyRunConfig,
     },
+    FetchAvailableInstruments {
+        end_date: NaiveDate,
+    },
 }
 
 #[derive(Resource, Debug, Clone)]
@@ -332,10 +337,13 @@ pub struct LastRunResult {
 }
 
 #[derive(Resource, Default, Debug, Clone)]
-pub struct InstrumentList {
-    pub ids: Vec<String>,
-    pub loaded: bool,
-    pub error: Option<String>,
+pub struct AvailableInstruments {
+    /// end_date キーで全上場銘柄リストを保持する UI セッション内ミラー。
+    pub by_end_date: HashMap<NaiveDate, Vec<String>>,
+    /// 同一 end_date への並行 fetch 防止。
+    pub in_flight: HashSet<NaiveDate>,
+    /// 最後の fetch 失敗。picker 内のエラー行表示に使用。
+    pub last_error: Option<(NaiveDate, String)>,
 }
 
 #[derive(Debug, Clone, Default)]

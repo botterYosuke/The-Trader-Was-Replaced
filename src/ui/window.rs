@@ -1,7 +1,8 @@
 use crate::ui::button::spawn_button;
 use crate::ui::chart::ChartViewState;
 use crate::ui::components::{
-    ChartInstrument, InstrumentRegistry, PanelKind, PriceDisplay, TradeButton, WindowRoot,
+    ChartInstrument, InstrumentRegistry, LayoutExcluded, PanelKind, PriceDisplay, TradeButton,
+    WindowRoot,
 };
 use crate::ui::floating_window::{FloatingWindowSpec, spawn_floating_window};
 use bevy::prelude::*;
@@ -26,6 +27,7 @@ pub fn spawn_chart_panel(commands: &mut Commands, instrument_id: &str) {
     commands.entity(root).insert(ChartInstrument {
         instrument_id: instrument_id.to_string(),
     });
+    commands.entity(root).insert(LayoutExcluded);
 
     // ─── ここから下は中身（content_area の子として配置） ───
 
