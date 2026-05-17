@@ -823,10 +823,16 @@ pub fn flush_sidecars_now(
     Ok(original_mtime)
 }
 
-fn rewrite_scenario_instruments_atomic(
+/// Read the sidecar at `path`, mutate its `scenario` object via `mutate`, and
+/// atomically replace the file via a tmp + rename. Keys outside `scenario`
+/// (e.g. `layout`) are preserved verbatim.
+pub(crate) fn atomic_mutate_scenario_object<F>(
     path: &std::path::Path,
-    new_ids: &[serde_json::Value],
-) -> std::io::Result<()> {
+    mutate: F,
+) -> std::io::Result<()>
+where
+    F: FnOnce(&mut serde_json::Map<String, serde_json::Value>),
+{
     let raw = crate::ui::layout_persistence::read_json_with_bom_strip(path)?;
     let mut value: serde_json::Value = serde_json::from_str(&raw)
         .map_err(|e| std::io::Error::new(std::io::ErrorKind::InvalidData, e))?;
@@ -838,28 +844,7 @@ fn rewrite_scenario_instruments_atomic(
             .ok_or_else(|| {
                 std::io::Error::new(std::io::ErrorKind::InvalidData, "missing scenario object")
             })?;
-
-        // v1 → v2 正規化:
-        // - schema_version が None または 1 で、legacy `instrument` キー（単数 or list）がある場合、
-        //   `instrument` を削除して `schema_version=2` にセットする。
-        let needs_normalize = {
-            let ver = scenario.get("schema_version").and_then(|v| v.as_u64());
-            let has_legacy_instrument = scenario.contains_key("instrument");
-            has_legacy_instrument && matches!(ver, None | Some(1))
-        };
-        if needs_normalize {
-            scenario.remove("instrument");
-            scenario.insert(
-                "schema_version".to_string(),
-                serde_json::Value::Number(2u64.into()),
-            );
-            warn!("normalized v1 sidecar to v2: {:?}", path);
-        }
-
-        scenario.insert(
-            "instruments".to_string(),
-            serde_json::Value::Array(new_ids.to_vec()),
-        );
+        mutate(scenario);
     }
 
     let serialized = serde_json::to_string_pretty(&value)
@@ -882,11 +867,45 @@ fn rewrite_scenario_instruments_atomic(
     Ok(())
 }
 
+fn rewrite_scenario_instruments_atomic(
+    path: &std::path::Path,
+    new_ids: &[serde_json::Value],
+) -> std::io::Result<()> {
+    atomic_mutate_scenario_object(path, |scenario| {
+        // v1 → v2 正規化: legacy `instrument` キーがあれば削除して schema_version=2 にする。
+        let needs_normalize = {
+            let ver = scenario.get("schema_version").and_then(|v| v.as_u64());
+            scenario.contains_key("instrument") && matches!(ver, None | Some(1))
+        };
+        if needs_normalize {
+            scenario.remove("instrument");
+            scenario.insert(
+                "schema_version".to_string(),
+                serde_json::Value::Number(2u64.into()),
+            );
+            warn!("normalized v1 sidecar to v2: {:?}", path);
+        }
+
+        scenario.insert(
+            "instruments".to_string(),
+            serde_json::Value::Array(new_ids.to_vec()),
+        );
+    })
+}
+
 #[cfg(test)]
 mod writeback_scenario_instruments_tests {
     use super::*;
     use crate::replay::ReplayStartupProgress;
     use std::fs;
+
+    fn init_strategy_run_resources(app: &mut App) {
+        app.init_resource::<ScenarioStartupParams>();
+        app.init_resource::<ReplayStartupProgress>();
+        app.init_resource::<crate::trading::TradingData>();
+        app.init_resource::<crate::trading::LastRunResult>();
+        app.init_resource::<bevy::time::Time<bevy::time::Real>>();
+    }
 
     /// 計画書 §3.4 / §5.1「永続化」最上段:
     /// registry が dirty(=revision != flushed_revision) の状態で
@@ -1399,11 +1418,7 @@ mod writeback_scenario_instruments_tests {
         });
         app.insert_resource(TransportCommandSender { tx });
         app.init_resource::<InstrumentRegistry>();
-        app.init_resource::<ScenarioStartupParams>();
-        app.init_resource::<ReplayStartupProgress>();
-        app.init_resource::<crate::trading::TradingData>();
-        app.init_resource::<crate::trading::LastRunResult>();
-        app.init_resource::<bevy::time::Time<bevy::time::Real>>();
+        init_strategy_run_resources(&mut app);
         app.insert_resource(ScenarioMetadata {
             instruments: vec!["A.T".to_string(), "B.T".to_string()],
             start: Some("2025-01-06".to_string()),
@@ -1478,11 +1493,7 @@ mod writeback_scenario_instruments_tests {
         });
         app.insert_resource(TransportCommandSender { tx });
         app.init_resource::<InstrumentRegistry>();
-        app.init_resource::<ScenarioStartupParams>();
-        app.init_resource::<ReplayStartupProgress>();
-        app.init_resource::<crate::trading::TradingData>();
-        app.init_resource::<crate::trading::LastRunResult>();
-        app.init_resource::<bevy::time::Time<bevy::time::Real>>();
+        init_strategy_run_resources(&mut app);
         app.insert_resource(ScenarioMetadata {
             instruments: vec!["A.T".to_string(), "B.T".to_string()],
             start: Some("2025-01-06".to_string()),
@@ -1558,11 +1569,7 @@ mod writeback_scenario_instruments_tests {
         });
         app.insert_resource(TransportCommandSender { tx });
         app.init_resource::<InstrumentRegistry>();
-        app.init_resource::<ScenarioStartupParams>();
-        app.init_resource::<ReplayStartupProgress>();
-        app.init_resource::<crate::trading::TradingData>();
-        app.init_resource::<crate::trading::LastRunResult>();
-        app.init_resource::<bevy::time::Time<bevy::time::Real>>();
+        init_strategy_run_resources(&mut app);
         app.insert_resource(ScenarioMetadata {
             instruments: vec!["A.T".to_string()],
             start: Some("2025-01-06".to_string()),
@@ -1624,11 +1631,7 @@ mod writeback_scenario_instruments_tests {
         });
         app.insert_resource(TransportCommandSender { tx });
         app.init_resource::<InstrumentRegistry>();
-        app.init_resource::<ScenarioStartupParams>();
-        app.init_resource::<ReplayStartupProgress>();
-        app.init_resource::<crate::trading::TradingData>();
-        app.init_resource::<crate::trading::LastRunResult>();
-        app.init_resource::<bevy::time::Time<bevy::time::Real>>();
+        init_strategy_run_resources(&mut app);
         app.insert_resource(ScenarioMetadata {
             instruments: vec!["NEW.T".to_string()],
             start: Some("2025-01-06".to_string()),
@@ -2124,11 +2127,7 @@ mod writeback_scenario_instruments_tests {
             last_error: None,
         });
         app.init_resource::<InstrumentRegistry>();
-        app.init_resource::<ScenarioStartupParams>();
-        app.init_resource::<ReplayStartupProgress>();
-        app.init_resource::<crate::trading::TradingData>();
-        app.init_resource::<crate::trading::LastRunResult>();
-        app.init_resource::<bevy::time::Time<bevy::time::Real>>();
+        init_strategy_run_resources(&mut app);
         app.init_resource::<ScenarioMetadata>();
         app.init_resource::<ScenarioFileWatchState>();
         app.init_resource::<ScenarioReadTarget>();
@@ -2493,11 +2492,7 @@ mod writeback_scenario_instruments_tests {
         });
         app.insert_resource(TransportCommandSender { tx });
         app.init_resource::<InstrumentRegistry>();
-        app.init_resource::<ScenarioStartupParams>();
-        app.init_resource::<ReplayStartupProgress>();
-        app.init_resource::<crate::trading::TradingData>();
-        app.init_resource::<crate::trading::LastRunResult>();
-        app.init_resource::<bevy::time::Time<bevy::time::Real>>();
+        init_strategy_run_resources(&mut app);
         app.init_resource::<ScenarioMetadata>();
         app.init_resource::<ScenarioFileWatchState>();
         app.init_resource::<ScenarioReadTarget>();
@@ -2821,7 +2816,7 @@ pub struct ScenarioStartupParams {
     pub errors: ScenarioStartupParamsErrors,
 }
 
-// ── Scenario Startup Panel markers (Phase 7.6 / I3a) ──────────────────────
+// ── Scenario Startup Panel markers ────────────────────────────────────────
 #[derive(Component)]
 pub struct ScenarioStartupPanelRoot;
 

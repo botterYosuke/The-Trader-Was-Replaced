@@ -9,8 +9,8 @@ use chrono::NaiveDate;
 use crate::replay::startup_progress::ReplayStartupProgress;
 use bevy_cosmic_edit::CosmicTextChanged;
 
-/// `CosmicEditBuffer` から現在の text を取り出す。crate 内部の `BufferExtras::get_text`
-/// は private module なので、ここでは `Buffer.lines` から直接 join する fallback を使う。
+/// `BufferExtras::get_text` lives in a private cosmic-edit module, so we
+/// re-join `Buffer.lines` manually.
 fn buffer_text(buffer: &CosmicEditBuffer) -> String {
     let mut out = String::new();
     let n = buffer.lines.len();
@@ -29,12 +29,23 @@ use crate::ui::components::{
     ScenarioStartupFieldEditor, ScenarioStartupGranularityDailyButton,
     ScenarioStartupGranularityMinuteButton, ScenarioStartupPanelRoot, ScenarioStartupParams,
     ScenarioStartupStartFieldHost, ScenarioWritebackPaths, SidebarRoot,
+    atomic_mutate_scenario_object,
 };
 
+const DATE_FMT: &str = "%Y-%m-%d";
+
+const PANEL_BG: Color = Color::srgba(0.07, 0.07, 0.11, 1.0);
+const PANEL_BORDER: Color = Color::srgba(0.18, 0.18, 0.28, 1.0);
+const LABEL_COLOR: Color = Color::srgb(0.78, 0.82, 0.92);
+const HEADER_COLOR: Color = Color::srgb(0.50, 0.70, 1.00);
+const BTN_BG: Color = Color::srgba(0.10, 0.10, 0.16, 1.0);
+const BTN_TEXT: Color = Color::srgb(0.78, 0.82, 0.92);
+const ERROR_COLOR: Color = Color::srgb(0.95, 0.45, 0.45);
+const LABEL_WIDTH: f32 = 70.0;
+
 impl GranularityChoice {
-    /// canonical 表記 "Daily" / "Minute" に変換する。
-    /// ScenarioMetadata.granularity / cache sidecar JSON / StrategyRunConfig.granularity
-    /// の三者で同一表記を使うための単一ポイント。
+    /// `ScenarioMetadata.granularity` / cache sidecar JSON / `StrategyRunConfig.granularity`
+    /// must use this exact spelling.
     pub fn as_canonical_str(self) -> &'static str {
         match self {
             GranularityChoice::Daily => "Daily",
@@ -42,8 +53,7 @@ impl GranularityChoice {
         }
     }
 
-    /// canonical 完全一致で parse する。"daily" や " Daily " などは弾く (None を返す)。
-    /// 計画書 §Phase 7.6b / Granularity canonical form の "完全一致のみ" 要件。
+    /// Exact-match parse: "daily" / " Daily " / "DAILY" all return `None`.
     pub fn parse_canonical(s: &str) -> Option<Self> {
         match s {
             "Daily" => Some(GranularityChoice::Daily),
@@ -53,9 +63,16 @@ impl GranularityChoice {
     }
 }
 
-/// UI 層（cosmic-edit / button）と validation / state mutation を切り離すための
-/// commit イベント。I3 で input widget が出来たら同じ Event を emit する。
-/// テストでも `app.world_mut().send_event(...)` で純粋 ECS テストが書ける。
+/// Validate one of the date input fields. `field_name` is used to build a
+/// human-readable "{field_name} must not be empty" error.
+fn validate_date_field(field_name: &str, s: &str) -> Result<NaiveDate, String> {
+    if s.is_empty() {
+        return Err(format!("{} must not be empty", field_name));
+    }
+    NaiveDate::parse_from_str(s, DATE_FMT)
+        .map_err(|_| format!("invalid date '{}'; use YYYY-MM-DD", s))
+}
+
 #[derive(Event, Debug, Clone)]
 pub enum ScenarioStartupParamCommit {
     Start(String),
@@ -64,10 +81,87 @@ pub enum ScenarioStartupParamCommit {
     InitialCash(String),
 }
 
-/// Sidebar の child として Scenario Startup パネルの Node ツリーを生やす。
-/// I3a 段階では cosmic-edit を埋め込まず、3 個の field host (Start/End/Cash) は
-/// 空の placeholder Node。Granularity だけは segmented button 2 個を入れる。
-/// エラーラベルは空文字で先に entity を確保する。
+fn spawn_text_field_row(
+    panel: &mut ChildBuilder,
+    label: &str,
+    host_marker: impl Bundle,
+    error_field: ScenarioStartupField,
+) {
+    panel
+        .spawn(Node {
+            width: Val::Percent(100.0),
+            flex_direction: FlexDirection::Row,
+            align_items: AlignItems::Center,
+            padding: UiRect::axes(Val::Px(2.0), Val::Px(2.0)),
+            ..default()
+        })
+        .with_children(|row| {
+            row.spawn((
+                Text::new(label),
+                TextFont {
+                    font_size: 11.0,
+                    ..default()
+                },
+                TextColor(LABEL_COLOR),
+                Node {
+                    width: Val::Px(LABEL_WIDTH),
+                    ..default()
+                },
+            ));
+            row.spawn((
+                Node {
+                    flex_grow: 1.0,
+                    height: Val::Px(18.0),
+                    ..default()
+                },
+                host_marker,
+            ));
+        });
+    panel.spawn((
+        Text::new(""),
+        TextFont {
+            font_size: 10.0,
+            ..default()
+        },
+        TextColor(ERROR_COLOR),
+        Node {
+            padding: UiRect::left(Val::Px(LABEL_WIDTH)),
+            ..default()
+        },
+        ScenarioStartupErrorLabel { field: error_field },
+    ));
+}
+
+fn spawn_granularity_button(row: &mut ChildBuilder, label: &str, marker: impl Bundle, gap_right: bool) {
+    let margin = if gap_right {
+        UiRect::right(Val::Px(2.0))
+    } else {
+        UiRect::default()
+    };
+    row.spawn((
+        Button,
+        Node {
+            padding: UiRect::axes(Val::Px(6.0), Val::Px(2.0)),
+            margin,
+            justify_content: JustifyContent::Center,
+            align_items: AlignItems::Center,
+            ..default()
+        },
+        BackgroundColor(BTN_BG),
+        marker,
+    ))
+    .with_children(|btn| {
+        btn.spawn((
+            Text::new(label),
+            TextFont {
+                font_size: 10.0,
+                ..default()
+            },
+            TextColor(BTN_TEXT),
+        ));
+    });
+}
+
 pub fn spawn_scenario_startup_panel(
     mut commands: Commands,
     sidebar_q: Query<Entity, With<SidebarRoot>>,
@@ -75,14 +169,6 @@ pub fn spawn_scenario_startup_panel(
     let Ok(sidebar) = sidebar_q.get_single() else {
         return;
     };
-
-    let panel_bg = Color::srgba(0.07, 0.07, 0.11, 1.0);
-    let border = Color::srgba(0.18, 0.18, 0.28, 1.0);
-    let label_color = Color::srgb(0.78, 0.82, 0.92);
-    let header_color = Color::srgb(0.50, 0.70, 1.00);
-    let btn_bg = Color::srgba(0.10, 0.10, 0.16, 1.0);
-    let btn_text = Color::srgb(0.78, 0.82, 0.92);
-    let error_color = Color::srgb(0.95, 0.45, 0.45);
 
     commands.entity(sidebar).with_children(|parent| {
         parent
@@ -94,120 +180,37 @@ pub fn spawn_scenario_startup_panel(
                     border: UiRect::top(Val::Px(1.0)),
                     ..default()
                 },
-                BackgroundColor(panel_bg),
-                BorderColor(border),
+                BackgroundColor(PANEL_BG),
+                BorderColor(PANEL_BORDER),
                 ScenarioStartupPanelRoot,
             ))
             .with_children(|panel| {
-                // section header
                 panel.spawn((
                     Text::new("Startup"),
                     TextFont {
                         font_size: 10.0,
                         ..default()
                     },
-                    TextColor(header_color),
+                    TextColor(HEADER_COLOR),
                     Node {
                         padding: UiRect::axes(Val::Px(2.0), Val::Px(2.0)),
                         ..default()
                     },
                 ));
 
-                // Start 行
-                panel
-                    .spawn(Node {
-                        width: Val::Percent(100.0),
-                        flex_direction: FlexDirection::Row,
-                        align_items: AlignItems::Center,
-                        padding: UiRect::axes(Val::Px(2.0), Val::Px(2.0)),
-                        ..default()
-                    })
-                    .with_children(|row| {
-                        row.spawn((
-                            Text::new("Start"),
-                            TextFont {
-                                font_size: 11.0,
-                                ..default()
-                            },
-                            TextColor(label_color),
-                            Node {
-                                width: Val::Px(70.0),
-                                ..default()
-                            },
-                        ));
-                        row.spawn((
-                            Node {
-                                flex_grow: 1.0,
-                                height: Val::Px(18.0),
-                                ..default()
-                            },
-                            ScenarioStartupStartFieldHost,
-                        ));
-                    });
-                panel.spawn((
-                    Text::new(""),
-                    TextFont {
-                        font_size: 10.0,
-                        ..default()
-                    },
-                    TextColor(error_color),
-                    Node {
-                        padding: UiRect::left(Val::Px(70.0)),
-                        ..default()
-                    },
-                    ScenarioStartupErrorLabel {
-                        field: ScenarioStartupField::Start,
-                    },
-                ));
+                spawn_text_field_row(
+                    panel,
+                    "Start",
+                    ScenarioStartupStartFieldHost,
+                    ScenarioStartupField::Start,
+                );
+                spawn_text_field_row(
+                    panel,
+                    "End",
+                    ScenarioStartupEndFieldHost,
+                    ScenarioStartupField::End,
+                );
 
-                // End 行
-                panel
-                    .spawn(Node {
-                        width: Val::Percent(100.0),
-                        flex_direction: FlexDirection::Row,
-                        align_items: AlignItems::Center,
-                        padding: UiRect::axes(Val::Px(2.0), Val::Px(2.0)),
-                        ..default()
-                    })
-                    .with_children(|row| {
-                        row.spawn((
-                            Text::new("End"),
-                            TextFont {
-                                font_size: 11.0,
-                                ..default()
-                            },
-                            TextColor(label_color),
-                            Node {
-                                width: Val::Px(70.0),
-                                ..default()
-                            },
-                        ));
-                        row.spawn((
-                            Node {
-                                flex_grow: 1.0,
-                                height: Val::Px(18.0),
-                                ..default()
-                            },
-                            ScenarioStartupEndFieldHost,
-                        ));
-                    });
-                panel.spawn((
-                    Text::new(""),
-                    TextFont {
-                        font_size: 10.0,
-                        ..default()
-                    },
-                    TextColor(error_color),
-                    Node {
-                        padding: UiRect::left(Val::Px(70.0)),
-                        ..default()
-                    },
-                    ScenarioStartupErrorLabel {
-                        field: ScenarioStartupField::End,
-                    },
-                ));
-
-                // Granularity 行 (segmented button)
                 panel
                     .spawn(Node {
                         width: Val::Percent(100.0),
@@ -223,55 +226,24 @@ pub fn spawn_scenario_startup_panel(
                                 font_size: 11.0,
                                 ..default()
                             },
-                            TextColor(label_color),
+                            TextColor(LABEL_COLOR),
                             Node {
-                                width: Val::Px(70.0),
+                                width: Val::Px(LABEL_WIDTH),
                                 ..default()
                             },
                         ));
-                        row.spawn((
-                            Button,
-                            Node {
-                                padding: UiRect::axes(Val::Px(6.0), Val::Px(2.0)),
-                                margin: UiRect::right(Val::Px(2.0)),
-                                justify_content: JustifyContent::Center,
-                                align_items: AlignItems::Center,
-                                ..default()
-                            },
-                            BackgroundColor(btn_bg),
+                        spawn_granularity_button(
+                            row,
+                            "Daily",
                             ScenarioStartupGranularityDailyButton,
-                        ))
-                        .with_children(|btn| {
-                            btn.spawn((
-                                Text::new("Daily"),
-                                TextFont {
-                                    font_size: 10.0,
-                                    ..default()
-                                },
-                                TextColor(btn_text),
-                            ));
-                        });
-                        row.spawn((
-                            Button,
-                            Node {
-                                padding: UiRect::axes(Val::Px(6.0), Val::Px(2.0)),
-                                justify_content: JustifyContent::Center,
-                                align_items: AlignItems::Center,
-                                ..default()
-                            },
-                            BackgroundColor(btn_bg),
+                            true,
+                        );
+                        spawn_granularity_button(
+                            row,
+                            "Minute",
                             ScenarioStartupGranularityMinuteButton,
-                        ))
-                        .with_children(|btn| {
-                            btn.spawn((
-                                Text::new("Minute"),
-                                TextFont {
-                                    font_size: 10.0,
-                                    ..default()
-                                },
-                                TextColor(btn_text),
-                            ));
-                        });
+                            false,
+                        );
                     });
                 panel.spawn((
                     Text::new(""),
@@ -279,9 +251,9 @@ pub fn spawn_scenario_startup_panel(
                         font_size: 10.0,
                         ..default()
                     },
-                    TextColor(error_color),
+                    TextColor(ERROR_COLOR),
                     Node {
-                        padding: UiRect::left(Val::Px(70.0)),
+                        padding: UiRect::left(Val::Px(LABEL_WIDTH)),
                         ..default()
                     },
                     ScenarioStartupErrorLabel {
@@ -289,61 +261,20 @@ pub fn spawn_scenario_startup_panel(
                     },
                 ));
 
-                // Initial cash 行
-                panel
-                    .spawn(Node {
-                        width: Val::Percent(100.0),
-                        flex_direction: FlexDirection::Row,
-                        align_items: AlignItems::Center,
-                        padding: UiRect::axes(Val::Px(2.0), Val::Px(2.0)),
-                        ..default()
-                    })
-                    .with_children(|row| {
-                        row.spawn((
-                            Text::new("Initial cash"),
-                            TextFont {
-                                font_size: 11.0,
-                                ..default()
-                            },
-                            TextColor(label_color),
-                            Node {
-                                width: Val::Px(70.0),
-                                ..default()
-                            },
-                        ));
-                        row.spawn((
-                            Node {
-                                flex_grow: 1.0,
-                                height: Val::Px(18.0),
-                                ..default()
-                            },
-                            ScenarioStartupCashFieldHost,
-                        ));
-                    });
-                panel.spawn((
-                    Text::new(""),
-                    TextFont {
-                        font_size: 10.0,
-                        ..default()
-                    },
-                    TextColor(error_color),
-                    Node {
-                        padding: UiRect::left(Val::Px(70.0)),
-                        ..default()
-                    },
-                    ScenarioStartupErrorLabel {
-                        field: ScenarioStartupField::InitialCash,
-                    },
-                ));
+                spawn_text_field_row(
+                    panel,
+                    "Initial cash",
+                    ScenarioStartupCashFieldHost,
+                    ScenarioStartupField::InitialCash,
+                );
 
-                // Cross-field error
                 panel.spawn((
                     Text::new(""),
                     TextFont {
                         font_size: 10.0,
                         ..default()
                     },
-                    TextColor(error_color),
+                    TextColor(ERROR_COLOR),
                     Node {
                         padding: UiRect::all(Val::Px(2.0)),
                         ..default()
@@ -356,13 +287,8 @@ pub fn spawn_scenario_startup_panel(
     });
 }
 
-/// Spawn 3 cosmic-edit `TextEdit` fields (Start / End / InitialCash) as children of
-/// their respective field host nodes (created by `spawn_scenario_startup_panel`).
-///
-/// - `TextEdit` を使う (UI ツリー用)。Sprite 版の `TextEdit2d` ではない。
-/// - `Without<ScenarioStartupFieldEditor>` filter で host に二重 spawn しない。
-/// - `CosmicRenderScale(1.0)` で supersample を上げず DPI トラップを避ける。
-/// - フォーカスは `change_active_editor_ui` が click で切り替えるので、`FocusedWidget` は触らない。
+/// Attach a cosmic-edit `TextEdit` to each field host. Focus is handled by
+/// `change_active_editor_ui` on click; `FocusedWidget` is intentionally untouched.
 pub fn spawn_scenario_startup_input_fields(
     mut commands: Commands,
     mut font_system: ResMut<bevy_cosmic_edit::prelude::CosmicFontSystem>,
@@ -411,21 +337,21 @@ pub fn spawn_scenario_startup_input_fields(
     }
 }
 
-/// ScenarioMetadata → ScenarioStartupParams への片方向 sync。
+/// One-way sync from ScenarioMetadata into ScenarioStartupParams.
 ///
-/// - `progress.visible == true` の間は触らない（§Disable enforcement）
-/// - `params.dirty == true` の間も触らない（UI 入力中保護）
-/// - validation エラー以外の errors は触らない
-///   （commit 起因の error を sync で消さない、再 commit で消える）
+/// - skip while the progress window is visible (run-in-progress)
+/// - skip while the user is mid-edit (`params.dirty`)
+/// - skip when metadata hasn't changed (avoid per-frame re-clones that mark
+///   `ScenarioStartupParams` Changed and re-trigger the whole pipeline)
 pub fn sync_startup_params_from_scenario_system(
     metadata: Res<ScenarioMetadata>,
     progress: Res<ReplayStartupProgress>,
     mut params: ResMut<ScenarioStartupParams>,
 ) {
-    if progress.visible {
+    if progress.visible || params.dirty {
         return;
     }
-    if params.dirty {
+    if !metadata.is_changed() {
         return;
     }
 
@@ -433,21 +359,19 @@ pub fn sync_startup_params_from_scenario_system(
     params.end = metadata.end.clone().unwrap_or_default();
 
     match metadata.granularity.as_deref() {
-        Some("Daily") => {
-            params.granularity = GranularityChoice::Daily;
-            params.errors.granularity = None;
-        }
-        Some("Minute") => {
-            params.granularity = GranularityChoice::Minute;
-            params.errors.granularity = None;
-        }
-        Some(other) => {
-            params.granularity = GranularityChoice::default();
-            params.errors.granularity = Some(format!(
-                "unknown granularity '{}'; please select Daily or Minute to enable Run",
-                other
-            ));
-        }
+        Some(s) => match GranularityChoice::parse_canonical(s) {
+            Some(choice) => {
+                params.granularity = choice;
+                params.errors.granularity = None;
+            }
+            None => {
+                params.granularity = GranularityChoice::default();
+                params.errors.granularity = Some(format!(
+                    "unknown granularity '{}'; please select Daily or Minute to enable Run",
+                    s
+                ));
+            }
+        },
         None => {
             params.granularity = GranularityChoice::default();
             params.errors.granularity =
@@ -461,10 +385,6 @@ pub fn sync_startup_params_from_scenario_system(
     };
 }
 
-/// UI commit イベントを受けて validate → ScenarioMetadata 更新 →
-/// errors / dirty / writeback_pending を立てる system。
-///
-/// `progress.visible == true` のときは events を drain しつつ何もしない。
 pub fn commit_startup_params_to_scenario_system(
     mut events: EventReader<ScenarioStartupParamCommit>,
     mut params: ResMut<ScenarioStartupParams>,
@@ -472,46 +392,43 @@ pub fn commit_startup_params_to_scenario_system(
     progress: Res<ReplayStartupProgress>,
 ) {
     if progress.visible {
-        // disabled: drain events without mutating state
         for _ in events.read() {}
         return;
     }
 
-    let mut any_field_cleared = false;
+    let mut any_committed = false;
+    let mut any_event = false;
 
     for ev in events.read() {
+        any_event = true;
         match ev {
-            ScenarioStartupParamCommit::Start(s) => {
-                if s.is_empty() {
-                    params.errors.start = Some("start must not be empty".into());
-                } else if NaiveDate::parse_from_str(s, "%Y-%m-%d").is_err() {
-                    params.errors.start =
-                        Some(format!("invalid date '{}'; use YYYY-MM-DD", s));
-                } else {
+            ScenarioStartupParamCommit::Start(s) => match validate_date_field("start", s) {
+                Err(msg) => {
+                    params.errors.start = Some(msg);
+                }
+                Ok(_) => {
                     params.start = s.clone();
                     params.errors.start = None;
                     metadata.start = Some(s.clone());
-                    any_field_cleared = true;
+                    any_committed = true;
                 }
-            }
-            ScenarioStartupParamCommit::End(s) => {
-                if s.is_empty() {
-                    params.errors.end = Some("end must not be empty".into());
-                } else if NaiveDate::parse_from_str(s, "%Y-%m-%d").is_err() {
-                    params.errors.end =
-                        Some(format!("invalid date '{}'; use YYYY-MM-DD", s));
-                } else {
+            },
+            ScenarioStartupParamCommit::End(s) => match validate_date_field("end", s) {
+                Err(msg) => {
+                    params.errors.end = Some(msg);
+                }
+                Ok(_) => {
                     params.end = s.clone();
                     params.errors.end = None;
                     metadata.end = Some(s.clone());
-                    any_field_cleared = true;
+                    any_committed = true;
                 }
-            }
+            },
             ScenarioStartupParamCommit::Granularity(g) => {
                 params.granularity = *g;
                 params.errors.granularity = None;
                 metadata.granularity = Some(g.as_canonical_str().to_string());
-                any_field_cleared = true;
+                any_committed = true;
             }
             ScenarioStartupParamCommit::InitialCash(s) => match s.parse::<i64>() {
                 Err(_) => {
@@ -525,47 +442,44 @@ pub fn commit_startup_params_to_scenario_system(
                     params.initial_cash = s.clone();
                     params.errors.initial_cash = None;
                     metadata.initial_cash = Some(n);
-                    any_field_cleared = true;
+                    any_committed = true;
                 }
             },
         }
     }
 
-    // cross-field check: start <= end when both parse OK
-    let start_parsed = NaiveDate::parse_from_str(&params.start, "%Y-%m-%d").ok();
-    let end_parsed = NaiveDate::parse_from_str(&params.end, "%Y-%m-%d").ok();
-    if let (Some(sd), Some(ed)) = (start_parsed, end_parsed) {
-        if sd > ed {
-            params.errors.cross_field = Some("start must be on or before end".into());
-        } else {
-            params.errors.cross_field = None;
-        }
+    if any_event {
+        // Cross-field check only makes sense when both individual fields are
+        // currently valid — otherwise the per-field error already conveys the
+        // problem and a lingering "start must be on or before end" is misleading.
+        let both_fields_valid =
+            params.errors.start.is_none() && params.errors.end.is_none();
+        let start_parsed = NaiveDate::parse_from_str(&params.start, DATE_FMT).ok();
+        let end_parsed = NaiveDate::parse_from_str(&params.end, DATE_FMT).ok();
+        params.errors.cross_field = match (both_fields_valid, start_parsed, end_parsed) {
+            (true, Some(sd), Some(ed)) if sd > ed => {
+                Some("start must be on or before end".into())
+            }
+            _ => None,
+        };
     }
 
-    if any_field_cleared {
+    if any_committed {
         params.dirty = false;
         params.writeback_pending = true;
     }
 }
 
-/// `ScenarioStartupParams.writeback_pending == true` のとき、cache sidecar JSON の
-/// `scenario.{start,end,granularity,initial_cash}` だけを書き戻す。
-///
-/// - `progress.visible == true` の間は何もしない。
-/// - `cache_sidecar` 未設定なら no-op (error log なし)。
-/// - 既存ファイルを read_json_with_bom_strip で読み直し、4 field 以外
-///   (instruments / schema_version / 他 unknown key / layout 等) は触らない。
-/// - tmp file に書いて `std::fs::rename` で atomic に置換する。
-/// - 成功時のみ `writeback_pending = false`。失敗時は `writeback_pending` を据え置く。
+/// On `writeback_pending`, replace `scenario.{start,end,granularity,initial_cash}`
+/// in the cache sidecar JSON atomically. Other keys (instruments, layout, unknown
+/// fields) are preserved verbatim. Failure leaves `writeback_pending` set so the
+/// next tick retries.
 pub fn write_startup_params_to_cache_sidecar_system(
     mut params: ResMut<ScenarioStartupParams>,
     paths: Res<ScenarioWritebackPaths>,
     progress: Res<ReplayStartupProgress>,
 ) {
-    if progress.visible {
-        return;
-    }
-    if !params.writeback_pending {
+    if progress.visible || !params.writeback_pending {
         return;
     }
     let Some(path) = paths.cache_sidecar.as_deref() else {
@@ -583,21 +497,13 @@ pub fn write_startup_params_to_cache_sidecar_system(
             params.writeback_pending = false;
         }
         Err(e) => {
-            warn!(
-                "startup params writeback failed: {:?}: {}",
-                path, e
-            );
+            warn!("startup params writeback failed: {:?}: {}", path, e);
         }
     }
 }
 
-/// `ScenarioStartupParams.{start,end,initial_cash}` → 各 cosmic-edit field の text を
-/// 一方向 sync (params 側を真として描画を合わせる)。
-///
-/// - `params.is_changed()` でない tick は早期 return: 毎フレーム書き換えると
-///   cosmic-edit 側のカーソル位置がリセットされる典型バグになる。
-/// - 現在の buffer text が expected と一致していたら touch しない。
-/// - Granularity / CrossField は対象外。
+/// Propagate `params.{start,end,initial_cash}` strings into each cosmic-edit
+/// buffer. Gated on `params.is_changed()` to avoid resetting the user's cursor.
 pub fn sync_startup_param_editors_text_system(
     params: Res<ScenarioStartupParams>,
     mut font_system: ResMut<CosmicFontSystem>,
@@ -614,8 +520,7 @@ pub fn sync_startup_param_editors_text_system(
             ScenarioStartupField::InitialCash => &params.initial_cash,
             ScenarioStartupField::Granularity | ScenarioStartupField::CrossField => continue,
         };
-        let current = buffer_text(&buffer);
-        if current == expected {
+        if buffer_text(&buffer) == expected {
             continue;
         }
         buffer.set_text(
@@ -626,11 +531,6 @@ pub fn sync_startup_param_editors_text_system(
     }
 }
 
-/// `CosmicTextChanged` event を field marker で引いて
-/// `ScenarioStartupParamCommit` を発火 + `params.dirty = true`。
-///
-/// - `progress.visible` の間は events を drain して return。
-/// - editors_q に居ない entity (他の cosmic-edit field) は無視。
 pub fn scenario_startup_param_input_system(
     mut events: EventReader<CosmicTextChanged>,
     editors_q: Query<&ScenarioStartupFieldEditor>,
@@ -666,10 +566,6 @@ pub fn scenario_startup_param_input_system(
     }
 }
 
-/// Daily / Minute segmented button の click → `Commit::Granularity(..)` 発火 + dirty=true。
-///
-/// - `progress.visible` の間は何もしない。
-/// - 同 tick で両方 Pressed の場合は両方発火しても良い (実用上起きない)。
 pub fn scenario_startup_granularity_button_system(
     daily_q: Query<
         &Interaction,
@@ -711,10 +607,10 @@ pub fn scenario_startup_granularity_button_system(
     }
 }
 
-/// granularity ボタンの active 表示 + error label 文言 + disabled 視覚化を毎フレーム描画する。
+/// Repaint granularity button highlight + error labels.
 ///
-/// - active=濃い青, inactive=濃いグレー。`progress.visible` のときは alpha 0.5 で disabled 風に。
-/// - error label の text は `params.errors.{field}` の Some(msg)/None に同期。
+/// Writes through `BackgroundColor`/`Text` are guarded with `!= new` to avoid
+/// firing `Changed<T>` every frame.
 pub fn update_scenario_startup_param_ui_system(
     params: Res<ScenarioStartupParams>,
     progress: Res<ReplayStartupProgress>,
@@ -744,10 +640,14 @@ pub fn update_scenario_startup_param_ui_system(
     };
 
     for mut bg in daily_bg_q.iter_mut() {
-        *bg = BackgroundColor(daily_color);
+        if bg.0 != daily_color {
+            bg.0 = daily_color;
+        }
     }
     for mut bg in minute_bg_q.iter_mut() {
-        *bg = BackgroundColor(minute_color);
+        if bg.0 != minute_color {
+            bg.0 = minute_color;
+        }
     }
 
     for (label, mut text) in label_q.iter_mut() {
@@ -765,8 +665,6 @@ pub fn update_scenario_startup_param_ui_system(
     }
 }
 
-/// cache sidecar の `scenario.{start,end,granularity,initial_cash}` だけを置換する atomic write。
-/// 既存 `rewrite_scenario_instruments_atomic` (src/ui/components.rs) と同じ tmp file 命名規約を採用。
 fn rewrite_scenario_startup_params_atomic(
     path: &std::path::Path,
     start: &str,
@@ -774,60 +672,31 @@ fn rewrite_scenario_startup_params_atomic(
     granularity: &str,
     initial_cash: &str,
 ) -> std::io::Result<()> {
-    let raw = crate::ui::layout_persistence::read_json_with_bom_strip(path)?;
-    let mut value: serde_json::Value = serde_json::from_str(&raw)
-        .map_err(|e| std::io::Error::new(std::io::ErrorKind::InvalidData, e))?;
+    let start_v = if start.is_empty() {
+        serde_json::Value::Null
+    } else {
+        serde_json::Value::String(start.to_string())
+    };
+    let end_v = if end.is_empty() {
+        serde_json::Value::Null
+    } else {
+        serde_json::Value::String(end.to_string())
+    };
+    let cash_v = match initial_cash.parse::<i64>() {
+        Ok(n) => serde_json::Value::Number(n.into()),
+        Err(_) => serde_json::Value::Null,
+    };
+    let granularity = granularity.to_string();
 
-    {
-        let scenario = value
-            .get_mut("scenario")
-            .and_then(|v| v.as_object_mut())
-            .ok_or_else(|| {
-                std::io::Error::new(std::io::ErrorKind::InvalidData, "missing scenario object")
-            })?;
-
-        let start_v = if start.is_empty() {
-            serde_json::Value::Null
-        } else {
-            serde_json::Value::String(start.to_string())
-        };
-        let end_v = if end.is_empty() {
-            serde_json::Value::Null
-        } else {
-            serde_json::Value::String(end.to_string())
-        };
-        let cash_v = match initial_cash.parse::<i64>() {
-            Ok(n) => serde_json::Value::Number(n.into()),
-            Err(_) => serde_json::Value::Null,
-        };
-
+    atomic_mutate_scenario_object(path, move |scenario| {
         scenario.insert("start".to_string(), start_v);
         scenario.insert("end".to_string(), end_v);
         scenario.insert(
             "granularity".to_string(),
-            serde_json::Value::String(granularity.to_string()),
+            serde_json::Value::String(granularity),
         );
         scenario.insert("initial_cash".to_string(), cash_v);
-    }
-
-    let serialized = serde_json::to_string_pretty(&value)
-        .map_err(|e| std::io::Error::new(std::io::ErrorKind::InvalidData, e))?;
-
-    let dir = path.parent().ok_or_else(|| {
-        std::io::Error::new(std::io::ErrorKind::InvalidInput, "path has no parent")
-    })?;
-    let file_name = path.file_name().and_then(|s| s.to_str()).ok_or_else(|| {
-        std::io::Error::new(std::io::ErrorKind::InvalidInput, "path has no filename")
-    })?;
-    let tmp = dir.join(format!(
-        ".{}.tmp-{}-{}",
-        file_name,
-        std::process::id(),
-        rand::random::<u32>()
-    ));
-    std::fs::write(&tmp, serialized.as_bytes())?;
-    std::fs::rename(&tmp, path)?;
-    Ok(())
+    })
 }
 
 #[cfg(test)]
@@ -888,8 +757,6 @@ mod tests {
         app
     }
 
-    /// #9 scenario params sync: ScenarioMetadata の各 field が
-    /// ScenarioStartupParams に反映され、granularity error は消える。
     #[test]
     fn test_9_scenario_params_sync() {
         let mut app = make_app();
@@ -910,8 +777,6 @@ mod tests {
         assert!(params.errors.granularity.is_none());
     }
 
-    /// #9b granularity Some("Tick") sync: 未知 granularity は default に
-    /// fallback しつつ errors.granularity を立てる。
     #[test]
     fn test_9b_granularity_unknown_string() {
         let mut app = make_app();
@@ -928,11 +793,9 @@ mod tests {
         assert!(msg.contains("Daily") && msg.contains("Minute"));
     }
 
-    /// #9c granularity None sync: prompt メッセージが立つ。
     #[test]
     fn test_9c_granularity_none() {
         let mut app = make_app();
-        // ScenarioMetadata::default() => granularity = None
         app.update();
 
         let params = app.world().resource::<ScenarioStartupParams>();
@@ -943,12 +806,9 @@ mod tests {
         );
     }
 
-    /// #11 validation failure: 不正な start commit で errors.start が立ち、
-    /// ScenarioMetadata.start は更新されない、dirty/writeback_pending も触らない。
     #[test]
     fn test_11_validation_failure() {
         let mut app = make_app();
-        // dirty = true にして sync を抑止し、commit 単独の挙動を見る
         {
             let mut params = app.world_mut().resource_mut::<ScenarioStartupParams>();
             params.dirty = true;
@@ -965,7 +825,6 @@ mod tests {
         assert!(!params.writeback_pending);
     }
 
-    /// #11b multiple field errors independent: start を直しても end error は残る。
     #[test]
     fn test_11b_multiple_field_errors_independent() {
         let mut app = make_app();
@@ -984,7 +843,6 @@ mod tests {
             assert!(params.errors.end.is_some());
         }
 
-        // Fix start only
         app.world_mut()
             .send_event(ScenarioStartupParamCommit::Start("2024-01-01".into()));
         app.update();
@@ -997,8 +855,6 @@ mod tests {
         );
     }
 
-    /// #10d disabled while progress visible:
-    /// dirty / writeback_pending / errors を一切触らない。
     #[test]
     fn test_10d_disabled_while_progress_visible() {
         let mut app = make_app();
@@ -1024,9 +880,6 @@ mod tests {
         assert!(meta.start.is_none(), "metadata must not be mutated");
     }
 
-    /// #12 cache unavailable (compile-only, sync still works):
-    /// cache sidecar I/O は I2b 以降に後回しなので、ここでは sync が
-    /// 走ることだけ確認する（cache 経路はそもそも触っていない）。
     #[test]
     fn test_12_cache_unavailable_compile_only() {
         let mut app = make_app();
@@ -1042,9 +895,41 @@ mod tests {
         assert_eq!(params.granularity, GranularityChoice::Daily);
     }
 
-    // ─────────────────────────────────────────────────────────────────────
-    // I2b: cache sidecar writeback tests
-    // ─────────────────────────────────────────────────────────────────────
+    /// Cross-field error must clear when one date becomes invalid (otherwise
+    /// the user sees stale "start must be on or before end" alongside a
+    /// "invalid date" error).
+    #[test]
+    fn cross_field_error_clears_when_one_date_invalid() {
+        let mut app = make_app();
+        {
+            let mut params = app.world_mut().resource_mut::<ScenarioStartupParams>();
+            params.dirty = true;
+        }
+        // First set start > end so cross_field error fires.
+        app.world_mut()
+            .send_event(ScenarioStartupParamCommit::Start("2024-06-01".into()));
+        app.world_mut()
+            .send_event(ScenarioStartupParamCommit::End("2024-01-01".into()));
+        app.update();
+        assert!(app
+            .world()
+            .resource::<ScenarioStartupParams>()
+            .errors
+            .cross_field
+            .is_some());
+
+        // Now invalidate end; cross_field should no longer claim ordering.
+        app.world_mut()
+            .send_event(ScenarioStartupParamCommit::End("not-a-date".into()));
+        app.update();
+
+        let params = app.world().resource::<ScenarioStartupParams>();
+        assert!(params.errors.end.is_some());
+        assert!(
+            params.errors.cross_field.is_none(),
+            "cross_field must not linger when one date fails to parse"
+        );
+    }
 
     use crate::ui::components::{
         InstrumentRegistry, ScenarioFileWatchState, ScenarioInstrumentsWritebackState,
@@ -1066,10 +951,6 @@ mod tests {
         app
     }
 
-    /// #10 scenario params writeback to cache sidecar:
-    /// writeback_pending=true で 1 tick 回すと cache.json の
-    /// scenario.{start,end,granularity,initial_cash} だけが更新され、
-    /// instruments / schema_version / unknown_field / layout は不変。
     #[test]
     fn test_10_scenario_params_writeback_to_cache_sidecar() {
         let dir = tempfile::tempdir().unwrap();
@@ -1112,7 +993,6 @@ mod tests {
             scenario.get("initial_cash").unwrap().as_i64(),
             Some(500_000)
         );
-        // unchanged keys
         let instruments = scenario.get("instruments").unwrap().as_array().unwrap();
         assert_eq!(instruments.len(), 1);
         assert_eq!(instruments[0].as_str(), Some("1301.TSE"));
@@ -1124,10 +1004,6 @@ mod tests {
         assert_eq!(v.get("layout").unwrap().get("foo").unwrap().as_str(), Some("bar"));
     }
 
-    /// #10b round-trip via parse_scenario_system:
-    /// write → metadata reset → ScenarioReadTarget セット → parse 1 tick で
-    /// metadata.start / granularity が回復し、次 tick sync で
-    /// params.granularity == Minute に戻る。
     #[test]
     fn test_10b_round_trip_via_parse_scenario_system() {
         let dir = tempfile::tempdir().unwrap();
@@ -1146,8 +1022,6 @@ mod tests {
         }
         app.update();
 
-        // Re-parse via parse_scenario_system. Use the canonical system to ensure
-        // the writeback output is consumable by the real parser.
         app.insert_resource(ScenarioMetadata::default());
         app.init_resource::<ScenarioFileWatchState>();
         app.insert_resource(ScenarioReadTarget(Some(cache_path.clone())));
@@ -1162,8 +1036,6 @@ mod tests {
                 .chain(),
         );
 
-        // First tick: parse_scenario_system reads cache, populates metadata;
-        // sync also runs but params.dirty may be false → reflects metadata too.
         app.update();
 
         let meta = app.world().resource::<ScenarioMetadata>();
@@ -1172,15 +1044,11 @@ mod tests {
         assert_eq!(meta.granularity.as_deref(), Some("Minute"));
         assert_eq!(meta.initial_cash, Some(500_000));
 
-        // After another tick the sync system has surely propagated.
         app.update();
         let params = app.world().resource::<ScenarioStartupParams>();
         assert_eq!(params.granularity, GranularityChoice::Minute);
     }
 
-    /// #10c concurrent writeback with scenario.instruments:
-    /// 同 cache.json に対し、instruments writeback と startup params writeback が
-    /// 同 chain で連続して走り、両方の変更が共存する。
     #[test]
     fn test_10c_concurrent_writeback_with_instruments() {
         let dir = tempfile::tempdir().unwrap();
@@ -1209,7 +1077,6 @@ mod tests {
                     .chain(),
             );
 
-        // Mark registry dirty with new ids
         {
             let mut registry = app.world_mut().resource_mut::<InstrumentRegistry>();
             registry.editable = true;
@@ -1221,7 +1088,6 @@ mod tests {
                 .resource_mut::<ScenarioInstrumentsWritebackState>();
             wb.revision += 1;
         }
-        // Stage new startup params for writeback
         {
             let mut params = app.world_mut().resource_mut::<ScenarioStartupParams>();
             params.start = "2024-05-01".into();

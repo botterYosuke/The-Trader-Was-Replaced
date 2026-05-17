@@ -1,11 +1,6 @@
-//! Replay startup progress window (Step G1).
-//!
-//! screen-space で中央に表示する 360x120 の progress window を spawn し、
-//! `ReplayStartupProgress` resource に応じて stage label / visibility を更新し、
-//! indeterminate bar を時間ベースで往復させる。
-//!
-//! Step G1 では描画と stage label 反映のみを担当する。close button のクリック
-//! 処理 / auto-hide / timeout は Step G2 で追加する。
+//! Center-screen progress window shown while a replay is starting up.
+//! Visibility and stage label track `ReplayStartupProgress`; the indeterminate
+//! bar sweeps left-right via `Time<Real>`.
 
 use crate::replay::{
     ReplayStartupBarFill, ReplayStartupCloseButton, ReplayStartupPhase, ReplayStartupProgress,
@@ -84,7 +79,6 @@ pub fn spawn_replay_startup_window(mut commands: Commands) {
                 ));
             });
 
-            // Close button (G1 では spawn のみ。click 処理は G2)。
             p.spawn((
                 Button,
                 Node {
@@ -125,36 +119,44 @@ pub fn update_replay_startup_window_system(
         (With<ReplayStartupCloseButton>, Without<ReplayStartupWindow>),
     >,
 ) {
+    let target_vis = if progress.visible {
+        Visibility::Visible
+    } else {
+        Visibility::Hidden
+    };
     if let Ok(mut visibility) = window_q.get_single_mut() {
-        *visibility = if progress.visible {
-            Visibility::Visible
-        } else {
-            Visibility::Hidden
-        };
+        if *visibility != target_vis {
+            *visibility = target_vis;
+        }
     }
 
     if let Ok(mut text) = label_q.get_single_mut() {
-        if let Some(err) = &progress.error {
-            text.0 = err.clone();
+        let new_label: &str = if let Some(err) = &progress.error {
+            err.as_str()
         } else {
-            let label = match progress.phase {
+            match progress.phase {
                 ReplayStartupPhase::Idle => "",
                 ReplayStartupPhase::CommandAccepted => "Starting replay command...",
                 ReplayStartupPhase::ResettingReplay => "Resetting previous replay...",
                 ReplayStartupPhase::LoadingData => "Loading replay data...",
                 ReplayStartupPhase::StartingStrategy => "Starting Python strategy...",
                 ReplayStartupPhase::WaitingForFirstTick => "Waiting for first replay tick...",
-            };
-            text.0 = label.to_string();
+            }
+        };
+        if text.0 != new_label {
+            text.0 = new_label.to_string();
         }
     }
 
+    let target_close_vis = if progress.error.is_some() {
+        Visibility::Visible
+    } else {
+        Visibility::Hidden
+    };
     if let Ok(mut vis) = close_btn_q.get_single_mut() {
-        *vis = if progress.error.is_some() {
-            Visibility::Visible
-        } else {
-            Visibility::Hidden
-        };
+        if *vis != target_close_vis {
+            *vis = target_close_vis;
+        }
     }
 }
 
@@ -213,7 +215,8 @@ pub fn auto_hide_replay_startup_window_system(
         progress.baseline_timestamp_ms = None;
         progress.started_at_elapsed = None;
         progress.start_engine_accepted = false;
-        // progress.error は触らない (§5 末尾コメント参照)
+        // Leave `progress.error` untouched: errors must remain visible until the
+        // user dismisses them via the close button.
     }
 }
 

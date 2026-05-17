@@ -1,7 +1,5 @@
-//! Replay startup progress UI の共有状態 (resource / phase / markers)。
-//!
-//! ここでは型と marker のみを定義し、resource init や system 登録、
-//! UI spawn は Step D 以降で行う。
+//! Shared state for the replay startup progress UI: resource + phase enum +
+//! marker components. Resource init / system wiring / UI spawn live elsewhere.
 
 use bevy::prelude::{Component, Resource};
 
