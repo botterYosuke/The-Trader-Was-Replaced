@@ -6,6 +6,8 @@ from datetime import date, datetime, timedelta, timezone
 from pathlib import Path
 from unittest.mock import patch
 
+from engine.paths import jquants_catalog_path
+
 import pytest
 
 from engine.strategy_runtime.warmup import make_catalog_warmup_loader
@@ -15,7 +17,7 @@ from engine.strategy_runtime.warmup import make_catalog_warmup_loader
 # Helpers
 # ---------------------------------------------------------------------------
 
-_CATALOG = Path("artifacts/jquants-catalog")
+_CATALOG = jquants_catalog_path()
 _REAL_CATALOG_AVAILABLE = _CATALOG.exists()
 
 

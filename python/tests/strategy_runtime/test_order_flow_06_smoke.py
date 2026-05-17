@@ -16,13 +16,15 @@ from pathlib import Path
 
 import pytest
 
+from engine.paths import jquants_catalog_path
+
 # ---------------------------------------------------------------------------
 # Path constants
 # ---------------------------------------------------------------------------
 
 _REPO_ROOT = Path(__file__).parents[3]
 _STRATEGY_PATH = Path(r"C:\Users\sasai\Documents\🐃_blacksheep\strategies\order_flow_06.py")
-_CATALOG_PATH = _REPO_ROOT / "artifacts" / "jquants-catalog"
+_CATALOG_PATH = jquants_catalog_path()
 _FIXTURE_UNIVERSE = Path(__file__).parent / "fixtures" / "universe_1301_jan0610.json"
 
 _STRATEGY_AVAILABLE = _STRATEGY_PATH.exists()

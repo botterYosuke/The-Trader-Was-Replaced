@@ -94,13 +94,6 @@ class BuyAndHoldStrategy(Strategy):
         self.submit_order(order)
         self._bought = True
         self.log.info(f"BUY: {self.lot_size} shares @ {bar.close}")
+
+
 # endregion region_001
-# region region_002
-asadsadasd+
-# endregion region_002
-# region region_003
-asdasdasda
-# endregion region_003
-# region region_004
-vcvvv1
-# endregion region_004

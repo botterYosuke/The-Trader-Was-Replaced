@@ -17,7 +17,6 @@
                 "PATH": "${workspaceFolder}/.venv/Scripts;${env:PATH}",
                 "BACKEND_ENABLED": "true",
                 "BACKEND_TOKEN": "testtoken",
-                "BACKEND_CATALOG_PATH": "artifacts\\jquants-catalog",
                 "RUST_LOG": "info"
             },
             "envFile": "${workspaceFolder}/.env",

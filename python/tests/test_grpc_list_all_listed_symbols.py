@@ -88,7 +88,7 @@ def test_list_all_listed_symbols_wrong_token(grpc_server):
 
 @pytest.mark.slow
 def test_list_all_listed_symbols_empty_end_date_with_catalog(tmp_path, monkeypatch):
-    monkeypatch.chdir(tmp_path)
+    monkeypatch.setenv("ARTIFACTS_PATH", str(tmp_path / "artifacts"))
     catalog_path = tmp_path / "catalog"
     catalog_path.mkdir()
     ts_ns = pd.Timestamp("2024-01-04", tz="UTC").value
@@ -124,7 +124,7 @@ def test_list_all_listed_symbols_empty_end_date_with_catalog(tmp_path, monkeypat
 
 @pytest.mark.slow
 def test_list_all_listed_symbols_artifact_miss_then_write(tmp_path, monkeypatch):
-    monkeypatch.chdir(tmp_path)
+    monkeypatch.setenv("ARTIFACTS_PATH", str(tmp_path / "artifacts"))
     catalog_path = tmp_path / "catalog"
     catalog_path.mkdir()
     ts_ns = pd.Timestamp("2024-01-04", tz="UTC").value
@@ -161,7 +161,7 @@ def test_list_all_listed_symbols_artifact_miss_then_write(tmp_path, monkeypatch)
 # ---------------------------------------------------------------------------
 
 def test_list_all_listed_symbols_artifact_hit_no_catalog(grpc_server, tmp_path, monkeypatch):
-    monkeypatch.chdir(tmp_path)
+    monkeypatch.setenv("ARTIFACTS_PATH", str(tmp_path / "artifacts"))
     artifact_dir = tmp_path / "artifacts" / "instrument-lists"
     artifact_dir.mkdir(parents=True)
     artifact_path = artifact_dir / "listed-symbols-2024-01-04.json"
@@ -198,7 +198,7 @@ def test_list_all_listed_symbols_artifact_hit_no_catalog(grpc_server, tmp_path, 
     '{not valid json',
 ])
 def test_list_all_listed_symbols_invalid_artifact_regenerate(tmp_path, monkeypatch, bad_payload):
-    monkeypatch.chdir(tmp_path)
+    monkeypatch.setenv("ARTIFACTS_PATH", str(tmp_path / "artifacts"))
     catalog_path = tmp_path / "catalog"
     catalog_path.mkdir()
     ts_ns = pd.Timestamp("2024-01-04", tz="UTC").value
@@ -236,7 +236,7 @@ def test_list_all_listed_symbols_invalid_artifact_regenerate(tmp_path, monkeypat
 
 @pytest.mark.slow
 def test_list_all_listed_symbols_date_before_oldest(tmp_path, monkeypatch):
-    monkeypatch.chdir(tmp_path)
+    monkeypatch.setenv("ARTIFACTS_PATH", str(tmp_path / "artifacts"))
     catalog_path = tmp_path / "catalog"
     catalog_path.mkdir()
     ts_ns = pd.Timestamp("2024-01-04", tz="UTC").value
@@ -271,7 +271,7 @@ def test_list_all_listed_symbols_date_before_oldest(tmp_path, monkeypatch):
 
 @pytest.mark.slow
 def test_list_all_listed_symbols_future_date_clamps_to_latest(tmp_path, monkeypatch):
-    monkeypatch.chdir(tmp_path)
+    monkeypatch.setenv("ARTIFACTS_PATH", str(tmp_path / "artifacts"))
     catalog_path = tmp_path / "catalog"
     catalog_path.mkdir()
     ts_ns = pd.Timestamp("2024-01-04", tz="UTC").value
@@ -302,7 +302,7 @@ def test_list_all_listed_symbols_future_date_clamps_to_latest(tmp_path, monkeypa
 # ---------------------------------------------------------------------------
 
 def test_list_all_listed_symbols_no_catalog_no_artifact(grpc_server, tmp_path, monkeypatch):
-    monkeypatch.chdir(tmp_path)
+    monkeypatch.setenv("ARTIFACTS_PATH", str(tmp_path / "artifacts"))
     port, _ = grpc_server
     stub = _make_stub(port)
     resp = stub.ListAllListedSymbols(

@@ -10,8 +10,10 @@ from pathlib import Path
 
 import pytest
 
+from engine.paths import jquants_catalog_path as _jquants_catalog_path
+
 _REPO_ROOT = Path(__file__).parents[3]
-_CATALOG_PATH = _REPO_ROOT / "artifacts" / "jquants-catalog"
+_CATALOG_PATH = _jquants_catalog_path()
 
 # J-Quants データソース候補（先頭から順に試す）
 _JQUANTS_DATA_DIRS = [

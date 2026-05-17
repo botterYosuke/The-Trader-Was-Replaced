@@ -20,8 +20,12 @@ from zoneinfo import ZoneInfo
 
 _JST = ZoneInfo("Asia/Tokyo")
 
-BASE_DIR     = Path(r"S:\j-quants")
-CATALOG      = Path(r"D:\Documents\The-Trader-Was-Replaced\artifacts\jquants-catalog")
+from engine.paths import jquants_cache_dir, jquants_catalog_path
+
+BASE_DIR = jquants_cache_dir()
+if BASE_DIR is None:
+    raise RuntimeError("DEV_J_QUANTS_CACHE is not set")
+CATALOG = jquants_catalog_path()
 MINUTE_START = "2024-11-01"
 MINUTE_END   = "2025-01-30"
 DAILY_START  = "2024-10-01"   # warmup needs ~47 trading days before Jan 06

@@ -35,8 +35,28 @@ $ErrorActionPreference = "Stop"
 $RepoRoot   = Split-Path $PSScriptRoot -Parent
 $PyRoot     = Join-Path $RepoRoot "python"
 
+function Get-DotEnvValue([string]$Name) {
+    $envFile = Join-Path $RepoRoot ".env"
+    if (-not (Test-Path $envFile)) { return $null }
+    foreach ($line in (Get-Content $envFile)) {
+        if ($line -match "^\s*$Name\s*=\s*['""]?([^'""#]+)['""]?\s*(?:#.*)?$") {
+            return $Matches[1].Trim()
+        }
+    }
+    return $null
+}
+
+function Resolve-RepoRelativePath([string]$PathValue) {
+    if ([System.IO.Path]::IsPathRooted($PathValue)) { return $PathValue }
+    return Join-Path $RepoRoot $PathValue
+}
+
 if (-not $Catalog) {
-    $Catalog = Join-Path $RepoRoot "artifacts\jquants-catalog"
+    $ArtifactsRoot = $env:ARTIFACTS_PATH
+    if (-not $ArtifactsRoot) { $ArtifactsRoot = Get-DotEnvValue "ARTIFACTS_PATH" }
+    if (-not $ArtifactsRoot) { $ArtifactsRoot = "artifacts" }
+    $ArtifactsRoot = Resolve-RepoRelativePath $ArtifactsRoot
+    $Catalog = Join-Path $ArtifactsRoot "jquants-catalog"
 }
 if (-not (Test-Path $Strategy)) {
     throw "strategy not found: $Strategy"
@@ -78,18 +98,9 @@ Write-Host "scenario : instruments=$($instruments -join ',') granularity=$granul
 # ── 2. catalog 自動構築 ───────────────────────────────────────────────────────
 if (-not $SkipCatalogBuild) {
     # .env から DEV_J_QUANTS_CACHE を読む（PowerShell は .env を自動ロードしない）
-    $baseDir = [Environment]::GetEnvironmentVariable("DEV_J_QUANTS_CACHE")
-    if (-not $baseDir) { $baseDir = "" }
-    $envFile = Join-Path $RepoRoot ".env"
-    if (($baseDir -eq "") -and (Test-Path $envFile)) {
-        foreach ($line in (Get-Content $envFile)) {
-            if ($line -match '^\s*DEV_J_QUANTS_CACHE\s*=\s*"?([^"]+)"?\s*$') {
-                $baseDir = $Matches[1]
-                break
-            }
-        }
-    }
-    if ($baseDir -eq "") {
+    $baseDir = $env:DEV_J_QUANTS_CACHE
+    if (-not $baseDir) { $baseDir = Get-DotEnvValue "DEV_J_QUANTS_CACHE" }
+    if (-not $baseDir) {
         throw "DEV_J_QUANTS_CACHE is not set (.env or environment). Cannot auto-build catalog."
     }
     if (-not (Test-Path $baseDir)) {

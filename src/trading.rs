@@ -123,18 +123,17 @@ impl TradingSettings {
                 .ok()
                 .and_then(|v| v.parse().ok())
                 .unwrap_or(1000),
-            catalog_path: std::env::var("BACKEND_CATALOG_PATH").ok().map(|p| {
-                let path = std::path::Path::new(&p);
-                if path.is_absolute() {
-                    p
-                } else {
+            catalog_path: {
+                let base = std::env::var("ARTIFACTS_PATH").unwrap_or_else(|_| {
                     std::env::current_dir()
                         .unwrap_or_default()
-                        .join(path)
+                        .join("artifacts")
                         .to_string_lossy()
                         .to_string()
-                }
-            }),
+                });
+                let p = std::path::Path::new(&base).join("jquants-catalog");
+                Some(p.to_string_lossy().to_string())
+            },
         }
     }
 }
@@ -610,5 +609,98 @@ mod tests {
             in_flight: HashSet::new(),
             last_error: None,
         };
+    }
+
+    struct EnvGuard {
+        key: &'static str,
+        prev: Option<String>,
+    }
+    impl EnvGuard {
+        fn set(key: &'static str, val: &str) -> Self {
+            let prev = std::env::var(key).ok();
+            unsafe { std::env::set_var(key, val) };
+            Self { key, prev }
+        }
+        fn unset(key: &'static str) -> Self {
+            let prev = std::env::var(key).ok();
+            unsafe { std::env::remove_var(key) };
+            Self { key, prev }
+        }
+    }
+    impl Drop for EnvGuard {
+        fn drop(&mut self) {
+            match &self.prev {
+                Some(v) => unsafe { std::env::set_var(self.key, v) },
+                None => unsafe { std::env::remove_var(self.key) },
+            }
+        }
+    }
+
+    #[test]
+    #[serial]
+    fn test_catalog_path_uses_artifacts_path_env() {
+        let _a = EnvGuard::set("ARTIFACTS_PATH", "/tmp/custom-artifacts");
+        let _b = EnvGuard::unset("BACKEND_CATALOG_PATH");
+        let settings = TradingSettings::from_env();
+        let catalog = settings.catalog_path.expect("catalog_path should be Some");
+        assert!(
+            catalog.ends_with("jquants-catalog"),
+            "expected jquants-catalog suffix, got: {catalog}"
+        );
+        assert!(
+            catalog.contains("custom-artifacts"),
+            "expected custom-artifacts in path, got: {catalog}"
+        );
+    }
+
+    #[test]
+    #[serial]
+    fn test_catalog_path_defaults_to_artifacts_jquants_catalog() {
+        let _a = EnvGuard::unset("ARTIFACTS_PATH");
+        let _b = EnvGuard::unset("BACKEND_CATALOG_PATH");
+        let settings = TradingSettings::from_env();
+        let catalog = settings.catalog_path.expect("catalog_path should be Some");
+        assert!(
+            catalog.ends_with("jquants-catalog"),
+            "expected jquants-catalog suffix, got: {catalog}"
+        );
+        assert!(
+            catalog.contains("artifacts"),
+            "expected 'artifacts' in path, got: {catalog}"
+        );
+    }
+
+    #[test]
+    #[serial]
+    fn test_catalog_path_absolute_artifacts_path_not_joined_with_repo() {
+        let _a = EnvGuard::set("ARTIFACTS_PATH", "/absolute/path");
+        let _b = EnvGuard::unset("BACKEND_CATALOG_PATH");
+        let settings = TradingSettings::from_env();
+        let catalog = settings.catalog_path.expect("catalog_path should be Some");
+        assert!(
+            catalog.contains("absolute") && catalog.contains("path"),
+            "expected /absolute/path to be base, got: {catalog}"
+        );
+        assert!(
+            catalog.ends_with("jquants-catalog"),
+            "expected jquants-catalog suffix, got: {catalog}"
+        );
+    }
+
+    #[test]
+    #[serial]
+    fn test_catalog_path_ignores_backend_catalog_path_env() {
+        let _a = EnvGuard::unset("ARTIFACTS_PATH");
+        let _b = EnvGuard::set("BACKEND_CATALOG_PATH", "/legacy/path");
+        let settings = TradingSettings::from_env();
+        let catalog = settings.catalog_path.expect("catalog_path should be Some");
+        assert!(
+            !catalog.starts_with("/legacy/path"),
+            "catalog must not use BACKEND_CATALOG_PATH, got: {catalog}"
+        );
+        assert!(
+            catalog.ends_with("jquants-catalog"),
+            "expected jquants-catalog suffix, got: {catalog}"
+        );
     }
 }

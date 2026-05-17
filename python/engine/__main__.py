@@ -39,7 +39,7 @@ def parse_args(argv=None):
         "--jquants-catalog-path",
         type=str,
         default=os.environ.get("JQUANTS_CATALOG_PATH"),
-        help="Path to Nautilus ParquetDataCatalog for J-Quants data (env: JQUANTS_CATALOG_PATH)",
+        help="Path to Nautilus ParquetDataCatalog for J-Quants data (env: JQUANTS_CATALOG_PATH, ARTIFACTS_PATH)",
     )
 
     return parser.parse_args(argv)

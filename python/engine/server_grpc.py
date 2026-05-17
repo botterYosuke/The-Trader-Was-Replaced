@@ -15,13 +15,14 @@ from .core import DataEngine
 from .proto import engine_pb2, engine_pb2_grpc
 from .replay import BaseReplayProvider
 from .jquants_loader import JQuantsLoader
+from .paths import listed_symbols_artifact_path
 
 
 _INSTRUMENT_ID_RE = re.compile(r"^(.+?)-\d+-[A-Z]")
 
 
 def _artifact_path_for(end_date: str) -> Path:
-    return Path("artifacts") / "instrument-lists" / f"listed-symbols-{end_date}.json"
+    return listed_symbols_artifact_path(end_date)
 
 
 def _read_artifact(end_date: str) -> Optional[list[str]]:
