@@ -1,6 +1,7 @@
 use crate::ui::components::{
-    InstrumentRegistry, PanelKind, PanelSpawnRequested, PanelSpawnSource, SidebarInstrumentRemoveButton,
-    SidebarInstrumentRow, SidebarInstrumentsList, SidebarInstrumentsWarning, SidebarRoot, WindowRoot,
+    InstrumentRegistry, PanelKind, PanelSpawnRequested, PanelSpawnSource, SidebarAddInstrumentButton,
+    SidebarInstrumentRemoveButton, SidebarInstrumentRow, SidebarInstrumentsList,
+    SidebarInstrumentsWarning, SidebarRoot, WindowRoot,
 };
 use bevy::prelude::*;
 
@@ -238,6 +239,33 @@ pub fn update_sidebar_system(
             }
         });
     }
+
+    commands.entity(list_entity).with_children(|parent| {
+        parent
+            .spawn((
+                Button,
+                Node {
+                    width: Val::Percent(100.0),
+                    padding: UiRect::axes(Val::Px(6.0), Val::Px(4.0)),
+                    margin: UiRect::axes(Val::Px(6.0), Val::Px(4.0)),
+                    justify_content: JustifyContent::Center,
+                    align_items: AlignItems::Center,
+                    ..default()
+                },
+                BackgroundColor(row_btn_bg),
+                SidebarAddInstrumentButton,
+            ))
+            .with_children(|btn| {
+                btn.spawn((
+                    Text::new("+ Add"),
+                    TextFont {
+                        font_size: 11.0,
+                        ..default()
+                    },
+                    TextColor(BTN_TEXT),
+                ));
+            });
+    });
 
     // 警告行は毎回作り直す
     for entity in warning_q.iter() {

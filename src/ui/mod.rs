@@ -56,6 +56,11 @@ use crate::ui::window::instrument_chart_sync_system;
 use crate::ui::sidebar::{
     instrument_remove_button_system, panel_button_system, spawn_sidebar, update_sidebar_system,
 };
+use crate::ui::instrument_picker::{
+    add_instrument_button_system, picker_close_when_invisible_system,
+    picker_list_rebuild_system, picker_searchbox_input_system,
+    picker_sync_visible_on_window_removed_system, force_close_picker_on_lock_system,
+};
 use crate::ui::strategy_editor::{
     StrategyAutoSaveState, apply_pending_app_edits_system, apply_strategy_snapshot_restore_system,
     debounced_strategy_autosave_system, sync_editor_to_strategy_buffer_system,
@@ -130,6 +135,13 @@ impl Plugin for UiPlugin {
                 run_result_panel_system,
                 log_strategy_run_requested_system,
                 handle_strategy_run_system.after(sync_scenario_metadata_from_registry_system),
+                panel_button_system,
+                panel_spawn_dispatcher_system,
+            ),
+        )
+        .add_systems(
+            Update,
+            (
                 (
                     parse_scenario_system,
                     sync_registry_from_scenario_loaded_system,
@@ -142,8 +154,10 @@ impl Plugin for UiPlugin {
                     .chain(),
                 update_sidebar_system,
                 instrument_remove_button_system,
-                panel_button_system,
-                panel_spawn_dispatcher_system,
+                add_instrument_button_system.after(sync_registry_from_scenario_loaded_system),
+                picker_close_when_invisible_system,
+                picker_sync_visible_on_window_removed_system,
+                force_close_picker_on_lock_system.after(mark_registry_dirty_system),
             ),
         )
         .add_systems(
@@ -153,6 +167,10 @@ impl Plugin for UiPlugin {
                 menu_item_system,
                 menu_keyboard_system,
                 sync_menu_popup_visibility_system,
+                picker_searchbox_input_system,
+                picker_list_rebuild_system
+                    .after(picker_searchbox_input_system)
+                    .after(force_close_picker_on_lock_system),
             ),
         )
         .add_systems(
@@ -175,7 +193,9 @@ impl Plugin for UiPlugin {
         )
         .add_systems(
             Update,
-            change_active_editor_sprite.after(menu_keyboard_system),
+            change_active_editor_sprite
+                .after(menu_keyboard_system)
+                .after(picker_searchbox_input_system),
         );
     }
 }

@@ -118,6 +118,14 @@ pub struct SidebarInstrumentRemoveButton {
     pub instrument_id: String,
 }
 
+/// サイドバー `Instruments` セクション末尾の `[+ Add]` 行ボタン。
+///
+/// 押下で `InstrumentPickerState.visible = true` にする
+/// `handle_add_button_pressed_system`（Phase 7.5b §3.1）が拾うマーカー。
+/// `InstrumentRegistry::editable == false` のときは visually disabled。
+#[derive(Component, Debug, Default, Clone, Copy)]
+pub struct SidebarAddInstrumentButton;
+
 #[derive(Component, Debug)]
 pub struct SidebarInstrumentsList;
 
