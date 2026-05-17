@@ -22,6 +22,17 @@ Footer の Run ボタン押下後、Python backend が実際に replay を開始
 
 progress window の表示対象は replay 本体の進捗ではなく、**startup phase**、つまり `ForceStop -> LoadReplayData -> StartEngine request accepted / first RUNNING observation` までに限定する。Scenario Startup Parameters Panel は progress window とは別 UI として扱い、Run 前に startup 条件を確認・編集するための 7.6b として同じ計画書内に独立させる。
 
+## Review Status (2026-05-18)
+
+Medium 以上のレビュー指摘は本版で解消済み。
+
+- **Resolved / Medium**: `auto_hide_replay_startup_window_system` の system ordering が未指定だった。同一 frame で `status_update_system` が `start_engine_accepted = true` を書いた後に auto-hide が実行されないとフレーム遅延が起きる。`auto_hide_replay_startup_window_system.after(status_update_system)` を ordering section に追加した(§Systems Ordering 参照)。
+- **Resolved / Medium**: `RunComplete` による auto-hide の担当システムが §3 と §5 で矛盾していた。§3 では `status_update_system` が処理すると読め、§5 では polling system の条件として書かれていた。`status_update_system` が matching `RunComplete` を受信したとき直接 `progress.visible = false` と cleanup を実行する設計に一本化した(§3, §5 更新)。
+- **Resolved / Medium**: `update_scenario_startup_param_ui_system` の ordering が未指定だった。`scenario_startup_param_input_system` と `auto_hide_replay_startup_window_system` の後に配置し、最新の errors と visible 状態を反映するよう明記した(§Systems Ordering 参照)。
+- **Resolved / Medium**: Test 4d の「fake backend」セットアップが未記述だった。`mpsc::channel` で gRPC 呼び出しを持たない ECS テストとして構成する方法を明記した(§Test Plan 4d 参照)。
+- **Resolved / Medium**: Scenario Startup Parameters Panel の配置が「Sidebar 下部または Footer 上」と未決だった。**Sidebar 下部**（instrument list の下、Sidebar Panel の内部フッター）に固定した(§UX Specification 参照)。
+- **Resolved / Medium**: 既存 strategy の cache sidecar に `scenario.granularity` が設定されていない場合、7.6b 導入後は `errors.granularity` が設定されて Run が block される移行リスクが Risks に未記載だった。Risks に追加した。
+
 ## Review Status (2026-05-17)
 
 Medium 以上のレビュー指摘は本版で解消済み。
@@ -233,7 +244,7 @@ Run 前に scenario の主要 startup parameter を確認・変更できる comp
 
 ### UX
 
-Scenario Startup Parameters Panel は Sidebar 下部または Footer 上の小さな常設領域に置く。Run 前は編集可能、progress window が visible (= Run startup 中) の間は disabled 表示にする。
+Scenario Startup Parameters Panel は **Sidebar 下部**（instrument list の下、Sidebar Panel の内部フッター相当）に小さな常設フォームとして置く。Run 前は編集可能、progress window が visible (= Run startup 中) の間は disabled 表示にする。
 
 - `Start`: date text input (`YYYY-MM-DD`)
 - `End`: date text input (`YYYY-MM-DD`)
@@ -441,6 +452,18 @@ scenario_startup_param_input_system
 write_startup_params_to_cache_sidecar
     .after(writeback_scenario_instruments_system)
     .before(handle_strategy_run_system)
+
+// auto_hide は status_update_system が start_engine_accepted を書いた後に実行する。
+// 同一 frame で WaitingForFirstTick が届き RUNNING も観測された場合に
+// auto-hide が確実に発火するよう、status_update_system の後に配置する。
+auto_hide_replay_startup_window_system
+    .after(status_update_system)
+
+// update_scenario_startup_param_ui_system は validation errors と
+// progress.visible の最新状態を反映するため、以下の後に配置する。
+update_scenario_startup_param_ui_system
+    .after(scenario_startup_param_input_system)
+    .after(auto_hide_replay_startup_window_system)
 ```
 
 ポイント:
@@ -448,6 +471,8 @@ write_startup_params_to_cache_sidecar
 - Run と同じ frame で param を commit した場合、Run config が古い値を読まないように、input system は `handle_strategy_run_system` より前に置く。
 - `parse_scenario_system` が同 frame で sidecar を reload した場合、sync system は `dirty == false` のときだけ params を上書きする。input commit 中(`dirty == true`)に reload が走っても params は守られる。
 - cache writeback は `writeback_scenario_instruments_system` の後に置き、§Coexistence with `scenario.instruments` writeback の race を回避する。
+- `auto_hide_replay_startup_window_system` を `status_update_system` の後に置くことで、`start_engine_accepted = true` が書かれた同一 frame に auto-hide が発火できる（ordering なしでは 1 frame 遅延する）。
+- `update_scenario_startup_param_ui_system` は mutation 系の後に置き、同一 frame の commit 結果を UI に即反映する。
 
 ### Disable enforcement while progress window is visible
 
@@ -582,7 +607,8 @@ last_run.state = RunState::Running;
 - `BackendStartupStage -> ReplayStartupPhase` の変換は `status_update_system` 内で行う。
 - Run task 内の各 RPC 直前に matching `startup_id` 付き phase update を送る。
 - `WaitingForFirstTick` 反映時に `progress.start_engine_accepted = true` を設定する。
-- `RunFailed` / `RunComplete` は matching `startup_id` のときだけ startup window に反映する。
+- `RunFailed` は matching `startup_id` のときだけ `progress.error` を設定する。
+- `RunComplete` は matching `startup_id` のとき `status_update_system` が **直接** cleanup を実行する（`auto_hide_replay_startup_window_system` の polling ではなく event-driven で確実に処理する）。cleanup code は §5 auto-hide の「満たしたら」block と同じ（`progress.visible = false`, `phase = Idle`, etc.）。
 
 注意: `BackendStatusUpdate::RunStarted` の意味は既存互換のため残す。ただし UI 表示上は `RunStarted == startup started` と解釈しない。Startup window は専用 resource だけを見る。
 
@@ -606,6 +632,14 @@ indeterminate bar は Bevy UI の親 `Node` に clip 相当がなければ、固
 
 ### 5. Auto-hide
 
+auto-hide は 2 つの経路に分かれる。
+
+**経路 A — event-driven（`status_update_system` が担当）**
+
+`status_update_system` が matching `BackendStatusUpdate::RunComplete { startup_id: Some(progress.startup_id), ... }` を受信したとき、直接 cleanup を実行する（§3 参照）。小さい replay で `RUNNING` が UI polling に見える前に完了するケースを確実に吸収するため、polling system ではなく event-driven にする。
+
+**経路 B — polling（`auto_hide_replay_startup_window_system` が担当）**
+
 `auto_hide_replay_startup_window_system`:
 
 条件:
@@ -616,7 +650,6 @@ indeterminate bar は Bevy UI の親 `Node` に clip 相当がなければ、固
   - `progress.start_engine_accepted == true` かつ `TradingData.replay_state.as_deref() == Some("RUNNING")`
   - `progress.start_engine_accepted == true` かつ `progress.baseline_timestamp_ms` が `Some(b)` で、かつ `TradingData.timestamp_ms != b`
     （**`>` ではなく `!=`**: scenario 切替で過去日に飛ぶケースもあり、単調増加を仮定しない。baseline は Run 押下時の snapshot で「matching startup が StartEngine accepted まで進んだ後に変化したら startup が完了した」とみなす）
-  - `status_update_system` が matching `BackendStatusUpdate::RunComplete { startup_id: Some(progress.startup_id), ... }` を受信した
 
 満たしたら:
 
@@ -751,9 +784,12 @@ if progress.visible
    - `progress.error == None` のまま。
 
 4d. startup task early failure emits matching RunFailed
-   - fake backend で `force_stop_replay` が `success == false` または gRPC error を返す。
-   - matching `RunFailed` が送られ、`progress.error` に表示される。
-   - `load_replay_data` / `start_engine` は呼ばれない。
+   - テストセットアップ: `BackendStatusUpdate` を送る `mpsc::channel` の sender を test 側が握り、実際の gRPC call は行わない ECS test として構成する。`TransportCommandSender` を差し替えるのではなく、tokio task を spawn せず代わりに `status_update_tx.send(BackendStatusUpdate::RunFailed { startup_id: Some(startup_id), error: "force_stop failed".into() })` を直接呼ぶ。
+   - 事前に `progress.visible = true`、`progress.startup_id = startup_id` を設定。
+   - `status_update_system` を回して `BackendStatusUpdate::RunFailed` を処理させる。
+   - `progress.error` に失敗文言が設定される。
+   - `progress.visible == true` のまま(Close 待ち)。
+   - `load_replay_data` / `start_engine` は呼ばれない（tokio task を spawn しないため自明）。
 
 4e. unknown granularity emits matching RunFailed
    - `StrategyRunConfig.granularity = "Tick"` などを渡す。
@@ -864,6 +900,7 @@ if progress.visible
 - `startup_id` は Rust UI transport 内だけの相関 ID とし、backend/proto には渡さない。proto 変更を避けつつ stale update を防ぐ。
 - scenario parameter edit は cache sidecar のみを書き換えるため、明示 Save しない限り元ファイルには反映されない。この挙動を UI 上で誤解させないため、panel は startup/run configuration の編集として扱い、元ファイル保存の表現はしない。
 - `initial_cash` は `ScenarioMetadata` 上では `Option<i64>` だが、UI input は文字列で持つ。parse 失敗時に古い値で Run されないよう、error がある間は Run を block する。
+- **既存 strategy の `granularity = None` による移行時の Run block**: 7.6b 導入前に作成された strategy の cache sidecar に `scenario.granularity` が無い場合、`sync_startup_params_from_scenario_system` が `GranularityChoice::Daily` にフォールバックして `errors.granularity = Some(...)` を設定し、Run が block される。ユーザーは Scenario Startup Parameters Panel から granularity を選択・commit することで解除できる。初回利用時に説明なしでフリーズして見えるリスクがあるため、panel の `granularity` エラー文言を「Please select a granularity to enable Run」のように案内的にする。本計画では strict 側（error + block）を採用し、silent に `Daily` を適用して動くようにはしない（7.6a が `RunFailed` に変換する defense-in-depth と一致させるため）。
 
 ## Acceptance Criteria
 
