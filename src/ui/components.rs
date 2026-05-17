@@ -637,7 +637,6 @@ pub struct ScenarioWritebackPaths {
 /// `scenario.instruments` だけを registry.ids で置換する。
 pub fn writeback_scenario_instruments_system(
     registry: Res<InstrumentRegistry>,
-    _buffer: Res<StrategyBuffer>,
     paths: Res<ScenarioWritebackPaths>,
     mut writeback: ResMut<ScenarioInstrumentsWritebackState>,
     mut watch: ResMut<ScenarioFileWatchState>,

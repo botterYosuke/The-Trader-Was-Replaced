@@ -631,6 +631,12 @@ cargo check --tests 2>&1 | Select-String -Pattern "warning|error"
 
 `flush_sidecars_now` の signature が変わった or autonomous な ScenarioMetadata 同期 system 追加で経路が変わった可能性。確認の上、引数削除 or `_ = buffer.original_path` で意図を明示。
 
+**完了 (2026-05-17)**:
+- 実装: `handle_strategy_run_system` (`src/ui/menu_bar.rs:553`) と `writeback_scenario_instruments_system` (`src/ui/components.rs:640`) から未使用の `_buffer: Res<StrategyBuffer>` 引数を削除
+- 検証: `cargo check --lib` warning 0 / `cargo test --lib` 128 passed
+- 差分: 2 ファイル (`src/ui/menu_bar.rs`, `src/ui/components.rs`)
+- commit: <pending>
+
 ### 9.4 Em dash 豆腐（低優先、視覚のみ）
 
 `CHART — {id}` のタイトルと sidebar 警告行内の `—` が Bevy デフォルトフォントで豆腐 `□` 化。動作影響なし。
