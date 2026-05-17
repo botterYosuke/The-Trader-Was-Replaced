@@ -683,6 +683,7 @@ pub struct ScenarioWritebackPaths {
 pub fn writeback_scenario_instruments_system(
     registry: Res<InstrumentRegistry>,
     paths: Res<ScenarioWritebackPaths>,
+    target: Res<ScenarioReadTarget>,
     mut writeback: ResMut<ScenarioInstrumentsWritebackState>,
     mut watch: ResMut<ScenarioFileWatchState>,
 ) {
@@ -693,12 +694,25 @@ pub fn writeback_scenario_instruments_system(
         return;
     }
 
+    let is_cache_target = target.0.as_deref() == paths.cache_sidecar.as_deref()
+        && target.0.is_some();
     match flush_sidecars_now(registry.as_slice(), None, paths.cache_sidecar.as_deref()) {
         Ok(new_mtime) => {
             writeback.flushed_revision = writeback.revision;
             writeback.last_error = None;
             if let Some(m) = new_mtime {
                 watch.last_mtime = Some(m);
+            } else if is_cache_target {
+                // §5b: cache sidecar への writeback 時は original_py mtime が返らない。
+                // cache file の実 mtime を読み直して watch に転記し、
+                // parse_scenario_system の再 trigger を抑止する。
+                if let Some(cache_path) = paths.cache_sidecar.as_deref() {
+                    if let Ok(meta) = std::fs::metadata(cache_path) {
+                        if let Ok(m) = meta.modified() {
+                            watch.last_mtime = Some(m);
+                        }
+                    }
+                }
             }
         }
         Err(msg) => {
@@ -1277,12 +1291,12 @@ mod writeback_scenario_instruments_tests {
             last_merged_source: None,
         });
         app.insert_resource(ScenarioWritebackPaths {
-            cache_sidecar: None,
+            cache_sidecar: Some(original_json.clone()),
         });
         app.init_resource::<InstrumentRegistry>();
         app.init_resource::<ScenarioInstrumentsWritebackState>();
         app.init_resource::<ScenarioFileWatchState>();
-        app.init_resource::<ScenarioReadTarget>();
+        app.insert_resource(ScenarioReadTarget(Some(original_json.clone())));
         app.init_resource::<ScenarioMetadata>();
         app.add_event::<ScenarioLoadedFromFile>();
         app.add_event::<ScenarioClearedFromFile>();

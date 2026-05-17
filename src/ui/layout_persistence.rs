@@ -507,7 +507,7 @@ fn handle_save_layout_system(
             buffer.cache_path = cache_state_paths().map(|(_, cache_py)| cache_py);
         }
 
-        let cache_sidecar = paths.cache_sidecar.as_deref();
+        let scenario_json = scenario_target.0.clone();
         let fallback_json = buffer
             .original_path
             .as_ref()
@@ -518,7 +518,7 @@ fn handle_save_layout_system(
             &*buffer,
             &registry,
             &scenario,
-            cache_sidecar,
+            scenario_json.as_deref(),
             fallback_json.as_deref(),
         ) {
             Some(l) => l,
@@ -533,7 +533,10 @@ fn handle_save_layout_system(
             }
         };
         match save_layout_to(&json_path, &layout) {
-            Ok(()) => info!("layout saved to {:?}", json_path),
+            Ok(()) => {
+                info!("layout saved to {:?}", json_path);
+                scenario_target.0 = Some(json_path.clone());
+            }
             Err(e) => {
                 error!("layout save failed: {e}");
                 // ロールバック: original_path を None に戻す（初回 save の場合）
@@ -598,6 +601,7 @@ fn handle_save_as_layout_system(
     paths: Res<crate::ui::components::ScenarioWritebackPaths>,
     scenario: Res<crate::ui::components::ScenarioMetadata>,
     mut writeback: ResMut<crate::ui::components::ScenarioInstrumentsWritebackState>,
+    mut scenario_target: ResMut<crate::ui::components::ScenarioReadTarget>,
 ) {
     for _ in events.read() {
         // 計画書 KC4: 明示 Save As の前に cache 側だけ最新化する。
@@ -632,12 +636,13 @@ fn handle_save_as_layout_system(
         // Fix(High): buffer を先に新パスへ更新 → build_layout の strategy_path が正しくなる
         let old_original = buffer.original_path.clone();
         let old_cache = buffer.cache_path.clone();
+        let old_scenario_target = scenario_target.0.clone();
         buffer.original_path = Some(py_path.clone());
         buffer.cache_path = cache_state_paths().map(|(_, cache_py)| cache_py);
 
-        // 計画書 KC4-c: preserve_scenario_from は cache_sidecar 第一候補、
+        // preserve_scenario_from: 現在 open 中の scenario_target を第一候補、
         // 無ければ Save As 限定で old_original_path.with_extension("json") に fallback。
-        let cache_sidecar = paths.cache_sidecar.as_deref();
+        let scenario_json = old_scenario_target.clone();
         let old_original_json = old_original.as_ref().map(|p| p.with_extension("json"));
         let layout = match build_layout_for_explicit_save(
             &panels,
@@ -645,7 +650,7 @@ fn handle_save_as_layout_system(
             &*buffer,
             &registry,
             &scenario,
-            cache_sidecar,
+            scenario_json.as_deref(),
             old_original_json.as_deref(),
         ) {
             Some(l) => l,
@@ -663,6 +668,7 @@ fn handle_save_as_layout_system(
                 // writeback revision を強制 inc。registry 不変でも次 tick の writeback system が
                 // 新パス側 sidecar へ flush する。
                 crate::ui::components::bump_writeback_for_save_as(&mut writeback);
+                scenario_target.0 = Some(json_path.clone());
             }
             Err(e) => {
                 error!("layout save-as failed: {e}");
@@ -703,6 +709,7 @@ fn handle_save_as_layout_system(
                     error!("strategy .py save-as failed: {e}");
                     buffer.original_path = old_original;
                     buffer.cache_path = old_cache;
+                    scenario_target.0 = old_scenario_target.clone();
                 }
             }
         }
@@ -2157,7 +2164,7 @@ mod tests {
         app.insert_resource(reg);
         app.init_resource::<ScenarioMetadata>();
         app.init_resource::<StrategyAutoSaveState>();
-        app.init_resource::<ScenarioReadTarget>();
+        app.insert_resource(ScenarioReadTarget(Some(cache_json_path.clone())));
 
         app.add_event::<LayoutSaveRequested>();
         app.world_mut().spawn((
