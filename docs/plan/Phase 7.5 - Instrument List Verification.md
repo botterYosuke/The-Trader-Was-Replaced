@@ -419,24 +419,32 @@ parse_scenario_system
 
 ### 5.3 手動 E2E
 
-- `pair_trade_minute.json` Open → Instruments に 2 銘柄、Chart 2 つ spawn。
-- Chart `[×]` で `7203.TSE` Chart を閉じる → Instruments の行も消え、元 sidecar と cache sidecar の `scenario.instruments` が `["1301.TSE"]`。
-- 再度 Open → 1 銘柄だけ復元。
-- window を動かしただけでは元 sidecar mtime 変化なし、cache JSON のみ更新。
-- 単一 `instrument: "1301.TSE"` の v1 sidecar を開いて Chart `[×]` → 元 sidecar が `schema_version=2`, `instruments: []` に正規化されている。
+> **注記 (2026-05-17 訂正)**: 本節は当初 Phase 7.3 (`5029f24` CacheOnly writeback) 前提で「元 sidecar も即時更新される」と書かれていたが、実機挙動と乖離していたため Phase 7.5a E2E 結果に合わせて全面改訂。**現行仕様: 編集系操作 (Chart 閉じ / registry mutate) は cache sidecar のみ書き戻し、元 sidecar は明示 Save / Save As で初めて反映される**。Run 直前 inline flush は別経路。
+
+- `File > Open...` で `pair_trade_minute.json` (`.json` を直接選択。`.py` は対象外) → Instruments に 2 銘柄、Chart 2 つ spawn。
+- Chart `[×]` で `7203.TSE` Chart を閉じる → Instruments の行も消え、**cache sidecar の `scenario.instruments` のみ** `["1301.TSE"]` に更新。**元 sidecar は不変** (Phase 7.3 CacheOnly writeback)。元 sidecar に反映したい場合は `File > Save` を明示実行。
+- 再度同じ `pair_trade_minute.json` を Open → **元 sidecar が Sidecar 優先で読まれ 2 銘柄復元** (`["1301.TSE","7203.TSE"]`)。cache に残っていた 1 銘柄状態は採用されない。
+- window を動かしただけでは元 sidecar mtime 変化なし、cache JSON のみ更新（従来通り）。
+- 単一 `instrument: "1301.TSE"` の v1 sidecar (`e2e_v1_sidecar.json`) を開いて Chart `[×]` → **cache 側のみ** `schema_version: 2`, `instruments: []` に正規化される。**元 v1 fixture は `instrument: "1301.TSE"` のまま不変** (Phase 7.3 CacheOnly writeback と整合)。元ファイルを v2 化したい場合は明示 Save。
 - `instruments_ref` を持つ sidecar を開く → `[× row]` と Chart `[×]` が visually disabled、警告行表示、ファイル mtime 変化なし。
 - 旧 layout JSON（`PanelKind::Chart` 単体エントリ）を読んでも起動成功 + warn ログ。
+
+**Save / Save As と writeback の関係 (Phase 7.3 以降)**:
+- 編集 (registry mutate / Chart close) → cache sidecar のみ atomic write
+- `File > Save` → 元 sidecar に flush (現在の registry / ScenarioMetadata を書き出し)
+- `File > Save As` → 新 path を `StrategyBuffer.original_path` にセット + §9.1 完了済の `writeback.revision += 1` で新 path に flush
+- `Run` 直前 inline flush は cache + 元 sidecar 両方を強制同期 (validation 経路の整合性のため)
 
 ---
 
 ## 6. 完了基準 ✅ 全達成
 
 - ✅ `pair_trade_minute.json` を Open → Instruments に 2 銘柄、Chart 2 つ spawn
-- ✅ Chart `[×]` で Instruments 該当行 + Chart が消え、**元 + cache** の両 sidecar が更新
+- ✅ Chart `[×]` で Instruments 該当行 + Chart が消え、**cache sidecar が更新** (元 sidecar は明示 Save または Run inline flush で反映 — Phase 7.3 CacheOnly writeback)
 - ✅ サイドバー `Panels` から `Chart` ボタン消失
 - ✅ window 移動だけでは元 sidecar 不変
 - ✅ Close → 即 Run で backend に届く RunStrategy の instruments が新内容、cache sidecar も同内容
-- ✅ v1 sidecar の Close が v2 正規化される
+- ✅ v1 sidecar の Close で **cache 側が** v2 正規化される (元 v1 fixture は明示 Save まで不変 — Phase 7.3 CacheOnly writeback)
 - ✅ `instruments_ref` を含む sidecar は編集ロック、UI 警告表示
 - ✅ 旧 layout JSON が ignore + warn で起動成功
 - ✅ §5.1 / §5.2 のテスト全件 pass（120 passed / 1 ignored — R1 待ちの skeleton 1 件のみ）
@@ -637,7 +645,43 @@ cargo check --tests 2>&1 | Select-String -Pattern "warning|error"
 - 差分: 2 ファイル (`src/ui/menu_bar.rs`, `src/ui/components.rs`)
 - commit: <pending>
 
-### 9.4 Em dash 豆腐（低優先、視覚のみ）
+### 9.4 Open 後 1 銘柄欠落 bug (再現困難、Phase 7.5b へ繰越)
+
+**観測事象 (2026-05-17、§5.3 E2E 中に 1 回のみ)**:
+- 流れ: `pair_trade_minute.json` Open → `7203.TSE` Chart `[×]` で close (cache のみ 1 銘柄化) → アプリ再起動 → cache 経由で 1 銘柄状態が一時的に見えた状態から、再度 `pair_trade_minute.json` を Open
+- 期待: 元 sidecar Sidecar 優先で 2 銘柄復元 (§5.3 改訂後の項目③)
+- 実際: Instruments に 1 銘柄 (`1301.TSE`) しか出なかった。2 回目以降の再現試行 (診断ログ patch 5 件投入) では再現せず
+
+**再現条件の仮説**:
+- 「`instruments_ref` locked sidecar 起動直後の state」→「cache を旧 `PanelKind::Chart` entry + `scenario.instruments` 1 銘柄で書き換え」→「再起動」→「`pair_trade_minute.json` Open」という複雑な状態遷移の組み合わせでのみ発生
+- 単発の Open リプレイでは出ない
+
+**疑わしい経路 (決定打なし)**:
+- `InstrumentRegistry` mutate 経路 4 か所のいずれかで race
+- chart despawn observer 1 経路
+- `parse_scenario_system` の path/mtime 早期 return が古い ScenarioMetadata を保持し、新ファイル load を skip している可能性 (R5 対策の `ScenarioFileWatchState` mtime 転記との相互作用)
+- `registry.editable` 残存と sync event 不発火の組み合わせ (§9.2 で対応した cleared event の取りこぼし経路)
+
+**診断試行結果**:
+- 診断ログ patch 5 件投入 (mutate 4 + despawn 1) でも 2 回の再現試行で発生せず
+- 状態スナップショット (cache JSON / 元 sidecar mtime / `ScenarioFileWatchState`) の事前条件特定に至らず
+
+**推奨次手 (Phase 7.5b 着手時)**:
+1. **再現スクリプト化を最優先**: 上記「locked sidecar 起動 → cache 強制書換 → 再起動 → Open」を PowerShell + cache JSON 直接編集で deterministic に組む
+2. 再現したら `parse_scenario_system` の mtime 早期 return 分岐に trace ログ追加し、新 path で `ScenarioFileWatchState` がリセットされているか確認
+3. `ScenarioLoadedFromFile` event が 2 銘柄分の `instruments` を載せて発火しているかを `sync_registry_from_scenario_loaded_system` 入口で assert
+4. registry replace ↔ writeback ↔ chart sync の同 tick chain 順序を再確認 (現行: sync_metadata → writeback → chart_sync)
+
+**関連経路ファイル**:
+- `src/ui/scenario_parser.rs::parse_scenario_system` (path/mtime 早期 return)
+- `src/ui/components.rs::sync_registry_from_scenario_loaded_system` / `sync_registry_from_scenario_cleared_system`
+- `src/ui/components.rs` の `ScenarioFileWatchState` / `ScenarioInstrumentsWritebackState`
+- `src/ui/menu_bar.rs::restore_from_cache` (cache 読み出し経路)
+- `src/ui/layout_persistence.rs` (cache merge 部の scenario.instruments 取り込み)
+
+**Phase 7.5a スコープ判断**: 1 回観測 / 再現不能のため修正は Phase 7.5b に繰越。本書では記録のみとし、Phase 7.5b kickoff 時に再現スクリプト作成を最初の task として割り当てる。
+
+### 9.5 Em dash 豆腐（低優先、視覚のみ）
 
 `CHART — {id}` のタイトルと sidebar 警告行内の `—` が Bevy デフォルトフォントで豆腐 `□` 化。動作影響なし。
 
@@ -648,13 +692,13 @@ cargo check --tests 2>&1 | Select-String -Pattern "warning|error"
 
 (a) が最小コスト。Phase 7.5b の UI brush-up と一緒に対応推奨。
 
-### 9.5 cache JSON への Chart 位置情報非保存（既知制約、Phase 7.6 候補）
+### 9.6 cache JSON への Chart 位置情報非保存（既知制約、Phase 7.6 候補）
 
 Phase 7.5a では Chart を `WindowLayout` に保存しない方針（`build_layout` の `Without<ChartInstrument>`）。結果として Chart の位置・サイズはセッション間で保存されず、registry から Chart spawn 時はデフォルト位置に出る。
 
 Phase 7.6 で扱う場合、`WindowLayout` に `instrument_id: Option<String>` を追加して Chart 単位の位置記録 + 復元を実装する。同時に多銘柄 Chart データ分離 (R3) も併せて設計。
 
-### 9.6 多銘柄 TradingData 共有（R3、既知制約）
+### 9.7 多銘柄 TradingData 共有（R3、既知制約）
 
 複数 Chart が同じ `TradingData` Resource を読むため、Chart 2 つ並べると同じ price/candle を描く。Phase 7.5a では非対応、Phase 7.6 仮称 で per-instrument data fetch + per-Chart store 経路を別計画。
 
