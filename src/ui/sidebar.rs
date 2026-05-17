@@ -1,6 +1,6 @@
-use crate::trading::InstrumentList;
 use crate::ui::components::{
-    PanelKind, PanelSpawnRequested, PanelSpawnSource, SidebarListLabel, SidebarRoot, WindowRoot,
+    InstrumentRegistry, PanelKind, PanelSpawnRequested, PanelSpawnSource, SidebarInstrumentRemoveButton,
+    SidebarInstrumentRow, SidebarInstrumentsList, SidebarInstrumentsWarning, SidebarRoot, WindowRoot,
 };
 use bevy::prelude::*;
 
@@ -17,6 +17,12 @@ const BTN_NORMAL: Color = Color::srgba(0.10, 0.10, 0.16, 1.0);
 const BTN_HOVER: Color = Color::srgba(0.20, 0.20, 0.30, 1.0);
 const BTN_PRESSED: Color = Color::srgba(0.30, 0.30, 0.48, 1.0);
 const BTN_TEXT: Color = Color::srgb(0.78, 0.82, 0.92);
+
+// Instrument 行用の色
+const REMOVE_BTN_NORMAL: Color = Color::srgba(0.20, 0.10, 0.12, 1.0);
+const REMOVE_BTN_DISABLED: Color = Color::srgba(0.15, 0.15, 0.20, 0.6);
+const ROW_TEXT: Color = Color::srgb(0.80, 0.90, 1.00);
+const WARNING_TEXT: Color = Color::srgb(0.95, 0.75, 0.35);
 
 pub fn spawn_sidebar(mut commands: Commands) {
     commands
@@ -41,18 +47,13 @@ pub fn spawn_sidebar(mut commands: Commands) {
             spawn_section_header(parent, "Instruments");
 
             parent.spawn((
-                Text::new("Loading…"),
-                TextFont {
-                    font_size: 11.0,
-                    ..default()
-                },
-                TextColor(Color::srgb(0.75, 0.70, 0.25)),
                 Node {
-                    padding: UiRect::all(Val::Px(6.0)),
-                    flex_wrap: FlexWrap::Wrap,
+                    width: Val::Percent(100.0),
+                    flex_direction: FlexDirection::Column,
+                    padding: UiRect::all(Val::Px(2.0)),
                     ..default()
                 },
-                SidebarListLabel,
+                SidebarInstrumentsList,
             ));
 
             // ── Panels section ────────────────────────────────────────
@@ -139,38 +140,149 @@ fn spawn_panel_btn(parent: &mut ChildBuilder, kind: PanelKind) {
         });
 }
 
+/// `InstrumentRegistry` の変更を受けて Instruments 行リストと警告行を作り直す。
 pub fn update_sidebar_system(
-    list: Res<InstrumentList>,
-    mut label_q: Query<(&mut Text, &mut TextColor), With<SidebarListLabel>>,
+    mut commands: Commands,
+    registry: Res<InstrumentRegistry>,
+    list_q: Query<Entity, With<SidebarInstrumentsList>>,
+    warning_q: Query<Entity, With<SidebarInstrumentsWarning>>,
+    sidebar_root_q: Query<Entity, With<SidebarRoot>>,
 ) {
-    if !list.is_changed() {
+    if !registry.is_changed() {
         return;
     }
 
-    let Ok((mut text, mut color)) = label_q.get_single_mut() else {
+    let Ok(list_entity) = list_q.get_single() else {
         return;
     };
 
-    if !list.loaded {
-        text.0 = "Loading…".to_string();
-        color.0 = Color::srgb(0.75, 0.70, 0.25);
-        return;
+    commands.entity(list_entity).despawn_descendants();
+
+    let editable = registry.editable;
+    let row_btn_bg = if editable {
+        REMOVE_BTN_NORMAL
+    } else {
+        REMOVE_BTN_DISABLED
+    };
+
+    if registry.ids.is_empty() {
+        commands.entity(list_entity).with_children(|parent| {
+            parent.spawn((
+                Text::new("No instruments"),
+                TextFont {
+                    font_size: 11.0,
+                    ..default()
+                },
+                TextColor(Color::srgb(0.45, 0.45, 0.45)),
+                Node {
+                    padding: UiRect::all(Val::Px(6.0)),
+                    ..default()
+                },
+            ));
+        });
+    } else {
+        let ids = registry.ids.clone();
+        commands.entity(list_entity).with_children(|parent| {
+            for id in &ids {
+                parent
+                    .spawn((
+                        Node {
+                            width: Val::Percent(100.0),
+                            padding: UiRect::axes(Val::Px(6.0), Val::Px(2.0)),
+                            align_items: AlignItems::Center,
+                            ..default()
+                        },
+                        SidebarInstrumentRow {
+                            instrument_id: id.clone(),
+                        },
+                    ))
+                    .with_children(|row| {
+                        row.spawn((
+                            Text::new(id.clone()),
+                            TextFont {
+                                font_size: 11.0,
+                                ..default()
+                            },
+                            TextColor(ROW_TEXT),
+                        ));
+                        // spacer
+                        row.spawn(Node {
+                            flex_grow: 1.0,
+                            ..default()
+                        });
+                        row.spawn((
+                            Button,
+                            Node {
+                                padding: UiRect::axes(Val::Px(6.0), Val::Px(2.0)),
+                                margin: UiRect::left(Val::Px(4.0)),
+                                justify_content: JustifyContent::Center,
+                                align_items: AlignItems::Center,
+                                ..default()
+                            },
+                            BackgroundColor(row_btn_bg),
+                            SidebarInstrumentRemoveButton {
+                                instrument_id: id.clone(),
+                            },
+                        ))
+                        .with_children(|btn| {
+                            btn.spawn((
+                                Text::new("x"),
+                                TextFont {
+                                    font_size: 11.0,
+                                    ..default()
+                                },
+                                TextColor(BTN_TEXT),
+                            ));
+                        });
+                    });
+            }
+        });
     }
 
-    if let Some(err) = &list.error {
-        text.0 = format!("Error:\n{}", err);
-        color.0 = Color::srgb(1.00, 0.28, 0.28);
-        return;
+    // 警告行は毎回作り直す
+    for entity in warning_q.iter() {
+        commands.entity(entity).despawn_recursive();
     }
 
-    if list.ids.is_empty() {
-        text.0 = "No instruments".to_string();
-        color.0 = Color::srgb(0.45, 0.45, 0.45);
-        return;
+    if !editable {
+        if let Ok(root) = sidebar_root_q.get_single() {
+            commands.entity(root).with_children(|parent| {
+                parent.spawn((
+                    Text::new("This sidecar uses 'instruments_ref' — read-only in Phase 7.5a"),
+                    TextFont {
+                        font_size: 10.0,
+                        ..default()
+                    },
+                    TextColor(WARNING_TEXT),
+                    Node {
+                        width: Val::Percent(100.0),
+                        padding: UiRect::all(Val::Px(6.0)),
+                        flex_wrap: FlexWrap::Wrap,
+                        ..default()
+                    },
+                    SidebarInstrumentsWarning,
+                ));
+            });
+        }
     }
+}
 
-    text.0 = list.ids.join("\n");
-    color.0 = Color::srgb(0.80, 0.90, 1.00);
+/// Instruments 行の × ボタンを処理する。`editable=false` のときは no-op。
+#[allow(clippy::type_complexity)]
+pub fn instrument_remove_button_system(
+    mut query: Query<
+        (&Interaction, &SidebarInstrumentRemoveButton),
+        (Changed<Interaction>, With<Button>),
+    >,
+    mut registry: ResMut<InstrumentRegistry>,
+) {
+    for (interaction, btn) in &mut query {
+        if matches!(interaction, Interaction::Pressed) {
+            if registry.editable {
+                registry.remove(&btn.instrument_id);
+            }
+        }
+    }
 }
 
 /// パネルボタンが押されたら `PanelSpawnRequested` イベントを発火する。

@@ -108,6 +108,22 @@ pub struct SidebarRoot;
 #[derive(Component)]
 pub struct SidebarListLabel;
 
+#[derive(Component, Debug, Clone)]
+pub struct SidebarInstrumentRow {
+    pub instrument_id: String,
+}
+
+#[derive(Component, Debug, Clone)]
+pub struct SidebarInstrumentRemoveButton {
+    pub instrument_id: String,
+}
+
+#[derive(Component, Debug)]
+pub struct SidebarInstrumentsList;
+
+#[derive(Component, Debug)]
+pub struct SidebarInstrumentsWarning;
+
 /// floating window の × ボタンに貼るマーカー。
 /// Click observer がこの entity の祖先 WindowRoot を Visibility::Hidden にする。
 #[derive(Component)]

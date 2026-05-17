@@ -6,9 +6,9 @@ use std::path::PathBuf;
 use std::time::Instant;
 
 use crate::ui::components::{
-    PanelKind, PanelSpawnRequested, PanelSpawnSource, PendingStrategyFragments, RegionKeyAllocator,
-    StrategyBuffer, StrategyEditorId, StrategyEditorSpawnSpec, StrategyFileLoadRequested,
-    StrategyFragment, StrategyLoadMode, WindowManager, WindowRoot,
+    ChartInstrument, PanelKind, PanelSpawnRequested, PanelSpawnSource, PendingStrategyFragments,
+    RegionKeyAllocator, StrategyBuffer, StrategyEditorId, StrategyEditorSpawnSpec,
+    StrategyFileLoadRequested, StrategyFragment, StrategyLoadMode, WindowManager, WindowRoot,
 };
 use crate::ui::menu_bar::{cache_state_paths, sync_to_cache};
 use crate::ui::strategy_editor::{
@@ -168,7 +168,7 @@ fn build_layout(
             &Sprite,
             &Visibility,
         ),
-        With<WindowRoot>,
+        (With<WindowRoot>, Without<ChartInstrument>),
     >,
     camera: &Query<(&Transform, &OrthographicProjection), (With<Camera2d>, Without<WindowRoot>)>,
     buffer: &StrategyBuffer,
@@ -341,7 +341,7 @@ fn handle_save_layout_system(
             &Sprite,
             &Visibility,
         ),
-        With<WindowRoot>,
+        (With<WindowRoot>, Without<ChartInstrument>),
     >,
     camera: Query<(&Transform, &OrthographicProjection), (With<Camera2d>, Without<WindowRoot>)>,
     mut buffer: ResMut<StrategyBuffer>,
@@ -426,7 +426,7 @@ fn handle_save_as_layout_system(
             &Sprite,
             &Visibility,
         ),
-        With<WindowRoot>,
+        (With<WindowRoot>, Without<ChartInstrument>),
     >,
     camera: Query<(&Transform, &OrthographicProjection), (With<Camera2d>, Without<WindowRoot>)>,
     mut buffer: ResMut<StrategyBuffer>,
@@ -525,7 +525,7 @@ fn apply_layout_system(
             &mut Sprite,
             &mut Visibility,
         ),
-        With<WindowRoot>,
+        (With<WindowRoot>, Without<ChartInstrument>),
     >,
     mut camera: Query<
         (&mut Transform, &mut OrthographicProjection),
@@ -756,7 +756,7 @@ fn apply_pending_layout_system(
             &mut Sprite,
             &mut Visibility,
         ),
-        With<WindowRoot>,
+        (With<WindowRoot>, Without<ChartInstrument>),
     >,
     mut wm: ResMut<WindowManager>,
     pending_fragments: Res<PendingStrategyFragments>,
@@ -852,7 +852,7 @@ fn save_layout_on_window_close(
             &Sprite,
             &Visibility,
         ),
-        With<WindowRoot>,
+        (With<WindowRoot>, Without<ChartInstrument>),
     >,
     camera: Query<(&Transform, &OrthographicProjection), (With<Camera2d>, Without<WindowRoot>)>,
     mut buffer: ResMut<StrategyBuffer>,
@@ -910,7 +910,7 @@ fn debounced_autosave_system(
             &Sprite,
             &Visibility,
         ),
-        With<WindowRoot>,
+        (With<WindowRoot>, Without<ChartInstrument>),
     >,
     camera: Query<(&Transform, &OrthographicProjection), (With<Camera2d>, Without<WindowRoot>)>,
     buffer: Res<StrategyBuffer>,
@@ -1219,5 +1219,114 @@ mod tests {
         };
         assert!(is_legacy_chart_entry(&chart), "Chart entry must be skipped");
         assert!(!is_legacy_chart_entry(&orders), "non-Chart entries must pass through");
+    }
+
+    #[test]
+    fn build_layout_excludes_chart_instrument_roots() {
+        use bevy::ecs::system::SystemState;
+        use bevy::prelude::*;
+        use crate::ui::components::ChartInstrument;
+
+        let mut app = App::new();
+        app.insert_resource(StrategyBuffer::default());
+
+        app.world_mut().spawn((
+            Camera2d,
+            Transform::default(),
+            OrthographicProjection::default_2d(),
+        ));
+
+        app.world_mut().spawn((
+            WindowRoot,
+            PanelKind::Chart,
+            Transform::from_xyz(10.0, 20.0, 1.0),
+            Sprite { custom_size: Some(Vec2::new(400.0, 300.0)), ..default() },
+            Visibility::Visible,
+            ChartInstrument { instrument_id: "7203.TSE".to_string() },
+        ));
+
+        app.world_mut().spawn((
+            WindowRoot,
+            PanelKind::Orders,
+            Transform::from_xyz(0.0, 0.0, 1.0),
+            Sprite { custom_size: Some(Vec2::new(200.0, 150.0)), ..default() },
+            Visibility::Visible,
+        ));
+
+        let mut state: SystemState<(
+            Query<
+                (&PanelKind, Option<&StrategyEditorId>, &Transform, &Sprite, &Visibility),
+                (With<WindowRoot>, Without<ChartInstrument>),
+            >,
+            Query<(&Transform, &OrthographicProjection), (With<Camera2d>, Without<WindowRoot>)>,
+            Res<StrategyBuffer>,
+        )> = SystemState::new(app.world_mut());
+
+        let (panels, camera, buffer) = state.get(app.world());
+        let layout = build_layout(&panels, &camera, &*buffer, None);
+
+        let windows = layout.windows.expect("windows must be Some");
+        assert_eq!(windows.len(), 1, "ChartInstrument 付き root は除外される");
+        assert_eq!(windows[0].kind, PanelKind::Orders);
+    }
+
+    #[test]
+    fn apply_layout_does_not_despawn_chart_when_layout_lacks_chart() {
+        use bevy::prelude::*;
+        use crate::ui::components::ChartInstrument;
+
+        let mut app = App::new();
+        app.add_event::<LayoutLoadRequested>();
+        app.add_event::<PanelSpawnRequested>();
+        app.add_event::<StrategyFileLoadRequested>();
+        app.insert_resource(WindowManager::default());
+        app.insert_resource(PendingLayoutApply::default());
+        app.insert_resource(SidecarAutoLoadState::default());
+        app.insert_resource(PendingStrategyFragments::default());
+
+        app.world_mut().spawn((
+            Camera2d,
+            Transform::default(),
+            OrthographicProjection::default_2d(),
+        ));
+
+        let chart = app.world_mut().spawn((
+            WindowRoot,
+            PanelKind::Chart,
+            Transform::from_xyz(10.0, 20.0, 1.0),
+            Sprite { custom_size: Some(Vec2::new(400.0, 300.0)), ..default() },
+            Visibility::Visible,
+            ChartInstrument { instrument_id: "7203.TSE".to_string() },
+        )).id();
+
+        let tmp = std::env::temp_dir().join(format!(
+            "ttwr_test_apply_no_chart_{}.json",
+            std::process::id()
+        ));
+        let layout_json = serde_json::json!({
+            "schema_version": SCHEMA_VERSION,
+            "viewport": null,
+            "strategy_path": null,
+            "windows": [{
+                "kind": "Orders",
+                "position": [0.0, 0.0],
+                "size": [200.0, 150.0],
+                "z": 1.0,
+                "visible": true,
+                "region_key": null
+            }]
+        });
+        std::fs::write(&tmp, serde_json::to_string(&layout_json).unwrap()).unwrap();
+
+        app.world_mut().send_event(LayoutLoadRequested { path: tmp.clone() });
+        app.add_systems(Update, apply_layout_system);
+        app.update();
+
+        let _ = std::fs::remove_file(&tmp);
+
+        assert!(
+            app.world().get_entity(chart).is_ok(),
+            "ChartInstrument 付き root は layout に含まれなくても despawn されない"
+        );
     }
 }

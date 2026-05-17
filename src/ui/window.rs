@@ -1,8 +1,11 @@
 use crate::ui::button::spawn_button;
 use crate::ui::chart::ChartViewState;
-use crate::ui::components::{ChartInstrument, PanelKind, PriceDisplay, TradeButton};
+use crate::ui::components::{
+    ChartInstrument, InstrumentRegistry, PanelKind, PriceDisplay, TradeButton, WindowRoot,
+};
 use crate::ui::floating_window::{FloatingWindowSpec, spawn_floating_window};
 use bevy::prelude::*;
+use std::collections::{HashMap, HashSet};
 
 const PANEL_SIZE: Vec2 = Vec2::new(400.0, 500.0);
 const PANEL_POSITION: Vec2 = Vec2::new(200.0, 0.0);
@@ -74,6 +77,33 @@ pub fn spawn_chart_panel(commands: &mut Commands, instrument_id: &str) {
     commands.entity(content_area).add_child(sell_button);
 }
 
+/// `InstrumentRegistry` と Chart `WindowRoot` を同期する。
+pub fn instrument_chart_sync_system(
+    registry: Res<InstrumentRegistry>,
+    chart_q: Query<(Entity, &ChartInstrument), With<WindowRoot>>,
+    mut commands: Commands,
+) {
+    if !registry.is_changed() {
+        return;
+    }
+    let desired: HashSet<&str> = registry.ids.iter().map(|s| s.as_str()).collect();
+    let spawned: HashMap<&str, Entity> = chart_q
+        .iter()
+        .map(|(e, c)| (c.instrument_id.as_str(), e))
+        .collect();
+
+    for id in &desired {
+        if !spawned.contains_key(id) {
+            spawn_chart_panel(&mut commands, id);
+        }
+    }
+    for (id, e) in &spawned {
+        if !desired.contains(id) {
+            commands.entity(*e).despawn_recursive();
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -92,5 +122,103 @@ mod tests {
         let found: Vec<&ChartInstrument> = q.iter(world).collect();
         assert_eq!(found.len(), 1, "expected exactly 1 ChartInstrument on a WindowRoot");
         assert_eq!(found[0].instrument_id, "1301.TSE");
+    }
+
+    #[test]
+    fn instrument_chart_sync_system_spawns_chart_for_each_registry_id() {
+        use crate::ui::components::InstrumentRegistry;
+        use crate::ui::window::instrument_chart_sync_system; // ← まだ無い
+
+        let mut app = App::new();
+        app.init_resource::<InstrumentRegistry>();
+        app.add_systems(Update, instrument_chart_sync_system);
+
+        {
+            let mut reg = app.world_mut().resource_mut::<InstrumentRegistry>();
+            reg.replace_all(&["1301.TSE".to_string()]);
+        }
+        app.update();
+
+        let world = app.world_mut();
+        let mut q = world.query_filtered::<&ChartInstrument, With<WindowRoot>>();
+        let found: Vec<&ChartInstrument> = q.iter(world).collect();
+        assert_eq!(found.len(), 1, "registry の 1 銘柄に対し Chart が 1 entity spawn される");
+        assert_eq!(found[0].instrument_id, "1301.TSE");
+    }
+
+    #[test]
+    fn instrument_chart_sync_system_despawns_chart_when_registry_empties() {
+        use crate::ui::components::InstrumentRegistry;
+
+        let mut app = App::new();
+        app.init_resource::<InstrumentRegistry>();
+        app.add_systems(Update, instrument_chart_sync_system);
+
+        {
+            let mut reg = app.world_mut().resource_mut::<InstrumentRegistry>();
+            reg.replace_all(&["1301.TSE".to_string()]);
+        }
+        app.update();
+        {
+            let mut reg = app.world_mut().resource_mut::<InstrumentRegistry>();
+            reg.replace_all(&[]);
+        }
+        app.update();
+
+        let world = app.world_mut();
+        let mut q = world.query_filtered::<&ChartInstrument, With<WindowRoot>>();
+        assert_eq!(q.iter(world).count(), 0, "registry を空にすると Chart が despawn される");
+    }
+
+    #[test]
+    fn instrument_chart_sync_system_is_idempotent_across_updates() {
+        use crate::ui::components::InstrumentRegistry;
+
+        let mut app = App::new();
+        app.init_resource::<InstrumentRegistry>();
+        app.add_systems(Update, instrument_chart_sync_system);
+
+        {
+            let mut reg = app.world_mut().resource_mut::<InstrumentRegistry>();
+            reg.replace_all(&["1301.TSE".to_string(), "7203.TSE".to_string()]);
+        }
+        app.update();
+        app.update();
+        app.update();
+
+        let world = app.world_mut();
+        let mut q = world.query_filtered::<&ChartInstrument, With<WindowRoot>>();
+        let ids: Vec<&str> = q.iter(world).map(|c| c.instrument_id.as_str()).collect();
+        assert_eq!(ids.len(), 2, "is_changed() で early return、重複 spawn しない");
+        assert!(ids.contains(&"1301.TSE"));
+        assert!(ids.contains(&"7203.TSE"));
+    }
+
+    #[test]
+    fn instrument_chart_sync_system_handles_partial_diff() {
+        use crate::ui::components::InstrumentRegistry;
+
+        let mut app = App::new();
+        app.init_resource::<InstrumentRegistry>();
+        app.add_systems(Update, instrument_chart_sync_system);
+
+        {
+            let mut reg = app.world_mut().resource_mut::<InstrumentRegistry>();
+            reg.replace_all(&["A.T".to_string(), "B.T".to_string()]);
+        }
+        app.update();
+        {
+            let mut reg = app.world_mut().resource_mut::<InstrumentRegistry>();
+            reg.replace_all(&["A.T".to_string(), "C.T".to_string()]);
+        }
+        app.update();
+
+        let world = app.world_mut();
+        let mut q = world.query_filtered::<&ChartInstrument, With<WindowRoot>>();
+        let ids: Vec<&str> = q.iter(world).map(|c| c.instrument_id.as_str()).collect();
+        assert_eq!(ids.len(), 2);
+        assert!(ids.contains(&"A.T"));
+        assert!(ids.contains(&"C.T"));
+        assert!(!ids.contains(&"B.T"));
     }
 }

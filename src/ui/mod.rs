@@ -50,7 +50,10 @@ use crate::ui::components::{
     writeback_scenario_instruments_system,
 };
 use crate::ui::scenario_parser::parse_scenario_system;
-use crate::ui::sidebar::{panel_button_system, spawn_sidebar, update_sidebar_system};
+use crate::ui::window::instrument_chart_sync_system;
+use crate::ui::sidebar::{
+    instrument_remove_button_system, panel_button_system, spawn_sidebar, update_sidebar_system,
+};
 use crate::ui::strategy_editor::{
     StrategyAutoSaveState, apply_pending_app_edits_system, apply_strategy_snapshot_restore_system,
     debounced_strategy_autosave_system, sync_editor_to_strategy_buffer_system,
@@ -127,9 +130,12 @@ impl Plugin for UiPlugin {
                     parse_scenario_system,
                     sync_registry_from_scenario_loaded_system,
                     mark_registry_dirty_system,
+                    writeback_scenario_instruments_system,
+                    instrument_chart_sync_system,
                 )
                     .chain(),
                 update_sidebar_system,
+                instrument_remove_button_system,
                 panel_button_system,
                 panel_spawn_dispatcher_system,
             ),
@@ -159,7 +165,6 @@ impl Plugin for UiPlugin {
                     .after(apply_strategy_snapshot_restore_system),
                 debounced_strategy_autosave_system,
                 update_strategy_editor_zoom_system,
-                writeback_scenario_instruments_system,
             ),
         )
         .add_systems(

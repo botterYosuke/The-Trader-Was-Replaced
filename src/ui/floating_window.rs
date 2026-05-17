@@ -1,8 +1,9 @@
 use crate::ui::buying_power::spawn_buying_power_panel;
 use crate::ui::components::{
-    CloseButton, PanelKind, PanelSpawnRequested, PanelSpawnSource, PendingStrategyFragments,
-    RegionKeyAllocator, StrategyBuffer, StrategyEditorId, StrategyEditorSpawnSpec,
-    StrategyFragment, TitleBar, WindowManager, WindowRoot,
+    ChartInstrument, CloseButton, InstrumentRegistry, PanelKind, PanelSpawnRequested,
+    PanelSpawnSource, PendingStrategyFragments, RegionKeyAllocator, StrategyBuffer,
+    StrategyEditorId, StrategyEditorSpawnSpec, StrategyFragment, TitleBar, WindowManager,
+    WindowRoot,
 };
 use crate::ui::editor_history::{ActiveDrag, AppHistory};
 use crate::ui::layout_persistence::WindowLayout;
@@ -136,7 +137,7 @@ pub fn spawn_floating_window(
             |drag_end: Trigger<Pointer<DragEnd>>,
              parent_query: Query<&Parent>,
              root_q: Query<
-                (&Transform, &PanelKind, Option<&StrategyEditorId>),
+                (&Transform, &PanelKind, Option<&StrategyEditorId>, Option<&ChartInstrument>),
                 With<WindowRoot>,
             >,
              mut active_drag: ResMut<ActiveDrag>,
@@ -149,9 +150,12 @@ pub fn spawn_floating_window(
                 let Some(before) = active_drag.starts.remove(&root_entity) else {
                     return;
                 };
-                let Ok((tf, kind, editor_id)) = root_q.get(root_entity) else {
+                let Ok((tf, kind, editor_id, chart_instrument)) = root_q.get(root_entity) else {
                     return;
                 };
+                if chart_instrument.is_some() {
+                    return;
+                }
                 let after = tf.translation.truncate();
                 let region_key = editor_id.map(|id| id.region_key.clone());
                 history.push_window_move(*kind, region_key, before, after);
@@ -208,19 +212,37 @@ pub fn spawn_floating_window(
                     &Sprite,
                     Option<&StrategyEditorId>,
                     Option<&StrategyFragment>,
+                    Option<&ChartInstrument>,
                 ),
                 With<WindowRoot>,
             >,
              mut history: ResMut<AppHistory>,
              mut auto_save: ResMut<crate::ui::layout_persistence::AutoSaveState>,
+             mut registry: ResMut<InstrumentRegistry>,
              mut commands: Commands| {
                 let Ok(parent) = parent_query.get(trigger.entity()) else {
                     return;
                 };
                 let root_entity = parent.get();
-                if !history.is_replaying()
-                    && let Ok((kind, tf, sprite, editor_id, fragment)) = root_q.get(root_entity)
-                {
+                let Ok((kind, tf, sprite, editor_id, fragment, chart_instrument)) =
+                    root_q.get(root_entity)
+                else {
+                    commands.entity(root_entity).despawn_recursive();
+                    return;
+                };
+
+                // Chart window: editable=false なら何もしない
+                if let Some(ci) = chart_instrument {
+                    if !registry.editable {
+                        return;
+                    }
+                    registry.remove(&ci.instrument_id);
+                    commands.entity(root_entity).despawn_recursive();
+                    return;
+                }
+
+                // 既存ロジック（非 Chart）
+                if !history.is_replaying() {
                     let region_key = editor_id.map(|id| id.region_key.clone());
                     let layout = WindowLayout {
                         kind: *kind,
