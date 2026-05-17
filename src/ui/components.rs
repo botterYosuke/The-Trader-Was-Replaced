@@ -426,7 +426,10 @@ mod instrument_registry_tests {
         r.add("A");
         r.add("B");
         r.add("C");
-        assert_eq!(r.ids, vec!["A".to_string(), "B".to_string(), "C".to_string()]);
+        assert_eq!(
+            r.ids,
+            vec!["A".to_string(), "B".to_string(), "C".to_string()]
+        );
     }
 
     #[test]
@@ -464,11 +467,8 @@ mod instrument_registry_tests {
     #[test]
     fn test_replace_all_dedups_preserving_order() {
         let mut reg = InstrumentRegistry::default();
-        let changed = reg.replace_all(&[
-            "AAPL".to_string(),
-            "MSFT".to_string(),
-            "AAPL".to_string(),
-        ]);
+        let changed =
+            reg.replace_all(&["AAPL".to_string(), "MSFT".to_string(), "AAPL".to_string()]);
         assert!(changed);
         assert_eq!(reg.as_slice(), &["AAPL".to_string(), "MSFT".to_string()]);
     }
@@ -538,7 +538,10 @@ mod sync_registry_from_scenario_loaded_tests {
         });
         app.update();
         let reg = app.world().resource::<InstrumentRegistry>();
-        assert_eq!(reg.as_slice(), &["7203.T".to_string(), "9984.T".to_string()]);
+        assert_eq!(
+            reg.as_slice(),
+            &["7203.T".to_string(), "9984.T".to_string()]
+        );
         assert!(!reg.editable, "instruments_ref ありは編集ロック");
     }
 
@@ -564,8 +567,12 @@ mod sync_registry_from_scenario_loaded_tests {
     #[test]
     fn file_load_does_not_bump_writeback_revision() {
         let mut app = build_app();
-        app.world_mut().resource_mut::<ScenarioInstrumentsWritebackState>().flushed_revision = 5;
-        app.world_mut().resource_mut::<ScenarioInstrumentsWritebackState>().revision = 5;
+        app.world_mut()
+            .resource_mut::<ScenarioInstrumentsWritebackState>()
+            .flushed_revision = 5;
+        app.world_mut()
+            .resource_mut::<ScenarioInstrumentsWritebackState>()
+            .revision = 5;
         app.world_mut().send_event(ScenarioLoadedFromFile {
             source_path: std::path::PathBuf::from("dummy.py"),
             instruments: vec!["7203.T".into()],
@@ -574,7 +581,10 @@ mod sync_registry_from_scenario_loaded_tests {
         });
         app.update();
         let wb = app.world().resource::<ScenarioInstrumentsWritebackState>();
-        assert_eq!(wb.revision, wb.flushed_revision, "ファイル由来は flushed と同値に保つ");
+        assert_eq!(
+            wb.revision, wb.flushed_revision,
+            "ファイル由来は flushed と同値に保つ"
+        );
         assert!(wb.last_error.is_none());
     }
 }
@@ -609,7 +619,10 @@ mod mark_registry_dirty_tests {
     fn test_registry_change_increments_writeback_revision() {
         let mut app = build_app();
         app.update();
-        let baseline = app.world().resource::<ScenarioInstrumentsWritebackState>().revision;
+        let baseline = app
+            .world()
+            .resource::<ScenarioInstrumentsWritebackState>()
+            .revision;
 
         {
             let mut reg = app.world_mut().resource_mut::<InstrumentRegistry>();
@@ -618,7 +631,11 @@ mod mark_registry_dirty_tests {
         app.update();
 
         let wb = app.world().resource::<ScenarioInstrumentsWritebackState>();
-        assert_eq!(wb.revision, baseline + 1, "registry mutate で revision が +1");
+        assert_eq!(
+            wb.revision,
+            baseline + 1,
+            "registry mutate で revision が +1"
+        );
         assert_eq!(wb.flushed_revision, 0, "flushed_revision は据え置き");
     }
 
@@ -626,7 +643,10 @@ mod mark_registry_dirty_tests {
     fn test_unchanged_registry_does_not_increment() {
         let mut app = build_app();
         app.update();
-        let baseline = app.world().resource::<ScenarioInstrumentsWritebackState>().revision;
+        let baseline = app
+            .world()
+            .resource::<ScenarioInstrumentsWritebackState>()
+            .revision;
 
         app.update();
         app.update();
@@ -663,11 +683,7 @@ pub fn writeback_scenario_instruments_system(
         return;
     }
 
-    match flush_sidecars_now(
-        registry.as_slice(),
-        None,
-        paths.cache_sidecar.as_deref(),
-    ) {
+    match flush_sidecars_now(registry.as_slice(), None, paths.cache_sidecar.as_deref()) {
         Ok(new_mtime) => {
             writeback.flushed_revision = writeback.revision;
             writeback.last_error = None;
@@ -767,10 +783,7 @@ fn rewrite_scenario_instruments_atomic(
             .get_mut("scenario")
             .and_then(|v| v.as_object_mut())
             .ok_or_else(|| {
-                std::io::Error::new(
-                    std::io::ErrorKind::InvalidData,
-                    "missing scenario object",
-                )
+                std::io::Error::new(std::io::ErrorKind::InvalidData, "missing scenario object")
             })?;
 
         // v1 → v2 正規化:
@@ -802,12 +815,9 @@ fn rewrite_scenario_instruments_atomic(
     let dir = path.parent().ok_or_else(|| {
         std::io::Error::new(std::io::ErrorKind::InvalidInput, "path has no parent")
     })?;
-    let file_name = path
-        .file_name()
-        .and_then(|s| s.to_str())
-        .ok_or_else(|| {
-            std::io::Error::new(std::io::ErrorKind::InvalidInput, "path has no filename")
-        })?;
+    let file_name = path.file_name().and_then(|s| s.to_str()).ok_or_else(|| {
+        std::io::Error::new(std::io::ErrorKind::InvalidInput, "path has no filename")
+    })?;
     let tmp = dir.join(format!(
         ".{}.tmp-{}-{}",
         file_name,
@@ -860,7 +870,9 @@ mod writeback_scenario_instruments_tests {
             reg.editable = true;
         }
         {
-            let mut wb = app.world_mut().resource_mut::<ScenarioInstrumentsWritebackState>();
+            let mut wb = app
+                .world_mut()
+                .resource_mut::<ScenarioInstrumentsWritebackState>();
             wb.revision = 1;
             wb.flushed_revision = 0;
         }
@@ -881,7 +893,10 @@ mod writeback_scenario_instruments_tests {
         );
 
         let wb = app.world().resource::<ScenarioInstrumentsWritebackState>();
-        assert_eq!(wb.flushed_revision, wb.revision, "flushed_revision must catch up on success");
+        assert_eq!(
+            wb.flushed_revision, wb.revision,
+            "flushed_revision must catch up on success"
+        );
         assert!(wb.last_error.is_none());
     }
 
@@ -919,7 +934,9 @@ mod writeback_scenario_instruments_tests {
             reg.editable = true;
         }
         {
-            let mut wb = app.world_mut().resource_mut::<ScenarioInstrumentsWritebackState>();
+            let mut wb = app
+                .world_mut()
+                .resource_mut::<ScenarioInstrumentsWritebackState>();
             wb.revision = 1;
             wb.flushed_revision = 0;
         }
@@ -935,13 +952,28 @@ mod writeback_scenario_instruments_tests {
         let updated: serde_json::Value =
             serde_json::from_str(&fs::read_to_string(&cache_json).unwrap()).unwrap();
 
-        assert_eq!(updated["scenario"]["instruments"], serde_json::json!(["NEW.T"]));
+        assert_eq!(
+            updated["scenario"]["instruments"],
+            serde_json::json!(["NEW.T"])
+        );
         assert_eq!(updated["scenario"]["schema_version"], serde_json::json!(2));
-        assert_eq!(updated["scenario"]["start"], serde_json::json!("2025-01-06"));
+        assert_eq!(
+            updated["scenario"]["start"],
+            serde_json::json!("2025-01-06")
+        );
         assert_eq!(updated["scenario"]["end"], serde_json::json!("2025-01-10"));
-        assert_eq!(updated["scenario"]["granularity"], serde_json::json!("Daily"));
-        assert_eq!(updated["scenario"]["initial_cash"], serde_json::json!(1000000));
-        assert_eq!(updated["scenario"]["custom_extra"], serde_json::json!("keep-me"));
+        assert_eq!(
+            updated["scenario"]["granularity"],
+            serde_json::json!("Daily")
+        );
+        assert_eq!(
+            updated["scenario"]["initial_cash"],
+            serde_json::json!(1000000)
+        );
+        assert_eq!(
+            updated["scenario"]["custom_extra"],
+            serde_json::json!("keep-me")
+        );
         assert_eq!(updated["viewport"], serde_json::json!({"x": 42}));
         assert_eq!(updated["windows"], serde_json::json!([{"id": "w1"}]));
     }
@@ -981,7 +1013,9 @@ mod writeback_scenario_instruments_tests {
             reg.editable = true;
         }
         {
-            let mut wb = app.world_mut().resource_mut::<ScenarioInstrumentsWritebackState>();
+            let mut wb = app
+                .world_mut()
+                .resource_mut::<ScenarioInstrumentsWritebackState>();
             wb.revision = 1;
             wb.flushed_revision = 0;
         }
@@ -1038,7 +1072,9 @@ mod writeback_scenario_instruments_tests {
             reg.editable = true;
         }
         {
-            let mut wb = app.world_mut().resource_mut::<ScenarioInstrumentsWritebackState>();
+            let mut wb = app
+                .world_mut()
+                .resource_mut::<ScenarioInstrumentsWritebackState>();
             wb.revision = 1;
             wb.flushed_revision = 0;
         }
@@ -1055,7 +1091,10 @@ mod writeback_scenario_instruments_tests {
             serde_json::from_str(&fs::read_to_string(&cache_json).unwrap()).unwrap();
 
         assert_eq!(updated["scenario"]["schema_version"], serde_json::json!(2));
-        assert_eq!(updated["scenario"]["instruments"], serde_json::json!(["NEW.T"]));
+        assert_eq!(
+            updated["scenario"]["instruments"],
+            serde_json::json!(["NEW.T"])
+        );
         assert!(
             updated["scenario"].get("instrument").is_none(),
             "legacy 'instrument' key (list form) must be removed"
@@ -1098,15 +1137,25 @@ mod writeback_scenario_instruments_tests {
             reg.editable = false;
         }
         {
-            let mut wb = app.world_mut().resource_mut::<ScenarioInstrumentsWritebackState>();
+            let mut wb = app
+                .world_mut()
+                .resource_mut::<ScenarioInstrumentsWritebackState>();
             wb.revision = 7;
             wb.flushed_revision = 0;
         }
         app.add_systems(Update, writeback_scenario_instruments_system);
         app.update();
 
-        assert_eq!(fs::read(&original_json).unwrap(), original_bytes, "locked: original must be byte-identical");
-        assert_eq!(fs::read(&cache_json).unwrap(), cache_bytes, "locked: cache must be byte-identical");
+        assert_eq!(
+            fs::read(&original_json).unwrap(),
+            original_bytes,
+            "locked: original must be byte-identical"
+        );
+        assert_eq!(
+            fs::read(&cache_json).unwrap(),
+            cache_bytes,
+            "locked: cache must be byte-identical"
+        );
 
         let wb = app.world().resource::<ScenarioInstrumentsWritebackState>();
         assert_eq!(wb.flushed_revision, 0, "locked: flushed_revision must stay");
@@ -1146,7 +1195,9 @@ mod writeback_scenario_instruments_tests {
             reg.editable = true;
         }
         {
-            let mut wb = app.world_mut().resource_mut::<ScenarioInstrumentsWritebackState>();
+            let mut wb = app
+                .world_mut()
+                .resource_mut::<ScenarioInstrumentsWritebackState>();
             wb.revision = 3;
             wb.flushed_revision = 0;
         }
@@ -1155,7 +1206,10 @@ mod writeback_scenario_instruments_tests {
         app.update();
         {
             let wb = app.world().resource::<ScenarioInstrumentsWritebackState>();
-            assert_eq!(wb.flushed_revision, 0, "failure: flushed_revision must stay");
+            assert_eq!(
+                wb.flushed_revision, 0,
+                "failure: flushed_revision must stay"
+            );
             assert!(wb.last_error.is_some(), "failure: last_error must be set");
         }
 
@@ -1166,8 +1220,14 @@ mod writeback_scenario_instruments_tests {
         app.update();
 
         let wb = app.world().resource::<ScenarioInstrumentsWritebackState>();
-        assert_eq!(wb.flushed_revision, wb.revision, "retry: flushed_revision must catch up");
-        assert!(wb.last_error.is_none(), "retry: last_error must clear on success");
+        assert_eq!(
+            wb.flushed_revision, wb.revision,
+            "retry: flushed_revision must catch up"
+        );
+        assert!(
+            wb.last_error.is_none(),
+            "retry: last_error must clear on success"
+        );
 
         let updated_good: serde_json::Value =
             serde_json::from_str(&fs::read_to_string(&good_cache).unwrap()).unwrap();
@@ -1212,7 +1272,9 @@ mod writeback_scenario_instruments_tests {
 
         app.add_systems(Update, parse_scenario_system);
         app.update();
-        app.world_mut().resource_mut::<Events<ScenarioLoadedFromFile>>().clear();
+        app.world_mut()
+            .resource_mut::<Events<ScenarioLoadedFromFile>>()
+            .clear();
 
         {
             let mut reg = app.world_mut().resource_mut::<InstrumentRegistry>();
@@ -1220,12 +1282,17 @@ mod writeback_scenario_instruments_tests {
             reg.editable = true;
         }
         {
-            let mut wb = app.world_mut().resource_mut::<ScenarioInstrumentsWritebackState>();
+            let mut wb = app
+                .world_mut()
+                .resource_mut::<ScenarioInstrumentsWritebackState>();
             wb.revision = 1;
             wb.flushed_revision = 0;
         }
 
-        app.add_systems(Update, (writeback_scenario_instruments_system, parse_scenario_system).chain());
+        app.add_systems(
+            Update,
+            (writeback_scenario_instruments_system, parse_scenario_system).chain(),
+        );
         app.update();
 
         let events = app.world().resource::<Events<ScenarioLoadedFromFile>>();
@@ -1371,7 +1438,9 @@ mod writeback_scenario_instruments_tests {
             cache_path: original_py.clone(),
         });
         app.update();
-        let cmd = rx.try_recv().expect("second RunStrategy must be sent (inline flush is idempotent)");
+        let cmd = rx
+            .try_recv()
+            .expect("second RunStrategy must be sent (inline flush is idempotent)");
         match cmd {
             TransportCommand::RunStrategy { strategy_file, .. } => {
                 assert_eq!(strategy_file, original_py);
@@ -1563,7 +1632,8 @@ mod writeback_scenario_instruments_tests {
                 parse_scenario_system,
                 sync_registry_from_scenario_loaded_system,
                 instrument_chart_sync_system,
-            ).chain(),
+            )
+                .chain(),
         );
 
         app.world_mut().send_event(StrategyFileLoadRequested {
@@ -1573,13 +1643,592 @@ mod writeback_scenario_instruments_tests {
         app.update();
 
         let reg = app.world().resource::<InstrumentRegistry>();
-        assert_eq!(reg.ids, vec!["1301.TSE".to_string(), "7203.TSE".to_string()]);
+        assert_eq!(
+            reg.ids,
+            vec!["1301.TSE".to_string(), "7203.TSE".to_string()]
+        );
 
         let world = app.world_mut();
         let mut q = world.query_filtered::<&ChartInstrument, With<WindowRoot>>();
         let mut ids: Vec<String> = q.iter(world).map(|c| c.instrument_id.clone()).collect();
         ids.sort();
         assert_eq!(ids, vec!["1301.TSE".to_string(), "7203.TSE".to_string()]);
+    }
+
+    /// 計画書 §5.2 E2E-1 (Phase 7.5b): pair_trade_minute.json を Open して
+    /// 2 銘柄 + 2 Chart を確立した後、`[+ Add]` ボタン押下 → fake transport が
+    /// `FetchAvailableInstruments { end_date: 2025-01-10 }` を受信 →
+    /// `AvailableInstruments.by_end_date[2025-01-10] = ["1301.TSE","7203.TSE","9984.TSE"]`
+    /// を直接注入（status_update_system 経由ではなく Resource 直書きで fake injection を表現） →
+    /// `handle_picker_row_click("9984.TSE", ...)` を呼んで registry に追加 →
+    /// 1 tick 回して registry 3 銘柄 / Chart 3 entity / cache sidecar が
+    /// `["1301.TSE","7203.TSE","9984.TSE"]` になることを assert する。
+    #[test]
+    fn test_e2e_open_then_add_via_picker() {
+        use crate::trading::{AvailableInstruments, TransportCommand, TransportCommandSender};
+        use crate::ui::components::{
+            ChartInstrument, InstrumentRegistry, PendingStrategyFragments, RegionKeyAllocator,
+            ScenarioFileWatchState, ScenarioInstrumentsWritebackState, ScenarioLoadedFromFile,
+            ScenarioMetadata, ScenarioWritebackPaths, SidebarAddInstrumentButton,
+            StrategyFileLoadRequested, StrategyLoadMode, WindowRoot, mark_registry_dirty_system,
+            sync_registry_from_scenario_loaded_system, writeback_scenario_instruments_system,
+        };
+        use crate::ui::instrument_picker::{InstrumentPickerState, add_instrument_button_system};
+        use crate::ui::layout_persistence::LayoutLoadRequested;
+        use crate::ui::menu_bar::handle_strategy_file_load_system;
+        use crate::ui::scenario_parser::parse_scenario_system;
+        use crate::ui::window::instrument_chart_sync_system;
+        use bevy::prelude::Interaction;
+        use chrono::NaiveDate;
+
+        let dir = tempfile::tempdir().unwrap();
+        let py_path = dir.path().join("pair_trade_minute.py");
+        let json_path = dir.path().join("pair_trade_minute.json");
+        let cache_json_path = dir.path().join("app_state.json");
+        let initial_json = r#"{"scenario": {"schema_version": 2, "instruments": ["1301.TSE", "7203.TSE"], "start": "2025-01-06", "end": "2025-01-10", "granularity": "Minute", "initial_cash": 1000000}}"#;
+        std::fs::write(&py_path, "# dummy\n").unwrap();
+        std::fs::write(&json_path, initial_json).unwrap();
+        std::fs::write(&cache_json_path, initial_json).unwrap();
+
+        // fake transport
+        let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel::<TransportCommand>();
+
+        let mut app = App::new();
+        app.insert_resource(StrategyBuffer {
+            original_path: None,
+            cache_path: None,
+            last_merged_source: None,
+        });
+        app.insert_resource(ScenarioWritebackPaths {
+            cache_sidecar: Some(cache_json_path.clone()),
+        });
+        app.insert_resource(TransportCommandSender { tx });
+        app.insert_resource(crate::trading::BackendStatus {
+            connected: true,
+            running: false,
+            last_error: None,
+        });
+        app.init_resource::<InstrumentRegistry>();
+        app.init_resource::<ScenarioMetadata>();
+        app.init_resource::<ScenarioFileWatchState>();
+        app.init_resource::<RegionKeyAllocator>();
+        app.init_resource::<PendingStrategyFragments>();
+        app.init_resource::<ScenarioInstrumentsWritebackState>();
+        app.init_resource::<InstrumentPickerState>();
+        app.init_resource::<AvailableInstruments>();
+        app.add_event::<StrategyFileLoadRequested>();
+        app.add_event::<ScenarioLoadedFromFile>();
+        app.add_event::<ScenarioClearedFromFile>();
+        app.add_event::<LayoutLoadRequested>();
+        app.add_event::<PanelSpawnRequested>();
+
+        app.add_systems(
+            Update,
+            (
+                handle_strategy_file_load_system,
+                parse_scenario_system,
+                sync_registry_from_scenario_loaded_system,
+                add_instrument_button_system,
+                instrument_chart_sync_system,
+                mark_registry_dirty_system,
+                writeback_scenario_instruments_system,
+            )
+                .chain(),
+        );
+
+        // Step 1: Open pair_trade_minute.json → 2 銘柄 + 2 Chart
+        app.world_mut().send_event(StrategyFileLoadRequested {
+            path: py_path.clone(),
+            mode: StrategyLoadMode::UserOpen,
+        });
+        app.update();
+        {
+            let reg = app.world().resource::<InstrumentRegistry>();
+            assert_eq!(
+                reg.ids,
+                vec!["1301.TSE".to_string(), "7203.TSE".to_string()]
+            );
+            let world = app.world_mut();
+            let mut q = world.query_filtered::<&ChartInstrument, With<WindowRoot>>();
+            assert_eq!(q.iter(world).count(), 2, "open 後 Chart 2 件");
+        }
+
+        // Step 2: [+ Add] 押下 → add_instrument_button_system が
+        //  - picker.visible = true
+        //  - picker.end_date = Some(2025-01-10)
+        //  - in_flight に 2025-01-10 を入れて FetchAvailableInstruments を send
+        app.world_mut()
+            .spawn((SidebarAddInstrumentButton, Interaction::Pressed));
+        app.update();
+        {
+            let picker = app.world().resource::<InstrumentPickerState>();
+            assert!(picker.visible);
+            let end = NaiveDate::from_ymd_opt(2025, 1, 10).unwrap();
+            assert_eq!(picker.end_date, Some(end));
+            let av = app.world().resource::<AvailableInstruments>();
+            assert!(av.in_flight.contains(&end));
+        }
+        // fake transport 受信検証
+        let cmd = rx
+            .try_recv()
+            .expect("FetchAvailableInstruments が送出される");
+        match cmd {
+            TransportCommand::FetchAvailableInstruments { end_date } => {
+                assert_eq!(end_date, NaiveDate::from_ymd_opt(2025, 1, 10).unwrap());
+            }
+            other => panic!("expected FetchAvailableInstruments, got {:?}", other),
+        }
+
+        // Step 3: backend response を fake で注入（status_update_system 等価の Resource 直書き）
+        {
+            let end = NaiveDate::from_ymd_opt(2025, 1, 10).unwrap();
+            let mut av = app.world_mut().resource_mut::<AvailableInstruments>();
+            av.by_end_date.insert(
+                end,
+                vec![
+                    "1301.TSE".to_string(),
+                    "7203.TSE".to_string(),
+                    "9984.TSE".to_string(),
+                ],
+            );
+            av.in_flight.remove(&end);
+        }
+
+        // Step 4: picker row click 相当（observer 経路はテスト harness で配線しにくいため、
+        //  handle_picker_row_click の効果を等価な registry.add で再現）。
+        //  ※ handle_picker_row_click は pub(super) ではなく fn-private のため、ここでは
+        //  registry に直接 add し、後段 chain（mark_registry_dirty → writeback → chart_sync）
+        //  が動くことを確認する。これにより picker click と同等の chain 駆動を assert する。
+        {
+            let mut reg = app.world_mut().resource_mut::<InstrumentRegistry>();
+            reg.add("9984.TSE");
+        }
+        app.update();
+
+        // Step 5: registry 3 銘柄、Chart 3 entity
+        {
+            let reg = app.world().resource::<InstrumentRegistry>();
+            assert_eq!(
+                reg.ids,
+                vec![
+                    "1301.TSE".to_string(),
+                    "7203.TSE".to_string(),
+                    "9984.TSE".to_string()
+                ]
+            );
+            let world = app.world_mut();
+            let mut q = world.query_filtered::<&ChartInstrument, With<WindowRoot>>();
+            let mut ids: Vec<String> = q.iter(world).map(|c| c.instrument_id.clone()).collect();
+            ids.sort();
+            assert_eq!(
+                ids,
+                vec![
+                    "1301.TSE".to_string(),
+                    "7203.TSE".to_string(),
+                    "9984.TSE".to_string()
+                ],
+                "Chart 3 件で 3 銘柄全部"
+            );
+        }
+
+        // Step 6: cache sidecar に 9984.TSE が書かれている（CacheOnly writeback）
+        {
+            let body = std::fs::read_to_string(&cache_json_path).unwrap();
+            let v: serde_json::Value = serde_json::from_str(&body).unwrap();
+            let instruments = v["scenario"]["instruments"].as_array().unwrap();
+            let got: Vec<String> = instruments
+                .iter()
+                .map(|x| x.as_str().unwrap().to_string())
+                .collect();
+            assert_eq!(
+                got,
+                vec![
+                    "1301.TSE".to_string(),
+                    "7203.TSE".to_string(),
+                    "9984.TSE".to_string()
+                ],
+                "cache sidecar に 9984 が追加されている"
+            );
+        }
+        // 元 sidecar は据え置き
+        {
+            let body = std::fs::read_to_string(&json_path).unwrap();
+            let v: serde_json::Value = serde_json::from_str(&body).unwrap();
+            let instruments = v["scenario"]["instruments"].as_array().unwrap();
+            let got: Vec<String> = instruments
+                .iter()
+                .map(|x| x.as_str().unwrap().to_string())
+                .collect();
+            assert_eq!(
+                got,
+                vec!["1301.TSE".to_string(), "7203.TSE".to_string()],
+                "original sidecar は CacheOnly 仕様で据え置き"
+            );
+        }
+        let _ = dir;
+    }
+
+    /// 計画書 §5.2 E2E-3 (Phase 7.5b): scenario.end が invalid (parse 不可) のとき、
+    /// [+ Add] 押下で picker は open する (visible=true / end_date=None) が、
+    /// AvailableInstruments.in_flight は空のまま、FetchAvailableInstruments も送出されない —
+    /// add_instrument_button_system が `let Some(d) = end_date else { continue; };` で
+    /// transport ブロックだけ短絡することを pin する。
+    #[test]
+    fn test_e2e_picker_no_open_for_invalid_end_date() {
+        use crate::trading::{AvailableInstruments, TransportCommand, TransportCommandSender};
+        use crate::ui::components::{
+            ChartInstrument, InstrumentRegistry, PendingStrategyFragments, RegionKeyAllocator,
+            ScenarioFileWatchState, ScenarioInstrumentsWritebackState, ScenarioLoadedFromFile,
+            ScenarioMetadata, ScenarioWritebackPaths, SidebarAddInstrumentButton,
+            StrategyFileLoadRequested, StrategyLoadMode, WindowRoot, mark_registry_dirty_system,
+            sync_registry_from_scenario_loaded_system, writeback_scenario_instruments_system,
+        };
+        use crate::ui::instrument_picker::{InstrumentPickerState, add_instrument_button_system};
+        use crate::ui::layout_persistence::LayoutLoadRequested;
+        use crate::ui::menu_bar::handle_strategy_file_load_system;
+        use crate::ui::scenario_parser::parse_scenario_system;
+        use crate::ui::window::instrument_chart_sync_system;
+        use bevy::prelude::Interaction;
+
+        let dir = tempfile::tempdir().unwrap();
+        let py_path = dir.path().join("pair_trade_minute.py");
+        let json_path = dir.path().join("pair_trade_minute.json");
+        let cache_json_path = dir.path().join("app_state.json");
+        // end を invalid 値にする (parse_scenario_end が None を返す)
+        let initial_json = r#"{"scenario": {"schema_version": 2, "instruments": ["1301.TSE", "7203.TSE"], "start": "2025-01-06", "end": "not-a-date", "granularity": "Minute", "initial_cash": 1000000}}"#;
+        std::fs::write(&py_path, "# dummy\n").unwrap();
+        std::fs::write(&json_path, initial_json).unwrap();
+        std::fs::write(&cache_json_path, initial_json).unwrap();
+
+        // fake transport
+        let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel::<TransportCommand>();
+
+        let mut app = App::new();
+        app.insert_resource(StrategyBuffer {
+            original_path: None,
+            cache_path: None,
+            last_merged_source: None,
+        });
+        app.insert_resource(ScenarioWritebackPaths {
+            cache_sidecar: Some(cache_json_path.clone()),
+        });
+        app.insert_resource(TransportCommandSender { tx });
+        app.insert_resource(crate::trading::BackendStatus {
+            connected: true,
+            running: false,
+            last_error: None,
+        });
+        app.init_resource::<InstrumentRegistry>();
+        app.init_resource::<ScenarioMetadata>();
+        app.init_resource::<ScenarioFileWatchState>();
+        app.init_resource::<RegionKeyAllocator>();
+        app.init_resource::<PendingStrategyFragments>();
+        app.init_resource::<ScenarioInstrumentsWritebackState>();
+        app.init_resource::<InstrumentPickerState>();
+        app.init_resource::<AvailableInstruments>();
+        app.add_event::<StrategyFileLoadRequested>();
+        app.add_event::<ScenarioLoadedFromFile>();
+        app.add_event::<ScenarioClearedFromFile>();
+        app.add_event::<LayoutLoadRequested>();
+        app.add_event::<PanelSpawnRequested>();
+
+        app.add_systems(
+            Update,
+            (
+                handle_strategy_file_load_system,
+                parse_scenario_system,
+                sync_registry_from_scenario_loaded_system,
+                add_instrument_button_system,
+                instrument_chart_sync_system,
+                mark_registry_dirty_system,
+                writeback_scenario_instruments_system,
+            )
+                .chain(),
+        );
+
+        // Step 1: Open → 2 銘柄 + 2 Chart (E2E-1 と同一の事前条件)
+        app.world_mut().send_event(StrategyFileLoadRequested {
+            path: py_path.clone(),
+            mode: StrategyLoadMode::UserOpen,
+        });
+        app.update();
+        {
+            let reg = app.world().resource::<InstrumentRegistry>();
+            assert_eq!(
+                reg.ids,
+                vec!["1301.TSE".to_string(), "7203.TSE".to_string()]
+            );
+            let world = app.world_mut();
+            let mut q = world.query_filtered::<&ChartInstrument, With<WindowRoot>>();
+            assert_eq!(q.iter(world).count(), 2, "open 後 Chart 2 件");
+        }
+
+        // Step 2: [+ Add] 押下 → picker は open するが transport は静か
+        app.world_mut()
+            .spawn((SidebarAddInstrumentButton, Interaction::Pressed));
+        app.update();
+        {
+            let picker = app.world().resource::<InstrumentPickerState>();
+            assert!(picker.visible, "invalid end でも picker は visible になる");
+            assert_eq!(
+                picker.end_date, None,
+                "parse_scenario_end が None を返すので picker.end_date も None"
+            );
+            let av = app.world().resource::<AvailableInstruments>();
+            assert!(
+                av.in_flight.is_empty(),
+                "end が parse 不可なので in_flight に登録されない"
+            );
+        }
+        // FetchAvailableInstruments は一切送出されない
+        assert!(
+            rx.try_recv().is_err(),
+            "invalid end_date のとき FetchAvailableInstruments は送出されない"
+        );
+
+        let _ = dir;
+    }
+
+    /// 計画書 §5.2 E2E-2 (Phase 7.5b): Open → [+ Add] → picker response → registry.add →
+    /// StrategyRunRequested の chain を一気通貫させ、Run 発火後 RunStrategy.config.instruments が
+    /// 3 銘柄 (1301/7203/9984)、両 sidecar が 7.5a CacheOnly 仕様どおり同期されることを確認する。
+    /// E2E-1 (picker → cache 反映) を Run inline flush 経路まで 1 tick 延長したもの。
+    #[test]
+    fn test_e2e_add_then_run() {
+        use crate::trading::{AvailableInstruments, TransportCommand, TransportCommandSender};
+        use crate::ui::components::{
+            ChartInstrument, InstrumentRegistry, PendingStrategyFragments, RegionKeyAllocator,
+            ScenarioFileWatchState, ScenarioInstrumentsWritebackState, ScenarioLoadedFromFile,
+            ScenarioMetadata, ScenarioWritebackPaths, SidebarAddInstrumentButton,
+            StrategyFileLoadRequested, StrategyLoadMode, StrategyRunRequested, WindowRoot,
+            mark_registry_dirty_system, sync_registry_from_scenario_loaded_system,
+            writeback_scenario_instruments_system,
+        };
+        use crate::ui::instrument_picker::{InstrumentPickerState, add_instrument_button_system};
+        use crate::ui::layout_persistence::LayoutLoadRequested;
+        use crate::ui::menu_bar::{handle_strategy_file_load_system, handle_strategy_run_system};
+        use crate::ui::scenario_parser::parse_scenario_system;
+        use crate::ui::window::instrument_chart_sync_system;
+        use bevy::prelude::Interaction;
+        use chrono::NaiveDate;
+
+        let dir = tempfile::tempdir().unwrap();
+        let py_path = dir.path().join("pair_trade_minute.py");
+        let json_path = dir.path().join("pair_trade_minute.json");
+        let cache_json_path = dir.path().join("app_state.json");
+        let initial_json = r#"{"scenario": {"schema_version": 2, "instruments": ["1301.TSE", "7203.TSE"], "start": "2025-01-06", "end": "2025-01-10", "granularity": "Minute", "initial_cash": 1000000}}"#;
+        std::fs::write(&py_path, "# dummy\n").unwrap();
+        std::fs::write(&json_path, initial_json).unwrap();
+        std::fs::write(&cache_json_path, initial_json).unwrap();
+
+        // fake transport
+        let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel::<TransportCommand>();
+
+        let mut app = App::new();
+        app.insert_resource(StrategyBuffer {
+            original_path: None,
+            cache_path: None,
+            last_merged_source: None,
+        });
+        app.insert_resource(ScenarioWritebackPaths {
+            cache_sidecar: Some(cache_json_path.clone()),
+        });
+        app.insert_resource(TransportCommandSender { tx });
+        app.insert_resource(crate::trading::BackendStatus {
+            connected: true,
+            running: false,
+            last_error: None,
+        });
+        app.init_resource::<InstrumentRegistry>();
+        app.init_resource::<ScenarioMetadata>();
+        app.init_resource::<ScenarioFileWatchState>();
+        app.init_resource::<RegionKeyAllocator>();
+        app.init_resource::<PendingStrategyFragments>();
+        app.init_resource::<ScenarioInstrumentsWritebackState>();
+        app.init_resource::<InstrumentPickerState>();
+        app.init_resource::<AvailableInstruments>();
+        app.add_event::<StrategyFileLoadRequested>();
+        app.add_event::<StrategyRunRequested>();
+        app.add_event::<ScenarioLoadedFromFile>();
+        app.add_event::<ScenarioClearedFromFile>();
+        app.add_event::<LayoutLoadRequested>();
+        app.add_event::<PanelSpawnRequested>();
+
+        app.add_systems(
+            Update,
+            (
+                handle_strategy_file_load_system,
+                parse_scenario_system,
+                sync_registry_from_scenario_loaded_system,
+                add_instrument_button_system,
+                instrument_chart_sync_system,
+                mark_registry_dirty_system,
+                sync_scenario_metadata_from_registry_system,
+                writeback_scenario_instruments_system,
+                handle_strategy_run_system,
+            )
+                .chain(),
+        );
+
+        // Step A: Open → registry 2 銘柄
+        app.world_mut().send_event(StrategyFileLoadRequested {
+            path: py_path.clone(),
+            mode: StrategyLoadMode::UserOpen,
+        });
+        app.update();
+        {
+            let reg = app.world().resource::<InstrumentRegistry>();
+            assert_eq!(
+                reg.ids,
+                vec!["1301.TSE".to_string(), "7203.TSE".to_string()]
+            );
+        }
+
+        // Step B: [+ Add] 押下 → FetchAvailableInstruments を 1 件 drain（rx を Run 検証前に空に）
+        app.world_mut()
+            .spawn((SidebarAddInstrumentButton, Interaction::Pressed));
+        app.update();
+        {
+            let cmd = rx
+                .try_recv()
+                .expect("FetchAvailableInstruments が送出される");
+            match cmd {
+                TransportCommand::FetchAvailableInstruments { end_date } => {
+                    assert_eq!(end_date, NaiveDate::from_ymd_opt(2025, 1, 10).unwrap());
+                }
+                other => panic!("expected FetchAvailableInstruments, got {:?}", other),
+            }
+        }
+
+        // Step C: backend response を fake で注入
+        {
+            let end = NaiveDate::from_ymd_opt(2025, 1, 10).unwrap();
+            let mut av = app.world_mut().resource_mut::<AvailableInstruments>();
+            av.by_end_date.insert(
+                end,
+                vec![
+                    "1301.TSE".to_string(),
+                    "7203.TSE".to_string(),
+                    "9984.TSE".to_string(),
+                ],
+            );
+            av.in_flight.remove(&end);
+        }
+
+        // Step D: handle_picker_row_click 等価の registry.add で 9984.TSE を追加
+        {
+            let mut reg = app.world_mut().resource_mut::<InstrumentRegistry>();
+            reg.add("9984.TSE");
+        }
+        app.update();
+
+        // registry 3 銘柄、Chart 3 entity、cache sidecar 3 銘柄
+        {
+            let reg = app.world().resource::<InstrumentRegistry>();
+            assert_eq!(
+                reg.ids,
+                vec![
+                    "1301.TSE".to_string(),
+                    "7203.TSE".to_string(),
+                    "9984.TSE".to_string()
+                ]
+            );
+            let world = app.world_mut();
+            let mut q = world.query_filtered::<&ChartInstrument, With<WindowRoot>>();
+            let mut ids: Vec<String> = q.iter(world).map(|c| c.instrument_id.clone()).collect();
+            ids.sort();
+            assert_eq!(
+                ids,
+                vec![
+                    "1301.TSE".to_string(),
+                    "7203.TSE".to_string(),
+                    "9984.TSE".to_string()
+                ],
+                "Chart 3 件で 3 銘柄全部"
+            );
+        }
+        {
+            let body = std::fs::read_to_string(&cache_json_path).unwrap();
+            let v: serde_json::Value = serde_json::from_str(&body).unwrap();
+            let instruments = v["scenario"]["instruments"].as_array().unwrap();
+            let got: Vec<String> = instruments
+                .iter()
+                .map(|x| x.as_str().unwrap().to_string())
+                .collect();
+            assert_eq!(
+                got,
+                vec![
+                    "1301.TSE".to_string(),
+                    "7203.TSE".to_string(),
+                    "9984.TSE".to_string()
+                ],
+                "Run 前段階で cache sidecar に 9984 が追加されている"
+            );
+        }
+
+        // Step E: Run 発火 → RunStrategy.config.instruments が 3 銘柄
+        app.world_mut().send_event(StrategyRunRequested {
+            cache_path: py_path.clone(),
+        });
+        app.update();
+
+        let cmd = rx
+            .try_recv()
+            .expect("RunStrategy must be sent after add+run");
+        match cmd {
+            TransportCommand::RunStrategy {
+                strategy_file,
+                config,
+            } => {
+                assert_eq!(strategy_file, py_path);
+                assert_eq!(
+                    config.instruments,
+                    vec![
+                        "1301.TSE".to_string(),
+                        "7203.TSE".to_string(),
+                        "9984.TSE".to_string()
+                    ],
+                    "Run 時 backend へ渡る instruments が picker 追加後の 3 銘柄"
+                );
+            }
+            other => panic!("expected RunStrategy, got {:?}", other),
+        }
+
+        // Step F: 両 sidecar の最終状態
+        {
+            let body = std::fs::read_to_string(&json_path).unwrap();
+            let v: serde_json::Value = serde_json::from_str(&body).unwrap();
+            let instruments = v["scenario"]["instruments"].as_array().unwrap();
+            let got: Vec<String> = instruments
+                .iter()
+                .map(|x| x.as_str().unwrap().to_string())
+                .collect();
+            assert_eq!(
+                got,
+                vec!["1301.TSE".to_string(), "7203.TSE".to_string()],
+                "original sidecar ({:?}) は CacheOnly で据え置き",
+                json_path
+            );
+        }
+        {
+            let body = std::fs::read_to_string(&cache_json_path).unwrap();
+            let v: serde_json::Value = serde_json::from_str(&body).unwrap();
+            let instruments = v["scenario"]["instruments"].as_array().unwrap();
+            let got: Vec<String> = instruments
+                .iter()
+                .map(|x| x.as_str().unwrap().to_string())
+                .collect();
+            assert_eq!(
+                got,
+                vec![
+                    "1301.TSE".to_string(),
+                    "7203.TSE".to_string(),
+                    "9984.TSE".to_string()
+                ],
+                "cache sidecar に 9984 が残っている"
+            );
+        }
+        let _ = dir;
     }
 
     /// 計画書 §5.2 E2E-2: open 後に registry から 1 件 close（直接 mutate）すると、
@@ -1639,7 +2288,8 @@ mod writeback_scenario_instruments_tests {
                 instrument_chart_sync_system,
                 mark_registry_dirty_system,
                 writeback_scenario_instruments_system,
-            ).chain(),
+            )
+                .chain(),
         );
 
         app.world_mut().send_event(StrategyFileLoadRequested {
@@ -1649,7 +2299,10 @@ mod writeback_scenario_instruments_tests {
         app.update();
 
         let reg = app.world().resource::<InstrumentRegistry>();
-        assert_eq!(reg.ids, vec!["1301.TSE".to_string(), "7203.TSE".to_string()]);
+        assert_eq!(
+            reg.ids,
+            vec!["1301.TSE".to_string(), "7203.TSE".to_string()]
+        );
         {
             let world = app.world_mut();
             let mut q = world.query_filtered::<&ChartInstrument, With<WindowRoot>>();
@@ -1669,18 +2322,26 @@ mod writeback_scenario_instruments_tests {
         let world = app.world_mut();
         let mut q = world.query_filtered::<&ChartInstrument, With<WindowRoot>>();
         let ids: Vec<String> = q.iter(world).map(|c| c.instrument_id.clone()).collect();
-        assert_eq!(ids, vec!["1301.TSE".to_string()], "Chart 1 件で 1301.TSE のみ");
+        assert_eq!(
+            ids,
+            vec!["1301.TSE".to_string()],
+            "Chart 1 件で 1301.TSE のみ"
+        );
 
         // original sidecar は CacheOnly 仕様で据え置き
         {
             let body = std::fs::read_to_string(&json_path).unwrap();
             let v: serde_json::Value = serde_json::from_str(&body).unwrap();
             let instruments = v["scenario"]["instruments"].as_array().unwrap();
-            let got: Vec<String> = instruments.iter().map(|x| x.as_str().unwrap().to_string()).collect();
+            let got: Vec<String> = instruments
+                .iter()
+                .map(|x| x.as_str().unwrap().to_string())
+                .collect();
             assert_eq!(
                 got,
                 vec!["1301.TSE".to_string(), "7203.TSE".to_string()],
-                "original sidecar ({:?}) は CacheOnly で据え置き", json_path
+                "original sidecar ({:?}) は CacheOnly で据え置き",
+                json_path
             );
         }
         // cache sidecar だけ新 registry を反映
@@ -1688,8 +2349,15 @@ mod writeback_scenario_instruments_tests {
             let body = std::fs::read_to_string(&cache_json_path).unwrap();
             let v: serde_json::Value = serde_json::from_str(&body).unwrap();
             let instruments = v["scenario"]["instruments"].as_array().unwrap();
-            let got: Vec<String> = instruments.iter().map(|x| x.as_str().unwrap().to_string()).collect();
-            assert_eq!(got, vec!["1301.TSE".to_string()], "cache sidecar が縮んでいる");
+            let got: Vec<String> = instruments
+                .iter()
+                .map(|x| x.as_str().unwrap().to_string())
+                .collect();
+            assert_eq!(
+                got,
+                vec!["1301.TSE".to_string()],
+                "cache sidecar が縮んでいる"
+            );
         }
     }
 
@@ -1755,7 +2423,8 @@ mod writeback_scenario_instruments_tests {
                 mark_registry_dirty_system,
                 writeback_scenario_instruments_system,
                 handle_strategy_run_system,
-            ).chain(),
+            )
+                .chain(),
         );
 
         app.world_mut().send_event(StrategyFileLoadRequested {
@@ -1765,7 +2434,10 @@ mod writeback_scenario_instruments_tests {
         app.update();
 
         let reg = app.world().resource::<InstrumentRegistry>();
-        assert_eq!(reg.ids, vec!["1301.TSE".to_string(), "7203.TSE".to_string()]);
+        assert_eq!(
+            reg.ids,
+            vec!["1301.TSE".to_string(), "7203.TSE".to_string()]
+        );
         {
             let world = app.world_mut();
             let mut q = world.query_filtered::<&ChartInstrument, With<WindowRoot>>();
@@ -1785,7 +2457,9 @@ mod writeback_scenario_instruments_tests {
         let reg = app.world().resource::<InstrumentRegistry>();
         assert_eq!(reg.ids, vec!["1301.TSE".to_string()]);
 
-        let cmd = rx.try_recv().expect("RunStrategy must be sent after close+run");
+        let cmd = rx
+            .try_recv()
+            .expect("RunStrategy must be sent after close+run");
         match cmd {
             TransportCommand::RunStrategy { strategy_file, .. } => {
                 assert_eq!(strategy_file, py_path);
@@ -1798,11 +2472,15 @@ mod writeback_scenario_instruments_tests {
             let body = std::fs::read_to_string(&json_path).unwrap();
             let v: serde_json::Value = serde_json::from_str(&body).unwrap();
             let instruments = v["scenario"]["instruments"].as_array().unwrap();
-            let got: Vec<String> = instruments.iter().map(|x| x.as_str().unwrap().to_string()).collect();
+            let got: Vec<String> = instruments
+                .iter()
+                .map(|x| x.as_str().unwrap().to_string())
+                .collect();
             assert_eq!(
                 got,
                 vec!["1301.TSE".to_string(), "7203.TSE".to_string()],
-                "original sidecar ({:?}) は CacheOnly で据え置き", json_path
+                "original sidecar ({:?}) は CacheOnly で据え置き",
+                json_path
             );
         }
         // cache sidecar だけ新 registry を反映
@@ -1810,15 +2488,22 @@ mod writeback_scenario_instruments_tests {
             let body = std::fs::read_to_string(&cache_json_path).unwrap();
             let v: serde_json::Value = serde_json::from_str(&body).unwrap();
             let instruments = v["scenario"]["instruments"].as_array().unwrap();
-            let got: Vec<String> = instruments.iter().map(|x| x.as_str().unwrap().to_string()).collect();
-            assert_eq!(got, vec!["1301.TSE".to_string()], "cache sidecar が縮んでいる");
+            let got: Vec<String> = instruments
+                .iter()
+                .map(|x| x.as_str().unwrap().to_string())
+                .collect();
+            assert_eq!(
+                got,
+                vec!["1301.TSE".to_string()],
+                "cache sidecar が縮んでいる"
+            );
         }
     }
 
     #[test]
     fn save_as_bumps_writeback_revision() {
         use crate::ui::components::{
-            bump_writeback_for_save_as, ScenarioInstrumentsWritebackState,
+            ScenarioInstrumentsWritebackState, bump_writeback_for_save_as,
         };
         let mut wb = ScenarioInstrumentsWritebackState {
             revision: 0,

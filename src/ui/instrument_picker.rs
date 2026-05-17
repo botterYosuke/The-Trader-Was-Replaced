@@ -8,15 +8,17 @@
 //! - picker root には必ず `LayoutExcluded` を同時に付与すること（§3.6 / R10）。
 //! - `InstrumentPickerState` は `UiPlugin::build` で `init_resource` される。
 
-use bevy::prelude::*;
-use bevy::prelude::Interaction;
 use bevy::input::keyboard::{Key, KeyboardInput};
+use bevy::prelude::Interaction;
+use bevy::prelude::*;
 use bevy::sprite::Anchor;
 use chrono::NaiveDate;
 use std::time::{Duration, Instant};
 
-use crate::trading::{AvailableInstruments, TransportCommand, TransportCommandSender};
-use crate::ui::components::{InstrumentRegistry, LayoutExcluded, ScenarioMetadata, SidebarAddInstrumentButton};
+use crate::trading::{AvailableInstruments, BackendStatus, TransportCommand, TransportCommandSender};
+use crate::ui::components::{
+    InstrumentRegistry, LayoutExcluded, ScenarioMetadata, SidebarAddInstrumentButton,
+};
 use crate::ui::floating_window::{FloatingWindowSpec, spawn_floating_window};
 
 // ---------------------------------------------------------------------------
@@ -77,13 +79,18 @@ pub fn spawn_picker_window(commands: &mut Commands) -> (Entity, Entity, Entity) 
             accent: Color::srgba(0.4, 0.7, 1.0, 0.8),
         },
     );
-    commands
-        .entity(root)
-        .insert((InstrumentPickerWindow, LayoutExcluded, Name::new("InstrumentPickerWindow")));
+    commands.entity(root).insert((
+        InstrumentPickerWindow,
+        LayoutExcluded,
+        Name::new("InstrumentPickerWindow"),
+    ));
     commands
         .spawn((
             Text2d::new(String::new()),
-            TextFont { font_size: 18.0, ..default() },
+            TextFont {
+                font_size: 18.0,
+                ..default()
+            },
             TextColor(Color::WHITE),
             Anchor::CenterLeft,
             Transform::from_xyz(-160.0, 200.0, 0.1),
@@ -131,6 +138,7 @@ pub fn add_instrument_button_system(
     registry: Res<InstrumentRegistry>,
     scenario_meta: Res<ScenarioMetadata>,
     sender: Option<Res<TransportCommandSender>>,
+    backend_status: Option<Res<BackendStatus>>,
     mut available: Option<ResMut<AvailableInstruments>>,
     mut last_dispatch_at: Local<Option<Instant>>,
     interactions: Query<&Interaction, (Changed<Interaction>, With<SidebarAddInstrumentButton>)>,
@@ -153,7 +161,9 @@ pub fn add_instrument_button_system(
         let now = Instant::now();
         picker.last_opened_at = Some(now);
 
-        let Some(d) = end_date else { continue; };
+        let Some(d) = end_date else {
+            continue;
+        };
 
         let time_ok = match *last_dispatch_at {
             None => true,
@@ -170,13 +180,26 @@ pub fn add_instrument_button_system(
         if available.by_end_date.contains_key(&d) || available.in_flight.contains(&d) {
             continue;
         }
+        // 計画書 §5.4 項目 7: backend disconnect 時は transport task が connect 再試行
+        // ループ中で queued command を処理しないため、in_flight に入れると picker が永久 Loading
+        // になる。preflight で last_error を立てて即座に error 行を出す。
+        if backend_status.as_ref().map(|s| !s.connected).unwrap_or(true) {
+            available.last_error = Some((d, "backend not connected".to_string()));
+            continue;
+        }
         let Some(sender) = sender.as_ref() else {
-            error!("add_instrument_button_system: TransportCommandSender is None — backend not connected");
+            error!(
+                "add_instrument_button_system: TransportCommandSender is None — backend not connected"
+            );
+            available.last_error = Some((d, "backend transport unavailable".to_string()));
             continue;
         };
 
         available.in_flight.insert(d);
-        let _ = sender.tx.send(TransportCommand::FetchAvailableInstruments { end_date: d });
+        available.last_error = None;
+        let _ = sender
+            .tx
+            .send(TransportCommand::FetchAvailableInstruments { end_date: d });
         *last_dispatch_at = Some(now);
     }
 }
@@ -317,7 +340,11 @@ fn spawn_picker_row(
         Color::srgba(0.15, 0.35, 0.55, 0.6)
     };
     let mut e = commands.spawn((
-        Sprite { color: bg, custom_size: Some(Vec2::new(320.0, 24.0)), ..default() },
+        Sprite {
+            color: bg,
+            custom_size: Some(Vec2::new(320.0, 24.0)),
+            ..default()
+        },
         Transform::from_xyz(0.0, y, 0.06),
         GlobalTransform::default(),
         Visibility::Visible,
@@ -327,8 +354,13 @@ fn spawn_picker_row(
     ));
     if let Some(id) = instrument_id {
         e.insert((
-            InstrumentPickerRow { instrument_id: id.to_string(), already_added },
-            InstrumentPickerAddButton { instrument_id: id.to_string() },
+            InstrumentPickerRow {
+                instrument_id: id.to_string(),
+                already_added,
+            },
+            InstrumentPickerAddButton {
+                instrument_id: id.to_string(),
+            },
         ));
         if !already_added {
             let id_owned = id.to_string();
@@ -346,7 +378,10 @@ fn spawn_picker_row(
     commands
         .spawn((
             Text2d::new(label.to_string()),
-            TextFont { font_size: 14.0, ..default() },
+            TextFont {
+                font_size: 14.0,
+                ..default()
+            },
             TextColor(Color::WHITE),
             Anchor::CenterLeft,
             Transform::from_xyz(-150.0, 0.0, 0.01),
@@ -382,13 +417,18 @@ pub fn picker_list_rebuild_system(
     available: Res<AvailableInstruments>,
     registry: Res<InstrumentRegistry>,
     container_q: Query<Entity, With<InstrumentPickerListContainer>>,
+    added_container_q: Query<(), Added<InstrumentPickerListContainer>>,
     existing_rows_q: Query<Entity, With<InstrumentPickerRow>>,
     container_children_q: Query<&Children, With<InstrumentPickerListContainer>>,
 ) {
     if !picker.visible {
         return;
     }
-    if !(picker.is_changed() || available.is_changed() || registry.is_changed()) {
+    // 再 open で container が同フレームに spawn された場合、Res の changed flag は
+    // 前フレームのものなので落ち得る。container 新規生成自体を rebuild trigger に含める。
+    let container_added = !added_container_q.is_empty();
+    if !(container_added || picker.is_changed() || available.is_changed() || registry.is_changed())
+    {
         return;
     }
     let Ok(container) = container_q.get_single() else {
@@ -408,14 +448,28 @@ pub fn picker_list_rebuild_system(
 
     // 1) end 未設定 → placeholder
     let Some(end) = picker.end_date else {
-        spawn_picker_row(&mut commands, container, 0, "Set scenario.end first", None, false);
+        spawn_picker_row(
+            &mut commands,
+            container,
+            0,
+            "Set scenario.end first",
+            None,
+            false,
+        );
         return;
     };
 
     // 2) error（同 end_date の失敗のみ表示）
     if let Some((d, msg)) = &available.last_error {
         if *d == end {
-            spawn_picker_row(&mut commands, container, 0, &format!("Error: {msg}"), None, false);
+            spawn_picker_row(
+                &mut commands,
+                container,
+                0,
+                &format!("Error: {msg}"),
+                None,
+                false,
+            );
             return;
         }
     }
@@ -447,23 +501,31 @@ pub fn picker_list_rebuild_system(
 
     for (idx, id) in filtered.iter().take(15).enumerate() {
         let already = registry.contains(id);
-        spawn_picker_row(&mut commands, container, idx, id, Some(id.as_str()), already);
+        spawn_picker_row(
+            &mut commands,
+            container,
+            idx,
+            id,
+            Some(id.as_str()),
+            already,
+        );
     }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use chrono::NaiveDate;
-    use crate::ui::components::{
-        InstrumentRegistry, ScenarioMetadata, SidebarAddInstrumentButton,
-    };
     use crate::trading::AvailableInstruments;
+    use crate::ui::components::{InstrumentRegistry, ScenarioMetadata, SidebarAddInstrumentButton};
+    use chrono::NaiveDate;
 
     fn make_app() -> App {
         let mut app = App::new();
         app.init_resource::<InstrumentPickerState>();
-        app.insert_resource(InstrumentRegistry { ids: vec![], editable: true });
+        app.insert_resource(InstrumentRegistry {
+            ids: vec![],
+            editable: true,
+        });
         app.insert_resource(ScenarioMetadata {
             schema_version: None,
             instruments: vec![],
@@ -479,10 +541,10 @@ mod tests {
     #[test]
     fn test_picker_opens_on_add_button_pressed() {
         let mut app = make_app();
-        let btn = app.world_mut().spawn((
-            SidebarAddInstrumentButton,
-            Interaction::Pressed,
-        )).id();
+        let btn = app
+            .world_mut()
+            .spawn((SidebarAddInstrumentButton, Interaction::Pressed))
+            .id();
         app.add_systems(Update, add_instrument_button_system);
         app.update();
 
@@ -499,11 +561,12 @@ mod tests {
     #[test]
     fn test_picker_skips_open_when_registry_locked() {
         let mut app = make_app();
-        app.insert_resource(InstrumentRegistry { ids: vec![], editable: false });
-        app.world_mut().spawn((
-            SidebarAddInstrumentButton,
-            Interaction::Pressed,
-        ));
+        app.insert_resource(InstrumentRegistry {
+            ids: vec![],
+            editable: false,
+        });
+        app.world_mut()
+            .spawn((SidebarAddInstrumentButton, Interaction::Pressed));
         app.add_systems(Update, add_instrument_button_system);
         app.update();
 
@@ -515,12 +578,15 @@ mod tests {
     fn test_picker_skips_open_during_debounce() {
         let mut app = make_app();
         let d = NaiveDate::from_ymd_opt(2024, 12, 31).unwrap();
-        app.world_mut().resource_mut::<AvailableInstruments>().in_flight.insert(d);
+        app.world_mut()
+            .resource_mut::<AvailableInstruments>()
+            .in_flight
+            .insert(d);
 
-        let btn = app.world_mut().spawn((
-            SidebarAddInstrumentButton,
-            Interaction::Pressed,
-        )).id();
+        let btn = app
+            .world_mut()
+            .spawn((SidebarAddInstrumentButton, Interaction::Pressed))
+            .id();
         app.add_systems(Update, add_instrument_button_system);
         app.update();
         *app.world_mut().get_mut::<Interaction>(btn).unwrap() = Interaction::None;
@@ -529,15 +595,26 @@ mod tests {
         app.update();
 
         let av = app.world().resource::<AvailableInstruments>();
-        assert_eq!(av.in_flight.len(), 1, "in_flight must not double-register on rapid re-press");
+        assert_eq!(
+            av.in_flight.len(),
+            1,
+            "in_flight must not double-register on rapid re-press"
+        );
     }
 
     #[test]
     fn test_picker_force_close_on_lock() {
         let mut app = make_app();
-        app.world_mut().resource_mut::<InstrumentPickerState>().visible = true;
-        app.world_mut().resource_mut::<InstrumentPickerState>().query = "abc".to_string();
-        app.insert_resource(InstrumentRegistry { ids: vec![], editable: false });
+        app.world_mut()
+            .resource_mut::<InstrumentPickerState>()
+            .visible = true;
+        app.world_mut()
+            .resource_mut::<InstrumentPickerState>()
+            .query = "abc".to_string();
+        app.insert_resource(InstrumentRegistry {
+            ids: vec![],
+            editable: false,
+        });
 
         app.add_systems(Update, force_close_picker_on_lock_system);
         app.update();
@@ -551,7 +628,10 @@ mod tests {
 
     #[test]
     fn test_picker_click_adds_to_registry() {
-        let mut registry = InstrumentRegistry { ids: vec![], editable: true };
+        let mut registry = InstrumentRegistry {
+            ids: vec![],
+            editable: true,
+        };
         let mut picker = InstrumentPickerState::default();
         let now = Instant::now();
 
@@ -579,7 +659,10 @@ mod tests {
 
     #[test]
     fn test_picker_click_debounces_same_id_only() {
-        let mut registry = InstrumentRegistry { ids: vec![], editable: true };
+        let mut registry = InstrumentRegistry {
+            ids: vec![],
+            editable: true,
+        };
         let mut picker = InstrumentPickerState::default();
         let t0 = Instant::now();
 
@@ -593,16 +676,16 @@ mod tests {
         assert_eq!(picker.last_added, after_first, "last_added は更新されない");
 
         handle_picker_row_click("9984", &mut registry, &mut picker, t1);
-        assert_eq!(
-            registry.ids,
-            vec!["7203".to_string(), "9984".to_string()]
-        );
+        assert_eq!(registry.ids, vec!["7203".to_string(), "9984".to_string()]);
         assert_eq!(picker.last_added, Some(("9984".to_string(), t1)));
     }
 
     #[test]
     fn test_picker_click_blocked_when_locked() {
-        let mut registry = InstrumentRegistry { ids: vec![], editable: false };
+        let mut registry = InstrumentRegistry {
+            ids: vec![],
+            editable: false,
+        };
         let mut picker = InstrumentPickerState::default();
         let now = Instant::now();
 
@@ -610,5 +693,92 @@ mod tests {
 
         assert!(registry.ids.is_empty());
         assert_eq!(picker.last_added, None);
+    }
+
+    /// §5.4 項目 7 回帰 pin: backend disconnect 時に [+ Add] を押すと
+    /// in_flight に入れずに last_error をセットし、picker は spinner 永久ループにならない。
+    #[test]
+    fn test_picker_sets_last_error_when_backend_disconnected() {
+        use crate::trading::BackendStatus;
+        let mut app = make_app();
+        app.insert_resource(BackendStatus { connected: false, running: false, last_error: None });
+
+        app.world_mut().spawn((SidebarAddInstrumentButton, Interaction::Pressed));
+        app.add_systems(Update, add_instrument_button_system);
+        app.update();
+
+        let d = NaiveDate::from_ymd_opt(2024, 12, 31).unwrap();
+        let av = app.world().resource::<AvailableInstruments>();
+        assert!(!av.in_flight.contains(&d), "disconnect 時は in_flight に入れない");
+        assert_eq!(
+            av.last_error.as_ref().map(|(date, _)| *date),
+            Some(d),
+            "disconnect 時は last_error を当該 end_date でセット",
+        );
+    }
+
+    /// §5.4 項目 5-a 回帰 pin: picker close → 再 open で list がブランクにならないこと。
+    /// rebuild system は container 新規 spawn を trigger に含む必要がある。
+    #[test]
+    fn test_picker_list_rebuilds_on_reopen_after_close() {
+        let mut app = make_app();
+        let d = NaiveDate::from_ymd_opt(2024, 12, 31).unwrap();
+        // backend response 相当を事前に投入
+        app.world_mut()
+            .resource_mut::<AvailableInstruments>()
+            .by_end_date
+            .insert(d, vec!["7203.TSE".to_string(), "9984.TSE".to_string()]);
+
+        app.add_systems(
+            Update,
+            (
+                add_instrument_button_system,
+                picker_close_when_invisible_system,
+                picker_list_rebuild_system,
+            )
+                .chain(),
+        );
+
+        // 1) 初回 open
+        let btn = app
+            .world_mut()
+            .spawn((SidebarAddInstrumentButton, Interaction::Pressed))
+            .id();
+        app.update();
+        // change detection を消費するため Interaction::None で 1 tick
+        *app.world_mut().get_mut::<Interaction>(btn).unwrap() = Interaction::None;
+        app.update();
+        {
+            let world = app.world_mut();
+            let mut q = world.query::<&InstrumentPickerRow>();
+            let count = q.iter(world).count();
+            assert_eq!(count, 2, "初回 open で 2 行 spawn");
+        }
+
+        // 2) close
+        app.world_mut()
+            .resource_mut::<InstrumentPickerState>()
+            .visible = false;
+        app.update();
+        {
+            let world = app.world_mut();
+            let mut q = world.query::<&InstrumentPickerWindow>();
+            assert_eq!(q.iter(world).count(), 0, "close で window 消失");
+        }
+
+        // 3) 再 open
+        *app.world_mut().get_mut::<Interaction>(btn).unwrap() = Interaction::Pressed;
+        app.update();
+        *app.world_mut().get_mut::<Interaction>(btn).unwrap() = Interaction::None;
+        app.update();
+
+        // 4) cache hit 経路でも list が再構築されていること（regression pin）
+        let world = app.world_mut();
+        let mut q = world.query::<&InstrumentPickerRow>();
+        let count = q.iter(world).count();
+        assert_eq!(
+            count, 2,
+            "再 open で list ブランクにならないこと（cache hit 経路）"
+        );
     }
 }

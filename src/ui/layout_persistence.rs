@@ -251,8 +251,7 @@ fn build_layout_for_explicit_save(
     fallback_original_json: Option<&std::path::Path>,
 ) -> Option<SidecarLayout> {
     // preserve source: cache 第一、fallback 第二
-    let preserve_from: Option<&std::path::Path> =
-        cache_sidecar.or(fallback_original_json);
+    let preserve_from: Option<&std::path::Path> = cache_sidecar.or(fallback_original_json);
     let mut layout = build_layout(panels, camera, buffer, preserve_from);
 
     if !registry.editable {
@@ -493,7 +492,10 @@ fn handle_save_layout_system(
         }
 
         let cache_sidecar = paths.cache_sidecar.as_deref();
-        let fallback_json = buffer.original_path.as_ref().map(|p| p.with_extension("json"));
+        let fallback_json = buffer
+            .original_path
+            .as_ref()
+            .map(|p| p.with_extension("json"));
         let layout = match build_layout_for_explicit_save(
             &panels,
             &camera,
@@ -589,7 +591,10 @@ fn handle_save_as_layout_system(
                 None,
                 paths.cache_sidecar.as_deref(),
             ) {
-                warn!("Save As: pre-flush to cache failed (continuing save): {}", e);
+                warn!(
+                    "Save As: pre-flush to cache failed (continuing save): {}",
+                    e
+                );
             }
         }
 
@@ -785,12 +790,18 @@ fn apply_layout_system(
         if let Some(path_str) = &layout.strategy_path {
             let path = std::path::PathBuf::from(path_str);
             if path.exists() {
-                if let Some(user_path) = &pending_fragments.loaded_for_path {
-                    if user_path != &path {
+                let is_user_open_sidecar_loopback = pending_fragments
+                    .loaded_for_path
+                    .as_ref()
+                    .map(|user_path| event.path == user_path.with_extension("json"))
+                    .unwrap_or(false);
+
+                if is_user_open_sidecar_loopback {
+                    if pending_fragments.loaded_for_path.as_ref() != Some(&path) {
                         warn!(
                             "apply_layout_system: sidecar strategy_path {:?} \
                              differs from user-selected {:?}; ignoring sidecar path",
-                            path, user_path
+                            path, pending_fragments.loaded_for_path
                         );
                     } else {
                         debug!(
@@ -799,7 +810,7 @@ fn apply_layout_system(
                             path
                         );
                     }
-                } else if !sidecar_state.done {
+                } else {
                     load_ev.send(StrategyFileLoadRequested {
                         path,
                         mode: StrategyLoadMode::LayoutRestore,
@@ -823,10 +834,6 @@ fn apply_layout_system(
                         event.path
                     );
                     continue;
-                } else {
-                    debug!(
-                        "apply_layout_system: skipping strategy_path reload (sidecar one-shot done)"
-                    );
                 }
             } else {
                 warn!("layout load: strategy_path {:?} not found, skipping", path);
@@ -1392,6 +1399,51 @@ mod tests {
     }
 
     #[test]
+    fn layout_open_loads_strategy_path_even_after_previous_open() {
+        let dir = tempfile::tempdir().unwrap();
+        let old_py = dir.path().join("old.py");
+        let new_py = dir.path().join("new.py");
+        let layout_json = dir.path().join("new.json");
+        std::fs::write(&old_py, "# old").unwrap();
+        std::fs::write(&new_py, "# new").unwrap();
+
+        let layout = SidecarLayout {
+            schema_version: Some(SCHEMA_VERSION),
+            strategy_path: Some(new_py.to_string_lossy().to_string()),
+            ..Default::default()
+        };
+        std::fs::write(&layout_json, serde_json::to_string(&layout).unwrap()).unwrap();
+
+        let mut app = App::new();
+        app.init_resource::<WindowManager>();
+        app.init_resource::<PendingLayoutApply>();
+        app.insert_resource(PendingStrategyFragments {
+            by_region_key: Default::default(),
+            loaded_for_path: Some(old_py),
+        });
+        app.insert_resource(SidecarAutoLoadState { done: true });
+        app.add_event::<LayoutLoadRequested>();
+        app.add_event::<StrategyFileLoadRequested>();
+        app.add_event::<PanelSpawnRequested>();
+        app.add_systems(Update, apply_layout_system);
+
+        app.world_mut()
+            .send_event(LayoutLoadRequested { path: layout_json });
+        app.update();
+
+        let events = app.world().resource::<Events<StrategyFileLoadRequested>>();
+        let mut reader = events.get_cursor();
+        let collected: Vec<_> = reader.read(events).cloned().collect();
+        assert_eq!(
+            collected.len(),
+            1,
+            "direct layout Open must load its strategy_path even when a previous file is still recorded"
+        );
+        assert_eq!(collected[0].path, new_py);
+        assert!(matches!(collected[0].mode, StrategyLoadMode::LayoutRestore));
+    }
+
+    #[test]
     fn legacy_chart_window_layout_is_skipped() {
         let chart = WindowLayout {
             kind: PanelKind::Chart,
@@ -1410,14 +1462,17 @@ mod tests {
             region_key: None,
         };
         assert!(is_legacy_chart_entry(&chart), "Chart entry must be skipped");
-        assert!(!is_legacy_chart_entry(&orders), "non-Chart entries must pass through");
+        assert!(
+            !is_legacy_chart_entry(&orders),
+            "non-Chart entries must pass through"
+        );
     }
 
     #[test]
     fn build_layout_excludes_chart_instrument_roots() {
+        use crate::ui::components::ChartInstrument;
         use bevy::ecs::system::SystemState;
         use bevy::prelude::*;
-        use crate::ui::components::ChartInstrument;
 
         let mut app = App::new();
         app.insert_resource(StrategyBuffer::default());
@@ -1432,9 +1487,14 @@ mod tests {
             WindowRoot,
             PanelKind::Chart,
             Transform::from_xyz(10.0, 20.0, 1.0),
-            Sprite { custom_size: Some(Vec2::new(400.0, 300.0)), ..default() },
+            Sprite {
+                custom_size: Some(Vec2::new(400.0, 300.0)),
+                ..default()
+            },
             Visibility::Visible,
-            ChartInstrument { instrument_id: "7203.TSE".to_string() },
+            ChartInstrument {
+                instrument_id: "7203.TSE".to_string(),
+            },
             LayoutExcluded,
         ));
 
@@ -1442,13 +1502,22 @@ mod tests {
             WindowRoot,
             PanelKind::Orders,
             Transform::from_xyz(0.0, 0.0, 1.0),
-            Sprite { custom_size: Some(Vec2::new(200.0, 150.0)), ..default() },
+            Sprite {
+                custom_size: Some(Vec2::new(200.0, 150.0)),
+                ..default()
+            },
             Visibility::Visible,
         ));
 
         let mut state: SystemState<(
             Query<
-                (&PanelKind, Option<&StrategyEditorId>, &Transform, &Sprite, &Visibility),
+                (
+                    &PanelKind,
+                    Option<&StrategyEditorId>,
+                    &Transform,
+                    &Sprite,
+                    &Visibility,
+                ),
                 (With<WindowRoot>, Without<LayoutExcluded>),
             >,
             Query<(&Transform, &OrthographicProjection), (With<Camera2d>, Without<WindowRoot>)>,
@@ -1465,8 +1534,8 @@ mod tests {
 
     #[test]
     fn apply_layout_does_not_despawn_chart_when_layout_lacks_chart() {
-        use bevy::prelude::*;
         use crate::ui::components::ChartInstrument;
+        use bevy::prelude::*;
 
         let mut app = App::new();
         app.add_event::<LayoutLoadRequested>();
@@ -1483,15 +1552,23 @@ mod tests {
             OrthographicProjection::default_2d(),
         ));
 
-        let chart = app.world_mut().spawn((
-            WindowRoot,
-            PanelKind::Chart,
-            Transform::from_xyz(10.0, 20.0, 1.0),
-            Sprite { custom_size: Some(Vec2::new(400.0, 300.0)), ..default() },
-            Visibility::Visible,
-            ChartInstrument { instrument_id: "7203.TSE".to_string() },
-            LayoutExcluded,
-        )).id();
+        let chart = app
+            .world_mut()
+            .spawn((
+                WindowRoot,
+                PanelKind::Chart,
+                Transform::from_xyz(10.0, 20.0, 1.0),
+                Sprite {
+                    custom_size: Some(Vec2::new(400.0, 300.0)),
+                    ..default()
+                },
+                Visibility::Visible,
+                ChartInstrument {
+                    instrument_id: "7203.TSE".to_string(),
+                },
+                LayoutExcluded,
+            ))
+            .id();
 
         let tmp = std::env::temp_dir().join(format!(
             "ttwr_test_apply_no_chart_{}.json",
@@ -1512,7 +1589,8 @@ mod tests {
         });
         std::fs::write(&tmp, serde_json::to_string(&layout_json).unwrap()).unwrap();
 
-        app.world_mut().send_event(LayoutLoadRequested { path: tmp.clone() });
+        app.world_mut()
+            .send_event(LayoutLoadRequested { path: tmp.clone() });
         app.add_systems(Update, apply_layout_system);
         app.update();
 
@@ -1526,9 +1604,9 @@ mod tests {
 
     #[test]
     fn picker_window_is_excluded_from_layout_save() {
+        use crate::ui::instrument_picker::InstrumentPickerWindow;
         use bevy::ecs::system::SystemState;
         use bevy::prelude::*;
-        use crate::ui::instrument_picker::InstrumentPickerWindow;
 
         let mut app = App::new();
         app.insert_resource(StrategyBuffer::default());
@@ -1543,7 +1621,10 @@ mod tests {
             WindowRoot,
             PanelKind::Orders,
             Transform::from_xyz(0.0, 0.0, 1.0),
-            Sprite { custom_size: Some(Vec2::new(200.0, 150.0)), ..default() },
+            Sprite {
+                custom_size: Some(Vec2::new(200.0, 150.0)),
+                ..default()
+            },
             Visibility::Visible,
         ));
 
@@ -1551,7 +1632,10 @@ mod tests {
             WindowRoot,
             PanelKind::Orders,
             Transform::from_xyz(100.0, 100.0, 2.0),
-            Sprite { custom_size: Some(Vec2::new(360.0, 480.0)), ..default() },
+            Sprite {
+                custom_size: Some(Vec2::new(360.0, 480.0)),
+                ..default()
+            },
             Visibility::Visible,
             InstrumentPickerWindow,
             LayoutExcluded,
@@ -1559,7 +1643,13 @@ mod tests {
 
         let mut state: SystemState<(
             Query<
-                (&PanelKind, Option<&StrategyEditorId>, &Transform, &Sprite, &Visibility),
+                (
+                    &PanelKind,
+                    Option<&StrategyEditorId>,
+                    &Transform,
+                    &Sprite,
+                    &Visibility,
+                ),
                 (With<WindowRoot>, Without<LayoutExcluded>),
             >,
             Query<(&Transform, &OrthographicProjection), (With<Camera2d>, Without<WindowRoot>)>,
@@ -1571,7 +1661,8 @@ mod tests {
 
         let windows = layout.windows.expect("windows must be Some");
         assert_eq!(
-            windows.len(), 1,
+            windows.len(),
+            1,
             "LayoutExcluded 付き picker window は除外され、Orders 1 件のみ残る"
         );
         assert_eq!(windows[0].kind, PanelKind::Orders);
@@ -1579,8 +1670,8 @@ mod tests {
 
     #[test]
     fn layout_restore_does_not_spawn_picker_window() {
-        use bevy::prelude::*;
         use crate::ui::instrument_picker::InstrumentPickerWindow;
+        use bevy::prelude::*;
 
         let mut app = App::new();
         app.add_event::<LayoutLoadRequested>();
@@ -1597,15 +1688,21 @@ mod tests {
             OrthographicProjection::default_2d(),
         ));
 
-        let picker = app.world_mut().spawn((
-            WindowRoot,
-            PanelKind::Orders,
-            Transform::from_xyz(100.0, 100.0, 2.0),
-            Sprite { custom_size: Some(Vec2::new(360.0, 480.0)), ..default() },
-            Visibility::Visible,
-            InstrumentPickerWindow,
-            LayoutExcluded,
-        )).id();
+        let picker = app
+            .world_mut()
+            .spawn((
+                WindowRoot,
+                PanelKind::Orders,
+                Transform::from_xyz(100.0, 100.0, 2.0),
+                Sprite {
+                    custom_size: Some(Vec2::new(360.0, 480.0)),
+                    ..default()
+                },
+                Visibility::Visible,
+                InstrumentPickerWindow,
+                LayoutExcluded,
+            ))
+            .id();
 
         let tmp = std::env::temp_dir().join(format!(
             "ttwr_test_apply_no_picker_{}.json",
@@ -1626,7 +1723,8 @@ mod tests {
         });
         std::fs::write(&tmp, serde_json::to_string(&layout_json).unwrap()).unwrap();
 
-        app.world_mut().send_event(LayoutLoadRequested { path: tmp.clone() });
+        app.world_mut()
+            .send_event(LayoutLoadRequested { path: tmp.clone() });
         app.add_systems(Update, apply_layout_system);
         app.update();
 
@@ -1640,10 +1738,10 @@ mod tests {
 
     #[test]
     fn save_layout_writes_registry_to_original_sidecar() {
-        use bevy::prelude::*;
         use crate::ui::components::{
             InstrumentRegistry, ScenarioMetadata, ScenarioWritebackPaths, StrategyBuffer,
         };
+        use bevy::prelude::*;
 
         let dir = tempfile::tempdir().unwrap();
         let py_path = dir.path().join("strat.py");
@@ -1692,12 +1790,130 @@ mod tests {
         assert_eq!(got, vec!["1301.TSE".to_string()]);
     }
 
+    /// E2E-4: picker entity (`InstrumentPickerWindow` + `LayoutExcluded`) は
+    /// save 時の JSON `windows[]` に混入せず、load 時にも `PanelSpawnRequested` を
+    /// 発火させない。Orders panel (LayoutExcluded なし) のみが round-trip する。
     #[test]
-    fn save_layout_skip_when_scenario_required_fields_missing() {
-        use bevy::prelude::*;
+    fn picker_excluded_from_layout_roundtrip() {
         use crate::ui::components::{
             InstrumentRegistry, ScenarioMetadata, ScenarioWritebackPaths, StrategyBuffer,
         };
+        use crate::ui::instrument_picker::InstrumentPickerWindow;
+        use bevy::prelude::*;
+
+        let dir = tempfile::tempdir().unwrap();
+        let py_path = dir.path().join("strat.py");
+        let json_path = dir.path().join("strat.json");
+        let cache_json_path = dir.path().join("cache.json");
+        let initial = r#"{"scenario":{"schema_version":2,"instruments":["1301.TSE"],"start":"2025-01-06","end":"2025-01-10","granularity":"Minute","initial_cash":1000000}}"#;
+        std::fs::write(&py_path, "# dummy\n").unwrap();
+        std::fs::write(&json_path, initial).unwrap();
+        std::fs::write(&cache_json_path, initial).unwrap();
+
+        let mut app = App::new();
+        app.insert_resource(StrategyBuffer {
+            original_path: Some(py_path.clone()),
+            cache_path: None,
+            last_merged_source: None,
+        });
+        app.insert_resource(ScenarioWritebackPaths {
+            cache_sidecar: Some(cache_json_path.clone()),
+        });
+        let mut reg = InstrumentRegistry::default();
+        reg.ids = vec!["1301.TSE".to_string()];
+        reg.editable = true;
+        app.insert_resource(reg);
+        app.init_resource::<ScenarioMetadata>();
+        app.init_resource::<StrategyAutoSaveState>();
+        app.insert_resource(WindowManager::default());
+        app.insert_resource(PendingLayoutApply::default());
+        app.insert_resource(SidecarAutoLoadState::default());
+        app.insert_resource(PendingStrategyFragments::default());
+
+        app.add_event::<LayoutSaveRequested>();
+        app.add_event::<LayoutLoadRequested>();
+        app.add_event::<PanelSpawnRequested>();
+        app.add_event::<StrategyFileLoadRequested>();
+
+        app.world_mut().spawn((
+            Camera2d,
+            Transform::default(),
+            OrthographicProjection::default_2d(),
+        ));
+
+        // Orders panel: save 経路の query (With<WindowRoot>, Without<LayoutExcluded>) に拾われる。
+        app.world_mut().spawn((
+            WindowRoot,
+            PanelKind::Orders,
+            Transform::from_xyz(50.0, 60.0, 1.5),
+            Sprite {
+                custom_size: Some(Vec2::new(200.0, 150.0)),
+                ..default()
+            },
+            Visibility::Visible,
+        ));
+
+        // Picker entity: LayoutExcluded を持つので save から除外されるはず。
+        app.world_mut().spawn((
+            WindowRoot,
+            Transform::from_xyz(100.0, 100.0, 2.0),
+            Sprite {
+                custom_size: Some(Vec2::new(360.0, 480.0)),
+                ..default()
+            },
+            Visibility::Visible,
+            InstrumentPickerWindow,
+            LayoutExcluded,
+        ));
+
+        app.add_systems(Update, (handle_save_layout_system, apply_layout_system));
+
+        // --- Save ---
+        app.world_mut().send_event(LayoutSaveRequested);
+        app.update();
+
+        let body = std::fs::read_to_string(&json_path).unwrap();
+        let v: serde_json::Value = serde_json::from_str(&body).unwrap();
+        let windows = v["windows"].as_array().expect("windows must be array");
+        assert_eq!(
+            windows.len(),
+            1,
+            "picker は LayoutExcluded で除外され、Orders 1 件だけが windows[] に残る"
+        );
+        assert_eq!(
+            windows[0]["kind"].as_str(),
+            Some("Orders"),
+            "残った 1 件は Orders kind であるべき"
+        );
+
+        // --- Load ---
+        // Save 直後の Orders entity は既に world に存在するので、
+        // apply_layout_system は found Some 経路に入り PanelSpawnRequested は発火しない想定。
+        // ただし「picker が JSON に混ざっていた」場合は found None 経路で picker kind の
+        // PanelSpawnRequested が発火するため、ここで検知できる。
+        app.world_mut().send_event(LayoutLoadRequested {
+            path: json_path.clone(),
+        });
+        app.update();
+
+        let mut spawn_events = app
+            .world_mut()
+            .resource_mut::<Events<PanelSpawnRequested>>();
+        let kinds: Vec<PanelKind> = spawn_events.update_drain().map(|ev| ev.kind).collect();
+        assert!(
+            kinds.is_empty(),
+            "Orders は既存 entity が match するため再 spawn されず、\
+             picker は JSON に混入していないため発火しない。got = {:?}",
+            kinds
+        );
+    }
+
+    #[test]
+    fn save_layout_skip_when_scenario_required_fields_missing() {
+        use crate::ui::components::{
+            InstrumentRegistry, ScenarioMetadata, ScenarioWritebackPaths, StrategyBuffer,
+        };
+        use bevy::prelude::*;
 
         let dir = tempfile::tempdir().unwrap();
         let py_path = dir.path().join("strat.py");
@@ -1745,10 +1961,10 @@ mod tests {
     /// に registry 内容で writeback できる。
     #[test]
     fn save_layout_continues_when_cache_sidecar_path_none() {
-        use bevy::prelude::*;
         use crate::ui::components::{
             InstrumentRegistry, ScenarioMetadata, ScenarioWritebackPaths, StrategyBuffer,
         };
+        use bevy::prelude::*;
 
         let dir = tempfile::tempdir().unwrap();
         let py_path = dir.path().join("strat.py");
@@ -1804,10 +2020,10 @@ mod tests {
     /// 元 sidecar 側に registry 値が届く。
     #[test]
     fn save_layout_fallback_to_original_sidecar_when_cache_corrupt() {
-        use bevy::prelude::*;
         use crate::ui::components::{
             InstrumentRegistry, ScenarioMetadata, ScenarioWritebackPaths, StrategyBuffer,
         };
+        use bevy::prelude::*;
 
         let dir = tempfile::tempdir().unwrap();
         let py_path = dir.path().join("strat.py");
@@ -1870,10 +2086,10 @@ mod tests {
     /// 元 sidecar の `instruments_ref` 形状を破壊しない。
     #[test]
     fn save_layout_preserves_instruments_ref_shape() {
-        use bevy::prelude::*;
         use crate::ui::components::{
             InstrumentRegistry, ScenarioMetadata, ScenarioWritebackPaths, StrategyBuffer,
         };
+        use bevy::prelude::*;
 
         let dir = tempfile::tempdir().unwrap();
         let py_path = dir.path().join("strat.py");
@@ -1934,10 +2150,10 @@ mod tests {
     ///     (A2/A4/A5 系と一貫)
     #[test]
     fn save_layout_writes_registry_and_preserves_markers_and_py_bytes() {
-        use bevy::prelude::*;
         use crate::ui::components::{
             InstrumentRegistry, ScenarioMetadata, ScenarioWritebackPaths, StrategyBuffer,
         };
+        use bevy::prelude::*;
 
         let dir = tempfile::tempdir().unwrap();
         let py_path = dir.path().join("strat.py");
@@ -1997,18 +2213,25 @@ mod tests {
 
         // ② scenario 内の original-only field は cache restore 仕様により落ちる (regression 固定)
         assert!(
-            v["scenario"].get("marker_original").map_or(true, |x| x.is_null()),
+            v["scenario"]
+                .get("marker_original")
+                .map_or(true, |x| x.is_null()),
             "marker_original from source strat.json must NOT survive writeback (cache is source of truth)"
         );
         // ②' cache_sidecar 側マーカーは preserve される
         assert_eq!(
-            v["scenario"]["marker_cache"], serde_json::json!("from_cache"),
+            v["scenario"]["marker_cache"],
+            serde_json::json!("from_cache"),
             "marker from cache_sidecar must be preserved through writeback"
         );
 
         // ③ 元 .py が byte 不変
         let py_after = std::fs::read(&py_path).unwrap();
-        assert_eq!(py_after.as_slice(), py_bytes, "original .py must be byte-identical");
+        assert_eq!(
+            py_after.as_slice(),
+            py_bytes,
+            "original .py must be byte-identical"
+        );
 
         // ④ cache_sidecar は KC4-a 仕様により registry 最新値で上書きされる
         let cache_body = std::fs::read_to_string(&cache_json_path).unwrap();
