@@ -137,6 +137,22 @@ pub struct CacheRestoreRequested {
     pub layout: SidecarLayout,
 }
 
+/// Phase 7.5: legacy `PanelKind::Chart` entry を含む旧 layout JSON を読み込んだとき、
+/// 当該 WindowLayout を spawn/pending 投入する前に弾く。
+#[inline]
+fn is_legacy_chart_entry(win_layout: &WindowLayout) -> bool {
+    if win_layout.kind == PanelKind::Chart {
+        warn!(
+            "layout: skipping deprecated PanelKind::Chart entry (pos={:?}, size={:?}); \
+             Chart panel is removed in Phase 7.5",
+            win_layout.position, win_layout.size
+        );
+        true
+    } else {
+        false
+    }
+}
+
 /// ECS 状態から `SidecarLayout` を組み立てる。
 ///
 /// `preserve_scenario_from` に `Some(path)` を渡すと、その `path.with_extension("json")`
@@ -269,9 +285,12 @@ fn apply_cache_restore_system(
         }
 
         if let Some(win_layouts) = &event.layout.windows {
-            pending.windows.extend(win_layouts.iter().cloned());
-
             for win_layout in win_layouts {
+                if is_legacy_chart_entry(win_layout) {
+                    continue;
+                }
+                pending.windows.push(win_layout.clone());
+
                 let region_key = if win_layout.kind == PanelKind::StrategyEditor {
                     Some(
                         win_layout
@@ -637,6 +656,9 @@ fn apply_layout_system(
         if let Some(win_layouts) = &layout.windows {
             let mut new_max_z = wm.max_z;
             for win_layout in win_layouts {
+                if is_legacy_chart_entry(win_layout) {
+                    continue;
+                }
                 let want_key: Option<String> = if win_layout.kind == PanelKind::StrategyEditor {
                     Some(
                         win_layout
@@ -752,6 +774,9 @@ fn apply_pending_layout_system(
     let mut still_pending = vec![];
     let windows = std::mem::take(&mut pending.windows);
     for win_layout in windows {
+        if is_legacy_chart_entry(&win_layout) {
+            continue;
+        }
         let found = panels.iter_mut().find(|(kind, id, ..)| {
             if **kind != win_layout.kind {
                 return false;
@@ -1172,5 +1197,27 @@ mod tests {
         assert_eq!(scenario.unwrap()["instrument"], "7203.TSE");
 
         std::fs::remove_file(&json_path).ok();
+    }
+
+    #[test]
+    fn legacy_chart_window_layout_is_skipped() {
+        let chart = WindowLayout {
+            kind: PanelKind::Chart,
+            visible: true,
+            position: [10.0, 20.0],
+            size: [400.0, 300.0],
+            z: 1.0,
+            region_key: None,
+        };
+        let orders = WindowLayout {
+            kind: PanelKind::Orders,
+            visible: true,
+            position: [0.0, 0.0],
+            size: [200.0, 150.0],
+            z: 1.0,
+            region_key: None,
+        };
+        assert!(is_legacy_chart_entry(&chart), "Chart entry must be skipped");
+        assert!(!is_legacy_chart_entry(&orders), "non-Chart entries must pass through");
     }
 }

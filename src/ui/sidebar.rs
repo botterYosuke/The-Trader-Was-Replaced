@@ -59,7 +59,6 @@ pub fn spawn_sidebar(mut commands: Commands) {
             spawn_section_header(parent, "Panels");
 
             for kind in [
-                PanelKind::Chart,
                 PanelKind::StrategyEditor,
                 PanelKind::BuyingPower,
                 PanelKind::RunResult,

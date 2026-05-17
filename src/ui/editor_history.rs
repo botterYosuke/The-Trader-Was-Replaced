@@ -520,7 +520,7 @@ mod tests {
 
         let text_edit = make_text_edit("a", "ab");
         let move_edit = AppEdit::WindowMove(WindowMoveEdit {
-            kind: PanelKind::Chart,
+            kind: PanelKind::Orders,
             region_key: None,
             before: Vec2::ZERO,
             after: Vec2::new(100.0, 0.0),
@@ -541,7 +541,7 @@ mod tests {
     fn test_window_move_undo() {
         let mut pending = PendingAppEdits::default();
         let mut edit = AppEdit::WindowMove(WindowMoveEdit {
-            kind: PanelKind::Chart,
+            kind: PanelKind::Orders,
             region_key: None,
             before: Vec2::new(10.0, 20.0),
             after: Vec2::new(100.0, 200.0),
@@ -550,7 +550,7 @@ mod tests {
         edit.edit(&mut pending);
         match &pending.queue[0] {
             AppEditAction::MoveWindow { kind: k, position: p, .. } => {
-                assert_eq!(*k, PanelKind::Chart);
+                assert_eq!(*k, PanelKind::Orders);
                 assert_eq!(*p, Vec2::new(100.0, 200.0));
             }
             _ => panic!("expected MoveWindow(after)"),
@@ -560,7 +560,7 @@ mod tests {
         edit.undo(&mut pending);
         match &pending.queue[0] {
             AppEditAction::MoveWindow { kind: k, position: p, .. } => {
-                assert_eq!(*k, PanelKind::Chart);
+                assert_eq!(*k, PanelKind::Orders);
                 assert_eq!(*p, Vec2::new(10.0, 20.0));
             }
             _ => panic!("expected MoveWindow(before)"),
@@ -584,14 +584,14 @@ mod tests {
     fn test_window_spawn_undo_despawns() {
         let mut pending = PendingAppEdits::default();
         let mut edit = AppEdit::WindowSpawn(WindowSpawnEdit {
-            kind: PanelKind::Chart,
-            layout: dummy_layout(PanelKind::Chart),
+            kind: PanelKind::Orders,
+            layout: dummy_layout(PanelKind::Orders),
         });
 
         edit.undo(&mut pending);
         assert_eq!(pending.queue.len(), 1);
         match &pending.queue[0] {
-            AppEditAction::DespawnWindow { kind, .. } => assert_eq!(*kind, PanelKind::Chart),
+            AppEditAction::DespawnWindow { kind, .. } => assert_eq!(*kind, PanelKind::Orders),
             _ => panic!("expected DespawnWindow"),
         }
     }

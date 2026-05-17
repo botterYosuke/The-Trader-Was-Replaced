@@ -11,7 +11,6 @@ use crate::ui::orders::spawn_orders_panel;
 use crate::ui::positions::spawn_positions_panel;
 use crate::ui::run_result_panel::spawn_run_result_panel;
 use crate::ui::strategy_editor::spawn_strategy_editor_panel;
-use crate::ui::window::spawn_chart_panel;
 use bevy::prelude::*;
 use bevy_cosmic_edit::prelude::CosmicFontSystem;
 
@@ -293,7 +292,9 @@ pub fn panel_spawn_dispatcher_system(
             PanelKind::RunResult => spawn_run_result_panel(&mut commands),
             PanelKind::Positions => spawn_positions_panel(&mut commands),
             PanelKind::Orders => spawn_orders_panel(&mut commands),
-            PanelKind::Chart => spawn_chart_panel(&mut commands),
+            PanelKind::Chart => {
+                warn!("PanelKind::Chart spawn requested but Chart is deprecated; ignored");
+            }
             PanelKind::StrategyEditor => {
                 let spec = event.strategy_spec.clone().unwrap_or_else(|| {
                     let key = allocator.allocate();

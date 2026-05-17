@@ -1,6 +1,6 @@
 use crate::ui::button::spawn_button;
 use crate::ui::chart::ChartViewState;
-use crate::ui::components::{PanelKind, PriceDisplay, TradeButton};
+use crate::ui::components::{ChartInstrument, PanelKind, PriceDisplay, TradeButton};
 use crate::ui::floating_window::{FloatingWindowSpec, spawn_floating_window};
 use bevy::prelude::*;
 
@@ -8,18 +8,21 @@ const PANEL_SIZE: Vec2 = Vec2::new(400.0, 500.0);
 const PANEL_POSITION: Vec2 = Vec2::new(200.0, 0.0);
 const ACCENT: Color = Color::srgba(0.0, 0.8, 1.0, 0.4);
 
-pub fn spawn_chart_panel(commands: &mut Commands) {
+pub fn spawn_chart_panel(commands: &mut Commands, instrument_id: &str) {
     // 枠は共通ヘルパーに任せる
     let (root, content_area, _title_bar) = spawn_floating_window(
         commands,
         FloatingWindowSpec {
-            title: "CHART".to_string(),
+            title: format!("CHART — {}", instrument_id),
             size: PANEL_SIZE,
             position: PANEL_POSITION,
             accent: ACCENT,
         },
     );
     commands.entity(root).insert(PanelKind::Chart);
+    commands.entity(root).insert(ChartInstrument {
+        instrument_id: instrument_id.to_string(),
+    });
 
     // ─── ここから下は中身（content_area の子として配置） ───
 
@@ -69,4 +72,25 @@ pub fn spawn_chart_panel(commands: &mut Commands) {
     commands.entity(content_area).add_child(chart);
     commands.entity(content_area).add_child(buy_button);
     commands.entity(content_area).add_child(sell_button);
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::ui::components::{ChartInstrument, WindowRoot};
+
+    #[test]
+    fn spawn_chart_panel_attaches_chart_instrument_to_root() {
+        let mut app = App::new();
+        app.add_systems(Startup, |mut commands: Commands| {
+            spawn_chart_panel(&mut commands, "1301.TSE");
+        });
+        app.update();
+
+        let world = app.world_mut();
+        let mut q = world.query_filtered::<&ChartInstrument, With<WindowRoot>>();
+        let found: Vec<&ChartInstrument> = q.iter(world).collect();
+        assert_eq!(found.len(), 1, "expected exactly 1 ChartInstrument on a WindowRoot");
+        assert_eq!(found[0].instrument_id, "1301.TSE");
+    }
 }

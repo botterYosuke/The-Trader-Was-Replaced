@@ -18,7 +18,7 @@ pub mod window;
 
 pub use components::{
     ChartInstrument, InstrumentRegistry, ScenarioFileWatchState, ScenarioInstrumentsWritebackState,
-    ScenarioLoadedFromFile,
+    ScenarioLoadedFromFile, ScenarioWritebackPaths,
 };
 
 use crate::ui::buying_power::buying_power_panel_system;
@@ -45,7 +45,10 @@ use crate::ui::menu_bar::{
 use crate::ui::orders::orders_panel_system;
 use crate::ui::positions::positions_panel_system;
 use crate::ui::run_result_panel::run_result_panel_system;
-use crate::ui::components::sync_registry_from_scenario_loaded_system;
+use crate::ui::components::{
+    mark_registry_dirty_system, sync_registry_from_scenario_loaded_system,
+    writeback_scenario_instruments_system,
+};
 use crate::ui::scenario_parser::parse_scenario_system;
 use crate::ui::sidebar::{panel_button_system, spawn_sidebar, update_sidebar_system};
 use crate::ui::strategy_editor::{
@@ -88,6 +91,9 @@ impl Plugin for UiPlugin {
         .init_resource::<InstrumentRegistry>()
         .init_resource::<ScenarioFileWatchState>()
         .init_resource::<ScenarioInstrumentsWritebackState>()
+        .insert_resource(ScenarioWritebackPaths {
+            cache_sidecar: crate::ui::menu_bar::cache_state_paths().map(|(json, _)| json),
+        })
         .add_event::<ScenarioLoadedFromFile>()
         .add_systems(
             Startup,
@@ -117,7 +123,12 @@ impl Plugin for UiPlugin {
                 run_result_panel_system,
                 log_strategy_run_requested_system,
                 handle_strategy_run_system,
-                (parse_scenario_system, sync_registry_from_scenario_loaded_system).chain(),
+                (
+                    parse_scenario_system,
+                    sync_registry_from_scenario_loaded_system,
+                    mark_registry_dirty_system,
+                )
+                    .chain(),
                 update_sidebar_system,
                 panel_button_system,
                 panel_spawn_dispatcher_system,
@@ -148,6 +159,7 @@ impl Plugin for UiPlugin {
                     .after(apply_strategy_snapshot_restore_system),
                 debounced_strategy_autosave_system,
                 update_strategy_editor_zoom_system,
+                writeback_scenario_instruments_system,
             ),
         )
         .add_systems(
