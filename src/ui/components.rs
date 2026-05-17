@@ -1427,4 +1427,286 @@ mod writeback_scenario_instruments_tests {
             other => panic!("expected RunStrategy, got {:?}", other),
         }
     }
+
+    /// 計画書 §5.2 E2E-1: StrategyFileLoadRequested(scenario-only sidecar) を投げると、
+    /// parse_scenario_system → ScenarioLoadedFromFile → sync_registry_from_scenario_loaded_system
+    /// → instrument_chart_sync_system まで通り、InstrumentRegistry.ids と Chart entity 2 つが揃う。
+    #[test]
+    fn test_e2e_open_to_chart_spawn() {
+        use crate::ui::components::{
+            ChartInstrument, InstrumentRegistry, PendingStrategyFragments, RegionKeyAllocator,
+            ScenarioFileWatchState, ScenarioInstrumentsWritebackState, ScenarioLoadedFromFile,
+            ScenarioMetadata, StrategyFileLoadRequested, StrategyLoadMode, WindowRoot,
+            sync_registry_from_scenario_loaded_system,
+        };
+        use crate::ui::layout_persistence::LayoutLoadRequested;
+        use crate::ui::menu_bar::handle_strategy_file_load_system;
+        use crate::ui::scenario_parser::parse_scenario_system;
+        use crate::ui::window::instrument_chart_sync_system;
+
+        let dir = tempfile::tempdir().unwrap();
+        let py_path = dir.path().join("pair_trade_minute.py");
+        let json_path = dir.path().join("pair_trade_minute.json");
+        std::fs::write(&py_path, "# dummy\n").unwrap();
+        std::fs::write(
+            &json_path,
+            r#"{"scenario": {"schema_version": 2, "instruments": ["1301.TSE", "7203.TSE"], "start": "2025-01-06", "end": "2025-01-10", "granularity": "Minute", "initial_cash": 1000000}}"#,
+        ).unwrap();
+
+        let mut app = App::new();
+        app.insert_resource(StrategyBuffer {
+            original_path: None,
+            cache_path: None,
+            last_merged_source: None,
+        });
+        app.init_resource::<InstrumentRegistry>();
+        app.init_resource::<ScenarioMetadata>();
+        app.init_resource::<ScenarioFileWatchState>();
+        app.init_resource::<RegionKeyAllocator>();
+        app.init_resource::<PendingStrategyFragments>();
+        app.init_resource::<ScenarioInstrumentsWritebackState>();
+        app.add_event::<StrategyFileLoadRequested>();
+        app.add_event::<ScenarioLoadedFromFile>();
+        app.add_event::<LayoutLoadRequested>();
+        app.add_event::<PanelSpawnRequested>();
+
+        app.add_systems(
+            Update,
+            (
+                handle_strategy_file_load_system,
+                parse_scenario_system,
+                sync_registry_from_scenario_loaded_system,
+                instrument_chart_sync_system,
+            ).chain(),
+        );
+
+        app.world_mut().send_event(StrategyFileLoadRequested {
+            path: py_path.clone(),
+            mode: StrategyLoadMode::UserOpen,
+        });
+        app.update();
+
+        let reg = app.world().resource::<InstrumentRegistry>();
+        assert_eq!(reg.ids, vec!["1301.TSE".to_string(), "7203.TSE".to_string()]);
+
+        let world = app.world_mut();
+        let mut q = world.query_filtered::<&ChartInstrument, With<WindowRoot>>();
+        let mut ids: Vec<String> = q.iter(world).map(|c| c.instrument_id.clone()).collect();
+        ids.sort();
+        assert_eq!(ids, vec!["1301.TSE".to_string(), "7203.TSE".to_string()]);
+    }
+
+    /// 計画書 §5.2 E2E-2: open 後に registry から 1 件 close（直接 mutate）すると、
+    /// mark_registry_dirty_system → writeback_scenario_instruments_system が走り、
+    /// Chart entity の despawn と両 sidecar JSON の `scenario.instruments` 更新が連動する。
+    /// close observer 配送経路は本 test の範囲外で、registry の mutate で代替する。
+    #[test]
+    fn test_e2e_close_writeback() {
+        use crate::ui::components::{
+            ChartInstrument, InstrumentRegistry, PendingStrategyFragments, RegionKeyAllocator,
+            ScenarioFileWatchState, ScenarioInstrumentsWritebackState, ScenarioLoadedFromFile,
+            ScenarioMetadata, ScenarioWritebackPaths, StrategyFileLoadRequested, StrategyLoadMode,
+            WindowRoot, mark_registry_dirty_system, sync_registry_from_scenario_loaded_system,
+            writeback_scenario_instruments_system,
+        };
+        use crate::ui::layout_persistence::LayoutLoadRequested;
+        use crate::ui::menu_bar::handle_strategy_file_load_system;
+        use crate::ui::scenario_parser::parse_scenario_system;
+        use crate::ui::window::instrument_chart_sync_system;
+
+        let dir = tempfile::tempdir().unwrap();
+        let py_path = dir.path().join("pair_trade_minute.py");
+        let json_path = dir.path().join("pair_trade_minute.json");
+        let cache_json_path = dir.path().join("app_state.json");
+        let initial_json = r#"{"scenario": {"schema_version": 2, "instruments": ["1301.TSE", "7203.TSE"], "start": "2025-01-06", "end": "2025-01-10", "granularity": "Minute", "initial_cash": 1000000}}"#;
+        std::fs::write(&py_path, "# dummy\n").unwrap();
+        std::fs::write(&json_path, initial_json).unwrap();
+        std::fs::write(&cache_json_path, initial_json).unwrap();
+
+        let mut app = App::new();
+        app.insert_resource(StrategyBuffer {
+            original_path: None,
+            cache_path: None,
+            last_merged_source: None,
+        });
+        app.insert_resource(ScenarioWritebackPaths {
+            cache_sidecar: Some(cache_json_path.clone()),
+        });
+        app.init_resource::<InstrumentRegistry>();
+        app.init_resource::<ScenarioMetadata>();
+        app.init_resource::<ScenarioFileWatchState>();
+        app.init_resource::<RegionKeyAllocator>();
+        app.init_resource::<PendingStrategyFragments>();
+        app.init_resource::<ScenarioInstrumentsWritebackState>();
+        app.add_event::<StrategyFileLoadRequested>();
+        app.add_event::<ScenarioLoadedFromFile>();
+        app.add_event::<LayoutLoadRequested>();
+        app.add_event::<PanelSpawnRequested>();
+
+        app.add_systems(
+            Update,
+            (
+                handle_strategy_file_load_system,
+                parse_scenario_system,
+                sync_registry_from_scenario_loaded_system,
+                instrument_chart_sync_system,
+                mark_registry_dirty_system,
+                writeback_scenario_instruments_system,
+            ).chain(),
+        );
+
+        app.world_mut().send_event(StrategyFileLoadRequested {
+            path: py_path.clone(),
+            mode: StrategyLoadMode::UserOpen,
+        });
+        app.update();
+
+        let reg = app.world().resource::<InstrumentRegistry>();
+        assert_eq!(reg.ids, vec!["1301.TSE".to_string(), "7203.TSE".to_string()]);
+        {
+            let world = app.world_mut();
+            let mut q = world.query_filtered::<&ChartInstrument, With<WindowRoot>>();
+            assert_eq!(q.iter(world).count(), 2, "1 tick 目で Chart 2 件");
+        }
+
+        // close 相当: registry から 7203.TSE を除去
+        {
+            let mut reg = app.world_mut().resource_mut::<InstrumentRegistry>();
+            reg.ids.retain(|id| id != "7203.TSE");
+        }
+        app.update();
+
+        let reg = app.world().resource::<InstrumentRegistry>();
+        assert_eq!(reg.ids, vec!["1301.TSE".to_string()]);
+
+        let world = app.world_mut();
+        let mut q = world.query_filtered::<&ChartInstrument, With<WindowRoot>>();
+        let ids: Vec<String> = q.iter(world).map(|c| c.instrument_id.clone()).collect();
+        assert_eq!(ids, vec!["1301.TSE".to_string()], "Chart 1 件で 1301.TSE のみ");
+
+        for path in [&json_path, &cache_json_path] {
+            let body = std::fs::read_to_string(path).unwrap();
+            let v: serde_json::Value = serde_json::from_str(&body).unwrap();
+            let instruments = v["scenario"]["instruments"].as_array().unwrap();
+            let got: Vec<String> = instruments.iter().map(|x| x.as_str().unwrap().to_string()).collect();
+            assert_eq!(got, vec!["1301.TSE".to_string()], "{:?} の instruments が縮んでいる", path);
+        }
+    }
+
+    /// 計画書 §5.2 E2E-3: open → close mutate → StrategyRunRequested まで一気通貫で、
+    /// `handle_strategy_run_system` の inline flush が走り、TransportCommand::RunStrategy が
+    /// 新 instruments を反映した sidecar を伴って送出される。
+    #[test]
+    fn test_e2e_close_and_run_uses_new_instruments() {
+        use crate::trading::{TransportCommand, TransportCommandSender};
+        use crate::ui::components::{
+            ChartInstrument, InstrumentRegistry, PendingStrategyFragments, RegionKeyAllocator,
+            ScenarioFileWatchState, ScenarioInstrumentsWritebackState, ScenarioLoadedFromFile,
+            ScenarioMetadata, ScenarioWritebackPaths, StrategyFileLoadRequested, StrategyLoadMode,
+            StrategyRunRequested, WindowRoot, mark_registry_dirty_system,
+            sync_registry_from_scenario_loaded_system, writeback_scenario_instruments_system,
+        };
+        use crate::ui::layout_persistence::LayoutLoadRequested;
+        use crate::ui::menu_bar::{handle_strategy_file_load_system, handle_strategy_run_system};
+        use crate::ui::scenario_parser::parse_scenario_system;
+        use crate::ui::window::instrument_chart_sync_system;
+
+        let dir = tempfile::tempdir().unwrap();
+        let py_path = dir.path().join("pair_trade_minute.py");
+        let json_path = dir.path().join("pair_trade_minute.json");
+        let cache_json_path = dir.path().join("app_state.json");
+        let initial_json = r#"{"scenario": {"schema_version": 2, "instruments": ["1301.TSE", "7203.TSE"], "start": "2025-01-06", "end": "2025-01-10", "granularity": "Minute", "initial_cash": 1000000}}"#;
+        std::fs::write(&py_path, "# dummy\n").unwrap();
+        std::fs::write(&json_path, initial_json).unwrap();
+        std::fs::write(&cache_json_path, initial_json).unwrap();
+
+        let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel::<TransportCommand>();
+
+        let mut app = App::new();
+        app.insert_resource(StrategyBuffer {
+            original_path: None,
+            cache_path: None,
+            last_merged_source: None,
+        });
+        app.insert_resource(ScenarioWritebackPaths {
+            cache_sidecar: Some(cache_json_path.clone()),
+        });
+        app.insert_resource(TransportCommandSender { tx });
+        app.init_resource::<InstrumentRegistry>();
+        app.init_resource::<ScenarioMetadata>();
+        app.init_resource::<ScenarioFileWatchState>();
+        app.init_resource::<RegionKeyAllocator>();
+        app.init_resource::<PendingStrategyFragments>();
+        app.init_resource::<ScenarioInstrumentsWritebackState>();
+        app.add_event::<StrategyFileLoadRequested>();
+        app.add_event::<StrategyRunRequested>();
+        app.add_event::<ScenarioLoadedFromFile>();
+        app.add_event::<LayoutLoadRequested>();
+        app.add_event::<PanelSpawnRequested>();
+
+        app.add_systems(
+            Update,
+            (
+                handle_strategy_file_load_system,
+                parse_scenario_system,
+                sync_registry_from_scenario_loaded_system,
+                instrument_chart_sync_system,
+                mark_registry_dirty_system,
+                writeback_scenario_instruments_system,
+                handle_strategy_run_system,
+            ).chain(),
+        );
+
+        app.world_mut().send_event(StrategyFileLoadRequested {
+            path: py_path.clone(),
+            mode: StrategyLoadMode::UserOpen,
+        });
+        app.update();
+
+        let reg = app.world().resource::<InstrumentRegistry>();
+        assert_eq!(reg.ids, vec!["1301.TSE".to_string(), "7203.TSE".to_string()]);
+        {
+            let world = app.world_mut();
+            let mut q = world.query_filtered::<&ChartInstrument, With<WindowRoot>>();
+            assert_eq!(q.iter(world).count(), 2, "1 tick 目で Chart 2 件");
+        }
+
+        // close 相当: registry から 7203.TSE を除去 + Run 発火
+        {
+            let mut reg = app.world_mut().resource_mut::<InstrumentRegistry>();
+            reg.ids.retain(|id| id != "7203.TSE");
+        }
+        app.world_mut().send_event(StrategyRunRequested {
+            cache_path: py_path.clone(),
+        });
+        app.update();
+
+        let reg = app.world().resource::<InstrumentRegistry>();
+        assert_eq!(reg.ids, vec!["1301.TSE".to_string()]);
+
+        let cmd = rx.try_recv().expect("RunStrategy must be sent after close+run");
+        match cmd {
+            TransportCommand::RunStrategy { strategy_file, .. } => {
+                assert_eq!(strategy_file, py_path);
+            }
+            other => panic!("expected RunStrategy, got {:?}", other),
+        }
+
+        for path in [&json_path, &cache_json_path] {
+            let body = std::fs::read_to_string(path).unwrap();
+            let v: serde_json::Value = serde_json::from_str(&body).unwrap();
+            let instruments = v["scenario"]["instruments"].as_array().unwrap();
+            let got: Vec<String> = instruments.iter().map(|x| x.as_str().unwrap().to_string()).collect();
+            assert_eq!(got, vec!["1301.TSE".to_string()], "{:?} の instruments が新 registry を反映", path);
+        }
+    }
+
+    #[test]
+    #[ignore = "Phase 7.5a R1: Save As 経路の writeback.revision 強制 inc が Step 3 未実装。\
+                handle_strategy_file_load_system 等で buffer.original_path が None→Some に\
+                遷移した tick に writeback.revision += 1 する小修正が入ってから外す。"]
+    fn test_e2e_save_as_after_unsaved_add() {
+        // R1 修正後に本実装
+        todo!("Phase 7.5a R1 修正後に本実装");
+    }
 }
