@@ -931,3 +931,24 @@ if progress.visible
 
 - 既存の Footer Run / Pause / Resume / ForceStop の挙動を壊さない。
 - `cargo test` の関連 UI / run-flow tests が通る。
+
+## Implementation Notes
+
+### 配置変更: `ReplayStartupProgress` 関連型は `src/replay/startup_progress.rs` へ (2026-05-18)
+
+§Data Model および §Files to Change では `src/ui/components.rs` に `ReplayStartupProgress` / `ReplayStartupPhase` / 4 marker components を追加する設計だったが、実装時に **新規モジュール `src/replay/startup_progress.rs` + `src/replay/mod.rs`** へ配置することに変更した（Human 承認、Step C）。
+
+- `src/lib.rs` に `pub mod replay;` を 1 行追加。
+- 公開 API: `crate::replay::{ReplayStartupProgress, ReplayStartupPhase, ReplayStartupWindow, ReplayStartupStageLabel, ReplayStartupBarFill, ReplayStartupCloseButton}`。
+- 型・field・variant・marker 名は §Data Model 原文と完全一致（`ReplayStartupPhase` は `Failed` を含まない、`error.is_some()` で失敗表現）。
+
+**Why**: `src/ui/components.rs` が 2736 行に達しており、replay startup 専用の transient overlay 状態を分離した方が責務が明確になる。`src/ui/components.rs` への集中はモジュール肥大化を加速するため。
+
+**How to apply**: 後続 Step（G の replay_startup_window.rs / I の scenario_startup_panel.rs）からも `use crate::replay::*` で参照する。Step H で追加予定の `ScenarioStartupParams` / `GranularityChoice` の配置先は別途判断（計画書原文どおり `src/ui/components.rs` か、`src/replay/scenario_params.rs` 等の新規 module か）。
+
+§Files to Change の `src/ui/components.rs` 行はこの変更により以下に読み替える:
+
+- `src/ui/components.rs` → `ReplayStartupProgress` / `ReplayStartupPhase` / replay marker components は **配置しない**。`ScenarioStartupParams` / `GranularityChoice` は Step H で別途判断。
+- `src/replay/startup_progress.rs` (new) → `ReplayStartupProgress` / `ReplayStartupPhase` / 4 marker components
+- `src/replay/mod.rs` (new) → 上記の re-export
+- `src/lib.rs` → `pub mod replay;` 追加
