@@ -215,6 +215,11 @@ cargo test --test backend_integration
 | candle が出ない | `KlineUpdate` に `open_time_ms` が無い | `python/engine/core.py` を確認 |
 | port 19876 が掴めない | 前回の backend がゾンビ | §2.1 で kill |
 | `python -m engine.server_grpc` でエラー | `__main__` 不在 | `python -m engine` を使う |
+| backcast 再起動後に "No instruments" + 警告「This sidecar uses 'instruments_ref'」が出るが、cache JSON に `instruments_ref` が無い | `InstrumentRegistry::default()` が `editable=false`。cache restore は `ScenarioLoadedFromFile` event を発火しないので registry が default に張り付き、warning が誤発火（Phase 7.5a Issue B） | 手動で `File → Load... → <strategy>.py` 再 Load で state 再確立。**Phase 7.5c で fix 予定** |
+| File→Load で cache `app_state.json` の windows / strategy_path / 追加した instruments が消える | `sync_to_cache → copy_sidecar_to_cache` が cache_sidecar を**無条件削除**し、original sidecar の bare 内容で上書き（Phase 7.5a Issue A、`menu_bar.rs:642-669`） | 仕様としては「Load は fresh start」だが、検証中に状態が縮退する。**Phase 7.5c で fix 予定** |
+| picker `[+ Add]` で "Loading..." 永久ループ（backend dead 時） | transport task が connect retry loop 中、queued FetchAvailableInstruments を処理しない。preflight 無いと `in_flight` 残る | **修正済み**（Phase 7.5b §5.4 項目 7、`add_instrument_button_system` に `BackendStatus` preflight）。`Error: backend not connected` が picker に出れば OK |
+| picker close → 再 open で list がブランク | `picker_list_rebuild_system` が cache hit 経路で `is_changed()` 反応せず、新 container が空のまま | **修正済み**（Phase 7.5b §5.4 項目 5-a、`Added<InstrumentPickerListContainer>` を trigger に追加） |
+| catalog に instrument データ無く `ListAllListedSymbols` が 1 件しか返さない | `artifacts/jquants-catalog/data/bar/` 配下が少銘柄のみ | `scripts/build_catalog_batch.py` を `BASE_DIR=S:\j-quants` / `UNIVERSE_JSONS=C:\Users\sasai\Documents\🐃_blacksheep\data\universe\v05_B_top100_*.json` で実行 → 302 銘柄分 build。**`CATALOG` 定数は環境別 absolute path なので注意** |
 
 ---
 

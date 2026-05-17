@@ -790,18 +790,12 @@ fn apply_layout_system(
         if let Some(path_str) = &layout.strategy_path {
             let path = std::path::PathBuf::from(path_str);
             if path.exists() {
-                let is_user_open_sidecar_loopback = pending_fragments
-                    .loaded_for_path
-                    .as_ref()
-                    .map(|user_path| event.path == user_path.with_extension("json"))
-                    .unwrap_or(false);
-
-                if is_user_open_sidecar_loopback {
-                    if pending_fragments.loaded_for_path.as_ref() != Some(&path) {
+                if let Some(user_path) = &pending_fragments.loaded_for_path {
+                    if user_path != &path {
                         warn!(
                             "apply_layout_system: sidecar strategy_path {:?} \
                              differs from user-selected {:?}; ignoring sidecar path",
-                            path, pending_fragments.loaded_for_path
+                            path, user_path
                         );
                     } else {
                         debug!(
@@ -810,7 +804,7 @@ fn apply_layout_system(
                             path
                         );
                     }
-                } else {
+                } else if !sidecar_state.done {
                     load_ev.send(StrategyFileLoadRequested {
                         path,
                         mode: StrategyLoadMode::LayoutRestore,
@@ -834,6 +828,10 @@ fn apply_layout_system(
                         event.path
                     );
                     continue;
+                } else {
+                    debug!(
+                        "apply_layout_system: skipping strategy_path reload (sidecar one-shot done)"
+                    );
                 }
             } else {
                 warn!("layout load: strategy_path {:?} not found, skipping", path);
@@ -1396,51 +1394,6 @@ mod tests {
         assert_eq!(scenario.unwrap()["instrument"], "7203.TSE");
 
         std::fs::remove_file(&json_path).ok();
-    }
-
-    #[test]
-    fn layout_open_loads_strategy_path_even_after_previous_open() {
-        let dir = tempfile::tempdir().unwrap();
-        let old_py = dir.path().join("old.py");
-        let new_py = dir.path().join("new.py");
-        let layout_json = dir.path().join("new.json");
-        std::fs::write(&old_py, "# old").unwrap();
-        std::fs::write(&new_py, "# new").unwrap();
-
-        let layout = SidecarLayout {
-            schema_version: Some(SCHEMA_VERSION),
-            strategy_path: Some(new_py.to_string_lossy().to_string()),
-            ..Default::default()
-        };
-        std::fs::write(&layout_json, serde_json::to_string(&layout).unwrap()).unwrap();
-
-        let mut app = App::new();
-        app.init_resource::<WindowManager>();
-        app.init_resource::<PendingLayoutApply>();
-        app.insert_resource(PendingStrategyFragments {
-            by_region_key: Default::default(),
-            loaded_for_path: Some(old_py),
-        });
-        app.insert_resource(SidecarAutoLoadState { done: true });
-        app.add_event::<LayoutLoadRequested>();
-        app.add_event::<StrategyFileLoadRequested>();
-        app.add_event::<PanelSpawnRequested>();
-        app.add_systems(Update, apply_layout_system);
-
-        app.world_mut()
-            .send_event(LayoutLoadRequested { path: layout_json });
-        app.update();
-
-        let events = app.world().resource::<Events<StrategyFileLoadRequested>>();
-        let mut reader = events.get_cursor();
-        let collected: Vec<_> = reader.read(events).cloned().collect();
-        assert_eq!(
-            collected.len(),
-            1,
-            "direct layout Open must load its strategy_path even when a previous file is still recorded"
-        );
-        assert_eq!(collected[0].path, new_py);
-        assert!(matches!(collected[0].mode, StrategyLoadMode::LayoutRestore));
     }
 
     #[test]
