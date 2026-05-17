@@ -6,7 +6,7 @@ Footer の Run ボタン押下後、Python backend が実際に replay を開始
 
 本計画で実現する変更は次の通り。
 
-- **Replay startup progress window**: `Starting replay` window を追加し、`Preparing strategy cache...` / `Resetting previous replay...` / `Loading replay data...` / `Starting Python strategy...` / `Waiting for first replay tick...` を段階表示する。実進捗率は backend から得られないため、indeterminate progress bar を使う。
+- **Replay startup progress window**: `Starting replay` window を追加し、`Starting replay command...` / `Resetting previous replay...` / `Loading replay data...` / `Starting Python strategy...` / `Waiting for first replay tick...` を段階表示する。実進捗率は backend から得られないため、indeterminate progress bar を使う。
 - **startup 専用 UI state**: `ReplayStartupProgress` resource、`ReplayStartupPhase` enum、window marker components を追加し、visible / phase / detail / error / timeout / baseline timestamp / first-tick gate を管理する。
 - **Run status correlation**: `TransportCommand::RunStrategy` と `BackendStatusUpdate` に UI transport 内の `startup_id` を通し、前回 Run、旧 replay、古い tokio task の status update が新しい window に混ざらないようにする。
 - **backend startup phase events**: `BackendStartupStage` と `BackendStatusUpdate::ReplayStartup { startup_id, stage }` を追加し、`ForceStopReplay` / `LoadReplayData` / `StartEngine` / `WaitingForFirstTick` の段階を UI に伝える。
@@ -33,7 +33,9 @@ Medium 以上のレビュー指摘は本版で解消済み。
 - **Resolved / Medium**: timeout 設計で `Time<Real>` を使う方針と test plan の `Time<Virtual>` が矛盾していたため、`Time<Real>` に統一。
 - **Resolved / Medium**: Scenario Startup Panel の入力 UI ライブラリ未指定だった点を解消。既存 strategy_editor と同じ `bevy_cosmic_edit` を採用し、DPI トラップ([cosmic-edit-buffer-metrics-dpi-trap](memory))を踏まないよう CosmicEditBuffer メトリクスは `1.0` 倍で持ち CosmicEditor 側でのみ scale するパターンを再利用する(§Phase 7.6b / Input UI library)。
 - **Resolved / Medium**: `GranularityChoice` ↔ string canonical form を `"Daily"` / `"Minute"` に固定し、`ScenarioMetadata.granularity` / cache sidecar JSON / `StrategyRunConfig.granularity` の三者を同一表記で揃えた(§Phase 7.6b / Granularity canonical form)。
-- **Resolved / Medium**: 新 `write_startup_params_to_cache_sidecar` と既存 `writeback_scenario_instruments_system` が同一 `cache_sidecar` を read-modify-write する race を排除。新 writeback は scenario.instruments writeback と同じ `ScenarioInstrumentsWritebackState` revision フェンス下で動かし、system ordering で chain する(§Phase 7.6b / Coexistence with scenario.instruments writeback)。
+- **Resolved / Medium**: 新 `write_startup_params_to_cache_sidecar` と既存 `writeback_scenario_instruments_system` が同一 `cache_sidecar` を read-modify-write する race を排除。startup params 側は独立の `writeback_pending` flag で管理し、`writeback_scenario_instruments_system` の後に最新 JSON を読み直してから scenario 配下 4 field だけを書き換える(§Phase 7.6b / Coexistence with scenario.instruments writeback)。
+- **Resolved / Medium**: `TransportCommand::RunStrategy` 送信成功後に初めて window を表示する方針と `Preparing strategy cache...` 初期 phase が矛盾していたため、UI-only 初期 phase を `CommandAccepted` / `Starting replay command...` に変更した。
+- **Resolved / Medium**: `ScenarioStartupParams.dirty` が「編集中」と「cache writeback 待ち」を兼ねていたため、`dirty` は UI 編集中の保護だけに限定し、commit 成功時は `writeback_pending = true` を立てる設計に分離した。
 - **Resolved / Medium**: `progress.visible` 中の panel disabled enforcement を明文化。視覚的 disabled に加え、input system が `progress.visible == true` の間は commit 自体を skip する。
 - **Resolved / Medium**: `scenario_startup_param_input_system` と `parse_scenario_system` の ordering を `.after(parse_scenario_system).before(handle_strategy_run_system)` に統一し、reload と commit の同一 frame 衝突を排除した。
 - **Resolved / Medium**: cache JSON writeback の round-trip(`commit -> rewrite -> parse_scenario_system -> ScenarioStartupParams 復元`) を Test Plan #10b に追加した。
@@ -136,7 +138,7 @@ Run ボタンを押して、cache flush と scenario validation が通り、`Tra
 - 内容:
   - title: `Starting replay`
   - stage label:
-    - `Preparing strategy cache...`
+    - `Starting replay command...`
     - `Resetting previous replay...`
     - `Loading replay data...`
     - `Starting Python strategy...`
@@ -190,7 +192,7 @@ pub struct ReplayStartupProgress {
 pub enum ReplayStartupPhase {
     #[default]
     Idle,
-    PreparingCache,
+    CommandAccepted,
     ResettingReplay,
     LoadingData,
     StartingStrategy,
@@ -198,7 +200,7 @@ pub enum ReplayStartupPhase {
 }
 ```
 
-`Idle` は `visible == false` 時のみ取り得る。`visible == true` の間は必ず他の variant のいずれかである。failure 中も最後の phase を保持し、`error.is_some()` で失敗状態を判定する。
+`Idle` は `visible == false` 時のみ取り得る。`visible == true` の間は必ず他の variant のいずれかである。`CommandAccepted` は UI 側だけの初期 phase で、`TransportCommand::RunStrategy` 送信成功後から backend の最初の `ReplayStartup` status を受けるまでの短い待機状態を表す。failure 中も最後の phase を保持し、`error.is_some()` で失敗状態を判定する。
 
 UI marker components:
 
@@ -261,8 +263,8 @@ Commit timing:
 
 既存 `writeback_scenario_instruments_system` も同じ `ScenarioWritebackPaths.cache_sidecar` を read-modify-write する。同一 frame で両方が発火すると、後勝ちで片方の field 更新が失われる(両 system が serde_json::Value で読み→書き戻すため)。これを防ぐために以下を守る。
 
-1. **revision fence の共有はしない**: instruments 側の `ScenarioInstrumentsWritebackState` を流用せず、scenario startup params 用に独立の dirty fence を `ScenarioStartupParams.dirty` で持つ。理由は責務分離 ── instruments の registry edit と startup param の field commit は独立に起きうるため。
-2. **system ordering で chain**: `write_startup_params_to_cache_sidecar` を `writeback_scenario_instruments_system` の `.after(...)` に置く。これで同一 frame に両方が dirty でも、instruments writeback の `flush_sidecars_now` が先に終わり、その上から startup params が atomic に上書きする。
+1. **revision fence の共有はしない**: instruments 側の `ScenarioInstrumentsWritebackState` を流用せず、scenario startup params 用に独立の pending flag を `ScenarioStartupParams.writeback_pending` で持つ。理由は責務分離 ── instruments の registry edit と startup param の field commit は独立に起きうるため。`dirty` は UI 入力中の上書き保護だけに使い、writeback 判定には使わない。
+2. **system ordering で chain**: `write_startup_params_to_cache_sidecar` を `writeback_scenario_instruments_system` の `.after(...)` に置く。これで同一 frame に両方が pending でも、instruments writeback の `flush_sidecars_now` が先に終わり、その上から startup params が atomic に上書きする。
 3. **読み直し前提**: startup param writeback は **必ず `read_json_with_bom_strip` で最新ファイルを読み直してから** scenario 配下 4 field のみ置換する(キャッシュ済み Value は使わない)。これで instruments writeback が書いた `scenario.instruments` を保持できる。
 4. **テストで明示**: Test #10c で「同一 frame に registry edit と startup param commit が両方走った場合、両方の更新が cache JSON に残る」を assert する。
 
@@ -313,7 +315,12 @@ pub struct ScenarioStartupParams {
     pub initial_cash: String,
     /// UI 側で編集中フラグ。`sync_startup_params_from_scenario_system` は
     /// `dirty == false` のときだけ ScenarioMetadata から上書きする。
+    /// cache writeback 待ちとは分ける。commit 成功時は dirty を false に戻し、
+    /// writeback_pending を true にする。
     pub dirty: bool,
+    /// validated commit があり、cache sidecar への反映がまだ終わっていないことを表す。
+    /// `write_startup_params_to_cache_sidecar` が成功したら false に戻す。
+    pub writeback_pending: bool,
     /// field-level error。各 field を独立に検証して格納する。
     /// UX 仕様「field 近くに短い error text を表示」を保つため、
     /// 単一 `Option<String>` ではなく per-field map にする。
@@ -395,9 +402,9 @@ impl GranularityChoice {
 2. UI field commit
    - validate する。
    - 失敗時は cache writeback と ScenarioMetadata 更新を skip し、`params.errors.<field> = Some(...)`(または cross-field 失敗なら `params.errors.cross_field`)。
-   - 成功時は対応する `params.errors.<field>` を `None` にクリア、`params.dirty = false` に戻す。
+   - 成功時は対応する `params.errors.<field>` を `None` にクリア、`params.dirty = false` に戻し、`params.writeback_pending = true` を立てる。
    - `ScenarioMetadata` を更新する。
-   - cache sidecar JSON を書き換える。
+   - cache sidecar JSON の書き換えは同 frame の `write_startup_params_to_cache_sidecar` に任せる。
 3. Run
    - `handle_strategy_run_system` は更新済み `ScenarioMetadata` から `StrategyRunConfig` を作る。
    - `ScenarioStartupParams.errors.any() == true` の間は Run を block し、progress window も表示しない。
@@ -413,7 +420,9 @@ impl GranularityChoice {
 - `scenario_startup_param_input_system`
   - input commit を検知し、validation する。
 - `write_startup_params_to_cache_sidecar`
-  - `ScenarioWritebackPaths.cache_sidecar` の JSON を `serde_json::Value` で読み書きする helper。
+  - `ScenarioStartupParams.writeback_pending == true` のときだけ動く。
+  - `ScenarioWritebackPaths.cache_sidecar` の JSON を `serde_json::Value` で読み直し、scenario 配下 4 field だけを書き換える。
+  - 書き込み成功時に `writeback_pending = false` へ戻す。失敗時は `writeback_pending = true` のまま残し、error log を出す。
 - `update_scenario_startup_param_ui_system`
   - form 表示、disabled 状態、error 表示を更新する。
 
@@ -446,8 +455,8 @@ write_startup_params_to_cache_sidecar
 
 1. **視覚的 disabled**: stage label / fill / input field を grey 化し、`CosmicEditor` の readonly flag を立てる(commit に進めない見た目)。
 2. **入力 commit を skip**: `scenario_startup_param_input_system` の冒頭で `if progress.visible { return; }` を行い、Enter / focus loss / dropdown 選択イベントが来ても commit せず破棄する。`dirty` フラグも触らない。
-3. **writeback も skip**: `write_startup_params_to_cache_sidecar` も同じ guard を持ち、Run startup 中に古い `dirty` flag が残っていても sidecar を上書きしない。
-4. **解除タイミング**: progress window が `visible == false` に戻った直後の frame から、編集と commit を再開する。`dirty` は Run startup 開始時点で `false`(commit 済み or 未編集) のはずなので、復帰時に意図せず古い値で writeback が走ることはない。
+3. **writeback も skip**: `write_startup_params_to_cache_sidecar` も同じ guard を持ち、Run startup 中に古い `writeback_pending` flag が残っていても sidecar を上書きしない。
+4. **解除タイミング**: progress window が `visible == false` に戻った直後の frame から、編集と commit を再開する。`writeback_pending` は通常 Run startup 開始前に flush 済みだが、残っていた場合でも解除後に最新 JSON を読み直してから 4 field だけを書き戻す。
 
 ## Event / Status Design
 
@@ -480,7 +489,7 @@ enum BackendStatusUpdate {
 }
 ```
 
-`PreparingCache` は UI 側 (`handle_strategy_run_system`) でのみ設定する phase で、backend は知らない。`status_update_system` で `BackendStartupStage -> ReplayStartupPhase` 変換を行い、**かつ `ReplayStartupProgress.visible == true && progress.startup_id == startup_id` のときだけ反映する**。visible == false 時や `startup_id` 不一致時に backend から phase が来ても無視する(古い run の名残、前回 tokio task の遅延 status、UI 起動前に backend が走っていたケースを潰す)。
+`CommandAccepted` は UI 側 (`handle_strategy_run_system`) でのみ設定する phase で、backend は知らない。`status_update_system` で `BackendStartupStage -> ReplayStartupPhase` 変換を行い、**かつ `ReplayStartupProgress.visible == true && progress.startup_id == startup_id` のときだけ反映する**。visible == false 時や `startup_id` 不一致時に backend から phase が来ても無視する(古い run の名残、前回 tokio task の遅延 status、UI 起動前に backend が走っていたケースを潰す)。
 
 `TransportCommand::RunStrategy` には `startup_id: u64` を追加する。これは backend/proto へ送らず、Rust UI transport 内だけで status update の相関に使う。
 
@@ -518,6 +527,7 @@ enum BackendStatusUpdate {
 - `auto_hide_replay_startup_window_system`
 - `sync_startup_params_from_scenario_system`
 - `scenario_startup_param_input_system`
+- `write_startup_params_to_cache_sidecar`
 - `update_scenario_startup_param_ui_system`
 
 を Update に追加する。
@@ -544,7 +554,7 @@ enum BackendStatusUpdate {
 
 ```rust
 progress.visible = true;
-progress.phase = ReplayStartupPhase::PreparingCache;
+progress.phase = ReplayStartupPhase::CommandAccepted;
 progress.detail = Some(event.cache_path.file_name()...);
 progress.error = None;
 progress.started_at_elapsed = Some(real_time.elapsed());
@@ -691,7 +701,7 @@ if progress.visible
    - `StrategyRunRequested` を送る。
    - `TransportCommand::RunStrategy { startup_id, .. }` が送られる。
    - `ReplayStartupProgress.visible == true`
-   - `phase == PreparingCache`
+   - `phase == CommandAccepted`
    - `ReplayStartupProgress.startup_id == startup_id`
    - `ReplayStartupProgress.start_engine_accepted == false`
 
@@ -724,7 +734,7 @@ if progress.visible
    - `progress.start_engine_accepted == true`
 
 4. failure during startup
-   - 事前に `progress.visible = true`(PreparingCache 設定済み)。
+   - 事前に `progress.visible = true`(`CommandAccepted` 設定済み)。
    - matching `BackendStatusUpdate::RunFailed { startup_id: Some(progress.startup_id), error }` を流す。
    - `progress.error == Some(error)`
    - `visible == true` のまま(Close 待ち)。
@@ -795,6 +805,7 @@ if progress.visible
    - cache sidecar JSON に未知 field と `scenario.instruments` を含める。
    - `start` / `end` / `granularity` / `initial_cash` を UI commit する。
    - 対象 4 field だけが更新され、未知 field、layout 情報、`scenario.instruments` が保持される。
+   - 書き込み成功後に `ScenarioStartupParams.writeback_pending == false` へ戻る。
    - 元の `<strategy>.json` は変更されない。
 
 10b. scenario params cache writeback round-trip
@@ -811,7 +822,7 @@ if progress.visible
    - `progress.visible = true` の状態で `start` / `end` / `granularity` / `initial_cash` の commit イベントを流す。
    - cache JSON が変更されない。
    - `ScenarioMetadata` が変更されない。
-   - `ScenarioStartupParams.dirty` も `error` も触られない。
+   - `ScenarioStartupParams.dirty` / `writeback_pending` / `errors` のいずれも触られない。
 
 11. scenario params validation failure
    - `start > end`、invalid date、`initial_cash <= 0` のいずれかを commit する。
