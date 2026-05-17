@@ -574,6 +574,25 @@ class GrpcDataEngineServer(
                     error_message=f"Invalid end_date '{resolved_end_date}': {exc}",
                 )
 
+        # Fast path: if the artifact already exists for the requested end_date,
+        # serve it without scanning catalog parquet metadata. The bounds-resolve
+        # scan walks every per-instrument parquet (~600 files, ~40s on cold cache)
+        # and is only needed to clamp out-of-range end_dates / detect before_oldest;
+        # any artifact on disk was written for a valid in-range end_date, so skipping
+        # the scan is safe here.
+        if end_date:
+            fast_cached = _read_artifact(resolved_end_date)
+            if fast_cached is not None:
+                logging.info(
+                    "ListAllListedSymbols: artifact hit (fast path) end_date=%s count=%d",
+                    resolved_end_date, len(fast_cached),
+                )
+                return engine_pb2.ListAllListedSymbolsResponse(
+                    success=True,
+                    instrument_ids=fast_cached,
+                    resolved_end_date=resolved_end_date,
+                )
+
         before_oldest = False
         if end_date and catalog_path:
             bounds = _resolve_date_bounds_from_catalog(catalog_path)
