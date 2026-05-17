@@ -1,6 +1,7 @@
 use backcast::trading::engine::{
     EngineState, ForceStopReplayRequest, GetPortfolioRequest, GetPortfolioResponse,
-    GetStateRequest, GetStateResponse, ListInstrumentsRequest, ListInstrumentsResponse,
+    GetStateRequest, GetStateResponse, ListAllListedSymbolsRequest, ListAllListedSymbolsResponse,
+    ListInstrumentsRequest, ListInstrumentsResponse,
     LoadReplayDataRequest, PauseReplayRequest, ReplayControlResponse, ResumeReplayRequest,
     SetReplaySpeedRequest, StartEngineRequest, StartEngineResponse, StartResponse,
     StepReplayRequest, StopEngineRequest, StopReplayRequest, StopRequest, StopResponse,
@@ -232,6 +233,22 @@ impl DataEngine for MyDataEngine {
             success: true,
             instrument_ids: vec![],
             error_message: "".to_string(),
+        }))
+    }
+
+    async fn list_all_listed_symbols(
+        &self,
+        request: Request<ListAllListedSymbolsRequest>,
+    ) -> Result<Response<ListAllListedSymbolsResponse>, Status> {
+        let request = request.into_inner();
+        if request.token != self.token {
+            return Err(Status::unauthenticated("Invalid token"));
+        }
+        Ok(Response::new(ListAllListedSymbolsResponse {
+            success: true,
+            instrument_ids: vec![],
+            error_message: String::new(),
+            resolved_end_date: request.end_date,
         }))
     }
 

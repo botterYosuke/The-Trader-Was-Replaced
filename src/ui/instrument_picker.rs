@@ -336,19 +336,7 @@ fn spawn_picker_row(
                 move |_trigger: Trigger<Pointer<Down>>,
                       mut registry: ResMut<InstrumentRegistry>,
                       mut picker: ResMut<InstrumentPickerState>| {
-                    if !registry.editable {
-                        return;
-                    }
-                    // 同一 id 100ms debounce（計画書 §3.4 / §0.4）
-                    let now = Instant::now();
-                    if let Some((prev_id, prev_t)) = &picker.last_added {
-                        if prev_id == &id_owned && now.duration_since(*prev_t) < Duration::from_millis(100) {
-                            return;
-                        }
-                    }
-                    registry.add(&id_owned);
-                    picker.last_added = Some((id_owned.clone(), now));
-                    // picker は閉じない（計画書 §3.4: 連続 add 許可、close は Esc）
+                    handle_picker_row_click(&id_owned, &mut registry, &mut picker, Instant::now());
                 },
             );
         }
@@ -364,6 +352,26 @@ fn spawn_picker_row(
             Transform::from_xyz(-150.0, 0.0, 0.01),
         ))
         .set_parent(row_entity);
+}
+
+/// Picker row click を処理する純粋ハンドラ。
+/// 同一 id 100ms debounce（計画書 §3.4 / §0.4）。picker は閉じない（連続 add 許可、close は Esc）。
+fn handle_picker_row_click(
+    id: &str,
+    registry: &mut InstrumentRegistry,
+    picker: &mut InstrumentPickerState,
+    now: Instant,
+) {
+    if !registry.editable {
+        return;
+    }
+    if let Some((prev_id, prev_t)) = &picker.last_added {
+        if prev_id == id && now.duration_since(*prev_t) < Duration::from_millis(100) {
+            return;
+        }
+    }
+    registry.add(id);
+    picker.last_added = Some((id.to_string(), now));
 }
 
 /// Picker list を再構築する。
@@ -440,5 +448,167 @@ pub fn picker_list_rebuild_system(
     for (idx, id) in filtered.iter().take(15).enumerate() {
         let already = registry.contains(id);
         spawn_picker_row(&mut commands, container, idx, id, Some(id.as_str()), already);
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use chrono::NaiveDate;
+    use crate::ui::components::{
+        InstrumentRegistry, ScenarioMetadata, SidebarAddInstrumentButton,
+    };
+    use crate::trading::AvailableInstruments;
+
+    fn make_app() -> App {
+        let mut app = App::new();
+        app.init_resource::<InstrumentPickerState>();
+        app.insert_resource(InstrumentRegistry { ids: vec![], editable: true });
+        app.insert_resource(ScenarioMetadata {
+            schema_version: None,
+            instruments: vec![],
+            start: None,
+            end: Some("2024-12-31".to_string()),
+            granularity: None,
+            initial_cash: None,
+        });
+        app.insert_resource(AvailableInstruments::default());
+        app
+    }
+
+    #[test]
+    fn test_picker_opens_on_add_button_pressed() {
+        let mut app = make_app();
+        let btn = app.world_mut().spawn((
+            SidebarAddInstrumentButton,
+            Interaction::Pressed,
+        )).id();
+        app.add_systems(Update, add_instrument_button_system);
+        app.update();
+
+        let picker = app.world().resource::<InstrumentPickerState>();
+        assert!(picker.visible, "Add button press should open picker");
+        assert_eq!(
+            picker.end_date,
+            Some(NaiveDate::from_ymd_opt(2024, 12, 31).unwrap()),
+            "end_date snapshot should be taken from ScenarioMetadata.end"
+        );
+        let _ = btn;
+    }
+
+    #[test]
+    fn test_picker_skips_open_when_registry_locked() {
+        let mut app = make_app();
+        app.insert_resource(InstrumentRegistry { ids: vec![], editable: false });
+        app.world_mut().spawn((
+            SidebarAddInstrumentButton,
+            Interaction::Pressed,
+        ));
+        app.add_systems(Update, add_instrument_button_system);
+        app.update();
+
+        let picker = app.world().resource::<InstrumentPickerState>();
+        assert!(!picker.visible, "locked registry must not open picker");
+    }
+
+    #[test]
+    fn test_picker_skips_open_during_debounce() {
+        let mut app = make_app();
+        let d = NaiveDate::from_ymd_opt(2024, 12, 31).unwrap();
+        app.world_mut().resource_mut::<AvailableInstruments>().in_flight.insert(d);
+
+        let btn = app.world_mut().spawn((
+            SidebarAddInstrumentButton,
+            Interaction::Pressed,
+        )).id();
+        app.add_systems(Update, add_instrument_button_system);
+        app.update();
+        *app.world_mut().get_mut::<Interaction>(btn).unwrap() = Interaction::None;
+        app.update();
+        *app.world_mut().get_mut::<Interaction>(btn).unwrap() = Interaction::Pressed;
+        app.update();
+
+        let av = app.world().resource::<AvailableInstruments>();
+        assert_eq!(av.in_flight.len(), 1, "in_flight must not double-register on rapid re-press");
+    }
+
+    #[test]
+    fn test_picker_force_close_on_lock() {
+        let mut app = make_app();
+        app.world_mut().resource_mut::<InstrumentPickerState>().visible = true;
+        app.world_mut().resource_mut::<InstrumentPickerState>().query = "abc".to_string();
+        app.insert_resource(InstrumentRegistry { ids: vec![], editable: false });
+
+        app.add_systems(Update, force_close_picker_on_lock_system);
+        app.update();
+
+        let picker = app.world().resource::<InstrumentPickerState>();
+        assert!(!picker.visible, "lock must force-close picker");
+        assert!(picker.query.is_empty(), "lock must clear query");
+    }
+
+    // ─── 5-a-2: handle_picker_row_click 単体テスト ──────────────────────
+
+    #[test]
+    fn test_picker_click_adds_to_registry() {
+        let mut registry = InstrumentRegistry { ids: vec![], editable: true };
+        let mut picker = InstrumentPickerState::default();
+        let now = Instant::now();
+
+        handle_picker_row_click("7203", &mut registry, &mut picker, now);
+
+        assert!(registry.contains("7203"));
+        assert_eq!(registry.ids, vec!["7203".to_string()]);
+        assert_eq!(picker.last_added, Some(("7203".to_string(), now)));
+    }
+
+    #[test]
+    fn test_picker_click_is_idempotent_for_already_added() {
+        let mut registry = InstrumentRegistry {
+            ids: vec!["7203".to_string()],
+            editable: true,
+        };
+        let mut picker = InstrumentPickerState::default();
+        let now = Instant::now();
+
+        handle_picker_row_click("7203", &mut registry, &mut picker, now);
+
+        assert_eq!(registry.ids, vec!["7203".to_string()]);
+        assert_eq!(picker.last_added, Some(("7203".to_string(), now)));
+    }
+
+    #[test]
+    fn test_picker_click_debounces_same_id_only() {
+        let mut registry = InstrumentRegistry { ids: vec![], editable: true };
+        let mut picker = InstrumentPickerState::default();
+        let t0 = Instant::now();
+
+        handle_picker_row_click("7203", &mut registry, &mut picker, t0);
+        assert_eq!(registry.ids, vec!["7203".to_string()]);
+        let after_first = picker.last_added.clone();
+
+        let t1 = t0 + Duration::from_millis(50);
+        handle_picker_row_click("7203", &mut registry, &mut picker, t1);
+        assert_eq!(registry.ids, vec!["7203".to_string()]);
+        assert_eq!(picker.last_added, after_first, "last_added は更新されない");
+
+        handle_picker_row_click("9984", &mut registry, &mut picker, t1);
+        assert_eq!(
+            registry.ids,
+            vec!["7203".to_string(), "9984".to_string()]
+        );
+        assert_eq!(picker.last_added, Some(("9984".to_string(), t1)));
+    }
+
+    #[test]
+    fn test_picker_click_blocked_when_locked() {
+        let mut registry = InstrumentRegistry { ids: vec![], editable: false };
+        let mut picker = InstrumentPickerState::default();
+        let now = Instant::now();
+
+        handle_picker_row_click("7203", &mut registry, &mut picker, now);
+
+        assert!(registry.ids.is_empty());
+        assert_eq!(picker.last_added, None);
     }
 }

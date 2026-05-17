@@ -1525,6 +1525,120 @@ mod tests {
     }
 
     #[test]
+    fn picker_window_is_excluded_from_layout_save() {
+        use bevy::ecs::system::SystemState;
+        use bevy::prelude::*;
+        use crate::ui::instrument_picker::InstrumentPickerWindow;
+
+        let mut app = App::new();
+        app.insert_resource(StrategyBuffer::default());
+
+        app.world_mut().spawn((
+            Camera2d,
+            Transform::default(),
+            OrthographicProjection::default_2d(),
+        ));
+
+        app.world_mut().spawn((
+            WindowRoot,
+            PanelKind::Orders,
+            Transform::from_xyz(0.0, 0.0, 1.0),
+            Sprite { custom_size: Some(Vec2::new(200.0, 150.0)), ..default() },
+            Visibility::Visible,
+        ));
+
+        app.world_mut().spawn((
+            WindowRoot,
+            PanelKind::Orders,
+            Transform::from_xyz(100.0, 100.0, 2.0),
+            Sprite { custom_size: Some(Vec2::new(360.0, 480.0)), ..default() },
+            Visibility::Visible,
+            InstrumentPickerWindow,
+            LayoutExcluded,
+        ));
+
+        let mut state: SystemState<(
+            Query<
+                (&PanelKind, Option<&StrategyEditorId>, &Transform, &Sprite, &Visibility),
+                (With<WindowRoot>, Without<LayoutExcluded>),
+            >,
+            Query<(&Transform, &OrthographicProjection), (With<Camera2d>, Without<WindowRoot>)>,
+            Res<StrategyBuffer>,
+        )> = SystemState::new(app.world_mut());
+
+        let (panels, camera, buffer) = state.get(app.world());
+        let layout = build_layout(&panels, &camera, &*buffer, None);
+
+        let windows = layout.windows.expect("windows must be Some");
+        assert_eq!(
+            windows.len(), 1,
+            "LayoutExcluded 付き picker window は除外され、Orders 1 件のみ残る"
+        );
+        assert_eq!(windows[0].kind, PanelKind::Orders);
+    }
+
+    #[test]
+    fn layout_restore_does_not_spawn_picker_window() {
+        use bevy::prelude::*;
+        use crate::ui::instrument_picker::InstrumentPickerWindow;
+
+        let mut app = App::new();
+        app.add_event::<LayoutLoadRequested>();
+        app.add_event::<PanelSpawnRequested>();
+        app.add_event::<StrategyFileLoadRequested>();
+        app.insert_resource(WindowManager::default());
+        app.insert_resource(PendingLayoutApply::default());
+        app.insert_resource(SidecarAutoLoadState::default());
+        app.insert_resource(PendingStrategyFragments::default());
+
+        app.world_mut().spawn((
+            Camera2d,
+            Transform::default(),
+            OrthographicProjection::default_2d(),
+        ));
+
+        let picker = app.world_mut().spawn((
+            WindowRoot,
+            PanelKind::Orders,
+            Transform::from_xyz(100.0, 100.0, 2.0),
+            Sprite { custom_size: Some(Vec2::new(360.0, 480.0)), ..default() },
+            Visibility::Visible,
+            InstrumentPickerWindow,
+            LayoutExcluded,
+        )).id();
+
+        let tmp = std::env::temp_dir().join(format!(
+            "ttwr_test_apply_no_picker_{}.json",
+            std::process::id()
+        ));
+        let layout_json = serde_json::json!({
+            "schema_version": SCHEMA_VERSION,
+            "viewport": null,
+            "strategy_path": null,
+            "windows": [{
+                "kind": "Orders",
+                "position": [0.0, 0.0],
+                "size": [200.0, 150.0],
+                "z": 1.0,
+                "visible": true,
+                "region_key": null
+            }]
+        });
+        std::fs::write(&tmp, serde_json::to_string(&layout_json).unwrap()).unwrap();
+
+        app.world_mut().send_event(LayoutLoadRequested { path: tmp.clone() });
+        app.add_systems(Update, apply_layout_system);
+        app.update();
+
+        let _ = std::fs::remove_file(&tmp);
+
+        assert!(
+            app.world().get_entity(picker).is_ok(),
+            "InstrumentPickerWindow root は layout に含まれなくても despawn されない"
+        );
+    }
+
+    #[test]
     fn save_layout_writes_registry_to_original_sidecar() {
         use bevy::prelude::*;
         use crate::ui::components::{
