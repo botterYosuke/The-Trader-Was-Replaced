@@ -47,7 +47,7 @@ use crate::ui::positions::positions_panel_system;
 use crate::ui::run_result_panel::run_result_panel_system;
 use crate::ui::components::{
     mark_registry_dirty_system, sync_registry_from_scenario_loaded_system,
-    writeback_scenario_instruments_system,
+    sync_scenario_metadata_from_registry_system, writeback_scenario_instruments_system,
 };
 use crate::ui::scenario_parser::parse_scenario_system;
 use crate::ui::window::instrument_chart_sync_system;
@@ -125,11 +125,12 @@ impl Plugin for UiPlugin {
                 update_strategy_status_label_system,
                 run_result_panel_system,
                 log_strategy_run_requested_system,
-                handle_strategy_run_system,
+                handle_strategy_run_system.after(sync_scenario_metadata_from_registry_system),
                 (
                     parse_scenario_system,
                     sync_registry_from_scenario_loaded_system,
                     mark_registry_dirty_system,
+                    sync_scenario_metadata_from_registry_system,
                     writeback_scenario_instruments_system,
                     instrument_chart_sync_system,
                 )

@@ -64,7 +64,7 @@ pub fn parse_scenario_system(
 
     let json_path = py_path.with_extension("json");
 
-    let text = match std::fs::read_to_string(&json_path) {
+    let text = match crate::ui::layout_persistence::read_json_with_bom_strip(&json_path) {
         Ok(t) => t,
         Err(e) => {
             debug!(

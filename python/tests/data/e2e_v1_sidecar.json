@@ -1,0 +1,10 @@
+{
+  "scenario": {
+    "end": "2025-01-10",
+    "granularity": "Minute",
+    "initial_cash": 1000000,
+    "instruments": [],
+    "schema_version": 2,
+    "start": "2025-01-06"
+  }
+}

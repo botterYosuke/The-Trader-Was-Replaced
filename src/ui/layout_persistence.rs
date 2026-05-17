@@ -207,7 +207,7 @@ fn build_layout(
     let scenario = preserve_scenario_from
         .map(|p| p.with_extension("json"))
         .filter(|p| p.exists())
-        .and_then(|p| std::fs::read_to_string(&p).ok())
+        .and_then(|p| read_json_with_bom_strip(&p).ok())
         .and_then(|s| serde_json::from_str::<serde_json::Value>(&s).ok())
         .and_then(|v| v.get("scenario").cloned());
 
@@ -222,14 +222,114 @@ fn build_layout(
     }
 }
 
+/// 計画書 KC4-c: 明示 Save 専用 layout 構築。
+/// - `cache_sidecar` を preserve scenario の第一候補とする。
+/// - cache sidecar が無い / 読めない場合、`fallback_original_json` を二次候補にする
+///   (通常 autosave / window close からはこの fallback を呼ばないこと)。
+/// - registry.editable == true なら preserved scenario.instruments を registry で必ず上書きする。
+///   scenario object が無い場合は `ScenarioMetadata` から最小 v2 scenario を構築する。
+///   ただし start/end/granularity/initial_cash のいずれかが欠ける場合は
+///   壊れた scenario を作らないため None を返す（呼び出し側で skip 判断）。
+/// - registry.editable == false の場合は scenario 形状を一切変更しない。
+#[allow(clippy::type_complexity)]
+fn build_layout_for_explicit_save(
+    panels: &Query<
+        (
+            &PanelKind,
+            Option<&StrategyEditorId>,
+            &Transform,
+            &Sprite,
+            &Visibility,
+        ),
+        (With<WindowRoot>, Without<ChartInstrument>),
+    >,
+    camera: &Query<(&Transform, &OrthographicProjection), (With<Camera2d>, Without<WindowRoot>)>,
+    buffer: &StrategyBuffer,
+    registry: &crate::ui::components::InstrumentRegistry,
+    scenario_meta: &crate::ui::components::ScenarioMetadata,
+    cache_sidecar: Option<&std::path::Path>,
+    fallback_original_json: Option<&std::path::Path>,
+) -> Option<SidecarLayout> {
+    // preserve source: cache 第一、fallback 第二
+    let preserve_from: Option<&std::path::Path> =
+        cache_sidecar.or(fallback_original_json);
+    let mut layout = build_layout(panels, camera, buffer, preserve_from);
+
+    if !registry.editable {
+        // instruments_ref などは scenario 形状を壊さない
+        return Some(layout);
+    }
+
+    // editable == true: scenario.instruments を registry で必ず上書き
+    let instruments_json = serde_json::Value::Array(
+        registry
+            .as_slice()
+            .iter()
+            .map(|s| serde_json::Value::String(s.clone()))
+            .collect(),
+    );
+
+    match layout.scenario.as_mut() {
+        Some(serde_json::Value::Object(map)) => {
+            map.insert("instruments".to_string(), instruments_json);
+        }
+        _ => {
+            // 既存 scenario が無い: ScenarioMetadata から最小 v2 を構築
+            let (Some(start), Some(end), Some(granularity), Some(initial_cash)) = (
+                scenario_meta.start.as_ref(),
+                scenario_meta.end.as_ref(),
+                scenario_meta.granularity.as_ref(),
+                scenario_meta.initial_cash,
+            ) else {
+                error!(
+                    "explicit save: scenario required fields missing (start/end/granularity/initial_cash); skipping save"
+                );
+                return None;
+            };
+            let mut map = serde_json::Map::new();
+            map.insert(
+                "schema_version".to_string(),
+                serde_json::Value::Number(serde_json::Number::from(
+                    scenario_meta.schema_version.unwrap_or(2),
+                )),
+            );
+            map.insert("instruments".to_string(), instruments_json);
+            map.insert(
+                "start".to_string(),
+                serde_json::Value::String(start.clone()),
+            );
+            map.insert("end".to_string(), serde_json::Value::String(end.clone()));
+            map.insert(
+                "granularity".to_string(),
+                serde_json::Value::String(granularity.clone()),
+            );
+            map.insert(
+                "initial_cash".to_string(),
+                serde_json::Value::Number(serde_json::Number::from(initial_cash)),
+            );
+            layout.scenario = Some(serde_json::Value::Object(map));
+        }
+    }
+
+    Some(layout)
+}
+
 fn save_layout_to(path: &PathBuf, layout: &SidecarLayout) -> std::io::Result<()> {
     let json = serde_json::to_string_pretty(layout)
         .map_err(|e| std::io::Error::new(std::io::ErrorKind::InvalidData, e))?;
     std::fs::write(path, json)
 }
 
-fn load_layout_from(path: &PathBuf) -> std::io::Result<SidecarLayout> {
+/// UTF-8 BOM (0xEF 0xBB 0xBF) を読み飛ばしてから JSON parse する。
+/// PowerShell の `Out-File`、Notepad、`Set-Content -Encoding UTF8` などは
+/// BOM 付きで書き出すため、それらで作られた sidecar JSON を寛容に読む。
+pub(crate) fn read_json_with_bom_strip(path: &std::path::Path) -> std::io::Result<String> {
     let text = std::fs::read_to_string(path)?;
+    Ok(text.trim_start_matches('\u{FEFF}').to_string())
+}
+
+fn load_layout_from(path: &PathBuf) -> std::io::Result<SidecarLayout> {
+    let text = read_json_with_bom_strip(path)?;
     serde_json::from_str(&text).map_err(|e| std::io::Error::new(std::io::ErrorKind::InvalidData, e))
 }
 
@@ -347,8 +447,24 @@ fn handle_save_layout_system(
     mut buffer: ResMut<StrategyBuffer>,
     mut fragments_q: Query<(&StrategyEditorId, &mut StrategyFragment), With<WindowRoot>>,
     mut strategy_auto_save: ResMut<StrategyAutoSaveState>,
+    registry: Res<crate::ui::components::InstrumentRegistry>,
+    paths: Res<crate::ui::components::ScenarioWritebackPaths>,
+    scenario: Res<crate::ui::components::ScenarioMetadata>,
 ) {
     for _ in events.read() {
+        // 計画書 KC4: 明示 Save の前に cache 側だけ最新化する。
+        // registry.editable == false (instruments_ref) 時はスキップ。
+        // flush 失敗しても Save 自体は継続する（cache が壊れていても原本へは保存できるべき）。
+        if registry.editable {
+            if let Err(e) = crate::ui::components::flush_sidecars_now(
+                registry.as_slice(),
+                None,
+                paths.cache_sidecar.as_deref(),
+            ) {
+                warn!("Save: pre-flush to cache failed (continuing save): {}", e);
+            }
+        }
+
         let was_new = buffer.original_path.is_none();
 
         // ダイアログ（初回保存）の場合は先にパスを確定させる
@@ -376,7 +492,27 @@ fn handle_save_layout_system(
             buffer.cache_path = cache_state_paths().map(|(_, cache_py)| cache_py);
         }
 
-        let layout = build_layout(&panels, &camera, &*buffer, buffer.original_path.as_deref());
+        let cache_sidecar = paths.cache_sidecar.as_deref();
+        let fallback_json = buffer.original_path.as_ref().map(|p| p.with_extension("json"));
+        let layout = match build_layout_for_explicit_save(
+            &panels,
+            &camera,
+            &*buffer,
+            &registry,
+            &scenario,
+            cache_sidecar,
+            fallback_json.as_deref(),
+        ) {
+            Some(l) => l,
+            None => {
+                // helper が None を返した = required scenario fields 欠落。Save をスキップ。
+                if was_new {
+                    buffer.original_path = None;
+                    buffer.cache_path = None;
+                }
+                continue;
+            }
+        };
         match save_layout_to(&json_path, &layout) {
             Ok(()) => info!("layout saved to {:?}", json_path),
             Err(e) => {
@@ -432,8 +568,24 @@ fn handle_save_as_layout_system(
     mut buffer: ResMut<StrategyBuffer>,
     mut fragments_q: Query<(&StrategyEditorId, &mut StrategyFragment), With<WindowRoot>>,
     mut strategy_auto_save: ResMut<StrategyAutoSaveState>,
+    registry: Res<crate::ui::components::InstrumentRegistry>,
+    paths: Res<crate::ui::components::ScenarioWritebackPaths>,
+    scenario: Res<crate::ui::components::ScenarioMetadata>,
 ) {
     for _ in events.read() {
+        // 計画書 KC4: 明示 Save As の前に cache 側だけ最新化する。
+        // registry.editable == false (instruments_ref) 時はスキップ。
+        // flush 失敗しても Save As 自体は継続する。
+        if registry.editable {
+            if let Err(e) = crate::ui::components::flush_sidecars_now(
+                registry.as_slice(),
+                None,
+                paths.cache_sidecar.as_deref(),
+            ) {
+                warn!("Save As: pre-flush to cache failed (continuing save): {}", e);
+            }
+        }
+
         let json_path = match FileDialog::new()
             .add_filter("Layout JSON", &["json"])
             .save_file()
@@ -453,8 +605,27 @@ fn handle_save_as_layout_system(
         buffer.original_path = Some(py_path.clone());
         buffer.cache_path = cache_state_paths().map(|(_, cache_py)| cache_py);
 
-        let cache_json = cache_state_paths().map(|(cache_json, _)| cache_json);
-        let layout = build_layout(&panels, &camera, &*buffer, cache_json.as_deref());
+        // 計画書 KC4-c: preserve_scenario_from は cache_sidecar 第一候補、
+        // 無ければ Save As 限定で old_original_path.with_extension("json") に fallback。
+        let cache_sidecar = paths.cache_sidecar.as_deref();
+        let old_original_json = old_original.as_ref().map(|p| p.with_extension("json"));
+        let layout = match build_layout_for_explicit_save(
+            &panels,
+            &camera,
+            &*buffer,
+            &registry,
+            &scenario,
+            cache_sidecar,
+            old_original_json.as_deref(),
+        ) {
+            Some(l) => l,
+            None => {
+                // required scenario fields 欠落 → Save As skip + buffer ロールバック
+                buffer.original_path = old_original;
+                buffer.cache_path = old_cache;
+                continue;
+            }
+        };
         match save_layout_to(&json_path, &layout) {
             Ok(()) => info!("layout saved-as to {:?}", json_path),
             Err(e) => {
@@ -858,6 +1029,7 @@ fn save_layout_on_window_close(
     mut buffer: ResMut<StrategyBuffer>,
     mut fragments_q: Query<(&StrategyEditorId, &mut StrategyFragment), With<WindowRoot>>,
     mut strategy_auto_save: ResMut<StrategyAutoSaveState>,
+    paths: Res<crate::ui::components::ScenarioWritebackPaths>,
 ) {
     // Bevy 0.15 の winit は WindowCloseRequested を EventWriter 経由で送る。
     // add_observer が期待する trigger_targets() では送られないため observer は発火しない。
@@ -890,7 +1062,7 @@ fn save_layout_on_window_close(
             error!("layout auto-save failed: cache_dir not found");
             continue;
         };
-        let layout = build_layout(&panels, &camera, &*buffer, buffer.original_path.as_deref());
+        let layout = build_layout(&panels, &camera, &*buffer, paths.cache_sidecar.as_deref());
         match save_layout_to(&cache_json, &layout) {
             Ok(()) => info!("layout auto-saved to {:?}", cache_json),
             Err(e) => error!("layout auto-save failed: {e}"),
@@ -914,6 +1086,7 @@ fn debounced_autosave_system(
     >,
     camera: Query<(&Transform, &OrthographicProjection), (With<Camera2d>, Without<WindowRoot>)>,
     buffer: Res<StrategyBuffer>,
+    paths: Res<crate::ui::components::ScenarioWritebackPaths>,
 ) {
     if !auto_save.dirty {
         return;
@@ -932,7 +1105,7 @@ fn debounced_autosave_system(
         auto_save.last_change = None;
         return;
     };
-    let layout = build_layout(&panels, &camera, &*buffer, buffer.original_path.as_deref());
+    let layout = build_layout(&panels, &camera, &*buffer, paths.cache_sidecar.as_deref());
     match save_layout_to(&cache_json, &layout) {
         Ok(()) => info!("debounced autosave → {:?}", cache_json),
         Err(e) => error!("debounced autosave failed: {e}"),

@@ -618,7 +618,7 @@ pub fn writeback_scenario_instruments_system(
 
     match flush_sidecars_now(
         registry.as_slice(),
-        buffer.original_path.as_deref(),
+        None,
         paths.cache_sidecar.as_deref(),
     ) {
         Ok(new_mtime) => {
@@ -632,6 +632,29 @@ pub fn writeback_scenario_instruments_system(
             writeback.last_error = Some(msg);
         }
     }
+}
+
+/// 計画書 KC2: registry 編集を ScenarioMetadata.instruments に直接同期する。
+/// `writeback_scenario_instruments_system` と同じ revision dirty ゲート
+/// (registry.editable && revision != flushed_revision) で起動する。
+/// scenario.instruments と registry が同値なら no-op
+/// (ScenarioMetadata の change detection を毎 tick 汚さないため)。
+pub fn sync_scenario_metadata_from_registry_system(
+    registry: Res<InstrumentRegistry>,
+    writeback: Res<ScenarioInstrumentsWritebackState>,
+    mut scenario: ResMut<ScenarioMetadata>,
+) {
+    if !registry.editable {
+        return;
+    }
+    if writeback.revision == writeback.flushed_revision {
+        return;
+    }
+    let new_ids = registry.as_slice();
+    if scenario.instruments.as_slice() == new_ids {
+        return;
+    }
+    scenario.instruments = new_ids.to_vec();
 }
 
 /// 計画書 §3.4 / §3.5: writeback 本体ロジックを system 外から呼べる pure 関数として切り出したもの。
@@ -688,7 +711,7 @@ fn rewrite_scenario_instruments_atomic(
     path: &std::path::Path,
     new_ids: &[serde_json::Value],
 ) -> std::io::Result<()> {
-    let raw = std::fs::read_to_string(path)?;
+    let raw = crate::ui::layout_persistence::read_json_with_bom_strip(path)?;
     let mut value: serde_json::Value = serde_json::from_str(&raw)
         .map_err(|e| std::io::Error::new(std::io::ErrorKind::InvalidData, e))?;
 
@@ -760,7 +783,7 @@ mod writeback_scenario_instruments_tests {
     /// **元 sidecar と cache sidecar の両方** の `scenario.instruments` が
     /// registry.ids で置換される。
     #[test]
-    fn test_writeback_updates_both_original_and_cache_sidecars() {
+    fn test_writeback_updates_cache_only_preserves_original() {
         let dir = tempfile::tempdir().unwrap();
         let original_py = dir.path().join("strat.py");
         let original_json = dir.path().join("strat.json");
@@ -770,6 +793,7 @@ mod writeback_scenario_instruments_tests {
         let initial = r#"{"scenario": {"schema_version": 2, "instruments": ["OLD.T"], "start": "2025-01-06", "end": "2025-01-10", "granularity": "Daily", "initial_cash": 1000000}}"#;
         fs::write(&original_json, initial).unwrap();
         fs::write(&cache_json, initial).unwrap();
+        let original_before = fs::read(&original_json).unwrap();
 
         let mut app = App::new();
         app.insert_resource(StrategyBuffer {
@@ -796,16 +820,13 @@ mod writeback_scenario_instruments_tests {
         app.add_systems(Update, writeback_scenario_instruments_system);
         app.update();
 
-        let updated_original: serde_json::Value =
-            serde_json::from_str(&fs::read_to_string(&original_json).unwrap()).unwrap();
+        assert_eq!(
+            fs::read(&original_json).unwrap(),
+            original_before,
+            "original sidecar must NOT be touched (CacheOnly policy)"
+        );
         let updated_cache: serde_json::Value =
             serde_json::from_str(&fs::read_to_string(&cache_json).unwrap()).unwrap();
-
-        assert_eq!(
-            updated_original["scenario"]["instruments"],
-            serde_json::json!(["1301.TSE", "7203.TSE"]),
-            "original sidecar must reflect new instruments"
-        );
         assert_eq!(
             updated_cache["scenario"]["instruments"],
             serde_json::json!(["1301.TSE", "7203.TSE"]),
@@ -831,6 +852,7 @@ mod writeback_scenario_instruments_tests {
         let initial = r#"{"scenario":{"schema_version":2,"instruments":["OLD.T"],"start":"2025-01-06","end":"2025-01-10","granularity":"Daily","initial_cash":1000000,"custom_extra":"keep-me"},"viewport":{"x":42},"windows":[{"id":"w1"}]}"#;
         fs::write(&original_json, initial).unwrap();
         fs::write(&cache_json, initial).unwrap();
+        let original_before = fs::read(&original_json).unwrap();
 
         let mut app = App::new();
         app.insert_resource(StrategyBuffer {
@@ -857,8 +879,14 @@ mod writeback_scenario_instruments_tests {
         app.add_systems(Update, writeback_scenario_instruments_system);
         app.update();
 
+        assert_eq!(
+            fs::read(&original_json).unwrap(),
+            original_before,
+            "original sidecar must not be touched in CacheOnly mode"
+        );
+
         let updated: serde_json::Value =
-            serde_json::from_str(&fs::read_to_string(&original_json).unwrap()).unwrap();
+            serde_json::from_str(&fs::read_to_string(&cache_json).unwrap()).unwrap();
 
         assert_eq!(updated["scenario"]["instruments"], serde_json::json!(["NEW.T"]));
         assert_eq!(updated["scenario"]["schema_version"], serde_json::json!(2));
@@ -886,6 +914,7 @@ mod writeback_scenario_instruments_tests {
         let initial = r#"{"scenario":{"schema_version":1,"instrument":"1301.TSE","start":"2025-01-06","end":"2025-01-10","granularity":"Daily","initial_cash":1000000}}"#;
         fs::write(&original_json, initial).unwrap();
         fs::write(&cache_json, initial).unwrap();
+        let original_before = fs::read(&original_json).unwrap();
 
         let mut app = App::new();
         app.insert_resource(StrategyBuffer {
@@ -912,24 +941,19 @@ mod writeback_scenario_instruments_tests {
         app.add_systems(Update, writeback_scenario_instruments_system);
         app.update();
 
-        let updated: serde_json::Value =
-            serde_json::from_str(&fs::read_to_string(&original_json).unwrap()).unwrap();
-
-        assert_eq!(updated["scenario"]["schema_version"], serde_json::json!(2));
         assert_eq!(
-            updated["scenario"]["instruments"],
-            serde_json::json!(["1301.TSE", "7203.TSE"])
-        );
-        assert!(
-            updated["scenario"].get("instrument").is_none()
-                || updated["scenario"]["instrument"].is_null(),
-            "legacy 'instrument' key must be removed, got: {:?}",
-            updated["scenario"].get("instrument")
+            fs::read(&original_json).unwrap(),
+            original_before,
+            "original sidecar must not be touched in CacheOnly mode"
         );
 
         let cache: serde_json::Value =
             serde_json::from_str(&fs::read_to_string(&cache_json).unwrap()).unwrap();
         assert_eq!(cache["scenario"]["schema_version"], serde_json::json!(2));
+        assert_eq!(
+            cache["scenario"]["instruments"],
+            serde_json::json!(["1301.TSE", "7203.TSE"])
+        );
         assert!(cache["scenario"].get("instrument").is_none());
     }
 
@@ -947,6 +971,7 @@ mod writeback_scenario_instruments_tests {
         let initial = r#"{"scenario":{"instrument":["A","B"],"start":"2025-01-06","end":"2025-01-10","granularity":"Daily","initial_cash":1000000}}"#;
         fs::write(&original_json, initial).unwrap();
         fs::write(&cache_json, initial).unwrap();
+        let original_before = fs::read(&original_json).unwrap();
 
         let mut app = App::new();
         app.insert_resource(StrategyBuffer {
@@ -973,8 +998,14 @@ mod writeback_scenario_instruments_tests {
         app.add_systems(Update, writeback_scenario_instruments_system);
         app.update();
 
+        assert_eq!(
+            fs::read(&original_json).unwrap(),
+            original_before,
+            "original sidecar must not be touched in CacheOnly mode"
+        );
+
         let updated: serde_json::Value =
-            serde_json::from_str(&fs::read_to_string(&original_json).unwrap()).unwrap();
+            serde_json::from_str(&fs::read_to_string(&cache_json).unwrap()).unwrap();
 
         assert_eq!(updated["scenario"]["schema_version"], serde_json::json!(2));
         assert_eq!(updated["scenario"]["instruments"], serde_json::json!(["NEW.T"]));
@@ -1162,7 +1193,7 @@ mod writeback_scenario_instruments_tests {
     /// 計画書 §3.5 / §5.1: `handle_strategy_run_system` は RunStrategy 送信直前に
     /// registry.editable && flush_sidecars_now() を実行する。
     #[test]
-    fn test_run_inline_flush_writes_both_sidecars() {
+    fn test_run_inline_flush_writes_cache_only_preserves_original() {
         use crate::trading::{TransportCommand, TransportCommandSender};
         use crate::ui::components::StrategyRunRequested;
         use crate::ui::menu_bar::handle_strategy_run_system;
@@ -1176,6 +1207,7 @@ mod writeback_scenario_instruments_tests {
         let initial = r#"{"scenario": {"schema_version": 2, "instruments": ["OLD.T"], "start": "2025-01-06", "end": "2025-01-10", "granularity": "Daily", "initial_cash": 1000000}}"#;
         fs::write(&original_json, initial).unwrap();
         fs::write(&cache_sidecar, initial).unwrap();
+        let original_before = fs::read(&original_json).unwrap();
 
         let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel::<TransportCommand>();
 
@@ -1212,11 +1244,10 @@ mod writeback_scenario_instruments_tests {
         });
         app.update();
 
-        let updated_orig: serde_json::Value =
-            serde_json::from_str(&fs::read_to_string(&original_json).unwrap()).unwrap();
         assert_eq!(
-            updated_orig["scenario"]["instruments"],
-            serde_json::json!(["A.T", "B.T"]),
+            fs::read(&original_json).unwrap(),
+            original_before,
+            "original sidecar must NOT be touched (CacheOnly policy)"
         );
         let updated_cache: serde_json::Value =
             serde_json::from_str(&fs::read_to_string(&cache_sidecar).unwrap()).unwrap();
@@ -1250,6 +1281,7 @@ mod writeback_scenario_instruments_tests {
         let already_flushed = r#"{"scenario": {"schema_version": 2, "instruments": ["A.T", "B.T"], "start": "2025-01-06", "end": "2025-01-10", "granularity": "Daily", "initial_cash": 1000000}}"#;
         fs::write(&original_json, already_flushed).unwrap();
         fs::write(&cache_sidecar, already_flushed).unwrap();
+        let original_before = fs::read(&original_json).unwrap();
 
         let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel::<TransportCommand>();
 
@@ -1299,10 +1331,15 @@ mod writeback_scenario_instruments_tests {
             other => panic!("expected RunStrategy on second run, got {:?}", other),
         }
 
-        let updated: serde_json::Value =
-            serde_json::from_str(&fs::read_to_string(&original_json).unwrap()).unwrap();
         assert_eq!(
-            updated["scenario"]["instruments"],
+            fs::read(&original_json).unwrap(),
+            original_before,
+            "original sidecar must NOT be touched (CacheOnly policy)"
+        );
+        let updated_cache: serde_json::Value =
+            serde_json::from_str(&fs::read_to_string(&cache_sidecar).unwrap()).unwrap();
+        assert_eq!(
+            updated_cache["scenario"]["instruments"],
             serde_json::json!(["A.T", "B.T"]),
         );
     }
@@ -1390,7 +1427,7 @@ mod writeback_scenario_instruments_tests {
             last_merged_source: None,
         });
         app.insert_resource(ScenarioWritebackPaths {
-            cache_sidecar: None,
+            cache_sidecar: Some(original_json.clone()),
         });
         app.insert_resource(TransportCommandSender { tx });
         app.init_resource::<InstrumentRegistry>();
@@ -1584,12 +1621,25 @@ mod writeback_scenario_instruments_tests {
         let ids: Vec<String> = q.iter(world).map(|c| c.instrument_id.clone()).collect();
         assert_eq!(ids, vec!["1301.TSE".to_string()], "Chart 1 件で 1301.TSE のみ");
 
-        for path in [&json_path, &cache_json_path] {
-            let body = std::fs::read_to_string(path).unwrap();
+        // original sidecar は CacheOnly 仕様で据え置き
+        {
+            let body = std::fs::read_to_string(&json_path).unwrap();
             let v: serde_json::Value = serde_json::from_str(&body).unwrap();
             let instruments = v["scenario"]["instruments"].as_array().unwrap();
             let got: Vec<String> = instruments.iter().map(|x| x.as_str().unwrap().to_string()).collect();
-            assert_eq!(got, vec!["1301.TSE".to_string()], "{:?} の instruments が縮んでいる", path);
+            assert_eq!(
+                got,
+                vec!["1301.TSE".to_string(), "7203.TSE".to_string()],
+                "original sidecar ({:?}) は CacheOnly で据え置き", json_path
+            );
+        }
+        // cache sidecar だけ新 registry を反映
+        {
+            let body = std::fs::read_to_string(&cache_json_path).unwrap();
+            let v: serde_json::Value = serde_json::from_str(&body).unwrap();
+            let instruments = v["scenario"]["instruments"].as_array().unwrap();
+            let got: Vec<String> = instruments.iter().map(|x| x.as_str().unwrap().to_string()).collect();
+            assert_eq!(got, vec!["1301.TSE".to_string()], "cache sidecar が縮んでいる");
         }
     }
 
@@ -1692,12 +1742,25 @@ mod writeback_scenario_instruments_tests {
             other => panic!("expected RunStrategy, got {:?}", other),
         }
 
-        for path in [&json_path, &cache_json_path] {
-            let body = std::fs::read_to_string(path).unwrap();
+        // original sidecar は CacheOnly 仕様で据え置き
+        {
+            let body = std::fs::read_to_string(&json_path).unwrap();
             let v: serde_json::Value = serde_json::from_str(&body).unwrap();
             let instruments = v["scenario"]["instruments"].as_array().unwrap();
             let got: Vec<String> = instruments.iter().map(|x| x.as_str().unwrap().to_string()).collect();
-            assert_eq!(got, vec!["1301.TSE".to_string()], "{:?} の instruments が新 registry を反映", path);
+            assert_eq!(
+                got,
+                vec!["1301.TSE".to_string(), "7203.TSE".to_string()],
+                "original sidecar ({:?}) は CacheOnly で据え置き", json_path
+            );
+        }
+        // cache sidecar だけ新 registry を反映
+        {
+            let body = std::fs::read_to_string(&cache_json_path).unwrap();
+            let v: serde_json::Value = serde_json::from_str(&body).unwrap();
+            let instruments = v["scenario"]["instruments"].as_array().unwrap();
+            let got: Vec<String> = instruments.iter().map(|x| x.as_str().unwrap().to_string()).collect();
+            assert_eq!(got, vec!["1301.TSE".to_string()], "cache sidecar が縮んでいる");
         }
     }
 
@@ -1708,5 +1771,111 @@ mod writeback_scenario_instruments_tests {
     fn test_e2e_save_as_after_unsaved_add() {
         // R1 修正後に本実装
         todo!("Phase 7.5a R1 修正後に本実装");
+    }
+
+    /// KC7 前提固定: editable=false なら dirty (revision != flushed) でも
+    /// scenario.instruments は触らない。
+    #[test]
+    fn sync_scenario_metadata_from_registry_skips_when_not_editable() {
+        let mut app = App::new();
+        app.insert_resource(InstrumentRegistry {
+            ids: vec!["NEW.T".to_string()],
+            editable: false,
+        });
+        app.insert_resource(ScenarioInstrumentsWritebackState {
+            revision: 1,
+            flushed_revision: 0,
+            last_error: None,
+        });
+        app.insert_resource(ScenarioMetadata {
+            instruments: vec!["OLD.T".to_string()],
+            ..Default::default()
+        });
+        app.add_systems(Update, sync_scenario_metadata_from_registry_system);
+        app.update();
+
+        let scen = app.world().resource::<ScenarioMetadata>();
+        assert_eq!(scen.instruments, vec!["OLD.T".to_string()]);
+    }
+
+    /// KC7 前提固定: editable=true でも revision == flushed なら no-op。
+    /// (registry と scenario が乖離していても触らない)
+    #[test]
+    fn sync_scenario_metadata_from_registry_skips_when_revision_clean() {
+        let mut app = App::new();
+        app.insert_resource(InstrumentRegistry {
+            ids: vec!["NEW.T".to_string()],
+            editable: true,
+        });
+        app.insert_resource(ScenarioInstrumentsWritebackState {
+            revision: 3,
+            flushed_revision: 3,
+            last_error: None,
+        });
+        app.insert_resource(ScenarioMetadata {
+            instruments: vec!["OLD.T".to_string()],
+            ..Default::default()
+        });
+        app.add_systems(Update, sync_scenario_metadata_from_registry_system);
+        app.update();
+
+        let scen = app.world().resource::<ScenarioMetadata>();
+        assert_eq!(scen.instruments, vec!["OLD.T".to_string()]);
+    }
+
+    /// KC7 前提固定: dirty かつ editable でも registry == scenario なら
+    /// no-op 同値ガードで触らない。
+    #[test]
+    fn sync_scenario_metadata_from_registry_noop_when_already_equal() {
+        let mut app = App::new();
+        app.insert_resource(InstrumentRegistry {
+            ids: vec!["SAME.T".to_string(), "OTHER.T".to_string()],
+            editable: true,
+        });
+        app.insert_resource(ScenarioInstrumentsWritebackState {
+            revision: 2,
+            flushed_revision: 1,
+            last_error: None,
+        });
+        app.insert_resource(ScenarioMetadata {
+            instruments: vec!["SAME.T".to_string(), "OTHER.T".to_string()],
+            ..Default::default()
+        });
+        app.add_systems(Update, sync_scenario_metadata_from_registry_system);
+        app.update();
+
+        let scen = app.world().resource::<ScenarioMetadata>();
+        assert_eq!(
+            scen.instruments,
+            vec!["SAME.T".to_string(), "OTHER.T".to_string()]
+        );
+    }
+
+    /// KC7 前提固定: editable=true かつ dirty かつ registry != scenario なら
+    /// scenario.instruments が registry に追従する。
+    #[test]
+    fn sync_scenario_metadata_from_registry_updates_when_dirty_and_differs() {
+        let mut app = App::new();
+        app.insert_resource(InstrumentRegistry {
+            ids: vec!["1301.TSE".to_string(), "7203.TSE".to_string()],
+            editable: true,
+        });
+        app.insert_resource(ScenarioInstrumentsWritebackState {
+            revision: 5,
+            flushed_revision: 4,
+            last_error: None,
+        });
+        app.insert_resource(ScenarioMetadata {
+            instruments: vec!["OLD.T".to_string()],
+            ..Default::default()
+        });
+        app.add_systems(Update, sync_scenario_metadata_from_registry_system);
+        app.update();
+
+        let scen = app.world().resource::<ScenarioMetadata>();
+        assert_eq!(
+            scen.instruments,
+            vec!["1301.TSE".to_string(), "7203.TSE".to_string()]
+        );
     }
 }

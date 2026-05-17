@@ -303,7 +303,7 @@ pub fn restore_last_strategy_system(mut events: EventWriter<CacheRestoreRequeste
         return;
     }
 
-    let text = match std::fs::read_to_string(&cache_json) {
+    let text = match crate::ui::layout_persistence::read_json_with_bom_strip(&cache_json) {
         Ok(text) => text,
         Err(e) => {
             error!("restore_from_cache: failed to read {:?}: {e}", cache_json);
@@ -479,7 +479,7 @@ pub fn handle_strategy_file_load_system(
         // sidecar が「scenario-only」(windows キー不在) の場合、layout だけに委ねると
         // どのパネルも spawn されない。peek して windows が無ければ fragments を直接 spawn。
         let sidecar_has_windows = sidecar_exists
-            && std::fs::read_to_string(&sidecar_path)
+            && crate::ui::layout_persistence::read_json_with_bom_strip(&sidecar_path)
                 .ok()
                 .and_then(|s| serde_json::from_str::<serde_json::Value>(&s).ok())
                 .and_then(|v| v.get("windows").cloned())
@@ -575,7 +575,7 @@ pub fn handle_strategy_run_system(
         if registry.editable {
             if let Err(e) = flush_sidecars_now(
                 registry.as_slice(),
-                buffer.original_path.as_deref(),
+                None,
                 paths.cache_sidecar.as_deref(),
             ) {
                 error!("Run blocked: sidecar flush failed: {}", e);
