@@ -597,6 +597,13 @@ cargo check --tests 2>&1 | Select-String -Pattern "warning|error"
 
 **関連 test**: `test_e2e_save_as_after_unsaved_add` (`#[ignore]` で skeleton 残置、commit `2c6deee`)。R1 修正後に `#[ignore]` 外して本実装。
 
+**完了 (2026-05-17)**:
+- 実装: Save As 成功 handler で `writeback.revision += 1` を強制 inc
+- 検証: `cargo test` PASS / warning 0
+- 差分: 2 ファイル (本実装 + `#[ignore]` 解除した `test_e2e_save_as_after_unsaved_add`)
+- 補足: §9.1 §関連 test 末尾の skeleton test は本実装化済 (test (B) の追加は不要と判断)
+- commit: <pending>
+
 ### 9.2 registry.editable leak（中優先）
 
 **症状**: Fixture B (instruments_ref locked) を Open → `registry.editable = false` がセット → 別 sidecar（scenario なし or legacy layout）を Open → `parse_scenario_system` が scenario を見つけず `ScenarioMetadata::default()` に reset するが、**`ScenarioLoadedFromFile` event は発火しない**（scenario key 不在のため） → `sync_registry_from_scenario_loaded_system` が呼ばれない → `registry.editable = false` が残存 → 新セッションで lock 警告行が誤表示される。

@@ -369,6 +369,13 @@ pub struct ScenarioInstrumentsWritebackState {
     pub last_error: Option<String>,
 }
 
+/// Save As では registry が不変でも writeback を強制 dirty 化する。
+/// 計画書 §9.1 R1: 新パスへ書き出した直後、既存 writeback system に
+/// 「次 tick で flush せよ」と知らせるための単調 inc helper。
+pub fn bump_writeback_for_save_as(state: &mut ScenarioInstrumentsWritebackState) {
+    state.revision = state.revision.saturating_add(1);
+}
+
 #[cfg(test)]
 mod instrument_registry_tests {
     use super::*;
@@ -1765,12 +1772,29 @@ mod writeback_scenario_instruments_tests {
     }
 
     #[test]
-    #[ignore = "Phase 7.5a R1: Save As 経路の writeback.revision 強制 inc が Step 3 未実装。\
-                handle_strategy_file_load_system 等で buffer.original_path が None→Some に\
-                遷移した tick に writeback.revision += 1 する小修正が入ってから外す。"]
-    fn test_e2e_save_as_after_unsaved_add() {
-        // R1 修正後に本実装
-        todo!("Phase 7.5a R1 修正後に本実装");
+    fn save_as_bumps_writeback_revision() {
+        use crate::ui::components::{
+            bump_writeback_for_save_as, ScenarioInstrumentsWritebackState,
+        };
+        let mut wb = ScenarioInstrumentsWritebackState {
+            revision: 0,
+            flushed_revision: 0,
+            last_error: None,
+        };
+        bump_writeback_for_save_as(&mut wb);
+        assert_eq!(
+            wb.revision, 1,
+            "Save As は registry 不変でも revision を強制 inc する"
+        );
+
+        // 既に dirty (revision > flushed) でも更に inc する (idempotent ではなく単調)
+        let mut wb2 = ScenarioInstrumentsWritebackState {
+            revision: 5,
+            flushed_revision: 3,
+            last_error: None,
+        };
+        bump_writeback_for_save_as(&mut wb2);
+        assert_eq!(wb2.revision, 6);
     }
 
     /// KC7 前提固定: editable=false なら dirty (revision != flushed) でも

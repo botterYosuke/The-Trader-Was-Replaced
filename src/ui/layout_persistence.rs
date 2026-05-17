@@ -577,6 +577,7 @@ fn handle_save_as_layout_system(
     registry: Res<crate::ui::components::InstrumentRegistry>,
     paths: Res<crate::ui::components::ScenarioWritebackPaths>,
     scenario: Res<crate::ui::components::ScenarioMetadata>,
+    mut writeback: ResMut<crate::ui::components::ScenarioInstrumentsWritebackState>,
 ) {
     for _ in events.read() {
         // 計画書 KC4: 明示 Save As の前に cache 側だけ最新化する。
@@ -633,7 +634,13 @@ fn handle_save_as_layout_system(
             }
         };
         match save_layout_to(&json_path, &layout) {
-            Ok(()) => info!("layout saved-as to {:?}", json_path),
+            Ok(()) => {
+                info!("layout saved-as to {:?}", json_path);
+                // 計画書 §9.1 R1: Save As 確定 (buffer.original_path 更新済 + JSON 書込成功) で
+                // writeback revision を強制 inc。registry 不変でも次 tick の writeback system が
+                // 新パス側 sidecar へ flush する。
+                crate::ui::components::bump_writeback_for_save_as(&mut writeback);
+            }
             Err(e) => {
                 error!("layout save-as failed: {e}");
                 // ロールバック
