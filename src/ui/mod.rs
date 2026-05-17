@@ -168,7 +168,8 @@ impl Plugin for UiPlugin {
                 picker_searchbox_input_system,
                 picker_list_rebuild_system
                     .after(picker_searchbox_input_system)
-                    .after(force_close_picker_on_lock_system),
+                    .after(force_close_picker_on_lock_system)
+                    .after(update_sidebar_system),
                 sync_picker_dropdown_visibility_system,
                 picker_row_click_system,
             ),
