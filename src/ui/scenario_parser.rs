@@ -1,9 +1,10 @@
 use crate::ui::components::{
     ScenarioClearedFromFile, ScenarioFileWatchState, ScenarioLoadedFromFile, ScenarioMetadata,
-    StrategyBuffer,
+    ScenarioReadTarget,
 };
 use bevy::prelude::*;
 use serde::Deserialize;
+use std::path::PathBuf;
 
 /// サイドカー JSON のルート構造。`scenario` キー以外は無視する。
 #[derive(Deserialize)]
@@ -41,31 +42,28 @@ enum StringOrList {
 ///
 /// - ファイル不在 / "scenario" キーなし / JSON 破損 → `ScenarioMetadata::default()`（Run ボタングレーアウト）
 pub fn parse_scenario_system(
-    buffer: Res<StrategyBuffer>,
+    target: Res<ScenarioReadTarget>,
     mut scenario: ResMut<ScenarioMetadata>,
     mut watch: ResMut<ScenarioFileWatchState>,
     mut loaded_events: EventWriter<ScenarioLoadedFromFile>,
     mut cleared_events: EventWriter<ScenarioClearedFromFile>,
 ) {
-    let current_path = buffer.original_path.clone();
-    let current_mtime = current_path
+    let json_path: Option<PathBuf> = target.0.clone();
+    let current_mtime = json_path
         .as_ref()
-        .map(|p| p.with_extension("json"))
-        .and_then(|jp| std::fs::metadata(&jp).ok())
+        .and_then(|jp| std::fs::metadata(jp).ok())
         .and_then(|m| m.modified().ok());
-    if watch.last_path == current_path && watch.last_mtime == current_mtime {
+    if watch.last_path == json_path && watch.last_mtime == current_mtime {
         return;
     }
-    watch.last_path = current_path.clone();
+    watch.last_path = json_path.clone();
     watch.last_mtime = current_mtime;
 
-    let Some(py_path) = current_path else {
+    let Some(json_path) = json_path else {
         cleared_events.send(ScenarioClearedFromFile { source_path: None });
         *scenario = ScenarioMetadata::default();
         return;
     };
-
-    let json_path = py_path.with_extension("json");
 
     let text = match crate::ui::layout_persistence::read_json_with_bom_strip(&json_path) {
         Ok(t) => t,
@@ -162,6 +160,7 @@ pub fn parse_scenario_system(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::ui::components::StrategyBuffer;
     use crate::ui::components::ScenarioLoadedFromFile;
 
     #[test]
@@ -248,6 +247,7 @@ mod tests {
             cache_path: None,
             last_merged_source: None,
         });
+        app.insert_resource(ScenarioReadTarget(Some(json_path.clone())));
         app.init_resource::<ScenarioMetadata>();
         app.init_resource::<ScenarioFileWatchState>();
         app.add_event::<ScenarioLoadedFromFile>();
@@ -283,6 +283,7 @@ mod tests {
             cache_path: None,
             last_merged_source: None,
         });
+        app.insert_resource(ScenarioReadTarget(Some(json_path)));
         app.init_resource::<ScenarioMetadata>();
         app.init_resource::<ScenarioFileWatchState>();
         app.add_event::<ScenarioLoadedFromFile>();
@@ -318,6 +319,7 @@ mod tests {
             cache_path: None,
             last_merged_source: None,
         });
+        app.insert_resource(ScenarioReadTarget(Some(dir.path().join("no_sidecar.json"))));
         app.init_resource::<ScenarioFileWatchState>();
         app.add_event::<ScenarioLoadedFromFile>();
         app.add_event::<ScenarioClearedFromFile>();
@@ -352,6 +354,7 @@ mod tests {
             cache_path: None,
             last_merged_source: None,
         });
+        app.insert_resource(ScenarioReadTarget(Some(json_path.clone())));
         app.init_resource::<ScenarioMetadata>();
         app.init_resource::<ScenarioFileWatchState>();
         app.add_event::<ScenarioLoadedFromFile>();
@@ -396,6 +399,7 @@ mod tests {
             cache_path: None,
             last_merged_source: None,
         });
+        app.insert_resource(ScenarioReadTarget(Some(json_path.clone())));
         app.init_resource::<ScenarioMetadata>();
         app.init_resource::<ScenarioFileWatchState>();
         app.add_event::<ScenarioLoadedFromFile>();
@@ -438,6 +442,7 @@ mod tests {
             cache_path: None,
             last_merged_source: None,
         });
+        app.insert_resource(ScenarioReadTarget(Some(json_path.clone())));
         app.init_resource::<ScenarioMetadata>();
         app.init_resource::<ScenarioFileWatchState>();
         app.add_event::<ScenarioLoadedFromFile>();
@@ -497,6 +502,7 @@ mod tests {
         app.init_resource::<ScenarioFileWatchState>();
         app.init_resource::<InstrumentRegistry>();
         app.init_resource::<ScenarioInstrumentsWritebackState>();
+        app.insert_resource(ScenarioReadTarget(Some(json_a.clone())));
         app.add_event::<ScenarioLoadedFromFile>();
         app.add_event::<ScenarioClearedFromFile>();
         app.add_systems(
@@ -523,6 +529,7 @@ mod tests {
         app.world_mut()
             .resource_mut::<StrategyBuffer>()
             .original_path = Some(py_b.clone());
+        app.world_mut().insert_resource(ScenarioReadTarget(Some(json_b.clone())));
 
         // tick 2: parse_scenario_system は scenario キー不在で event を出さない
         //         → sync system が呼ばれず editable=false が残存 (= 現状のバグ)
@@ -536,6 +543,59 @@ mod tests {
         assert!(
             reg.as_slice().is_empty(),
             "scenario なし sidecar では registry も空 (instruments クリア) になるべき"
+        );
+    }
+
+    /// `ScenarioReadTarget = Some(cache.json)` なら buffer.original_path に関わらず
+    /// cache.json が読まれることを確認する (Step 4 Red テスト)。
+    /// — 現状の parse_scenario_system は buffer.original_path を見るため、
+    ///   cache.json の内容が反映されず Red になる。
+    #[test]
+    fn parse_scenario_uses_target_path_not_buffer_original() {
+        use crate::ui::components::ScenarioReadTarget;
+
+        let dir = tempfile::tempdir().unwrap();
+
+        // original sidecar: 7203.TSE
+        let py_path = dir.path().join("strat.py");
+        let original_json = dir.path().join("strat.json");
+        std::fs::write(&py_path, "# dummy").unwrap();
+        std::fs::write(
+            &original_json,
+            r#"{"scenario": {"schema_version": 2, "instruments": ["7203.TSE"], "start": "2025-01-06", "end": "2025-01-10", "granularity": "Daily", "initial_cash": 1000000}}"#,
+        )
+        .unwrap();
+
+        // cache sidecar: 1301.TSE
+        let cache_json = dir.path().join("app_state.json");
+        std::fs::write(
+            &cache_json,
+            r#"{"scenario": {"schema_version": 2, "instruments": ["1301.TSE"], "start": "2025-01-06", "end": "2025-01-10", "granularity": "Daily", "initial_cash": 1000000}}"#,
+        )
+        .unwrap();
+
+        let mut app = App::new();
+        // buffer は original sidecar を指す
+        app.insert_resource(StrategyBuffer {
+            original_path: Some(py_path.clone()),
+            cache_path: None,
+            last_merged_source: None,
+        });
+        // target は cache sidecar を指す
+        app.insert_resource(ScenarioReadTarget(Some(cache_json.clone())));
+        app.init_resource::<ScenarioMetadata>();
+        app.init_resource::<ScenarioFileWatchState>();
+        app.add_event::<ScenarioLoadedFromFile>();
+        app.add_event::<ScenarioClearedFromFile>();
+        app.add_systems(Update, parse_scenario_system);
+        app.update();
+
+        let meta = app.world().resource::<ScenarioMetadata>();
+        // target が指す cache_json の内容 (1301.TSE) が反映されるべき
+        assert_eq!(
+            meta.instruments,
+            vec!["1301.TSE".to_string()],
+            "ScenarioReadTarget が cache_json を指していれば 1301.TSE が読まれるべき"
         );
     }
 }

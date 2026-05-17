@@ -367,9 +367,19 @@ pub struct ScenarioClearedFromFile {
 /// 不要な再 trigger を抑止する（計画書 R5）。
 #[derive(Resource, Default, Debug, Clone)]
 pub struct ScenarioFileWatchState {
+    /// 直前 tick に読んだ JSON パス（`ScenarioReadTarget` の直前値）。
     pub last_path: Option<PathBuf>,
     pub last_mtime: Option<SystemTime>,
 }
+
+/// `parse_scenario_system` が次に読むべき sidecar JSON のフルパス。
+/// `None` のときは「読むものなし」= scenario を default にリセット。
+/// 各 loader (cache 復元 / user open / close) が排他的にセットする。
+/// - 起動 cache 復元: `Some(cache_json)` (`%LocalAppData%/.../app_state.json`)
+/// - user open: `Some(<strategy>.json)`
+/// - close / 新規: `None`
+#[derive(Resource, Default, Debug, Clone, PartialEq)]
+pub struct ScenarioReadTarget(pub Option<std::path::PathBuf>);
 
 /// Chart window の `WindowRoot` に貼るマーカー。
 /// close observer 内で逆引きして `InstrumentRegistry::remove` に渡す。
@@ -864,6 +874,7 @@ mod writeback_scenario_instruments_tests {
         app.init_resource::<InstrumentRegistry>();
         app.init_resource::<ScenarioInstrumentsWritebackState>();
         app.init_resource::<ScenarioFileWatchState>();
+        app.init_resource::<ScenarioReadTarget>();
         {
             let mut reg = app.world_mut().resource_mut::<InstrumentRegistry>();
             reg.replace_all(&["1301.TSE".to_string(), "7203.TSE".to_string()]);
@@ -928,6 +939,7 @@ mod writeback_scenario_instruments_tests {
         app.init_resource::<InstrumentRegistry>();
         app.init_resource::<ScenarioInstrumentsWritebackState>();
         app.init_resource::<ScenarioFileWatchState>();
+        app.init_resource::<ScenarioReadTarget>();
         {
             let mut reg = app.world_mut().resource_mut::<InstrumentRegistry>();
             reg.replace_all(&["NEW.T".to_string()]);
@@ -1007,6 +1019,7 @@ mod writeback_scenario_instruments_tests {
         app.init_resource::<InstrumentRegistry>();
         app.init_resource::<ScenarioInstrumentsWritebackState>();
         app.init_resource::<ScenarioFileWatchState>();
+        app.init_resource::<ScenarioReadTarget>();
         {
             let mut reg = app.world_mut().resource_mut::<InstrumentRegistry>();
             reg.replace_all(&["1301.TSE".to_string(), "7203.TSE".to_string()]);
@@ -1066,6 +1079,7 @@ mod writeback_scenario_instruments_tests {
         app.init_resource::<InstrumentRegistry>();
         app.init_resource::<ScenarioInstrumentsWritebackState>();
         app.init_resource::<ScenarioFileWatchState>();
+        app.init_resource::<ScenarioReadTarget>();
         {
             let mut reg = app.world_mut().resource_mut::<InstrumentRegistry>();
             reg.replace_all(&["NEW.T".to_string()]);
@@ -1131,6 +1145,7 @@ mod writeback_scenario_instruments_tests {
         app.init_resource::<InstrumentRegistry>();
         app.init_resource::<ScenarioInstrumentsWritebackState>();
         app.init_resource::<ScenarioFileWatchState>();
+        app.init_resource::<ScenarioReadTarget>();
         {
             let mut reg = app.world_mut().resource_mut::<InstrumentRegistry>();
             reg.replace_all(&["NEW.T".to_string()]);
@@ -1189,6 +1204,7 @@ mod writeback_scenario_instruments_tests {
         app.init_resource::<InstrumentRegistry>();
         app.init_resource::<ScenarioInstrumentsWritebackState>();
         app.init_resource::<ScenarioFileWatchState>();
+        app.init_resource::<ScenarioReadTarget>();
         {
             let mut reg = app.world_mut().resource_mut::<InstrumentRegistry>();
             reg.replace_all(&["RETRY.T".to_string()]);
@@ -1266,6 +1282,7 @@ mod writeback_scenario_instruments_tests {
         app.init_resource::<InstrumentRegistry>();
         app.init_resource::<ScenarioInstrumentsWritebackState>();
         app.init_resource::<ScenarioFileWatchState>();
+        app.init_resource::<ScenarioReadTarget>();
         app.init_resource::<ScenarioMetadata>();
         app.add_event::<ScenarioLoadedFromFile>();
         app.add_event::<ScenarioClearedFromFile>();
@@ -1616,6 +1633,7 @@ mod writeback_scenario_instruments_tests {
         app.init_resource::<InstrumentRegistry>();
         app.init_resource::<ScenarioMetadata>();
         app.init_resource::<ScenarioFileWatchState>();
+        app.init_resource::<ScenarioReadTarget>();
         app.init_resource::<RegionKeyAllocator>();
         app.init_resource::<PendingStrategyFragments>();
         app.init_resource::<ScenarioInstrumentsWritebackState>();
@@ -1711,6 +1729,7 @@ mod writeback_scenario_instruments_tests {
         app.init_resource::<InstrumentRegistry>();
         app.init_resource::<ScenarioMetadata>();
         app.init_resource::<ScenarioFileWatchState>();
+        app.init_resource::<ScenarioReadTarget>();
         app.init_resource::<RegionKeyAllocator>();
         app.init_resource::<PendingStrategyFragments>();
         app.init_resource::<ScenarioInstrumentsWritebackState>();
@@ -1921,6 +1940,7 @@ mod writeback_scenario_instruments_tests {
         app.init_resource::<InstrumentRegistry>();
         app.init_resource::<ScenarioMetadata>();
         app.init_resource::<ScenarioFileWatchState>();
+        app.init_resource::<ScenarioReadTarget>();
         app.init_resource::<RegionKeyAllocator>();
         app.init_resource::<PendingStrategyFragments>();
         app.init_resource::<ScenarioInstrumentsWritebackState>();
@@ -2042,6 +2062,7 @@ mod writeback_scenario_instruments_tests {
         app.init_resource::<InstrumentRegistry>();
         app.init_resource::<ScenarioMetadata>();
         app.init_resource::<ScenarioFileWatchState>();
+        app.init_resource::<ScenarioReadTarget>();
         app.init_resource::<RegionKeyAllocator>();
         app.init_resource::<PendingStrategyFragments>();
         app.init_resource::<ScenarioInstrumentsWritebackState>();
@@ -2270,6 +2291,7 @@ mod writeback_scenario_instruments_tests {
         app.init_resource::<InstrumentRegistry>();
         app.init_resource::<ScenarioMetadata>();
         app.init_resource::<ScenarioFileWatchState>();
+        app.init_resource::<ScenarioReadTarget>();
         app.init_resource::<RegionKeyAllocator>();
         app.init_resource::<PendingStrategyFragments>();
         app.init_resource::<ScenarioInstrumentsWritebackState>();
@@ -2403,6 +2425,7 @@ mod writeback_scenario_instruments_tests {
         app.init_resource::<InstrumentRegistry>();
         app.init_resource::<ScenarioMetadata>();
         app.init_resource::<ScenarioFileWatchState>();
+        app.init_resource::<ScenarioReadTarget>();
         app.init_resource::<RegionKeyAllocator>();
         app.init_resource::<PendingStrategyFragments>();
         app.init_resource::<ScenarioInstrumentsWritebackState>();
@@ -2630,5 +2653,23 @@ mod writeback_scenario_instruments_tests {
             scen.instruments,
             vec!["1301.TSE".to_string(), "7203.TSE".to_string()]
         );
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn scenario_read_target_default_is_none() {
+        let target = ScenarioReadTarget::default();
+        assert_eq!(target.0, None);
+    }
+
+    #[test]
+    fn scenario_read_target_some_roundtrip() {
+        let path = std::path::PathBuf::from("/some/path/app_state.json");
+        let target = ScenarioReadTarget(Some(path.clone()));
+        assert_eq!(target.0, Some(path));
     }
 }

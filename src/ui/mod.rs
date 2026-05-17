@@ -19,7 +19,7 @@ pub mod window;
 
 pub use components::{
     ChartInstrument, InstrumentRegistry, ScenarioFileWatchState, ScenarioInstrumentsWritebackState,
-    ScenarioLoadedFromFile, ScenarioWritebackPaths,
+    ScenarioLoadedFromFile, ScenarioReadTarget, ScenarioWritebackPaths,
 };
 
 use crate::ui::buying_power::buying_power_panel_system;
@@ -101,6 +101,7 @@ impl Plugin for UiPlugin {
         .init_resource::<ScenarioMetadata>()
         .init_resource::<InstrumentRegistry>()
         .init_resource::<ScenarioFileWatchState>()
+        .init_resource::<ScenarioReadTarget>()
         .init_resource::<ScenarioInstrumentsWritebackState>()
         .insert_resource(ScenarioWritebackPaths {
             cache_sidecar: crate::ui::menu_bar::cache_state_paths().map(|(json, _)| json),

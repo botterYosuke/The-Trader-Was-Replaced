@@ -7,8 +7,9 @@ use std::time::Instant;
 
 use crate::ui::components::{
     LayoutExcluded, PanelKind, PanelSpawnRequested, PanelSpawnSource, PendingStrategyFragments,
-    RegionKeyAllocator, StrategyBuffer, StrategyEditorId, StrategyEditorSpawnSpec,
-    StrategyFileLoadRequested, StrategyFragment, StrategyLoadMode, WindowManager, WindowRoot,
+    RegionKeyAllocator, ScenarioReadTarget, StrategyBuffer, StrategyEditorId,
+    StrategyEditorSpawnSpec, StrategyFileLoadRequested, StrategyFragment, StrategyLoadMode,
+    WindowManager, WindowRoot,
 };
 use crate::ui::menu_bar::{cache_state_paths, sync_to_cache};
 use crate::ui::strategy_editor::{
@@ -155,8 +156,8 @@ fn is_legacy_chart_entry(win_layout: &WindowLayout) -> bool {
 
 /// ECS 状態から `SidecarLayout` を組み立てる。
 ///
-/// `preserve_scenario_from` に `Some(path)` を渡すと、その `path.with_extension("json")`
-/// から既存 `scenario` キーを回収して新 layout に含める（F1 対応）。
+/// `preserve_scenario_json` に `Some(path)` を渡すと、その `.json` パスから
+/// 既存 `scenario` キーを回収して新 layout に含める（F1 対応）。
 /// `None` を渡すと `scenario` は `None` のままになる。
 #[allow(clippy::type_complexity)]
 fn build_layout(
@@ -172,7 +173,7 @@ fn build_layout(
     >,
     camera: &Query<(&Transform, &OrthographicProjection), (With<Camera2d>, Without<WindowRoot>)>,
     buffer: &StrategyBuffer,
-    preserve_scenario_from: Option<&std::path::Path>,
+    preserve_scenario_json: Option<&std::path::Path>,
 ) -> SidecarLayout {
     let viewport = camera
         .get_single()
@@ -204,8 +205,7 @@ fn build_layout(
         .and_then(|p| p.to_str().map(|s| s.to_string()));
 
     // 既存サイドカーから scenario キーを回収して merge（F1: save 時に scenario が消えるのを防ぐ）
-    let scenario = preserve_scenario_from
-        .map(|p| p.with_extension("json"))
+    let scenario = preserve_scenario_json
         .filter(|p| p.exists())
         .and_then(|p| read_json_with_bom_strip(&p).ok())
         .and_then(|s| serde_json::from_str::<serde_json::Value>(&s).ok())
@@ -327,6 +327,18 @@ pub(crate) fn read_json_with_bom_strip(path: &std::path::Path) -> std::io::Resul
     Ok(text.trim_start_matches('\u{FEFF}').to_string())
 }
 
+pub(crate) fn sidecar_has_windows(path: &std::path::Path) -> bool {
+    if !path.exists() {
+        return false;
+    }
+    read_json_with_bom_strip(path)
+        .ok()
+        .and_then(|s| serde_json::from_str::<serde_json::Value>(&s).ok())
+        .and_then(|v| v.get("windows").cloned())
+        .map(|w| !w.is_null())
+        .unwrap_or(false)
+}
+
 fn load_layout_from(path: &PathBuf) -> std::io::Result<SidecarLayout> {
     let text = read_json_with_bom_strip(path)?;
     serde_json::from_str(&text).map_err(|e| std::io::Error::new(std::io::ErrorKind::InvalidData, e))
@@ -343,9 +355,10 @@ fn apply_cache_restore_system(
     >,
     mut pending: ResMut<PendingLayoutApply>,
     mut spawn_ev: EventWriter<PanelSpawnRequested>,
+    mut scenario_target: ResMut<ScenarioReadTarget>,  // ← ADD
 ) {
     for event in events.read() {
-        let Some((_, cache_py)) = cache_state_paths() else {
+        let Some((cache_json, cache_py)) = cache_state_paths() else {
             error!("cache restore failed: cache_dir not found");
             continue;
         };
@@ -364,6 +377,8 @@ fn apply_cache_restore_system(
 
         buffer.original_path = event.layout.strategy_path.as_ref().map(PathBuf::from);
         buffer.cache_path = Some(cache_py.clone());
+        // §3a: 起動 truth source は cache sidecar。元 sidecar は読まない。
+        scenario_target.0 = Some(cache_json.clone());
         buffer.last_merged_source = None;
 
         allocator.bump_to_at_least(outcome.max_numeric_suffix);
@@ -449,6 +464,7 @@ fn handle_save_layout_system(
     registry: Res<crate::ui::components::InstrumentRegistry>,
     paths: Res<crate::ui::components::ScenarioWritebackPaths>,
     scenario: Res<crate::ui::components::ScenarioMetadata>,
+    mut scenario_target: ResMut<ScenarioReadTarget>,
 ) {
     for _ in events.read() {
         // 計画書 KC4: 明示 Save の前に cache 側だけ最新化する。
@@ -511,6 +527,7 @@ fn handle_save_layout_system(
                 if was_new {
                     buffer.original_path = None;
                     buffer.cache_path = None;
+                    scenario_target.0 = None;
                 }
                 continue;
             }
@@ -523,6 +540,7 @@ fn handle_save_layout_system(
                 if was_new {
                     buffer.original_path = None;
                     buffer.cache_path = None;
+                    scenario_target.0 = None;
                 }
                 continue;
             }
@@ -1376,12 +1394,8 @@ mod tests {
         writeln!(f, r#"{{"scenario": {{"schema_version": 1, "instrument": "7203.TSE", "start": "2025-01-06", "end": "2025-03-31", "granularity": "Daily", "initial_cash": 1000000}}}}"#).unwrap();
         drop(f);
 
-        // py_path.with_extension("json") が json_path になるような py_path を作る
-        let py_path = json_path.with_extension("py");
-
-        // preserve_scenario_from に py_path を渡すと scenario が回収される
-        let scenario = Some(py_path.as_path())
-            .map(|p| p.with_extension("json"))
+        // preserve_scenario_json に json_path を渡すと scenario が回収される
+        let scenario = Some(json_path.as_path())
             .filter(|p| p.exists())
             .and_then(|p| std::fs::read_to_string(&p).ok())
             .and_then(|s| serde_json::from_str::<serde_json::Value>(&s).ok())
@@ -1720,6 +1734,7 @@ mod tests {
         app.insert_resource(reg);
         app.init_resource::<ScenarioMetadata>();
         app.init_resource::<StrategyAutoSaveState>();
+        app.init_resource::<ScenarioReadTarget>();
 
         app.add_event::<LayoutSaveRequested>();
         app.world_mut().spawn((
@@ -1778,6 +1793,7 @@ mod tests {
         app.insert_resource(reg);
         app.init_resource::<ScenarioMetadata>();
         app.init_resource::<StrategyAutoSaveState>();
+        app.init_resource::<ScenarioReadTarget>();
         app.insert_resource(WindowManager::default());
         app.insert_resource(PendingLayoutApply::default());
         app.insert_resource(SidecarAutoLoadState::default());
@@ -1891,6 +1907,7 @@ mod tests {
         app.insert_resource(reg);
         app.init_resource::<ScenarioMetadata>();
         app.init_resource::<StrategyAutoSaveState>();
+        app.init_resource::<ScenarioReadTarget>();
 
         app.add_event::<LayoutSaveRequested>();
         app.world_mut().spawn((
@@ -1941,6 +1958,7 @@ mod tests {
         app.insert_resource(reg);
         app.init_resource::<ScenarioMetadata>();
         app.init_resource::<StrategyAutoSaveState>();
+        app.init_resource::<ScenarioReadTarget>();
 
         app.add_event::<LayoutSaveRequested>();
         app.world_mut().spawn((
@@ -2010,6 +2028,7 @@ mod tests {
         meta.initial_cash = Some(1000000);
         app.insert_resource(meta);
         app.init_resource::<StrategyAutoSaveState>();
+        app.init_resource::<ScenarioReadTarget>();
 
         app.add_event::<LayoutSaveRequested>();
         app.world_mut().spawn((
@@ -2068,6 +2087,7 @@ mod tests {
         app.insert_resource(reg);
         app.init_resource::<ScenarioMetadata>();
         app.init_resource::<StrategyAutoSaveState>();
+        app.init_resource::<ScenarioReadTarget>();
 
         app.add_event::<LayoutSaveRequested>();
         app.world_mut().spawn((
@@ -2137,6 +2157,7 @@ mod tests {
         app.insert_resource(reg);
         app.init_resource::<ScenarioMetadata>();
         app.init_resource::<StrategyAutoSaveState>();
+        app.init_resource::<ScenarioReadTarget>();
 
         app.add_event::<LayoutSaveRequested>();
         app.world_mut().spawn((

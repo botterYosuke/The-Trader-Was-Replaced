@@ -3,9 +3,9 @@ use crate::ui::components::ScenarioMetadata;
 use crate::ui::components::{
     InstrumentRegistry, MenuBarRoot, MenuItem, MenuPopup, MenuTopLevel, OpenMenu, PanelKind,
     PanelSpawnRequested, PanelSpawnSource, PendingStrategyFragments, RedoMenuRequested,
-    RegionKeyAllocator, ScenarioWritebackPaths, StrategyBuffer, StrategyEditorSpawnSpec,
-    StrategyFileLoadRequested, StrategyFragment, StrategyLoadMode, StrategyRunRequested,
-    StrategyStatusLabel, UndoMenuRequested, WindowRoot, flush_sidecars_now,
+    RegionKeyAllocator, ScenarioReadTarget, ScenarioWritebackPaths, StrategyBuffer,
+    StrategyEditorSpawnSpec, StrategyFileLoadRequested, StrategyFragment, StrategyLoadMode,
+    StrategyRunRequested, StrategyStatusLabel, UndoMenuRequested, WindowRoot, flush_sidecars_now,
 };
 use crate::ui::layout_persistence::{
     CacheRestoreRequested, LayoutLoadDialogRequested, LayoutLoadRequested, LayoutSaveAsRequested,
@@ -416,6 +416,7 @@ pub fn handle_strategy_file_load_system(
     mut spawn_ev: EventWriter<PanelSpawnRequested>,
     mut layout_ev: EventWriter<LayoutLoadRequested>,
     existing_roots: Query<(Entity, &PanelKind), With<WindowRoot>>,
+    mut scenario_target: ResMut<ScenarioReadTarget>,  // ← ADD
 ) {
     for event in events.read() {
         let source = match std::fs::read_to_string(&event.path) {
@@ -432,6 +433,9 @@ pub fn handle_strategy_file_load_system(
         }
 
         buffer.original_path = Some(event.path.clone());
+        // ↓ ADD: sidecar path を ScenarioReadTarget にセット（parse_scenario_system がここを読む）
+        let sidecar_path_for_target = event.path.with_extension("json");
+        scenario_target.0 = Some(sidecar_path_for_target);
         buffer.last_merged_source = None;
 
         match cache_state_paths() {
@@ -478,13 +482,8 @@ pub fn handle_strategy_file_load_system(
 
         // sidecar が「scenario-only」(windows キー不在) の場合、layout だけに委ねると
         // どのパネルも spawn されない。peek して windows が無ければ fragments を直接 spawn。
-        let sidecar_has_windows = sidecar_exists
-            && crate::ui::layout_persistence::read_json_with_bom_strip(&sidecar_path)
-                .ok()
-                .and_then(|s| serde_json::from_str::<serde_json::Value>(&s).ok())
-                .and_then(|v| v.get("windows").cloned())
-                .map(|w| !w.is_null())
-                .unwrap_or(false);
+        let sidecar_has_windows =
+            crate::ui::layout_persistence::sidecar_has_windows(&sidecar_path);
 
         match (event.mode, sidecar_exists, sidecar_has_windows) {
             (StrategyLoadMode::LayoutRestore, _, _) => {}
