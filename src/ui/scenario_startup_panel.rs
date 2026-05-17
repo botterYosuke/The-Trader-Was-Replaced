@@ -1,5 +1,5 @@
 use bevy::prelude::*;
-use bevy_cosmic_edit::cosmic_text::{Attrs, Metrics};
+use bevy_cosmic_edit::cosmic_text::{Attrs, AttrsOwned, Metrics};
 use bevy_cosmic_edit::prelude::*;
 use bevy_cosmic_edit::{
     CosmicBackgroundColor, CosmicRenderScale, CosmicTextAlign, CursorColor, ScrollEnabled,
@@ -119,7 +119,12 @@ fn spawn_text_field_row(
             row.spawn((
                 Node {
                     flex_grow: 1.0,
-                    height: Val::Px(18.0),
+                    // Must be tall enough to hold one line of cosmic-edit
+                    // text after DPI scaling (set_initial_scale doubles the
+                    // initial Metrics on a 2x DPI display, so line_height
+                    // goes from 14 to 28). A row shorter than the scaled
+                    // line_height produces 0 layout runs and no glyphs.
+                    height: Val::Px(30.0),
                     ..default()
                 },
                 host_marker,
@@ -310,14 +315,17 @@ pub fn spawn_scenario_startup_input_fields(
         host: Entity,
         field: ScenarioStartupField,
     ) {
+        let text_attrs = Attrs::new().color(CosmicColor::rgb(220, 220, 220));
         let entity = commands
             .spawn((
                 TextEdit,
-                CosmicEditBuffer::new(font_system, Metrics::new(12.0, 14.0)).with_text(
-                    font_system,
-                    "",
-                    Attrs::new().color(CosmicColor::rgb(220, 220, 220)),
-                ),
+                CosmicEditBuffer::new(font_system, Metrics::new(12.0, 14.0))
+                    .with_text(font_system, "", text_attrs),
+                // render_texture reads font_color from DefaultAttrs (not from
+                // the Attrs passed to set_text). Without this, font_color
+                // falls back to rgb(0,0,0) and the text becomes invisible on
+                // the dark background even though the buffer holds the value.
+                DefaultAttrs(AttrsOwned::new(text_attrs)),
                 CursorColor(Color::WHITE),
                 CosmicBackgroundColor(Color::srgba(0.02, 0.02, 0.04, 1.0)),
                 CosmicRenderScale(1.0),
