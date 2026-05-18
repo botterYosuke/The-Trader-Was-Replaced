@@ -391,3 +391,57 @@ async def test_event_ws_raises_without_websockets_package(monkeypatch):
 
     with pytest.raises(RuntimeError, match="websockets"):
         await ws.run(cb)
+
+
+# ---------------------------------------------------------------------------
+# TickerEventWsHub — multi-subscriber multiplexer (Phase 8 §3.2 A3.2b)
+# ---------------------------------------------------------------------------
+
+from engine.exchanges.tachibana_ws import TickerEventWsHub
+
+
+async def test_hub_subscribe_starts_ws_and_unsubscribe_stops(monkeypatch):
+    """最初の subscribe で WS runner task が起動し、最後の unsubscribe で停止する。"""
+    stop_hint = asyncio.Event()
+    fake = _FakeWs(
+        [_encode_frame_sjis([("p_cmd", "KP")])],
+        auto_close=False,
+        idle_event=stop_hint,
+    )
+    _install_fake_ws(monkeypatch, fake)
+
+    hub = TickerEventWsHub("wss://example/ws", ticker="7203")
+    assert hub.subscriber_count == 0
+
+    received: list[str] = []
+
+    async def cb(frame_type: str, fields: dict[str, str], recv_ts_ms: int) -> None:
+        received.append(frame_type)
+
+    await hub.subscribe("sub-a", cb)
+    assert hub.subscriber_count == 1
+    # WS タスクが起動したことを KP frame が cb に届くことで観測。
+    await asyncio.wait_for(
+        _wait_until(lambda: received == ["KP"]), timeout=2.0
+    )
+
+    await hub.unsubscribe("sub-a")
+    assert hub.subscriber_count == 0
+    # _FakeWs を park させていた idle_event を解放して runner を畳ませる。
+    stop_hint.set()
+    # unsubscribe が最後の subscriber を外したら runner task は短時間で終わる。
+    await asyncio.wait_for(_wait_runner_done(hub), timeout=2.0)
+
+
+async def _wait_until(pred, *, interval: float = 0.01) -> None:
+    while not pred():
+        await asyncio.sleep(interval)
+
+
+async def _wait_runner_done(hub) -> None:
+    # private 属性に触るのは hub の lifecycle 観測 (test scope) のためのみ。
+    task = hub._runner_task
+    if task is None:
+        return
+    while not task.done():
+        await asyncio.sleep(0.01)
