@@ -5,6 +5,13 @@ from __future__ import annotations
 import os
 from typing import AsyncIterator, Literal
 
+import asyncio
+
+import httpx
+
+from engine.exchanges.kabusapi_register import RegisterSet
+from engine.exchanges.kabusapi_url import endpoint
+from engine.exchanges.kabusapi_ws_codec import KabuPushFrameProcessor
 from engine.live.adapter import (
     Channel,
     InstrumentId,
@@ -24,6 +31,11 @@ class KabuStationAdapter:
             raise ValueError("environment must be 'prod' or 'verify'")
         self._env = environment
         self._token: str | None = None
+        self._client: httpx.AsyncClient = httpx.AsyncClient()
+        self._register_set: RegisterSet = RegisterSet()
+        self._processors: dict[str, KabuPushFrameProcessor] = {}
+        self._queue: asyncio.Queue = asyncio.Queue()
+        self._ws_task: asyncio.Task | None = None
 
     async def login(self, creds: VenueCredentials) -> None:
         source = creds.credentials_source
@@ -47,6 +59,21 @@ class KabuStationAdapter:
 
     async def logout(self) -> None:
         self._token = None
+        await self._client.aclose()
+
+    async def _put_register(self, symbols: list[tuple[str, int]]) -> bool:
+        """PUT /register で残存銘柄を再送する。
+
+        Returns:
+            ResultCode == 0 で True、それ以外 False。
+        """
+        resp = await self._client.put(
+            endpoint("register", env=self._env),
+            headers={"X-API-KEY": self._token},
+            json={"Symbols": [{"Symbol": s, "Exchange": ex} for s, ex in symbols]},
+        )
+        data = resp.json()
+        return data.get("ResultCode") == 0
 
     async def fetch_instruments(self) -> list[InstrumentRaw]:
         return []
