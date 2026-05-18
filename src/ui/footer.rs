@@ -327,9 +327,14 @@ pub fn update_footer_system(
         let new_text = match exec_mode.mode {
             ExecutionMode::Replay => {
                 if data.timestamp_ms > 0 {
-                    let s = data.timestamp_ms / 1000;
-                    let ms = data.timestamp_ms % 1000;
-                    format!("time: {}.{:03} (replay)", s, ms)
+                    let jst = chrono::FixedOffset::east_opt(9 * 3600).unwrap();
+                    match chrono::DateTime::from_timestamp_millis(data.timestamp_ms) {
+                        Some(utc) => {
+                            let local = utc.with_timezone(&jst);
+                            format!("time: {} JST (replay)", local.format("%Y-%m-%d %H:%M:%S"))
+                        }
+                        None => format!("time: {} ms (replay)", data.timestamp_ms),
+                    }
                 } else {
                     "time: -- (replay)".to_string()
                 }
