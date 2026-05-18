@@ -1,10 +1,14 @@
 from __future__ import annotations
 
+import asyncio
 import itertools
 import threading
 import time
+from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
-from typing import Any, Mapping, MutableMapping, Optional
+from typing import Any, Awaitable, Mapping, MutableMapping, Optional
+
+from .tachibana_url import EventUrl, MasterUrl, PriceUrl, RequestUrl
 
 __all__ = [
     "TachibanaError",
@@ -106,3 +110,61 @@ def check_response(payload: Mapping[str, Any]) -> None:
     midoku = payload.get("sKinsyouhouMidokuFlg", "0")
     if midoku == "1":
         raise UnreadNoticesError("unread notices flag set")
+
+
+# ---------------------------------------------------------------------------
+# Phase 8 A1: PNoCounter / TachibanaSession / StartupLatch
+# ---------------------------------------------------------------------------
+
+
+class PNoCounter:
+    """Per-instance monotonic `p_no` generator."""
+
+    __slots__ = ("_value",)
+
+    def __init__(self) -> None:
+        self._value = int(time.time())
+
+    def next(self) -> int:
+        self._value += 1
+        return self._value
+
+    def peek(self) -> int:
+        return self._value
+
+
+@dataclass(frozen=True, slots=True)
+class TachibanaSession:
+    """Result of a successful login."""
+
+    url_request: RequestUrl
+    url_master: MasterUrl
+    url_price: PriceUrl
+    url_event: EventUrl
+    url_event_ws: str
+    zyoutoeki_kazei_c: str
+    expires_at_ms: Optional[int] = None
+
+
+class StartupLatch:
+    """Allow `validate_session_on_startup` exactly once per instance."""
+
+    __slots__ = ("_lock", "_done")
+
+    def __init__(self) -> None:
+        self._lock = asyncio.Lock()
+        self._done = False
+
+    async def run_once(self, coro: "Awaitable[Any]") -> "Any":
+        async with self._lock:
+            if self._done:
+                if asyncio.iscoroutine(coro):
+                    coro.close()
+                raise RuntimeError(
+                    "validate_session_on_startup は 1 プロセスライフサイクル中に "
+                    "1 度だけ呼べる (L6)。"
+                )
+            try:
+                return await coro
+            finally:
+                self._done = True
