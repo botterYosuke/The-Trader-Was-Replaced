@@ -37,6 +37,15 @@ description: |
     (U+25A0–U+25FF: ▶ ■ ▷ □ 等) を**含まない**ため、これらを Text に使うと豆腐になる。
     また direct exe 起動時 (target/debug/backcast.exe) は AssetServer が exe parent を
     見るので `BEVY_ASSET_ROOT` で repo root を指定しないと assets/ が読めない。
+  ⑩ アイドル CPU / 描画レート / 起動の重さ関連: "CPU が高い", "アイドルなのに重い",
+    "起動しただけで CPU/メモリ", "ファンが回る", "バッテリが減る", "FPS", "frame_time",
+    "vsync", "WinitSettings", "UpdateMode", "desktop_app", "reactive", "Continuous",
+    "RequestRedraw", "EventLoopProxy", "WakeUp" と言われたとき。
+    Bevy 0.15 の DefaultPlugins は `WinitSettings::game()` 相当 (focused=Continuous) なので
+    **アイドル時もモニタリフレッシュ上限まで描き続ける**。trading dashboard では 90Hz モニタで
+    1 コア 60% 食ってた (2026-05-18 計測)。`WinitSettings::reactive(200ms)` 化で 4.7% まで落ちる。
+    ただし `WinitSettings::desktop_app()` (5s/60s) は **mpsc backend push が最大 5 秒遅延** する
+    ので trading UI では使わない。詳細: `references/winit-update-mode.md`。
 
   本プロジェクトは **Bevy 0.15** をピン留めしている（`Cargo.toml` の `bevy = "0.15"`）。
   一方 `.claude/skills/bevy-engine/src/` にミラーされている upstream は **0.19.0-dev** で、
@@ -347,3 +356,4 @@ egui の中で `state.buffer` のような大きい String を編集するとき
 - [references/egui-vs-worldspace.md](references/egui-vs-worldspace.md) — どちらを使うか
 - [references/observers-and-pointer.md](references/observers-and-pointer.md) — observe & Pointer
 - [references/ecs-basics.md](references/ecs-basics.md) — 汎用 ECS（プロジェクト外でも使える）
+- [references/winit-update-mode.md](references/winit-update-mode.md) — WinitSettings / アイドル CPU 削減 / reactive update mode

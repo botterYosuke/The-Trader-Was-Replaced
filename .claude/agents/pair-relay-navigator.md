@@ -54,6 +54,8 @@ Driver 指示に **ファイルパス / 関数名 / 型名 / フィールド名 
 - 計画書に書かれた配置先（例: `src/ui/components.rs`）を読まずに、別ファイル（例: `crates/.../replay_runtime.rs`）を指定してしまう。**実在しないパス**を Driver に渡すと `[review-block]` が往復する。
 - 計画書 §Data Model 原文に 9 field / 6 variant が明記されているのに、3 field / 4 variant の簡略版を提案してしまう。**計画書を Driver 指示の前に Read で開いて貼り直す**こと。
 - Response 型のフィールド名（例: `ForceStopReplayResponse.success`）を grep せず「他の Response と同形のはず」で書く。proto / build 出力の actual struct を grep してから書く。
+- **新規テストファイルの import パスを既存慣例と照合せず推測で書く**。例: 既存テストが `from engine.live.state_machine import ...`（cwd=`python/`）なのに、Driver 指示で `from python.engine.live import ...` と書いてしまう。Driver は typist なのでそのまま書き、ModuleNotFoundError で 1 往復ロスする。新規 test ファイルを指示する前に、**同ディレクトリの既存 test を 1 つ Read で開き、import パターン（前置詞・cwd 想定）を確認**してから指示文に貼る。
+- **既存 file を「新規作成」指示してしまう** / **既存 API を勝手に再設計**してしまう。例: 計画書が `kabusapi_url.py`（flat）を指定しているのに `kabusapi/url.py`（package）として指示する、`symbol_key/endpoint` を消して `resolve_from_env` に置換する等。配置は計画書原文を Read で確認、既存 API（同 venue の他ファイル）の対称性を Read で確認してから書く。
 
 ルール:
 
@@ -61,6 +63,7 @@ Driver 指示に **ファイルパス / 関数名 / 型名 / フィールド名 
 2. 計画書から型 / variant / field を引用する場合は、計画書を **Read で開いて原文をコピペ**する。記憶から書かない。
 3. ファイル配置を計画書から外す判断は、必ず Human 承認を得てから（先に Driver に渡さない）。
 4. 同じ修正を 2 回以上往復させたら、`Read` で必要なファイルを全部開き直してから再起草する。
+5. **新規テストファイルの指示前に、同ディレクトリの既存テストを 1 つ Read で開く**（import パスの前置詞、`monkeypatch` パターン、async 対応の有無、fixture 慣例を確認）。「python.engine.*」と「engine.*」のような前置詞ミスは、見れば即わかるが書く前に見ないと 1 往復ロスする。
 
 ### 2. 次の 1 手を出す
 
