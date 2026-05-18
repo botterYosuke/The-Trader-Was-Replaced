@@ -551,3 +551,61 @@ async def test_events_skips_unknown_side_trade(
     depths = [e for e in collected if e.kind == "depth"]
     assert len(trades) == 1   # 2 件目の buy のみ
     assert len(depths) == 3   # 1/2/3 件目全部
+
+
+# ---------------------------------------------------------------------------
+# Phase 8 §3.2 A3.3-4: logout closes all hubs + clears registry
+# ---------------------------------------------------------------------------
+
+
+async def test_logout_acloses_all_hubs(monkeypatch, httpx_mock: HTTPXMock):
+    """logout は subscribe 中の全 hub に対し aclose() を呼ぶ。"""
+    Stub = _install_stub_hub(monkeypatch)
+    adapter = await _login_demo(monkeypatch, httpx_mock)
+
+    await adapter.subscribe("7203.TSE", {"trades", "depth"})
+    await adapter.subscribe("9984.TSE", {"trades", "depth"})
+    assert len(Stub.instances) == 2
+
+    await adapter.logout()
+
+    for hub in Stub.instances:
+        assert hub.aclose_called is True
+
+
+async def test_logout_clears_hubs_and_processors(monkeypatch, httpx_mock: HTTPXMock):
+    """logout 後 _hubs / _processors は空になる。"""
+    _install_stub_hub(monkeypatch)
+    adapter = await _login_demo(monkeypatch, httpx_mock)
+
+    await adapter.subscribe("7203.TSE", {"trades", "depth"})
+    await adapter.subscribe("9984.TSE", {"trades", "depth"})
+    assert adapter._hubs and adapter._processors
+
+    await adapter.logout()
+
+    assert adapter._hubs == {}
+    assert adapter._processors == {}
+
+
+async def test_logout_makes_subscribe_raise(monkeypatch, httpx_mock: HTTPXMock):
+    """logout 後 subscribe は session 無しで RuntimeError(login) を投げる。"""
+    _install_stub_hub(monkeypatch)
+    adapter = await _login_demo(monkeypatch, httpx_mock)
+    await adapter.subscribe("7203.TSE", {"trades", "depth"})
+
+    await adapter.logout()
+
+    with pytest.raises(RuntimeError, match="login"):
+        await adapter.subscribe("7203.TSE", {"trades", "depth"})
+
+
+async def test_logout_is_idempotent(monkeypatch, httpx_mock: HTTPXMock):
+    """logout を 2 回呼んでも例外を出さない (idempotent)。"""
+    _install_stub_hub(monkeypatch)
+    adapter = await _login_demo(monkeypatch, httpx_mock)
+    await adapter.subscribe("7203.TSE", {"trades", "depth"})
+
+    await adapter.logout()
+    await adapter.logout()  # 2 回目: 例外なし
+    assert adapter._session is None
