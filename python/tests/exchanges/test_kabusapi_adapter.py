@@ -48,11 +48,6 @@ def test_login_prompt_raises_not_implemented():
         asyncio.run(KabuStationAdapter().login(creds))
 
 
-def test_events_raises_not_implemented():
-    with pytest.raises(NotImplementedError):
-        KabuStationAdapter().events()
-
-
 def test_logout_clears_token():
     a = KabuStationAdapter()
     a._token = "abc"

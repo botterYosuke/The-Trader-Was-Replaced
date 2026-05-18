@@ -9,14 +9,18 @@ import asyncio
 
 import httpx
 
+from engine.exchanges import kabusapi_ws  # patch 対象を module 経由で参照
 from engine.exchanges.kabusapi_register import RegisterSet
 from engine.exchanges.kabusapi_url import endpoint
 from engine.exchanges.kabusapi_ws_codec import KabuPushFrameProcessor
 from engine.live.adapter import (
     Channel,
+    DepthLevel,
+    DepthUpdate,
     InstrumentId,
     InstrumentRaw,
     LiveEvent,
+    TradesUpdate,
     VenueCredentials,
 )
 
@@ -58,8 +62,18 @@ class KabuStationAdapter:
         self._token = await fetch_token(api_password, env=self._env)
 
     async def logout(self) -> None:
-        self._token = None
+        if self._ws_task is not None:
+            self._ws_task.cancel()
+            try:
+                await self._ws_task
+            except asyncio.CancelledError:
+                pass
+            except BaseException:
+                pass
+        self._processors.clear()
+        self._register_set.unregister_all()
         await self._client.aclose()
+        self._token = None
 
     async def _put_register(self, symbols: list[tuple[str, int]]) -> bool:
         """PUT /register で残存銘柄を再送する。
@@ -89,6 +103,46 @@ class KabuStationAdapter:
         self._register_set.register(symbol, 1)
         await self._put_register(self._register_set.all_symbols())
         self._processors[symbol] = KabuPushFrameProcessor(symbol=symbol)
+        if self._ws_task is None:
+            self._ws_task = asyncio.create_task(
+                kabusapi_ws.connect(
+                    env=self._env,
+                    on_message=self._on_frame,
+                    register_set=self._register_set,
+                    put_register=self._put_register,
+                )
+            )
+
+    async def _on_frame(self, msg: dict) -> None:
+        symbol = msg.get("Symbol")
+        if symbol is None:
+            return
+        proc = self._processors.get(symbol)
+        if proc is None:
+            return
+        trade, depth = proc.process(msg)
+        instrument_id = f"{symbol}.TSE"
+        if depth is not None:
+            self._queue.put_nowait(
+                DepthUpdate(
+                    kind="depth",
+                    instrument_id=instrument_id,
+                    ts_ns=depth["ts_ns"] or 0,
+                    bids=tuple(DepthLevel(price=p, size=s) for p, s in depth["bids"]),
+                    asks=tuple(DepthLevel(price=p, size=s) for p, s in depth["asks"]),
+                )
+            )
+        if trade is not None:
+            self._queue.put_nowait(
+                TradesUpdate(
+                    kind="trades",
+                    instrument_id=instrument_id,
+                    ts_ns=trade["ts_ns"] or 0,
+                    price=trade["price"],
+                    size=trade["size"],
+                    aggressor_side=trade["aggressor_side"],
+                )
+            )
 
     async def unsubscribe(self, instrument_id: InstrumentId) -> None:
         if self._token is None:
@@ -98,5 +152,6 @@ class KabuStationAdapter:
         self._processors.pop(symbol, None)
         await self._put_register(self._register_set.all_symbols())
 
-    def events(self) -> AsyncIterator[LiveEvent]:
-        raise NotImplementedError
+    async def events(self) -> AsyncIterator[LiveEvent]:
+        while True:
+            yield await self._queue.get()
