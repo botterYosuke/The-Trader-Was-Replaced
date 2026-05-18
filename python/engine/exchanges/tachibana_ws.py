@@ -349,9 +349,10 @@ class TachibanaEventWs:
                     pass
 
     async def _connect_once(self, callback: Any) -> None:
-        connect_kwargs: dict[str, Any] = {"ping_interval": None}
-        if self._proxy is not None:
-            connect_kwargs["proxy"] = self._proxy
+        connect_kwargs: dict[str, Any] = {
+            "ping_interval": None,
+            "proxy": self._proxy,
+        }
         async with websockets.connect(self._url, **connect_kwargs) as ws:
             log.info(
                 "tachibana ws: connected ticker=%s conn=#%d",
@@ -457,6 +458,11 @@ class TachibanaEventWs:
                 exc = recv_task.exception()
                 if exc is not None:
                     raise exc
+                # 正常 close (StopAsyncIteration で recv_loop 自然終了) でも
+                # stop が立っていなければ reconnect 経路 (backoff) へ乗せる。
+                # 立てずに return すると run() の while が即再突入し reconnect storm。
+                if not self._stop.is_set():
+                    raise ConnectionError("websocket closed")
 
 
 # ---------------------------------------------------------------------------
