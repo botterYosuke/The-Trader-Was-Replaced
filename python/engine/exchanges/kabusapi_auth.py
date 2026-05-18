@@ -70,6 +70,8 @@ def check_response(payload: dict, http_status: int) -> None:
         raise KabuTokenExpiredError(code, message)
     if code == 4002006:
         raise KabuRateLimitError(code, message)
+    if code == 4002001:
+        raise KabuRegisterFullError(code, message)
     raise KabuApiError(code, message)
 
 
