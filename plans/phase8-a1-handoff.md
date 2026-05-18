@@ -2,7 +2,7 @@
 
 リポジトリ: `C:\Users\sasai\Documents\The-Trader-Was-Replaced`
 ブランチ: `impl/8-venue-login-skeleton`
-HEAD: `f64e57f test(tachibana): cover master parser + fetch_instruments httpx path (Phase 8 §3.2 A2)`
+HEAD: `88a1820 test(tachibana): cover TachibanaEventWs connect / recv / timeout (Phase 8 §3.2 A3.2a)`
 
 ## 完了済み
 
@@ -18,12 +18,13 @@ HEAD: `f64e57f test(tachibana): cover master parser + fetch_instruments httpx pa
 | **C1 ✅** | `476a7f2` | `live_adapter_factory` + `serve()` 配線 (`live_venue` kwarg → factory 注入) | regression 627 passed (preexisting 3 件は MISSING_STRATEGY_FILE、C1 起因 0) |
 | **A2 ✅** | `2cefbac` + `f64e57f` | `tachibana.fetch_instruments` 実装 (CLMEventDownload マスタ DL + parser 純関数化) | exchanges GREEN / regression 594 passed |
 | **A3.1 ✅** | `1c8d82e` + `2e551f5` | `tachibana_ws.py` 新設: `is_market_open` (JST 前場/後場+クロージング) + `FdFrameProcessor` (F3 side rule / F4 first-frame & DV-reset / F17 ts_ms / 10-level depth) | exchanges GREEN (+11 in test_tachibana_ws) |
+| **A3.2a ✅** | `a3aaa00` + `88a1820` | `TachibanaEventWs` async client: websockets.connect + per-frame `asyncio.wait_for` dead-frame timeout + `FdFrameProcessor` delegate (+ `websockets` dep) | exchanges GREEN (test_tachibana_ws 18 passed) |
 
 ## 残タスク
 
 6 件:
 
-- **A3.2** `TachibanaEventWs` (async WS conn + dead-frame timeout) + `TickerEventWsHub` (mux)
+- **A3.2b** `TickerEventWsHub` (複数 symbol mux + reconnect ループ)
 - **A3.3** `TachibanaAdapter.subscribe` / `unsubscribe` / `events` 配線
 - **B1** `kabusapi.login` (env + `/token`)
 - **B2** `kabusapi.fetch_instruments` (lazy = 空 list、subscribe 時 GET `/symbol`)
