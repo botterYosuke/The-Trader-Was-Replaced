@@ -55,6 +55,10 @@ pub struct BackendTradingState {
     pub venue_state: Option<String>,
     #[serde(default)]
     pub execution_mode: Option<String>,
+    #[serde(default)]
+    pub venue_id: Option<String>,
+    #[serde(default)]
+    pub instruments_loaded: Option<u32>,
 }
 
 #[derive(Resource, Default)]
@@ -606,6 +610,8 @@ mod tests {
             replay_state: Some("RUNNING".to_string()),
             venue_state: None,
             execution_mode: None,
+            venue_id: None,
+            instruments_loaded: None,
         };
         tx.send(new_state).unwrap();
 
@@ -654,6 +660,8 @@ mod tests {
             replay_state: None,
             venue_state: None,
             execution_mode: None,
+            venue_id: None,
+            instruments_loaded: None,
         };
         tx.send(new_state).unwrap();
 
@@ -702,6 +710,8 @@ mod tests {
             replay_state: None,
             venue_state: None,
             execution_mode: None,
+            venue_id: None,
+            instruments_loaded: None,
         };
         tx.send(new_state).unwrap();
 

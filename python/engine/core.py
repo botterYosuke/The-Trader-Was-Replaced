@@ -326,6 +326,7 @@ class DataEngine:
                 execution_mode=self.mode_manager.current_mode if self.mode_manager else "Replay",
                 venue_id=self.venue_id,
                 subscribed_instruments=list(self._subscribed_instruments),
+                instruments_loaded=len(self._subscribed_instruments),
             )
 
     def take_snapshot(self) -> EngineSnapshot:
@@ -358,6 +359,7 @@ class DataEngine:
                 execution_mode=self.mode_manager.current_mode if self.mode_manager else "Replay",
                 venue_id=self.venue_id,
                 subscribed_instruments=list(self._subscribed_instruments),
+                instruments_loaded=len(self._subscribed_instruments),
                 ),
                 replay_index=replay_index,
                 source_path=source_path,

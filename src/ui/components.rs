@@ -76,6 +76,7 @@ pub struct MenuBarRoot;
 pub enum MenuTopLevel {
     File,
     Edit,
+    Venue,
 }
 
 #[derive(Component, Clone, Copy, Debug, PartialEq, Eq)]
@@ -85,6 +86,13 @@ pub enum MenuItem {
     LoadLayout,
     Undo,
     Redo,
+    // --- Phase 8 §3.5 / §3.6 で追加 ---
+    FileNew,
+    VenueConnectTachibanaDemo,
+    VenueConnectTachibanaProd,
+    VenueConnectKabuVerify,
+    VenueConnectKabuProd,
+    VenueDisconnect,
 }
 
 #[derive(Component, Clone, Copy, Debug, PartialEq, Eq)]

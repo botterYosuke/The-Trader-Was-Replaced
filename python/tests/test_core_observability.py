@@ -105,3 +105,23 @@ def test_get_current_state_subscribed_instruments_reflects_internal_list():
     state = eng.get_current_state()
 
     assert state.subscribed_instruments == ["1301.TSE", "5401.TSE"]
+
+
+def test_get_current_state_instruments_loaded_default_is_zero():
+    """ListInstruments 未実行時、instruments_loaded は 0"""
+    eng = DataEngine(state_machine=None)
+
+    state = eng.get_current_state()
+
+    assert state.instruments_loaded == 0
+
+
+def test_get_current_state_instruments_loaded_reflects_subscribed_count():
+    """_subscribed_instruments の件数が instruments_loaded に反映される
+    (Rust 側 BackendStatusUpdate::VenueChanged.instruments_loaded: u32 への配線元)"""
+    eng = DataEngine(state_machine=None)
+    eng._subscribed_instruments = ["1301.TSE", "5401.TSE", "7203.TSE"]
+
+    state = eng.get_current_state()
+
+    assert state.instruments_loaded == 3

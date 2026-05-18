@@ -667,15 +667,15 @@ fn setup_backend_connection(
                         Ok(state) => {
                             // Phase 8 §3.5 subtask 5: detect venue_state / execution_mode
                             // transitions and push typed updates. venue_id / instruments_loaded
-                            // are placeholders until backend exposes them.
+                            // are now sourced from backend BackendTradingState.
                             if state.venue_state != prev_venue {
                                 if let Some(ref s) = state.venue_state {
                                     match parse_venue_state(s) {
                                         Some(vs) => {
                                             let _ = status_tx.send(BackendStatusUpdate::VenueChanged {
                                                 state: vs,
-                                                venue_id: None,
-                                                instruments_loaded: 0,
+                                                venue_id: state.venue_id.clone(),
+                                                instruments_loaded: state.instruments_loaded.unwrap_or(0),
                                             });
                                         }
                                         None => warn!("unknown venue_state from backend: {:?}", s),

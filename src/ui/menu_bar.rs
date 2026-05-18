@@ -1,6 +1,6 @@
 use crate::trading::{
-    LastRunResult, RunState, StrategyRunConfig, TradingData, TransportCommand,
-    TransportCommandSender,
+    ExecutionMode, ExecutionModeRes, LastRunResult, RunState, StrategyRunConfig, TradingData,
+    TransportCommand, TransportCommandSender,
 };
 use crate::ui::components::ScenarioMetadata;
 use crate::ui::components::{
@@ -109,6 +109,7 @@ pub fn spawn_menu_bar(mut commands: Commands) {
                     MenuPopup(MenuTopLevel::File),
                 ))
                 .with_children(|p| {
+                    spawn_menu_item(p, "New", MenuItem::FileNew);
                     spawn_menu_item(p, "Open (Ctrl+O)", MenuItem::LoadLayout);
                     spawn_menu_item(p, "Save (Ctrl+S)", MenuItem::SaveLayout);
                     spawn_menu_item(p, "Save As (Ctrl+Shift+S)", MenuItem::SaveLayoutAs);
@@ -155,6 +156,52 @@ pub fn spawn_menu_bar(mut commands: Commands) {
                 .with_children(|p| {
                     spawn_menu_item(p, "Undo (Ctrl+Z)", MenuItem::Undo);
                     spawn_menu_item(p, "Redo (Ctrl+Y)", MenuItem::Redo);
+                });
+            });
+
+            // [Venue ▾] トップレベルボタン
+            p.spawn((
+                Button,
+                Node {
+                    overflow: Overflow::visible(),
+                    padding: UiRect::axes(Val::Px(10.0), Val::Px(2.0)),
+                    align_items: AlignItems::Center,
+                    position_type: PositionType::Relative,
+                    ..default()
+                },
+                BackgroundColor(BTN_NORMAL),
+                MenuTopLevel::Venue,
+            ))
+            .with_children(|p| {
+                p.spawn((
+                    Text::new("Venue(&V)"),
+                    TextFont {
+                        font_size: 12.0,
+                        ..default()
+                    },
+                    TextColor(Color::srgb(0.82, 0.82, 0.82)),
+                ));
+                // Venue popup
+                p.spawn((
+                    Node {
+                        display: Display::None,
+                        position_type: PositionType::Absolute,
+                        top: Val::Px(22.0),
+                        left: Val::Px(0.0),
+                        flex_direction: FlexDirection::Column,
+                        min_width: Val::Px(240.0),
+                        ..default()
+                    },
+                    BackgroundColor(Color::srgba(0.10, 0.10, 0.16, 0.98)),
+                    GlobalZIndex(100),
+                    MenuPopup(MenuTopLevel::Venue),
+                ))
+                .with_children(|p| {
+                    spawn_menu_item(p, "Connect Tachibana (Demo)", MenuItem::VenueConnectTachibanaDemo);
+                    spawn_menu_item(p, "Connect Tachibana (Prod)", MenuItem::VenueConnectTachibanaProd);
+                    spawn_menu_item(p, "Connect kabuStation (Verify)", MenuItem::VenueConnectKabuVerify);
+                    spawn_menu_item(p, "Connect kabuStation (Prod)", MenuItem::VenueConnectKabuProd);
+                    spawn_menu_item(p, "Disconnect", MenuItem::VenueDisconnect);
                 });
             });
 
@@ -239,11 +286,50 @@ pub fn menu_keyboard_system(
             Some(MenuTopLevel::Edit)
         };
         true
+    } else if keys.just_pressed(KeyCode::KeyV) {
+        open_menu.0 = if open_menu.0 == Some(MenuTopLevel::Venue) {
+            None
+        } else {
+            Some(MenuTopLevel::Venue)
+        };
+        true
     } else {
         false
     };
     if handled {
         kb_events.clear();
+    }
+}
+
+fn send_venue_login(
+    sender: &Option<Res<TransportCommandSender>>,
+    venue_id: &str,
+    environment_hint: &str,
+) {
+    let Some(sender) = sender.as_ref() else {
+        warn!(
+            "menu: Venue→Connect dropped (TransportCommandSender unavailable, venue={}, env={})",
+            venue_id, environment_hint
+        );
+        return;
+    };
+    info!(
+        "menu: Venue→Connect requested (venue={}, env={})",
+        venue_id, environment_hint
+    );
+    if sender
+        .tx
+        .send(TransportCommand::VenueLogin {
+            venue_id: venue_id.to_string(),
+            credentials_source: "prompt".to_string(),
+            environment_hint: environment_hint.to_string(),
+        })
+        .is_err()
+    {
+        error!(
+            "menu: VenueLogin send failed (transport channel closed, venue={})",
+            venue_id
+        );
     }
 }
 
@@ -258,6 +344,8 @@ pub fn menu_item_system(
     mut load_ev: EventWriter<LayoutLoadDialogRequested>,
     mut undo_ev: EventWriter<UndoMenuRequested>,
     mut redo_ev: EventWriter<RedoMenuRequested>,
+    sender: Option<Res<TransportCommandSender>>,
+    execution_mode: Res<ExecutionModeRes>,
 ) {
     for (interaction, mut bg, item) in &mut query {
         match interaction {
@@ -274,6 +362,29 @@ pub fn menu_item_system(
                         save_as_ev.send(LayoutSaveAsRequested);
                     }
                     MenuItem::LoadLayout => {
+                        // Phase 8 §3.5.1 / §3.6.1「File→Open Strategy の execution_mode 連動」:
+                        //   現在 Live (LiveManual or LiveAuto) なら、ダイアログ発火前に
+                        //   SetExecutionMode(LiveAuto) を送って Live Auto に遷移させる。
+                        //   Replay モードの場合は既存挙動どおりダイアログのみ。
+                        // 既存の sidecar JSON 経由 .py 間接ロード経路 (apply_layout_system →
+                        //   StrategyFileLoadRequested) は不変。本 Step では mode 連動のみ追加する。
+                        if matches!(
+                            execution_mode.mode,
+                            ExecutionMode::LiveManual | ExecutionMode::LiveAuto
+                        ) {
+                            if let Some(sender) = sender.as_ref() {
+                                info!("menu: File→Open in Live mode → SetExecutionMode(LiveAuto)");
+                                if sender
+                                    .tx
+                                    .send(TransportCommand::SetExecutionMode { mode: ExecutionMode::LiveAuto })
+                                    .is_err()
+                                {
+                                    error!("menu: SetExecutionMode(LiveAuto) send failed (transport channel closed)");
+                                }
+                            } else {
+                                warn!("menu: File→Open in Live mode but TransportCommandSender unavailable; skipping SetExecutionMode");
+                            }
+                        }
                         info!("menu: load layout requested");
                         load_ev.send(LayoutLoadDialogRequested);
                     }
@@ -284,6 +395,54 @@ pub fn menu_item_system(
                     MenuItem::Redo => {
                         info!("menu: redo requested");
                         redo_ev.send(RedoMenuRequested);
+                    }
+                    MenuItem::FileNew => {
+                        // Phase 8 §3.5 / §3.6「起動・New の挙動」:
+                        //   SetExecutionMode(LiveManual) を発行してロード中の戦略を破棄。Live Manual に戻る。
+                        // TODO(Phase 8 follow-up): 未保存サイドカー .json の自動保存 / 戦略 buffer の
+                        //   unload (StrategyBuffer.original_path のクリア等)。
+                        //   本 Step では SetExecutionMode 発火のみ実装し、副作用群は別 Step に繰り越す。
+                        let Some(sender) = sender.as_ref() else {
+                            warn!("menu: File→New dropped (TransportCommandSender unavailable)");
+                            continue;
+                        };
+                        // Phase 8 §3.5 / §3.6「New 時に Replay 稼働中なら停止を先行発火」:
+                        //   backend 側で冪等扱い (既に Idle なら error_code 返却 → main.rs:380-399 で
+                        //   error ログ 1 行)。UI は RunState を見ずに無条件で送る。
+                        info!("menu: File→New → ForceStop (precede SetExecutionMode)");
+                        if sender.tx.send(TransportCommand::ForceStop).is_err() {
+                            error!("menu: ForceStop send failed (transport channel closed)");
+                        }
+                        info!("menu: File→New requested (SetExecutionMode(LiveManual))");
+                        if sender
+                            .tx
+                            .send(TransportCommand::SetExecutionMode { mode: ExecutionMode::LiveManual })
+                            .is_err()
+                        {
+                            error!("menu: SetExecutionMode(LiveManual) send failed (transport channel closed)");
+                        }
+                    }
+                    MenuItem::VenueConnectTachibanaDemo => {
+                        send_venue_login(&sender, "tachibana", "demo");
+                    }
+                    MenuItem::VenueConnectTachibanaProd => {
+                        send_venue_login(&sender, "tachibana", "prod");
+                    }
+                    MenuItem::VenueConnectKabuVerify => {
+                        send_venue_login(&sender, "kabu", "verify");
+                    }
+                    MenuItem::VenueConnectKabuProd => {
+                        send_venue_login(&sender, "kabu", "prod");
+                    }
+                    MenuItem::VenueDisconnect => {
+                        let Some(sender) = sender.as_ref() else {
+                            warn!("menu: Venue→Disconnect dropped (TransportCommandSender unavailable)");
+                            continue;
+                        };
+                        info!("menu: Venue→Disconnect requested");
+                        if sender.tx.send(TransportCommand::VenueLogout).is_err() {
+                            error!("menu: VenueLogout send failed (transport channel closed)");
+                        }
                     }
                 }
             }
