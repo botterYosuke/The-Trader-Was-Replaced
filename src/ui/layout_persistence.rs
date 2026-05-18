@@ -109,16 +109,6 @@ impl AutoSaveState {
     }
 }
 
-/// 起動時の sidecar 自動ロードをワンショットに制限するフラグ。
-///
-/// `apply_layout_system` が `strategy_path` を読んで `StrategyFileLoadRequested { mode: LayoutRestore }`
-/// を発火した後、`handle_strategy_file_load_system` がさらに sidecar を発火し直すループを防ぐ。
-/// `done == true` のとき `apply_layout_system` は `strategy_path` 由来の追加発火を抑制する。
-#[derive(Resource, Default)]
-pub struct SidecarAutoLoadState {
-    pub done: bool,
-}
-
 #[derive(Event, Debug, Clone)]
 pub struct LayoutSaveRequested;
 
@@ -128,9 +118,16 @@ pub struct LayoutSaveAsRequested;
 #[derive(Event, Debug, Clone)]
 pub struct LayoutLoadDialogRequested;
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum LayoutLoadMode {
+    UserJsonOpen,
+    ApplySidecarForPy,
+}
+
 #[derive(Event, Debug, Clone)]
 pub struct LayoutLoadRequested {
     pub path: PathBuf,
+    pub mode: LayoutLoadMode,
 }
 
 #[derive(Event, Debug, Clone)]
@@ -420,7 +417,6 @@ fn apply_cache_restore_system(
         allocator.bump_to_at_least(outcome.max_numeric_suffix);
         pending_fragments.by_region_key.clear();
         pending_fragments.loaded_for_path = buffer.original_path.clone();
-        pending_fragments.loaded_source = Some(crate::ui::components::FragmentSource::CacheRestore);
         for (key, body) in &outcome.fragments {
             pending_fragments
                 .by_region_key
@@ -790,7 +786,10 @@ fn handle_load_dialog_system(
             .add_filter("Layout JSON", &["json"])
             .pick_file()
         {
-            writer.send(LayoutLoadRequested { path });
+            writer.send(LayoutLoadRequested {
+                path,
+                mode: LayoutLoadMode::UserJsonOpen,
+            });
         } else {
             info!("layout load cancelled: no file selected");
         }
@@ -820,8 +819,7 @@ fn apply_layout_system(
     mut spawn_ev: EventWriter<PanelSpawnRequested>,
     mut pending: ResMut<PendingLayoutApply>,
     mut load_ev: EventWriter<StrategyFileLoadRequested>,
-    mut sidecar_state: ResMut<SidecarAutoLoadState>,
-    pending_fragments: Res<PendingStrategyFragments>,
+    mut pending_fragments: ResMut<PendingStrategyFragments>,
     // ワンショット loopback 抑制: 直近で scenario-only Open → sibling .py 発火 →
     // handler が同じ JSON を再発火、までの 1 サイクルだけスキップする。
     // pending_fragments.loaded_for_path のような恒久的状態に基づくと、
@@ -880,49 +878,48 @@ fn apply_layout_system(
         if let Some(path_str) = &layout.strategy_path {
             let path = std::path::PathBuf::from(path_str);
             if path.exists() {
-                use crate::ui::components::FragmentSource;
-                let should_load = match (
-                    &pending_fragments.loaded_for_path,
-                    pending_fragments.loaded_source,
-                ) {
-                    // 同じ .py を既にロード済み → 再ロード不要
-                    (Some(p), _) if p == &path => {
-                        debug!(
-                            "apply_layout_system: skipping strategy_path reload \
-                             (already loaded: {:?})",
-                            path
-                        );
-                        false
+                let should_load = match event.mode {
+                    LayoutLoadMode::UserJsonOpen => true,
+                    LayoutLoadMode::ApplySidecarForPy => {
+                        // `.py` UserOpen 後の sidecar 適用では、ユーザーが明示選択した
+                        // `.py` を source of truth とする。sidecar の strategy_path が
+                        // 違っていても読み替えない。
+                        match &pending_fragments.loaded_for_path {
+                            Some(p) if p == &path => {
+                                debug!(
+                                    "apply_layout_system: skipping strategy_path reload \
+                                     (already loaded: {:?})",
+                                    path
+                                );
+                                false
+                            }
+                            Some(user_path) => {
+                                warn!(
+                                    "apply_layout_system: sidecar strategy_path {:?} \
+                                     differs from user-selected {:?}; ignoring sidecar path",
+                                    path, user_path
+                                );
+                                false
+                            }
+                            _ => true,
+                        }
                     }
-                    // ユーザが明示的に別の .py を選んでいる → sidecar の strategy_path を ignore
-                    (Some(user_path), Some(FragmentSource::UserOpen)) => {
-                        warn!(
-                            "apply_layout_system: sidecar strategy_path {:?} \
-                             differs from user-selected {:?}; ignoring sidecar path",
-                            path, user_path
-                        );
-                        false
-                    }
-                    // CacheRestore / LayoutRestore 由来 → 明示 JSON Load で上書きする
-                    (Some(prev_path), Some(src)) => {
-                        info!(
-                            "apply_layout_system: replacing fragments loaded via {:?} \
-                             ({:?} → {:?})",
-                            src, prev_path, path
-                        );
-                        true
-                    }
-                    // 由来不明だが path だけある（理論上発生しないが安全側）
-                    (Some(_), None) => true,
-                    // 何もロードしていない（初回 sidecar 自動ロード）
-                    (None, _) => !sidecar_state.done,
                 };
                 if should_load {
+                    // 連続 Load / 失敗後リトライに備え、前回 deferred apply の残骸を
+                    // 一貫して初期化する。直後に load_ev / pending.windows.extend /
+                    // waiting_for_strategy = true が再設定するので、ここでは
+                    // 「捨てる」ことだけに専念する。
+                    pending_fragments.by_region_key.clear();
+                    pending_fragments.loaded_for_path = None;
+                    pending.windows.clear();
+                    pending.spawn_requested.clear();
+                    pending.waiting_for_strategy = false;
+
                     load_ev.send(StrategyFileLoadRequested {
                         path,
                         mode: StrategyLoadMode::LayoutRestore,
                     });
-                    sidecar_state.done = true;
                     // ウィンドウ spawn をキューして翌フレームまで defer する
                     if let Some(win_layouts) = &layout.windows {
                         pending.windows.extend(win_layouts.iter().cloned());
@@ -941,10 +938,6 @@ fn apply_layout_system(
                         event.path
                     );
                     continue;
-                } else {
-                    debug!(
-                        "apply_layout_system: skipping strategy_path reload (sidecar one-shot done)"
-                    );
                 }
             } else {
                 warn!("layout load: strategy_path {:?} not found, skipping", path);
@@ -1294,7 +1287,6 @@ impl Plugin for LayoutPersistencePlugin {
     fn build(&self, app: &mut App) {
         app.init_resource::<PendingLayoutApply>()
             .init_resource::<AutoSaveState>()
-            .init_resource::<SidecarAutoLoadState>()
             .add_event::<LayoutSaveRequested>()
             .add_event::<LayoutSaveAsRequested>()
             .add_event::<LayoutLoadDialogRequested>()
@@ -1698,7 +1690,6 @@ mod tests {
         app.add_event::<StrategyFileLoadRequested>();
         app.insert_resource(WindowManager::default());
         app.insert_resource(PendingLayoutApply::default());
-        app.insert_resource(SidecarAutoLoadState::default());
         app.insert_resource(PendingStrategyFragments::default());
 
         app.world_mut().spawn((
@@ -1744,8 +1735,10 @@ mod tests {
         });
         std::fs::write(&tmp, serde_json::to_string(&layout_json).unwrap()).unwrap();
 
-        app.world_mut()
-            .send_event(LayoutLoadRequested { path: tmp.clone() });
+        app.world_mut().send_event(LayoutLoadRequested {
+            path: tmp.clone(),
+            mode: LayoutLoadMode::UserJsonOpen,
+        });
         app.add_systems(Update, apply_layout_system);
         app.update();
 
@@ -1834,7 +1827,6 @@ mod tests {
         app.add_event::<StrategyFileLoadRequested>();
         app.insert_resource(WindowManager::default());
         app.insert_resource(PendingLayoutApply::default());
-        app.insert_resource(SidecarAutoLoadState::default());
         app.insert_resource(PendingStrategyFragments::default());
 
         app.world_mut().spawn((
@@ -1878,8 +1870,10 @@ mod tests {
         });
         std::fs::write(&tmp, serde_json::to_string(&layout_json).unwrap()).unwrap();
 
-        app.world_mut()
-            .send_event(LayoutLoadRequested { path: tmp.clone() });
+        app.world_mut().send_event(LayoutLoadRequested {
+            path: tmp.clone(),
+            mode: LayoutLoadMode::UserJsonOpen,
+        });
         app.add_systems(Update, apply_layout_system);
         app.update();
 
@@ -1984,7 +1978,6 @@ mod tests {
         app.init_resource::<ScenarioReadTarget>();
         app.insert_resource(WindowManager::default());
         app.insert_resource(PendingLayoutApply::default());
-        app.insert_resource(SidecarAutoLoadState::default());
         app.insert_resource(PendingStrategyFragments::default());
 
         app.add_event::<LayoutSaveRequested>();
@@ -2050,6 +2043,7 @@ mod tests {
         // PanelSpawnRequested が発火するため、ここで検知できる。
         app.world_mut().send_event(LayoutLoadRequested {
             path: json_path.clone(),
+            mode: LayoutLoadMode::UserJsonOpen,
         });
         app.update();
 
@@ -2409,5 +2403,210 @@ mod tests {
             vec!["NEW1.TSE".to_string(), "NEW2.TSE".to_string()],
             "cache_sidecar must be flushed with registry latest values (KC4-a)"
         );
+    }
+
+    /// UserJsonOpen は pending_fragments.loaded_for_path == strategy_path であっても
+    /// JSON の strategy_path を必ず再読込する（StrategyFileLoadRequested を発火する）。
+    #[test]
+    fn test_user_json_open_reloads_strategy_path_even_if_already_loaded() {
+        use crate::ui::components::{
+            PendingStrategyFragments, RegionKeyAllocator, StrategyBuffer,
+        };
+        use bevy::prelude::*;
+
+        let mut app = App::new();
+        app.add_event::<LayoutLoadRequested>();
+        app.add_event::<PanelSpawnRequested>();
+        app.add_event::<StrategyFileLoadRequested>();
+        app.insert_resource(WindowManager::default());
+        app.insert_resource(PendingLayoutApply::default());
+        app.insert_resource(StrategyBuffer::default());
+        app.insert_resource(PendingStrategyFragments::default());
+        app.insert_resource(RegionKeyAllocator::default());
+        app.init_resource::<Time>();
+
+        app.world_mut().spawn((
+            Camera2d,
+            Transform::default(),
+            OrthographicProjection::default_2d(),
+        ));
+
+        let dir = tempfile::tempdir().unwrap();
+        let py_path = dir.path().join("foo.py");
+        let json_path = dir.path().join("foo.json");
+        std::fs::write(&py_path, "# --- region: region_001 ---\npass\n").unwrap();
+        let layout_json = serde_json::json!({
+            "schema_version": SCHEMA_VERSION,
+            "viewport": null,
+            "strategy_path": py_path.to_string_lossy(),
+            "windows": [],
+        });
+        std::fs::write(&json_path, serde_json::to_string(&layout_json).unwrap()).unwrap();
+
+        // 既に foo.py を loaded 済みの状態を作る（UserOpen 由来）。
+        {
+            let mut pf = app.world_mut().resource_mut::<PendingStrategyFragments>();
+            pf.loaded_for_path = Some(py_path.clone());
+        }
+
+        app.add_systems(Update, apply_layout_system);
+        app.world_mut().send_event(LayoutLoadRequested {
+            path: json_path.clone(),
+            mode: LayoutLoadMode::UserJsonOpen,
+        });
+        app.update();
+        app.update();
+
+        let mut load_events = app
+            .world_mut()
+            .resource_mut::<Events<StrategyFileLoadRequested>>();
+        let loads: Vec<StrategyFileLoadRequested> = load_events.update_drain().collect();
+        assert_eq!(
+            loads.len(),
+            1,
+            "UserJsonOpen は pending_fragments を無視して strategy_path を必ず reload するべき。\
+             got events = {}",
+            loads.len()
+        );
+        assert_eq!(
+            loads[0].path, py_path,
+            "reload された path は JSON の strategy_path であるべき"
+        );
+    }
+
+    /// cache restore 後に残った pending_fragments.by_region_key を、
+    /// 後続の UserJsonOpen が deferred path に入るときに必ず破棄する。
+    #[test]
+    fn user_json_open_clears_stale_pending_fragments() {
+        use crate::ui::components::{
+            PendingStrategyFragments, RegionKeyAllocator, StrategyBuffer,
+        };
+        use bevy::prelude::*;
+
+        let mut app = App::new();
+        app.add_event::<LayoutLoadRequested>();
+        app.add_event::<PanelSpawnRequested>();
+        app.add_event::<StrategyFileLoadRequested>();
+        app.insert_resource(WindowManager::default());
+        app.insert_resource(PendingLayoutApply::default());
+        app.insert_resource(StrategyBuffer::default());
+        app.insert_resource(PendingStrategyFragments::default());
+        app.insert_resource(RegionKeyAllocator::default());
+        app.init_resource::<Time>();
+
+        app.world_mut().spawn((
+            Camera2d,
+            Transform::default(),
+            OrthographicProjection::default_2d(),
+        ));
+
+        let dir = tempfile::tempdir().unwrap();
+        let py_path = dir.path().join("foo.py");
+        let json_path = dir.path().join("foo.json");
+        std::fs::write(&py_path, "# --- region: region_001 ---\npass\n").unwrap();
+        let layout_json = serde_json::json!({
+            "schema_version": SCHEMA_VERSION,
+            "viewport": null,
+            "strategy_path": py_path.to_string_lossy(),
+            "windows": [],
+        });
+        std::fs::write(&json_path, serde_json::to_string(&layout_json).unwrap()).unwrap();
+
+        // cache restore で投入された stale fragments を仕込む。
+        {
+            let mut pf = app.world_mut().resource_mut::<PendingStrategyFragments>();
+            pf.by_region_key
+                .insert("region_999".to_string(), "stale body".to_string());
+            pf.loaded_for_path = Some(PathBuf::from("/some/other/path.py"));
+        }
+
+        app.add_systems(Update, apply_layout_system);
+        app.world_mut().send_event(LayoutLoadRequested {
+            path: json_path.clone(),
+            mode: LayoutLoadMode::UserJsonOpen,
+        });
+        app.update();
+
+        let pf = app.world().resource::<PendingStrategyFragments>();
+        assert!(
+            pf.by_region_key.is_empty(),
+            "UserJsonOpen deferred path must clear stale pending_fragments.by_region_key, \
+             got: {:?}",
+            pf.by_region_key.keys().collect::<Vec<_>>()
+        );
+    }
+
+    /// ApplySidecarForPy は `.py` UserOpen 後の sidecar 適用なので、
+    /// sidecar の strategy_path が別ファイルを指していても読み替えない。
+    #[test]
+    fn apply_sidecar_for_py_ignores_mismatched_strategy_path() {
+        use crate::ui::components::{
+            PendingStrategyFragments, RegionKeyAllocator, StrategyBuffer,
+        };
+        use bevy::prelude::*;
+
+        let mut app = App::new();
+        app.add_event::<LayoutLoadRequested>();
+        app.add_event::<PanelSpawnRequested>();
+        app.add_event::<StrategyFileLoadRequested>();
+        app.insert_resource(WindowManager::default());
+        app.insert_resource(PendingLayoutApply::default());
+        app.insert_resource(StrategyBuffer::default());
+        app.insert_resource(PendingStrategyFragments::default());
+        app.insert_resource(RegionKeyAllocator::default());
+        app.init_resource::<Time>();
+
+        app.world_mut().spawn((
+            Camera2d,
+            Transform::default(),
+            OrthographicProjection::default_2d(),
+        ));
+
+        let dir = tempfile::tempdir().unwrap();
+        let user_py_path = dir.path().join("user_selected.py");
+        let sidecar_py_path = dir.path().join("sidecar_points_elsewhere.py");
+        let json_path = dir.path().join("user_selected.json");
+        std::fs::write(&user_py_path, "# region region_001\nuser\n# endregion region_001\n")
+            .unwrap();
+        std::fs::write(
+            &sidecar_py_path,
+            "# region region_001\nsidecar\n# endregion region_001\n",
+        )
+        .unwrap();
+        let layout_json = serde_json::json!({
+            "schema_version": SCHEMA_VERSION,
+            "viewport": null,
+            "strategy_path": sidecar_py_path.to_string_lossy(),
+            "windows": [],
+        });
+        std::fs::write(&json_path, serde_json::to_string(&layout_json).unwrap()).unwrap();
+
+        {
+            let mut pf = app.world_mut().resource_mut::<PendingStrategyFragments>();
+            pf.loaded_for_path = Some(user_py_path.clone());
+            pf.by_region_key
+                .insert("region_001".to_string(), "user".to_string());
+        }
+
+        app.add_systems(Update, apply_layout_system);
+        app.world_mut().send_event(LayoutLoadRequested {
+            path: json_path,
+            mode: LayoutLoadMode::ApplySidecarForPy,
+        });
+        app.update();
+        app.update();
+
+        let mut load_events = app
+            .world_mut()
+            .resource_mut::<Events<StrategyFileLoadRequested>>();
+        let loads: Vec<StrategyFileLoadRequested> = load_events.update_drain().collect();
+        assert!(
+            loads.is_empty(),
+            "ApplySidecarForPy must not reload sidecar strategy_path when user-selected .py differs"
+        );
+
+        let pf = app.world().resource::<PendingStrategyFragments>();
+        assert_eq!(pf.loaded_for_path.as_deref(), Some(user_py_path.as_path()));
+        assert_eq!(pf.by_region_key.get("region_001").map(String::as_str), Some("user"));
     }
 }

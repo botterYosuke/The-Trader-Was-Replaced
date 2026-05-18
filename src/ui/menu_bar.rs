@@ -12,7 +12,8 @@ use crate::ui::components::{
     flush_sidecars_now,
 };
 use crate::ui::layout_persistence::{
-    CacheRestoreRequested, LayoutLoadDialogRequested, LayoutLoadRequested, LayoutSaveAsRequested,
+    CacheRestoreRequested, LayoutLoadDialogRequested, LayoutLoadMode, LayoutLoadRequested,
+    LayoutSaveAsRequested,
     LayoutSaveRequested, SidecarLayout,
 };
 use crate::replay::{ReplayStartupPhase, ReplayStartupProgress};
@@ -478,10 +479,6 @@ pub fn handle_strategy_file_load_system(
 
         pending.by_region_key.clear();
         pending.loaded_for_path = Some(event.path.clone());
-        pending.loaded_source = Some(match event.mode {
-            StrategyLoadMode::UserOpen => crate::ui::components::FragmentSource::UserOpen,
-            StrategyLoadMode::LayoutRestore => crate::ui::components::FragmentSource::LayoutRestore,
-        });
         for (key, body) in &outcome.fragments {
             pending.by_region_key.insert(key.clone(), body.clone());
         }
@@ -501,7 +498,10 @@ pub fn handle_strategy_file_load_system(
                     "strategy load: sidecar present with windows, delegating spawn to layout {:?}",
                     sidecar_path
                 );
-                layout_ev.send(LayoutLoadRequested { path: sidecar_path });
+                layout_ev.send(LayoutLoadRequested {
+                    path: sidecar_path,
+                    mode: LayoutLoadMode::ApplySidecarForPy,
+                });
             }
             (_, true, false) => {
                 info!(
@@ -519,7 +519,10 @@ pub fn handle_strategy_file_load_system(
                         }),
                     });
                 }
-                layout_ev.send(LayoutLoadRequested { path: sidecar_path });
+                layout_ev.send(LayoutLoadRequested {
+                    path: sidecar_path,
+                    mode: LayoutLoadMode::ApplySidecarForPy,
+                });
             }
             (_, false, _) => {
                 for (key, body) in &outcome.fragments {

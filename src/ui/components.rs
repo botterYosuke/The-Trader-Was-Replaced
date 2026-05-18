@@ -279,22 +279,6 @@ pub struct PendingStrategyFragments {
     pub by_region_key: HashMap<String, String>,
     /// このバッチを解析した .py パス。drain 時に不一致なら warn して skip する。
     pub loaded_for_path: Option<PathBuf>,
-    /// 現在保持している fragments の由来。
-    /// `apply_layout_system` が「sidecar の strategy_path を尊重するか」判断するのに使う。
-    pub loaded_source: Option<FragmentSource>,
-}
-
-/// `PendingStrategyFragments` の由来。`apply_layout_system` のゲート判定で使う。
-///
-/// - `CacheRestore`: 起動時に cache から復元した fragments。明示 JSON Load で上書きしてよい。
-/// - `UserOpen`: ユーザが `.py` を直接選択して読んだ fragments。
-///   sidecar の `strategy_path` がユーザ選択と違っても、ユーザ選択を優先して sidecar を ignore する。
-/// - `LayoutRestore`: 別の JSON Load 由来。新しい明示 JSON Load で上書きしてよい。
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum FragmentSource {
-    CacheRestore,
-    UserOpen,
-    LayoutRestore,
 }
 
 /// ユーザー操作またはレイアウト復元でストラテジーファイルをロードするイベント。
