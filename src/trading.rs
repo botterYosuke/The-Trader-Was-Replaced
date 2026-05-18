@@ -201,6 +201,21 @@ pub enum TransportCommand {
     },
     /// User-initiated venue logout. `token` is injected by the transport task.
     VenueLogout,
+    /// Fetch the instrument universe and refresh `Tickers`. Triggered at
+    /// startup (Replay catalog fallback) and whenever the venue transitions
+    /// into CONNECTED/SUBSCRIBED (Live universe overwrite, plan §3.5).
+    ListInstruments {
+        /// Hint forwarded as `ListInstrumentsRequest.source`. Phase 8 backend
+        /// ignores this and always returns the Replay catalog; reserved for
+        /// future `"local"` parquet snapshot wiring.
+        source: Option<String>,
+    },
+    /// Live-mode sidebar click handler. `token` is injected by the transport
+    /// task. Channels are `["trades", "depth"]` by default (LiveRunner is
+    /// channel-agnostic on the backend side).
+    SubscribeMarketData {
+        instrument_id: String,
+    },
 }
 
 #[derive(Resource, Debug, Clone)]
@@ -467,6 +482,34 @@ pub struct ExecutionModeRes {
     pub mode: ExecutionMode,
 }
 
+/// Sidebar instrument row. Phase 8 §3.5: name/market are filled by the venue
+/// adapter when available; for Replay catalog sources `name` falls back to
+/// `id` and `market` is empty. Live-tick `last_price` is intentionally kept
+/// in a separate (future) resource so the sidebar's virtual scroller does
+/// not invalidate every row on every tick.
+#[derive(Debug, Clone, PartialEq, Eq, Default)]
+pub struct Ticker {
+    pub id: String,
+    pub name: String,
+    pub market: String,
+}
+
+/// Authoritative instrument universe shown in the sidebar. Replaced wholesale
+/// on each `BackendStatusUpdate::InstrumentsListed` (plan §0.5.1: "overwrite,
+/// not union — show the latest tradable universe").
+#[derive(Resource, Debug, Clone, Default)]
+pub struct Tickers {
+    pub list: Vec<Ticker>,
+}
+
+/// Currently-selected sidebar symbol. Click handling is mode-dependent
+/// (plan §3.5): Replay → update this only; Live* → also fire
+/// `TransportCommand::SubscribeMarketData`.
+#[derive(Resource, Debug, Clone, Default)]
+pub struct SelectedSymbol {
+    pub id: Option<String>,
+}
+
 #[derive(Debug, Clone)]
 pub enum BackendStartupStage {
     ResettingReplay,
@@ -516,6 +559,10 @@ pub enum BackendStatusUpdate {
     },
     ExecutionModeChanged {
         mode: ExecutionMode,
+    },
+    /// Wholesale replacement of the sidebar instrument universe (plan §3.5).
+    InstrumentsListed {
+        instruments: Vec<Ticker>,
     },
 }
 
@@ -906,5 +953,17 @@ mod tests {
     fn test_execution_mode_res_default() {
         let r = ExecutionModeRes::default();
         assert_eq!(r.mode, ExecutionMode::LiveManual);
+    }
+
+    #[test]
+    fn test_tickers_default_is_empty() {
+        let t = Tickers::default();
+        assert!(t.list.is_empty());
+    }
+
+    #[test]
+    fn test_selected_symbol_default_is_none() {
+        let s = SelectedSymbol::default();
+        assert!(s.id.is_none());
     }
 }

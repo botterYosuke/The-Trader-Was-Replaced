@@ -66,9 +66,14 @@ use crate::ui::scenario_startup_panel::{
     sync_startup_params_from_scenario_system, update_scenario_startup_param_ui_system,
     write_startup_params_to_cache_sidecar_system,
 };
-use crate::ui::components::ScenarioStartupParams;
+use crate::ui::components::{
+    ScenarioStartupParams, SidebarTickersScrollOffset, SidebarTickersSearchState,
+};
 use crate::ui::sidebar::{
-    instrument_remove_button_system, panel_button_system, spawn_sidebar, update_sidebar_system,
+    instrument_remove_button_system, panel_button_system, spawn_sidebar,
+    ticker_row_click_system, tickers_scroll_system, tickers_search_focus_system,
+    tickers_search_input_system, tickers_search_text_sync_system, update_sidebar_system,
+    update_tickers_list_system,
 };
 use crate::ui::strategy_editor::{
     StrategyAutoSaveState, apply_pending_app_edits_system, apply_strategy_snapshot_restore_system,
@@ -115,6 +120,8 @@ impl Plugin for UiPlugin {
         .init_resource::<ScenarioMetadata>()
         .init_resource::<ScenarioStartupParams>()
         .init_resource::<InstrumentRegistry>()
+        .init_resource::<SidebarTickersScrollOffset>()
+        .init_resource::<SidebarTickersSearchState>()
         .init_resource::<ScenarioFileWatchState>()
         .init_resource::<ScenarioReadTarget>()
         .init_resource::<ScenarioInstrumentsWritebackState>()
@@ -186,6 +193,15 @@ impl Plugin for UiPlugin {
                 instrument_remove_button_system,
                 add_instrument_button_system.after(sync_registry_from_scenario_loaded_system),
                 force_close_picker_on_lock_system.after(mark_registry_dirty_system),
+                // Phase 8 §3.5 Tickers (Live universe) systems
+                tickers_search_focus_system,
+                tickers_search_input_system.before(picker_searchbox_input_system),
+                tickers_search_text_sync_system.after(tickers_search_input_system),
+                tickers_scroll_system,
+                update_tickers_list_system
+                    .after(tickers_search_input_system)
+                    .after(tickers_scroll_system),
+                ticker_row_click_system,
             ),
         )
         .add_systems(

@@ -3,9 +3,9 @@ use backcast::grid::GridPlugin;
 use backcast::trading::{
     AvailableInstruments, BackendChannel, BackendStartupStage, BackendStatus, BackendStatusUpdate,
     ExecutionMode, ExecutionModeRes, LastRunResult, PortfolioOrder, PortfolioPosition,
-    PortfolioState, ReplaySpeed, RunState, TradingData, TradingSettings, TransportCommand,
-    TransportCommandSender, VenueState, VenueStatusRes, backend_update_system, engine,
-    parse_summary_json, price_simulation_system,
+    PortfolioState, ReplaySpeed, RunState, SelectedSymbol, Ticker, Tickers, TradingData,
+    TradingSettings, TransportCommand, TransportCommandSender, VenueState, VenueStatusRes,
+    backend_update_system, engine, parse_summary_json, price_simulation_system,
 };
 use backcast::replay::{ReplayStartupPhase, ReplayStartupProgress};
 use backcast::ui::UiPlugin;
@@ -20,9 +20,10 @@ use chrono::NaiveDate;
 use engine::data_engine_client::DataEngineClient;
 use engine::{
     EngineKind, EngineStartConfig, ForceStopReplayRequest, GetPortfolioRequest, GetStateRequest,
-    ListAllListedSymbolsRequest, LoadReplayDataRequest, PauseReplayRequest, ReplayGranularity,
-    ResumeReplayRequest, SetExecutionModeRequest, SetReplaySpeedRequest, StartEngineRequest,
-    StartEngineResponse, StepReplayRequest, VenueLoginRequest, VenueLogoutRequest,
+    ListAllListedSymbolsRequest, ListInstrumentsRequest, LoadReplayDataRequest, PauseReplayRequest,
+    ReplayGranularity, ResumeReplayRequest, SetExecutionModeRequest, SetReplaySpeedRequest,
+    StartEngineRequest, StartEngineResponse, StepReplayRequest, SubscribeRequest,
+    VenueLoginRequest, VenueLogoutRequest,
 };
 use tokio::sync::mpsc;
 
@@ -49,6 +50,52 @@ fn parse_venue_state(s: &str) -> Option<VenueState> {
 /// Returns `None` for unknown values; caller should warn and skip.
 fn parse_execution_mode(s: &str) -> Option<ExecutionMode> {
     serde_json::from_value(serde_json::Value::String(s.to_owned())).ok()
+}
+
+/// Fire `ListInstruments` off the main polling loop and emit
+/// `InstrumentsListed` on success. Used at startup and on venue state
+/// transitions; the work runs on a separate task so the poll cadence
+/// is not gated on backend list latency.
+fn fire_list_instruments(
+    client: &DataEngineClient<tonic::transport::Channel>,
+    token: &str,
+    source: Option<String>,
+    status_tx: &mpsc::UnboundedSender<BackendStatusUpdate>,
+) {
+    let mut li_client = client.clone();
+    let li_token = token.to_owned();
+    let li_status_tx = status_tx.clone();
+    tokio::spawn(async move {
+        let req = tonic::Request::new(ListInstrumentsRequest {
+            token: li_token,
+            source,
+        });
+        match li_client.list_instruments(req).await {
+            Ok(resp) => {
+                let inner = resp.into_inner();
+                if inner.success {
+                    let instruments: Vec<Ticker> = inner
+                        .instruments
+                        .into_iter()
+                        .map(|i| Ticker {
+                            id: i.id,
+                            name: i.name,
+                            market: i.market,
+                        })
+                        .collect();
+                    info!("ListInstruments(auto) ok: {} instruments", instruments.len());
+                    let _ = li_status_tx
+                        .send(BackendStatusUpdate::InstrumentsListed { instruments });
+                } else {
+                    warn!("ListInstruments(auto) returned !success: {}", inner.error_message);
+                    let _ = li_status_tx.send(BackendStatusUpdate::InstrumentsListed {
+                        instruments: Vec::new(),
+                    });
+                }
+            }
+            Err(e) => error!("ListInstruments(auto) failed: {}", e),
+        }
+    });
 }
 
 #[tokio::main]
@@ -82,6 +129,8 @@ async fn main() {
         .insert_resource(ReplaySpeed::default())
         .insert_resource(VenueStatusRes::default())
         .insert_resource(ExecutionModeRes::default())
+        .insert_resource(Tickers::default())
+        .insert_resource(SelectedSymbol::default())
         .insert_resource(tokio_handle)
         .add_systems(Startup, (setup_camera, setup_backend_connection, spawn_replay_startup_window))
         .add_systems(
@@ -116,6 +165,7 @@ fn status_update_system(
     mut progress: ResMut<ReplayStartupProgress>,
     mut venue_status: ResMut<VenueStatusRes>,
     mut exec_mode: ResMut<ExecutionModeRes>,
+    mut tickers: ResMut<Tickers>,
 ) {
     while let Ok(update) = channel.rx.try_recv() {
         apply_status_update(
@@ -127,6 +177,7 @@ fn status_update_system(
             &mut progress,
             &mut venue_status,
             &mut exec_mode,
+            &mut tickers,
         );
     }
 }
@@ -140,6 +191,7 @@ fn apply_status_update(
     progress: &mut ReplayStartupProgress,
     venue_status: &mut VenueStatusRes,
     exec_mode: &mut ExecutionModeRes,
+    tickers: &mut Tickers,
 ) {
     match update {
         BackendStatusUpdate::Connected(c) => status.connected = c,
@@ -230,6 +282,9 @@ fn apply_status_update(
         BackendStatusUpdate::ExecutionModeChanged { mode } => {
             exec_mode.mode = mode;
         }
+        BackendStatusUpdate::InstrumentsListed { instruments } => {
+            tickers.list = instruments;
+        }
     }
 }
 
@@ -302,6 +357,12 @@ fn setup_backend_connection(
         // Backend manages its own lifecycle; no explicit Start call needed.
         info!("Backend connection established.");
         let _ = status_tx.send(BackendStatusUpdate::Running(true));
+
+        // Phase 8 §3.5: fetch the initial instrument universe once on connect.
+        // Pre-login this falls back to the Replay catalog (plan §3.5 1002);
+        // after VenueLogin success we re-fire below to overwrite with the
+        // Live venue universe.
+        fire_list_instruments(&client, &token, None, &status_tx);
 
         // Phase 8 §3.5 subtask 5: dedupe venue_state / execution_mode pushes
         // by tracking the previous raw string we saw from BackendTradingState.
@@ -637,6 +698,36 @@ fn setup_backend_connection(
                             Err(e) => error!("VenueLogin failed: venue_id={} err={}", venue_id, e),
                         }
                     }
+                    TransportCommand::ListInstruments { source } => {
+                        fire_list_instruments(&client, &token, source, &status_tx);
+                    }
+                    TransportCommand::SubscribeMarketData { instrument_id } => {
+                        let req = tonic::Request::new(SubscribeRequest {
+                            instrument_id: instrument_id.clone(),
+                            channels: vec!["trades".to_string(), "depth".to_string()],
+                            token: token.clone(),
+                        });
+                        match client.subscribe_market_data(req).await {
+                            Ok(r) => {
+                                let inner = r.into_inner();
+                                if inner.success {
+                                    info!("SubscribeMarketData ok: {}", instrument_id);
+                                } else {
+                                    // Plan §3.5 + "案 C": precondition reject is warn-only
+                                    // (no ModalLayer yet). LIVE_ADAPTER_NOT_CONFIGURED /
+                                    // EXECUTION_MODE_PRECONDITION surfaces here.
+                                    warn!(
+                                        "SubscribeMarketData rejected: {} error_code={}",
+                                        instrument_id, inner.error_code
+                                    );
+                                }
+                            }
+                            Err(e) => error!(
+                                "SubscribeMarketData failed: {} err={}",
+                                instrument_id, e
+                            ),
+                        }
+                    }
                     TransportCommand::VenueLogout => {
                         let req = tonic::Request::new(VenueLogoutRequest {
                             token: token.clone(),
@@ -677,6 +768,18 @@ fn setup_backend_connection(
                                                 venue_id: state.venue_id.clone(),
                                                 instruments_loaded: state.instruments_loaded.unwrap_or(0),
                                             });
+                                            // Phase 8 §3.5: overwrite Tickers with the Live
+                                            // venue universe whenever we (re-)enter a state
+                                            // where the backend has instrument metadata
+                                            // available (plan §0.5.1 / §3.5 1001).
+                                            if matches!(
+                                                vs,
+                                                VenueState::Connected | VenueState::Subscribed
+                                            ) {
+                                                fire_list_instruments(
+                                                    &client, &token, None, &status_tx,
+                                                );
+                                            }
                                         }
                                         None => warn!("unknown venue_state from backend: {:?}", s),
                                     }
@@ -734,7 +837,7 @@ mod tests {
     };
     use backcast::trading::{
         AvailableInstruments, BackendStartupStage, BackendStatus, BackendStatusUpdate,
-        ExecutionModeRes, LastRunResult, PortfolioState, RunState, VenueStatusRes,
+        ExecutionModeRes, LastRunResult, PortfolioState, RunState, Ticker, Tickers, VenueStatusRes,
     };
     use chrono::NaiveDate;
 
@@ -757,6 +860,7 @@ mod tests {
         let mut available = AvailableInstruments::default();
         let mut venue_status = VenueStatusRes::default();
         let mut exec_mode = ExecutionModeRes::default();
+        let mut tickers = Tickers::default();
         apply_status_update(
             update,
             &mut status,
@@ -766,8 +870,35 @@ mod tests {
             progress,
             &mut venue_status,
             &mut exec_mode,
+            &mut tickers,
         );
         last_run
+    }
+
+    /// Variant of `apply` that returns the `Tickers` resource after the update,
+    /// for verifying `InstrumentsListed` overwrite semantics.
+    fn apply_with_tickers(
+        update: BackendStatusUpdate,
+        progress: &mut ReplayStartupProgress,
+        tickers: &mut Tickers,
+    ) {
+        let mut status = BackendStatus::default();
+        let mut last_run = LastRunResult::default();
+        let mut portfolio = PortfolioState::default();
+        let mut available = AvailableInstruments::default();
+        let mut venue_status = VenueStatusRes::default();
+        let mut exec_mode = ExecutionModeRes::default();
+        apply_status_update(
+            update,
+            &mut status,
+            &mut last_run,
+            &mut portfolio,
+            &mut available,
+            progress,
+            &mut venue_status,
+            &mut exec_mode,
+            tickers,
+        );
     }
 
     #[test]
@@ -1029,5 +1160,41 @@ mod tests {
     #[test]
     fn parse_replay_granularity_empty_returns_err() {
         assert!(parse_replay_granularity("").is_err());
+    }
+
+    // --- InstrumentsListed arm (Phase 8 §3.5) ---
+
+    fn t(id: &str) -> Ticker {
+        Ticker { id: id.into(), name: id.into(), market: String::new() }
+    }
+
+    #[test]
+    fn apply_instruments_listed_overwrites_tickers() {
+        let mut progress = ReplayStartupProgress::default();
+        let mut tickers = Tickers { list: vec![t("OLD.TSE")] };
+        apply_with_tickers(
+            BackendStatusUpdate::InstrumentsListed {
+                instruments: vec![t("1301.TSE"), t("7203.TSE")],
+            },
+            &mut progress,
+            &mut tickers,
+        );
+        assert_eq!(
+            tickers.list.iter().map(|x| x.id.as_str()).collect::<Vec<_>>(),
+            vec!["1301.TSE", "7203.TSE"],
+            "InstrumentsListed must replace (not merge with) the prior universe",
+        );
+    }
+
+    #[test]
+    fn apply_instruments_listed_empty_clears_tickers() {
+        let mut progress = ReplayStartupProgress::default();
+        let mut tickers = Tickers { list: vec![t("1301.TSE")] };
+        apply_with_tickers(
+            BackendStatusUpdate::InstrumentsListed { instruments: vec![] },
+            &mut progress,
+            &mut tickers,
+        );
+        assert!(tickers.list.is_empty());
     }
 }

@@ -188,10 +188,22 @@ message ListInstrumentsRequest {
   optional string source = 2;
 }
 
+message Instrument {
+  string id = 1;
+  // Human-readable name. For Replay catalog sources where name/market metadata
+  // is unavailable, this is filled with `id` and `market` is left empty.
+  // Live venue adapters populate these fields when they back ListInstruments.
+  string name = 2;
+  string market = 3;
+}
+
 message ListInstrumentsResponse {
   bool success = 1;
+  // Legacy id-only field. Kept for backwards compatibility; new clients should
+  // prefer `instruments` which carries name/market metadata.
   repeated string instrument_ids = 2;
   string error_message = 3;
+  repeated Instrument instruments = 4;
 }
 
 message ListAllListedSymbolsRequest {

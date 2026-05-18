@@ -47,6 +47,53 @@ def test_list_instruments_no_catalog(grpc_server):
     assert resp.error_message  # some message, no crash
 
 
+# ---------------------------------------------------------------------------
+# With a fake on-disk catalog (no Nautilus dependency) — fast path
+# ---------------------------------------------------------------------------
+
+def test_list_instruments_returns_structured_instruments(tmp_path):
+    """
+    Phase 8 §3.5: ListInstrumentsResponse must populate `instruments`
+    (id + name + market) in addition to the legacy `instrument_ids`.
+
+    For Replay catalog sources the venue/market metadata is unknown, so
+    `name` falls back to `id` and `market` is empty. Live venue adapters
+    are expected to fill these fields when they back ListInstruments in
+    a later phase.
+    """
+    catalog_path = tmp_path / "catalog"
+    bar_dir = catalog_path / "data" / "bar"
+    bar_dir.mkdir(parents=True)
+    # Catalog dir names follow the pattern `<id>-<n>-<RES>` where <id>
+    # contains the instrument id (e.g. "1301.TSE"). The backend extracts
+    # the id by regex `^(.+?)-\d+-[A-Z]`.
+    (bar_dir / "1301.TSE-1-MINUTE-LAST-EXTERNAL").mkdir()
+    (bar_dir / "7203.TSE-1-MINUTE-LAST-EXTERNAL").mkdir()
+    (bar_dir / "backup").mkdir()  # must be skipped
+
+    engine = DataEngine(jquants_catalog_path=str(catalog_path))
+    server = grpc.server(futures.ThreadPoolExecutor(max_workers=2))
+    servicer = GrpcDataEngineServer(TOKEN, engine)
+    engine_pb2_grpc.add_DataEngineServicer_to_server(servicer, server)
+    port = server.add_insecure_port("[::]:0")
+    server.start()
+    try:
+        stub = _make_stub(port)
+        resp = stub.ListInstruments(
+            engine_pb2.ListInstrumentsRequest(token=TOKEN)
+        )
+        assert resp.success, resp.error_message
+        # Legacy field still populated for backwards compat.
+        assert sorted(resp.instrument_ids) == ["1301.TSE", "7203.TSE"]
+        # New structured field — same ids, name falls back to id, market empty.
+        got = sorted(resp.instruments, key=lambda i: i.id)
+        assert [i.id for i in got] == ["1301.TSE", "7203.TSE"]
+        assert [i.name for i in got] == ["1301.TSE", "7203.TSE"]
+        assert [i.market for i in got] == ["", ""]
+    finally:
+        server.stop(0)
+
+
 def test_list_instruments_wrong_token(grpc_server):
     port, _ = grpc_server
     stub = _make_stub(port)

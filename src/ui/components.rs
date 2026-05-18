@@ -149,6 +149,45 @@ pub struct SidebarInstrumentsList;
 #[derive(Component, Debug)]
 pub struct SidebarInstrumentsWarning;
 
+// ── Phase 8 §3.5 sidebar Tickers (Live universe browser) ─────────────────
+
+/// Marker for the Tickers section's row container (virtual-scroll slice).
+#[derive(Component, Debug)]
+pub struct SidebarTickersList;
+
+/// Marker for the search-box outer Button. Click toggles focus (see
+/// `tickers_search_focus_system`).
+#[derive(Component, Debug)]
+pub struct SidebarTickersSearchBox;
+
+/// Marker for the Text node inside the search box that mirrors
+/// `SidebarTickersSearchState.query`.
+#[derive(Component, Debug)]
+pub struct SidebarTickersSearchText;
+
+/// Per-row marker that carries the clicked instrument id. Mode-dependent
+/// click dispatch lives in `ticker_row_click_system`.
+#[derive(Component, Debug, Clone)]
+pub struct SidebarTickerRow {
+    pub instrument_id: String,
+}
+
+/// Visible-window offset for the Tickers virtual scroller. Clamped to
+/// `0..=(filtered.len().saturating_sub(visible_rows))` on each render.
+#[derive(Resource, Debug, Default, Clone, Copy)]
+pub struct SidebarTickersScrollOffset {
+    pub first_visible: usize,
+}
+
+/// Tickers search-box state. `focused` is set by click on the search box
+/// and consumed by `tickers_search_input_system` to drain keyboard input
+/// (Esc clears + unfocuses).
+#[derive(Resource, Debug, Default, Clone)]
+pub struct SidebarTickersSearchState {
+    pub query: String,
+    pub focused: bool,
+}
+
 /// floating window の × ボタンに貼るマーカー。
 /// Click observer がこの entity の祖先 WindowRoot を Visibility::Hidden にする。
 #[derive(Component)]

@@ -637,7 +637,17 @@ class GrpcDataEngineServer(
 
             ids = sorted(seen)
             logging.info("ListInstruments: found %d instruments: %s", len(ids), ids)
-            return engine_pb2.ListInstrumentsResponse(success=True, instrument_ids=ids)
+            # Phase 8 §3.5: also populate the structured `instruments` field.
+            # Replay catalog dirs only expose the id; name falls back to id and
+            # market is left empty until a Live venue adapter backs this RPC.
+            instruments = [
+                engine_pb2.Instrument(id=i, name=i, market="") for i in ids
+            ]
+            return engine_pb2.ListInstrumentsResponse(
+                success=True,
+                instrument_ids=ids,
+                instruments=instruments,
+            )
         except Exception as exc:
             logging.error("ListInstruments: error: %s", exc)
             return engine_pb2.ListInstrumentsResponse(
