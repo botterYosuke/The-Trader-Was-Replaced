@@ -2,7 +2,8 @@ use bevy::prelude::*;
 use bevy_cosmic_edit::cosmic_text::{Attrs, AttrsOwned, Metrics};
 use bevy_cosmic_edit::prelude::*;
 use bevy_cosmic_edit::{
-    CosmicBackgroundColor, CosmicRenderScale, CosmicTextAlign, CursorColor, ScrollEnabled,
+    CosmicBackgroundColor, CosmicRenderScale, CosmicTextAlign, CursorColor, ReadOnly,
+    ScrollEnabled,
 };
 use chrono::NaiveDate;
 
@@ -42,6 +43,8 @@ const BTN_BG: Color = Color::srgba(0.10, 0.10, 0.16, 1.0);
 const BTN_TEXT: Color = Color::srgb(0.78, 0.82, 0.92);
 const ERROR_COLOR: Color = Color::srgb(0.95, 0.45, 0.45);
 const LABEL_WIDTH: f32 = 70.0;
+const FIELD_BG_ACTIVE: Color = Color::srgba(0.02, 0.02, 0.04, 1.0);
+const FIELD_BG_DISABLED: Color = Color::srgba(0.08, 0.08, 0.10, 1.0);
 
 impl GranularityChoice {
     /// `ScenarioMetadata.granularity` / cache sidecar JSON / `StrategyRunConfig.granularity`
@@ -327,7 +330,7 @@ pub fn spawn_scenario_startup_input_fields(
                 // the dark background even though the buffer holds the value.
                 DefaultAttrs(AttrsOwned::new(text_attrs)),
                 CursorColor(Color::WHITE),
-                CosmicBackgroundColor(Color::srgba(0.02, 0.02, 0.04, 1.0)),
+                CosmicBackgroundColor(FIELD_BG_ACTIVE),
                 CosmicRenderScale(1.0),
                 CosmicTextAlign::TopLeft { padding: 4 },
                 ScrollEnabled::Disabled,
@@ -630,6 +633,40 @@ pub fn scenario_startup_granularity_button_system(
     }
 }
 
+/// Toggle `ReadOnly` + dim the field background on the 3 CosmicEditor entities
+/// while `is_panel_disabled`. The commit / writeback / input systems already
+/// short-circuit on `is_panel_disabled`, but without this the editors still
+/// accept clicks and key input visually, letting the user mutate the buffer
+/// during a Run; the trailing `CosmicTextChanged` event then races with the
+/// `progress.visible` flip and can leak through after auto-hide.
+pub fn enforce_scenario_startup_panel_readonly_system(
+    mut commands: Commands,
+    progress: Res<ReplayStartupProgress>,
+    paths: Res<ScenarioWritebackPaths>,
+    mut q: Query<(
+        Entity,
+        Option<&ReadOnly>,
+        &mut CosmicBackgroundColor,
+    ), With<ScenarioStartupFieldEditor>>,
+) {
+    let disabled = is_panel_disabled(&progress, &paths);
+    let target_bg = if disabled { FIELD_BG_DISABLED } else { FIELD_BG_ACTIVE };
+    for (entity, ro, mut bg) in q.iter_mut() {
+        match (disabled, ro.is_some()) {
+            (true, false) => {
+                commands.entity(entity).insert(ReadOnly);
+            }
+            (false, true) => {
+                commands.entity(entity).remove::<ReadOnly>();
+            }
+            _ => {}
+        }
+        if bg.0 != target_bg {
+            bg.0 = target_bg;
+        }
+    }
+}
+
 /// Repaint granularity button highlight + error labels.
 ///
 /// Writes through `BackgroundColor`/`Text` are guarded with `!= new` to avoid
@@ -730,6 +767,89 @@ fn rewrite_scenario_startup_params_atomic(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Finding A (E2E §13 regression): the visible-flag short-circuit on the
+    /// commit/input/writeback systems is necessary but not sufficient — without
+    /// also flipping the editors to ReadOnly the user can still mutate the
+    /// CosmicEditor buffer during a Run, and the trailing CosmicTextChanged
+    /// event can leak through after `progress.visible` returns to false.
+    #[test]
+    fn enforce_readonly_toggles_with_progress_visible() {
+        let mut app = App::new();
+        app.init_resource::<ReplayStartupProgress>()
+            .insert_resource(ScenarioWritebackPaths {
+                cache_sidecar: Some(std::path::PathBuf::from("/tmp/dummy_cache.json")),
+            })
+            .add_systems(Update, enforce_scenario_startup_panel_readonly_system);
+
+        let e = app
+            .world_mut()
+            .spawn((
+                ScenarioStartupFieldEditor {
+                    field: ScenarioStartupField::InitialCash,
+                },
+                CosmicBackgroundColor(FIELD_BG_ACTIVE),
+            ))
+            .id();
+
+        // Run while progress hidden — editor must be editable.
+        app.update();
+        assert!(app.world().get::<ReadOnly>(e).is_none());
+        assert_eq!(
+            app.world().get::<CosmicBackgroundColor>(e).unwrap().0,
+            FIELD_BG_ACTIVE
+        );
+
+        // Flip to visible — editor must become ReadOnly + dimmed.
+        app.world_mut()
+            .resource_mut::<ReplayStartupProgress>()
+            .visible = true;
+        app.update();
+        assert!(app.world().get::<ReadOnly>(e).is_some());
+        assert_eq!(
+            app.world().get::<CosmicBackgroundColor>(e).unwrap().0,
+            FIELD_BG_DISABLED
+        );
+
+        // Flip back — marker must be removed and bg restored.
+        app.world_mut()
+            .resource_mut::<ReplayStartupProgress>()
+            .visible = false;
+        app.update();
+        assert!(app.world().get::<ReadOnly>(e).is_none());
+        assert_eq!(
+            app.world().get::<CosmicBackgroundColor>(e).unwrap().0,
+            FIELD_BG_ACTIVE
+        );
+    }
+
+    /// Cache-unavailable (`ScenarioWritebackPaths.cache_sidecar = None`) also
+    /// disables the panel per plan §"cache_sidecar == None" — the readonly
+    /// enforcement must mirror that, not only watch `progress.visible`.
+    #[test]
+    fn enforce_readonly_when_cache_unavailable() {
+        let mut app = App::new();
+        app.init_resource::<ReplayStartupProgress>()
+            .insert_resource(ScenarioWritebackPaths { cache_sidecar: None })
+            .add_systems(Update, enforce_scenario_startup_panel_readonly_system);
+
+        let e = app
+            .world_mut()
+            .spawn((
+                ScenarioStartupFieldEditor {
+                    field: ScenarioStartupField::Start,
+                },
+                CosmicBackgroundColor(FIELD_BG_ACTIVE),
+            ))
+            .id();
+
+        app.update();
+        assert!(app.world().get::<ReadOnly>(e).is_some());
+        assert_eq!(
+            app.world().get::<CosmicBackgroundColor>(e).unwrap().0,
+            FIELD_BG_DISABLED
+        );
+    }
 
     #[test]
     fn granularity_as_canonical_str_returns_pascal_case() {
