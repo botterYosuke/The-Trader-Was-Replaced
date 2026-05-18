@@ -7,7 +7,7 @@ from pytest_httpx import HTTPXMock
 
 from engine.exchanges.kabusapi import KabuStationAdapter
 from engine.exchanges.kabusapi_url import endpoint
-from engine.live.adapter import LiveVenueAdapter, VenueCredentials
+from engine.live.adapter import DepthUpdate, LiveVenueAdapter, TradesUpdate, VenueCredentials
 
 
 def test_venue_id_is_kabu():
@@ -328,3 +328,128 @@ async def test_subscribe_without_login_raises_runtime_error():
     adapter = KabuStationAdapter(environment="verify")
     with pytest.raises(RuntimeError, match="login"):
         await adapter.subscribe("7203.TSE", {"trades"})
+
+
+# ---------------------------------------------------------------------------
+# Phase 8 §3.2 B4-4c: events() + _on_frame 配線 + logout cleanup
+# ---------------------------------------------------------------------------
+
+
+async def test_on_frame_emits_depth_and_trade_into_queue():
+    from engine.exchanges.kabusapi_ws_codec import KabuPushFrameProcessor
+
+    adapter = KabuStationAdapter(environment="verify")
+    adapter._token = "tkn"
+    adapter._processors["7203"] = KabuPushFrameProcessor(symbol="7203")
+    adapter._processors["7203"].process(
+        {
+            "CurrentPrice": 1000.0,
+            "TradingVolume": 100.0,
+            "CurrentPriceTime": "2026-05-18T09:00:00",
+            "Sell1": {"Price": 1001.0, "Qty": 10.0},
+            "Buy1": {"Price": 999.0, "Qty": 20.0},
+        }
+    )
+    await adapter._on_frame(
+        {
+            "Symbol": "7203",
+            "CurrentPrice": 1001.0,
+            "TradingVolume": 150.0,
+            "CurrentPriceTime": "2026-05-18T09:00:01",
+            "Sell1": {"Price": 1002.0, "Qty": 5.0},
+            "Buy1": {"Price": 1000.0, "Qty": 8.0},
+        }
+    )
+
+    first = adapter._queue.get_nowait()
+    second = adapter._queue.get_nowait()
+    events = [first, second]
+    depths = [e for e in events if isinstance(e, DepthUpdate)]
+    trades = [e for e in events if isinstance(e, TradesUpdate)]
+    assert len(depths) == 1
+    assert len(trades) == 1
+    assert depths[0].instrument_id == "7203.TSE"
+    assert trades[0].instrument_id == "7203.TSE"
+    assert trades[0].aggressor_side == "buy"
+    assert trades[0].price == 1001.0
+    assert trades[0].size == 50.0
+
+
+async def test_on_frame_skips_trade_when_codec_returns_none():
+    from engine.exchanges.kabusapi_ws_codec import KabuPushFrameProcessor
+
+    adapter = KabuStationAdapter(environment="verify")
+    adapter._token = "tkn"
+    adapter._processors["7203"] = KabuPushFrameProcessor(symbol="7203")
+
+    await adapter._on_frame(
+        {
+            "Symbol": "7203",
+            "CurrentPrice": 1000.0,
+            "TradingVolume": 100.0,
+            "CurrentPriceTime": "2026-05-18T09:00:00",
+            "Sell1": {"Price": 1001.0, "Qty": 10.0},
+            "Buy1": {"Price": 999.0, "Qty": 20.0},
+        }
+    )
+
+    assert adapter._queue.qsize() == 1
+    only = adapter._queue.get_nowait()
+    assert isinstance(only, DepthUpdate)
+
+
+async def test_events_yields_from_queue():
+    adapter = KabuStationAdapter(environment="verify")
+    adapter._queue.put_nowait(
+        DepthUpdate(
+            kind="depth",
+            instrument_id="7203.TSE",
+            ts_ns=0,
+            bids=(),
+            asks=(),
+        )
+    )
+
+    agen = adapter.events()
+    event = await asyncio.wait_for(agen.__anext__(), timeout=1.0)
+    assert isinstance(event, DepthUpdate)
+    assert event.instrument_id == "7203.TSE"
+
+
+async def test_logout_cancels_ws_task_and_clears_state(
+    monkeypatch, httpx_mock: HTTPXMock
+):
+    monkeypatch.setenv("DEV_KABU_API_PASSWORD", "pw")
+    httpx_mock.add_response(
+        url=endpoint("token", env="verify"),
+        method="POST",
+        json={"ResultCode": 0, "Token": "tkn"},
+    )
+    httpx_mock.add_response(
+        url=endpoint("register", env="verify"),
+        method="PUT",
+        json={"ResultCode": 0, "RegistList": []},
+    )
+
+    async def _fake_connect(**kwargs):
+        await asyncio.Event().wait()
+
+    monkeypatch.setattr(
+        "engine.exchanges.kabusapi.kabusapi_ws_connect", _fake_connect, raising=False
+    )
+    import engine.exchanges.kabusapi_ws as _ws_mod
+    monkeypatch.setattr(_ws_mod, "connect", _fake_connect)
+
+    adapter = KabuStationAdapter(environment="verify")
+    await adapter.login(VenueCredentials(credentials_source="env"))
+    await adapter.subscribe("7203.TSE", {"trades", "depth"})
+
+    assert adapter._ws_task is not None
+    assert not adapter._ws_task.done()
+
+    await adapter.logout()
+
+    assert adapter._token is None
+    assert adapter._ws_task.cancelled() or adapter._ws_task.done()
+    assert adapter._processors == {}
+    assert len(adapter._register_set) == 0
