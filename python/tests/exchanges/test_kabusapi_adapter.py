@@ -448,3 +448,133 @@ async def test_logout_cancels_ws_task_and_clears_state(
     assert adapter._ws_task.cancelled() or adapter._ws_task.done()
     assert adapter._processors == {}
     assert len(adapter._register_set) == 0
+
+
+# ---------------------------------------------------------------------------
+# Phase 8 §3.2 B4-4d: review fix — subscribe/login/unsubscribe robustness
+# 1. subscribe: PUT /register が失敗したら state を rollback して raise
+# 2. subscribe: 前回の WS task が done() なら再 spawn
+# 3. login: logout 後の再 login で closed client を作り直す
+# 4. unsubscribe: TSE 以外の suffix は ValueError (state は変更しない)
+# ---------------------------------------------------------------------------
+
+
+async def test_subscribe_rolls_back_state_on_register_failure(
+    monkeypatch, httpx_mock: HTTPXMock
+):
+    monkeypatch.setenv("DEV_KABU_API_PASSWORD", "pw")
+    httpx_mock.add_response(
+        url=endpoint("token", env="verify"),
+        method="POST",
+        json={"ResultCode": 0, "Token": "tkn"},
+    )
+    httpx_mock.add_response(
+        url=endpoint("register", env="verify"),
+        method="PUT",
+        json={"ResultCode": 4002001, "Message": "register full"},
+    )
+
+    adapter = KabuStationAdapter(environment="verify")
+    await adapter.login(VenueCredentials(credentials_source="env"))
+    with pytest.raises(RuntimeError, match="register"):
+        await adapter.subscribe("7203.TSE", {"trades"})
+
+    assert adapter._processors == {}
+    assert len(adapter._register_set) == 0
+    assert adapter._ws_task is None
+
+
+async def test_subscribe_respawns_ws_task_when_previous_done(
+    monkeypatch, httpx_mock: HTTPXMock
+):
+    monkeypatch.setenv("DEV_KABU_API_PASSWORD", "pw")
+    httpx_mock.add_response(
+        url=endpoint("token", env="verify"),
+        method="POST",
+        json={"ResultCode": 0, "Token": "tkn"},
+    )
+    for _ in range(2):
+        httpx_mock.add_response(
+            url=endpoint("register", env="verify"),
+            method="PUT",
+            json={"ResultCode": 0, "RegistList": []},
+        )
+
+    async def _fake_connect_immediate(**kwargs):
+        return
+
+    import engine.exchanges.kabusapi_ws as _ws_mod
+    monkeypatch.setattr(_ws_mod, "connect", _fake_connect_immediate)
+
+    adapter = KabuStationAdapter(environment="verify")
+    await adapter.login(VenueCredentials(credentials_source="env"))
+    await adapter.subscribe("7203.TSE", {"trades"})
+    first_task = adapter._ws_task
+    assert first_task is not None
+    await asyncio.sleep(0)
+    await asyncio.sleep(0)
+    assert first_task.done()
+
+    await adapter.subscribe("9984.TSE", {"trades"})
+    second_task = adapter._ws_task
+    assert second_task is not None
+    assert second_task is not first_task
+
+
+async def test_login_recreates_closed_client(monkeypatch, httpx_mock: HTTPXMock):
+    monkeypatch.setenv("DEV_KABU_API_PASSWORD", "pw")
+    for _ in range(2):
+        httpx_mock.add_response(
+            url=endpoint("token", env="verify"),
+            method="POST",
+            json={"ResultCode": 0, "Token": "tkn"},
+        )
+    httpx_mock.add_response(
+        url=endpoint("register", env="verify"),
+        method="PUT",
+        json={"ResultCode": 0, "RegistList": []},
+    )
+
+    adapter = KabuStationAdapter(environment="verify")
+    await adapter.login(VenueCredentials(credentials_source="env"))
+    await adapter.logout()
+    assert adapter._client.is_closed
+
+    await adapter.login(VenueCredentials(credentials_source="env"))
+    assert not adapter._client.is_closed
+    ok = await adapter._put_register([("7203", 1)])
+    assert ok is True
+
+
+async def test_unsubscribe_rejects_non_tse_suffix(
+    monkeypatch, httpx_mock: HTTPXMock
+):
+    monkeypatch.setenv("DEV_KABU_API_PASSWORD", "pw")
+    httpx_mock.add_response(
+        url=endpoint("token", env="verify"),
+        method="POST",
+        json={"ResultCode": 0, "Token": "tkn"},
+    )
+    httpx_mock.add_response(
+        url=endpoint("register", env="verify"),
+        method="PUT",
+        json={"ResultCode": 0, "RegistList": []},
+    )
+
+    async def _fake_connect(**kwargs):
+        await asyncio.Event().wait()
+
+    import engine.exchanges.kabusapi_ws as _ws_mod
+    monkeypatch.setattr(_ws_mod, "connect", _fake_connect)
+
+    adapter = KabuStationAdapter(environment="verify")
+    await adapter.login(VenueCredentials(credentials_source="env"))
+    await adapter.subscribe("7203.TSE", {"trades"})
+
+    with pytest.raises(ValueError, match="suffix|OSE"):
+        await adapter.unsubscribe("7203.OSE")
+
+    assert "7203" in adapter._processors
+    assert ("7203", 1) in adapter._register_set
+
+    await adapter.logout()
