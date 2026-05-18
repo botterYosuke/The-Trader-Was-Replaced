@@ -2,7 +2,7 @@
 
 リポジトリ: `C:\Users\sasai\Documents\The-Trader-Was-Replaced`
 ブランチ: `impl/8-venue-login-skeleton`
-HEAD: `6b27ab5 feat(kabusapi): connect() with ping_interval=None + register replay + reconnect (Phase 8 §3.2 B4-2)`
+HEAD: `db1a678 fix(kabusapi): defer consecutive_failures reset until first frame dispatch (Phase 8 §3.2 B4-2.5)`
 
 ## 完了済み
 
@@ -30,6 +30,7 @@ HEAD: `6b27ab5 feat(kabusapi): connect() with ping_interval=None + register repl
 | **B3 ✅** | `029578a` (RED) → `a084909` (GREEN) | `kabusapi_register.RegisterSet` (50-symbol LRU、Q-K5 暗黙 evict なし、KabuRegisterFullError) | (前 session 集計) |
 | **B4-1 ✅** | `1245398` (RED 4) → `756d0bf` (GREEN) | `kabusapi_url.py` に `ws_url(env)` + `KabuEnv = Env` alias。base_url 経由で KABU_ALLOW_PROD 二重ガード自動発火 | exchanges 255 passed |
 | **B4-2 ✅** | `7a8800e` (RED 8) → `6b27ab5` (GREEN) | `kabusapi_ws.py` 新規 (151 行、e-station 写経 + 1-arg `KabuConnectionError` 翻訳)。`connect(*, env, on_message, register_set, put_register)` async loop: `ping_interval=None` / `compression=None` / `asyncio.wait_for(recv, 3600)` / OSError×5 で raise / ConnectionClosedOK>5 で raise / 接続直後 `put_register(register_set.all_symbols())`。test 8 件 (_FakeWs `__aenter__/__aexit__/recv` パターン、deferred import) | exchanges **263 passed / 0 failed / 0 errors** |
+| **B4-2.5 fix ✅** | `194916e` (RED 1) → `db1a678` (GREEN) | レビュー指摘 (High): handshake 成功直後の `consecutive_failures = 0` リセットを「最初の frame dispatch 直前 (`consecutive_ok_close_count = 0` の隣)」へ移設。recv 即 ConnectionClosedError を繰り返す病的シナリオで上限到達せず無限再接続する High バグを fix。test 9 として test 7 と対称な ConnectionClosedError 版を追加。副次的に Low 指摘の TimeoutError break 経路 sleep コメントを実到達経路に合わせて正確化。+7/-3 lines | exchanges **264 passed / 0 failed / 0 errors** |
 
 > note: 同 session で想定外 commit (`60b7bc0` / `eb13ed2` = `.claude/skills/zed/src/` 1.5M 行) を rebase --onto で drop。`c5215df ｓ` は `16d7099 zed` として再積み (149 行 SKILL.md add)。保険 branch `backup/pre-rebase-1519f69` 残置 (要らなければ `git branch -D`)。
 
@@ -78,7 +79,7 @@ HEAD: `6b27ab5 feat(kabusapi): connect() with ping_interval=None + register repl
 
 ```
 plans/phase8-a1-handoff.md を読み、B4-3 (kabu PUSH frame → DepthUpdate + TradesUpdate normalizer)
-から再開。HEAD: 6b27ab5 (B4-2 GREEN)、exchanges scope 263 passed / 0 failed / 0 errors baseline。
+から再開。HEAD: db1a678 (B4-2.5 fix GREEN)、exchanges scope 264 passed / 0 failed / 0 errors baseline。
 
 B4-3 写経元: C:\Users\sasai\Documents\e-station\python\engine\exchanges\kabusapi_codec.py
             (or kabusapi.py 内 normalizer 部分)
