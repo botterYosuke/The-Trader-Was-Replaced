@@ -24,6 +24,7 @@ from engine.exchanges.tachibana_master import (
     MasterStreamParser,
     build_instruments_from_master_records,
 )
+from engine.exchanges.tachibana_ws import TickerEventWsHub
 
 # Phase 8 §3.2: env-based credential keys (tachibana skill §S2).
 # 第二暗証番号 (s_second_password) は env に置かない (handoff 制約)。
@@ -41,6 +42,8 @@ class TachibanaAdapter:
         # R4: PNoCounter は adapter で 1 個保持し、retry / re-login で共有する。
         self._p_no_counter = PNoCounter()
         self._session: TachibanaSession | None = None
+        # Phase 8 §3.2 A3.3: per-ticker WS hub registry.
+        self._hubs: dict[str, TickerEventWsHub] = {}
 
     async def login(self, creds: VenueCredentials) -> None:
         """Resolve credentials per `creds.credentials_source` and call auth.login().
@@ -129,7 +132,21 @@ class TachibanaAdapter:
     async def subscribe(
         self, instrument_id: InstrumentId, channels: set[Channel]
     ) -> None:
-        raise NotImplementedError("Phase 8 後半 WS step で実装")
+        # §9.5 ADR: channels は accept-and-ignore（trades + depth 固定）
+        if self._session is None:
+            raise RuntimeError(
+                "subscribe requires an active session; call login() first"
+            )
+        ticker = instrument_id.split(".")[0]
+        hub = self._hubs.get(ticker)
+        if hub is None:
+            hub = TickerEventWsHub(
+                self._session.url_event_ws,
+                ticker=ticker,
+            )
+            self._hubs[ticker] = hub
+        # A3.3-3 で callback 実装と hub.subscribe() の呼び出しを足す。
+        # ここでは hub の生成までで GREEN を取る (test は callback 未検証)。
 
     async def unsubscribe(self, instrument_id: InstrumentId) -> None:
         raise NotImplementedError("Phase 8 後半 WS step で実装")
