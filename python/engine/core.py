@@ -18,10 +18,12 @@ class DataEngine:
         jquants_loader=None,
         nautilus_catalog_path: Optional[str] = None,
         jquants_catalog_path: Optional[str] = None,
+        state_machine: Optional["VenueStateMachine"] = None,
     ):
         logging.info(
             f"Initializing DataEngine core (max_history_len: {max_history_len})"
         )
+        self.state_machine = state_machine
         self._lock = threading.Lock()
         self._is_running = False
         self._replay_state = "IDLE"
