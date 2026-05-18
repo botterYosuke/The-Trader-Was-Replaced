@@ -14,7 +14,7 @@
 | §3.2 LiveVenueAdapter Protocol + venue helper 骨組み | ✅ 完了 | URL builder / auth / codec / file_store / instrument_mapping / mask_secrets |
 | §3.2 **LiveEvent discriminated union** | ✅ 完了 | KlineUpdate/TradesUpdate/DepthUpdate/DepthLevel、Pydantic v2 frozen、`kind` discriminator |
 | §3.2.1 login_dialog_runner NDJSON 骨組み | ✅ 完了 | tkinter UI 本体は未実装 |
-| §3.2 venue I/O 本体（HTTP/WS）| 🟡 一部完了 | tachibana: login / fetch_instruments / EVENT WS 配線完了 (A1-A3.3)。kabu: login env path 完了 (B1, `fetch_token` + `KabuStationAdapter.login('env')`、`ResultCode` 正規化済み)。残: kabu fetch_instruments (B2) / kabu register (B3) / kabu WebSocket (B4) / smoke (D1) |
+| §3.2 venue I/O 本体（HTTP/WS）| 🟡 一部完了 | tachibana: login / fetch_instruments / EVENT WS 配線完了 (A1-A3.3)。kabu: login env path (B1, `fetch_token` + `KabuStationAdapter.login('env')`、`ResultCode` 正規化済み) + fetch_instruments MVP 完了 (B2, ユーザー決定事項「kabu は空 list」L84 に従い `return []`)。残: kabu register (B3) / kabu WebSocket (B4) / smoke (D1) |
 | §3.3 **live/event_bus.py** | ✅ 完了 | asyncio.Queue fan-out、late-subscribe で履歴 replay しない |
 | §3.3 **live/aggregator.py** | ✅ 完了 | `TickBarAggregator` 1m 固定、close=last-write-wins、空 bar 埋めなし |
 | §3.3 **live/mock_adapter.py (Step C)** | ✅ 完了 | Protocol 準拠 deterministic mock、`inject_tick` / `emit_depth_snapshot` でテスト制御、6 件 PASS |
@@ -723,7 +723,7 @@ class LiveVenueAdapter(Protocol):
 > - ✅ `exchanges/kabusapi_url.py`（BASE_URL 1 箇所、KABU_ALLOW_PROD ガード、`symbol_key`、`endpoint`）
 > - ✅ `exchanges/kabusapi_auth.py`（例外階層、R7 二段判定、X-API-KEY ヘッダ helper、**`fetch_token` (B1, 2026-05-18): POST /token + masked log + `ResultCode` 正規化**）
 > - ✅ `exchanges/tachibana.py` (login env + fetch_instruments + subscribe/unsubscribe/events 配線完了)
-> - 🟡 `exchanges/kabusapi.py` (`KabuStationAdapter.login('env')` 完了 B1; fetch_instruments / subscribe / events は `NotImplementedError`、`session_cache` は `UNSUPPORTED_FOR_VENUE` reject)
+> - 🟡 `exchanges/kabusapi.py` (`KabuStationAdapter.login('env')` 完了 B1; `fetch_instruments` は MVP `return []` 完了 B2 (handoff ユーザー決定事項 L84「kabu は空 list」); subscribe / events は `NotImplementedError`、`session_cache` は `UNSUPPORTED_FOR_VENUE` reject)
 > - ✅ `live/mock_adapter.py` (Step C 完了 2026-05-18): `MockVenueAdapter` Protocol 準拠、`venue_id="MOCK"`、`is_logged_in` 状態、`fetch_instruments` 固定 2 件 (7203 / 9984)、`subscribe`/`unsubscribe` の `_subscribed: dict[InstrumentId, set[Channel]]` 管理、`inject_tick(event)` / `emit_depth_snapshot(...)` でテスト制御、`events()` は単一 `asyncio.Queue[LiveEvent]` の drain async generator。6 件 PASS
 > - ⏳ 未実装: `tachibana_login_flow.py` / `kabusapi_ws.py` / `kabusapi_*.py` REST 各種 (fetch_instruments / register) / `kabusapi_login_flow.py` / `kabusapi_ratelimit.py` / `kabusapi_register.py`
 
