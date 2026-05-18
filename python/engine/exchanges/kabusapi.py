@@ -42,6 +42,8 @@ class KabuStationAdapter:
         self._ws_task: asyncio.Task | None = None
 
     async def login(self, creds: VenueCredentials) -> None:
+        if self._client.is_closed:
+            self._client = httpx.AsyncClient()
         source = creds.credentials_source
         if source == "session_cache":
             raise ValueError("UNSUPPORTED_FOR_VENUE: kabu does not support session_cache")
@@ -92,18 +94,25 @@ class KabuStationAdapter:
     async def fetch_instruments(self) -> list[InstrumentRaw]:
         return []
 
+    def _parse_instrument_id(self, instrument_id: InstrumentId) -> tuple[str, int]:
+        symbol, _, suffix = instrument_id.rpartition(".")
+        if suffix != "TSE":
+            raise ValueError(f"unsupported exchange suffix: {suffix!r} (MVP supports TSE only)")
+        return symbol, 1
+
     async def subscribe(
         self, instrument_id: InstrumentId, channels: set[Channel]
     ) -> None:
         if self._token is None:
             raise RuntimeError("login required before subscribe")
-        symbol, suffix = instrument_id.rsplit(".", 1)
-        if suffix != "TSE":
-            raise ValueError(f"unsupported exchange suffix: {suffix!r} (MVP supports TSE only)")
-        self._register_set.register(symbol, 1)
-        await self._put_register(self._register_set.all_symbols())
+        symbol, exchange = self._parse_instrument_id(instrument_id)
+        self._register_set.register(symbol, exchange)
+        ok = await self._put_register(self._register_set.all_symbols())
+        if not ok:
+            self._register_set.unregister(symbol, exchange)
+            raise RuntimeError(f"register failed: {symbol}")
         self._processors[symbol] = KabuPushFrameProcessor(symbol=symbol)
-        if self._ws_task is None:
+        if self._ws_task is None or self._ws_task.done():
             self._ws_task = asyncio.create_task(
                 kabusapi_ws.connect(
                     env=self._env,
@@ -147,8 +156,8 @@ class KabuStationAdapter:
     async def unsubscribe(self, instrument_id: InstrumentId) -> None:
         if self._token is None:
             return
-        symbol, _suffix = instrument_id.rsplit(".", 1)
-        self._register_set.unregister(symbol, 1)
+        symbol, exchange = self._parse_instrument_id(instrument_id)
+        self._register_set.unregister(symbol, exchange)
         self._processors.pop(symbol, None)
         await self._put_register(self._register_set.all_symbols())
 
