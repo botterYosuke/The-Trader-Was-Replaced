@@ -182,6 +182,12 @@ pub enum TransportCommand {
     FetchAvailableInstruments {
         end_date: NaiveDate,
     },
+    /// User-initiated execution-mode change. Backend is authoritative;
+    /// `ExecutionModeRes` is updated only via `BackendStatusUpdate::ExecutionModeChanged`
+    /// from the `GetState` polling diff, never directly from the UI.
+    SetExecutionMode {
+        mode: ExecutionMode,
+    },
 }
 
 #[derive(Resource, Debug, Clone)]
@@ -422,6 +428,18 @@ pub enum ExecutionMode {
     LiveManual,
     #[serde(rename = "LiveAuto")]
     LiveAuto,
+}
+
+impl ExecutionMode {
+    /// Wire-format string matching the `#[serde(rename = ...)]` values above.
+    /// Used when sending `SetExecutionMode` RPC to the Python backend.
+    pub fn as_wire_str(self) -> &'static str {
+        match self {
+            ExecutionMode::Replay => "Replay",
+            ExecutionMode::LiveManual => "LiveManual",
+            ExecutionMode::LiveAuto => "LiveAuto",
+        }
+    }
 }
 
 #[derive(Resource, Debug, Clone, Default)]

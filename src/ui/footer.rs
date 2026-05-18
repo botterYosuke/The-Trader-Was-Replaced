@@ -619,34 +619,42 @@ pub fn footer_pause_resume_system(
     }
 }
 
+/// ExecutionMode segment クリックを `SetExecutionMode` RPC として backend に送る。
+/// Optimistic local state は持たない: `ExecutionModeRes` は polling diff (`BackendStatusUpdate::ExecutionModeChanged`)
+/// 経由でのみ更新される。これにより backend が precondition で reject した場合の
+/// UI/backend desync を構造的に防ぐ。LiveAuto は §3.6 通り Phase 8 では選択不可で、
+/// クリックはローカルで握り潰す (RPC を送らない)。
 #[allow(clippy::type_complexity)]
 pub fn execution_mode_toggle_system(
-    mut query: Query<
+    query: Query<
         (&Interaction, &ExecutionModeToggleSegment),
         (Changed<Interaction>, With<Button>),
     >,
-    mut exec_mode: ResMut<ExecutionModeRes>,
+    exec_mode: Res<ExecutionModeRes>,
+    sender: Res<TransportCommandSender>,
 ) {
-    for (interaction, seg) in &mut query {
+    for (interaction, seg) in &query {
         if *interaction != Interaction::Pressed {
             continue;
         }
-        match seg.0 {
-            ExecutionMode::Replay => {
-                if exec_mode.mode != ExecutionMode::Replay {
-                    info!("execution_mode: switching to Replay (local, RPC pending)");
-                    exec_mode.mode = ExecutionMode::Replay;
-                }
-            }
-            ExecutionMode::LiveManual => {
-                if exec_mode.mode != ExecutionMode::LiveManual {
-                    info!("execution_mode: switching to LiveManual (local, RPC pending)");
-                    exec_mode.mode = ExecutionMode::LiveManual;
-                }
-            }
-            ExecutionMode::LiveAuto => {
-                info!("execution_mode: LiveAuto requested but no .py loaded — ignored (Phase 10)");
-            }
+        if seg.0 == ExecutionMode::LiveAuto {
+            info!("execution_mode: LiveAuto requested but no .py loaded — ignored (Phase 10)");
+            continue;
+        }
+        if exec_mode.mode == seg.0 {
+            continue;
+        }
+        info!(
+            "execution_mode: requesting SetExecutionMode({}) (current: {})",
+            seg.0.as_wire_str(),
+            exec_mode.mode.as_wire_str()
+        );
+        if sender
+            .tx
+            .send(TransportCommand::SetExecutionMode { mode: seg.0 })
+            .is_err()
+        {
+            error!("execution_mode: transport channel closed; SetExecutionMode dropped");
         }
     }
 }
