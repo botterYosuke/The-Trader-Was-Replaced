@@ -2,8 +2,9 @@
 
 from __future__ import annotations
 
-import os
 from typing import Literal
+
+from ._env_guard import require_prod_env
 
 BASE_URL_PROD = "http://localhost:18080/kabusapi/"
 BASE_URL_VERIFY = "http://localhost:18081/kabusapi/"
@@ -20,8 +21,7 @@ def base_url(env: Env) -> str:
     if env == "verify":
         return BASE_URL_VERIFY
     if env == "prod":
-        if os.environ.get("KABU_ALLOW_PROD") != "1":
-            raise RuntimeError("KABU_ALLOW_PROD env required for production")
+        require_prod_env("KABU_ALLOW_PROD")
         return BASE_URL_PROD
     raise ValueError("invalid env")
 

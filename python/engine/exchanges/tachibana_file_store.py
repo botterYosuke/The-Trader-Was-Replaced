@@ -42,6 +42,4 @@ def is_session_valid_for_today(session: dict, *, today: date | None = None) -> b
 
 
 def clear_session() -> None:
-    path = session_file_path()
-    if path.exists():
-        path.unlink()
+    session_file_path().unlink(missing_ok=True)

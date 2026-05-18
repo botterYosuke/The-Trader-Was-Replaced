@@ -1,9 +1,10 @@
 import json
-import os
 from typing import Literal
 
 BASE_URL_DEMO = "https://demo-kabuka.e-shiten.jp/e_api_v4r8/"
 BASE_URL_PROD = "https://kabuka.e-shiten.jp/e_api_v4r8/"
+
+from ._env_guard import require_prod_env
 
 _URLENCODE_TABLE: dict[str, str] = {
     " ": "%20",
@@ -38,22 +39,20 @@ _URLENCODE_TABLE: dict[str, str] = {
     "~": "%7E",
 }
 
+_URLENCODE_TRANS = str.maketrans(_URLENCODE_TABLE)
+
 
 def base_url(environment: Literal["demo", "prod"]) -> str:
     if environment == "demo":
         return BASE_URL_DEMO
     if environment == "prod":
-        if os.environ.get("TACHIBANA_ALLOW_PROD") == "1":
-            return BASE_URL_PROD
-        raise RuntimeError("TACHIBANA_ALLOW_PROD env required for production")
+        require_prod_env("TACHIBANA_ALLOW_PROD")
+        return BASE_URL_PROD
     raise ValueError("invalid environment")
 
 
 def func_replace_urlecnode(s: str) -> str:
-    parts: list[str] = []
-    for ch in s:
-        parts.append(_URLENCODE_TABLE.get(ch, ch))
-    return "".join(parts)
+    return s.translate(_URLENCODE_TRANS)
 
 
 def build_request_url(base: str, json_obj: dict | str) -> str:

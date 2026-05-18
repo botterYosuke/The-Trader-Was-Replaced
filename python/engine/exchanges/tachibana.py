@@ -9,7 +9,6 @@ from engine.live.adapter import (
     InstrumentId,
     InstrumentRaw,
     LiveEvent,
-    LiveVenueAdapter,
     VenueCredentials,
 )
 

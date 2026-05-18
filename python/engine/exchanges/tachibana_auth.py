@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import itertools
+import threading
 import time
 from datetime import datetime, timedelta, timezone
 from typing import Any, Mapping, MutableMapping, Optional
@@ -42,18 +44,23 @@ class SessionExpiredError(ApiError):
 
 _JST = timezone(timedelta(hours=9))
 
-_p_no_counter: Optional[int] = None
+_p_no_lock = threading.Lock()
+_p_no_iter: Optional[itertools.count] = None
 
 _RESERVED_FIELDS = frozenset({"sCLMID", "sJsonOfmt", "p_no", "p_sd_date"})
 
 
 def next_p_no() -> int:
-    global _p_no_counter
-    if _p_no_counter is None:
-        _p_no_counter = int(time.time())
-    else:
-        _p_no_counter += 1
-    return _p_no_counter
+    """Return the next monotonically increasing p_no.
+
+    Tachibana サーバは p_no が逆転すると `code=6` を返すため、
+    複数スレッド / リトライから同時に呼ばれても重複・逆転しないよう Lock で守る。
+    """
+    global _p_no_iter
+    with _p_no_lock:
+        if _p_no_iter is None:
+            _p_no_iter = itertools.count(int(time.time()))
+        return next(_p_no_iter)
 
 
 def current_p_sd_date() -> str:
