@@ -90,3 +90,50 @@ C1 完了時点の regression で観測された 3 件の FAILED は、いずれ
 - C1 起因 0 件 (live_adapter_factory / serve() 配線まわりの test は全 passed)
 - regression 集計: **627 passed**、preexisting 3 FAILED は別タスクで扱う
 - 後続タスク (A2/A3/B*/D1) は本 3 件を baseline として進めて良い
+
+## レビュー指摘対応
+
+### High-2 → Low 格下げ (本 session スコープ外)
+
+**指摘**: fetch_instruments の master DL 経路で `p_errno` / `sResultCode` を
+check_response に通していない。session expired が空リスト `[]` として握り
+つぶされる可能性がある (tachibana.py:120-127)。
+
+**判断**: 本 session では着手せず、Low に格下げ。
+
+**根拠**:
+- HTTP レベルのエラーは `resp.raise_for_status()` (tachibana.py:121) で raise
+  されるため、session expired が 401/403 で返るなら問題は発生しない。
+- Tachibana の CLMEventDownload エラー応答が単一 dict 形式 (`{"p_errno": ...}`)
+  で 200 OK と共に返るかは未確認。e-station 公式サンプルにも check_response
+  相当は無く、エビデンスが弱い。
+- 架空のエラー応答 fixture でテストを書いても実形式と乖離するリスクがあり、
+  false sense of security になる。
+
+**フォローアップ条件** (いずれかで再起動):
+1. 実 Tachibana で session expired を踏んで `fetch_instruments()` が `[]` を
+   返す再現が取れたとき。
+2. Tachibana API ドキュメントで master DL のエラー応答形式が確定したとき。
+3. A2 以降で order 系 (CLMKabuNewOrder 等) を実装する際、同じ
+   `check_response` パターンが必要になり master 側も合わせて入れる流れに
+   なったとき。
+
+**現状の防御**:
+- `resp.raise_for_status()` で HTTP 系エラーは raise
+- `build_instruments_from_master_records` は不明 sCLMID record を silent drop
+  するので、`p_errno` 含む dict が混ざっても InstrumentRaw 構築には影響しない
+  (ただし空 list 化のリスクは残る)
+
+### Low: chunked-response 統合テスト改善 (本 session 据え置き)
+
+**背景**: Step 3 で `fetch_instruments` を `client.stream()` + `aiter_bytes()`
+経路にリファクタしたため、test 側で複数 chunk を yield する httpx mock を
+組めば、本物の chunked decode の統合テストにできる。
+
+**現状**: 既存 test は単一 chunk 相当で通っており、chunked decode の
+boundary 跨ぎ branch (decode_clm_yobine_record の record 境界またぎ) は
+unit test (`test_decode_clm_yobine_record_*`) で別途カバー済み。
+integration 観点での coverage 漏れは無い。
+
+**着手条件**: 実 Tachibana で chunked boundary 起因の decode bug が観測
+されたとき、または adapter refactor で stream 経路の挙動を変えるとき。
