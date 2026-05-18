@@ -15,10 +15,11 @@ HEAD: `55702d7 feat(tachibana): wire TachibanaAdapter.login env path (Phase 8 §
 | A1.3b ✅ | `9d80903` | `test_tachibana_auth.py` に login() RED 13 件写経 | 29 PASS + 13 FAILED + 13 ERROR (RED 観測) |
 | **A1.4 ✅** | `474a873` | `login()` GREEN 実装 (e-station 写経 + 本 repo 例外規約に適応) | exchanges 132 passed |
 | **A1.5 ✅** | `55702d7` | `TachibanaAdapter.login()` wire-up (env 経路のみ、session_cache/prompt は NotImplementedError) | exchanges 139 passed |
+| **C1 ✅** | `476a7f2` | `live_adapter_factory` + `serve()` 配線 (`live_venue` kwarg → factory 注入) | regression 627 passed (preexisting 3 件は MISSING_STRATEGY_FILE、C1 起因 0) |
 
 ## 残タスク
 
-8 件:
+7 件:
 
 - **A2** `tachibana.fetch_instruments` (CLMEventDownload、master ダウンロードの特殊フロー)
 - **A3** `tachibana_ws.py` + adapter `subscribe`/`unsubscribe`/`events`
@@ -26,7 +27,6 @@ HEAD: `55702d7 feat(tachibana): wire TachibanaAdapter.login env path (Phase 8 §
 - **B2** `kabusapi.fetch_instruments` (lazy = 空 list、subscribe 時 GET `/symbol`)
 - **B3** `kabusapi_register.RegisterSet` (50-symbol LRU)
 - **B4** `kabusapi_ws.py` + adapter (ping_interval=None 必須)
-- **C1** `live_adapter_factory` + `serve()` 配線 (`live_venue` kwarg → factory 注入) — **D1 より優先**
 - **D1** `-m slow` smoke test (tachibana + kabu 各 1 本)
 - **D2** 計画書更新 + 完了報告
 
@@ -65,10 +65,10 @@ HEAD: `55702d7 feat(tachibana): wire TachibanaAdapter.login env path (Phase 8 §
 ## 次 session 開始指示テンプレ
 
 ```
-plans/phase8-a1-handoff.md を読み、C1 (live_adapter_factory + serve 配線) から再開。
-handoff の「C1 は D1 smoke より優先度高い」注記通り、tachibana A2/A3 を後回しにして
-serve() への live_venue kwarg 配線と factory を先に通す。pair-relay 1 往復で 1 subtask、
-1 session 2-3 subtask が現実的ライン。
+plans/phase8-a1-handoff.md を読み、A2 (tachibana.fetch_instruments、CLMEventDownload マスタ DL) から再開。
+ユーザー決定 L76 「順次 A→B、tachibana 完了後 kabu」に従い、tachibana 側 A2 → A3 を先に通してから
+B1-B4 (kabu) へ移る。D1 smoke は A/B 完了後。写経元は e-station tachibana_master.py (L39 参照)。
+pair-relay 1 往復で 1 subtask、1 session 2-3 subtask が現実的ライン。
 ```
 
 ## ユーザー決定事項 (確定、変更しない)
@@ -79,3 +79,12 @@ serve() への live_venue kwarg 配線と factory を先に通す。pair-relay 1
 4. **serve() 配線**: Phase 8 全体の範疇で完了
 5. **HTTP 実装**: e-station フル移植 (Option B、minimal wrap でない)
 6. **URL builder**: tachibana_url 内 inline、prod guard は後送り、`BASE_URL_*` は AuthUrl 型
+
+## Known preexisting failures (not C1-induced)
+
+C1 完了時点の regression で観測された 3 件の FAILED は、いずれも C1 配線とは無関係の preexisting failure:
+
+- 失敗パターン: `MISSING_STRATEGY_FILE` (strategy file fixture が見つからない系)
+- C1 起因 0 件 (live_adapter_factory / serve() 配線まわりの test は全 passed)
+- regression 集計: **627 passed**、preexisting 3 FAILED は別タスクで扱う
+- 後続タスク (A2/A3/B*/D1) は本 3 件を baseline として進めて良い
