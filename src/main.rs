@@ -49,6 +49,13 @@ async fn main() {
             }),
             ..default()
         }))
+        // Idle CPU 削減: focused 5fps / unfocused 0.5fps の reactive update。
+        // backend からの mpsc push は最大 200ms 遅延で UI に反映される
+        // (desktop_app() の 5s は trading UI には粗すぎたため短縮)。
+        .insert_resource(bevy::winit::WinitSettings {
+            focused_mode: bevy::winit::UpdateMode::reactive(std::time::Duration::from_millis(200)),
+            unfocused_mode: bevy::winit::UpdateMode::reactive_low_power(std::time::Duration::from_secs(2)),
+        })
         .add_plugins(PanCamPlugin)
         .add_plugins(UiPlugin)
         .add_plugins(GridPlugin)
