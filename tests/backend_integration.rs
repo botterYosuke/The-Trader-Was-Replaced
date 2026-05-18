@@ -2,9 +2,11 @@ use backcast::trading::engine::{
     EngineState, ForceStopReplayRequest, GetPortfolioRequest, GetPortfolioResponse,
     GetStateRequest, GetStateResponse, ListAllListedSymbolsRequest, ListAllListedSymbolsResponse,
     ListInstrumentsRequest, ListInstrumentsResponse, LoadReplayDataRequest, PauseReplayRequest,
-    ReplayControlResponse, ResumeReplayRequest, SetReplaySpeedRequest, StartEngineRequest,
-    StartEngineResponse, StartResponse, StepReplayRequest, StopEngineRequest, StopReplayRequest,
-    StopRequest, StopResponse,
+    ReplayControlResponse, ResumeReplayRequest, SetExecutionModeRequest,
+    SetExecutionModeResponse, SetReplaySpeedRequest, StartEngineRequest, StartEngineResponse,
+    StartResponse, StepReplayRequest, StopEngineRequest, StopReplayRequest, StopRequest,
+    StopResponse, SubscribeRequest, SubscribeResponse, UnsubscribeRequest, VenueControlResponse,
+    VenueLoginRequest, VenueLoginResponse, VenueLogoutRequest,
     data_engine_server::{DataEngine, DataEngineServer},
 };
 use backcast::trading::{BackendTradingState, StartRequest};
@@ -267,6 +269,75 @@ impl DataEngine for MyDataEngine {
             positions: vec![],
             orders: vec![],
             error_message: "".to_string(),
+        }))
+    }
+
+    async fn venue_login(
+        &self,
+        request: Request<VenueLoginRequest>,
+    ) -> Result<Response<VenueLoginResponse>, Status> {
+        if request.into_inner().token != self.token {
+            return Err(Status::unauthenticated("Invalid token"));
+        }
+        Ok(Response::new(VenueLoginResponse {
+            success: true,
+            error_code: "".to_string(),
+            venue_state: "CONNECTED".to_string(),
+            instruments_loaded: 0,
+        }))
+    }
+
+    async fn venue_logout(
+        &self,
+        request: Request<VenueLogoutRequest>,
+    ) -> Result<Response<VenueControlResponse>, Status> {
+        if request.into_inner().token != self.token {
+            return Err(Status::unauthenticated("Invalid token"));
+        }
+        Ok(Response::new(VenueControlResponse {
+            success: true,
+            error_code: "".to_string(),
+        }))
+    }
+
+    async fn subscribe_market_data(
+        &self,
+        request: Request<SubscribeRequest>,
+    ) -> Result<Response<SubscribeResponse>, Status> {
+        if request.into_inner().token != self.token {
+            return Err(Status::unauthenticated("Invalid token"));
+        }
+        Ok(Response::new(SubscribeResponse {
+            success: false,
+            error_code: "NOT_IMPLEMENTED".to_string(),
+        }))
+    }
+
+    async fn unsubscribe_market_data(
+        &self,
+        request: Request<UnsubscribeRequest>,
+    ) -> Result<Response<SubscribeResponse>, Status> {
+        if request.into_inner().token != self.token {
+            return Err(Status::unauthenticated("Invalid token"));
+        }
+        Ok(Response::new(SubscribeResponse {
+            success: false,
+            error_code: "NOT_IMPLEMENTED".to_string(),
+        }))
+    }
+
+    async fn set_execution_mode(
+        &self,
+        request: Request<SetExecutionModeRequest>,
+    ) -> Result<Response<SetExecutionModeResponse>, Status> {
+        let req = request.into_inner();
+        if req.token != self.token {
+            return Err(Status::unauthenticated("Invalid token"));
+        }
+        Ok(Response::new(SetExecutionModeResponse {
+            success: true,
+            error_code: "".to_string(),
+            execution_mode: req.mode,
         }))
     }
 }
