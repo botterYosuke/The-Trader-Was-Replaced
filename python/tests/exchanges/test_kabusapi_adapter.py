@@ -191,3 +191,59 @@ async def test_fetch_instruments_does_not_require_login():
     assert adapter._token is None
     result = await adapter.fetch_instruments()
     assert result == []
+
+
+# ---------------------------------------------------------------------------
+# Phase 8 §3.2 B4-4a: _put_register helper
+# Contract: PUT {base}/register, header X-API-KEY=<token>,
+#           body {"Symbols": [{"Symbol": "<sym>", "Exchange": <int>}, ...]}
+#           ResultCode 0 → True, それ以外 → False (logger.warning は kabusapi_ws 側)
+# ---------------------------------------------------------------------------
+
+async def test_put_register_posts_symbols_with_token_header(
+    monkeypatch, httpx_mock: HTTPXMock
+):
+    monkeypatch.setenv("DEV_KABU_API_PASSWORD", "pw")
+    httpx_mock.add_response(
+        url=endpoint("token", env="verify"),
+        method="POST",
+        json={"ResultCode": 0, "Token": "tkn-xyz"},
+    )
+    httpx_mock.add_response(
+        url=endpoint("register", env="verify"),
+        method="PUT",
+        json={"ResultCode": 0, "RegistList": [{"Symbol": "7203", "Exchange": 1}]},
+    )
+
+    adapter = KabuStationAdapter(environment="verify")
+    await adapter.login(VenueCredentials(credentials_source="env"))
+    ok = await adapter._put_register([("7203", 1)])
+
+    assert ok is True
+    import json as _json
+    put_reqs = [r for r in httpx_mock.get_requests() if r.method == "PUT"]
+    assert len(put_reqs) == 1
+    assert put_reqs[0].headers.get("X-API-KEY") == "tkn-xyz"
+    body = _json.loads(put_reqs[0].content)
+    assert body == {"Symbols": [{"Symbol": "7203", "Exchange": 1}]}
+
+
+async def test_put_register_returns_false_on_nonzero_result_code(
+    monkeypatch, httpx_mock: HTTPXMock
+):
+    monkeypatch.setenv("DEV_KABU_API_PASSWORD", "pw")
+    httpx_mock.add_response(
+        url=endpoint("token", env="verify"),
+        method="POST",
+        json={"ResultCode": 0, "Token": "tkn"},
+    )
+    httpx_mock.add_response(
+        url=endpoint("register", env="verify"),
+        method="PUT",
+        json={"ResultCode": 4002001, "Message": "register full"},
+    )
+
+    adapter = KabuStationAdapter(environment="verify")
+    await adapter.login(VenueCredentials(credentials_source="env"))
+    ok = await adapter._put_register([("7203", 1)])
+    assert ok is False
