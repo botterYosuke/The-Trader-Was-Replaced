@@ -42,6 +42,10 @@ class KabuConnectionError(KabuError):
     """kabu STATION body process not reachable (connection refused etc.)."""
 
 
+class KabuRegisterFullError(KabuApiError):
+    """Code 4002001 — PUSH register full (R6: 50 symbols, Q-K5: no implicit evict)."""
+
+
 def check_response(payload: dict, http_status: int) -> None:
     """Two-stage response validation per kabu skill R7.
 
