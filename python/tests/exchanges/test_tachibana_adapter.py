@@ -38,21 +38,6 @@ def test_invalid_environment_raises():
         TachibanaAdapter(environment="staging")  # type: ignore[arg-type]
 
 
-def test_subscribe_raises_not_implemented():
-    with pytest.raises(NotImplementedError):
-        asyncio.run(TachibanaAdapter().subscribe("7203.TSE", {"price"}))
-
-
-def test_unsubscribe_raises_not_implemented():
-    with pytest.raises(NotImplementedError):
-        asyncio.run(TachibanaAdapter().unsubscribe("7203.TSE"))
-
-
-def test_events_raises_not_implemented():
-    with pytest.raises(NotImplementedError):
-        TachibanaAdapter().events()
-
-
 def test_logout_clears_session():
     a = TachibanaAdapter()
     a._session = "sentinel"  # type: ignore[assignment]
@@ -275,3 +260,69 @@ async def test_fetch_instruments_handles_chunked_response(monkeypatch, httpx_moc
     out = await adapter.fetch_instruments()
     assert len(out) == 1
     assert out[0].name == "トヨタ自動車"  # SJIS round-trip OK
+
+
+# ---------------------------------------------------------------------------
+# Phase 8 §3.2 A3.3: subscribe / events wire-up to TickerEventWsHub
+# ---------------------------------------------------------------------------
+
+async def test_subscribe_requires_login():
+    """No session → subscribe must reject (sUrlEventWebSocket only comes from login)."""
+    adapter = TachibanaAdapter(environment="demo")
+    with pytest.raises(RuntimeError, match="login"):
+        await adapter.subscribe("7203.TSE", {"trades", "depth"})
+
+
+async def test_subscribe_creates_hub_for_ticker(monkeypatch, httpx_mock: HTTPXMock):
+    """subscribe('7203.TSE', ...) は ticker '7203' の TickerEventWsHub を 1 本作る。"""
+    adapter = await _login_demo(monkeypatch, httpx_mock)
+
+    created: list[tuple[str, str]] = []  # (ws_url, ticker)
+
+    from engine.exchanges import tachibana as _tach_mod
+
+    class _StubHub:
+        def __init__(self, ws_url, *, ticker, proxy=None):
+            created.append((ws_url, ticker))
+            self.ticker = ticker
+            self._subs: dict = {}
+        async def subscribe(self, key, callback, *, on_connect=None, on_close=None):
+            self._subs[key] = callback
+        async def unsubscribe(self, key):
+            self._subs.pop(key, None)
+        async def aclose(self):
+            self._subs.clear()
+
+    monkeypatch.setattr(_tach_mod, "TickerEventWsHub", _StubHub)
+
+    await adapter.subscribe("7203.TSE", {"trades", "depth"})
+
+    assert len(created) == 1
+    ws_url, ticker = created[0]
+    assert ticker == "7203"
+    assert ws_url == adapter._session.url_event_ws
+
+
+async def test_subscribe_same_ticker_twice_reuses_hub(monkeypatch, httpx_mock: HTTPXMock):
+    """同じ instrument_id を二回 subscribe しても hub は 1 本だけ。"""
+    adapter = await _login_demo(monkeypatch, httpx_mock)
+
+    created: list = []
+    from engine.exchanges import tachibana as _tach_mod
+
+    class _StubHub:
+        def __init__(self, ws_url, *, ticker, proxy=None):
+            created.append(ticker)
+            self._subs: dict = {}
+        async def subscribe(self, key, callback, *, on_connect=None, on_close=None):
+            self._subs[key] = callback
+        async def unsubscribe(self, key):
+            self._subs.pop(key, None)
+        async def aclose(self):
+            self._subs.clear()
+
+    monkeypatch.setattr(_tach_mod, "TickerEventWsHub", _StubHub)
+
+    await adapter.subscribe("7203.TSE", {"trades", "depth"})
+    await adapter.subscribe("7203.TSE", {"trades", "depth"})
+    assert len(created) == 1
