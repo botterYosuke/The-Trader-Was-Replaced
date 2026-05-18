@@ -300,7 +300,11 @@ async def test_subscribe_creates_hub_for_ticker(monkeypatch, httpx_mock: HTTPXMo
     assert len(created) == 1
     ws_url, ticker = created[0]
     assert ticker == "7203"
-    assert ws_url == adapter._session.url_event_ws
+    # fix1 (A3.3 review): build_event_url で query 付与された URL が渡される。
+    # prefix が url_event_ws と一致し、必須 query が含まれていれば契約 OK。
+    assert ws_url.startswith(adapter._session.url_event_ws)
+    assert "p_issue_code=7203" in ws_url
+    assert "p_evt_cmd=" in ws_url
 
 
 async def test_subscribe_same_ticker_twice_reuses_hub(monkeypatch, httpx_mock: HTTPXMock):
@@ -691,4 +695,9 @@ async def test_subscribe_passes_processor_reset_as_on_connect(
 
     assert len(captured_on_connect) == 1
     processor = adapter._processors["7203"]
-    assert captured_on_connect[0] is processor.reset
+    # bound method の `is` 比較は毎回新規 object のため不可。
+    # 「processor インスタンスの reset メソッドが渡された」ことを同一性で検証。
+    cb = captured_on_connect[0]
+    assert cb is not None
+    assert cb.__self__ is processor
+    assert cb.__func__ is type(processor).reset

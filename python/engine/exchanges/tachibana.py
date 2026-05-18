@@ -28,6 +28,7 @@ from engine.exchanges.tachibana_master import (
     MasterStreamParser,
     build_instruments_from_master_records,
 )
+from engine.exchanges.tachibana_url import EventUrl, build_event_url
 from engine.exchanges.tachibana_ws import FdFrameProcessor, TickerEventWsHub
 
 # Phase 8 §3.2: env-based credential keys (tachibana skill §S2).
@@ -148,20 +149,36 @@ class TachibanaAdapter:
                 "subscribe requires an active session; call login() first"
             )
         ticker = instrument_id.split(".")[0]
-        hub = self._hubs.get(ticker)
-        if hub is None:
-            hub = TickerEventWsHub(
-                self._session.url_event_ws,
-                ticker=ticker,
-            )
-            self._hubs[ticker] = hub
         processor = self._processors.get(ticker)
         if processor is None:
             processor = FdFrameProcessor(row="1")
             self._processors[ticker] = processor
+        hub = self._hubs.get(ticker)
+        if hub is None:
+            # Phase 8 §3.2 A3.3 review fix (High): EVENT WS は必須クエリを
+            # build_event_url で組み立てる。市場コードは MVP "00" 固定
+            # (TSE 想定)。名証/福証/札証対応時は master lookup へ。
+            ws_url = build_event_url(
+                EventUrl(self._session.url_event_ws),
+                {
+                    "p_rid": "22",
+                    "p_board_no": "1000",
+                    "p_gyou_no": "1",
+                    "p_issue_code": ticker,
+                    "p_mkt_code": "00",
+                    "p_eno": "0",
+                    "p_evt_cmd": "ST,KP,FD",
+                },
+            )
+            hub = TickerEventWsHub(
+                ws_url,
+                ticker=ticker,
+            )
+            self._hubs[ticker] = hub
         await hub.subscribe(
             instrument_id,
             self._make_callback(instrument_id, processor),
+            on_connect=processor.reset,
         )
 
     async def unsubscribe(self, instrument_id: InstrumentId) -> None:
