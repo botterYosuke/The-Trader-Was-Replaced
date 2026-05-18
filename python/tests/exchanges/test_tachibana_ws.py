@@ -671,3 +671,86 @@ async def test_hub_dispatch_exception_does_not_propagate_to_other_subscribers(mo
     await hub.aclose()
     stop_hint.set()
     await asyncio.wait_for(_wait_runner_done(hub), timeout=2.0)
+
+
+async def test_hub_resubscribe_after_unsubscribe_restarts_runner(monkeypatch):
+    """Race: unsubscribe で stop_event=set した直後、既存 runner が park から
+    抜ける前に subscribe('b') が来ると、現状実装は ``runner_task.done() is False``
+    のため restart を skip し、結果として新 subscriber に frame が届かない。
+
+    再現手順:
+      1. subscribe('a') で runner 起動 → _FakeWs#1 は frame 配り終えて idle park
+      2. unsubscribe('a') → stop_event.set() するが runner_task はまだ park 中で pending
+      3. 即 subscribe('b') を呼ぶ (await 1 step のみ)
+      4. idle_event を release → 既存 runner は stop_event=True を見て終了
+         → bug 時: 新 runner は立たず connect_counter == 1 / received == []
+         → fix 後: stop_event.is_set() を検知して新 runner 起動 → connect_counter == 2 / received == ["KP"]
+    """
+    # 接続毎に新しい _FakeWs を返し、connect 回数を観測する。
+    connect_counter = {"n": 0}
+    idle_events: list[asyncio.Event] = []
+    fakes: list[_FakeWs] = []
+
+    def _fake_connect(url: str, **kwargs: Any) -> _FakeWs:
+        connect_counter["n"] += 1
+        idle = asyncio.Event()
+        idle_events.append(idle)
+        fake = _FakeWs(
+            [_encode_frame_sjis([("p_cmd", "KP")])],
+            auto_close=False,
+            idle_event=idle,
+        )
+        fakes.append(fake)
+        return fake
+
+    monkeypatch.setattr(
+        tws_mod, "websockets",
+        type("_M", (), {"connect": staticmethod(_fake_connect)}),
+    )
+    monkeypatch.setattr(tws_mod, "_HAS_WEBSOCKETS", True)
+
+    hub = TickerEventWsHub("wss://example/ws", ticker="7203")
+    received_a: list[str] = []
+    received_b: list[str] = []
+
+    async def cb_a(frame_type: str, fields: dict[str, str], recv_ts_ms: int) -> None:
+        received_a.append(frame_type)
+
+    async def cb_b(frame_type: str, fields: dict[str, str], recv_ts_ms: int) -> None:
+        received_b.append(frame_type)
+
+    # 1) subscribe('a') → 1 本目接続 + KP 受信 + idle park.
+    await hub.subscribe("sub-a", cb_a)
+    await asyncio.wait_for(
+        _wait_until(lambda: received_a == ["KP"]), timeout=2.0
+    )
+    assert connect_counter["n"] == 1
+
+    # 2) unsubscribe('a') → stop_event.set される (runner はまだ park 中で pending).
+    await hub.unsubscribe("sub-a")
+    assert hub._runner_task is not None
+    assert not hub._runner_task.done(), (
+        "precondition: runner_task should still be pending (parked on idle_event)"
+    )
+    assert hub._stop_event.is_set(), (
+        "precondition: unsubscribe() should have set stop_event"
+    )
+
+    # 3) 直後に subscribe('b'). 現状実装は runner_task.done() is False のため
+    #    restart を skip する (= bug).
+    await hub.subscribe("sub-b", cb_b)
+
+    # 4) 既存 runner を park から解放 → stop_event=True を見て自然終了させる.
+    for ev in idle_events:
+        ev.set()
+
+    # bug 時: 新 runner 不在のため connect は 1 回のまま, received_b は空.
+    # fix 後: 2 本目接続が走り KP が cb_b に届く.
+    await asyncio.wait_for(
+        _wait_until(lambda: received_b == ["KP"]), timeout=2.0
+    )
+    assert connect_counter["n"] == 2, (
+        f"new runner should reconnect, got connect_counter={connect_counter['n']}"
+    )
+
+    await hub.aclose()
