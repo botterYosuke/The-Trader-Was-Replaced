@@ -754,3 +754,162 @@ async def test_hub_resubscribe_after_unsubscribe_restarts_runner(monkeypatch):
     )
 
     await hub.aclose()
+
+
+# ---------------------------------------------------------------------------
+# TickerEventWsHub — Bug A: subscribe-after-stop must not double-connect
+# (Phase 8 §3.2 A3.2b race-fix follow-up)
+# ---------------------------------------------------------------------------
+
+
+async def test_hub_resubscribe_after_unsubscribe_keeps_single_connection(monkeypatch):
+    """Bug A: 前 race fix の `or self._stop_event.is_set()` だけでは、
+    old runner_task がまだ park 中 (done()==False) のときに subscribe('b') が
+    走ると新 task が即作られ、結果として WS が **2 本並行 alive** になる。
+
+    立花 EVENT WS は ``(session, p_issue_code)`` 単位で 1 接続のみ許容するため、
+    並行 2 本は ``p_errno=2 'session inactive.'`` を誘発する致命バグ。
+
+    fix 後の契約: subscribe('b') 完了時点で alive な connection は **常に 1 本**。
+    """
+    connect_counter = {"n": 0}
+    alive: set[int] = set()
+    peak_alive = {"n": 0}
+    idle_events: list[asyncio.Event] = []
+
+    class _TrackingFakeWs:
+        def __init__(self, idle: asyncio.Event) -> None:
+            self._frames = [_encode_frame_sjis([("p_cmd", "KP")])]
+            self._idle = idle
+            self._id = id(self)
+
+        async def __aenter__(self) -> "_TrackingFakeWs":
+            alive.add(self._id)
+            if len(alive) > peak_alive["n"]:
+                peak_alive["n"] = len(alive)
+            return self
+
+        async def __aexit__(self, *exc: Any) -> None:
+            alive.discard(self._id)
+            return None
+
+        def __aiter__(self) -> "_TrackingFakeWs":
+            return self
+
+        async def __anext__(self) -> Any:
+            if self._frames:
+                return self._frames.pop(0)
+            await self._idle.wait()
+            raise StopAsyncIteration
+
+    def _fake_connect(url: str, **kwargs: Any) -> "_TrackingFakeWs":
+        connect_counter["n"] += 1
+        idle = asyncio.Event()
+        idle_events.append(idle)
+        return _TrackingFakeWs(idle)
+
+    monkeypatch.setattr(
+        tws_mod, "websockets",
+        type("_M", (), {"connect": staticmethod(_fake_connect)}),
+    )
+    monkeypatch.setattr(tws_mod, "_HAS_WEBSOCKETS", True)
+
+    hub = TickerEventWsHub("wss://example/ws", ticker="7203")
+    received_a: list[str] = []
+    received_b: list[str] = []
+
+    async def cb_a(frame_type: str, fields: dict[str, str], recv_ts_ms: int) -> None:
+        received_a.append(frame_type)
+
+    async def cb_b(frame_type: str, fields: dict[str, str], recv_ts_ms: int) -> None:
+        received_b.append(frame_type)
+
+    await hub.subscribe("sub-a", cb_a)
+    await asyncio.wait_for(
+        _wait_until(lambda: received_a == ["KP"]), timeout=2.0
+    )
+    assert connect_counter["n"] == 1
+    assert len(alive) == 1
+
+    await hub.unsubscribe("sub-a")
+    assert hub._runner_task is not None
+    assert not hub._runner_task.done(), (
+        "precondition: old runner_task must still be parked"
+    )
+    assert hub._stop_event.is_set()
+
+    await hub.subscribe("sub-b", cb_b)
+
+    for ev in idle_events:
+        ev.set()
+
+    await asyncio.wait_for(
+        _wait_until(lambda: received_b == ["KP"]), timeout=2.0
+    )
+
+    assert connect_counter["n"] == 2, (
+        f"expected 2 sequential connects, got {connect_counter['n']}"
+    )
+    assert peak_alive["n"] == 1, (
+        f"Bug A: WS double-connected (peak_alive={peak_alive['n']}); "
+        "subscribe-after-stop must await old runner before starting new one"
+    )
+
+    await hub.aclose()
+    for ev in idle_events:
+        ev.set()
+    await asyncio.wait_for(_wait_runner_done(hub), timeout=2.0)
+
+
+# ---------------------------------------------------------------------------
+# TickerEventWsHub — Bug B: _run() hard error must restart while subscribers remain
+# (Phase 8 §3.2 A3.2b silent-dead follow-up)
+# ---------------------------------------------------------------------------
+
+
+async def test_hub_run_hard_error_restarts_while_subscribers_remain(monkeypatch):
+    """Bug B: ``TachibanaEventWs.run()`` が hard error を raise した場合、
+    現状実装は log するだけで _run() が終了し subscriber 残ったまま silent dead。
+
+    fix 後の契約: ``self._subscribers`` が残っている限り、_run() は backoff 付きで
+    内部 run loop を restart する。
+    """
+    call_log: list[str] = []
+    original_run = tws_mod.TachibanaEventWs.run
+
+    async def flaky_run(self, callback, *, on_connect=None):
+        call_log.append("run")
+        if len(call_log) == 1:
+            raise RuntimeError("simulated hard error on first attempt")
+        return await original_run(self, callback, on_connect=on_connect)
+
+    monkeypatch.setattr(tws_mod.TachibanaEventWs, "run", flaky_run)
+
+    stop_hint = asyncio.Event()
+    fake = _FakeWs(
+        [_encode_frame_sjis([("p_cmd", "KP")])],
+        auto_close=False,
+        idle_event=stop_hint,
+    )
+    _install_fake_ws(monkeypatch, fake)
+
+    monkeypatch.setattr(tws_mod, "_BACKOFF_CAPS", (0.01,), raising=False)
+
+    hub = TickerEventWsHub("wss://example/ws", ticker="7203")
+    received: list[str] = []
+
+    async def cb(frame_type: str, fields: dict[str, str], recv_ts_ms: int) -> None:
+        received.append(frame_type)
+
+    await hub.subscribe("sub-a", cb)
+
+    await asyncio.wait_for(
+        _wait_until(lambda: received == ["KP"]), timeout=2.0
+    )
+    assert len(call_log) >= 2, (
+        f"expected at least one restart, got {len(call_log)} run() calls"
+    )
+
+    await hub.aclose()
+    stop_hint.set()
+    await asyncio.wait_for(_wait_runner_done(hub), timeout=2.0)
