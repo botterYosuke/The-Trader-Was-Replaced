@@ -2,7 +2,7 @@
 
 リポジトリ: `C:\Users\sasai\Documents\The-Trader-Was-Replaced`
 ブランチ: `impl/8-venue-login-skeleton`
-HEAD: `1b91f3c fix(tachibana): raise on ws normal close + always pass proxy kwarg (Phase 8 §3.2 A3.2a)`
+HEAD: `9ea9f17 fix(tachibana): restart EVENT WS reader after stop in TickerEventWsHub (Phase 8 §3.2 A3.2b)`
 
 ## 完了済み
 
@@ -22,6 +22,7 @@ HEAD: `1b91f3c fix(tachibana): raise on ws normal close + always pass proxy kwar
 | **A3.2b (部分) ✅** | `55a63b4` + `a84b5cc` | `TickerEventWsHub` 写経 (subscribe/unsubscribe lifecycle, fanout, aclose, on_connect/on_close, dispatch 例外吸収) + 最小 lifecycle test 1 件 | test_tachibana_ws 19 passed |
 | **A3.2b (完了) ✅** | `7be3282` | `TickerEventWsHub` 未テスト挙動 5 件 append (duplicate subscribe / fanout / aclose+on_close / on_connect 再発火 / dispatch 例外隔離) | test_tachibana_ws 24 passed, tachibana scope 156 passed |
 | **A3.2a fix ✅** | `8d19926` + `1b91f3c` | `TachibanaEventWs._run_loop` の websockets normal-close を `ConnectionClosedOK` raise に変更 (reconnect storm 防止) + `_connect` で proxy kwarg を常時渡す (None でも明示) | test_tachibana_ws 26 passed (RED 2 件 → GREEN) |
+| **A3.2b race fix ✅** | `2d69145` + `9ea9f17` | `TickerEventWsHub` の subscribe-after-stop race を修正: 全 unsubscribe で reader task を停止した後の再 subscribe で reader が起動し直されず frame が届かない問題を、subscribe 時の reader 再起動で解消 (RED→GREEN) | test_tachibana_ws 27 passed / tachibana scope 159 passed |
 
 > note: 同 session で想定外 commit (`60b7bc0` / `eb13ed2` = `.claude/skills/zed/src/` 1.5M 行) を rebase --onto で drop。`c5215df ｓ` は `16d7099 zed` として再積み (149 行 SKILL.md add)。保険 branch `backup/pre-rebase-1519f69` 残置 (要らなければ `git branch -D`)。
 
