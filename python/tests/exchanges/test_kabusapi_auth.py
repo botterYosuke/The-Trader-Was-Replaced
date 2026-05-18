@@ -60,6 +60,11 @@ class TestCheckResponse:
             check_response({"Code": 4002006, "Message": "rate limit"}, 200)
         assert exc.value.code == 4002006
 
+    def test_code_4002001_raises_register_full(self):
+        with pytest.raises(KabuRegisterFullError) as exc:
+            check_response({"Code": 4002001, "Message": "register full"}, 200)
+        assert exc.value.code == 4002001
+
     def test_other_nonzero_code_raises_generic_api_error(self):
         with pytest.raises(KabuApiError) as exc:
             check_response({"Code": 9999, "Message": "boom"}, 200)
