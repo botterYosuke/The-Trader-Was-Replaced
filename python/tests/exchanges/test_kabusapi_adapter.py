@@ -48,11 +48,6 @@ def test_login_prompt_raises_not_implemented():
         asyncio.run(KabuStationAdapter().login(creds))
 
 
-def test_fetch_instruments_raises_not_implemented():
-    with pytest.raises(NotImplementedError):
-        asyncio.run(KabuStationAdapter().fetch_instruments())
-
-
 def test_subscribe_raises_not_implemented():
     with pytest.raises(NotImplementedError):
         asyncio.run(KabuStationAdapter().subscribe("5401.TSE", {"price"}))
@@ -167,3 +162,32 @@ async def test_login_env_prod_with_allow_prod_hits_prod_url(
     assert adapter._token == "prod-token-yyyy"
     requests = httpx_mock.get_requests()
     assert any(":18080/" in str(r.url) for r in requests)
+
+
+# ---------------------------------------------------------------------------
+# Phase 8 §3.2 B2: fetch_instruments MVP — 空 list 返却
+# 理由 (handoff §「ユーザー決定事項」L84): kabu fetch_instruments は空 list。
+# subscribe 時の /symbol lazy fetch は B4 以降。
+# ---------------------------------------------------------------------------
+
+
+async def test_fetch_instruments_returns_empty_list():
+    """MVP: HTTP を叩かず空 list を返す (handoff ユーザー決定事項)。"""
+    adapter = KabuStationAdapter()
+    result = await adapter.fetch_instruments()
+    assert result == []
+
+
+async def test_fetch_instruments_returns_list_type():
+    """戻り値は list (None や tuple ではない) — Protocol 適合のため。"""
+    adapter = KabuStationAdapter()
+    result = await adapter.fetch_instruments()
+    assert isinstance(result, list)
+
+
+async def test_fetch_instruments_does_not_require_login():
+    """MVP: login 前でも呼べる (将来 lazy fetch 化したら login 必須に変える)。"""
+    adapter = KabuStationAdapter()
+    assert adapter._token is None
+    result = await adapter.fetch_instruments()
+    assert result == []
