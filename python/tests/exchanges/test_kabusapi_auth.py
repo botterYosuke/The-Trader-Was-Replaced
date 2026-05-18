@@ -12,6 +12,11 @@ from engine.exchanges.kabusapi_auth import (
     check_response,
 )
 
+import httpx
+from pytest_httpx import HTTPXMock
+
+from engine.exchanges.kabusapi_url import endpoint
+
 
 class TestExceptionHierarchy:
     def test_api_error_is_kabu_error(self):
@@ -66,3 +71,101 @@ class TestAuthHeaders:
     def test_empty_token_raises(self):
         with pytest.raises(ValueError):
             auth_headers("")
+
+
+class TestFetchToken:
+    """Phase 8 §3.2 B1 / kabu skill R1+R3+R7+R10.
+
+    POST {base}/token with {"APIPassword": ...} body. Returns the Token string
+    on 2xx + Code 0. The function itself does NOT persist the token.
+    """
+
+    def setup_method(self):
+        # Deferred import: fetch_token is not implemented yet (Phase 8 §3.2 B1).
+        # Importing at class setup keeps collection GREEN for the other 3 test
+        # classes while letting these 7 tests RED with ImportError until impl lands.
+        from engine.exchanges.kabusapi_auth import fetch_token  # noqa: F401
+        self._fetch_token = fetch_token
+
+    async def test_returns_token_on_200_ok(self, httpx_mock: HTTPXMock):
+        httpx_mock.add_response(
+            url=endpoint("token", env="verify"),
+            method="POST",
+            json={"ResultCode": 0, "Token": "abcd1234efgh5678"},
+        )
+        token = await self._fetch_token("api-pw", env="verify")
+        assert token == "abcd1234efgh5678"
+
+    async def test_posts_api_password_in_json_body(self, httpx_mock: HTTPXMock):
+        httpx_mock.add_response(
+            url=endpoint("token", env="verify"),
+            method="POST",
+            json={"ResultCode": 0, "Token": "tkn"},
+        )
+        await self._fetch_token("my-secret-pw", env="verify")
+        request = httpx_mock.get_request()
+        assert request is not None
+        import json as _json
+        body = _json.loads(request.content)
+        assert body == {"APIPassword": "my-secret-pw"}
+
+    async def test_http_4xx_raises_api_error(self, httpx_mock: HTTPXMock):
+        httpx_mock.add_response(
+            url=endpoint("token", env="verify"),
+            method="POST",
+            status_code=401,
+            json={"Code": 4001001, "Message": "Unauthorized"},
+        )
+        with pytest.raises(KabuApiError) as exc:
+            await self._fetch_token("bad-pw", env="verify")
+        assert exc.value.code == 4001001
+
+    async def test_non_json_response_raises_connection_error(
+        self, httpx_mock: HTTPXMock
+    ):
+        httpx_mock.add_response(
+            url=endpoint("token", env="verify"),
+            method="POST",
+            content=b"<html>500 oops</html>",
+            headers={"content-type": "text/html"},
+        )
+        with pytest.raises(KabuConnectionError):
+            await self._fetch_token("pw", env="verify")
+
+    async def test_token_key_missing_raises_connection_error(
+        self, httpx_mock: HTTPXMock
+    ):
+        httpx_mock.add_response(
+            url=endpoint("token", env="verify"),
+            method="POST",
+            json={"ResultCode": 0},
+        )
+        with pytest.raises(KabuConnectionError):
+            await self._fetch_token("pw", env="verify")
+
+    async def test_connect_error_raises_connection_error(
+        self, httpx_mock: HTTPXMock
+    ):
+        def _boom(request):
+            raise httpx.ConnectError("kabu body process not running")
+
+        httpx_mock.add_callback(_boom, url=endpoint("token", env="verify"), method="POST")
+        with pytest.raises(KabuConnectionError):
+            await self._fetch_token("pw", env="verify")
+
+    async def test_logs_only_masked_token_tail(
+        self, httpx_mock: HTTPXMock, caplog
+    ):
+        """R10 — log line for the issued token must only show ***<last4>."""
+        import logging
+
+        httpx_mock.add_response(
+            url=endpoint("token", env="verify"),
+            method="POST",
+            json={"ResultCode": 0, "Token": "secrettoken9999"},
+        )
+        with caplog.at_level(logging.INFO):
+            await self._fetch_token("pw", env="verify")
+        joined = " ".join(rec.getMessage() for rec in caplog.records)
+        assert "secrettoken9999" not in joined
+        assert "***9999" in joined
