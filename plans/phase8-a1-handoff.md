@@ -2,7 +2,7 @@
 
 リポジトリ: `C:\Users\sasai\Documents\The-Trader-Was-Replaced`
 ブランチ: `impl/8-venue-login-skeleton`
-HEAD: `88a1820 test(tachibana): cover TachibanaEventWs connect / recv / timeout (Phase 8 §3.2 A3.2a)`
+HEAD: `7be3282 test(tachibana): cover TickerEventWsHub fanout / aclose / on_connect / exception isolation (Phase 8 §3.2 A3.2b)`
 
 ## 完了済み
 
@@ -20,14 +20,14 @@ HEAD: `88a1820 test(tachibana): cover TachibanaEventWs connect / recv / timeout 
 | **A3.1 ✅** | `1c8d82e` + `2e551f5` | `tachibana_ws.py` 新設: `is_market_open` (JST 前場/後場+クロージング) + `FdFrameProcessor` (F3 side rule / F4 first-frame & DV-reset / F17 ts_ms / 10-level depth) | exchanges GREEN (+11 in test_tachibana_ws) |
 | **A3.2a ✅** | `a3aaa00` + `88a1820` | `TachibanaEventWs` async client: websockets.connect + per-frame `asyncio.wait_for` dead-frame timeout + `FdFrameProcessor` delegate (+ `websockets` dep) | exchanges GREEN (test_tachibana_ws 18 passed) |
 | **A3.2b (部分) ✅** | `55a63b4` + `a84b5cc` | `TickerEventWsHub` 写経 (subscribe/unsubscribe lifecycle, fanout, aclose, on_connect/on_close, dispatch 例外吸収) + 最小 lifecycle test 1 件 | test_tachibana_ws 19 passed |
+| **A3.2b (完了) ✅** | `7be3282` | `TickerEventWsHub` 未テスト挙動 5 件 append (duplicate subscribe / fanout / aclose+on_close / on_connect 再発火 / dispatch 例外隔離) | test_tachibana_ws 24 passed, tachibana scope 156 passed |
 
 > note: 同 session で想定外 commit (`60b7bc0` / `eb13ed2` = `.claude/skills/zed/src/` 1.5M 行) を rebase --onto で drop。`c5215df ｓ` は `16d7099 zed` として再積み (149 行 SKILL.md add)。保険 branch `backup/pre-rebase-1519f69` 残置 (要らなければ `git branch -D`)。
 
 ## 残タスク
 
-7 件 (A3.2b は test 追加分が残):
+6 件:
 
-- **A3.2b 残** `TickerEventWsHub` の未テスト挙動: 多重 subscribe ガード / fanout 2 subscriber / aclose+on_close / on_connect 再発火 / dispatch 例外吸収 (実装は写経済み、test のみ追加)
 - **A3.3** `TachibanaAdapter.subscribe` / `unsubscribe` / `events` 配線
 - **A3.3** `TachibanaAdapter.subscribe` / `unsubscribe` / `events` 配線
 - **B1** `kabusapi.login` (env + `/token`)
