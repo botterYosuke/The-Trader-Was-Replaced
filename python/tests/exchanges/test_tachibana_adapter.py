@@ -609,3 +609,86 @@ async def test_logout_is_idempotent(monkeypatch, httpx_mock: HTTPXMock):
     await adapter.logout()
     await adapter.logout()  # 2 回目: 例外なし
     assert adapter._session is None
+
+
+# ---------------------------------------------------------------------------
+# Phase 8 §3.2 A3.3 fix1 / fix2 (Medium) — EVENT WS URL params & on_connect=reset
+# ---------------------------------------------------------------------------
+
+
+async def test_subscribe_builds_event_ws_url_with_expected_params(
+    monkeypatch, httpx_mock: HTTPXMock
+):
+    """fix1-RED: TickerEventWsHub に渡す ws_url は build_event_url 経由で
+    期待 query (p_rid=22, p_board_no=1000, p_gyou_no=1, p_issue_code=<ticker>,
+    p_mkt_code=00, p_eno=0, p_evt_cmd=ST,KP,FD) を含む。"""
+    adapter = await _login_demo(monkeypatch, httpx_mock)
+
+    captured_urls: list[str] = []
+    from engine.exchanges import tachibana as _tach_mod
+
+    class _CaptureHub:
+        def __init__(self, ws_url, *, ticker, proxy=None):
+            captured_urls.append(ws_url)
+            self._subs: dict = {}
+
+        async def subscribe(self, key, callback, *, on_connect=None, on_close=None):
+            self._subs[key] = callback
+
+        async def unsubscribe(self, key):
+            self._subs.pop(key, None)
+
+        async def aclose(self):
+            self._subs.clear()
+
+    monkeypatch.setattr(_tach_mod, "TickerEventWsHub", _CaptureHub)
+
+    await adapter.subscribe("7203.TSE", {"trades", "depth"})
+
+    assert len(captured_urls) == 1
+    url = captured_urls[0]
+    assert url.startswith("wss://")
+    assert "/event_ws/" in url
+    assert "?" in url
+    assert "p_rid=22" in url
+    assert "p_board_no=1000" in url
+    assert "p_gyou_no=1" in url
+    assert "p_issue_code=7203" in url
+    assert "p_mkt_code=00" in url
+    assert "p_eno=0" in url
+    # "," is percent-encoded as %2C by build_event_url
+    assert "p_evt_cmd=ST%2CKP%2CFD" in url
+
+
+async def test_subscribe_passes_processor_reset_as_on_connect(
+    monkeypatch, httpx_mock: HTTPXMock
+):
+    """fix2-RED (Medium): hub.subscribe(... on_connect=...) には FdFrameProcessor.reset
+    と同一の callable が渡されること (WS 再接続時に board snapshot を初期化するため)。"""
+    adapter = await _login_demo(monkeypatch, httpx_mock)
+
+    captured_on_connect: list = []
+    from engine.exchanges import tachibana as _tach_mod
+
+    class _CaptureOnConnectHub:
+        def __init__(self, ws_url, *, ticker, proxy=None):
+            self.ticker = ticker
+            self._subs: dict = {}
+
+        async def subscribe(self, key, callback, *, on_connect=None, on_close=None):
+            captured_on_connect.append(on_connect)
+            self._subs[key] = callback
+
+        async def unsubscribe(self, key):
+            self._subs.pop(key, None)
+
+        async def aclose(self):
+            self._subs.clear()
+
+    monkeypatch.setattr(_tach_mod, "TickerEventWsHub", _CaptureOnConnectHub)
+
+    await adapter.subscribe("7203.TSE", {"trades", "depth"})
+
+    assert len(captured_on_connect) == 1
+    processor = adapter._processors["7203"]
+    assert captured_on_connect[0] is processor.reset
