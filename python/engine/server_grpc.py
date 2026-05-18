@@ -13,6 +13,7 @@ from typing import Optional
 import grpc
 
 from .core import DataEngine
+from .live.live_adapter_factory import build_live_adapter_factory
 from .live.live_runner import LiveRunner
 from .live.reducer_bridge import LiveReducerBridge
 from .live.state_machine import VenueStateMachine
@@ -913,6 +914,7 @@ def serve(
     advance_interval_sec: float = 1.0,
     jquants_dir: Optional[str] = None,
     jquants_catalog_path: Optional[str] = None,
+    live_venue: Optional[str] = None,
 ):
     jquants_loader = JQuantsLoader(jquants_dir) if jquants_dir else None
 
@@ -938,8 +940,18 @@ def serve(
     )
     ticker_thread.start()
 
+    live_adapter_factory = (
+        build_live_adapter_factory(live_venue) if live_venue is not None else None
+    )
+
     server = grpc.server(futures.ThreadPoolExecutor(max_workers=10))
-    servicer = GrpcDataEngineServer(token, engine, mode_manager=mm, venue_sm=venue_sm)
+    servicer = GrpcDataEngineServer(
+        token,
+        engine,
+        mode_manager=mm,
+        venue_sm=venue_sm,
+        live_adapter_factory=live_adapter_factory,
+    )
 
     engine_pb2_grpc.add_HealthServicer_to_server(servicer, server)
     engine_pb2_grpc.add_DataEngineServicer_to_server(servicer, server)

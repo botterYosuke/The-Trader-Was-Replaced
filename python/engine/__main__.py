@@ -42,6 +42,15 @@ def parse_args(argv=None):
         help="Path to Nautilus ParquetDataCatalog for J-Quants data (env: JQUANTS_CATALOG_PATH, ARTIFACTS_PATH)",
     )
 
+    # Phase 8 §3.2 C1 Live venue wiring
+    parser.add_argument(
+        "--live-venue",
+        type=str,
+        default=None,
+        choices=["TACHIBANA", "KABU"],
+        help="Live venue adapter to wire (TACHIBANA or KABU). Default: None (Replay only).",
+    )
+
     return parser.parse_args(argv)
 
 
@@ -67,6 +76,7 @@ def main():
             advance_interval_sec=args.advance_interval_sec,
             jquants_dir=args.jquants_dir,
             jquants_catalog_path=args.jquants_catalog_path,
+            live_venue=args.live_venue,
         )
     else:
         logging.error(f"Unsupported transport: {args.transport}")
