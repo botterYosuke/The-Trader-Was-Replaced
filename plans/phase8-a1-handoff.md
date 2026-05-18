@@ -31,15 +31,17 @@ HEAD: `db1a678 fix(kabusapi): defer consecutive_failures reset until first frame
 | **B4-1 ✅** | `1245398` (RED 4) → `756d0bf` (GREEN) | `kabusapi_url.py` に `ws_url(env)` + `KabuEnv = Env` alias。base_url 経由で KABU_ALLOW_PROD 二重ガード自動発火 | exchanges 255 passed |
 | **B4-2 ✅** | `7a8800e` (RED 8) → `6b27ab5` (GREEN) | `kabusapi_ws.py` 新規 (151 行、e-station 写経 + 1-arg `KabuConnectionError` 翻訳)。`connect(*, env, on_message, register_set, put_register)` async loop: `ping_interval=None` / `compression=None` / `asyncio.wait_for(recv, 3600)` / OSError×5 で raise / ConnectionClosedOK>5 で raise / 接続直後 `put_register(register_set.all_symbols())`。test 8 件 (_FakeWs `__aenter__/__aexit__/recv` パターン、deferred import) | exchanges **263 passed / 0 failed / 0 errors** |
 | **B4-2.5 fix ✅** | `194916e` (RED 1) → `db1a678` (GREEN) | レビュー指摘 (High): handshake 成功直後の `consecutive_failures = 0` リセットを「最初の frame dispatch 直前 (`consecutive_ok_close_count = 0` の隣)」へ移設。recv 即 ConnectionClosedError を繰り返す病的シナリオで上限到達せず無限再接続する High バグを fix。test 9 として test 7 と対称な ConnectionClosedError 版を追加。副次的に Low 指摘の TimeoutError break 経路 sleep コメントを実到達経路に合わせて正確化。+7/-3 lines | exchanges **264 passed / 0 failed / 0 errors** |
+| **B4-3 ✅** | `df345cd` (RED) → `c678f96` (GREEN) → `a7bdbc1` (simplify) | `kabusapi_ws_codec.KabuPushFrameProcessor` (Depth + Trades 正規化、tick rule + TradingVolume delta、aggressor 判定不能なら Trade 抑制) | exchanges 274 passed |
+| **B4-4a ✅** | `f400260` (RED 2) → `3148ac2` (GREEN) | `KabuStationAdapter._put_register` helper (PUT /register、X-API-KEY header、`{"Symbols": [{"Symbol", "Exchange"}]}` body、ResultCode==0 → True)。state field 追加: `_client` (`__init__` 保持)、`_register_set`、`_processors`、`_queue`、`_ws_task` | exchanges 276 passed |
+| **B4-4b ✅** | `6174c2e` (RED 4) → `f191d44` (GREEN) | `subscribe(instrument_id, channels)`: login check 最先 (`RuntimeError("login required ...")`) + `.TSE` suffix 固定 (それ以外 ValueError) + `RegisterSet.register(s, 1)` + `_put_register(all_symbols())` + `KabuPushFrameProcessor` 生成。`unsubscribe`: token=None で no-op、unregister + processor pop + `_put_register` 再送 | exchanges 278 passed |
+| **B4-4c ✅** | `44e48d2` (RED 4) → `bbc555e` (GREEN) | `_on_frame(msg)` (codec dict → pydantic `DepthUpdate` / `TradesUpdate` 変換、`f"{symbol}.TSE"` 復元、codec が trade=None なら trade 抑制) + `events()` (async generator、queue.get yield) + `subscribe` 初回で `kabusapi_ws.connect()` を `asyncio.create_task` で spawn (`kabusapi_ws.connect` は module attr 経由で patch 可) + `logout` 拡張 (task cancel/await + processors.clear + register_set.unregister_all + client.aclose + token=None) | exchanges **281 passed / 0 failed / 0 errors** |
 
 > note: 同 session で想定外 commit (`60b7bc0` / `eb13ed2` = `.claude/skills/zed/src/` 1.5M 行) を rebase --onto で drop。`c5215df ｓ` は `16d7099 zed` として再積み (149 行 SKILL.md add)。保険 branch `backup/pre-rebase-1519f69` 残置 (要らなければ `git branch -D`)。
 
 ## 残タスク
 
-- **B4-3** `kabusapi_ws_codec.py` 等で kabu PUSH frame → `DepthUpdate` + `TradesUpdate` 正規化 (tachibana の `FdFrameProcessor` 相当の kabu 版)。Sell1..10/Buy1..10 → DepthUpdate、CurrentPrice/TradingVolume delta → TradesUpdate
-- **B4-4** `KabuStationAdapter.subscribe/unsubscribe/events` 配線 (RegisterSet 注入 + `put_register` helper を adapter 側で httpx.AsyncClient 保持しつつ実装 + `kabusapi_ws.connect()` を `asyncio.create_task` で spawn + `events()` AsyncIterator。logout で task cancel + register clear)
-- **D1** `-m slow` smoke test (tachibana + kabu 各 1 本)
-- **D2** 計画書更新 + 完了報告
+- **D1** `-m slow` smoke test (tachibana + kabu 各 1 本) — kabu は kabuステーション本体 (Windows GUI) の起動が前提なので CI では `-m slow` から除外。Windows 開発機で別途実施
+- **D2** 計画書更新 (`docs/plan/Phase 8 - Live Venue and Market Data.md` §3.2 を完了表記に更新) + 完了報告
 
 ## 必読 (次 session)
 
