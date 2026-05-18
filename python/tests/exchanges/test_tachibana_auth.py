@@ -1,8 +1,11 @@
 import asyncio
+import json
 import re
 import time as _time
+from urllib.parse import unquote
 
 import pytest
+from pytest_httpx import HTTPXMock
 
 from engine.exchanges.tachibana_auth import (
     ApiError,
@@ -16,9 +19,12 @@ from engine.exchanges.tachibana_auth import (
     build_params,
     check_response,
     current_p_sd_date,
+    login,
     next_p_no,
+    validate_session_on_startup,
 )
 from engine.exchanges.tachibana_url import (
+    BASE_URL_DEMO,
     EventUrl,
     MasterUrl,
     PriceUrl,
@@ -180,7 +186,7 @@ def test_p_no_counter_next_returns_int():
 # ---------- TachibanaSession (A1.2) ----------
 
 
-def _make_session() -> TachibanaSession:
+def _make_login_session() -> TachibanaSession:
     return TachibanaSession(
         url_request=RequestUrl("https://demo-kabuka.e-shiten.jp/e_api_v4r8/request/ND=/"),
         url_master=MasterUrl("https://demo-kabuka.e-shiten.jp/e_api_v4r8/master/ND=/"),
@@ -192,7 +198,7 @@ def _make_session() -> TachibanaSession:
 
 
 def test_tachibana_session_holds_newtype_urls():
-    s = _make_session()
+    s = _make_login_session()
     assert isinstance(s.url_request, RequestUrl)
     assert isinstance(s.url_master, MasterUrl)
     assert isinstance(s.url_price, PriceUrl)
@@ -200,17 +206,17 @@ def test_tachibana_session_holds_newtype_urls():
 
 
 def test_tachibana_session_expires_at_ms_defaults_to_none():
-    assert _make_session().expires_at_ms is None
+    assert _make_login_session().expires_at_ms is None
 
 
 def test_tachibana_session_is_frozen():
-    s = _make_session()
+    s = _make_login_session()
     with pytest.raises((AttributeError, Exception)):
         s.zyoutoeki_kazei_c = "2"  # type: ignore[misc]
 
 
 def test_tachibana_session_ws_url_uses_wss_scheme():
-    assert _make_session().url_event_ws.startswith("wss://")
+    assert _make_login_session().url_event_ws.startswith("wss://")
 
 
 # ---------- StartupLatch (M3) ----------
@@ -264,3 +270,247 @@ async def test_startup_latch_concurrent_calls_exactly_one_succeeds():
     successes = [r for r in results if r == "ok"]
     assert len(runtime_errors) == 1
     assert len(successes) == 1
+
+
+# ===========================================================================
+# A1.3b login() RED tests (写経 from e-station)
+# ===========================================================================
+#
+# These exercise `login()` / `validate_session_on_startup()` which are still
+# NotImplementedError stubs. RED 観測 = 13 件 FAILED (NotImplementedError) を
+# A1.3b 完走条件とし、A1.4 実装で GREEN に転じる。
+#
+# Test URLs are derived from BASE_URL_DEMO so the demo host literal stays
+# single-sourced in `tachibana_url.py` (F-L1 / T7 secret_scan allowlist).
+
+_DEMO_BASE = BASE_URL_DEMO.value  # ends with "/"
+_DEMO_HOST_PATH = _DEMO_BASE.removeprefix("https://").removesuffix("/")
+
+_AUTH_URL_RE = re.compile(rf"^{re.escape(_DEMO_BASE)}auth/\?")
+_VIRTUAL_REQUEST = f"{_DEMO_BASE}request/ND=/"
+_VIRTUAL_MASTER = f"{_DEMO_BASE}master/ND=/"
+_VIRTUAL_PRICE = f"{_DEMO_BASE}price/ND=/"
+_VIRTUAL_EVENT = f"{_DEMO_BASE}event/ND=/"
+_VIRTUAL_EVENT_WS = f"wss://{_DEMO_HOST_PATH}/event_ws/ND=/"
+
+
+def _ok_login_payload(**overrides) -> dict:
+    base = {
+        "p_no": "1",
+        "p_sd_date": "2026.04.25-10:00:00.000",
+        "p_errno": "0",
+        "p_err": "",
+        "sCLMID": "CLMAuthLoginAck",
+        "sResultCode": "0",
+        "sResultText": "",
+        "sZyoutoekiKazeiC": "1",
+        "sKinsyouhouMidokuFlg": "0",
+        "sUrlRequest": _VIRTUAL_REQUEST,
+        "sUrlMaster": _VIRTUAL_MASTER,
+        "sUrlPrice": _VIRTUAL_PRICE,
+        "sUrlEvent": _VIRTUAL_EVENT,
+        "sUrlEventWebSocket": _VIRTUAL_EVENT_WS,
+    }
+    base.update(overrides)
+    return base
+
+
+def _add_login_response(httpx_mock: HTTPXMock, payload: dict | str) -> None:
+    """Tachibana returns Shift-JIS bytes; emulate that here."""
+    body = payload if isinstance(payload, str) else json.dumps(payload, ensure_ascii=False)
+    httpx_mock.add_response(
+        url=_AUTH_URL_RE,
+        method="GET",
+        content=body.encode("shift_jis"),
+    )
+
+
+def _decode_query_json(url: str) -> dict:
+    """Recover the JSON object from the bespoke percent-encoded query."""
+    _, _, q = url.partition("?")
+    return json.loads(unquote(q))
+
+
+# ---------- Happy path ----------
+
+
+async def test_login_returns_session_on_success(httpx_mock: HTTPXMock):
+    _add_login_response(httpx_mock, _ok_login_payload())
+    session = await login("uid", "pwd", is_demo=True, p_no_counter=PNoCounter())
+    assert isinstance(session, TachibanaSession)
+    assert isinstance(session.url_master, MasterUrl)
+    assert session.url_event_ws.startswith("wss://")
+    assert session.zyoutoeki_kazei_c == "1"
+    assert session.expires_at_ms is None  # F-B3
+
+
+async def test_login_request_uses_json_ofmt_five(httpx_mock: HTTPXMock):
+    """MEDIUM-C3-1 — auth endpoint requires sJsonOfmt='5'."""
+    _add_login_response(httpx_mock, _ok_login_payload())
+    await login("uid", "pwd", is_demo=True, p_no_counter=PNoCounter())
+    request = httpx_mock.get_request()
+    assert request is not None
+    query = _decode_query_json(str(request.url))
+    assert query["sJsonOfmt"] == "5"
+    assert query["sCLMID"] == "CLMAuthLoginRequest"
+    assert query["sUserId"] == "uid"
+    assert query["sPassword"] == "pwd"
+
+
+async def test_login_consumes_p_no_counter_so_retries_are_monotonic(
+    httpx_mock: HTTPXMock,
+):
+    """R4 — two `login()` calls on the same counter must send strictly
+    increasing `p_no` values, so a startup retry never replays the prior
+    request id."""
+    _add_login_response(httpx_mock, _ok_login_payload())
+    _add_login_response(httpx_mock, _ok_login_payload())
+    counter = PNoCounter()
+    await login("uid", "pwd", is_demo=True, p_no_counter=counter)
+    await login("uid", "pwd", is_demo=True, p_no_counter=counter)
+    requests = httpx_mock.get_requests()
+    p_nos = [int(_decode_query_json(str(r.url))["p_no"]) for r in requests]
+    assert p_nos[1] > p_nos[0]
+
+
+# ---------- URL scheme validation (MEDIUM-C3-3) ----------
+
+
+async def test_login_rejects_non_wss_event_url(httpx_mock: HTTPXMock):
+    payload = _ok_login_payload(
+        sUrlEventWebSocket=_VIRTUAL_EVENT_WS.replace("wss://", "ws://", 1),
+    )
+    _add_login_response(httpx_mock, payload)
+    with pytest.raises(LoginError):
+        await login("uid", "pwd", is_demo=True, p_no_counter=PNoCounter())
+
+
+async def test_login_rejects_non_https_request_url(httpx_mock: HTTPXMock):
+    payload = _ok_login_payload(
+        sUrlRequest=_VIRTUAL_REQUEST.replace("https://", "http://", 1),
+    )
+    _add_login_response(httpx_mock, payload)
+    with pytest.raises(LoginError):
+        await login("uid", "pwd", is_demo=True, p_no_counter=PNoCounter())
+
+
+# ---------- Error mapping (R6 / two-stage check + sKinsyouhouMidokuFlg) ----------
+
+
+async def test_login_raises_unread_notices_when_kinsyouhou_flag_set(httpx_mock: HTTPXMock):
+    """HIGH-C2-1: sKinsyouhouMidokuFlg='1' → UnreadNoticesError → unread_notices."""
+    _add_login_response(
+        httpx_mock,
+        _ok_login_payload(sKinsyouhouMidokuFlg="1"),
+    )
+    with pytest.raises(UnreadNoticesError) as exc_info:
+        await login("uid", "pwd", is_demo=True, p_no_counter=PNoCounter())
+    assert exc_info.value.code == "unread_notices"
+
+
+async def test_session_expired_p_errno_2(httpx_mock: HTTPXMock):
+    _add_login_response(
+        httpx_mock,
+        _ok_login_payload(p_errno="2", p_err="session expired"),
+    )
+    with pytest.raises(SessionExpiredError) as exc_info:
+        await login("uid", "pwd", is_demo=True, p_no_counter=PNoCounter())
+    assert exc_info.value.code == "session_expired"
+
+
+async def test_login_p_errno_minus_62_raises_login_error(httpx_mock: HTTPXMock):
+    """Generic non-2 `p_errno` on the auth path must be bucketed as
+    `LoginError` (login_path=True), not surface as a bare `TachibanaError`."""
+    _add_login_response(
+        httpx_mock,
+        _ok_login_payload(p_errno="-62", p_err="auth-rate"),
+    )
+    with pytest.raises(LoginError) as exc_info:
+        await login("uid", "pwd", is_demo=True, p_no_counter=PNoCounter())
+    assert exc_info.value.code == "-62"
+
+
+async def test_login_p_errno_minus_62_uses_service_out_of_hours_banner(
+    httpx_mock: HTTPXMock,
+):
+    """`p_errno=-62` ("システムサービス時間外") MUST surface a dedicated banner
+    instead of the misleading credential-check string. Raw `p_err` must not
+    leak (F-Banner1)."""
+    _add_login_response(
+        httpx_mock,
+        _ok_login_payload(p_errno="-62", p_err="システムサービス時間外。"),
+    )
+    with pytest.raises(LoginError) as exc_info:
+        await login("uid", "pwd", is_demo=True, p_no_counter=PNoCounter())
+    msg = exc_info.value.message
+    assert "サービス時間外" in msg
+    assert "ID" not in msg and "パスワード" not in msg, (
+        "service-hours banner must NOT recycle the credential-check wording"
+    )
+    assert "システムサービス時間外。" not in msg, (
+        "raw server p_err text must not leak into the banner (F-Banner1)"
+    )
+
+
+async def test_login_authentication_failure_raises_login_error(httpx_mock: HTTPXMock):
+    """Same guarantee for `sResultCode != "0"` on the auth path."""
+    _add_login_response(
+        httpx_mock,
+        _ok_login_payload(
+            sResultCode="10031",
+            sResultText="invalid credentials",
+        ),
+    )
+    with pytest.raises(LoginError) as exc_info:
+        await login("uid", "pwd", is_demo=True, p_no_counter=PNoCounter())
+    assert exc_info.value.code == "10031"
+
+
+# ---------- Banner-text contract (F-Banner1) ----------
+
+
+async def test_login_failure_message_uses_fixed_japanese_banner(
+    httpx_mock: HTTPXMock,
+):
+    _add_login_response(
+        httpx_mock,
+        _ok_login_payload(
+            sResultCode="10031",
+            sResultText="invalid credentials",
+        ),
+    )
+    with pytest.raises(LoginError) as exc_info:
+        await login("uid", "pwd", is_demo=True, p_no_counter=PNoCounter())
+    assert "invalid credentials" not in exc_info.value.message
+    assert exc_info.value.message == (
+        "ログインに失敗しました。ID / パスワードを確認してください"
+    )
+
+
+async def test_session_expired_message_is_python_composed(httpx_mock: HTTPXMock):
+    _add_login_response(
+        httpx_mock,
+        _ok_login_payload(p_errno="2", p_err="session expired"),
+    )
+    with pytest.raises(SessionExpiredError) as exc_info:
+        await login("uid", "pwd", is_demo=True, p_no_counter=PNoCounter())
+    assert "session expired" not in exc_info.value.message
+    assert exc_info.value.message == (
+        "立花のセッションが切れました（夜間閉局）。再ログインしてください"
+    )
+
+
+# ---------- HTTP / transport error mapping ----------
+
+
+async def test_login_http_502_maps_to_transport_error(httpx_mock: HTTPXMock):
+    """5xx must surface as transport_error, not as a JSON parse failure."""
+    httpx_mock.add_response(
+        url=_AUTH_URL_RE,
+        method="GET",
+        status_code=502,
+        content=b"<html>Bad Gateway</html>",
+    )
+    with pytest.raises(LoginError) as exc_info:
+        await login("uid", "pwd", is_demo=True, p_no_counter=PNoCounter())
+    assert exc_info.value.code == "transport_error"

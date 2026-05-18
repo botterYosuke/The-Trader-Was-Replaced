@@ -20,6 +20,8 @@ __all__ = [
     "current_p_sd_date",
     "build_params",
     "check_response",
+    "login",
+    "validate_session_on_startup",
 ]
 
 
@@ -37,9 +39,29 @@ class ApiError(TachibanaError):
 class LoginError(TachibanaError):
     """Raised when login fails."""
 
+    def __init__(
+        self,
+        message: str = "login failed",
+        *,
+        code: str = "LOGIN_FAILED",
+    ) -> None:
+        super().__init__(message)
+        self.message = message
+        self.code = code
+
 
 class UnreadNoticesError(TachibanaError):
     """Raised when the API reports unread notices (sKinsyouhouMidokuFlg=1)."""
+
+    def __init__(
+        self,
+        message: str = "unread notices flag set",
+        *,
+        code: str = "UNREAD_NOTICES",
+    ) -> None:
+        super().__init__(message)
+        self.message = message
+        self.code = code
 
 
 class SessionExpiredError(ApiError):
@@ -168,3 +190,20 @@ class StartupLatch:
                 return await coro
             finally:
                 self._done = True
+
+
+# ---------------------------------------------------------------------------
+# Phase 8 A1.3: login / validate_session_on_startup (stub for A1.3b RED tests)
+# ---------------------------------------------------------------------------
+
+
+async def login(*args: Any, **kwargs: Any) -> TachibanaSession:
+    """Stub — real implementation lands in A1.4. Keyword-only at call site."""
+    raise NotImplementedError("login() is not yet implemented (A1.4)")
+
+
+async def validate_session_on_startup(*args: Any, **kwargs: Any) -> None:
+    """Stub — real implementation lands in A1.4. Keyword-only at call site."""
+    raise NotImplementedError(
+        "validate_session_on_startup() is not yet implemented (A1.4)"
+    )
