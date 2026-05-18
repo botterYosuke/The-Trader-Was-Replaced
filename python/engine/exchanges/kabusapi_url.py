@@ -39,3 +39,15 @@ def symbol_key(symbol: str, exchange: int) -> str:
     if not symbol:
         raise ValueError("INVALID_SYMBOL: empty")
     return f"{symbol}@{exchange}"
+
+
+# B4-1: kabusapi_ws.py 等が `from ... import KabuEnv` を期待するため alias を export
+KabuEnv = Env
+
+
+def ws_url(env: Env) -> str:
+    """Return WebSocket URL for given env (kabu skill: PUSH 配信は ws://.../kabusapi/websocket).
+
+    base_url(env) 経由で呼ぶことで prod 時の KABU_ALLOW_PROD 二重ガードが自動発火する。
+    """
+    return base_url(env).replace("http://", "ws://", 1) + "websocket"
