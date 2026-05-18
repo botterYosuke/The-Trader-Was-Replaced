@@ -578,3 +578,133 @@ async def test_unsubscribe_rejects_non_tse_suffix(
     assert ("7203", 1) in adapter._register_set
 
     await adapter.logout()
+
+
+# ---------------------------------------------------------------------------
+# Phase 8 §3.2 B4-4e: review fix —
+#   High:   WS task silent death を events() に伝播
+#   Medium①: 既存購読 symbol の再 subscribe で PUT 失敗時に既存 state を壊さない
+#   Medium②: unsubscribe は PUT 成功後に local state を commit (server/local skew 防止)
+# ---------------------------------------------------------------------------
+
+
+async def test_events_raises_when_ws_task_dies(
+    monkeypatch, httpx_mock: HTTPXMock
+):
+    """WS task が KabuConnectionError で死んだら events() は無音にならず raise する。"""
+    from engine.exchanges.kabusapi_auth import KabuConnectionError
+
+    monkeypatch.setenv("DEV_KABU_API_PASSWORD", "pw")
+    httpx_mock.add_response(
+        url=endpoint("token", env="verify"),
+        method="POST",
+        json={"ResultCode": 0, "Token": "tkn"},
+    )
+    httpx_mock.add_response(
+        url=endpoint("register", env="verify"),
+        method="PUT",
+        json={"ResultCode": 0, "RegistList": []},
+    )
+
+    async def _dying_connect(**kwargs):
+        raise KabuConnectionError("ws upstream gone")
+
+    import engine.exchanges.kabusapi_ws as _ws_mod
+    monkeypatch.setattr(_ws_mod, "connect", _dying_connect)
+
+    adapter = KabuStationAdapter(environment="verify")
+    await adapter.login(VenueCredentials(credentials_source="env"))
+    await adapter.subscribe("7203.TSE", {"trades"})
+
+    # WS task が死んだら events() は永久 _queue.get() で待たず、例外を raise する
+    events_iter = adapter.events()
+    with pytest.raises(KabuConnectionError, match="ws upstream gone"):
+        await asyncio.wait_for(events_iter.__anext__(), timeout=1.0)
+
+
+async def test_subscribe_duplicate_with_put_failure_preserves_existing_state(
+    monkeypatch, httpx_mock: HTTPXMock
+):
+    """既に subscribe 済み symbol の再 subscribe で PUT が失敗しても、
+    既存の register / processor を壊さない (Medium ①)。"""
+    monkeypatch.setenv("DEV_KABU_API_PASSWORD", "pw")
+    httpx_mock.add_response(
+        url=endpoint("token", env="verify"),
+        method="POST",
+        json={"ResultCode": 0, "Token": "tkn"},
+    )
+    # 1 回目 subscribe: PUT 成功
+    httpx_mock.add_response(
+        url=endpoint("register", env="verify"),
+        method="PUT",
+        json={"ResultCode": 0, "RegistList": []},
+    )
+    # 2 回目 subscribe (同 symbol): PUT 失敗
+    httpx_mock.add_response(
+        url=endpoint("register", env="verify"),
+        method="PUT",
+        json={"ResultCode": 4002001, "Message": "register full"},
+    )
+
+    async def _fake_connect(**kwargs):
+        await asyncio.Event().wait()
+
+    import engine.exchanges.kabusapi_ws as _ws_mod
+    monkeypatch.setattr(_ws_mod, "connect", _fake_connect)
+
+    adapter = KabuStationAdapter(environment="verify")
+    await adapter.login(VenueCredentials(credentials_source="env"))
+    await adapter.subscribe("7203.TSE", {"trades"})
+    first_processor = adapter._processors["7203"]
+
+    with pytest.raises(RuntimeError, match="register"):
+        await adapter.subscribe("7203.TSE", {"trades"})
+
+    # 既存 state は破壊されていない
+    assert ("7203", 1) in adapter._register_set
+    assert adapter._processors.get("7203") is first_processor
+
+    await adapter.logout()
+
+
+async def test_unsubscribe_raises_and_preserves_state_on_put_failure(
+    monkeypatch, httpx_mock: HTTPXMock
+):
+    """unsubscribe の PUT が失敗したら local state を消さずに raise する (Medium ②)。"""
+    monkeypatch.setenv("DEV_KABU_API_PASSWORD", "pw")
+    httpx_mock.add_response(
+        url=endpoint("token", env="verify"),
+        method="POST",
+        json={"ResultCode": 0, "Token": "tkn"},
+    )
+    # subscribe: PUT 成功
+    httpx_mock.add_response(
+        url=endpoint("register", env="verify"),
+        method="PUT",
+        json={"ResultCode": 0, "RegistList": []},
+    )
+    # unsubscribe: PUT 失敗
+    httpx_mock.add_response(
+        url=endpoint("register", env="verify"),
+        method="PUT",
+        json={"ResultCode": 4002001, "Message": "register sync failed"},
+    )
+
+    async def _fake_connect(**kwargs):
+        await asyncio.Event().wait()
+
+    import engine.exchanges.kabusapi_ws as _ws_mod
+    monkeypatch.setattr(_ws_mod, "connect", _fake_connect)
+
+    adapter = KabuStationAdapter(environment="verify")
+    await adapter.login(VenueCredentials(credentials_source="env"))
+    await adapter.subscribe("7203.TSE", {"trades"})
+
+    with pytest.raises(RuntimeError, match="unregister"):
+        await adapter.unsubscribe("7203.TSE")
+
+    # PUT が失敗したら local state はそのまま (server/local skew 防止)
+    assert ("7203", 1) in adapter._register_set
+    assert "7203" in adapter._processors
+
+    await adapter.logout()
