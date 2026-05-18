@@ -7,6 +7,7 @@ from engine.exchanges.kabusapi_auth import (
     KabuConnectionError,
     KabuError,
     KabuRateLimitError,
+    KabuRegisterFullError,
     KabuTokenExpiredError,
     auth_headers,
     check_response,
@@ -31,6 +32,9 @@ class TestExceptionHierarchy:
     def test_connection_error_is_kabu_error(self):
         assert issubclass(KabuConnectionError, KabuError)
         assert not issubclass(KabuConnectionError, KabuApiError)
+
+    def test_register_full_is_api_error(self):
+        assert issubclass(KabuRegisterFullError, KabuApiError)
 
 
 class TestCheckResponse:
