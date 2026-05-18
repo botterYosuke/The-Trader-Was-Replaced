@@ -181,6 +181,31 @@ class DataEngineStub(object):
                 request_serializer=engine__pb2.GetPortfolioRequest.SerializeToString,
                 response_deserializer=engine__pb2.GetPortfolioResponse.FromString,
                 _registered_method=True)
+        self.VenueLogin = channel.unary_unary(
+                '/engine.DataEngine/VenueLogin',
+                request_serializer=engine__pb2.VenueLoginRequest.SerializeToString,
+                response_deserializer=engine__pb2.VenueLoginResponse.FromString,
+                _registered_method=True)
+        self.VenueLogout = channel.unary_unary(
+                '/engine.DataEngine/VenueLogout',
+                request_serializer=engine__pb2.VenueLogoutRequest.SerializeToString,
+                response_deserializer=engine__pb2.VenueControlResponse.FromString,
+                _registered_method=True)
+        self.SubscribeMarketData = channel.unary_unary(
+                '/engine.DataEngine/SubscribeMarketData',
+                request_serializer=engine__pb2.SubscribeRequest.SerializeToString,
+                response_deserializer=engine__pb2.SubscribeResponse.FromString,
+                _registered_method=True)
+        self.UnsubscribeMarketData = channel.unary_unary(
+                '/engine.DataEngine/UnsubscribeMarketData',
+                request_serializer=engine__pb2.UnsubscribeRequest.SerializeToString,
+                response_deserializer=engine__pb2.SubscribeResponse.FromString,
+                _registered_method=True)
+        self.SetExecutionMode = channel.unary_unary(
+                '/engine.DataEngine/SetExecutionMode',
+                request_serializer=engine__pb2.SetExecutionModeRequest.SerializeToString,
+                response_deserializer=engine__pb2.SetExecutionModeResponse.FromString,
+                _registered_method=True)
 
 
 class DataEngineServicer(object):
@@ -280,6 +305,37 @@ class DataEngineServicer(object):
         context.set_details('Method not implemented!')
         raise NotImplementedError('Method not implemented!')
 
+    def VenueLogin(self, request, context):
+        """Live Venue / Market Data (Phase 8)
+        """
+        context.set_code(grpc.StatusCode.UNIMPLEMENTED)
+        context.set_details('Method not implemented!')
+        raise NotImplementedError('Method not implemented!')
+
+    def VenueLogout(self, request, context):
+        """Missing associated documentation comment in .proto file."""
+        context.set_code(grpc.StatusCode.UNIMPLEMENTED)
+        context.set_details('Method not implemented!')
+        raise NotImplementedError('Method not implemented!')
+
+    def SubscribeMarketData(self, request, context):
+        """Missing associated documentation comment in .proto file."""
+        context.set_code(grpc.StatusCode.UNIMPLEMENTED)
+        context.set_details('Method not implemented!')
+        raise NotImplementedError('Method not implemented!')
+
+    def UnsubscribeMarketData(self, request, context):
+        """Missing associated documentation comment in .proto file."""
+        context.set_code(grpc.StatusCode.UNIMPLEMENTED)
+        context.set_details('Method not implemented!')
+        raise NotImplementedError('Method not implemented!')
+
+    def SetExecutionMode(self, request, context):
+        """Missing associated documentation comment in .proto file."""
+        context.set_code(grpc.StatusCode.UNIMPLEMENTED)
+        context.set_details('Method not implemented!')
+        raise NotImplementedError('Method not implemented!')
+
 
 def add_DataEngineServicer_to_server(servicer, server):
     rpc_method_handlers = {
@@ -357,6 +413,31 @@ def add_DataEngineServicer_to_server(servicer, server):
                     servicer.GetPortfolio,
                     request_deserializer=engine__pb2.GetPortfolioRequest.FromString,
                     response_serializer=engine__pb2.GetPortfolioResponse.SerializeToString,
+            ),
+            'VenueLogin': grpc.unary_unary_rpc_method_handler(
+                    servicer.VenueLogin,
+                    request_deserializer=engine__pb2.VenueLoginRequest.FromString,
+                    response_serializer=engine__pb2.VenueLoginResponse.SerializeToString,
+            ),
+            'VenueLogout': grpc.unary_unary_rpc_method_handler(
+                    servicer.VenueLogout,
+                    request_deserializer=engine__pb2.VenueLogoutRequest.FromString,
+                    response_serializer=engine__pb2.VenueControlResponse.SerializeToString,
+            ),
+            'SubscribeMarketData': grpc.unary_unary_rpc_method_handler(
+                    servicer.SubscribeMarketData,
+                    request_deserializer=engine__pb2.SubscribeRequest.FromString,
+                    response_serializer=engine__pb2.SubscribeResponse.SerializeToString,
+            ),
+            'UnsubscribeMarketData': grpc.unary_unary_rpc_method_handler(
+                    servicer.UnsubscribeMarketData,
+                    request_deserializer=engine__pb2.UnsubscribeRequest.FromString,
+                    response_serializer=engine__pb2.SubscribeResponse.SerializeToString,
+            ),
+            'SetExecutionMode': grpc.unary_unary_rpc_method_handler(
+                    servicer.SetExecutionMode,
+                    request_deserializer=engine__pb2.SetExecutionModeRequest.FromString,
+                    response_serializer=engine__pb2.SetExecutionModeResponse.SerializeToString,
             ),
     }
     generic_handler = grpc.method_handlers_generic_handler(
@@ -764,6 +845,141 @@ class DataEngine(object):
             '/engine.DataEngine/GetPortfolio',
             engine__pb2.GetPortfolioRequest.SerializeToString,
             engine__pb2.GetPortfolioResponse.FromString,
+            options,
+            channel_credentials,
+            insecure,
+            call_credentials,
+            compression,
+            wait_for_ready,
+            timeout,
+            metadata,
+            _registered_method=True)
+
+    @staticmethod
+    def VenueLogin(request,
+            target,
+            options=(),
+            channel_credentials=None,
+            call_credentials=None,
+            insecure=False,
+            compression=None,
+            wait_for_ready=None,
+            timeout=None,
+            metadata=None):
+        return grpc.experimental.unary_unary(
+            request,
+            target,
+            '/engine.DataEngine/VenueLogin',
+            engine__pb2.VenueLoginRequest.SerializeToString,
+            engine__pb2.VenueLoginResponse.FromString,
+            options,
+            channel_credentials,
+            insecure,
+            call_credentials,
+            compression,
+            wait_for_ready,
+            timeout,
+            metadata,
+            _registered_method=True)
+
+    @staticmethod
+    def VenueLogout(request,
+            target,
+            options=(),
+            channel_credentials=None,
+            call_credentials=None,
+            insecure=False,
+            compression=None,
+            wait_for_ready=None,
+            timeout=None,
+            metadata=None):
+        return grpc.experimental.unary_unary(
+            request,
+            target,
+            '/engine.DataEngine/VenueLogout',
+            engine__pb2.VenueLogoutRequest.SerializeToString,
+            engine__pb2.VenueControlResponse.FromString,
+            options,
+            channel_credentials,
+            insecure,
+            call_credentials,
+            compression,
+            wait_for_ready,
+            timeout,
+            metadata,
+            _registered_method=True)
+
+    @staticmethod
+    def SubscribeMarketData(request,
+            target,
+            options=(),
+            channel_credentials=None,
+            call_credentials=None,
+            insecure=False,
+            compression=None,
+            wait_for_ready=None,
+            timeout=None,
+            metadata=None):
+        return grpc.experimental.unary_unary(
+            request,
+            target,
+            '/engine.DataEngine/SubscribeMarketData',
+            engine__pb2.SubscribeRequest.SerializeToString,
+            engine__pb2.SubscribeResponse.FromString,
+            options,
+            channel_credentials,
+            insecure,
+            call_credentials,
+            compression,
+            wait_for_ready,
+            timeout,
+            metadata,
+            _registered_method=True)
+
+    @staticmethod
+    def UnsubscribeMarketData(request,
+            target,
+            options=(),
+            channel_credentials=None,
+            call_credentials=None,
+            insecure=False,
+            compression=None,
+            wait_for_ready=None,
+            timeout=None,
+            metadata=None):
+        return grpc.experimental.unary_unary(
+            request,
+            target,
+            '/engine.DataEngine/UnsubscribeMarketData',
+            engine__pb2.UnsubscribeRequest.SerializeToString,
+            engine__pb2.SubscribeResponse.FromString,
+            options,
+            channel_credentials,
+            insecure,
+            call_credentials,
+            compression,
+            wait_for_ready,
+            timeout,
+            metadata,
+            _registered_method=True)
+
+    @staticmethod
+    def SetExecutionMode(request,
+            target,
+            options=(),
+            channel_credentials=None,
+            call_credentials=None,
+            insecure=False,
+            compression=None,
+            wait_for_ready=None,
+            timeout=None,
+            metadata=None):
+        return grpc.experimental.unary_unary(
+            request,
+            target,
+            '/engine.DataEngine/SetExecutionMode',
+            engine__pb2.SetExecutionModeRequest.SerializeToString,
+            engine__pb2.SetExecutionModeResponse.FromString,
             options,
             channel_credentials,
             insecure,

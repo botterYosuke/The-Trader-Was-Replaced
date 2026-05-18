@@ -62,6 +62,13 @@ service DataEngine {
 
   // Portfolio
   rpc GetPortfolio(GetPortfolioRequest) returns (GetPortfolioResponse);
+
+  // Live Venue / Market Data (Phase 8)
+  rpc VenueLogin (VenueLoginRequest) returns (VenueLoginResponse);
+  rpc VenueLogout (VenueLogoutRequest) returns (VenueControlResponse);
+  rpc SubscribeMarketData (SubscribeRequest) returns (SubscribeResponse);
+  rpc UnsubscribeMarketData (UnsubscribeRequest) returns (SubscribeResponse);
+  rpc SetExecutionMode (SetExecutionModeRequest) returns (SetExecutionModeResponse);
 }
 
 message GetStateRequest {
@@ -227,4 +234,50 @@ message GetPortfolioResponse {
   repeated PortfolioPosition positions = 5;
   repeated PortfolioOrder orders = 6;
   string error_message = 7;
+}
+
+// === Phase 8: Live Venue / Market Data ===
+
+message VenueLoginRequest {
+  string venue_id = 1;
+  string credentials_source = 2;
+  string environment_hint = 3;
+}
+
+message VenueLoginResponse {
+  bool success = 1;
+  string error_code = 2;
+  string venue_state = 3;
+  int32 instruments_loaded = 4;
+}
+
+message VenueLogoutRequest {}
+
+message VenueControlResponse {
+  bool success = 1;
+  string error_code = 2;
+}
+
+message SubscribeRequest {
+  string instrument_id = 1;
+  repeated string channels = 2;
+}
+
+message SubscribeResponse {
+  bool success = 1;
+  string error_code = 2;
+}
+
+message UnsubscribeRequest {
+  string instrument_id = 1;
+}
+
+message SetExecutionModeRequest {
+  string mode = 1;
+}
+
+message SetExecutionModeResponse {
+  bool success = 1;
+  string error_code = 2;
+  string execution_mode = 3;
 }

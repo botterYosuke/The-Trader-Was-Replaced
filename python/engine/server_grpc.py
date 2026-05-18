@@ -12,6 +12,8 @@ from typing import Optional
 import grpc
 
 from .core import DataEngine
+from .live.state_machine import VenueStateMachine
+from .mode_manager import ModeManager
 from .proto import engine_pb2, engine_pb2_grpc
 from .replay import BaseReplayProvider
 from .jquants_loader import JQuantsLoader
@@ -128,9 +130,21 @@ def _scan_catalog_instruments(catalog_path: str) -> list[str]:
 class GrpcDataEngineServer(
     engine_pb2_grpc.HealthServicer, engine_pb2_grpc.DataEngineServicer
 ):
-    def __init__(self, token: str, engine: DataEngine):
+    def __init__(
+        self,
+        token: str,
+        engine: DataEngine,
+        mode_manager=None,
+        venue_sm=None,
+    ):
         self.token = token
         self.engine = engine
+        self.mode_manager = mode_manager
+        self.venue_sm = venue_sm
+
+    _KNOWN_VENUES = {"TACHIBANA", "KABU"}
+    _KNOWN_CRED_SOURCES = {"prompt", "session_cache", "env"}
+    _KNOWN_MODES = {"Replay", "LiveManual", "LiveAuto"}
 
     def _current_engine_state(self):
         """Map the core replay state string to the gRPC EngineState enum."""
@@ -658,6 +672,75 @@ class GrpcDataEngineServer(
             resolved_end_date=resolved_end_date,
         )
 
+    def VenueLogin(self, request, context):
+        if request.credentials_source not in self._KNOWN_CRED_SOURCES:
+            context.abort(
+                grpc.StatusCode.INVALID_ARGUMENT,
+                "INVALID_CREDENTIALS_SOURCE",
+            )
+
+        venue_state = self.venue_sm.current if self.venue_sm is not None else "DISCONNECTED"
+
+        if request.venue_id not in self._KNOWN_VENUES:
+            return engine_pb2.VenueLoginResponse(
+                success=False,
+                error_code="UNKNOWN_VENUE",
+                venue_state=venue_state,
+                instruments_loaded=0,
+            )
+
+        if request.venue_id == "KABU" and request.credentials_source == "session_cache":
+            return engine_pb2.VenueLoginResponse(
+                success=False,
+                error_code="UNSUPPORTED_FOR_VENUE",
+                venue_state=venue_state,
+                instruments_loaded=0,
+            )
+
+        return engine_pb2.VenueLoginResponse(
+            success=False,
+            error_code="NOT_IMPLEMENTED",
+            venue_state=venue_state,
+            instruments_loaded=0,
+        )
+
+    def VenueLogout(self, request, context):
+        return engine_pb2.VenueControlResponse(success=True, error_code="")
+
+    def SetExecutionMode(self, request, context):
+        if request.mode not in self._KNOWN_MODES:
+            context.abort(grpc.StatusCode.INVALID_ARGUMENT, "INVALID_MODE")
+
+        if self.mode_manager is None:
+            return engine_pb2.SetExecutionModeResponse(
+                success=False,
+                error_code="NOT_IMPLEMENTED",
+                execution_mode="",
+            )
+
+        try:
+            applied = self.mode_manager.set_execution_mode(request.mode)
+        except ValueError as exc:
+            msg = str(exc)
+            code = "EXECUTION_MODE_PRECONDITION" if msg.startswith("EXECUTION_MODE_PRECONDITION") else "EXECUTION_MODE_ERROR"
+            return engine_pb2.SetExecutionModeResponse(
+                success=False,
+                error_code=code,
+                execution_mode="",
+            )
+
+        return engine_pb2.SetExecutionModeResponse(
+            success=True,
+            error_code="",
+            execution_mode=applied,
+        )
+
+    def SubscribeMarketData(self, request, context):
+        return engine_pb2.SubscribeResponse(success=False, error_code="NOT_IMPLEMENTED")
+
+    def UnsubscribeMarketData(self, request, context):
+        return engine_pb2.SubscribeResponse(success=False, error_code="NOT_IMPLEMENTED")
+
 
 def advance_loop(engine: DataEngine, interval: float = 1.0):
     """Advance the engine on a fixed background interval while it is running."""
@@ -681,12 +764,16 @@ def serve(
 ):
     jquants_loader = JQuantsLoader(jquants_dir) if jquants_dir else None
 
+    venue_sm = VenueStateMachine()
     engine = DataEngine(
         replay_provider=replay_provider,
         max_history_len=max_history_len,
         jquants_loader=jquants_loader,
         jquants_catalog_path=jquants_catalog_path,
+        state_machine=venue_sm,
     )
+    mm = ModeManager(venue_sm, engine)
+    engine.attach_mode_manager(mm)
 
     # Keep replay sessions paused at startup unless explicitly requested.
     if auto_start:
@@ -700,12 +787,12 @@ def serve(
     ticker_thread.start()
 
     server = grpc.server(futures.ThreadPoolExecutor(max_workers=10))
-    servicer = GrpcDataEngineServer(token, engine)
+    servicer = GrpcDataEngineServer(token, engine, mode_manager=mm, venue_sm=venue_sm)
 
     engine_pb2_grpc.add_HealthServicer_to_server(servicer, server)
     engine_pb2_grpc.add_DataEngineServicer_to_server(servicer, server)
 
-    server.add_insecure_port(f"[::]:{port}")
+    server.add_insecure_port(f"127.0.0.1:{port}")
     logging.info(f"Starting gRPC server on port {port}")
     server.start()
     try:
