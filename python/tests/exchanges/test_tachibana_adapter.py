@@ -326,3 +326,228 @@ async def test_subscribe_same_ticker_twice_reuses_hub(monkeypatch, httpx_mock: H
     await adapter.subscribe("7203.TSE", {"trades", "depth"})
     await adapter.subscribe("7203.TSE", {"trades", "depth"})
     assert len(created) == 1
+
+
+# ---------------------------------------------------------------------------
+# Phase 8 §3.2 A3.3-3: subscribe callback wiring / unsubscribe / events()
+# ---------------------------------------------------------------------------
+
+
+class _RecordingStubHub:
+    """A3.3-3 用 StubHub。subscribe された (key, callback) を記録し、
+    外部から fake frame を発火できる test double。"""
+
+    instances: list["_RecordingStubHub"] = []
+
+    def __init__(self, ws_url, *, ticker, proxy=None):
+        self.ws_url = ws_url
+        self.ticker = ticker
+        self.proxy = proxy
+        self._subs: dict = {}
+        self._on_connect: dict = {}
+        self._on_close: dict = {}
+        self.aclose_called = False
+        _RecordingStubHub.instances.append(self)
+
+    async def subscribe(self, key, callback, *, on_connect=None, on_close=None):
+        self._subs[key] = callback
+        if on_connect is not None:
+            self._on_connect[key] = on_connect
+        if on_close is not None:
+            self._on_close[key] = on_close
+
+    async def unsubscribe(self, key):
+        self._subs.pop(key, None)
+        self._on_connect.pop(key, None)
+        self._on_close.pop(key, None)
+
+    async def aclose(self):
+        self.aclose_called = True
+        self._subs.clear()
+
+    @property
+    def subscriber_count(self) -> int:
+        return len(self._subs)
+
+    async def fire(self, frame_type: str, fields: dict, recv_ts_ms: int) -> None:
+        """Invoke every registered callback (simulates one EVENT frame)."""
+        for cb in list(self._subs.values()):
+            await cb(frame_type, fields, recv_ts_ms)
+
+
+def _install_stub_hub(monkeypatch) -> type[_RecordingStubHub]:
+    _RecordingStubHub.instances = []
+    from engine.exchanges import tachibana as _tach_mod
+    monkeypatch.setattr(_tach_mod, "TickerEventWsHub", _RecordingStubHub)
+    return _RecordingStubHub
+
+
+def _fd_fields_first_frame() -> dict:
+    """row='1' の FD 1 件目 (DV 初期化のみ、trade は出ない)。depth 1 段だけ。"""
+    return {
+        "p_cmd": "FD",
+        "p_1_DPP": "3000",
+        "p_1_DV":  "100",
+        "p_1_GBP1": "2999", "p_1_GBV1": "10",
+        "p_1_GAP1": "3001", "p_1_GAV1": "20",
+    }
+
+
+def _fd_fields_buy_trade() -> dict:
+    """row='1' の FD 2 件目 (DV 進む + price>=prev_ask で buy)。depth も同梱。"""
+    return {
+        "p_cmd": "FD",
+        "p_1_DPP": "3001",       # >= prev_ask 3001 → buy
+        "p_1_DV":  "150",        # qty = 150 - 100 = 50
+        "p_1_GBP1": "3000", "p_1_GBV1": "12",
+        "p_1_GAP1": "3002", "p_1_GAV1": "18",
+    }
+
+
+def _fd_fields_ambiguous_trade() -> dict:
+    """midpoint かつ prev_trade とも同値で tick rule も中立 → side='unknown'。
+
+    2 件目の trade で _prev_trade_price = 3001 になる前提なので、
+    3 件目は DPP=3001 (= prev_trade) かつ < prev_ask=3002, > prev_bid=3000
+    で完全 midpoint を作る。
+    """
+    return {
+        "p_cmd": "FD",
+        "p_1_DPP": "3001",       # == prev_trade_price (3001) → tick neutral
+        "p_1_DV":  "200",        # qty = 200 - 150 = 50
+        "p_1_GBP1": "3000", "p_1_GBV1": "5",   # prev_bid=3000 (3001 > 3000 → bid 不適合)
+        "p_1_GAP1": "3002", "p_1_GAV1": "5",   # prev_ask=3002 (3001 < 3002 → ask 不適合)
+    }
+
+
+async def test_subscribe_registers_callback_on_hub(monkeypatch, httpx_mock: HTTPXMock):
+    """subscribe は hub.subscribe(key, callback) を 1 回呼ぶ。"""
+    Stub = _install_stub_hub(monkeypatch)
+    adapter = await _login_demo(monkeypatch, httpx_mock)
+
+    await adapter.subscribe("7203.TSE", {"trades", "depth"})
+
+    assert len(Stub.instances) == 1
+    hub = Stub.instances[0]
+    assert hub.subscriber_count == 1
+
+
+async def test_unsubscribe_removes_callback_and_closes_hub(
+    monkeypatch, httpx_mock: HTTPXMock,
+):
+    """最後の subscriber が外れたら hub.aclose() が呼ばれ、self._hubs から削除される。"""
+    Stub = _install_stub_hub(monkeypatch)
+    adapter = await _login_demo(monkeypatch, httpx_mock)
+
+    await adapter.subscribe("7203.TSE", {"trades", "depth"})
+    hub = Stub.instances[0]
+    await adapter.unsubscribe("7203.TSE")
+
+    assert hub.subscriber_count == 0
+    assert hub.aclose_called is True
+    assert "7203" not in adapter._hubs
+
+
+async def test_unsubscribe_unknown_instrument_is_noop(
+    monkeypatch, httpx_mock: HTTPXMock,
+):
+    """未登録 instrument の unsubscribe は例外を出さない (no-op)。"""
+    _install_stub_hub(monkeypatch)
+    adapter = await _login_demo(monkeypatch, httpx_mock)
+    # 例外が出なければ PASS
+    await adapter.unsubscribe("9999.TSE")
+
+
+async def test_events_yields_depth_update_from_fd_frame(
+    monkeypatch, httpx_mock: HTTPXMock,
+):
+    """FD 1 件目 (depth 有り / trade 無し) → DepthUpdate が events() に流れる。"""
+    Stub = _install_stub_hub(monkeypatch)
+    adapter = await _login_demo(monkeypatch, httpx_mock)
+
+    await adapter.subscribe("7203.TSE", {"trades", "depth"})
+    hub = Stub.instances[0]
+
+    gen = adapter.events()
+
+    async def driver():
+        await hub.fire("FD", _fd_fields_first_frame(), recv_ts_ms=1_700_000_000_000)
+
+    drive_task = asyncio.create_task(driver())
+    evt = await asyncio.wait_for(gen.__anext__(), timeout=1.0)
+    await drive_task
+
+    assert evt.kind == "depth"
+    assert evt.instrument_id == "7203.TSE"
+    assert evt.ts_ns == 1_700_000_000_000 * 1_000_000
+    assert evt.bids[0].price == 2999.0
+    assert evt.asks[0].price == 3001.0
+
+
+async def test_events_yields_trades_update_from_fd_frame(
+    monkeypatch, httpx_mock: HTTPXMock,
+):
+    """FD 2 件目 (DV 進む, buy side) → TradesUpdate + DepthUpdate の 2 件が流れる。"""
+    Stub = _install_stub_hub(monkeypatch)
+    adapter = await _login_demo(monkeypatch, httpx_mock)
+
+    await adapter.subscribe("7203.TSE", {"trades", "depth"})
+    hub = Stub.instances[0]
+
+    gen = adapter.events()
+
+    async def driver():
+        await hub.fire("FD", _fd_fields_first_frame(), recv_ts_ms=1_700_000_000_000)
+        await hub.fire("FD", _fd_fields_buy_trade(), recv_ts_ms=1_700_000_001_000)
+
+    drive_task = asyncio.create_task(driver())
+
+    collected = []
+    for _ in range(3):  # depth, trade, depth
+        evt = await asyncio.wait_for(gen.__anext__(), timeout=1.0)
+        collected.append(evt)
+    await drive_task
+
+    trades = [e for e in collected if e.kind == "trades"]
+    depths = [e for e in collected if e.kind == "depth"]
+    assert len(trades) == 1
+    assert len(depths) == 2
+
+    t = trades[0]
+    assert t.instrument_id == "7203.TSE"
+    assert t.price == 3001.0
+    assert t.size == 50.0
+    assert t.aggressor_side == "buy"
+    assert t.ts_ns == 1_700_000_001_000 * 1_000_000
+
+
+async def test_events_skips_unknown_side_trade(
+    monkeypatch, httpx_mock: HTTPXMock,
+):
+    """ambiguous な trade (side='unknown') は TradesUpdate を出さず depth のみ流す。"""
+    Stub = _install_stub_hub(monkeypatch)
+    adapter = await _login_demo(monkeypatch, httpx_mock)
+
+    await adapter.subscribe("7203.TSE", {"trades", "depth"})
+    hub = Stub.instances[0]
+
+    gen = adapter.events()
+
+    async def driver():
+        await hub.fire("FD", _fd_fields_first_frame(), recv_ts_ms=1_700_000_000_000)
+        await hub.fire("FD", _fd_fields_buy_trade(),   recv_ts_ms=1_700_000_001_000)
+        await hub.fire("FD", _fd_fields_ambiguous_trade(), recv_ts_ms=1_700_000_002_000)
+
+    drive_task = asyncio.create_task(driver())
+
+    collected = []
+    # 期待: depth(1), trade(2), depth(2), depth(3) の 4 件
+    for _ in range(4):
+        evt = await asyncio.wait_for(gen.__anext__(), timeout=1.0)
+        collected.append(evt)
+    await drive_task
+
+    trades = [e for e in collected if e.kind == "trades"]
+    depths = [e for e in collected if e.kind == "depth"]
+    assert len(trades) == 1   # 2 件目の buy のみ
+    assert len(depths) == 3   # 1/2/3 件目全部
