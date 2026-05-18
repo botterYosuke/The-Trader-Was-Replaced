@@ -48,16 +48,6 @@ def test_login_prompt_raises_not_implemented():
         asyncio.run(KabuStationAdapter().login(creds))
 
 
-def test_subscribe_raises_not_implemented():
-    with pytest.raises(NotImplementedError):
-        asyncio.run(KabuStationAdapter().subscribe("5401.TSE", {"price"}))
-
-
-def test_unsubscribe_raises_not_implemented():
-    with pytest.raises(NotImplementedError):
-        asyncio.run(KabuStationAdapter().unsubscribe("5401.TSE"))
-
-
 def test_events_raises_not_implemented():
     with pytest.raises(NotImplementedError):
         KabuStationAdapter().events()

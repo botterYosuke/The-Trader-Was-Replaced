@@ -81,10 +81,22 @@ class KabuStationAdapter:
     async def subscribe(
         self, instrument_id: InstrumentId, channels: set[Channel]
     ) -> None:
-        raise NotImplementedError
+        if self._token is None:
+            raise RuntimeError("login required before subscribe")
+        symbol, suffix = instrument_id.rsplit(".", 1)
+        if suffix != "TSE":
+            raise ValueError(f"unsupported exchange suffix: {suffix!r} (MVP supports TSE only)")
+        self._register_set.register(symbol, 1)
+        await self._put_register(self._register_set.all_symbols())
+        self._processors[symbol] = KabuPushFrameProcessor(symbol=symbol)
 
     async def unsubscribe(self, instrument_id: InstrumentId) -> None:
-        raise NotImplementedError
+        if self._token is None:
+            return
+        symbol, _suffix = instrument_id.rsplit(".", 1)
+        self._register_set.unregister(symbol, 1)
+        self._processors.pop(symbol, None)
+        await self._put_register(self._register_set.all_symbols())
 
     def events(self) -> AsyncIterator[LiveEvent]:
         raise NotImplementedError
