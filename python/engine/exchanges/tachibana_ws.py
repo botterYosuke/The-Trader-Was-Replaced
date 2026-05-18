@@ -526,7 +526,11 @@ class TickerEventWsHub:
                 self._on_connect_cbs[key] = on_connect
             if on_close is not None:
                 self._on_close_cbs[key] = on_close
-            if self._runner_task is None or self._runner_task.done():
+            if (
+                self._runner_task is None
+                or self._runner_task.done()
+                or self._stop_event.is_set()
+            ):
                 self._stop_event = asyncio.Event()
                 self._runner_task = asyncio.create_task(self._run())
 
