@@ -63,8 +63,6 @@ async def connect(
                 ping_interval=None,
                 compression=None,
             ) as ws:
-                consecutive_failures = 0
-
                 symbols = register_set.all_symbols()
                 if symbols:
                     ok = await put_register(symbols)
@@ -86,6 +84,10 @@ async def connect(
                         break
 
                     consecutive_ok_close_count = 0
+                    # 1 frame を正常受信した時点で session 健全と判断し failure を reset。
+                    # `async with` 直後にリセットすると、recv 即 ConnectionClosedError を
+                    # 繰り返す病的シナリオで上限到達せず無限ループになる (test 9 参照)。
+                    consecutive_failures = 0
 
                     if isinstance(raw, bytes):
                         text = raw.decode("utf-8")
@@ -97,7 +99,9 @@ async def connect(
                     if asyncio.iscoroutine(result):
                         await result
 
-            # 内側ループを break で抜けたら少し待って再接続
+            # 内側 TimeoutError break 経路: 少し待って再接続。
+            # `async with` の __aexit__ が例外を投げた場合はここに到達せず、
+            # 外側 except 側 (各々が個別に await asyncio.sleep) に分岐する。
             await asyncio.sleep(_RECONNECT_DELAY_S)
 
         except websockets.exceptions.ConnectionClosedOK as exc:
