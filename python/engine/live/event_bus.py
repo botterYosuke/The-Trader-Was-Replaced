@@ -31,11 +31,15 @@ class LiveEventBus:
         return self._iter(q)
 
     async def _iter(self, q: asyncio.Queue[LiveEvent | None]) -> AsyncIterator[LiveEvent]:
-        while True:
-            item = await q.get()
-            if item is None:
-                return
-            yield item
+        try:
+            while True:
+                item = await q.get()
+                if item is None:
+                    return
+                yield item
+        finally:
+            if q in self._subscribers:
+                self._subscribers.remove(q)
 
     async def publish(self, event: LiveEvent) -> None:
         if self._closed:

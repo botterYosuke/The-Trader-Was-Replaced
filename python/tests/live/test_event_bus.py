@@ -95,3 +95,46 @@ def test_accepts_any_live_event_variant():
 
     kinds = asyncio.run(scenario())
     assert kinds == ["kline", "trades"]
+
+
+def test_subscriber_queue_removed_when_iterator_closed_early():
+    """consumer が iterator を途中で aclose() した場合、_subscribers から外れる。
+    そうしないと以降の publish で使われない queue にイベントが溜まり続ける (leak)。
+    """
+    async def scenario():
+        bus = LiveEventBus()
+        sub = bus.subscribe()
+        await bus.publish(_kline(1))
+        async for _ in sub:
+            break
+        await sub.aclose()
+        return len(bus._subscribers)
+
+    remaining = asyncio.run(scenario())
+    assert remaining == 0
+
+
+def test_subscriber_queue_removed_when_consumer_task_cancelled():
+    """consumer task が cancel された場合も _subscribers から外れる。
+    async generator finalization (aclose) が finally を発火させる前提。
+    """
+    async def scenario():
+        bus = LiveEventBus()
+        sub = bus.subscribe()
+
+        async def consume():
+            async for _ in sub:
+                pass
+
+        task = asyncio.create_task(consume())
+        await asyncio.sleep(0)
+        task.cancel()
+        try:
+            await task
+        except asyncio.CancelledError:
+            pass
+        await sub.aclose()
+        return len(bus._subscribers)
+
+    remaining = asyncio.run(scenario())
+    assert remaining == 0
