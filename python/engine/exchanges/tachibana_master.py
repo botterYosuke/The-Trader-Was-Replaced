@@ -135,11 +135,12 @@ def decode_clm_yobine_record(record: dict[str, Any]) -> CLMYobineRecord:
             # Missing slot — treat as end-of-table (defensive; well-formed
             # CLMYobine always carries all 20).
             break
+        dec_int = int(dec_raw)
         raw_bands.append(
             YobineBand(
                 kizun_price=Decimal(str(kizun_raw)),
-                yobine_tanka=Decimal(str(tanka_raw)),
-                decimals=int(dec_raw),
+                yobine_tanka=Decimal(str(tanka_raw)) / (Decimal(10) ** dec_int),
+                decimals=dec_int,
             )
         )
 

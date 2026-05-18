@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import json
 import os
 from typing import AsyncIterator, Literal
 
@@ -20,6 +19,10 @@ from engine.exchanges.tachibana_auth import (
     PNoCounter,
     TachibanaSession,
     login as _auth_login,
+)
+from engine.exchanges.tachibana_master import (
+    MasterStreamParser,
+    build_instruments_from_master_records,
 )
 
 # Phase 8 §3.2: env-based credential keys (tachibana skill §S2).
@@ -101,7 +104,6 @@ class TachibanaAdapter:
             )
 
         from engine.exchanges.tachibana_auth import current_p_sd_date
-        from engine.exchanges.tachibana_codec import decode_response_body
         from engine.exchanges.tachibana_url import build_request_url
 
         payload = {
@@ -113,62 +115,16 @@ class TachibanaAdapter:
         url = build_request_url(self._session.url_master, payload, sJsonOfmt="4")
 
         _TIMEOUT = httpx.Timeout(connect=10.0, read=60.0, write=10.0, pool=5.0)
+        parser = MasterStreamParser()
         async with httpx.AsyncClient(timeout=_TIMEOUT) as client:
-            resp = await client.get(url)
-            resp.raise_for_status()
-            body = resp.content
+            async with client.stream("GET", url) as resp:
+                resp.raise_for_status()
+                async for chunk in resp.aiter_bytes():
+                    parser.feed(chunk)
+                    if parser.is_complete:
+                        break
 
-        text = decode_response_body(body)
-
-        # JSON object stream を 1 件ずつ取り出す
-        decoder = json.JSONDecoder()
-        issues: dict[str, dict] = {}   # code -> {name}
-        sizyou: dict[str, dict] = {}   # code -> {market, yobine_tani, lot_size}
-        yobine_tables: dict[str, float] = {}  # yobine_tani -> tick_size (1段目)
-
-        idx = 0
-        n = len(text)
-        while idx < n:
-            # whitespace skip
-            while idx < n and text[idx] in " \t\r\n":
-                idx += 1
-            if idx >= n:
-                break
-            rec, end = decoder.raw_decode(text, idx)
-            idx = end
-            if not isinstance(rec, dict):
-                continue
-            clmid = rec.get("sCLMID")
-            if clmid == "CLMEventDownloadComplete":
-                break
-            if clmid == "CLMIssueMstKabu":
-                issues[rec["sIssueCode"]] = {"name": rec.get("sIssueName", "")}
-            elif clmid == "CLMIssueSizyouMstKabu":
-                sizyou[rec["sIssueCode"]] = {
-                    "market": rec.get("sSizyouC", ""),
-                    "yobine_tani": rec.get("sYobineTaniNumber", ""),
-                    "lot_size": int(rec.get("sBaibaiTaniNumber") or 0),
-                }
-            elif clmid == "CLMYobine":
-                tani = rec.get("sYobineTaniNumber", "")
-                tanka = float(rec.get("sYobineTanka_1") or 0)
-                decimal = int(rec.get("sDecimal_1") or 0)
-                yobine_tables[tani] = tanka / (10 ** decimal) if decimal else tanka
-
-        out: list[InstrumentRaw] = []
-        for code, sz in sizyou.items():
-            iss = issues.get(code)
-            if iss is None:
-                continue
-            tick = yobine_tables.get(sz["yobine_tani"], 0.0)
-            out.append(InstrumentRaw(
-                code=code,
-                name=iss["name"],
-                market=sz["market"],
-                tick_size=tick,
-                lot_size=sz["lot_size"],
-            ))
-        return out
+        return build_instruments_from_master_records(parser.records())
 
     async def subscribe(
         self, instrument_id: InstrumentId, channels: set[Channel]
