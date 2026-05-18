@@ -825,6 +825,7 @@ fn apply_layout_system(
     // pending_fragments.loaded_for_path のような恒久的状態に基づくと、
     // 「同じ JSON を後から再 Open」したケースまで抑制されてしまうため。
     mut pending_loopback: Local<Option<PathBuf>>,
+    mut scenario_target: ResMut<ScenarioReadTarget>,
 ) {
     for event in events.read() {
         let layout = match load_layout_from(&event.path) {
@@ -856,6 +857,14 @@ fn apply_layout_system(
                 *pending_loopback = Some(event.path.clone());
                 continue;
             }
+            // sibling .py が無い scenario-only JSON: UI に scenario を反映するため
+            // ScenarioReadTarget だけ更新し、layout 側は素通りで終わらせる。
+            info!(
+                "scenario-only JSON {:?} opened with no sibling; updating scenario only",
+                event.path
+            );
+            scenario_target.0 = Some(event.path.clone());
+            continue;
         }
 
         // schema_version: None（不在）は ERROR を出さず debug ログに留める（F10: scenario-only JSON 対応）
@@ -1739,6 +1748,7 @@ mod tests {
             path: tmp.clone(),
             mode: LayoutLoadMode::UserJsonOpen,
         });
+        app.init_resource::<ScenarioReadTarget>();
         app.add_systems(Update, apply_layout_system);
         app.update();
 
@@ -1747,6 +1757,58 @@ mod tests {
         assert!(
             app.world().get_entity(chart).is_ok(),
             "ChartInstrument 付き root は layout に含まれなくても despawn されない"
+        );
+    }
+
+    /// Bug repro (RED): scenario-only JSON (windows=None, strategy_path=None) を
+    /// `UserJsonOpen` で開き、sibling `.py` が存在しないとき、
+    /// `apply_layout_system` は `ScenarioReadTarget = Some(event.path)` をセットして
+    /// scenario_parser_system に JSON を再 parse させるべき。
+    /// 現状は素通りして ScenarioReadTarget が更新されず、UI に scenario が反映されない。
+    #[test]
+    fn scenario_only_json_without_sibling_py_updates_scenario_read_target() {
+        use bevy::prelude::*;
+
+        let mut app = App::new();
+        app.add_event::<LayoutLoadRequested>();
+        app.add_event::<PanelSpawnRequested>();
+        app.add_event::<StrategyFileLoadRequested>();
+        app.insert_resource(WindowManager::default());
+        app.insert_resource(PendingLayoutApply::default());
+        app.insert_resource(PendingStrategyFragments::default());
+        app.init_resource::<ScenarioReadTarget>();
+
+        app.world_mut().spawn((
+            Camera2d,
+            Transform::default(),
+            OrthographicProjection::default_2d(),
+        ));
+
+        // scenario-only JSON: schema_version / windows / strategy_path いずれも無し。
+        // sibling `.py` は作らない（バグ条件）。
+        let dir = tempfile::tempdir().unwrap();
+        let json_path = dir.path().join("s7_no_sibling.json");
+        let body = r#"{"scenario":{"instrument":"7203.TSE","start":"2025-01-06","end":"2025-03-31","granularity":"Daily","initial_cash":1000000}}"#;
+        std::fs::write(&json_path, body).unwrap();
+        assert!(
+            !json_path.with_extension("py").exists(),
+            "precondition: sibling .py は存在しないこと"
+        );
+
+        app.world_mut().send_event(LayoutLoadRequested {
+            path: json_path.clone(),
+            mode: LayoutLoadMode::UserJsonOpen,
+        });
+        app.add_systems(Update, apply_layout_system);
+        app.update();
+
+        let target = app.world().resource::<ScenarioReadTarget>();
+        assert_eq!(
+            target.0.as_ref(),
+            Some(&json_path),
+            "scenario-only JSON without sibling .py must set ScenarioReadTarget so \
+             scenario_parser_system re-parses the JSON; got {:?}",
+            target.0
         );
     }
 
@@ -1874,6 +1936,7 @@ mod tests {
             path: tmp.clone(),
             mode: LayoutLoadMode::UserJsonOpen,
         });
+        app.init_resource::<ScenarioReadTarget>();
         app.add_systems(Update, apply_layout_system);
         app.update();
 
@@ -2449,6 +2512,7 @@ mod tests {
             pf.loaded_for_path = Some(py_path.clone());
         }
 
+        app.init_resource::<ScenarioReadTarget>();
         app.add_systems(Update, apply_layout_system);
         app.world_mut().send_event(LayoutLoadRequested {
             path: json_path.clone(),
@@ -2520,6 +2584,7 @@ mod tests {
             pf.loaded_for_path = Some(PathBuf::from("/some/other/path.py"));
         }
 
+        app.init_resource::<ScenarioReadTarget>();
         app.add_systems(Update, apply_layout_system);
         app.world_mut().send_event(LayoutLoadRequested {
             path: json_path.clone(),
@@ -2588,6 +2653,7 @@ mod tests {
                 .insert("region_001".to_string(), "user".to_string());
         }
 
+        app.init_resource::<ScenarioReadTarget>();
         app.add_systems(Update, apply_layout_system);
         app.world_mut().send_event(LayoutLoadRequested {
             path: json_path,
