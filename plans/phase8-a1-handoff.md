@@ -2,7 +2,7 @@
 
 リポジトリ: `C:\Users\sasai\Documents\The-Trader-Was-Replaced`
 ブランチ: `impl/8-venue-login-skeleton`
-HEAD: `55702d7 feat(tachibana): wire TachibanaAdapter.login env path (Phase 8 §3.2 A1.5)`
+HEAD: `f64e57f test(tachibana): cover master parser + fetch_instruments httpx path (Phase 8 §3.2 A2)`
 
 ## 完了済み
 
@@ -16,12 +16,12 @@ HEAD: `55702d7 feat(tachibana): wire TachibanaAdapter.login env path (Phase 8 §
 | **A1.4 ✅** | `474a873` | `login()` GREEN 実装 (e-station 写経 + 本 repo 例外規約に適応) | exchanges 132 passed |
 | **A1.5 ✅** | `55702d7` | `TachibanaAdapter.login()` wire-up (env 経路のみ、session_cache/prompt は NotImplementedError) | exchanges 139 passed |
 | **C1 ✅** | `476a7f2` | `live_adapter_factory` + `serve()` 配線 (`live_venue` kwarg → factory 注入) | regression 627 passed (preexisting 3 件は MISSING_STRATEGY_FILE、C1 起因 0) |
+| **A2 ✅** | `2cefbac` + `f64e57f` | `tachibana.fetch_instruments` 実装 (CLMEventDownload マスタ DL + parser 純関数化) | exchanges GREEN / regression 594 passed |
 
 ## 残タスク
 
-7 件:
+6 件:
 
-- **A2** `tachibana.fetch_instruments` (CLMEventDownload、master ダウンロードの特殊フロー)
 - **A3** `tachibana_ws.py` + adapter `subscribe`/`unsubscribe`/`events`
 - **B1** `kabusapi.login` (env + `/token`)
 - **B2** `kabusapi.fetch_instruments` (lazy = 空 list、subscribe 時 GET `/symbol`)
