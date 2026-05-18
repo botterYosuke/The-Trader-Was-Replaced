@@ -445,3 +445,177 @@ async def _wait_runner_done(hub) -> None:
         return
     while not task.done():
         await asyncio.sleep(0.01)
+
+
+async def test_hub_duplicate_subscribe_is_noop(monkeypatch):
+    """同じ key の 2 回目 subscribe は警告ログだけで no-op、count は増えない。"""
+    stop_hint = asyncio.Event()
+    fake = _FakeWs(
+        [_encode_frame_sjis([("p_cmd", "KP")])],
+        auto_close=False,
+        idle_event=stop_hint,
+    )
+    _install_fake_ws(monkeypatch, fake)
+
+    hub = TickerEventWsHub("wss://example/ws", ticker="7203")
+
+    received: list[str] = []
+
+    async def cb_first(frame_type: str, fields: dict[str, str], recv_ts_ms: int) -> None:
+        received.append(f"first:{frame_type}")
+
+    async def cb_second(frame_type: str, fields: dict[str, str], recv_ts_ms: int) -> None:
+        received.append(f"second:{frame_type}")
+
+    await hub.subscribe("dup-key", cb_first)
+    await hub.subscribe("dup-key", cb_second)  # 同 key → no-op
+    assert hub.subscriber_count == 1
+
+    # frame を流すと cb_first だけ発火 (cb_second は登録されていない)。
+    await asyncio.wait_for(
+        _wait_until(lambda: received == ["first:KP"]), timeout=2.0
+    )
+
+    await hub.aclose()
+    stop_hint.set()
+    await asyncio.wait_for(_wait_runner_done(hub), timeout=2.0)
+
+
+async def test_hub_fanout_delivers_frame_to_all_subscribers_in_order(monkeypatch):
+    """2 subscriber に同じ frame が登録順で配られる。"""
+    stop_hint = asyncio.Event()
+    fake = _FakeWs(
+        [_encode_frame_sjis([("p_cmd", "KP")])],
+        auto_close=False,
+        idle_event=stop_hint,
+    )
+    _install_fake_ws(monkeypatch, fake)
+
+    hub = TickerEventWsHub("wss://example/ws", ticker="7203")
+    order: list[str] = []
+
+    async def cb_a(frame_type: str, fields: dict[str, str], recv_ts_ms: int) -> None:
+        order.append(f"a:{frame_type}")
+
+    async def cb_b(frame_type: str, fields: dict[str, str], recv_ts_ms: int) -> None:
+        order.append(f"b:{frame_type}")
+
+    await hub.subscribe("sub-a", cb_a)
+    await hub.subscribe("sub-b", cb_b)
+    assert hub.subscriber_count == 2
+
+    await asyncio.wait_for(
+        _wait_until(lambda: order == ["a:KP", "b:KP"]), timeout=2.0
+    )
+
+    await hub.aclose()
+    stop_hint.set()
+    await asyncio.wait_for(_wait_runner_done(hub), timeout=2.0)
+
+
+async def test_hub_aclose_fires_on_close_for_all_subscribers_and_clears(monkeypatch):
+    """aclose() で全 subscriber の on_close が発火し、subscribers クリア + runner 終了。"""
+    stop_hint = asyncio.Event()
+    fake = _FakeWs(
+        [_encode_frame_sjis([("p_cmd", "KP")])],
+        auto_close=False,
+        idle_event=stop_hint,
+    )
+    _install_fake_ws(monkeypatch, fake)
+
+    hub = TickerEventWsHub("wss://example/ws", ticker="7203")
+    closed: list[str] = []
+
+    async def cb(frame_type: str, fields: dict[str, str], recv_ts_ms: int) -> None:
+        pass
+
+    def on_close_a() -> None:
+        closed.append("a")
+
+    def on_close_b() -> None:
+        closed.append("b")
+
+    await hub.subscribe("sub-a", cb, on_close=on_close_a)
+    await hub.subscribe("sub-b", cb, on_close=on_close_b)
+    assert hub.subscriber_count == 2
+
+    # runner が走り出すのを 1 frame の到達で観測してから aclose する。
+    received_marker = asyncio.Event()
+
+    async def cb_marker(frame_type: str, fields: dict[str, str], recv_ts_ms: int) -> None:
+        received_marker.set()
+
+    await hub.subscribe("marker", cb_marker)
+    await asyncio.wait_for(received_marker.wait(), timeout=2.0)
+
+    stop_hint.set()  # _FakeWs を park から解放しておく
+    await hub.aclose()
+
+    assert sorted(closed) == ["a", "b"]
+    assert hub.subscriber_count == 0
+    assert hub._runner_task is None or hub._runner_task.done()
+
+
+async def test_hub_on_connect_invoked_on_ws_connection(monkeypatch):
+    """subscribe 時に渡した on_connect が WS 接続時 (_on_ws_connect 経由) に呼ばれる。"""
+    stop_hint = asyncio.Event()
+    fake = _FakeWs(
+        [_encode_frame_sjis([("p_cmd", "KP")])],
+        auto_close=False,
+        idle_event=stop_hint,
+    )
+    _install_fake_ws(monkeypatch, fake)
+
+    hub = TickerEventWsHub("wss://example/ws", ticker="7203")
+    connect_calls: list[str] = []
+
+    async def cb(frame_type: str, fields: dict[str, str], recv_ts_ms: int) -> None:
+        pass
+
+    def on_connect_a() -> None:
+        connect_calls.append("a")
+
+    await hub.subscribe("sub-a", cb, on_connect=on_connect_a)
+
+    # WS が接続して KP が cb に届くまで待てば on_connect も呼ばれているはず。
+    await asyncio.wait_for(
+        _wait_until(lambda: connect_calls == ["a"]), timeout=2.0
+    )
+
+    await hub.aclose()
+    stop_hint.set()
+    await asyncio.wait_for(_wait_runner_done(hub), timeout=2.0)
+
+
+async def test_hub_dispatch_exception_does_not_propagate_to_other_subscribers(monkeypatch):
+    """1 subscriber の cb が raise しても他 subscriber に伝播せず両方呼ばれる。"""
+    stop_hint = asyncio.Event()
+    fake = _FakeWs(
+        [_encode_frame_sjis([("p_cmd", "KP")])],
+        auto_close=False,
+        idle_event=stop_hint,
+    )
+    _install_fake_ws(monkeypatch, fake)
+
+    hub = TickerEventWsHub("wss://example/ws", ticker="7203")
+    received: list[str] = []
+
+    async def cb_bad(frame_type: str, fields: dict[str, str], recv_ts_ms: int) -> None:
+        received.append("bad-entered")
+        raise RuntimeError("intentional dispatch failure")
+
+    async def cb_good(frame_type: str, fields: dict[str, str], recv_ts_ms: int) -> None:
+        received.append("good-received")
+
+    await hub.subscribe("sub-bad", cb_bad)
+    await hub.subscribe("sub-good", cb_good)
+
+    # 登録順は bad → good。bad が raise しても good に届くこと。
+    await asyncio.wait_for(
+        _wait_until(lambda: "good-received" in received), timeout=2.0
+    )
+    assert "bad-entered" in received
+
+    await hub.aclose()
+    stop_hint.set()
+    await asyncio.wait_for(_wait_runner_done(hub), timeout=2.0)
