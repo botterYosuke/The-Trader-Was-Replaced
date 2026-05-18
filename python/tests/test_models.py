@@ -47,3 +47,47 @@ def test_trading_state_serialization():
     assert data["history"] == [90.0, 95.0]
     assert data["timestamp"] == 123456789.0
     assert "timer" not in data
+
+def test_trading_state_execution_mode_default_is_replay():
+    state = TradingState(price=100.0, history=[90.0])
+    assert state.execution_mode == "Replay"
+
+def test_trading_state_execution_mode_accepts_all_three_values():
+    for mode in ("Replay", "LiveManual", "LiveAuto"):
+        state = TradingState(price=100.0, history=[90.0], execution_mode=mode)
+        assert state.execution_mode == mode
+    with pytest.raises(ValidationError):
+        TradingState(price=100.0, history=[90.0], execution_mode="Live")
+
+def test_trading_state_venue_fields_default_none_and_empty():
+    state = TradingState(price=100.0, history=[90.0])
+    assert state.venue_state is None
+    assert state.venue_id is None
+    assert state.subscribed_instruments == []
+
+def test_trading_state_venue_fields_roundtrip():
+    state = TradingState(
+        price=100.0,
+        history=[90.0],
+        venue_state="CONNECTED",
+        venue_id="TACHIBANA",
+        subscribed_instruments=["1301.TSE", "5401.TSE"],
+    )
+    json_data = state.model_dump_json()
+    import json
+    data = json.loads(json_data)
+    assert data["venue_state"] == "CONNECTED"
+    assert data["venue_id"] == "TACHIBANA"
+    assert data["subscribed_instruments"] == ["1301.TSE", "5401.TSE"]
+
+def test_trading_state_extra_forbid_still_holds_for_new_payload():
+    with pytest.raises(ValidationError):
+        TradingState(
+            price=100.0,
+            history=[90.0],
+            execution_mode="LiveManual",
+            venue_state="CONNECTED",
+            venue_id="TACHIBANA",
+            subscribed_instruments=["1301.TSE"],
+            foo=1,
+        )

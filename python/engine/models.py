@@ -52,6 +52,12 @@ class TradingState(_BoundaryModel):
     close: Optional[float] = Field(None, description="バー終値 (price と同値)")
     open_time_ms: Optional[int] = Field(None, description="バー開始時刻 (ms)")
     replay_state: Optional[str] = Field(None, description="リプレイ状態 (IDLE/LOADED/RUNNING/PAUSED)")
+    execution_mode: Literal["Replay", "LiveManual", "LiveAuto"] = Field(
+        "Replay", description="実行モード (Replay=過去再生, LiveManual=実発注手動, LiveAuto=実発注自動)"
+    )
+    venue_state: Optional[str] = Field(None, description="Venue 接続状態 (例: CONNECTED/DISCONNECTED)")
+    venue_id: Optional[str] = Field(None, description="接続中の Venue 識別子 (例: TACHIBANA)")
+    subscribed_instruments: List[str] = Field(default_factory=list, description="購読中の銘柄シンボル一覧")
 
     @field_validator("history")
     @classmethod
