@@ -177,6 +177,21 @@ format / restore の判断も Navigator に任せます。
 
 例外として許されるのは、Human への最終報告での **重複ログ圧縮** のみ。作業判断に関わる情報は削らない。
 
+## SendMessage が unavailable な harness の運用
+
+理想は Navigator を 1 個体に保ち、SendMessage で複数往復を回すこと（context が積み上がる）。ただし harness によっては `SendMessage` が deferred tool 一覧に出ない (= 利用不可) ことがある。その場合の代替手順:
+
+1. Navigator は毎ターン **新個体を spawn** する（前 Navigator の agentId は使えないし諦める）
+2. 司令塔は新 Navigator の prompt に以下を必ず含める:
+   - 「前任が起草した RED/差分は Driver により観測済み」の 1 行
+   - Driver の完了報告を **verbatim**（要約・改変なし、code block で括る）
+   - 直前の commit sha と現在の HEAD
+   - regression baseline 数字（passed/failed/errors）
+   - これまでに固まったユーザー確定仕様（B4 全体仕様など、複数 subtask に跨る決定事項）
+3. Navigator の最初の仕事に「Read で SUT 直前状態を確認してから次手を起草」を含める（記憶がないため）
+
+この運用で 4-5 ターン回しても context 整合は保てる。同個体継続より 1 ターンあたり 5-10k token 増えるので、1 session あたりの subtask 上限は 2-3 のままで変わらない。
+
 ## 合言葉
 
 運ぶ。混ぜない。削らない。急がせない。  
