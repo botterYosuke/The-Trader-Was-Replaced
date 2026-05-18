@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import os
 from typing import AsyncIterator, Literal
 
@@ -9,9 +10,12 @@ import httpx
 
 from engine.live.adapter import (
     Channel,
+    DepthLevel,
+    DepthUpdate,
     InstrumentId,
     InstrumentRaw,
     LiveEvent,
+    TradesUpdate,
     VenueCredentials,
 )
 from engine.exchanges._env_guard import require_prod_env
@@ -24,7 +28,7 @@ from engine.exchanges.tachibana_master import (
     MasterStreamParser,
     build_instruments_from_master_records,
 )
-from engine.exchanges.tachibana_ws import TickerEventWsHub
+from engine.exchanges.tachibana_ws import FdFrameProcessor, TickerEventWsHub
 
 # Phase 8 §3.2: env-based credential keys (tachibana skill §S2).
 # 第二暗証番号 (s_second_password) は env に置かない (handoff 制約)。
@@ -44,6 +48,8 @@ class TachibanaAdapter:
         self._session: TachibanaSession | None = None
         # Phase 8 §3.2 A3.3: per-ticker WS hub registry.
         self._hubs: dict[str, TickerEventWsHub] = {}
+        self._processors: dict[str, FdFrameProcessor] = {}
+        self._queue: asyncio.Queue[LiveEvent] = asyncio.Queue()
 
     async def login(self, creds: VenueCredentials) -> None:
         """Resolve credentials per `creds.credentials_source` and call auth.login().
@@ -145,11 +151,65 @@ class TachibanaAdapter:
                 ticker=ticker,
             )
             self._hubs[ticker] = hub
-        # A3.3-3 で callback 実装と hub.subscribe() の呼び出しを足す。
-        # ここでは hub の生成までで GREEN を取る (test は callback 未検証)。
+        processor = self._processors.get(ticker)
+        if processor is None:
+            processor = FdFrameProcessor(row="1")
+            self._processors[ticker] = processor
+        await hub.subscribe(
+            instrument_id,
+            self._make_callback(instrument_id, processor),
+        )
 
     async def unsubscribe(self, instrument_id: InstrumentId) -> None:
-        raise NotImplementedError("Phase 8 後半 WS step で実装")
+        ticker = instrument_id.split(".")[0]
+        hub = self._hubs.get(ticker)
+        if hub is None:
+            return
+        await hub.unsubscribe(instrument_id)
+        if hub.subscriber_count == 0:
+            await hub.aclose()
+            self._hubs.pop(ticker, None)
+            self._processors.pop(ticker, None)
 
-    def events(self) -> AsyncIterator[LiveEvent]:
-        raise NotImplementedError("Phase 8 後半 WS step で実装")
+    async def events(self) -> AsyncIterator[LiveEvent]:
+        while True:
+            yield await self._queue.get()
+
+    def _make_callback(
+        self, instrument_id: InstrumentId, processor: FdFrameProcessor
+    ):
+        async def _cb(frame_type: str, fields: dict, recv_ts_ms: int) -> None:
+            if frame_type != "FD":
+                return
+            trade, depth = processor.process(fields, recv_ts_ms)
+            if depth is not None:
+                ts_ns = int(depth["recv_ts_ms"]) * 1_000_000
+                bids = tuple(
+                    DepthLevel(price=float(lv["price"]), size=float(lv["qty"]))
+                    for lv in depth["bids"]
+                )
+                asks = tuple(
+                    DepthLevel(price=float(lv["price"]), size=float(lv["qty"]))
+                    for lv in depth["asks"]
+                )
+                self._queue.put_nowait(
+                    DepthUpdate(
+                        kind="depth",
+                        instrument_id=instrument_id,
+                        ts_ns=ts_ns,
+                        bids=bids,
+                        asks=asks,
+                    )
+                )
+            if trade is not None and trade["side"] != "unknown":
+                self._queue.put_nowait(
+                    TradesUpdate(
+                        kind="trades",
+                        instrument_id=instrument_id,
+                        ts_ns=int(trade["ts_ms"]) * 1_000_000,
+                        price=float(trade["price"]),
+                        size=float(trade["qty"]),
+                        aggressor_side=trade["side"],
+                    )
+                )
+        return _cb
