@@ -169,3 +169,33 @@ class TestFetchToken:
         joined = " ".join(rec.getMessage() for rec in caplog.records)
         assert "secrettoken9999" not in joined
         assert "***9999" in joined
+
+    async def test_result_code_nonzero_raises_api_error(
+        self, httpx_mock: HTTPXMock
+    ):
+        """OpenAPI TokenSuccess: ResultCode != 0 はエラーコード (kabu_STATION_API.yaml L5088)。
+        現状は ResultCode を見ず Token 欠落で KabuConnectionError に倒れる → 認証失敗が
+        接続障害として誤分類される。"""
+        httpx_mock.add_response(
+            url=endpoint("token", env="verify"),
+            method="POST",
+            json={"ResultCode": 4001003, "Message": "invalid APIPassword"},
+        )
+        with pytest.raises(KabuApiError) as exc:
+            await self._fetch_token("bad-pw", env="verify")
+        assert exc.value.code == 4001003
+        assert not isinstance(exc.value, KabuConnectionError)
+
+    async def test_result_code_4001005_raises_token_expired(
+        self, httpx_mock: HTTPXMock
+    ):
+        """check_response の Code 4001005 マッピングと同じ classification を
+        ResultCode 経路でも適用する。"""
+        httpx_mock.add_response(
+            url=endpoint("token", env="verify"),
+            method="POST",
+            json={"ResultCode": 4001005, "Message": "token expired"},
+        )
+        with pytest.raises(KabuTokenExpiredError) as exc:
+            await self._fetch_token("pw", env="verify")
+        assert exc.value.code == 4001005
