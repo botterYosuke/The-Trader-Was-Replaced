@@ -46,6 +46,7 @@ def test_venue_login_invalid_credentials_source_raises_invalid_argument(phase8_g
             engine_pb2.VenueLoginRequest(
                 venue_id="TACHIBANA",
                 credentials_source="keyring",
+                token=token,
             )
         )
     assert exc.value.code() == grpc.StatusCode.INVALID_ARGUMENT
@@ -59,6 +60,7 @@ def test_venue_login_unknown_venue_returns_error_code(phase8_grpc_server):
         engine_pb2.VenueLoginRequest(
             venue_id="FOO",
             credentials_source="prompt",
+            token=token,
         )
     )
     assert resp.success is False
@@ -72,6 +74,7 @@ def test_venue_login_kabu_session_cache_returns_unsupported(phase8_grpc_server):
         engine_pb2.VenueLoginRequest(
             venue_id="KABU",
             credentials_source="session_cache",
+            token=token,
         )
     )
     assert resp.success is False
@@ -85,6 +88,7 @@ def test_venue_login_tachibana_prompt_returns_not_implemented(phase8_grpc_server
         engine_pb2.VenueLoginRequest(
             venue_id="TACHIBANA",
             credentials_source="prompt",
+            token=token,
         )
     )
     assert resp.success is False
@@ -96,7 +100,7 @@ def test_venue_login_tachibana_prompt_returns_not_implemented(phase8_grpc_server
 def test_venue_logout_returns_success(phase8_grpc_server):
     port, token, *_ = phase8_grpc_server
     stub = _stub(port)
-    resp = stub.VenueLogout(engine_pb2.VenueLogoutRequest())
+    resp = stub.VenueLogout(engine_pb2.VenueLogoutRequest(token=token))
     assert resp.success is True
     assert resp.error_code == ""
 
@@ -107,14 +111,14 @@ def test_set_execution_mode_invalid_mode_raises_invalid_argument(phase8_grpc_ser
     port, token, *_ = phase8_grpc_server
     stub = _stub(port)
     with pytest.raises(grpc.RpcError) as exc:
-        stub.SetExecutionMode(engine_pb2.SetExecutionModeRequest(mode="Foo"))
+        stub.SetExecutionMode(engine_pb2.SetExecutionModeRequest(mode="Foo", token=token))
     assert exc.value.code() == grpc.StatusCode.INVALID_ARGUMENT
 
 
 def test_set_execution_mode_replay_precondition(phase8_grpc_server):
     port, token, engine, venue_sm, mm = phase8_grpc_server
     stub = _stub(port)
-    resp = stub.SetExecutionMode(engine_pb2.SetExecutionModeRequest(mode="Replay"))
+    resp = stub.SetExecutionMode(engine_pb2.SetExecutionModeRequest(mode="Replay", token=token))
     assert resp.success is False
     assert resp.error_code == "EXECUTION_MODE_PRECONDITION"
 
@@ -124,7 +128,7 @@ def test_set_execution_mode_live_manual_succeeds_when_venue_connected(phase8_grp
     venue_sm.transition_to("AUTHENTICATING")
     venue_sm.transition_to("CONNECTED")
     stub = _stub(port)
-    resp = stub.SetExecutionMode(engine_pb2.SetExecutionModeRequest(mode="LiveManual"))
+    resp = stub.SetExecutionMode(engine_pb2.SetExecutionModeRequest(mode="LiveManual", token=token))
     assert resp.success is True
     assert resp.error_code == ""
     assert resp.execution_mode == "LiveManual"
@@ -136,7 +140,7 @@ def test_subscribe_market_data_returns_not_implemented(phase8_grpc_server):
     port, token, *_ = phase8_grpc_server
     stub = _stub(port)
     resp = stub.SubscribeMarketData(
-        engine_pb2.SubscribeRequest(instrument_id="7203.TSE", channels=["bar"])
+        engine_pb2.SubscribeRequest(instrument_id="7203.TSE", channels=["bar"], token=token)
     )
     assert resp.success is False
     assert resp.error_code == "NOT_IMPLEMENTED"
@@ -146,7 +150,67 @@ def test_unsubscribe_market_data_returns_not_implemented(phase8_grpc_server):
     port, token, *_ = phase8_grpc_server
     stub = _stub(port)
     resp = stub.UnsubscribeMarketData(
-        engine_pb2.UnsubscribeRequest(instrument_id="7203.TSE")
+        engine_pb2.UnsubscribeRequest(instrument_id="7203.TSE", token=token)
     )
     assert resp.success is False
     assert resp.error_code == "NOT_IMPLEMENTED"
+
+
+# --- token 検証 (RED: handler 未実装) ---------------------------------------
+
+def test_venue_login_wrong_token_raises_unauthenticated(phase8_grpc_server):
+    port, *_ = phase8_grpc_server
+    stub = _stub(port)
+    with pytest.raises(grpc.RpcError) as exc:
+        stub.VenueLogin(
+            engine_pb2.VenueLoginRequest(
+                venue_id="TACHIBANA",
+                credentials_source="prompt",
+                token="wrong-token",
+            )
+        )
+    assert exc.value.code() == grpc.StatusCode.UNAUTHENTICATED
+
+
+def test_venue_logout_wrong_token_raises_unauthenticated(phase8_grpc_server):
+    port, *_ = phase8_grpc_server
+    stub = _stub(port)
+    with pytest.raises(grpc.RpcError) as exc:
+        stub.VenueLogout(engine_pb2.VenueLogoutRequest(token="wrong-token"))
+    assert exc.value.code() == grpc.StatusCode.UNAUTHENTICATED
+
+
+def test_set_execution_mode_wrong_token_raises_unauthenticated(phase8_grpc_server):
+    port, *_ = phase8_grpc_server
+    stub = _stub(port)
+    with pytest.raises(grpc.RpcError) as exc:
+        stub.SetExecutionMode(
+            engine_pb2.SetExecutionModeRequest(mode="LiveManual", token="wrong-token")
+        )
+    assert exc.value.code() == grpc.StatusCode.UNAUTHENTICATED
+
+
+def test_subscribe_market_data_wrong_token_raises_unauthenticated(phase8_grpc_server):
+    port, *_ = phase8_grpc_server
+    stub = _stub(port)
+    with pytest.raises(grpc.RpcError) as exc:
+        stub.SubscribeMarketData(
+            engine_pb2.SubscribeRequest(
+                instrument_id="7203.TSE",
+                channels=["bar"],
+                token="wrong-token",
+            )
+        )
+    assert exc.value.code() == grpc.StatusCode.UNAUTHENTICATED
+
+
+def test_unsubscribe_market_data_wrong_token_raises_unauthenticated(phase8_grpc_server):
+    port, *_ = phase8_grpc_server
+    stub = _stub(port)
+    with pytest.raises(grpc.RpcError) as exc:
+        stub.UnsubscribeMarketData(
+            engine_pb2.UnsubscribeRequest(
+                instrument_id="7203.TSE", token="wrong-token"
+            )
+        )
+    assert exc.value.code() == grpc.StatusCode.UNAUTHENTICATED

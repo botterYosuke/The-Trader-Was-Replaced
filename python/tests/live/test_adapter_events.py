@@ -69,6 +69,35 @@ def test_depth_update_ten_levels():
     assert len(ev.asks) == 10
 
 
+def test_depth_update_rejects_eleven_levels():
+    """11 段以上の bids は ValidationError で reject される（10 段固定）。"""
+    bids = [DepthLevel(price=2500.0 - i, size=100) for i in range(11)]
+    asks = [DepthLevel(price=2501.0 + i, size=100) for i in range(10)]
+    with pytest.raises(ValidationError):
+        DepthUpdate(
+            kind="depth",
+            instrument_id="7203.TSE",
+            ts_ns=0,
+            bids=bids,
+            asks=asks,
+        )
+
+
+def test_depth_update_bids_are_immutable():
+    """bids/asks は frozen container（tuple）で、append 不可。"""
+    ev = DepthUpdate(
+        kind="depth",
+        instrument_id="7203.TSE",
+        ts_ns=0,
+        bids=[DepthLevel(price=2500.0, size=100)],
+        asks=[DepthLevel(price=2501.0, size=100)],
+    )
+    with pytest.raises(AttributeError):
+        ev.bids.append(DepthLevel(price=2499.0, size=50))  # type: ignore[attr-defined]
+    with pytest.raises(AttributeError):
+        ev.asks.append(DepthLevel(price=2502.0, size=50))  # type: ignore[attr-defined]
+
+
 def test_live_event_union_dispatch():
     # 静的 union として import 可能なこと
     events: list[LiveEvent] = [

@@ -673,6 +673,8 @@ class GrpcDataEngineServer(
         )
 
     def VenueLogin(self, request, context):
+        if request.token != self.token:
+            context.abort(grpc.StatusCode.UNAUTHENTICATED, "Invalid token")
         if request.credentials_source not in self._KNOWN_CRED_SOURCES:
             context.abort(
                 grpc.StatusCode.INVALID_ARGUMENT,
@@ -705,9 +707,13 @@ class GrpcDataEngineServer(
         )
 
     def VenueLogout(self, request, context):
+        if request.token != self.token:
+            context.abort(grpc.StatusCode.UNAUTHENTICATED, "Invalid token")
         return engine_pb2.VenueControlResponse(success=True, error_code="")
 
     def SetExecutionMode(self, request, context):
+        if request.token != self.token:
+            context.abort(grpc.StatusCode.UNAUTHENTICATED, "Invalid token")
         if request.mode not in self._KNOWN_MODES:
             context.abort(grpc.StatusCode.INVALID_ARGUMENT, "INVALID_MODE")
 
@@ -736,9 +742,13 @@ class GrpcDataEngineServer(
         )
 
     def SubscribeMarketData(self, request, context):
+        if request.token != self.token:
+            context.abort(grpc.StatusCode.UNAUTHENTICATED, "Invalid token")
         return engine_pb2.SubscribeResponse(success=False, error_code="NOT_IMPLEMENTED")
 
     def UnsubscribeMarketData(self, request, context):
+        if request.token != self.token:
+            context.abort(grpc.StatusCode.UNAUTHENTICATED, "Invalid token")
         return engine_pb2.SubscribeResponse(success=False, error_code="NOT_IMPLEMENTED")
 
 

@@ -59,6 +59,10 @@ class TickBarAggregator:
         self._current: Optional[_PartialBar] = None
 
     def on_tick(self, tick: TradesUpdate) -> Optional[KlineUpdate]:
+        if tick.instrument_id != self._instrument_id:
+            raise ValueError(
+                f"tick instrument_id {tick.instrument_id!r} does not match aggregator instrument_id {self._instrument_id!r}"
+            )
         bucket = tick.ts_ns // self._interval_ns
         if self._current is None:
             self._current = _new_partial(tick, bucket, self._interval_ns)

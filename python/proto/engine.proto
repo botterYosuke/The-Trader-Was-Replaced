@@ -242,6 +242,7 @@ message VenueLoginRequest {
   string venue_id = 1;
   string credentials_source = 2;
   string environment_hint = 3;
+  string token = 4;
 }
 
 message VenueLoginResponse {
@@ -251,7 +252,9 @@ message VenueLoginResponse {
   int32 instruments_loaded = 4;
 }
 
-message VenueLogoutRequest {}
+message VenueLogoutRequest {
+  string token = 1;
+}
 
 message VenueControlResponse {
   bool success = 1;
@@ -261,6 +264,7 @@ message VenueControlResponse {
 message SubscribeRequest {
   string instrument_id = 1;
   repeated string channels = 2;
+  string token = 3;
 }
 
 message SubscribeResponse {
@@ -270,10 +274,12 @@ message SubscribeResponse {
 
 message UnsubscribeRequest {
   string instrument_id = 1;
+  string token = 2;
 }
 
 message SetExecutionModeRequest {
   string mode = 1;
+  string token = 2;
 }
 
 message SetExecutionModeResponse {

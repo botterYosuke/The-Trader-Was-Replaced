@@ -100,8 +100,8 @@ class DepthUpdate(BaseModel):
     kind: Literal["depth"]
     instrument_id: InstrumentId
     ts_ns: int
-    bids: list[DepthLevel]
-    asks: list[DepthLevel]
+    bids: Annotated[tuple[DepthLevel, ...], Field(max_length=10)]
+    asks: Annotated[tuple[DepthLevel, ...], Field(max_length=10)]
 
     model_config = {"frozen": True}
 

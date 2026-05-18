@@ -111,3 +111,18 @@ def test_out_of_order_tick_within_current_bar_is_accepted():
     assert partial is not None
     assert partial.high == 105.0
     assert partial.volume == 2.0
+
+
+def test_on_tick_rejects_tick_with_different_instrument_id():
+    """別 instrument_id の tick は ValueError で reject される (routing bug 早期検出)。"""
+    agg = TickBarAggregator(instrument_id="7203.TSE", interval_ns=NS_PER_MIN)
+    foreign_tick = TradesUpdate(
+        kind="trades",
+        instrument_id="9984.TSE",
+        ts_ns=0 * NS_PER_MIN + 1,
+        price=100.0,
+        size=1.0,
+        aggressor_side="buy",
+    )
+    with pytest.raises(ValueError, match="instrument_id"):
+        agg.on_tick(foreign_tick)

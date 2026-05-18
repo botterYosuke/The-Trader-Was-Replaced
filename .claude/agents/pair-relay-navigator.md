@@ -56,6 +56,8 @@ Driver 指示に **ファイルパス / 関数名 / 型名 / フィールド名 
 - Response 型のフィールド名（例: `ForceStopReplayResponse.success`）を grep せず「他の Response と同形のはず」で書く。proto / build 出力の actual struct を grep してから書く。
 - **新規テストファイルの import パスを既存慣例と照合せず推測で書く**。例: 既存テストが `from engine.live.state_machine import ...`（cwd=`python/`）なのに、Driver 指示で `from python.engine.live import ...` と書いてしまう。Driver は typist なのでそのまま書き、ModuleNotFoundError で 1 往復ロスする。新規 test ファイルを指示する前に、**同ディレクトリの既存 test を 1 つ Read で開き、import パターン（前置詞・cwd 想定）を確認**してから指示文に貼る。
 - **既存 file を「新規作成」指示してしまう** / **既存 API を勝手に再設計**してしまう。例: 計画書が `kabusapi_url.py`（flat）を指定しているのに `kabusapi/url.py`（package）として指示する、`symbol_key/endpoint` を消して `resolve_from_env` に置換する等。配置は計画書原文を Read で確認、既存 API（同 venue の他ファイル）の対称性を Read で確認してから書く。
+- **async テストに `@pytest.mark.asyncio` を反射的に付けてしまう**。`pytest-asyncio` が `pyproject.toml` に入っていない場合、mark は Unknown mark warning を出すだけで coroutine は await されず**即 pass する silent green failure** になる。RED が出ない → 実装の正しさが検証できない → 全件偽グリーン。async テストを書く前に必ず `pyproject.toml` / `conftest.py` で `pytest-asyncio` の有無を確認し、無ければ `def test_xxx(): asyncio.run(scenario())` の同期 wrapper パターンで書く（既存 `python/tests/live/test_event_bus.py` 等を参照）。
+- **Mock/具象 adapter のテストで既存 Protocol と違う API を発明してしまう**。例: 計画書と既存 `LiveVenueAdapter` Protocol が `login / fetch_instruments / subscribe / events` を要求しているのに、Mock 用と称して `connect / disconnect / subscribe_klines / subscribe_trades` といった別 API でテストを書き始める。この Mock は実 venue と差し替えられず live_runner で詰まる（Mock の意義消失）。Mock テストを書く前に必ず該当 Protocol を Read で開き、**Protocol メソッドそのものを呼ぶ形でテストを書く**こと。テスト制御用の補助メソッド（`inject_tick` / `emit_depth_snapshot` 等）は Protocol を変えず追加メソッドとして補う設計に倒す。
 
 ルール:
 
