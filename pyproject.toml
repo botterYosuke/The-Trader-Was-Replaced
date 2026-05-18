@@ -36,4 +36,5 @@ testpaths = ["python/tests"]
 asyncio_mode = "auto"
 markers = [
     "slow: marks tests that do full real-data scans (deselect with '-m not slow')",
+    "kabu_live: requires kabuStation GUI body running on localhost (Phase 8 §3.2 D1)",
 ]
