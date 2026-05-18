@@ -14,7 +14,7 @@
 | §3.2 LiveVenueAdapter Protocol + venue helper 骨組み | ✅ 完了 | URL builder / auth / codec / file_store / instrument_mapping / mask_secrets |
 | §3.2 **LiveEvent discriminated union** | ✅ 完了 | KlineUpdate/TradesUpdate/DepthUpdate/DepthLevel、Pydantic v2 frozen、`kind` discriminator |
 | §3.2.1 login_dialog_runner NDJSON 骨組み | ✅ 完了 | tkinter UI 本体は未実装 |
-| §3.2 venue I/O 本体（HTTP/WS）| 🟡 一部完了 | tachibana: login / fetch_instruments / EVENT WS 配線完了 (A1-A3.3)。kabu: login env path (B1, `fetch_token` + `KabuStationAdapter.login('env')`、`ResultCode` 正規化済み) + fetch_instruments MVP 完了 (B2, ユーザー決定事項「kabu は空 list」L84 に従い `return []`)。残: kabu register (B3) / kabu WebSocket (B4) / smoke (D1) |
+| §3.2 venue I/O 本体（HTTP/WS）| ✅ 完了 | tachibana: login / fetch_instruments / EVENT WS 配線完了 (A1-A3.3)。kabu: login env path (B1) + fetch_instruments MVP (B2 `return []`) + RegisterSet (B3) + WebSocket connect/reconnect (B4-1〜B4-2.5) + frame normalizer (B4-3) + adapter wire (subscribe/unsubscribe/events/logout, B4-4a〜c)。smoke 完了 (D1, tachibana demo + kabu mock + kabu_live)。exchanges scope 282 passed / 2 skipped |
 | §3.3 **live/event_bus.py** | ✅ 完了 | asyncio.Queue fan-out、late-subscribe で履歴 replay しない |
 | §3.3 **live/aggregator.py** | ✅ 完了 | `TickBarAggregator` 1m 固定、close=last-write-wins、空 bar 埋めなし |
 | §3.3 **live/mock_adapter.py (Step C)** | ✅ 完了 | Protocol 準拠 deterministic mock、`inject_tick` / `emit_depth_snapshot` でテスト制御、6 件 PASS |
@@ -708,9 +708,28 @@ class LiveVenueAdapter(Protocol):
 - **新 RPC `SetExecutionMode(mode)`** を追加。`Replay` / `Live` の切替を明示的に行い、前提条件不足なら `EXECUTION_MODE_PRECONDITION` で reject。
 - `ListInstruments` の Phase 8 拡張: Phase 7.5b で `ListAllListedSymbols(end_date)` が独立 RPC として実装済み（Replay 用 universe）。**Phase 8 では `ListInstruments` を Live venue 専用に位置付ける** — `source="live"` のみサポートし、`source="replay"` 拡張は不要（`ListAllListedSymbols` に分離済み）。`source="local"` (parquet fallback) は Live モード未ログイン用として残す検討事項 → §0.2 参照。`ListAllListedSymbols` は Replay モード picker 専用として並存。
 
-### 3.2 Backend: LiveVenueAdapter & 具象実装 🟡 骨組み + LiveEvent union 完了 / 実 I/O 未実装
+### 3.2 Backend: LiveVenueAdapter & 具象実装 ✅ 完了 (A1〜D1, 2026-05-18)
 
-> **進捗 (2026-05-18)**:
+> **完了サマリ (2026-05-18, HEAD `bc46495`)**:
+> Phase 8 §3.2 の venue I/O 本体 (A1〜B4-4) + smoke (D1) を全完了。
+> exchanges scope **282 passed / 2 skipped (slow)**。詳細な subtask 完了履歴は
+> `plans/phase8-a1-handoff.md` を参照 (commit hash 付き完成表)。
+>
+> | レーン | 完了範囲 |
+> |---|---|
+> | A1 (tachibana auth) | newtype URL builder + PNoCounter/Session + login(env) wire (`9d80903` / `474a873` / `55702d7`) |
+> | A2 (tachibana master) | CLMEventDownload chunked stream + parser 純関数化 (`2cefbac` / `f64e57f`) |
+> | A3 (tachibana EVENT WS) | `tachibana_ws.py` 新設 + `TachibanaEventWs` + `TickerEventWsHub` + adapter wire (`1c8d82e`〜`daaac07`) |
+> | B1 (kabu auth) | `fetch_token` POST /token + R10 masked log + `KabuStationAdapter.login('env')` (`5b4cf08`〜`2a37b0c`) |
+> | B2 (kabu master) | MVP `return []` (ユーザー決定事項 L84) (`1e72001` / `1bdc276`) |
+> | B3 (register set) | 50-symbol LRU + KabuRegisterFullError (`029578a` / `a084909`) |
+> | B4-1 (kabu WS URL) | `ws_url(env)` + KABU_ALLOW_PROD 二重ガード (`1245398` / `756d0bf`) |
+> | B4-2 (kabu WS client) | `kabusapi_ws.connect()` 写経 + ConnectionClosedOK / OSError 上限 reconnect (`7a8800e`〜`db1a678`) |
+> | B4-3 (kabu frame codec) | `KabuPushFrameProcessor`: Depth + Trades 正規化 (tick rule + TradingVolume delta) (`df345cd`〜`a7bdbc1`) |
+> | B4-4 (kabu adapter wire) | `_put_register` / `subscribe` / `unsubscribe` / `events` / `_on_frame` / `logout` cleanup (`f400260`〜`bbc555e`) |
+> | D1 (smoke) | tachibana `@slow` demo smoke + kabu mock smoke (CI) + kabu `@slow @kabu_live` 実機 smoke + README 手動手順 (`bc46495`) |
+>
+> **既往の進捗詳細 (実装記録、参考用)**:
 > - ✅ `live/adapter.py`（LiveVenueAdapter Protocol、VenueCredentials は password 持たず構造的排除）
 > - ✅ **`live/adapter.py` LiveEvent discriminated union**（2026-05-18 追加） — `LiveEvent = object` スタブを `Annotated[Union[KlineUpdate, TradesUpdate, DepthUpdate], Field(discriminator="kind")]` に置換。Pydantic v2 frozen model、`kind: Literal[...]` discriminator。`DepthLevel` を独立クラスで export（kabu PUSH の `Sell1..Sell10 / Buy1..Buy10` を 10 段に正規化する用途）。`aggressor_side: Literal["buy","sell"]` は Ladder LAST 行の売買区分表示要件（§3.7）に対応。**既存スタブテスト `test_live_event_stub_is_object_alias` は同 commit で削除**（docstring に「後続 step で Union 型に置き換える契約」と前提が書かれていた）
 > - ✅ `live/state_machine.py` (`VenueStateMachine` — DISCONNECTED→AUTHENTICATING→CONNECTED→SUBSCRIBED ⇄ RECONNECTING / ERROR)
@@ -723,9 +742,13 @@ class LiveVenueAdapter(Protocol):
 > - ✅ `exchanges/kabusapi_url.py`（BASE_URL 1 箇所、KABU_ALLOW_PROD ガード、`symbol_key`、`endpoint`）
 > - ✅ `exchanges/kabusapi_auth.py`（例外階層、R7 二段判定、X-API-KEY ヘッダ helper、**`fetch_token` (B1, 2026-05-18): POST /token + masked log + `ResultCode` 正規化**）
 > - ✅ `exchanges/tachibana.py` (login env + fetch_instruments + subscribe/unsubscribe/events 配線完了)
-> - 🟡 `exchanges/kabusapi.py` (`KabuStationAdapter.login('env')` 完了 B1; `fetch_instruments` は MVP `return []` 完了 B2 (handoff ユーザー決定事項 L84「kabu は空 list」); subscribe / events は `NotImplementedError`、`session_cache` は `UNSUPPORTED_FOR_VENUE` reject)
+> - ✅ `exchanges/kabusapi.py` (`login('env')` B1 + `fetch_instruments` MVP B2 + `subscribe`/`unsubscribe`/`_on_frame`/`events`/`logout` B4-4 配線完了。`session_cache` は `UNSUPPORTED_FOR_VENUE` reject)
+> - ✅ `exchanges/kabusapi_register.py` (B3: 50-symbol LRU、`KabuRegisterFullError`、暗黙 evict なし Q-K5)
+> - ✅ `exchanges/kabusapi_ws.py` (B4-2: async connect loop、ConnectionClosedOK / OSError 上限 reconnect、handshake → first-frame reset)
+> - ✅ `exchanges/kabusapi_ws_codec.py` (B4-3: `KabuPushFrameProcessor` Depth + Trades 正規化、tick rule + TradingVolume delta、aggressor 判定不能なら trade 抑制)
 > - ✅ `live/mock_adapter.py` (Step C 完了 2026-05-18): `MockVenueAdapter` Protocol 準拠、`venue_id="MOCK"`、`is_logged_in` 状態、`fetch_instruments` 固定 2 件 (7203 / 9984)、`subscribe`/`unsubscribe` の `_subscribed: dict[InstrumentId, set[Channel]]` 管理、`inject_tick(event)` / `emit_depth_snapshot(...)` でテスト制御、`events()` は単一 `asyncio.Queue[LiveEvent]` の drain async generator。6 件 PASS
-> - ⏳ 未実装: `tachibana_login_flow.py` / `kabusapi_ws.py` / `kabusapi_*.py` REST 各種 (fetch_instruments / register) / `kabusapi_login_flow.py` / `kabusapi_ratelimit.py` / `kabusapi_register.py`
+> - ✅ smoke (D1, `bc46495`): tachibana `@pytest.mark.slow` demo smoke (env-gated) + kabu mock smoke (CI, login wire-up) + kabu 実機 smoke (`@pytest.mark.slow` + `@pytest.mark.kabu_live`, ConnectError は skip)。手動手順は `python/tests/exchanges/README_kabu_smoke.md`
+> - ⏳ Phase 8 §3.2 範囲外 (後続 phase で拾う): `tachibana_login_flow.py` (実 tkinter UI、現状骨組みのみ) / `kabusapi_login_flow.py` / `kabusapi_ratelimit.py` (rate limit helper、現状 §3.2 では未要求) / `_build_mode.py` debug 判定定数 (release build パイプラインと併せて Phase 9 以降)
 
 venue 共通の抽象は `python/engine/live/` に置き、venue 固有のプロトコル実装は **`python/engine/exchanges/` 配下に venue 名で集約**する（tachibana skill `.claude/skills/tachibana/SKILL.md` の規約 R1 / F-L1 を踏襲。「立花プロトコル固有のヘルパーは Rust に書かない／Python は `exchanges/tachibana*.py` に集める」）。kabusapi も同方針で `exchanges/kabusapi*.py` に置き、Python に集約する（kabu skill「Python 実装ヘルパー」の命名規約に準拠）。
 
@@ -784,6 +807,40 @@ python/engine/
 > **重要**: Tachibana は「2 回目以降の起動にユーザー操作は不要」だが、kabu は「毎営業日 1 回の本体 GUI ログインが不可避」。この非対称性は venue の設計差異（リモートサービス vs ローカル Windows アプリ）に起因する。
 
 平文の資格情報は **絶対にログに出さない**。`logger` の `extra` フィルタで `password|token|api_key|p_pwd|sPassword|sSecondPassword|virtual_url|sUrl[A-Z]` を含むキーをマスクする helper を `live/logging.py` に置く（Tachibana skill R10）。仮想 URL もセッション秘密なのでマスク対象（`***` 化）。
+
+#### 3.2 完了報告 (2026-05-18, HEAD `bc46495`)
+
+Phase 8 §3.2「LiveVenueAdapter & 具象実装」の A1〜D1 全レーンが完了。
+
+- **テスト**: exchanges scope **282 passed / 2 skipped**。skipped 2 件は env 未注入で
+  自動 skip となる `@pytest.mark.slow` smoke (tachibana demo + kabu 実機)。CI 集計の
+  regression baseline は維持 (preexisting 3 件の `MISSING_STRATEGY_FILE` は §3.2 とは
+  無関係、§3.1 fixture 起因)。
+- **配線完了範囲**: tachibana (login env / fetch_instruments / EVENT WS / subscribe /
+  unsubscribe / events / logout) + kabu (login env / fetch_instruments MVP /
+  RegisterSet / WebSocket connect-reconnect / frame normalizer / subscribe /
+  unsubscribe / events / logout)。venue 共通の `LiveVenueAdapter` Protocol は
+  両 adapter で実装され、`live_runner` (§3.3) / `LiveReducerBridge` (§3.3) と接続可能。
+- **smoke (D1)**:
+  - tachibana: `test_tachibana_smoke.py` (1 件, `@slow`)。`DEV_TACHIBANA_USER_ID` +
+    `DEV_TACHIBANA_PASSWORD` 注入時、demo 環境で login → fetch_instruments → logout
+    を 1 往復通す。
+  - kabu (mock): `test_kabusapi_smoke.py::test_kabu_login_and_fetch_instruments_mock_smoke`
+    (1 件, no marker)。`pytest-httpx` で `/token` を mock し adapter wire-up を CI で
+    回す。
+  - kabu (実機): `test_kabusapi_smoke.py::test_kabu_real_login_smoke`
+    (`@slow` + 新 marker `@kabu_live`)。kabuStation 本体 GUI 起動前提、`ConnectError` /
+    `OSError` は `pytest.skip` 化。手動手順は `python/tests/exchanges/README_kabu_smoke.md`。
+- **後続 phase に持ち越し**:
+  - `tachibana_login_flow.py` / `kabusapi_login_flow.py` の実 tkinter UI、`_build_mode.py`
+    debug 判定定数、第二暗証番号 modal UI (§3.2.1 / Phase 9)
+  - `kabusapi_ratelimit.py` (現状の §3.2 では未要求、レート制限到達時の retry/backoff
+    policy は実機運用観測後に追加)
+  - `tachibana_session.json` session_cache 復元経路 (現状 `NotImplementedError` stub、
+    handoff §"A1.5 で持ち越したスコープ" L74)
+- **ユーザー確定事項の踏襲** (handoff `plans/phase8-a1-handoff.md` §"ユーザー決定事項"):
+  順次 venue 実装 (A → B)、kabu fetch_instruments は空 list、smoke は `-m slow` で 1
+  本ずつ、URL builder は venue 別 inline、prod guard 二重化。
 
 ### 3.2.1 Python 側のログインウィンドウ 🟡 スケルトン完了 / 実 UI 未実装
 
