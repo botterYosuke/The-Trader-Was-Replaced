@@ -478,6 +478,10 @@ pub fn handle_strategy_file_load_system(
 
         pending.by_region_key.clear();
         pending.loaded_for_path = Some(event.path.clone());
+        pending.loaded_source = Some(match event.mode {
+            StrategyLoadMode::UserOpen => crate::ui::components::FragmentSource::UserOpen,
+            StrategyLoadMode::LayoutRestore => crate::ui::components::FragmentSource::LayoutRestore,
+        });
         for (key, body) in &outcome.fragments {
             pending.by_region_key.insert(key.clone(), body.clone());
         }

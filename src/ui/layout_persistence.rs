@@ -420,6 +420,7 @@ fn apply_cache_restore_system(
         allocator.bump_to_at_least(outcome.max_numeric_suffix);
         pending_fragments.by_region_key.clear();
         pending_fragments.loaded_for_path = buffer.original_path.clone();
+        pending_fragments.loaded_source = Some(crate::ui::components::FragmentSource::CacheRestore);
         for (key, body) in &outcome.fragments {
             pending_fragments
                 .by_region_key
@@ -879,21 +880,44 @@ fn apply_layout_system(
         if let Some(path_str) = &layout.strategy_path {
             let path = std::path::PathBuf::from(path_str);
             if path.exists() {
-                if let Some(user_path) = &pending_fragments.loaded_for_path {
-                    if user_path != &path {
+                use crate::ui::components::FragmentSource;
+                let should_load = match (
+                    &pending_fragments.loaded_for_path,
+                    pending_fragments.loaded_source,
+                ) {
+                    // 同じ .py を既にロード済み → 再ロード不要
+                    (Some(p), _) if p == &path => {
+                        debug!(
+                            "apply_layout_system: skipping strategy_path reload \
+                             (already loaded: {:?})",
+                            path
+                        );
+                        false
+                    }
+                    // ユーザが明示的に別の .py を選んでいる → sidecar の strategy_path を ignore
+                    (Some(user_path), Some(FragmentSource::UserOpen)) => {
                         warn!(
                             "apply_layout_system: sidecar strategy_path {:?} \
                              differs from user-selected {:?}; ignoring sidecar path",
                             path, user_path
                         );
-                    } else {
-                        debug!(
-                            "apply_layout_system: skipping strategy_path reload \
-                             (already loaded via UserOpen: {:?})",
-                            path
-                        );
+                        false
                     }
-                } else if !sidecar_state.done {
+                    // CacheRestore / LayoutRestore 由来 → 明示 JSON Load で上書きする
+                    (Some(prev_path), Some(src)) => {
+                        info!(
+                            "apply_layout_system: replacing fragments loaded via {:?} \
+                             ({:?} → {:?})",
+                            src, prev_path, path
+                        );
+                        true
+                    }
+                    // 由来不明だが path だけある（理論上発生しないが安全側）
+                    (Some(_), None) => true,
+                    // 何もロードしていない（初回 sidecar 自動ロード）
+                    (None, _) => !sidecar_state.done,
+                };
+                if should_load {
                     load_ev.send(StrategyFileLoadRequested {
                         path,
                         mode: StrategyLoadMode::LayoutRestore,
