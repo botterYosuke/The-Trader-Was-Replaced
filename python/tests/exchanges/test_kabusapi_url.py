@@ -54,3 +54,30 @@ def test_symbol_key_formats_symbol_and_exchange():
 def test_symbol_key_rejects_empty_symbol():
     with pytest.raises(ValueError, match="INVALID_SYMBOL"):
         symbol_key("", 1)
+
+
+def test_ws_url_verify_returns_ws_scheme(monkeypatch):
+    monkeypatch.delenv("KABU_ALLOW_PROD", raising=False)
+    from engine.exchanges.kabusapi_url import ws_url
+
+    assert ws_url("verify") == "ws://localhost:18081/kabusapi/websocket"
+
+
+def test_ws_url_prod_requires_env_flag(monkeypatch):
+    monkeypatch.delenv("KABU_ALLOW_PROD", raising=False)
+    from engine.exchanges.kabusapi_url import ws_url
+
+    with pytest.raises(RuntimeError, match="KABU_ALLOW_PROD"):
+        ws_url("prod")
+
+
+def test_ws_url_prod_allowed_when_env_set(monkeypatch):
+    monkeypatch.setenv("KABU_ALLOW_PROD", "1")
+    from engine.exchanges.kabusapi_url import ws_url
+
+    assert ws_url("prod") == "ws://localhost:18080/kabusapi/websocket"
+
+
+def test_kabu_env_alias_importable():
+    """B4-2 で `kabusapi_ws.py` が `from ... import KabuEnv, ws_url` を要求する。"""
+    from engine.exchanges.kabusapi_url import KabuEnv  # noqa: F401
