@@ -2,7 +2,7 @@
 
 リポジトリ: `C:\Users\sasai\Documents\The-Trader-Was-Replaced`
 ブランチ: `impl/8-venue-login-skeleton`
-HEAD: `daaac07 fix(tachibana): serialize EVENT WS reconnect on subscribe-after-stop (Phase 8 §3.2 A3.2b)`
+HEAD: `6b27ab5 feat(kabusapi): connect() with ping_interval=None + register replay + reconnect (Phase 8 §3.2 B4-2)`
 
 ## 完了済み
 
@@ -27,13 +27,16 @@ HEAD: `daaac07 fix(tachibana): serialize EVENT WS reconnect on subscribe-after-s
 | **B1 dirty チェック ✅** | (この session) | 引継ぎ指示にあった dirty 2 件 (`tachibana_ws.py` +74/-13, `test_tachibana_ws.py` +159) は `3f8cab2` / `263537a` で既に commit 済み。working tree clean を確認 | — |
 | **B1 ✅** | `5b4cf08` (RED-1 fetch_token 7) → `2511c57` (RED-2 adapter env 6) → `2a37b0c` (GREEN) | `kabusapi_auth.fetch_token()` 新設 (POST /token + R10 masked log) + `KabuStationAdapter.login('env')` 配線 (`DEV_KABU_API_PASSWORD` + prod は `endpoint("token", env="prod")` 経由で `KABU_ALLOW_PROD` ガード自動発火)。kabusapi tests 38 passed | regression 648 passed / 3 skipped / 0 failed |
 | **B2 ✅** | `1e72001` (RED 3) → `1bdc276` (GREEN) | `KabuStationAdapter.fetch_instruments` MVP = `return []`。ユーザー決定事項 L84 「kabu fetch_instruments は空 list」に従い HTTP を叩かない。`subscribe` 時の `/symbol` lazy fetch は B4 以降。既存 stub `test_fetch_instruments_raises_not_implemented` 削除、新 3 件追加 (empty / type / no-login) | regression 652 passed / 3 skipped / 0 failed |
+| **B3 ✅** | `029578a` (RED) → `a084909` (GREEN) | `kabusapi_register.RegisterSet` (50-symbol LRU、Q-K5 暗黙 evict なし、KabuRegisterFullError) | (前 session 集計) |
+| **B4-1 ✅** | `1245398` (RED 4) → `756d0bf` (GREEN) | `kabusapi_url.py` に `ws_url(env)` + `KabuEnv = Env` alias。base_url 経由で KABU_ALLOW_PROD 二重ガード自動発火 | exchanges 255 passed |
+| **B4-2 ✅** | `7a8800e` (RED 8) → `6b27ab5` (GREEN) | `kabusapi_ws.py` 新規 (151 行、e-station 写経 + 1-arg `KabuConnectionError` 翻訳)。`connect(*, env, on_message, register_set, put_register)` async loop: `ping_interval=None` / `compression=None` / `asyncio.wait_for(recv, 3600)` / OSError×5 で raise / ConnectionClosedOK>5 で raise / 接続直後 `put_register(register_set.all_symbols())`。test 8 件 (_FakeWs `__aenter__/__aexit__/recv` パターン、deferred import) | exchanges **263 passed / 0 failed / 0 errors** |
 
 > note: 同 session で想定外 commit (`60b7bc0` / `eb13ed2` = `.claude/skills/zed/src/` 1.5M 行) を rebase --onto で drop。`c5215df ｓ` は `16d7099 zed` として再積み (149 行 SKILL.md add)。保険 branch `backup/pre-rebase-1519f69` 残置 (要らなければ `git branch -D`)。
 
 ## 残タスク
 
-- **B3** `kabusapi_register.RegisterSet` (50-symbol LRU) ← 次着手
-- **B4** `kabusapi_ws.py` + adapter (ping_interval=None 必須)
+- **B4-3** `kabusapi_ws_codec.py` 等で kabu PUSH frame → `DepthUpdate` + `TradesUpdate` 正規化 (tachibana の `FdFrameProcessor` 相当の kabu 版)。Sell1..10/Buy1..10 → DepthUpdate、CurrentPrice/TradingVolume delta → TradesUpdate
+- **B4-4** `KabuStationAdapter.subscribe/unsubscribe/events` 配線 (RegisterSet 注入 + `put_register` helper を adapter 側で httpx.AsyncClient 保持しつつ実装 + `kabusapi_ws.connect()` を `asyncio.create_task` で spawn + `events()` AsyncIterator。logout で task cancel + register clear)
 - **D1** `-m slow` smoke test (tachibana + kabu 各 1 本)
 - **D2** 計画書更新 + 完了報告
 
@@ -55,6 +58,8 @@ HEAD: `daaac07 fix(tachibana): serialize EVENT WS reconnect on subscribe-after-s
 ## ⚠️ 既知の罠 (今までの learnings)
 
 - **pair-relay 1 往復 ≈ 25k tokens** — Driver/Navigator に full diff を運ぶため。**1 session で 2-3 subtask が限界**
+- **SendMessage が unavailable な環境がある** — pair-relay の Navigator/Driver は本来 SendMessage で同個体を継続利用する想定だが、本 repo の harness では SendMessage が deferred tool に出ない。新個体を毎回 spawn して context を再注入する運用で B4-1/B4-2 は問題なく回った。Navigator prompt の冒頭で「前任が起草した RED は Driver により観測済み」+ 観測結果 verbatim を渡せば一貫性は保てる
+- **B4 frame normalizer (B4-3) の留意点** — kabu PUSH frame は `Sell1..Sell10` / `Buy1..Buy10` の named field。`DepthLevel` に 10 段並べる。`CurrentPrice` 単独で TradesUpdate は作れない (delta が要る) → 直前の `TradingVolume` を state 持って差分で qty を出す (tachibana FdFrameProcessor 同等パターン)。aggressor_side は `CurrentPrice >= prev_Ask1 → buy` ルール
 - **Navigator の事前 test count 見積もりは当てにならない** — 削除/分割が絡むと外す。Driver は collect-only で実数確認。passed 全数 ≤ collected で failed/errors=0 ならカウント差は気にせず GREEN 判定可
 - **pytest-httpx teardown が RED を二重カウント** — `13 FAILED + 13 ERROR` のような対称な数字は同一テストの teardown ノイズ。GREEN 化で両方消える
 - **pair-relay Navigator の import パス推測罠** — `from python.engine.*` を書くと Driver が ModuleNotFoundError。新規 test を指示する前に既存 test の冒頭 import を 1 つ Read で確認
@@ -72,10 +77,24 @@ HEAD: `daaac07 fix(tachibana): serialize EVENT WS reconnect on subscribe-after-s
 ## 次 session 開始指示テンプレ
 
 ```
-plans/phase8-a1-handoff.md を読み、A2 (tachibana.fetch_instruments、CLMEventDownload マスタ DL) から再開。
-ユーザー決定 L76 「順次 A→B、tachibana 完了後 kabu」に従い、tachibana 側 A2 → A3 を先に通してから
-B1-B4 (kabu) へ移る。D1 smoke は A/B 完了後。写経元は e-station tachibana_master.py (L39 参照)。
-pair-relay 1 往復で 1 subtask、1 session 2-3 subtask が現実的ライン。
+plans/phase8-a1-handoff.md を読み、B4-3 (kabu PUSH frame → DepthUpdate + TradesUpdate normalizer)
+から再開。HEAD: 6b27ab5 (B4-2 GREEN)、exchanges scope 263 passed / 0 failed / 0 errors baseline。
+
+B4-3 写経元: C:\Users\sasai\Documents\e-station\python\engine\exchanges\kabusapi_codec.py
+            (or kabusapi.py 内 normalizer 部分)
+B4-3 参考 (本 repo の tachibana 版): python/engine/exchanges/tachibana_ws.py の FdFrameProcessor
+
+ユーザー確定仕様 (この session で固めた):
+- B4 scope: WS 本体 (B4-2 完了) + adapter wire-up (B4-3/B4-4 残)
+- frame 正規化: Depth + Trades 両方 (e-station 同等)
+- 再登録: connect(*, env, on_message, register_set, put_register: Callable) 写経通り。
+  put_register 本体は adapter 側 (httpx.AsyncClient 保持) で実装
+- ws_url は kabusapi_url.py の ws_url(env) (B4-1 完了)
+
+pair-relay /tdd-workflow /kabusapi 発動。1 session 2-3 subtask が限界。
+SendMessage は本 harness で unavailable → Navigator は毎回新個体 spawn + 観測結果 verbatim 注入。
+
+B4 完了後: D1 (-m slow smoke) → D2 (計画書更新 + 完了報告)。
 ```
 
 ## ユーザー決定事項 (確定、変更しない)
