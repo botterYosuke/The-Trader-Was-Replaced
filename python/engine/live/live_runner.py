@@ -20,7 +20,7 @@ Step スコープ外:
 from __future__ import annotations
 
 import asyncio
-from typing import Iterable, Optional, Sequence, Union
+from typing import Iterable, Optional
 
 from engine.live.adapter import (
     DepthUpdate,
@@ -73,20 +73,22 @@ class LiveRunner:
         self._last_error = None
         self._task = asyncio.create_task(self._run())
 
+    def _is_subscribed(self, instrument_id: InstrumentId) -> bool:
+        return instrument_id in self._aggregators
+
     async def _run(self) -> None:
         try:
             async for evt in self._adapter.events():
+                # 未購読 instrument の event は一切流さない（実 adapter が global stream
+                # の別銘柄 frame や unsubscribe 直後の残留 frame を出してきた場合の防衛線、§9.9 ADR）
+                if not self._is_subscribed(evt.instrument_id):
+                    continue
                 if isinstance(evt, TradesUpdate):
-                    aggs = self._aggregators.get(evt.instrument_id)
-                    if aggs is None:
-                        continue
-                    for agg in aggs:
+                    for agg in self._aggregators[evt.instrument_id]:
                         closed = agg.on_tick(evt)
                         if closed is not None:
                             await self.bus.publish(closed)
-                elif isinstance(evt, DepthUpdate):
-                    await self.bus.publish(evt)
-                elif isinstance(evt, KlineUpdate):
+                elif isinstance(evt, (DepthUpdate, KlineUpdate)):
                     await self.bus.publish(evt)
         except asyncio.CancelledError:
             return

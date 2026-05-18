@@ -139,3 +139,62 @@ def test_bridge_stop_is_graceful_after_bus_close() -> None:
         await asyncio.wait_for(bridge.stop(), timeout=1.0)
 
     asyncio.run(scenario())
+
+
+@dataclass
+class _ExplodingDataEngine:
+    boom: BaseException
+    applied: List[ReplayEvent] = field(default_factory=list)
+
+    def apply_replay_event(self, event: ReplayEvent) -> None:
+        self.applied.append(event)
+        raise self.boom
+
+
+def test_bridge_can_restart_after_run_task_dies_with_exception() -> None:
+    """RED (F2): data_engine.apply_replay_event が例外を投げて _run が死んだ後でも
+    bridge.start() を再度呼べば新規 task が立ち上がり、last_error から原因が取得できる。
+
+    LiveRunner の Step 2 ハードンと同じ semantics を bridge にも適用する:
+      - start(): _task is None or _task.done() なら新規 task。
+      - _run の例外（CancelledError 以外）は self._last_error に保存。
+      - last_error プロパティで読み取れる。
+
+    現実装の問題:
+      - bridge._task が done のまま非 None で残り、再 start() が no-op になる。
+      - apply_replay_event の例外原因が外から観測不可能。
+    """
+    live = LiveKlineUpdate(
+        kind="kline", instrument_id="7203.TSE",
+        ts_ns=1_700_000_000_000_000_000,
+        open=100.0, high=110.0, low=95.0, close=105.0, volume=2.0,
+    )
+    boom = RuntimeError("data_engine kaboom")
+
+    async def scenario() -> BaseException | None:
+        bus = LiveEventBus()
+        de = _ExplodingDataEngine(boom=boom)
+        bridge = LiveReducerBridge(bus=bus, data_engine=de)
+        await bridge.start()
+        await bus.publish(live)
+        # _run が die するまで yield を回す
+        for _ in range(5):
+            await asyncio.sleep(0)
+        assert bridge._task is not None and bridge._task.done(), \
+            "precondition: bridge _run task should have died"
+        captured = bridge.last_error
+        assert captured is boom, f"last_error should expose cause, got {captured!r}"
+
+        # restart: data_engine を健全な版に差し替え、bridge.start() で復活すること
+        good_de = _RecordingDataEngine()
+        bridge._data_engine = good_de  # type: ignore[attr-defined]
+        await bridge.start()
+        await bus.publish(live)
+        await asyncio.sleep(0.05)
+        await bridge.stop()
+        await bus.close()
+        assert len(good_de.applied) == 2  # ReplayTimeUpdated + KlineUpdate
+        return captured
+
+    err = asyncio.run(scenario())
+    assert err is boom

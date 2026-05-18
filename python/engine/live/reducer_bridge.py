@@ -65,10 +65,13 @@ class LiveReducerBridge:
         self._data_engine = data_engine
         self._task: Optional[asyncio.Task[None]] = None
         self._iter: Optional[AsyncIterator] = None
+        self._last_error: Optional[BaseException] = None
 
     async def start(self) -> None:
-        if self._task is not None:
+        # _task が die 済み (done) なら新規 task を許可する（§9.8 ADR と同じ semantics）
+        if self._task is not None and not self._task.done():
             return
+        self._last_error = None
         # subscribe は同期完了させてから task spawn (§7 起動順序 ADR)
         self._iter = self._bus.subscribe()
         self._task = asyncio.create_task(self._run())
@@ -87,6 +90,10 @@ class LiveReducerBridge:
                 # DepthUpdate / TradesUpdate は無視
         except asyncio.CancelledError:
             return
+        except BaseException as exc:
+            # data_engine.apply_replay_event 等の例外を silent dead させない (§9.8 ADR と同形)
+            self._last_error = exc
+            return
 
     async def stop(self) -> None:
         if self._task is None:
@@ -97,3 +104,7 @@ class LiveReducerBridge:
         except asyncio.CancelledError:
             pass
         self._task = None
+
+    @property
+    def last_error(self) -> Optional[BaseException]:
+        return self._last_error

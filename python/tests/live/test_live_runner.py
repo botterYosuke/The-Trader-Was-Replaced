@@ -489,3 +489,95 @@ def test_live_runner_can_restart_after_run_task_dies_with_exception() -> None:
     assert bar.open          == 100.0
     assert bar.close         == 100.0
     assert bar.volume        == 1.0
+
+
+def test_live_runner_drops_depth_for_unsubscribed_instrument() -> None:
+    """RED (F1): runner.subscribe していない instrument の DepthUpdate は bus に流さない。
+
+    シナリオ:
+      - runner.subscribe("7203.TSE") のみ実施。
+      - mock の adapter には別途 "9984.TSE" を直接 subscribe（実 venue で global stream
+        の別銘柄 frame や unsubscribe 直後の残留 frame が来た状況を再現）。
+      - "9984.TSE" の DepthUpdate を inject → bus には届かない
+      - 続けて "7203.TSE" の DepthUpdate を inject → bus に届く
+      - bus から取れる最初の event は 7203 のものであることで gating を確認
+    """
+    ts_ns = 28333333 * INTERVAL_NS
+
+    async def scenario() -> DepthUpdate:
+        adapter = MockVenueAdapter()
+        runner = LiveRunner(adapter=adapter, interval_ns=INTERVAL_NS)
+        await adapter.login(VenueCredentials(
+            credentials_source="env", environment_hint="demo",
+        ))
+        await runner.subscribe("7203.TSE")
+        # adapter level でのみ 9984 を subscribe（runner._aggregators には載せない）
+        await adapter.subscribe("9984.TSE", {"depth"})
+
+        consumer = runner.bus.subscribe()
+        await runner.start()
+
+        adapter.emit_depth_snapshot(
+            "9984.TSE", ts_ns,
+            bids=[DepthLevel(price=200.0, size=1.0)],
+            asks=[DepthLevel(price=201.0, size=1.0)],
+        )
+        adapter.emit_depth_snapshot(
+            "7203.TSE", ts_ns,
+            bids=[DepthLevel(price=100.0, size=1.0)],
+            asks=[DepthLevel(price=101.0, size=1.0)],
+        )
+
+        try:
+            it = consumer.__aiter__()
+            evt = await asyncio.wait_for(it.__anext__(), timeout=1.0)
+        finally:
+            await runner.stop()
+
+        assert isinstance(evt, DepthUpdate)
+        return evt
+
+    depth = asyncio.run(scenario())
+    assert depth.instrument_id == "7203.TSE"
+
+
+def test_live_runner_drops_direct_kline_for_unsubscribed_instrument() -> None:
+    """RED (F1): runner.subscribe していない instrument の venue 直送 KlineUpdate も
+    bus に流さない。シナリオは depth 版と同形。"""
+    ts_ns = 28333333 * INTERVAL_NS
+    foreign = KlineUpdate(
+        kind="kline", instrument_id="9984.TSE",
+        ts_ns=ts_ns, open=200.0, high=200.0, low=200.0, close=200.0, volume=1.0,
+    )
+    own = KlineUpdate(
+        kind="kline", instrument_id="7203.TSE",
+        ts_ns=ts_ns, open=100.0, high=100.0, low=100.0, close=100.0, volume=1.0,
+    )
+
+    async def scenario() -> KlineUpdate:
+        adapter = MockVenueAdapter()
+        runner = LiveRunner(adapter=adapter, interval_ns=INTERVAL_NS)
+        await adapter.login(VenueCredentials(
+            credentials_source="env", environment_hint="demo",
+        ))
+        await runner.subscribe("7203.TSE")
+        await adapter.subscribe("9984.TSE", {"trades"})
+
+        consumer = runner.bus.subscribe()
+        await runner.start()
+
+        adapter.inject_tick(foreign)
+        adapter.inject_tick(own)
+
+        try:
+            it = consumer.__aiter__()
+            evt = await asyncio.wait_for(it.__anext__(), timeout=1.0)
+        finally:
+            await runner.stop()
+
+        assert isinstance(evt, KlineUpdate)
+        return evt
+
+    bar = asyncio.run(scenario())
+    assert bar.instrument_id == "7203.TSE"
+    assert bar == own
