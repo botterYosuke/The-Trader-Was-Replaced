@@ -323,3 +323,19 @@ def test_build_instruments_multiple_markets_for_same_issue_emit_multiple_rows():
     markets = sorted(i.market for i in out)
     assert markets == ["00", "02"]
     assert all(i.code == "7203" for i in out)
+
+
+def test_decode_clm_yobine_record_applies_sDecimal_scaling():
+    """sDecimal_N が 0 でない場合、yobine_tanka は 10**decimals で実価格スケールに割られる。
+    例: sYobineTanka_1='5', sDecimal_1='1' → 実 tick = 0.5。
+    """
+    from decimal import Decimal
+
+    from engine.exchanges.tachibana_master import decode_clm_yobine_record
+
+    rec = _yobine_record(yobine_code="Y_FRAC", kizun="3000", tanka="5", decimals=1)
+    decoded = decode_clm_yobine_record(rec)
+
+    assert decoded.bands[0].yobine_tanka == Decimal("0.5")
+    # decimals field 自体は生情報として残す (debug 用途)
+    assert decoded.bands[0].decimals == 1
