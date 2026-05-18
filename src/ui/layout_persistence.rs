@@ -344,6 +344,42 @@ fn load_layout_from(path: &PathBuf) -> std::io::Result<SidecarLayout> {
     serde_json::from_str(&text).map_err(|e| std::io::Error::new(std::io::ErrorKind::InvalidData, e))
 }
 
+/// cache restore で `layout.windows` 内に既に non-legacy な
+/// `PanelKind::StrategyEditor` エントリが存在するかを判定する。
+/// 存在すれば既存の windows ループが spawn を担当するため fallback は不要。
+fn cache_restore_has_strategy_editor_window(windows: Option<&Vec<WindowLayout>>) -> bool {
+    let Some(list) = windows else { return false; };
+    list.iter()
+        .any(|w| w.kind == PanelKind::StrategyEditor && !is_legacy_chart_entry(w))
+}
+
+/// cache restore fallback: `windows` 内に non-legacy StrategyEditor が無いとき、
+/// `fragments` の各 key について PanelSpawnRequested を生成して返す。
+/// `dedupe` に既に含まれる region_key はスキップする（caller が後で extend する）。
+/// caller 側で dedupe set への insert と event writer への送出を担当。
+fn compute_cache_restore_fallback_spawns(
+    windows: Option<&Vec<WindowLayout>>,
+    fragments: &[(String, String)],
+    dedupe: &std::collections::HashSet<String>,
+) -> Vec<PanelSpawnRequested> {
+    if cache_restore_has_strategy_editor_window(windows) {
+        return Vec::new();
+    }
+    fragments
+        .iter()
+        .filter(|(key, _)| !dedupe.contains(key))
+        .map(|(key, _)| PanelSpawnRequested {
+            kind: PanelKind::StrategyEditor,
+            source: PanelSpawnSource::LayoutLoad,
+            strategy_spec: Some(StrategyEditorSpawnSpec {
+                region_key: Some(key.clone()),
+                source: None,
+                layout_source: PanelSpawnSource::LayoutLoad,
+            }),
+        })
+        .collect()
+}
+
 fn apply_cache_restore_system(
     mut events: EventReader<CacheRestoreRequested>,
     mut buffer: ResMut<StrategyBuffer>,
@@ -432,6 +468,30 @@ fn apply_cache_restore_system(
                         strategy_spec,
                     });
                 }
+            }
+        }
+
+        let dedupe_keys = pending
+            .spawn_requested
+            .iter()
+            .filter(|(kind, _)| *kind == PanelKind::StrategyEditor)
+            .filter_map(|(_, rk)| rk.clone())
+            .collect::<std::collections::HashSet<String>>();
+        let fallback_spawns = compute_cache_restore_fallback_spawns(
+            event.layout.windows.as_ref(),
+            &outcome.fragments,
+            &dedupe_keys,
+        );
+        for req in fallback_spawns {
+            let region_key = req
+                .strategy_spec
+                .as_ref()
+                .and_then(|spec| spec.region_key.clone());
+            if pending
+                .spawn_requested
+                .insert((PanelKind::StrategyEditor, region_key))
+            {
+                spawn_ev.send(req);
             }
         }
 
@@ -1238,6 +1298,99 @@ impl Plugin for LayoutPersistencePlugin {
 mod tests {
     use super::*;
     use crate::ui::components::PanelKind;
+
+    #[test]
+    fn cache_restore_has_strategy_editor_window_returns_false_for_empty_list() {
+        let windows: Vec<WindowLayout> = vec![];
+        assert!(
+            !cache_restore_has_strategy_editor_window(Some(&windows)),
+            "空 list では fallback が必要 → false を返すべき"
+        );
+    }
+
+    #[test]
+    fn cache_restore_has_strategy_editor_window_detects_non_legacy_entry() {
+        let windows = vec![WindowLayout {
+            kind: PanelKind::StrategyEditor,
+            visible: true,
+            position: [0.0, 0.0],
+            size: [800.0, 600.0],
+            z: 0.0,
+            region_key: None,
+        }];
+        assert!(
+            cache_restore_has_strategy_editor_window(Some(&windows)),
+            "non-legacy StrategyEditor が存在すれば true（= fallback 不要）"
+        );
+    }
+
+    #[test]
+    fn compute_cache_restore_fallback_spawns_empty_windows_one_fragment() {
+        let windows: Vec<WindowLayout> = vec![];
+        let fragments = vec![("region_1".to_string(), "pass".to_string())];
+        let dedupe = std::collections::HashSet::new();
+        let out = compute_cache_restore_fallback_spawns(Some(&windows), &fragments, &dedupe);
+        assert_eq!(out.len(), 1);
+        assert_eq!(out[0].kind, PanelKind::StrategyEditor);
+        let spec = out[0].strategy_spec.as_ref().expect("strategy_spec must be Some");
+        assert_eq!(spec.region_key.as_deref(), Some("region_1"));
+        assert!(spec.source.is_none(), "source=None で dispatcher drain に委ねる");
+    }
+
+    #[test]
+    fn compute_cache_restore_fallback_spawns_skips_when_editor_window_exists() {
+        let windows = vec![WindowLayout {
+            kind: PanelKind::StrategyEditor,
+            visible: true,
+            position: [0.0, 0.0],
+            size: [800.0, 600.0],
+            z: 0.0,
+            region_key: Some("region_1".to_string()),
+        }];
+        let fragments = vec![("region_1".to_string(), "pass".to_string())];
+        let dedupe = std::collections::HashSet::new();
+        let out = compute_cache_restore_fallback_spawns(Some(&windows), &fragments, &dedupe);
+        assert!(out.is_empty(), "既存 StrategyEditor window があれば fallback は走らない");
+    }
+
+    #[test]
+    fn compute_cache_restore_fallback_spawns_windows_none_one_fragment() {
+        let fragments = vec![("region_1".to_string(), "pass".to_string())];
+        let dedupe = std::collections::HashSet::new();
+        let out = compute_cache_restore_fallback_spawns(None, &fragments, &dedupe);
+        assert_eq!(out.len(), 1);
+        assert_eq!(out[0].kind, PanelKind::StrategyEditor);
+    }
+
+    #[test]
+    fn compute_cache_restore_fallback_spawns_non_editor_windows_one_fragment() {
+        let windows = vec![WindowLayout {
+            kind: PanelKind::Orders,
+            visible: true,
+            position: [0.0, 0.0],
+            size: [200.0, 600.0],
+            z: 0.0,
+            region_key: None,
+        }];
+        let fragments = vec![("region_1".to_string(), "pass".to_string())];
+        let dedupe = std::collections::HashSet::new();
+        let out = compute_cache_restore_fallback_spawns(Some(&windows), &fragments, &dedupe);
+        assert_eq!(out.len(), 1, "StrategyEditor 不在なら fallback が走る");
+    }
+
+    #[test]
+    fn compute_cache_restore_fallback_spawns_skips_dedupe_keys() {
+        let fragments = vec![
+            ("region_1".to_string(), "pass".to_string()),
+            ("region_2".to_string(), "pass".to_string()),
+        ];
+        let mut dedupe = std::collections::HashSet::new();
+        dedupe.insert("region_1".to_string());
+        let out = compute_cache_restore_fallback_spawns(None, &fragments, &dedupe);
+        assert_eq!(out.len(), 1);
+        let spec = out[0].strategy_spec.as_ref().unwrap();
+        assert_eq!(spec.region_key.as_deref(), Some("region_2"));
+    }
 
     #[test]
     fn mark_layout_changed_sets_dirty_and_timestamp() {
