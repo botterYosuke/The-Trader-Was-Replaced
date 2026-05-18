@@ -1,10 +1,9 @@
-"""kabu STATION PUSH WebSocket connection manager (Phase 8 §3.2 B4-2).
-
-e-station 写経 (本 repo 向けに 1-arg KabuConnectionError へ翻訳).
+"""kabu STATION PUSH WebSocket connection manager.
 
 Responsibility:
 - websockets.connect(url, ping_interval=None, compression=None) で接続
-  (RFC6455 非準拠 PONG + permessage-deflate RSV1 バグ回避)
+  (kabuStation は RFC6455 非準拠 PONG + permessage-deflate RSV1 バグがあるため
+   keepalive と圧縮を無効化する)
 - 接続直後に register_set の銘柄を put_register で再送
 - ws.recv() ループで JSON frame を on_message に dispatch
 - OSError / ConnectionClosedError は consecutive_failures を増やし、
@@ -86,7 +85,7 @@ async def connect(
                     consecutive_ok_close_count = 0
                     # 1 frame を正常受信した時点で session 健全と判断し failure を reset。
                     # `async with` 直後にリセットすると、recv 即 ConnectionClosedError を
-                    # 繰り返す病的シナリオで上限到達せず無限ループになる (test 9 参照)。
+                    # 繰り返す病的シナリオで上限到達せず無限ループになる。
                     consecutive_failures = 0
 
                     if isinstance(raw, bytes):

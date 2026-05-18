@@ -1,4 +1,4 @@
-"""kabuステーション PUSH 銘柄登録セット — 50 銘柄上限 LRU 管理 (Phase 8 §3.2 B3).
+"""kabuステーション PUSH 銘柄登録セット — 50 銘柄上限 LRU 管理.
 
 R6: REST/PUSH を合算して 50 銘柄まで。
 Q-K5 決定: 暗黙 evict は行わず、満杯時は KabuRegisterFullError を投げる。

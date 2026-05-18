@@ -1,12 +1,9 @@
-"""Tests for kabusapi_ws.connect() (Phase 8 §3.2 B4-2).
+"""Tests for kabusapi_ws.connect().
 
 websockets.connect を _FakeWs で差し替え、ws.recv() を直接呼ぶ
-（e-station 写経元と同じく、__aiter__ ではなく ws.recv() 直接呼びループ）。
+（__aiter__ ではなく ws.recv() 直接呼びループ）。
 
-注:
-- asyncio_mode="auto" 設定済なので async def test_ にマーク不要。
-- SUT (engine.exchanges.kabusapi_ws) は B4-2 RED 時点で未実装のため、
-  各 test 内で deferred import する（top-level import すると collection error）。
+asyncio_mode="auto" 設定済なので async def test_ にマーク不要。
 """
 from __future__ import annotations
 
@@ -322,7 +319,9 @@ async def test_connect_raises_kabu_connection_error_after_5_consecutive_oserrors
             timeout=5.0,
         )
 
-    assert record["n"] == 5, "OSError は 5 回で打ち切るはず"
+    assert record["n"] == kws_mod._MAX_RECONNECT_ATTEMPTS, (
+        "OSError は _MAX_RECONNECT_ATTEMPTS 回で打ち切るはず"
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -374,8 +373,8 @@ async def test_connect_raises_after_six_consecutive_connection_closed_ok(monkeyp
             timeout=5.0,
         )
 
-    # 1..5 回目は通過、6 回目で raise → 計 6 connect
-    assert record["n"] == 6
+    # > _MAX_RECONNECT_ATTEMPTS で raise → 計 _MAX + 1 connect
+    assert record["n"] == kws_mod._MAX_RECONNECT_ATTEMPTS + 1
 
 
 # ---------------------------------------------------------------------------
@@ -475,5 +474,5 @@ async def test_connect_resets_failures_only_after_first_successful_frame(monkeyp
             timeout=5.0,
         )
 
-    # 1..4 回目は通過、5 回目で raise → 計 5 connect
-    assert record["n"] == 5
+    # >= _MAX_RECONNECT_ATTEMPTS で raise → 計 _MAX connect
+    assert record["n"] == kws_mod._MAX_RECONNECT_ATTEMPTS
