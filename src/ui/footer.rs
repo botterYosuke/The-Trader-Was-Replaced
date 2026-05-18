@@ -620,10 +620,15 @@ pub fn footer_pause_resume_system(
 }
 
 /// ExecutionMode segment クリックを `SetExecutionMode` RPC として backend に送る。
-/// Optimistic local state は持たない: `ExecutionModeRes` は polling diff (`BackendStatusUpdate::ExecutionModeChanged`)
-/// 経由でのみ更新される。これにより backend が precondition で reject した場合の
-/// UI/backend desync を構造的に防ぐ。LiveAuto は §3.6 通り Phase 8 では選択不可で、
-/// クリックはローカルで握り潰す (RPC を送らない)。
+/// Optimistic local state は持たない: `ExecutionModeRes` は polling diff
+/// (`BackendStatusUpdate::ExecutionModeChanged`) 経由でのみ更新される。これにより
+/// backend が precondition で reject した場合の UI/backend desync を構造的に防ぐ。
+///
+/// クライアント側 precondition (案 C):
+/// - Live (LiveManual / LiveAuto) への遷移: venue が Disconnected / Error なら blocked。
+/// - Replay への遷移: strategy が未ロード (`StrategyBuffer.original_path.is_none()`) なら blocked。
+/// precondition NG の場合は RPC を送らず warn! のみ。OK なら backend に送り、
+/// backend 側 `EXECUTION_MODE_PRECONDITION` reject は polling diff で吸収される。
 #[allow(clippy::type_complexity)]
 pub fn execution_mode_toggle_system(
     query: Query<
@@ -631,27 +636,45 @@ pub fn execution_mode_toggle_system(
         (Changed<Interaction>, With<Button>),
     >,
     exec_mode: Res<ExecutionModeRes>,
-    sender: Res<TransportCommandSender>,
+    venue: Res<VenueStatusRes>,
+    buffer: Res<StrategyBuffer>,
+    sender: Option<Res<TransportCommandSender>>,
 ) {
     for (interaction, seg) in &query {
         if *interaction != Interaction::Pressed {
             continue;
         }
-        if seg.0 == ExecutionMode::LiveAuto {
-            info!("execution_mode: LiveAuto requested but no .py loaded — ignored (Phase 10)");
+        let target = seg.0;
+        if exec_mode.mode == target {
             continue;
         }
-        if exec_mode.mode == seg.0 {
+        // precondition: Live への遷移は venue 接続必須
+        if matches!(target, ExecutionMode::LiveManual | ExecutionMode::LiveAuto)
+            && matches!(venue.state, VenueState::Disconnected | VenueState::Error)
+        {
+            warn!(
+                "ExecutionMode→Live blocked: venue not connected (state={:?})",
+                venue.state
+            );
             continue;
         }
+        // precondition: Replay への遷移は strategy ロード必須
+        if target == ExecutionMode::Replay && buffer.original_path.is_none() {
+            warn!("ExecutionMode→Replay blocked: no strategy loaded");
+            continue;
+        }
+        let Some(sender) = sender.as_ref() else {
+            warn!("execution_mode: TransportCommandSender unavailable; SetExecutionMode dropped");
+            continue;
+        };
         info!(
             "execution_mode: requesting SetExecutionMode({}) (current: {})",
-            seg.0.as_wire_str(),
+            target.as_wire_str(),
             exec_mode.mode.as_wire_str()
         );
         if sender
             .tx
-            .send(TransportCommand::SetExecutionMode { mode: seg.0 })
+            .send(TransportCommand::SetExecutionMode { mode: target })
             .is_err()
         {
             error!("execution_mode: transport channel closed; SetExecutionMode dropped");

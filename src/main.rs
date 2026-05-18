@@ -22,7 +22,7 @@ use engine::{
     EngineKind, EngineStartConfig, ForceStopReplayRequest, GetPortfolioRequest, GetStateRequest,
     ListAllListedSymbolsRequest, LoadReplayDataRequest, PauseReplayRequest, ReplayGranularity,
     ResumeReplayRequest, SetExecutionModeRequest, SetReplaySpeedRequest, StartEngineRequest,
-    StartEngineResponse, StepReplayRequest,
+    StartEngineResponse, StepReplayRequest, VenueLoginRequest, VenueLogoutRequest,
 };
 use tokio::sync::mpsc;
 
@@ -611,6 +611,47 @@ fn setup_backend_connection(
                                 }
                             }
                         });
+                    }
+                    TransportCommand::VenueLogin { venue_id, credentials_source, environment_hint } => {
+                        let req = tonic::Request::new(VenueLoginRequest {
+                            venue_id: venue_id.clone(),
+                            credentials_source,
+                            environment_hint,
+                            token: token.clone(),
+                        });
+                        match client.venue_login(req).await {
+                            Ok(r) => {
+                                let inner = r.into_inner();
+                                if inner.success {
+                                    info!(
+                                        "VenueLogin ok: venue_id={} venue_state={} instruments_loaded={}",
+                                        venue_id, inner.venue_state, inner.instruments_loaded
+                                    );
+                                } else {
+                                    error!(
+                                        "VenueLogin rejected: venue_id={} error_code={}",
+                                        venue_id, inner.error_code
+                                    );
+                                }
+                            }
+                            Err(e) => error!("VenueLogin failed: venue_id={} err={}", venue_id, e),
+                        }
+                    }
+                    TransportCommand::VenueLogout => {
+                        let req = tonic::Request::new(VenueLogoutRequest {
+                            token: token.clone(),
+                        });
+                        match client.venue_logout(req).await {
+                            Ok(r) => {
+                                let inner = r.into_inner();
+                                if inner.success {
+                                    info!("VenueLogout ok");
+                                } else {
+                                    error!("VenueLogout rejected: error_code={}", inner.error_code);
+                                }
+                            }
+                            Err(e) => error!("VenueLogout failed: {}", e),
+                        }
                     }
                 }
             }

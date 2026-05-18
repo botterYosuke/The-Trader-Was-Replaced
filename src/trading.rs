@@ -188,6 +188,15 @@ pub enum TransportCommand {
     SetExecutionMode {
         mode: ExecutionMode,
     },
+    /// User-initiated venue login. `token` is injected by the transport task
+    /// from `TradingSettings`, so the UI only carries fields the user selects.
+    VenueLogin {
+        venue_id: String,
+        credentials_source: String,
+        environment_hint: String,
+    },
+    /// User-initiated venue logout. `token` is injected by the transport task.
+    VenueLogout,
 }
 
 #[derive(Resource, Debug, Clone)]
