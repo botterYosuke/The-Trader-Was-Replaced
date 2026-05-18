@@ -5,10 +5,18 @@ Implements:
   KabuRateLimitError / KabuConnectionError)
 - check_response(payload, http_status): two-stage HTTP + Code judgement (R7)
 - auth_headers(token): build X-API-KEY header (R3)
-
-NOTE: fetch_token() is intentionally deferred to the HTTP client step
-later in Phase 8 (requires HTTPXMock-based tests).
+- fetch_token(api_password, env): POST /token, returns Token (R1+R3+R7+R10)
 """
+
+from __future__ import annotations
+
+import logging
+
+import httpx
+
+from engine.exchanges.kabusapi_url import Env, endpoint
+
+logger = logging.getLogger(__name__)
 
 
 class KabuError(Exception):
@@ -69,3 +77,39 @@ def auth_headers(token: str) -> dict[str, str]:
     if not token:
         raise ValueError("token must be non-empty")
     return {"X-API-KEY": token}
+
+
+async def fetch_token(api_password: str, *, env: Env) -> str:
+    """POST /token. Returns the Token string on success (kabu skill R1+R3+R7+R10).
+
+    Raises:
+        KabuApiError: HTTP 4xx/5xx or non-zero Code in payload.
+        KabuTokenExpiredError / KabuRateLimitError: specialized Code subclasses.
+        KabuConnectionError: kabu body process unreachable, non-JSON body,
+            or missing Token field on otherwise-OK response.
+    """
+    url = endpoint("token", env=env)
+    try:
+        async with httpx.AsyncClient(timeout=30.0) as client:
+            resp = await client.post(url, json={"APIPassword": api_password})
+    except httpx.ConnectError as exc:
+        raise KabuConnectionError(
+            f"kabu body process unreachable at {url}: {exc}"
+        ) from exc
+
+    try:
+        body = resp.json()
+    except Exception as exc:
+        raise KabuConnectionError(
+            f"kabu /token returned non-JSON body (HTTP {resp.status_code})"
+        ) from exc
+
+    check_response(body, resp.status_code)
+
+    token = body.get("Token") or ""
+    if not token:
+        raise KabuConnectionError("kabu /token response missing 'Token' field")
+
+    masked = f"***{token[-4:]}" if len(token) >= 4 else "***"
+    logger.info("kabu /token: 200 OK, token=%s", masked)
+    return token
