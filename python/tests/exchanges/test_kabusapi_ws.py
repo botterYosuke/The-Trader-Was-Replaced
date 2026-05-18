@@ -412,3 +412,68 @@ async def test_connect_uses_ws_url_for_verify_env(monkeypatch):
     assert url.startswith("ws://"), f"ws:// scheme expected, got {url}"
     assert "18081" in url, "verify env は 18081 ポート"
     assert url.endswith("/websocket"), f"/websocket 終端であるべき: {url}"
+
+
+# ---------------------------------------------------------------------------
+# 9. handshake 成功 → recv 即 ConnectionClosedError を繰り返すケースで
+#    consecutive_failures が毎回リセットされず、6 回目で打ち切る
+# ---------------------------------------------------------------------------
+
+
+async def test_connect_resets_failures_only_after_first_successful_frame(monkeypatch):
+    """High バグ回帰防止:
+
+    handshake (`async with websockets.connect(...)`) は成功するが、
+    最初の ws.recv() で ConnectionClosedError が即上がるシナリオ。
+    現行実装は `async with` 直後に `consecutive_failures = 0` を実行するため、
+    毎接続でカウンタがゼロに戻り、_MAX_RECONNECT_ATTEMPTS (5) に到達せず
+    無限ループする。fix では「最初の frame を on_message に dispatch した時点」
+    まで reset を遅延し、本テストは 6 回目の試行で KabuConnectionError を観測する。
+    """
+    from engine.exchanges import kabusapi_ws as kws_mod
+
+    monkeypatch.setattr(kws_mod, "_RECONNECT_DELAY_S", 0.0)
+
+    rs = RegisterSet()
+
+    async def put_register(symbols):
+        return True
+
+    async def on_message(msg: dict) -> None:
+        # frame は届かないので呼ばれない
+        pass
+
+    record = {"n": 0}
+
+    def _make_ws() -> _FakeWs:
+        record["n"] += 1
+        # frames=[] + close_exc=ConnectionClosedError →
+        # __aenter__ は成功するが recv 即 ConnectionClosedError
+        return _FakeWs(
+            [],
+            close_exc=websockets.exceptions.ConnectionClosedError(None, None),
+        )
+
+    def _fake_connect(url: str, **kwargs: Any):
+        return _make_ws()
+
+    fake_mod = type(
+        "_M",
+        (),
+        {"connect": staticmethod(_fake_connect), "exceptions": websockets.exceptions},
+    )
+    monkeypatch.setattr(kws_mod, "websockets", fake_mod)
+
+    with pytest.raises(KabuConnectionError):
+        await asyncio.wait_for(
+            kws_mod.connect(
+                env="verify",
+                on_message=on_message,
+                register_set=rs,
+                put_register=put_register,
+            ),
+            timeout=5.0,
+        )
+
+    # 1..4 回目は通過、5 回目で raise → 計 5 connect
+    assert record["n"] == 5
