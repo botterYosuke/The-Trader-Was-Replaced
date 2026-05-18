@@ -19,11 +19,15 @@ class DataEngine:
         nautilus_catalog_path: Optional[str] = None,
         jquants_catalog_path: Optional[str] = None,
         state_machine: Optional["VenueStateMachine"] = None,
+        venue_id: Optional[str] = None,
     ):
         logging.info(
             f"Initializing DataEngine core (max_history_len: {max_history_len})"
         )
         self.state_machine = state_machine
+        self.venue_id = venue_id
+        self._subscribed_instruments: list[str] = []
+        self.mode_manager: Optional["ModeManager"] = None
         self._lock = threading.Lock()
         self._is_running = False
         self._replay_state = "IDLE"
@@ -61,6 +65,10 @@ class DataEngine:
                 ],
                 max_history_len=max_history_len,
             )
+
+    def attach_mode_manager(self, mm: "ModeManager") -> None:
+        """ModeManager の循環参照回避のため setter で後付け注入する"""
+        self.mode_manager = mm
 
     @property
     def is_running(self) -> bool:
@@ -314,6 +322,10 @@ class DataEngine:
                 close=rs.price,
                 open_time_ms=rs.open_time_ms or None,
                 replay_state=self._replay_state,
+                venue_state=self.state_machine.current if self.state_machine else "DISCONNECTED",
+                execution_mode=self.mode_manager.current_mode if self.mode_manager else "Replay",
+                venue_id=self.venue_id,
+                subscribed_instruments=list(self._subscribed_instruments),
             )
 
     def take_snapshot(self) -> EngineSnapshot:
@@ -342,6 +354,10 @@ class DataEngine:
                     close=rs.price,
                     open_time_ms=rs.open_time_ms or None,
                     replay_state=self._replay_state,
+                    venue_state=self.state_machine.current if self.state_machine else "DISCONNECTED",
+                execution_mode=self.mode_manager.current_mode if self.mode_manager else "Replay",
+                venue_id=self.venue_id,
+                subscribed_instruments=list(self._subscribed_instruments),
                 ),
                 replay_index=replay_index,
                 source_path=source_path,
