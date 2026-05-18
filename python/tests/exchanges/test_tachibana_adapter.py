@@ -10,7 +10,7 @@ from pytest_httpx import HTTPXMock
 from engine.exchanges.tachibana import TachibanaAdapter
 from engine.exchanges.tachibana_auth import TachibanaSession
 from engine.exchanges.tachibana_url import BASE_URL_DEMO
-from engine.live.adapter import LiveVenueAdapter, VenueCredentials
+from engine.live.adapter import InstrumentRaw, LiveVenueAdapter, VenueCredentials
 
 
 def test_venue_id_is_tachibana():
@@ -36,11 +36,6 @@ def test_environment_prod_accepted():
 def test_invalid_environment_raises():
     with pytest.raises(ValueError):
         TachibanaAdapter(environment="staging")  # type: ignore[arg-type]
-
-
-def test_fetch_instruments_raises_not_implemented():
-    with pytest.raises(NotImplementedError):
-        asyncio.run(TachibanaAdapter().fetch_instruments())
 
 
 def test_subscribe_raises_not_implemented():
@@ -182,3 +177,101 @@ async def test_login_env_prod_without_allow_prod_raises(monkeypatch):
     adapter = TachibanaAdapter(environment="prod")
     with pytest.raises(RuntimeError, match="TACHIBANA_ALLOW_PROD"):
         await adapter.login(VenueCredentials(credentials_source="env"))
+
+
+# ---------------------------------------------------------------------------
+# Phase 8 §3.2 A2.3b: fetch_instruments() — CLMEventDownload streaming
+# ---------------------------------------------------------------------------
+
+_MASTER_URL_RE = re.compile(rf"^{re.escape(_DEMO_BASE)}master/")
+
+
+def _terminator_bytes() -> bytes:
+    return json.dumps({"sCLMID": "CLMEventDownloadComplete"}, ensure_ascii=False).encode("shift_jis")
+
+
+def _master_records_bytes() -> bytes:
+    """Minimal CLMEventDownload stream: 1 issue + 1 sizyou + 1 yobine + terminator."""
+    yobine = {"sCLMID": "CLMYobine", "sYobineTaniNumber": "Y1"}
+    yobine["sKizunPrice_1"] = "3000"
+    yobine["sYobineTanka_1"] = "1"
+    yobine["sDecimal_1"] = "0"
+    for i in range(2, 21):
+        yobine[f"sKizunPrice_{i}"] = "999999999"
+        yobine[f"sYobineTanka_{i}"] = "1"
+        yobine[f"sDecimal_{i}"] = "0"
+    recs = [
+        {"sCLMID": "CLMIssueMstKabu", "sIssueCode": "7203", "sIssueName": "トヨタ自動車"},
+        {"sCLMID": "CLMIssueSizyouMstKabu", "sIssueCode": "7203",
+         "sSizyouC": "00", "sYobineTaniNumber": "Y1", "sBaibaiTaniNumber": "100"},
+        yobine,
+    ]
+    body = b""
+    for r in recs:
+        body += json.dumps(r, ensure_ascii=False).encode("shift_jis")
+    body += _terminator_bytes()
+    return body
+
+
+async def _login_demo(monkeypatch, httpx_mock: HTTPXMock) -> TachibanaAdapter:
+    monkeypatch.setenv("DEV_TACHIBANA_USER_ID", "uid")
+    monkeypatch.setenv("DEV_TACHIBANA_PASSWORD", "pwd")
+    _add_login_response(httpx_mock, _ok_login_payload())
+    adapter = TachibanaAdapter(environment="demo")
+    await adapter.login(VenueCredentials(credentials_source="env"))
+    return adapter
+
+
+async def test_fetch_instruments_requires_login():
+    """No session yet → raises (不可 to build a master URL without sUrlMaster)."""
+    adapter = TachibanaAdapter(environment="demo")
+    with pytest.raises(Exception):
+        await adapter.fetch_instruments()
+
+
+async def test_fetch_instruments_returns_instrument_raw_list(monkeypatch, httpx_mock: HTTPXMock):
+    adapter = await _login_demo(monkeypatch, httpx_mock)
+    httpx_mock.add_response(url=_MASTER_URL_RE, method="GET", content=_master_records_bytes())
+
+    out = await adapter.fetch_instruments()
+    assert isinstance(out, list)
+    assert len(out) == 1
+    assert isinstance(out[0], InstrumentRaw)
+    assert out[0].code == "7203"
+    assert out[0].name == "トヨタ自動車"
+    assert out[0].market == "00"
+    assert out[0].lot_size == 100
+    assert out[0].tick_size == 1.0
+
+
+async def test_fetch_instruments_hits_url_master_endpoint(monkeypatch, httpx_mock: HTTPXMock):
+    """The master DL must be issued against sUrlMaster, not sUrlRequest/sUrlPrice."""
+    adapter = await _login_demo(monkeypatch, httpx_mock)
+    httpx_mock.add_response(url=_MASTER_URL_RE, method="GET", content=_master_records_bytes())
+
+    await adapter.fetch_instruments()
+    # 2 requests: 1 login (auth/), 1 master DL (master/)
+    requests = httpx_mock.get_requests()
+    master_reqs = [r for r in requests if "/master/" in str(r.url)]
+    assert len(master_reqs) == 1
+    assert "CLMEventDownload" in str(master_reqs[0].url)
+
+
+async def test_fetch_instruments_advances_p_no_counter(monkeypatch, httpx_mock: HTTPXMock):
+    adapter = await _login_demo(monkeypatch, httpx_mock)
+    httpx_mock.add_response(url=_MASTER_URL_RE, method="GET", content=_master_records_bytes())
+
+    before = adapter._p_no_counter.peek()
+    await adapter.fetch_instruments()
+    after = adapter._p_no_counter.peek()
+    assert after == before + 1
+
+
+async def test_fetch_instruments_handles_chunked_response(monkeypatch, httpx_mock: HTTPXMock):
+    """Stream parser must reassemble records across SJIS-multibyte chunk boundaries."""
+    adapter = await _login_demo(monkeypatch, httpx_mock)
+    httpx_mock.add_response(url=_MASTER_URL_RE, method="GET", content=_master_records_bytes())
+
+    out = await adapter.fetch_instruments()
+    assert len(out) == 1
+    assert out[0].name == "トヨタ自動車"  # SJIS round-trip OK
