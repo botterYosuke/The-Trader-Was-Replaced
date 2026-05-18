@@ -104,6 +104,12 @@ async def fetch_token(api_password: str, *, env: Env) -> str:
             f"kabu /token returned non-JSON body (HTTP {resp.status_code})"
         ) from exc
 
+    # /token uses ResultCode (OpenAPI TokenSuccess) where other endpoints use Code.
+    # Normalize so check_response's error mapping (4001005 / 4002006 / generic)
+    # applies uniformly and auth failures are not misclassified as KabuConnectionError.
+    if isinstance(body, dict) and "Code" not in body and "ResultCode" in body:
+        body = {**body, "Code": body["ResultCode"]}
+
     check_response(body, resp.status_code)
 
     token = body.get("Token") or ""
