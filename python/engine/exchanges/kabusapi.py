@@ -106,12 +106,18 @@ class KabuStationAdapter:
         if self._token is None:
             raise RuntimeError("login required before subscribe")
         symbol, exchange = self._parse_instrument_id(instrument_id)
+        # B4-4e Medium ①: 既存購読 symbol を再 subscribe したときの PUT 失敗で
+        # 既存 registration / processor を巻き戻して破壊しないよう、
+        # was_registered を記録して新規追加分のみ rollback する。
+        was_registered = (symbol, exchange) in self._register_set
         self._register_set.register(symbol, exchange)
         ok = await self._put_register(self._register_set.all_symbols())
         if not ok:
-            self._register_set.unregister(symbol, exchange)
+            if not was_registered:
+                self._register_set.unregister(symbol, exchange)
             raise RuntimeError(f"register failed: {symbol}")
-        self._processors[symbol] = KabuPushFrameProcessor(symbol=symbol)
+        if symbol not in self._processors:
+            self._processors[symbol] = KabuPushFrameProcessor(symbol=symbol)
         if self._ws_task is None or self._ws_task.done():
             self._ws_task = asyncio.create_task(
                 kabusapi_ws.connect(
@@ -157,10 +163,44 @@ class KabuStationAdapter:
         if self._token is None:
             return
         symbol, exchange = self._parse_instrument_id(instrument_id)
+        # B4-4e Medium ②: PUT 成功後に local state を commit する。
+        # 先に pop すると PUT 失敗で server(登録残)/local(未登録) skew が発生する。
+        if (symbol, exchange) not in self._register_set:
+            return
+        remaining = [s for s in self._register_set.all_symbols() if s != (symbol, exchange)]
+        ok = await self._put_register(remaining)
+        if not ok:
+            raise RuntimeError(f"unregister failed: {symbol}")
         self._register_set.unregister(symbol, exchange)
         self._processors.pop(symbol, None)
-        await self._put_register(self._register_set.all_symbols())
 
     async def events(self) -> AsyncIterator[LiveEvent]:
+        # B4-4e High: WS task が死んだら永久 _queue.get() で silent outage に
+        # ならないよう、queue が空 + task 終了状態なら例外を伝播する。
         while True:
-            yield await self._queue.get()
+            if self._queue.empty() and self._ws_task is not None and self._ws_task.done():
+                exc = self._ws_task.exception()
+                if exc is not None:
+                    raise exc
+                return
+            get_task = asyncio.ensure_future(self._queue.get())
+            try:
+                if self._ws_task is None or self._ws_task.done():
+                    yield await get_task
+                    continue
+                done, _pending = await asyncio.wait(
+                    {get_task, self._ws_task},
+                    return_when=asyncio.FIRST_COMPLETED,
+                )
+                if get_task in done:
+                    yield get_task.result()
+                else:
+                    get_task.cancel()
+                    exc = self._ws_task.exception()
+                    if exc is not None:
+                        raise exc
+                    return
+            except BaseException:
+                if not get_task.done():
+                    get_task.cancel()
+                raise
