@@ -526,13 +526,26 @@ class TickerEventWsHub:
                 self._on_connect_cbs[key] = on_connect
             if on_close is not None:
                 self._on_close_cbs[key] = on_close
-            if (
+            need_restart = (
                 self._runner_task is None
                 or self._runner_task.done()
                 or self._stop_event.is_set()
-            ):
+            )
+            if need_restart:
+                # Bug A: 旧 runner_task がまだ park 中 (done()==False) のまま
+                # 新 task を即作ると WS が 2 本並行 alive になる
+                # (立花 EVENT WS は (session, p_issue_code) 単位で 1 接続のみ許容)。
+                # → 新 task は旧 task の終了を await してから ws.run() に進む。
+                # ここで await はしない (subscribe レイテンシ確保 + caller 側で
+                # idle_event を解放するパターンとの deadlock 回避)。
+                predecessor = self._runner_task
+                if predecessor is not None and not predecessor.done():
+                    # 旧 stop_event は既に set (unsubscribe 経由) のはずだが、念のため。
+                    self._stop_event.set()
                 self._stop_event = asyncio.Event()
-                self._runner_task = asyncio.create_task(self._run())
+                self._runner_task = asyncio.create_task(
+                    self._run(predecessor=predecessor)
+                )
 
     async def unsubscribe(self, key: str) -> None:
         """``key`` の subscriber を外す。最後の 1 つが外れたら WS タスクを停止する。
@@ -576,17 +589,52 @@ class TickerEventWsHub:
                 except (asyncio.CancelledError, Exception):
                     pass
 
-    async def _run(self) -> None:
-        ws = TachibanaEventWs(
-            self._ws_url, self._stop_event,
-            ticker=self._ticker, proxy=self._proxy,
-        )
-        try:
-            await ws.run(self._dispatch, on_connect=self._on_ws_connect)
-        except Exception:
-            log.exception(
-                "TickerEventWsHub[%s]: WS run loop raised", self._ticker,
+    async def _run(self, *, predecessor: asyncio.Task | None = None) -> None:
+        # Bug A fix: 前任 runner が park 中なら、その終了を待ってから ws.run() を開始。
+        # こうすることで「旧 WS が __aexit__ で alive set から抜けてから新 WS が
+        # __aenter__ で alive set に入る」順序が保証され、peak_alive == 1 になる。
+        if predecessor is not None and not predecessor.done():
+            try:
+                await asyncio.wait_for(predecessor, timeout=5.0)
+            except asyncio.TimeoutError:
+                predecessor.cancel()
+                try:
+                    await predecessor
+                except (asyncio.CancelledError, Exception):
+                    pass
+            except (asyncio.CancelledError, Exception):
+                # 旧 runner 側の例外は log 済みなのでここでは飲む。
+                pass
+
+        # Bug B fix: ws.run() が hard error を raise しても、subscriber が残り
+        # stop_event が立っていない限り backoff 付きで restart する。
+        # 旧実装は単発 try/except で silent dead (subscriber 残ったまま無通知終了)。
+        backoff_idx = 0
+        while not self._stop_event.is_set() and self._subscribers:
+            ws = TachibanaEventWs(
+                self._ws_url, self._stop_event,
+                ticker=self._ticker, proxy=self._proxy,
             )
+            try:
+                await ws.run(self._dispatch, on_connect=self._on_ws_connect)
+            except Exception:
+                log.exception(
+                    "TickerEventWsHub[%s]: WS run loop raised; will restart if subscribers remain",
+                    self._ticker,
+                )
+            else:
+                # 正常終了 (stop_event 経由) はループ条件で抜ける。
+                continue
+            # 例外で抜けた場合のみ backoff sleep。stop_event で interruptible に。
+            if self._stop_event.is_set() or not self._subscribers:
+                break
+            delay = _BACKOFF_CAPS[min(backoff_idx, len(_BACKOFF_CAPS) - 1)]
+            backoff_idx += 1
+            try:
+                await asyncio.wait_for(self._stop_event.wait(), timeout=delay)
+                # stop_event が立った → ループ条件で抜ける。
+            except asyncio.TimeoutError:
+                pass  # backoff 満了 → 次の試行へ。
 
     def _on_ws_connect(self) -> None:
         """WS (再)接続毎に全 subscriber の on_connect を順に発火する。"""
