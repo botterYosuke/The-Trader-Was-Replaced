@@ -2,7 +2,7 @@
 
 リポジトリ: `C:\Users\sasai\Documents\The-Trader-Was-Replaced`
 ブランチ: `impl/8-venue-login-skeleton`
-HEAD: `9ea9f17 fix(tachibana): restart EVENT WS reader after stop in TickerEventWsHub (Phase 8 §3.2 A3.2b)`
+HEAD: `daaac07 fix(tachibana): serialize EVENT WS reconnect on subscribe-after-stop (Phase 8 §3.2 A3.2b)`
 
 ## 完了済み
 
@@ -23,16 +23,14 @@ HEAD: `9ea9f17 fix(tachibana): restart EVENT WS reader after stop in TickerEvent
 | **A3.2b (完了) ✅** | `7be3282` | `TickerEventWsHub` 未テスト挙動 5 件 append (duplicate subscribe / fanout / aclose+on_close / on_connect 再発火 / dispatch 例外隔離) | test_tachibana_ws 24 passed, tachibana scope 156 passed |
 | **A3.2a fix ✅** | `8d19926` + `1b91f3c` | `TachibanaEventWs._run_loop` の websockets normal-close を `ConnectionClosedOK` raise に変更 (reconnect storm 防止) + `_connect` で proxy kwarg を常時渡す (None でも明示) | test_tachibana_ws 26 passed (RED 2 件 → GREEN) |
 | **A3.2b race fix ✅** | `2d69145` + `9ea9f17` | `TickerEventWsHub` の subscribe-after-stop race を修正: 全 unsubscribe で reader task を停止した後の再 subscribe で reader が起動し直されず frame が届かない問題を、subscribe 時の reader 再起動で解消 (RED→GREEN) | test_tachibana_ws 27 passed / tachibana scope 159 passed |
+| **A3.3 ✅** | `af37286` → `daaac07` | `TachibanaAdapter.subscribe` / `unsubscribe` / `events` を `TickerEventWsHub` + `FdFrameProcessor` に配線。logout で全 hub aclose + registry clear。EVENT WS reconnect serialize + `_run` silent death restart | tachibana scope GREEN |
+| **B1 dirty チェック ✅** | (この session) | 引継ぎ指示にあった dirty 2 件 (`tachibana_ws.py` +74/-13, `test_tachibana_ws.py` +159) は `3f8cab2` / `263537a` で既に commit 済み。working tree clean を確認 | — |
 
 > note: 同 session で想定外 commit (`60b7bc0` / `eb13ed2` = `.claude/skills/zed/src/` 1.5M 行) を rebase --onto で drop。`c5215df ｓ` は `16d7099 zed` として再積み (149 行 SKILL.md add)。保険 branch `backup/pre-rebase-1519f69` 残置 (要らなければ `git branch -D`)。
 
 ## 残タスク
 
-6 件:
-
-- **A3.3** `TachibanaAdapter.subscribe` / `unsubscribe` / `events` 配線
-- **A3.3** `TachibanaAdapter.subscribe` / `unsubscribe` / `events` 配線
-- **B1** `kabusapi.login` (env + `/token`)
+- **B1** `kabusapi.login` (env + `/token`) ← 次着手
 - **B2** `kabusapi.fetch_instruments` (lazy = 空 list、subscribe 時 GET `/symbol`)
 - **B3** `kabusapi_register.RegisterSet` (50-symbol LRU)
 - **B4** `kabusapi_ws.py` + adapter (ping_interval=None 必須)
