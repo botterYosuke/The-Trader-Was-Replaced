@@ -251,6 +251,24 @@ egui の中で `state.buffer` のような大きい String を編集するとき
 - **ウィンドウがドラッグでカーソルから逃げる**: 規約 5 の scale 倍を忘れている。
 - **テキストが更新されない**: marker component を貼り忘れ、または親子関係の貼り
   忘れ（`add_child` か `set_parent` のどちらかが必要）。
+- **bevy_cosmic_edit の unfocused field (TextEdit / TextEdit2d) が黒い箱で文字が見えない**:
+  通常 2 つの独立した罠が同時に起きる。背景を一時的に `CosmicBackgroundColor(rgb(1,0,0))`
+  にして切り分けると速い：赤背景が出れば render は走っており文字色 or layout の問題、
+  出なければ render 自体が回ってない別問題（logical_size==0 など）。
+  - 罠 A: **`DefaultAttrs` が default のまま** → `Attrs::new()` で `color_opt = None`、
+    `render_texture` の fallback `rgb(0,0,0)` で黒文字になり背景に溶ける。
+    `with_text`/`set_text` に attrs を渡すだけでは効かない。spawn 時に
+    `DefaultAttrs(AttrsOwned::new(Attrs::new().color(CosmicColor::rgb(220,220,220))))`
+    を明示挿入する（`strategy_editor.rs:163-165` 参照）。required components の
+    default が黒なのでオーバーライドが必要。
+  - 罠 B: **Node の height が DPI 倍化された line_height より小さい** → `set_initial_scale`
+    が DPI 2x で `Metrics(12, 14)` を `(24, 28)` に倍化する一方、`set_buffer_size` は
+    `ComputedNode.logical_size()` で buffer height を決める。例えば `Val::Px(18.0)` の
+    row だと logical 18 < line_height 28 となり `shape_until_scroll` が `layout_runs=0`
+    を返して glyph が生成されない（バッファに text はあるのに表示されない）。
+    DPI 2x 想定で `Val::Px(30.0)` 以上にする、または初期 `Metrics(9, 11)` のように
+    小さくする。診断は buffer の `layout_runs().count()` / `metrics()` / `size()` を
+    `info!` で出す。`scenario_startup_panel.rs:119-127` が修正例。
 - **gRPC コールバックから Bevy world を触りたい**: 触れない。
   `tokio::sync::mpsc::UnboundedSender` でメッセージを送り、Bevy 側の system
   （`status_update_system` 参照）で `try_recv` → `ResMut` に反映する。
