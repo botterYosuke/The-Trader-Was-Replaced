@@ -3,15 +3,15 @@
 Phase 8 §1.3 で定義した、venue 非依存の adapter インターフェース。
 Tachibana / kabu 等の具体実装は後続 step で追加する。
 
-LiveEvent は初期スタブ（object alias）。KlineUpdate / TradesUpdate /
-DepthUpdate への置き換えは Phase 8 後半（reducer 実装時）で行う。
+LiveEvent は KlineUpdate / TradesUpdate / DepthUpdate の discriminated
+union（kind discriminator）。
 """
 
 from __future__ import annotations
 
-from typing import AsyncIterator, Literal, Protocol, runtime_checkable
+from typing import Annotated, AsyncIterator, Literal, Protocol, Union, runtime_checkable
 
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 
 # --- 基本型エイリアス ---
 
@@ -54,13 +54,66 @@ class InstrumentRaw(BaseModel):
     model_config = {"frozen": True}
 
 
-# --- LiveEvent スタブ ---
+# --- Market data event union ---
 
-LiveEvent = object
-"""price / trades / depth update の union 型。
 
-Phase 8 初期段階のスタブ。後続 step（reducer 実装時）で
-KlineUpdate | TradesUpdate | DepthUpdate に置き換える。
+class KlineUpdate(BaseModel):
+    """OHLCV bar update（Replay の KlineUpdate と同形式）。"""
+
+    kind: Literal["kline"]
+    instrument_id: InstrumentId
+    ts_ns: int
+    open: float
+    high: float
+    low: float
+    close: float
+    volume: float
+
+    model_config = {"frozen": True}
+
+
+class TradesUpdate(BaseModel):
+    """単一約定 tick。"""
+
+    kind: Literal["trades"]
+    instrument_id: InstrumentId
+    ts_ns: int
+    price: float
+    size: float
+    aggressor_side: Literal["buy", "sell"]
+
+    model_config = {"frozen": True}
+
+
+class DepthLevel(BaseModel):
+    """板の 1 段（price/size のみ）。"""
+
+    price: float
+    size: float
+
+    model_config = {"frozen": True}
+
+
+class DepthUpdate(BaseModel):
+    """板更新（bids/asks 各 0-10 段、空も許容）。"""
+
+    kind: Literal["depth"]
+    instrument_id: InstrumentId
+    ts_ns: int
+    bids: list[DepthLevel]
+    asks: list[DepthLevel]
+
+    model_config = {"frozen": True}
+
+
+LiveEvent = Annotated[
+    Union[KlineUpdate, TradesUpdate, DepthUpdate],
+    Field(discriminator="kind"),
+]
+"""price / trades / depth update の discriminated union（kind discriminator）。
+
+reducer 側は `kind` フィールドで分岐する。pydantic v2 の
+`TypeAdapter(LiveEvent).validate_python(...)` でも分岐可能。
 """
 
 

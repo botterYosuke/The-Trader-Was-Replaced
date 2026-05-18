@@ -96,11 +96,3 @@ def test_channel_literal_values() -> None:
     """Channel Literal の全許容値を runtime で列挙確認。"""
     from typing import get_args
     assert set(get_args(Channel)) == {"price", "trades", "depth"}
-
-
-def test_live_event_stub_is_object_alias() -> None:
-    """LiveEvent は Phase 8 初期スタブ（object alias）。
-
-    後続 step で Union 型に置き換える契約をテストで明示。
-    """
-    assert LiveEvent is object
