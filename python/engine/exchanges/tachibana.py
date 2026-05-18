@@ -96,6 +96,10 @@ class TachibanaAdapter:
         )
 
     async def logout(self) -> None:
+        for hub in list(self._hubs.values()):
+            await hub.aclose()
+        self._hubs.clear()
+        self._processors.clear()
         self._session = None
 
     async def fetch_instruments(self) -> list[InstrumentRaw]:
