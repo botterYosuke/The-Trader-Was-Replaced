@@ -240,7 +240,227 @@ class FdFrameProcessor:
         return fallback_ms
 
 
+# ---------------------------------------------------------------------------
+# TachibanaEventWs — async WebSocket connection manager (Phase 8 §3.2 A3.2a)
+# ---------------------------------------------------------------------------
+
+import asyncio
+from collections import Counter
+
+# websockets is an optional dependency at import time so that unit tests
+# that only exercise FdFrameProcessor can run without it.
+try:
+    import websockets  # type: ignore[import-untyped]
+    from websockets.exceptions import ConnectionClosed  # type: ignore[import-untyped]
+    _HAS_WEBSOCKETS = True
+except ImportError:  # pragma: no cover
+    websockets = None  # type: ignore[assignment]
+    ConnectionClosed = Exception  # type: ignore[assignment,misc]
+    _HAS_WEBSOCKETS = False
+
+# How long to wait for any frame (KP or data) before treating the connection
+# as dead.  12 s = KP_INTERVAL(5) * 2 + 2 s jitter (plan §T5 M2 修正).
+_DEAD_FRAME_TIMEOUT_S: float = 12.0
+
+# Exponential back-off for reconnects: [1, 2, 4, 8, 16, 30] seconds.
+_BACKOFF_CAPS: tuple[float, ...] = (1.0, 2.0, 4.0, 8.0, 16.0, 30.0)
+
+# Interval between frame-count stat log lines (§6 O1). Module-level so tests can patch.
+_FRAME_STATS_INTERVAL_S: float = 25.0
+
+
+class TachibanaEventWs:
+    """Async WS connection manager that dispatches parsed EVENT frames.
+
+    Usage (inside stream_trades / stream_depth)::
+
+        ws = TachibanaEventWs(url, stop_event, ticker="7203")
+        await ws.run(callback)
+
+    The loop handles reconnects internally with exponential back-off and a
+    dead-frame watchdog (no frame within ``_DEAD_FRAME_TIMEOUT_S`` → tear down
+    and reconnect). It exits cleanly when ``stop_event`` is set.
+
+    ``stop_event`` must be an ``asyncio.Event`` that the caller sets to
+    request graceful shutdown.
+    """
+
+    def __init__(
+        self,
+        url: str,
+        stop_event: asyncio.Event,
+        *,
+        ticker: str,
+        venue: str = "tachibana",
+        proxy: str | None = None,
+    ) -> None:
+        from .tachibana_codec import decode_response_body, parse_event_frame
+
+        self._url = url
+        self._stop = stop_event
+        self._ticker = ticker
+        self._venue = venue
+        self._proxy = proxy
+        self._decode = decode_response_body
+        self._parse = parse_event_frame
+        self._conn_count = 0
+
+    async def run(
+        self,
+        callback: Any,
+        *,
+        on_connect: Any | None = None,
+    ) -> None:
+        """Drive the WS loop, calling ``callback(frame_type, fields, recv_ts_ms)``
+        for each received frame.  Returns when ``stop_event`` is set.
+
+        ``on_connect`` is an optional zero-argument callable invoked at the start
+        of each connection attempt (before the handshake), including reconnects.
+        Use it to reset per-connection state (e.g. rate-limit dicts).
+        """
+        if not _HAS_WEBSOCKETS:
+            raise RuntimeError(
+                "tachibana_ws.TachibanaEventWs requires the 'websockets' package"
+            )
+        backoff_idx = 0
+        while not self._stop.is_set():
+            self._conn_count += 1
+            if on_connect is not None:
+                on_connect()
+            try:
+                await self._connect_once(callback)
+                backoff_idx = 0
+            except asyncio.CancelledError:
+                raise
+            except Exception as exc:
+                if self._stop.is_set():
+                    return
+                backoff = _BACKOFF_CAPS[min(backoff_idx, len(_BACKOFF_CAPS) - 1)]
+                backoff_idx += 1
+                log.warning(
+                    "tachibana ws: %s disconnected (%s); reconnecting in %.2f s",
+                    self._ticker, exc, backoff,
+                )
+                try:
+                    await asyncio.wait_for(
+                        self._stop.wait(), timeout=backoff
+                    )
+                except asyncio.TimeoutError:
+                    pass
+
+    async def _connect_once(self, callback: Any) -> None:
+        connect_kwargs: dict[str, Any] = {"ping_interval": None}
+        if self._proxy is not None:
+            connect_kwargs["proxy"] = self._proxy
+        async with websockets.connect(self._url, **connect_kwargs) as ws:
+            log.info(
+                "tachibana ws: connected ticker=%s conn=#%d",
+                self._ticker, self._conn_count,
+            )
+
+            loop = asyncio.get_event_loop()
+            last_frame_t: list[float] = [loop.time()]
+            dead_event = asyncio.Event()
+            # Frame counters for observability (§6 O1). Counter() avoids
+            # KeyError for unknown evt_cmd values.
+            _frame_counts: Counter[str] = Counter()
+            _last_stats_t: list[float] = [loop.time()]
+
+            async def _recv_loop() -> None:
+                async for raw in ws:
+                    last_frame_t[0] = loop.time()
+                    recv_ts_ms = int(datetime.now(timezone.utc).timestamp() * 1000)
+                    # Shift-JIS decode for bytes payload; pass str through decode_response_body.
+                    if isinstance(raw, bytes):
+                        text = self._decode(raw)
+                    else:
+                        text = raw
+
+                    pairs = self._parse(text)
+                    fields: dict[str, str] = {k: v for k, v in pairs}
+
+                    evt_cmd = fields.get("p_cmd", "")
+                    if evt_cmd == "KP":
+                        _frame_counts["KP"] += 1
+                        log.debug("tachibana ws: KP recv %s", self._ticker)
+                        await callback("KP", fields, recv_ts_ms)
+                    elif evt_cmd == "FD":
+                        _frame_counts["FD"] += 1
+                        await callback("FD", fields, recv_ts_ms)
+                    elif evt_cmd == "ST":
+                        _frame_counts["ST"] += 1
+                        p_errno = fields.get("p_errno", "?")
+                        log.warning(
+                            "tachibana ws: ST frame ticker=%s p_errno=%s (total ST=%d)",
+                            self._ticker, p_errno, _frame_counts["ST"],
+                        )
+                        await callback("ST", fields, recv_ts_ms)
+                    else:
+                        _frame_counts["other"] += 1
+                        log.debug(
+                            "tachibana ws: unknown evt_cmd=%r ticker=%s",
+                            evt_cmd, self._ticker,
+                        )
+
+                    now = loop.time()
+                    if now - _last_stats_t[0] >= _FRAME_STATS_INTERVAL_S:
+                        _last_stats_t[0] = now
+                        log.info(
+                            "tachibana ws: frame stats ticker=%s "
+                            "FD=%d KP=%d ST=%d other=%d (conn #%d cumulative)",
+                            self._ticker,
+                            _frame_counts["FD"], _frame_counts["KP"],
+                            _frame_counts["ST"], _frame_counts["other"],
+                            self._conn_count,
+                        )
+
+                    if self._stop.is_set():
+                        return
+
+            async def _watchdog() -> None:
+                # Adaptive check interval: at most 1s, at most half the timeout.
+                interval = min(1.0, _DEAD_FRAME_TIMEOUT_S / 2.0)
+                while not self._stop.is_set():
+                    await asyncio.sleep(interval)
+                    elapsed = loop.time() - last_frame_t[0]
+                    if elapsed >= _DEAD_FRAME_TIMEOUT_S:
+                        log.warning(
+                            "tachibana ws: %s dead-frame timeout (%.1f s); reconnecting. "
+                            "Frame counts: FD=%d KP=%d ST=%d other=%d",
+                            self._ticker, elapsed,
+                            _frame_counts["FD"], _frame_counts["KP"],
+                            _frame_counts["ST"], _frame_counts["other"],
+                        )
+                        dead_event.set()
+                        return
+
+            recv_task = asyncio.create_task(_recv_loop())
+            watchdog_task = asyncio.create_task(_watchdog())
+            stop_task = asyncio.create_task(self._stop.wait())
+
+            done, pending = await asyncio.wait(
+                [recv_task, watchdog_task, stop_task],
+                return_when=asyncio.FIRST_COMPLETED,
+            )
+            for t in pending:
+                t.cancel()
+                try:
+                    await t
+                except (asyncio.CancelledError, Exception):
+                    pass
+
+            if dead_event.is_set():
+                raise ConnectionError("dead-frame timeout")
+
+            # Re-raise any unhandled exception from the recv loop.
+            if recv_task in done:
+                exc = recv_task.exception()
+                if exc is not None:
+                    raise exc
+
+
 __all__ = [
     "FdFrameProcessor",
+    "TachibanaEventWs",
     "is_market_open",
 ]
