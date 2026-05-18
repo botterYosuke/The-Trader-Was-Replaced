@@ -247,3 +247,94 @@ async def test_put_register_returns_false_on_nonzero_result_code(
     await adapter.login(VenueCredentials(credentials_source="env"))
     ok = await adapter._put_register([("7203", 1)])
     assert ok is False
+
+
+# ---------------------------------------------------------------------------
+# Phase 8 §3.2 B4-4b: subscribe / unsubscribe 配線
+# Contract:
+#   - instrument_id "<sym>.TSE" を split → (sym, 1) で RegisterSet.register
+#     → _put_register(all_symbols()) → _processors[sym] = KabuPushFrameProcessor
+#   - "<sym>.OSE" 等 TSE 以外 suffix は ValueError (MVP: TSE=1 固定)
+#   - login 前の subscribe は RuntimeError
+#   - unsubscribe: RegisterSet.unregister → _put_register(残存銘柄で再送)
+# ---------------------------------------------------------------------------
+
+
+async def test_subscribe_calls_put_register_and_creates_processor(
+    monkeypatch, httpx_mock: HTTPXMock
+):
+    monkeypatch.setenv("DEV_KABU_API_PASSWORD", "pw")
+    httpx_mock.add_response(
+        url=endpoint("token", env="verify"),
+        method="POST",
+        json={"ResultCode": 0, "Token": "tkn"},
+    )
+    httpx_mock.add_response(
+        url=endpoint("register", env="verify"),
+        method="PUT",
+        json={"ResultCode": 0, "RegistList": [{"Symbol": "7203", "Exchange": 1}]},
+    )
+
+    adapter = KabuStationAdapter(environment="verify")
+    await adapter.login(VenueCredentials(credentials_source="env"))
+    await adapter.subscribe("7203.TSE", {"trades", "depth"})
+
+    import json as _json
+    put_reqs = [r for r in httpx_mock.get_requests() if r.method == "PUT"]
+    assert len(put_reqs) == 1
+    body = _json.loads(put_reqs[0].content)
+    assert body == {"Symbols": [{"Symbol": "7203", "Exchange": 1}]}
+    assert "7203" in adapter._processors
+    assert ("7203", 1) in adapter._register_set
+
+
+async def test_subscribe_then_unsubscribe_replays_remaining_symbols(
+    monkeypatch, httpx_mock: HTTPXMock
+):
+    monkeypatch.setenv("DEV_KABU_API_PASSWORD", "pw")
+    httpx_mock.add_response(
+        url=endpoint("token", env="verify"),
+        method="POST",
+        json={"ResultCode": 0, "Token": "tkn"},
+    )
+    # 3 回分の PUT /register response を仕込む (subscribe x2 + unsubscribe x1)
+    for _ in range(3):
+        httpx_mock.add_response(
+            url=endpoint("register", env="verify"),
+            method="PUT",
+            json={"ResultCode": 0, "RegistList": []},
+        )
+
+    adapter = KabuStationAdapter(environment="verify")
+    await adapter.login(VenueCredentials(credentials_source="env"))
+    await adapter.subscribe("7203.TSE", {"trades"})
+    await adapter.subscribe("9984.TSE", {"trades"})
+    await adapter.unsubscribe("7203.TSE")
+
+    import json as _json
+    put_reqs = [r for r in httpx_mock.get_requests() if r.method == "PUT"]
+    assert len(put_reqs) == 3
+    last_body = _json.loads(put_reqs[-1].content)
+    assert last_body == {"Symbols": [{"Symbol": "9984", "Exchange": 1}]}
+    assert "7203" not in adapter._processors
+    assert "9984" in adapter._processors
+
+
+async def test_subscribe_rejects_non_tse_suffix(monkeypatch, httpx_mock: HTTPXMock):
+    monkeypatch.setenv("DEV_KABU_API_PASSWORD", "pw")
+    httpx_mock.add_response(
+        url=endpoint("token", env="verify"),
+        method="POST",
+        json={"ResultCode": 0, "Token": "tkn"},
+    )
+
+    adapter = KabuStationAdapter(environment="verify")
+    await adapter.login(VenueCredentials(credentials_source="env"))
+    with pytest.raises(ValueError):
+        await adapter.subscribe("7203.OSE", {"trades"})
+
+
+async def test_subscribe_without_login_raises_runtime_error():
+    adapter = KabuStationAdapter(environment="verify")
+    with pytest.raises(RuntimeError, match="login"):
+        await adapter.subscribe("7203.TSE", {"trades"})
