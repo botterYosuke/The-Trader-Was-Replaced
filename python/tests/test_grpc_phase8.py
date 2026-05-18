@@ -8,6 +8,7 @@ from concurrent import futures
 import grpc
 
 from engine.core import DataEngine
+from engine.live.adapter import DepthLevel
 from engine.live.mock_adapter import MockVenueAdapter
 from engine.live.state_machine import VenueStateMachine
 from engine.mode_manager import ModeManager
@@ -426,3 +427,71 @@ def test_get_state_live_last_error_is_none_when_no_error(
     resp = stub.GetState(engine_pb2.GetStateRequest(token=token))
     payload = json.loads(resp.json_data)
     assert payload["live_last_error"] is None
+
+
+def test_get_state_exposes_last_prices_from_live_cache(
+    phase8_grpc_server_with_live,
+):
+    """Live mode で DepthUpdate(bid=100, ask=102) を inject すると、
+    GetState の state.last_prices["7203.TSE"] == 101.0 が返る (quote_mid)。"""
+    port, token, engine, venue_sm, mm, servicer = phase8_grpc_server_with_live
+    venue_sm.transition_to("AUTHENTICATING")
+    venue_sm.transition_to("CONNECTED")
+    stub = _stub(port)
+
+    resp_mode = stub.SetExecutionMode(
+        engine_pb2.SetExecutionModeRequest(mode="LiveManual", token=token)
+    )
+    assert resp_mode.success is True
+    assert servicer._live_price_cache is not None
+
+    resp_sub = stub.SubscribeMarketData(
+        engine_pb2.SubscribeRequest(
+            instrument_id="7203.TSE",
+            channels=["trades", "depth"],
+            token=token,
+        )
+    )
+    assert resp_sub.success is True
+
+    # adapter は LiveRunner 経由で subscribe 済み。emit_depth_snapshot は
+    # adapter._queue.put_nowait なので、必ず servicer._live_loop 上で実行する
+    # (adapter._queue が attach されている loop と揃える)。
+    adapter = servicer._live_runner._adapter
+    fut = asyncio.run_coroutine_threadsafe(
+        _emit_depth_async(adapter, "7203.TSE", bid=100.0, ask=102.0),
+        servicer._live_loop,
+    )
+    fut.result(timeout=2.0)
+
+    # runner -> bus -> cache の伝播待ち (interval_ns=60s だが cache は bus
+    # subscriber 直結なので即時。念のため少し待つ)
+    import time as _time
+    deadline = _time.time() + 2.0
+    while _time.time() < deadline:
+        snap = servicer._live_price_cache.snapshot()
+        if snap.get("7203.TSE") == 101.0:
+            break
+        _time.sleep(0.05)
+
+    resp = stub.GetState(engine_pb2.GetStateRequest(token=token))
+    payload = json.loads(resp.json_data)
+    assert payload["last_prices"]["7203.TSE"] == 101.0
+
+
+async def _emit_depth_async(adapter, instrument_id: str, bid: float, ask: float) -> None:
+    adapter.emit_depth_snapshot(
+        instrument_id=instrument_id,
+        ts_ns=1_000_000_000,
+        bids=[DepthLevel(price=bid, size=1)],
+        asks=[DepthLevel(price=ask, size=1)],
+    )
+
+
+def test_get_state_last_prices_empty_in_replay_mode(phase8_grpc_server):
+    """Replay モード (cache 無し) では last_prices は空 dict。"""
+    port, token, *_ = phase8_grpc_server
+    stub = _stub(port)
+    resp = stub.GetState(engine_pb2.GetStateRequest(token=token))
+    payload = json.loads(resp.json_data)
+    assert payload["last_prices"] == {}

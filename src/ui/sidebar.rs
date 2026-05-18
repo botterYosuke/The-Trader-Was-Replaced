@@ -1,12 +1,12 @@
 use crate::trading::{
-    ExecutionMode, ExecutionModeRes, SelectedSymbol, Tickers, TransportCommand,
-    TransportCommandSender,
+    ExecutionMode, ExecutionModeRes, LastPrices, SelectedSymbol, Tickers, TradingData,
+    TransportCommand, TransportCommandSender,
 };
 use crate::ui::components::{
     InstrumentRegistry, PanelKind, PanelSpawnRequested, PanelSpawnSource,
     SidebarAddInstrumentButton, SidebarInstrumentRemoveButton, SidebarInstrumentRow,
-    SidebarInstrumentsList, SidebarInstrumentsWarning, SidebarRoot, SidebarTickerRow,
-    SidebarTickersList, SidebarTickersScrollOffset, SidebarTickersSearchBox,
+    SidebarInstrumentsList, SidebarInstrumentsWarning, SidebarRoot, SidebarTickerPriceText,
+    SidebarTickerRow, SidebarTickersList, SidebarTickersScrollOffset, SidebarTickersSearchBox,
     SidebarTickersSearchState, SidebarTickersSearchText, WindowRoot,
 };
 use crate::ui::instrument_picker::spawn_picker_dropdown;
@@ -379,6 +379,7 @@ pub fn instrument_remove_button_system(
 
 const TICKER_ROW_NORMAL: Color = Color::srgba(0.08, 0.08, 0.13, 1.0);
 const TICKER_ROW_SELECTED: Color = Color::srgba(0.20, 0.32, 0.50, 1.0);
+const TICKER_PRICE_TEXT: Color = Color::srgb(0.70, 0.85, 0.95);
 
 /// Pure filter helper kept testable in isolation. Case-insensitive substring
 /// match against id, with empty query meaning "all".
@@ -488,11 +489,38 @@ pub fn update_tickers_list_system(
                     } else {
                         format!("{}  {}", id, name)
                     };
+                    // Label (left-aligned, takes remaining horizontal space).
                     row.spawn((
-                        Text::new(label),
-                        TextFont { font_size: 11.0, ..default() },
-                        TextColor(ROW_TEXT),
-                    ));
+                        Node {
+                            flex_grow: 1.0,
+                            overflow: Overflow::clip_x(),
+                            ..default()
+                        },
+                    ))
+                    .with_children(|l| {
+                        l.spawn((
+                            Text::new(label),
+                            TextFont { font_size: 11.0, ..default() },
+                            TextColor(ROW_TEXT),
+                        ));
+                    });
+                    // Price column (right-aligned, fixed 70px).
+                    row.spawn((
+                        Node {
+                            width: Val::Px(70.0),
+                            justify_content: JustifyContent::FlexEnd,
+                            align_items: AlignItems::Center,
+                            ..default()
+                        },
+                    ))
+                    .with_children(|p| {
+                        p.spawn((
+                            Text::new(""),
+                            TextFont { font_size: 11.0, ..default() },
+                            TextColor(TICKER_PRICE_TEXT),
+                            SidebarTickerPriceText { instrument_id: id.clone() },
+                        ));
+                    });
                 });
         }
     });
@@ -578,6 +606,48 @@ pub fn tickers_search_text_sync_system(
     }
     if color.0 != c {
         color.0 = c;
+    }
+}
+
+/// Format a `LastPrices` / `TradingData.close` value for the sidebar price
+/// column. `None` → empty string so the column visually clears; otherwise
+/// fixed 2-decimal formatting (matches the sub-yen tick granularity of the
+/// venues we currently target).
+pub fn format_price(value: Option<f64>) -> String {
+    match value {
+        Some(v) => format!("{:.2}", v),
+        None => String::new(),
+    }
+}
+
+/// Per-frame refresh of each ticker row's last-price text. Writes are
+/// guarded so unchanged rows do not retrigger Bevy's change-detection.
+/// - Live*: `LastPrices.map.get(&id)` → format
+/// - Replay: `Some(TradingData.close)` only when `SelectedSymbol.id == id`,
+///   otherwise empty
+pub fn update_ticker_price_text_system(
+    exec_mode: Res<ExecutionModeRes>,
+    last_prices: Res<LastPrices>,
+    selected: Res<SelectedSymbol>,
+    trading: Res<TradingData>,
+    mut q: Query<(&SidebarTickerPriceText, &mut Text)>,
+) {
+    let is_replay = matches!(exec_mode.mode, ExecutionMode::Replay);
+    let selected_id = selected.id.as_deref();
+    for (marker, mut text) in &mut q {
+        let value: Option<f64> = if is_replay {
+            if selected_id == Some(marker.instrument_id.as_str()) {
+                trading.close.map(|c| c as f64)
+            } else {
+                None
+            }
+        } else {
+            last_prices.map.get(&marker.instrument_id).copied()
+        };
+        let s = format_price(value);
+        if text.0 != s {
+            text.0 = s;
+        }
     }
 }
 
@@ -730,5 +800,14 @@ mod tests {
         // Universe smaller than the visible window → always 0.
         assert_eq!(clamp_scroll_offset(5, 3, 18), 0);
         assert_eq!(clamp_scroll_offset(0, 0, 18), 0);
+    }
+
+    #[test]
+    fn format_price_none_is_empty_and_some_is_two_decimals() {
+        assert_eq!(format_price(None), "");
+        assert_eq!(format_price(Some(0.0)), "0.00");
+        assert_eq!(format_price(Some(1234.5)), "1234.50");
+        assert_eq!(format_price(Some(0.001)), "0.00");
+        assert_eq!(format_price(Some(101.567)), "101.57");
     }
 }

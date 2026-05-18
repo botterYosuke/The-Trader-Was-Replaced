@@ -61,6 +61,7 @@ class TradingState(_BoundaryModel):
     instruments_loaded: int = Field(0, ge=0, description="ListInstruments で読み込んだ銘柄件数 (Rust BackendStatusUpdate::VenueChanged.instruments_loaded 配線元)")
 
     live_last_error: Optional[str] = Field(None, description="Live runner/bridge の最終エラー (type名: message)")
+    last_prices: dict[str, float] = Field(default_factory=dict, description="Live モードの最新価格 snapshot (quote_mid 優先 / last_trade fallback)。Replay モードでは常に空 dict。")
 
     @field_validator("history")
     @classmethod

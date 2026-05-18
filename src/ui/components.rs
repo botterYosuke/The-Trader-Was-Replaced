@@ -172,6 +172,14 @@ pub struct SidebarTickerRow {
     pub instrument_id: String,
 }
 
+/// Marker for the per-row "last price" Text child inside a `SidebarTickerRow`.
+/// The id is duplicated here so the update system can match against
+/// `LastPrices.map` / `SelectedSymbol` without traversing the parent.
+#[derive(Component, Debug, Clone)]
+pub struct SidebarTickerPriceText {
+    pub instrument_id: String,
+}
+
 /// Visible-window offset for the Tickers virtual scroller. Clamped to
 /// `0..=(filtered.len().saturating_sub(visible_rows))` on each render.
 #[derive(Resource, Debug, Default, Clone, Copy)]

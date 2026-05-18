@@ -28,7 +28,7 @@
 | §3.4 SubscribeMarketData / UnsubscribeMarketData 本実装 (Step 3) | ✅ 完了 | servicer に dedicated asyncio loop thread + LiveRunner/LiveReducerBridge 配線、LIVE_ADAPTER_NOT_CONFIGURED guard、Replay teardown 順序整流。21 件 PASS (test_grpc_phase8.py) |
 | §3.4 GetState への live_last_error 露出 (Step 3.9/3.10) | ✅ 完了 | TradingState.live_last_error: Optional[str] 追加 (models.py)、Runner.last_error / Bridge.last_error から最新値を毎 GetState で吸い上げ |
 | §3.5 Rust UI (`venue_capabilities.rs` / Footer toggle / menu_bar Venue+File→New+Open mode 依存 / §3.5.1 SetExecutionMode RPC) | ✅ 完了 | bevy-engine スキル準拠で実装 |
-| §3.5 sidebar Tickers (Live universe 上書き / 検索 / 仮想スクロール / mode 依存クリック) | ✅ 完了 | `Tickers` / `SelectedSymbol` Resource、`TransportCommand::ListInstruments`/`SubscribeMarketData`、`BackendStatusUpdate::InstrumentsListed` 配線。proto に `Instrument` message 追加、backend `ListInstruments` 拡張。最新価格列 (Live tick push) は Phase 8 follow-up に繰越 |
+| §3.5 sidebar Tickers (Live universe 上書き / 検索 / 仮想スクロール / mode 依存クリック) | ✅ 完了 | `Tickers` / `SelectedSymbol` Resource、`TransportCommand::ListInstruments`/`SubscribeMarketData`、`BackendStatusUpdate::InstrumentsListed` 配線。proto に `Instrument` message 追加、backend `ListInstruments` 拡張。最新価格列 (Live tick push) は §3.5 sidebar follow-up で完了 (HEAD 未 commit) |
 | §3.6 UI モード関連 UX (File→New / Open Strategy 文脈依存) | ✅ 完了 (サイドカー auto-save / Disconnect 警告は Phase 8 follow-up) | ModalLayer 流用は follow-up |
 | §0.5.2 UI_LAYOUT サイドカー切替 | ⏳ 未実装 | ExecutionMode 別保存先 |
 
@@ -1058,13 +1058,38 @@ Phase 8 §3.5 の sidebar Live universe 配線 (Tickers 上書き / 検索 / 仮
   - `cargo build --release` green、`cargo test --lib` **214 passed** (210 baseline + Tickers/SelectedSymbol default + filter/clamp 計 4)、`cargo test --bins` **19 passed** (17 baseline + InstrumentsListed overwrite/empty 計 2)、新規 warning ゼロ
   - `cd python && uv run pytest -m "not slow"` **720 passed** (719 baseline + `test_list_instruments_returns_structured_instruments` 1)、回帰なし
 - **Phase 8 follow-up に繰越**:
-  - sidebar 「最新価格」列 (§3.5 1005-1007 の Live tick / Replay close 表示) — Live tick push channel (`MarketDataUpdate` stream RPC or `GetState` `last_prices` map 露出) と Rust 側受信が proto/Python/Rust 横断のため別 PR
   - `ListInstruments(source="local")` の Live venue parquet snapshot 保存/読出経路 — §3.2 venue I/O 本体の責務として Live adapter 配線時に対応
   - `Instrument.name` / `Instrument.market` の Live venue adapter による実値充填 — 上記 §3.2 と同じ
 - **ユーザー確定事項の踏襲**:
   - `Tickers` field 構造 = `id + name + market`、Live tick 由来 `last_price` は別 Resource (今 session では作成せず follow-up)
   - `source="local"` は backend で受信するが現状は Replay catalog fallback のみ
   - 検索 / 仮想スクロール / mode 依存クリックの 3 点は Phase 8 必須として実装
+
+#### 3.5 sidebar 最新価格列 完了報告 (2026-05-18)
+
+Phase 8 §3.5 sidebar 「最新価格」列 (§3.5 1005-1007 ExecutionMode 依存仕様) を完了。
+
+- **proto / Python 拡張**:
+  - `python/engine/live/last_price_cache.py` 新設。`LastPriceCache(bus)` は LiveEventBus を購読し、`DepthUpdate` の best bid/ask から `mid=(bid+ask)/2` を `_quote_mid` に、`TradesUpdate.price` を `_last_trade` に保持。`snapshot() -> dict[str, float]` は instrument の和集合に対し **Quote 優先 / Trade fallback** で新規 dict を返す (外部 mutate 安全)。`start/stop` は `LiveRunner` / `LiveReducerBridge` と同 lifecycle (idempotent `start()`, `_last_error` 露出で silent dead 禁止)。`LiveReducerBridge` の責務は触らず独立 module として配線
+  - `python/engine/models.py` `TradingState` 末尾に `last_prices: dict[str, float] = Field(default_factory=dict)` 追加。Replay 経路は touch 禁止 ([[live_last_error]] と同パターン)
+  - `python/engine/server_grpc.py`: `GrpcDataEngineServer` に `_live_price_cache: Optional[LastPriceCache]` 追加。`_start_live_components_async` で `LastPriceCache(bus=runner.bus)` を bridge / runner と並走 start。`_teardown_live_components_async` は **bridge.stop → cache.stop → runner.stop** 順 (bus 閉鎖を最後)。`GetState` ハンドラで `state.last_prices = cache.snapshot() if cache else {}` を `model_copy` に追加
+  - proto は変更せず (GetStateResponse は `json_data` 一本通しのため `last_prices` は JSON 経由で Rust 側に届く、proto regen 罠 [[proto-regen-absolute-import-trap]] を回避)
+- **Rust core 配線**:
+  - `src/trading.rs`: `LastPrices { map: HashMap<String, f64> }` Resource + `BackendStatusUpdate::LastPricesUpdated { prices: HashMap<String, f64> }` variant + `BackendTradingState.last_prices: HashMap<String, f64>` (`#[serde(default)]`) 追加
+  - `src/main.rs`: `status_update_system` / `apply_status_update` シグネチャに `&mut LastPrices` 追加 (本番 + test helper `apply` / `apply_with_tickers` 全部 1 ターンで追従、Bevy `Res<T>` 追加 test panic 連鎖の罠を回避)。`UiPlugin::build` の `insert_resource(LastPrices::default())` 追加。polling task で `state.last_prices.clone()` を `LastPricesUpdated` として enqueue
+- **sidebar UI 配線範囲** (`src/ui/sidebar.rs`):
+  - row 内構造を `[label Text (flex_grow:1.0)] [price Text (右寄せ・固定幅 70px)]` に拡張 (Instruments 行と同パターン)
+  - 新 marker `SidebarTickerPriceText { instrument_id: String }` を child entity に貼る
+  - `format_price(Option<f64>) -> String` 純関数 (None→"", Some(v)→`{:.2}`) + unit test 1 件
+  - `update_ticker_price_text_system` を `Update` に追加 (`.after(update_tickers_list_system)` で同 frame rebuild 直後の text も更新)。Replay モードでは `SelectedSymbol == row.id` のときのみ `TradingData.close` を表示・他行は空欄、Live モードでは `LastPrices.map.get(&row.id)` を表示。差分書き込み (`if text.0 != s`) で change detection 抑制
+- **検証**:
+  - `cargo build --release` green、`cargo test --lib` **215 passed** (214 baseline + format_price 1)、`cargo test --bins` **21 passed** (19 baseline + LastPricesUpdated overwrite/empty 計 2)、新規 warning ゼロ
+  - `cd python && uv run pytest -m "not slow"` **728 passed** (720 baseline + LastPriceCache 6 + grpc_phase8 last_prices 2)、回帰なし
+- **ユーザー確定事項の踏襲**:
+  - Quote 優先 / Trade fallback (Q2)
+  - 今回は GetState 拡張のみ、StreamPrices server-streaming RPC は将来 follow-up (Q1)
+  - Replay モードでは selected 行のみ close 表示、他行は空欄 (UX 確定)
+  - `LiveReducerBridge` は reducer 変換専用に保ち、price cache は独立 module
 
 ### 3.5.1 ExecutionModeToggle (Footer)
 

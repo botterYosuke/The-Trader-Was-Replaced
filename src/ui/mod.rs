@@ -72,8 +72,8 @@ use crate::ui::components::{
 use crate::ui::sidebar::{
     instrument_remove_button_system, panel_button_system, spawn_sidebar,
     ticker_row_click_system, tickers_scroll_system, tickers_search_focus_system,
-    tickers_search_input_system, tickers_search_text_sync_system, update_sidebar_system,
-    update_tickers_list_system,
+    tickers_search_input_system, tickers_search_text_sync_system,
+    update_ticker_price_text_system, update_sidebar_system, update_tickers_list_system,
 };
 use crate::ui::strategy_editor::{
     StrategyAutoSaveState, apply_pending_app_edits_system, apply_strategy_snapshot_restore_system,
@@ -202,6 +202,7 @@ impl Plugin for UiPlugin {
                     .after(tickers_search_input_system)
                     .after(tickers_scroll_system),
                 ticker_row_click_system,
+                update_ticker_price_text_system.after(update_tickers_list_system),
             ),
         )
         .add_systems(

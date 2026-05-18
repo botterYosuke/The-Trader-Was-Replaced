@@ -59,6 +59,8 @@ pub struct BackendTradingState {
     pub venue_id: Option<String>,
     #[serde(default)]
     pub instruments_loaded: Option<u32>,
+    #[serde(default)]
+    pub last_prices: HashMap<String, f64>,
 }
 
 #[derive(Resource, Default)]
@@ -502,6 +504,15 @@ pub struct Tickers {
     pub list: Vec<Ticker>,
 }
 
+/// Per-instrument last trade price, overwritten wholesale on every
+/// `BackendStatusUpdate::LastPricesUpdated` (plan §3.5 sidebar last-price
+/// column). Live mode populates this from venue tick streams; Replay mode
+/// emits an empty map so the sidebar clears.
+#[derive(Resource, Debug, Clone, Default)]
+pub struct LastPrices {
+    pub map: HashMap<String, f64>,
+}
+
 /// Currently-selected sidebar symbol. Click handling is mode-dependent
 /// (plan §3.5): Replay → update this only; Live* → also fire
 /// `TransportCommand::SubscribeMarketData`.
@@ -563,6 +574,12 @@ pub enum BackendStatusUpdate {
     /// Wholesale replacement of the sidebar instrument universe (plan §3.5).
     InstrumentsListed {
         instruments: Vec<Ticker>,
+    },
+    /// Wholesale replacement of the per-instrument last-trade price map
+    /// derived from BackendTradingState.last_prices (Phase 8 §3.5 sidebar
+    /// last-price column). Replay 切替時は空 HashMap で来て全消去される。
+    LastPricesUpdated {
+        prices: HashMap<String, f64>,
     },
 }
 
@@ -659,6 +676,7 @@ mod tests {
             execution_mode: None,
             venue_id: None,
             instruments_loaded: None,
+            last_prices: HashMap::new(),
         };
         tx.send(new_state).unwrap();
 
@@ -709,6 +727,7 @@ mod tests {
             execution_mode: None,
             venue_id: None,
             instruments_loaded: None,
+            last_prices: HashMap::new(),
         };
         tx.send(new_state).unwrap();
 
@@ -759,6 +778,7 @@ mod tests {
             execution_mode: None,
             venue_id: None,
             instruments_loaded: None,
+            last_prices: HashMap::new(),
         };
         tx.send(new_state).unwrap();
 

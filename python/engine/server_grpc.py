@@ -16,6 +16,7 @@ from .core import DataEngine
 from .live.live_adapter_factory import build_live_adapter_factory
 from .live.live_runner import LiveRunner
 from .live.reducer_bridge import LiveReducerBridge
+from .live.last_price_cache import LastPriceCache
 from .live.state_machine import VenueStateMachine
 from .mode_manager import ModeManager
 from .proto import engine_pb2, engine_pb2_grpc
@@ -151,6 +152,7 @@ class GrpcDataEngineServer(
         self._live_bridge = None
         self._live_loop = None
         self._live_thread = None
+        self._live_price_cache: Optional[LastPriceCache] = None
         self._live_timeout_s = 5.0
 
     _KNOWN_VENUES = {"TACHIBANA", "KABU"}
@@ -204,10 +206,13 @@ class GrpcDataEngineServer(
 
         runner = LiveRunner(adapter=adapter, interval_ns=60 * 1_000_000_000)
         bridge = LiveReducerBridge(bus=runner.bus, data_engine=self.engine)
+        cache = LastPriceCache(bus=runner.bus)
         await bridge.start()
+        await cache.start()
         await runner.start()
         self._live_runner = runner
         self._live_bridge = bridge
+        self._live_price_cache = cache
 
     def _start_live_components(self):
         if self._live_runner is not None and self._live_bridge is not None:
@@ -223,9 +228,12 @@ class GrpcDataEngineServer(
 
     async def _teardown_live_components_async(self):
         bridge = self._live_bridge
+        cache = self._live_price_cache
         runner = self._live_runner
         if bridge is not None:
             await bridge.stop()
+        if cache is not None:
+            await cache.stop()
         if runner is not None:
             await runner.stop()
 
@@ -244,6 +252,7 @@ class GrpcDataEngineServer(
         finally:
             self._live_runner = None
             self._live_bridge = None
+            self._live_price_cache = None
 
     def Check(self, request, context):
         return engine_pb2.HealthCheckResponse(
@@ -259,8 +268,15 @@ class GrpcDataEngineServer(
             err = self._live_bridge.last_error
         live_last_error = f"{type(err).__name__}: {err}" if err is not None else None
 
+        last_prices = (
+            self._live_price_cache.snapshot()
+            if self._live_price_cache is not None
+            else {}
+        )
         state = self.engine.get_current_state()
-        state = state.model_copy(update={"live_last_error": live_last_error})
+        state = state.model_copy(
+            update={"live_last_error": live_last_error, "last_prices": last_prices}
+        )
         return engine_pb2.GetStateResponse(json_data=state.model_dump_json())
 
     def Start(self, request, context):

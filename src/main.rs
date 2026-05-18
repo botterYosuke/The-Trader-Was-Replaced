@@ -2,7 +2,7 @@ use backcast::camera::{pancam_suppression_over_editor_system, setup_camera};
 use backcast::grid::GridPlugin;
 use backcast::trading::{
     AvailableInstruments, BackendChannel, BackendStartupStage, BackendStatus, BackendStatusUpdate,
-    ExecutionMode, ExecutionModeRes, LastRunResult, PortfolioOrder, PortfolioPosition,
+    ExecutionMode, ExecutionModeRes, LastPrices, LastRunResult, PortfolioOrder, PortfolioPosition,
     PortfolioState, ReplaySpeed, RunState, SelectedSymbol, Ticker, Tickers, TradingData,
     TradingSettings, TransportCommand, TransportCommandSender, VenueState, VenueStatusRes,
     backend_update_system, engine, parse_summary_json, price_simulation_system,
@@ -130,6 +130,7 @@ async fn main() {
         .insert_resource(VenueStatusRes::default())
         .insert_resource(ExecutionModeRes::default())
         .insert_resource(Tickers::default())
+        .insert_resource(LastPrices::default())
         .insert_resource(SelectedSymbol::default())
         .insert_resource(tokio_handle)
         .add_systems(Startup, (setup_camera, setup_backend_connection, spawn_replay_startup_window))
@@ -166,6 +167,7 @@ fn status_update_system(
     mut venue_status: ResMut<VenueStatusRes>,
     mut exec_mode: ResMut<ExecutionModeRes>,
     mut tickers: ResMut<Tickers>,
+    mut last_prices: ResMut<LastPrices>,
 ) {
     while let Ok(update) = channel.rx.try_recv() {
         apply_status_update(
@@ -178,6 +180,7 @@ fn status_update_system(
             &mut venue_status,
             &mut exec_mode,
             &mut tickers,
+            &mut last_prices,
         );
     }
 }
@@ -192,6 +195,7 @@ fn apply_status_update(
     venue_status: &mut VenueStatusRes,
     exec_mode: &mut ExecutionModeRes,
     tickers: &mut Tickers,
+    last_prices: &mut LastPrices,
 ) {
     match update {
         BackendStatusUpdate::Connected(c) => status.connected = c,
@@ -284,6 +288,9 @@ fn apply_status_update(
         }
         BackendStatusUpdate::InstrumentsListed { instruments } => {
             tickers.list = instruments;
+        }
+        BackendStatusUpdate::LastPricesUpdated { prices } => {
+            last_prices.map = prices;
         }
     }
 }
@@ -799,6 +806,12 @@ fn setup_backend_connection(
                                 }
                                 prev_mode = state.execution_mode.clone();
                             }
+                            // Phase 8 §3.5: push last_prices map as a typed
+                            // status update. Overwrite semantics — Replay 切替
+                            // 時は backend が空 map を返すので sidebar が clear される。
+                            let _ = status_tx.send(BackendStatusUpdate::LastPricesUpdated {
+                                prices: state.last_prices.clone(),
+                            });
                             let _ = tx.send(state);
                             let _ = status_tx.send(BackendStatusUpdate::Connected(true));
                         }
@@ -837,7 +850,8 @@ mod tests {
     };
     use backcast::trading::{
         AvailableInstruments, BackendStartupStage, BackendStatus, BackendStatusUpdate,
-        ExecutionModeRes, LastRunResult, PortfolioState, RunState, Ticker, Tickers, VenueStatusRes,
+        ExecutionModeRes, LastPrices, LastRunResult, PortfolioState, RunState, Ticker, Tickers,
+        VenueStatusRes,
     };
     use chrono::NaiveDate;
 
@@ -861,6 +875,7 @@ mod tests {
         let mut venue_status = VenueStatusRes::default();
         let mut exec_mode = ExecutionModeRes::default();
         let mut tickers = Tickers::default();
+        let mut last_prices = LastPrices::default();
         apply_status_update(
             update,
             &mut status,
@@ -871,6 +886,7 @@ mod tests {
             &mut venue_status,
             &mut exec_mode,
             &mut tickers,
+            &mut last_prices,
         );
         last_run
     }
@@ -888,6 +904,7 @@ mod tests {
         let mut available = AvailableInstruments::default();
         let mut venue_status = VenueStatusRes::default();
         let mut exec_mode = ExecutionModeRes::default();
+        let mut last_prices = LastPrices::default();
         apply_status_update(
             update,
             &mut status,
@@ -898,6 +915,7 @@ mod tests {
             &mut venue_status,
             &mut exec_mode,
             tickers,
+            &mut last_prices,
         );
     }
 
@@ -1196,5 +1214,79 @@ mod tests {
             &mut tickers,
         );
         assert!(tickers.list.is_empty());
+    }
+
+    // --- LastPricesUpdated arm (Phase 8 §3.5 sidebar last-price column) ---
+
+    /// Variant of `apply` that lets the caller seed and observe a `LastPrices`
+    /// resource across the `apply_status_update` call (mirrors the
+    /// `apply_with_tickers` helper above).
+    fn apply_with_last_prices(
+        update: BackendStatusUpdate,
+        progress: &mut ReplayStartupProgress,
+        last_prices: &mut LastPrices,
+    ) {
+        let mut status = BackendStatus::default();
+        let mut last_run = LastRunResult::default();
+        let mut portfolio = PortfolioState::default();
+        let mut available = AvailableInstruments::default();
+        let mut venue_status = VenueStatusRes::default();
+        let mut exec_mode = ExecutionModeRes::default();
+        let mut tickers = Tickers::default();
+        apply_status_update(
+            update,
+            &mut status,
+            &mut last_run,
+            &mut portfolio,
+            &mut available,
+            progress,
+            &mut venue_status,
+            &mut exec_mode,
+            &mut tickers,
+            last_prices,
+        );
+    }
+
+    #[test]
+    fn apply_last_prices_updated_overwrites_resource() {
+        use std::collections::HashMap;
+        let mut progress = ReplayStartupProgress::default();
+        let mut last_prices = LastPrices {
+            map: HashMap::from([
+                ("7203".to_string(), 100.0_f64),
+                ("9999".to_string(), 1.0_f64),
+            ]),
+        };
+        let new_prices = HashMap::from([
+            ("7203".to_string(), 101.0_f64),
+            ("8306".to_string(), 500.0_f64),
+        ]);
+        apply_with_last_prices(
+            BackendStatusUpdate::LastPricesUpdated { prices: new_prices.clone() },
+            &mut progress,
+            &mut last_prices,
+        );
+        assert_eq!(
+            last_prices.map, new_prices,
+            "LastPricesUpdated must replace (not merge with) the prior map",
+        );
+    }
+
+    #[test]
+    fn apply_last_prices_updated_empty_clears_resource() {
+        use std::collections::HashMap;
+        let mut progress = ReplayStartupProgress::default();
+        let mut last_prices = LastPrices {
+            map: HashMap::from([("7203".to_string(), 100.0_f64)]),
+        };
+        apply_with_last_prices(
+            BackendStatusUpdate::LastPricesUpdated { prices: HashMap::new() },
+            &mut progress,
+            &mut last_prices,
+        );
+        assert!(
+            last_prices.map.is_empty(),
+            "empty LastPricesUpdated (e.g. Replay mode) must clear the resource",
+        );
     }
 }
