@@ -1,11 +1,12 @@
 use crate::trading::{
-    BackendStatus, LastRunResult, ReplaySpeed, RunState, TradingData, TradingSettings,
-    TransportCommand, TransportCommandSender,
+    BackendStatus, ExecutionMode, ExecutionModeRes, LastRunResult, ReplaySpeed, RunState,
+    TradingData, TradingSettings, TransportCommand, TransportCommandSender, VenueState,
+    VenueStatusRes,
 };
 use crate::ui::components::{
-    FooterRoot, GrpcStatusLabel, PauseResumeButton, PauseResumeLabel, ReplayStateBadge,
-    ReplayTimeLabel, SpeedButton, StrategyBuffer, StrategyEditorId, StrategyFragment,
-    StrategyRunRequested, TransportButton, WindowRoot,
+    ExecutionModeToggleSegment, FooterRoot, GrpcStatusLabel, PauseResumeButton, PauseResumeLabel,
+    ReplayStateBadge, ReplayTimeLabel, SpeedButton, StrategyBuffer, StrategyEditorId,
+    StrategyFragment, StrategyRunRequested, TransportButton, VenueStateBadge, WindowRoot,
 };
 use crate::ui::strategy_editor::{StrategyAutoSaveState, flush_strategy_cache, merge_fragments};
 use bevy::prelude::*;
@@ -76,6 +77,32 @@ fn spawn_speed_btn(parent: &mut ChildBuilder, multiplier: u32, selected: bool) {
         });
 }
 
+fn spawn_mode_segment(parent: &mut ChildBuilder, label: &str, mode: ExecutionMode) {
+    parent
+        .spawn((
+            Button,
+            Node {
+                width: Val::Px(50.0),
+                height: Val::Px(20.0),
+                justify_content: JustifyContent::Center,
+                align_items: AlignItems::Center,
+                ..default()
+            },
+            BackgroundColor(BTN_NORMAL),
+            ExecutionModeToggleSegment(mode),
+        ))
+        .with_children(|p| {
+            p.spawn((
+                Text::new(label),
+                TextFont {
+                    font_size: 11.0,
+                    ..default()
+                },
+                TextColor(Color::srgb(0.85, 0.85, 0.85)),
+            ));
+        });
+}
+
 pub fn spawn_footer(mut commands: Commands, asset_server: Res<AssetServer>) {
     // U+25B6 ▶ と U+25A0 ■ は Bevy デフォルトフォント (FiraMono subset) に無いため、
     // Noto Sans Symbols 2 を読み込んで該当ボタンの Text にだけ適用する。
@@ -100,6 +127,16 @@ pub fn spawn_footer(mut commands: Commands, asset_server: Res<AssetServer>) {
             FooterRoot,
         ))
         .with_children(|p| {
+            // ── ExecutionMode segment toggle (Phase 8 §3.5.1) ──
+            spawn_mode_segment(p, "Replay", ExecutionMode::Replay);
+            spawn_mode_segment(p, "Manual", ExecutionMode::LiveManual);
+            spawn_mode_segment(p, "Auto", ExecutionMode::LiveAuto);
+
+            p.spawn(Node {
+                width: Val::Px(8.0),
+                ..default()
+            });
+
             // Transport buttons
             spawn_transport_btn(p, "|<", TransportButton::JumpToStart);
             spawn_transport_btn(p, "<", TransportButton::StepBack);
@@ -193,6 +230,15 @@ pub fn spawn_footer(mut commands: Commands, asset_server: Res<AssetServer>) {
                 ReplayStateBadge,
             ));
             p.spawn((
+                Text::new("Venue: DISCONNECTED"),
+                TextFont {
+                    font_size: 12.0,
+                    ..default()
+                },
+                TextColor(Color::srgb(0.55, 0.55, 0.55)),
+                VenueStateBadge,
+            ));
+            p.spawn((
                 Text::new("grpc: DISABLED"),
                 TextFont {
                     font_size: 12.0,
@@ -205,11 +251,14 @@ pub fn spawn_footer(mut commands: Commands, asset_server: Res<AssetServer>) {
 }
 
 #[allow(clippy::type_complexity)]
+#[allow(clippy::too_many_arguments)]
 pub fn update_footer_system(
     data: Res<TradingData>,
     status: Res<BackendStatus>,
     settings: Res<TradingSettings>,
     buffer: Res<StrategyBuffer>,
+    venue: Res<VenueStatusRes>,
+    exec_mode: Res<ExecutionModeRes>,
     mut time_q: Query<
         &mut Text,
         (
@@ -217,6 +266,7 @@ pub fn update_footer_system(
             Without<ReplayStateBadge>,
             Without<GrpcStatusLabel>,
             Without<PauseResumeLabel>,
+            Without<VenueStateBadge>,
         ),
     >,
     mut state_q: Query<
@@ -226,6 +276,7 @@ pub fn update_footer_system(
             Without<ReplayTimeLabel>,
             Without<GrpcStatusLabel>,
             Without<PauseResumeLabel>,
+            Without<VenueStateBadge>,
         ),
     >,
     mut grpc_q: Query<
@@ -235,6 +286,7 @@ pub fn update_footer_system(
             Without<ReplayTimeLabel>,
             Without<ReplayStateBadge>,
             Without<PauseResumeLabel>,
+            Without<VenueStateBadge>,
         ),
     >,
     mut pause_q: Query<
@@ -244,22 +296,95 @@ pub fn update_footer_system(
             Without<ReplayTimeLabel>,
             Without<ReplayStateBadge>,
             Without<GrpcStatusLabel>,
+            Without<VenueStateBadge>,
         ),
     >,
+    mut venue_q: Query<
+        (&mut Text, &mut TextColor),
+        (
+            With<VenueStateBadge>,
+            Without<ReplayTimeLabel>,
+            Without<ReplayStateBadge>,
+            Without<GrpcStatusLabel>,
+            Without<PauseResumeLabel>,
+        ),
+    >,
+    mut seg_q: Query<(&ExecutionModeToggleSegment, &mut BackgroundColor, &Interaction)>,
 ) {
-    if !data.is_changed() && !status.is_changed() && !settings.is_changed() && !buffer.is_changed()
+    let need_walltime_tick = !matches!(exec_mode.mode, ExecutionMode::Replay);
+    if !need_walltime_tick
+        && !data.is_changed()
+        && !status.is_changed()
+        && !settings.is_changed()
+        && !buffer.is_changed()
+        && !venue.is_changed()
+        && !exec_mode.is_changed()
     {
         return;
     }
 
-    // Timestamp
     for mut text in &mut time_q {
-        if data.timestamp_ms > 0 {
-            let s = data.timestamp_ms / 1000;
-            let ms = data.timestamp_ms % 1000;
-            text.0 = format!("time: {}.{:03}", s, ms);
+        let new_text = match exec_mode.mode {
+            ExecutionMode::Replay => {
+                if data.timestamp_ms > 0 {
+                    let s = data.timestamp_ms / 1000;
+                    let ms = data.timestamp_ms % 1000;
+                    format!("time: {}.{:03} (replay)", s, ms)
+                } else {
+                    "time: -- (replay)".to_string()
+                }
+            }
+            ExecutionMode::LiveManual | ExecutionMode::LiveAuto => {
+                let now = chrono::Local::now();
+                format!("time: {} (live)", now.format("%Y-%m-%d %H:%M:%S"))
+            }
+        };
+        if text.0 != new_text {
+            text.0 = new_text;
+        }
+    }
+
+    for (mut text, mut color) in &mut venue_q {
+        let state_str = match venue.state {
+            VenueState::Disconnected => "DISCONNECTED",
+            VenueState::Authenticating => "AUTHENTICATING",
+            VenueState::Connected => "CONNECTED",
+            VenueState::Subscribed => "SUBSCRIBED",
+            VenueState::Reconnecting => "RECONNECTING",
+            VenueState::Error => "ERROR",
+        };
+        let new_text = match &venue.venue_id {
+            Some(id) => format!("Venue: {} ({})", state_str, id),
+            None => format!("Venue: {}", state_str),
+        };
+        if text.0 != new_text {
+            text.0 = new_text;
+        }
+        let new_color = match venue.state {
+            VenueState::Disconnected => Color::srgb(0.55, 0.55, 0.55),
+            VenueState::Authenticating | VenueState::Reconnecting => {
+                Color::srgb(1.00, 0.85, 0.20)
+            }
+            VenueState::Connected => Color::srgb(0.30, 0.80, 1.00),
+            VenueState::Subscribed => Color::srgb(0.20, 1.00, 0.45),
+            VenueState::Error => Color::srgb(1.00, 0.28, 0.28),
+        };
+        if color.0 != new_color {
+            color.0 = new_color;
+        }
+    }
+
+    for (seg, mut bg, interaction) in &mut seg_q {
+        let selected = seg.0 == exec_mode.mode;
+        let target = if selected {
+            BTN_SPEED_SELECTED
+        } else if *interaction == Interaction::Hovered {
+            BTN_HOVER
         } else {
-            text.0 = "time: --".to_string();
+            BTN_NORMAL
+        };
+        if bg.0 != target {
+            bg.0 = target;
         }
     }
 
@@ -485,6 +610,38 @@ pub fn footer_pause_resume_system(
             }
             Interaction::Hovered => bg.0 = BTN_HOVER,
             Interaction::None => bg.0 = BTN_NORMAL,
+        }
+    }
+}
+
+#[allow(clippy::type_complexity)]
+pub fn execution_mode_toggle_system(
+    mut query: Query<
+        (&Interaction, &ExecutionModeToggleSegment),
+        (Changed<Interaction>, With<Button>),
+    >,
+    mut exec_mode: ResMut<ExecutionModeRes>,
+) {
+    for (interaction, seg) in &mut query {
+        if *interaction != Interaction::Pressed {
+            continue;
+        }
+        match seg.0 {
+            ExecutionMode::Replay => {
+                if exec_mode.mode != ExecutionMode::Replay {
+                    info!("execution_mode: switching to Replay (local, RPC pending)");
+                    exec_mode.mode = ExecutionMode::Replay;
+                }
+            }
+            ExecutionMode::LiveManual => {
+                if exec_mode.mode != ExecutionMode::LiveManual {
+                    info!("execution_mode: switching to LiveManual (local, RPC pending)");
+                    exec_mode.mode = ExecutionMode::LiveManual;
+                }
+            }
+            ExecutionMode::LiveAuto => {
+                info!("execution_mode: LiveAuto requested but no .py loaded — ignored (Phase 10)");
+            }
         }
     }
 }

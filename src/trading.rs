@@ -51,6 +51,10 @@ pub struct BackendTradingState {
     pub open_time_ms: Option<i64>,
     #[serde(default)]
     pub replay_state: Option<String>,
+    #[serde(default)]
+    pub venue_state: Option<String>,
+    #[serde(default)]
+    pub execution_mode: Option<String>,
 }
 
 #[derive(Resource, Default)]
@@ -388,6 +392,102 @@ pub struct PortfolioState {
     pub loaded: bool,
 }
 
+/// Venue connection lifecycle state. String values are kept in sync with
+/// Python side (see Phase 8 §0.1) for JSON round-trip via serde.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
+pub enum VenueState {
+    #[default]
+    #[serde(rename = "DISCONNECTED")]
+    Disconnected,
+    #[serde(rename = "AUTHENTICATING")]
+    Authenticating,
+    #[serde(rename = "CONNECTED")]
+    Connected,
+    #[serde(rename = "SUBSCRIBED")]
+    Subscribed,
+    #[serde(rename = "RECONNECTING")]
+    Reconnecting,
+    #[serde(rename = "ERROR")]
+    Error,
+}
+
+/// Execution mode selected in the UI. `LiveAuto` is a Phase 10 stub and
+/// must not be selectable in Phase 8 (see plan §3.6).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
+pub enum ExecutionMode {
+    #[serde(rename = "Replay")]
+    Replay,
+    #[default]
+    #[serde(rename = "LiveManual")]
+    LiveManual,
+    #[serde(rename = "LiveAuto")]
+    LiveAuto,
+}
+
+#[derive(Resource, Debug, Clone, Default)]
+pub struct VenueStatusRes {
+    pub state: VenueState,
+    pub venue_id: Option<String>,
+    pub instruments_loaded: u32,
+}
+
+#[derive(Resource, Debug, Clone, Default)]
+pub struct ExecutionModeRes {
+    pub mode: ExecutionMode,
+}
+
+#[derive(Debug, Clone)]
+pub enum BackendStartupStage {
+    ResettingReplay,
+    LoadingData,
+    StartingStrategy,
+    WaitingForFirstTick,
+}
+
+#[derive(Debug, Clone)]
+pub enum BackendStatusUpdate {
+    Connected(bool),
+    Running(bool),
+    Error(String),
+    RunStarted,
+    ReplayStartup {
+        startup_id: u64,
+        stage: BackendStartupStage,
+    },
+    RunComplete {
+        startup_id: Option<u64>,
+        run_id: String,
+        summary_json: String,
+    },
+    RunFailed {
+        startup_id: Option<u64>,
+        error: String,
+    },
+    PortfolioLoaded {
+        buying_power: f64,
+        cash: f64,
+        equity: f64,
+        positions: Vec<PortfolioPosition>,
+        orders: Vec<PortfolioOrder>,
+    },
+    AvailableInstrumentsLoaded {
+        end_date: NaiveDate,
+        ids: Vec<String>,
+    },
+    AvailableInstrumentsFetchFailed {
+        end_date: NaiveDate,
+        error: String,
+    },
+    VenueChanged {
+        state: VenueState,
+        venue_id: Option<String>,
+        instruments_loaded: u32,
+    },
+    ExecutionModeChanged {
+        mode: ExecutionMode,
+    },
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -477,6 +577,8 @@ mod tests {
             close: Some(150.0),
             open_time_ms: Some(12344000),
             replay_state: Some("RUNNING".to_string()),
+            venue_state: None,
+            execution_mode: None,
         };
         tx.send(new_state).unwrap();
 
@@ -523,6 +625,8 @@ mod tests {
             close: None,
             open_time_ms: None,
             replay_state: None,
+            venue_state: None,
+            execution_mode: None,
         };
         tx.send(new_state).unwrap();
 
@@ -569,6 +673,8 @@ mod tests {
             close: None,
             open_time_ms: None,
             replay_state: None,
+            venue_state: None,
+            execution_mode: None,
         };
         tx.send(new_state).unwrap();
 
@@ -706,5 +812,62 @@ mod tests {
             catalog.ends_with("jquants-catalog"),
             "expected jquants-catalog suffix, got: {catalog}"
         );
+    }
+
+    #[test]
+    fn test_venue_state_default_is_disconnected() {
+        assert_eq!(VenueState::default(), VenueState::Disconnected);
+    }
+
+    #[test]
+    fn test_venue_state_json_round_trip() {
+        let cases = [
+            (VenueState::Disconnected, "\"DISCONNECTED\""),
+            (VenueState::Authenticating, "\"AUTHENTICATING\""),
+            (VenueState::Connected, "\"CONNECTED\""),
+            (VenueState::Subscribed, "\"SUBSCRIBED\""),
+            (VenueState::Reconnecting, "\"RECONNECTING\""),
+            (VenueState::Error, "\"ERROR\""),
+        ];
+        for (v, s) in cases {
+            let encoded = serde_json::to_string(&v).unwrap();
+            assert_eq!(encoded, s, "encode mismatch for {:?}", v);
+            let decoded: VenueState = serde_json::from_str(s).unwrap();
+            assert_eq!(decoded, v, "decode mismatch for {}", s);
+        }
+    }
+
+    #[test]
+    fn test_execution_mode_default_is_live_manual() {
+        assert_eq!(ExecutionMode::default(), ExecutionMode::LiveManual);
+    }
+
+    #[test]
+    fn test_execution_mode_json_round_trip() {
+        let cases = [
+            (ExecutionMode::Replay, "\"Replay\""),
+            (ExecutionMode::LiveManual, "\"LiveManual\""),
+            (ExecutionMode::LiveAuto, "\"LiveAuto\""),
+        ];
+        for (m, s) in cases {
+            let encoded = serde_json::to_string(&m).unwrap();
+            assert_eq!(encoded, s, "encode mismatch for {:?}", m);
+            let decoded: ExecutionMode = serde_json::from_str(s).unwrap();
+            assert_eq!(decoded, m, "decode mismatch for {}", s);
+        }
+    }
+
+    #[test]
+    fn test_venue_status_res_default() {
+        let r = VenueStatusRes::default();
+        assert_eq!(r.state, VenueState::Disconnected);
+        assert!(r.venue_id.is_none());
+        assert_eq!(r.instruments_loaded, 0);
+    }
+
+    #[test]
+    fn test_execution_mode_res_default() {
+        let r = ExecutionModeRes::default();
+        assert_eq!(r.mode, ExecutionMode::LiveManual);
     }
 }

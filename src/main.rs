@@ -1,10 +1,11 @@
 use backcast::camera::{pancam_suppression_over_editor_system, setup_camera};
 use backcast::grid::GridPlugin;
 use backcast::trading::{
-    AvailableInstruments, BackendChannel, BackendStatus, LastRunResult, PortfolioOrder,
-    PortfolioPosition, PortfolioState, ReplaySpeed, RunState, TradingData, TradingSettings,
-    TransportCommand, TransportCommandSender, backend_update_system, engine, parse_summary_json,
-    price_simulation_system,
+    AvailableInstruments, BackendChannel, BackendStartupStage, BackendStatus, BackendStatusUpdate,
+    ExecutionMode, ExecutionModeRes, LastRunResult, PortfolioOrder, PortfolioPosition,
+    PortfolioState, ReplaySpeed, RunState, TradingData, TradingSettings, TransportCommand,
+    TransportCommandSender, VenueState, VenueStatusRes, backend_update_system, engine,
+    parse_summary_json, price_simulation_system,
 };
 use backcast::replay::{ReplayStartupPhase, ReplayStartupProgress};
 use backcast::ui::UiPlugin;
@@ -38,6 +39,18 @@ fn parse_replay_granularity(s: &str) -> Result<i32, String> {
     }
 }
 
+/// Parse `VenueState` from backend string (e.g. `"CONNECTED"`).
+/// Returns `None` for unknown values; caller should warn and skip.
+fn parse_venue_state(s: &str) -> Option<VenueState> {
+    serde_json::from_value(serde_json::Value::String(s.to_owned())).ok()
+}
+
+/// Parse `ExecutionMode` from backend string (e.g. `"LiveManual"`).
+/// Returns `None` for unknown values; caller should warn and skip.
+fn parse_execution_mode(s: &str) -> Option<ExecutionMode> {
+    serde_json::from_value(serde_json::Value::String(s.to_owned())).ok()
+}
+
 #[tokio::main]
 async fn main() {
     let tokio_handle = TokioHandle(tokio::runtime::Handle::current());
@@ -67,6 +80,8 @@ async fn main() {
         .insert_resource(AvailableInstruments::default())
         .insert_resource(PortfolioState::default())
         .insert_resource(ReplaySpeed::default())
+        .insert_resource(VenueStatusRes::default())
+        .insert_resource(ExecutionModeRes::default())
         .insert_resource(tokio_handle)
         .add_systems(Startup, (setup_camera, setup_backend_connection, spawn_replay_startup_window))
         .add_systems(
@@ -92,48 +107,6 @@ struct StatusUpdateChannel {
     rx: mpsc::UnboundedReceiver<BackendStatusUpdate>,
 }
 
-enum BackendStartupStage {
-    ResettingReplay,
-    LoadingData,
-    StartingStrategy,
-    WaitingForFirstTick,
-}
-
-enum BackendStatusUpdate {
-    Connected(bool),
-    Running(bool),
-    Error(String),
-    RunStarted,
-    ReplayStartup {
-        startup_id: u64,
-        stage: BackendStartupStage,
-    },
-    RunComplete {
-        startup_id: Option<u64>,
-        run_id: String,
-        summary_json: String,
-    },
-    RunFailed {
-        startup_id: Option<u64>,
-        error: String,
-    },
-    PortfolioLoaded {
-        buying_power: f64,
-        cash: f64,
-        equity: f64,
-        positions: Vec<PortfolioPosition>,
-        orders: Vec<PortfolioOrder>,
-    },
-    AvailableInstrumentsLoaded {
-        end_date: NaiveDate,
-        ids: Vec<String>,
-    },
-    AvailableInstrumentsFetchFailed {
-        end_date: NaiveDate,
-        error: String,
-    },
-}
-
 fn status_update_system(
     mut status: ResMut<BackendStatus>,
     mut channel: ResMut<StatusUpdateChannel>,
@@ -141,6 +114,8 @@ fn status_update_system(
     mut portfolio: ResMut<PortfolioState>,
     mut available: ResMut<AvailableInstruments>,
     mut progress: ResMut<ReplayStartupProgress>,
+    mut venue_status: ResMut<VenueStatusRes>,
+    mut exec_mode: ResMut<ExecutionModeRes>,
 ) {
     while let Ok(update) = channel.rx.try_recv() {
         apply_status_update(
@@ -150,6 +125,8 @@ fn status_update_system(
             &mut portfolio,
             &mut available,
             &mut progress,
+            &mut venue_status,
+            &mut exec_mode,
         );
     }
 }
@@ -161,6 +138,8 @@ fn apply_status_update(
     portfolio: &mut PortfolioState,
     available: &mut AvailableInstruments,
     progress: &mut ReplayStartupProgress,
+    venue_status: &mut VenueStatusRes,
+    exec_mode: &mut ExecutionModeRes,
 ) {
     match update {
         BackendStatusUpdate::Connected(c) => status.connected = c,
@@ -239,6 +218,18 @@ fn apply_status_update(
         BackendStatusUpdate::AvailableInstrumentsFetchFailed { end_date, error } => {
             apply_available_failed(available, end_date, error);
         }
+        BackendStatusUpdate::VenueChanged {
+            state,
+            venue_id,
+            instruments_loaded,
+        } => {
+            venue_status.state = state;
+            venue_status.venue_id = venue_id;
+            venue_status.instruments_loaded = instruments_loaded;
+        }
+        BackendStatusUpdate::ExecutionModeChanged { mode } => {
+            exec_mode.mode = mode;
+        }
     }
 }
 
@@ -311,6 +302,11 @@ fn setup_backend_connection(
         // Backend manages its own lifecycle; no explicit Start call needed.
         info!("Backend connection established.");
         let _ = status_tx.send(BackendStatusUpdate::Running(true));
+
+        // Phase 8 §3.5 subtask 5: dedupe venue_state / execution_mode pushes
+        // by tracking the previous raw string we saw from BackendTradingState.
+        let mut prev_venue: Option<String> = None;
+        let mut prev_mode: Option<String> = None;
 
         loop {
             // Drain transport commands before polling state so the UI feels responsive.
@@ -604,6 +600,37 @@ fn setup_backend_connection(
                     let json_data = response.into_inner().json_data;
                     match serde_json::from_str::<backcast::trading::BackendTradingState>(&json_data) {
                         Ok(state) => {
+                            // Phase 8 §3.5 subtask 5: detect venue_state / execution_mode
+                            // transitions and push typed updates. venue_id / instruments_loaded
+                            // are placeholders until backend exposes them.
+                            if state.venue_state != prev_venue {
+                                if let Some(ref s) = state.venue_state {
+                                    match parse_venue_state(s) {
+                                        Some(vs) => {
+                                            let _ = status_tx.send(BackendStatusUpdate::VenueChanged {
+                                                state: vs,
+                                                venue_id: None,
+                                                instruments_loaded: 0,
+                                            });
+                                        }
+                                        None => warn!("unknown venue_state from backend: {:?}", s),
+                                    }
+                                }
+                                prev_venue = state.venue_state.clone();
+                            }
+                            if state.execution_mode != prev_mode {
+                                if let Some(ref m) = state.execution_mode {
+                                    match parse_execution_mode(m) {
+                                        Some(em) => {
+                                            let _ = status_tx.send(BackendStatusUpdate::ExecutionModeChanged {
+                                                mode: em,
+                                            });
+                                        }
+                                        None => warn!("unknown execution_mode from backend: {:?}", m),
+                                    }
+                                }
+                                prev_mode = state.execution_mode.clone();
+                            }
                             let _ = tx.send(state);
                             let _ = status_tx.send(BackendStatusUpdate::Connected(true));
                         }
@@ -637,12 +664,12 @@ fn setup_backend_connection(
 #[cfg(test)]
 mod tests {
     use super::{
-        BackendStartupStage, BackendStatusUpdate, ReplayGranularity, ReplayStartupPhase,
-        ReplayStartupProgress, apply_available_failed, apply_available_loaded,
-        apply_status_update, parse_replay_granularity,
+        ReplayGranularity, ReplayStartupPhase, ReplayStartupProgress, apply_available_failed,
+        apply_available_loaded, apply_status_update, parse_replay_granularity,
     };
     use backcast::trading::{
-        AvailableInstruments, BackendStatus, LastRunResult, PortfolioState, RunState,
+        AvailableInstruments, BackendStartupStage, BackendStatus, BackendStatusUpdate,
+        ExecutionModeRes, LastRunResult, PortfolioState, RunState, VenueStatusRes,
     };
     use chrono::NaiveDate;
 
@@ -663,6 +690,8 @@ mod tests {
         let mut last_run = LastRunResult::default();
         let mut portfolio = PortfolioState::default();
         let mut available = AvailableInstruments::default();
+        let mut venue_status = VenueStatusRes::default();
+        let mut exec_mode = ExecutionModeRes::default();
         apply_status_update(
             update,
             &mut status,
@@ -670,6 +699,8 @@ mod tests {
             &mut portfolio,
             &mut available,
             progress,
+            &mut venue_status,
+            &mut exec_mode,
         );
         last_run
     }

@@ -60,6 +60,15 @@ pub enum TransportButton {
 #[derive(Component, Clone, Copy, Debug)]
 pub struct SpeedButton(pub u32);
 
+/// Marker for a single segment of the Footer ExecutionMode toggle.
+/// Holds the `ExecutionMode` this segment represents.
+#[derive(Component, Clone, Copy, Debug)]
+pub struct ExecutionModeToggleSegment(pub crate::trading::ExecutionMode);
+
+/// Marker for the Footer venue-state badge Text node.
+#[derive(Component)]
+pub struct VenueStateBadge;
+
 #[derive(Component)]
 pub struct MenuBarRoot;
 

@@ -952,9 +952,18 @@ message SubscribeRequest {
 - **`VenueLogin` ハンドラの `credentials_source` allowlist チェック**: 受信時に `{"prompt", "session_cache", "env"}` に含まれない値は `grpc.StatusCode.INVALID_ARGUMENT` / `INVALID_CREDENTIALS_SOURCE` で即 reject（§3.2 の項目 5 参照）。
 - proto 再生成: `uv run python -m grpc_tools.protoc ...`（既存スクリプト準拠）。
 
-### 3.5 Rust UI: 接続フロー & 表示 ⏳ 未着手
+### 3.5 Rust UI: 接続フロー & 表示 ⏳ Core 3 完了 / menu_bar・sidebar 未着手
 
-> **進捗 (2026-05-18)**: 未着手。Rust 側は本セッションでは触っていない。`venue_capabilities.rs` 新設、`trading.rs` の `VenueState` / `ExecutionMode` enum + Resource + `BackendStatusUpdate` 拡張、`menu_bar.rs` の Venue メニュー + File→New + Open Strategy 連動、`footer.rs` の `ExecutionModeToggle` + `VenueStateBadge`、`sidebar.rs` の Live universe 上書きが必要。`bevy-engine` スキルを必ず Read してから着手すること（Bevy 0.15 固有の罠あり）。
+> **進捗 (2026-05-18)**: Core 3 (venue_capabilities + trading.rs + footer.rs) を pair-relay で完了。`cargo build --release` / `cargo test --lib` (208 passed) green、新規 warning なし。残作業は menu_bar.rs (Venue メニュー / File→New / Open Strategy 文脈分岐) と sidebar.rs (Live universe 上書き) で、別 session に分離。`ExecutionModeToggle` クリックは現状ローカル `ExecutionModeRes` 直書き + info! ログのみで、`SetExecutionMode` RPC 発火と precondition ダイアログは menu_bar session で実装する。
+>
+> **本 session 完了範囲**:
+> - `src/venue_capabilities.rs` [NEW] — Tachibana / kabu の 4 cap (`supports_order_correction` / `max_subscribed_instruments` / `requires_second_password` / `token_persists_across_restart`) ハードコード + unit test 4 件
+> - `src/trading.rs` — `VenueState` (DISCONNECTED..ERROR、serde rename で Python 同期可) / `ExecutionMode` (Replay/LiveManual/LiveAuto、Default=LiveManual) / `VenueStatusRes` / `ExecutionModeRes` + `BackendStatusUpdate::{VenueChanged, ExecutionModeChanged}` 追加。`BackendTradingState` に `venue_state` / `execution_mode` の `#[serde(default)] Option<String>` 2 field 追加 (Python 側未実装でも欠落耐性あり)
+> - `src/main.rs` — 旧 `BackendStatusUpdate` / `BackendStartupStage` enum を `trading.rs` に移動 (重複→切替→削除の 3 段階で中間 build error なし)。`App` に `VenueStatusRes` / `ExecutionModeRes` insert。`apply_status_update` 拡張 + polling task で `state.venue_state` / `state.execution_mode` の prev 比較差分検知 → `status_tx.send`
+> - `src/ui/footer.rs` — `ExecutionModeToggle` 3 セグメント (Replay/Manual/Auto、選択ハイライト) + `VenueStateBadge` (6 段階色) + 時刻表示の mode 切替 (Replay=replay 時刻、Live*=`chrono::Local::now()` wall clock)。`execution_mode_toggle_system` で Pressed → mode ローカル更新 (LiveAuto は info! のみで切替えない)
+> - `src/ui/components.rs` — `ExecutionModeToggleSegment(ExecutionMode)` / `VenueStateBadge` marker 追加
+>
+> **次 session スコープ**: §3.5 残り (menu_bar Venue メニュー / File→New / Open Strategy mode 依存) + sidebar Live universe 上書き + `SetExecutionMode` RPC 経路。`VenueChanged.venue_id` / `instruments_loaded` の backend 側充填 (§3.4) は§3.5 残作業と同 session で対応するのが筋。
 
 - `src/venue_capabilities.rs` [NEW]（**修正: `engine-client` crate は存在しないため `backcast` 単一クレートの `src/` 直下に置く**）:
   - `Ready.capabilities.venue_capabilities[<venue>][<key>]` の型付き抽出 API を骨格定義。Phase 8 では skeleton のみで、Phase 9 の発注 RPC 設計時に値を埋める
