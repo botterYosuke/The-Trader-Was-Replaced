@@ -2,6 +2,7 @@ import json
 import logging
 import os
 import re
+import asyncio
 import threading
 import time
 from concurrent import futures
@@ -12,6 +13,8 @@ from typing import Optional
 import grpc
 
 from .core import DataEngine
+from .live.live_runner import LiveRunner
+from .live.reducer_bridge import LiveReducerBridge
 from .live.state_machine import VenueStateMachine
 from .mode_manager import ModeManager
 from .proto import engine_pb2, engine_pb2_grpc
@@ -136,11 +139,18 @@ class GrpcDataEngineServer(
         engine: DataEngine,
         mode_manager=None,
         venue_sm=None,
+        live_adapter_factory=None,
     ):
         self.token = token
         self.engine = engine
         self.mode_manager = mode_manager
         self.venue_sm = venue_sm
+        self._live_adapter_factory = live_adapter_factory
+        self._live_runner = None
+        self._live_bridge = None
+        self._live_loop = None
+        self._live_thread = None
+        self._live_timeout_s = 5.0
 
     _KNOWN_VENUES = {"TACHIBANA", "KABU"}
     _KNOWN_CRED_SOURCES = {"prompt", "session_cache", "env"}
@@ -170,6 +180,70 @@ class GrpcDataEngineServer(
             return "Daily"
         return None
 
+    def _ensure_live_loop(self):
+        if self._live_loop is not None:
+            return self._live_loop
+
+        loop = asyncio.new_event_loop()
+
+        def run_loop():
+            asyncio.set_event_loop(loop)
+            loop.run_forever()
+
+        self._live_loop = loop
+        self._live_thread = threading.Thread(
+            target=run_loop, name="phase8-live-loop", daemon=True
+        )
+        self._live_thread.start()
+        return loop
+
+    async def _start_live_components_async(self, adapter):
+        if self._live_runner is not None and self._live_bridge is not None:
+            return
+
+        runner = LiveRunner(adapter=adapter, interval_ns=60 * 1_000_000_000)
+        bridge = LiveReducerBridge(bus=runner.bus, data_engine=self.engine)
+        await bridge.start()
+        await runner.start()
+        self._live_runner = runner
+        self._live_bridge = bridge
+
+    def _start_live_components(self):
+        if self._live_runner is not None and self._live_bridge is not None:
+            return
+        if self._live_adapter_factory is None:
+            return
+        adapter = self._live_adapter_factory()
+        loop = self._ensure_live_loop()
+        future = asyncio.run_coroutine_threadsafe(
+            self._start_live_components_async(adapter), loop
+        )
+        future.result(timeout=self._live_timeout_s)
+
+    async def _teardown_live_components_async(self):
+        bridge = self._live_bridge
+        runner = self._live_runner
+        if bridge is not None:
+            await bridge.stop()
+        if runner is not None:
+            await runner.stop()
+
+    def _teardown_live_components(self):
+        if self._live_runner is None and self._live_bridge is None:
+            return
+        loop = self._live_loop
+        try:
+            if loop is not None and loop.is_running():
+                future = asyncio.run_coroutine_threadsafe(
+                    self._teardown_live_components_async(), loop
+                )
+                future.result(timeout=self._live_timeout_s)
+        except Exception:
+            logging.exception("SetExecutionMode: failed to stop live components")
+        finally:
+            self._live_runner = None
+            self._live_bridge = None
+
     def Check(self, request, context):
         return engine_pb2.HealthCheckResponse(
             status=engine_pb2.HealthCheckResponse.SERVING
@@ -179,7 +253,13 @@ class GrpcDataEngineServer(
         if request.token != self.token:
             context.abort(grpc.StatusCode.UNAUTHENTICATED, "Invalid token")
 
+        err = self._live_runner.last_error if self._live_runner is not None else None
+        if err is None and self._live_bridge is not None:
+            err = self._live_bridge.last_error
+        live_last_error = f"{type(err).__name__}: {err}" if err is not None else None
+
         state = self.engine.get_current_state()
+        state = state.model_copy(update={"live_last_error": live_last_error})
         return engine_pb2.GetStateResponse(json_data=state.model_dump_json())
 
     def Start(self, request, context):
@@ -724,6 +804,13 @@ class GrpcDataEngineServer(
                 execution_mode="",
             )
 
+        if request.mode in ("LiveManual", "LiveAuto") and self._live_adapter_factory is None:
+            return engine_pb2.SetExecutionModeResponse(
+                success=False,
+                error_code="LIVE_ADAPTER_NOT_CONFIGURED",
+                execution_mode="",
+            )
+
         try:
             applied = self.mode_manager.set_execution_mode(request.mode)
         except ValueError as exc:
@@ -734,6 +821,24 @@ class GrpcDataEngineServer(
                 error_code=code,
                 execution_mode="",
             )
+        if applied in ("LiveManual", "LiveAuto"):
+            try:
+                self._start_live_components()
+            except RuntimeError as exc:
+                return engine_pb2.SetExecutionModeResponse(
+                    success=False,
+                    error_code=str(exc),
+                    execution_mode="",
+                )
+            except Exception as exc:
+                logging.exception("SetExecutionMode: failed to start live components")
+                return engine_pb2.SetExecutionModeResponse(
+                    success=False,
+                    error_code="LIVE_START_FAILED",
+                    execution_mode="",
+                )
+        elif applied == "Replay" and (self._live_runner is not None or self._live_bridge is not None):
+            self._teardown_live_components()
 
         return engine_pb2.SetExecutionModeResponse(
             success=True,
@@ -744,12 +849,49 @@ class GrpcDataEngineServer(
     def SubscribeMarketData(self, request, context):
         if request.token != self.token:
             context.abort(grpc.StatusCode.UNAUTHENTICATED, "Invalid token")
-        return engine_pb2.SubscribeResponse(success=False, error_code="NOT_IMPLEMENTED")
+        # Live runner 未起動 (Replay モード等) は precondition reject
+        if self._live_runner is None:
+            return engine_pb2.SubscribeResponse(
+                success=False,
+                error_code="EXECUTION_MODE_PRECONDITION",
+            )
+        # request.channels は accept-and-ignore (LiveRunner 側で {"trades","depth"} 固定)
+        loop = self._ensure_live_loop()
+        try:
+            future = asyncio.run_coroutine_threadsafe(
+                self._live_runner.subscribe(request.instrument_id), loop
+            )
+            future.result(timeout=self._live_timeout_s)
+        except Exception as exc:
+            logging.exception("SubscribeMarketData failed: %s", exc)
+            return engine_pb2.SubscribeResponse(
+                success=False,
+                error_code="SUBSCRIBE_FAILED",
+            )
+        return engine_pb2.SubscribeResponse(success=True, error_code="")
 
     def UnsubscribeMarketData(self, request, context):
         if request.token != self.token:
             context.abort(grpc.StatusCode.UNAUTHENTICATED, "Invalid token")
-        return engine_pb2.SubscribeResponse(success=False, error_code="NOT_IMPLEMENTED")
+        # Live runner 未起動 (Replay モード等) は precondition reject
+        if self._live_runner is None:
+            return engine_pb2.SubscribeResponse(
+                success=False,
+                error_code="EXECUTION_MODE_PRECONDITION",
+            )
+        loop = self._ensure_live_loop()
+        try:
+            future = asyncio.run_coroutine_threadsafe(
+                self._live_runner.unsubscribe(request.instrument_id), loop
+            )
+            future.result(timeout=self._live_timeout_s)
+        except Exception as exc:
+            logging.exception("UnsubscribeMarketData failed: %s", exc)
+            return engine_pb2.SubscribeResponse(
+                success=False,
+                error_code="UNSUBSCRIBE_FAILED",
+            )
+        return engine_pb2.SubscribeResponse(success=True, error_code="")
 
 
 def advance_loop(engine: DataEngine, interval: float = 1.0):

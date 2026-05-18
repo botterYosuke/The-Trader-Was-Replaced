@@ -67,6 +67,16 @@ class LiveRunner:
             self._aggregators.pop(instrument_id, None)
             raise
 
+    async def unsubscribe(self, instrument_id: InstrumentId) -> None:
+        # idempotent: 未登録なら何もしない
+        if instrument_id not in self._aggregators:
+            return
+        # 先に adapter に通知してから内部 state を落とす。
+        # adapter.unsubscribe が失敗したら _aggregators は残す
+        # (再試行可能 / 状態の真実は adapter 側)。
+        await self._adapter.unsubscribe(instrument_id)
+        self._aggregators.pop(instrument_id, None)
+
     async def start(self) -> None:
         if self._task is not None and not self._task.done():
             return

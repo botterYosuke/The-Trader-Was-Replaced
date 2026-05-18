@@ -59,6 +59,8 @@ class TradingState(_BoundaryModel):
     venue_id: Optional[str] = Field(None, description="接続中の Venue 識別子 (例: TACHIBANA)")
     subscribed_instruments: List[str] = Field(default_factory=list, description="購読中の銘柄シンボル一覧")
 
+    live_last_error: Optional[str] = Field(None, description="Live runner/bridge の最終エラー (type名: message)")
+
     @field_validator("history")
     @classmethod
     def check_history_finite(cls, v: List[float]) -> List[float]:

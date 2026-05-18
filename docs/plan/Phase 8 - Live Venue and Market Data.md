@@ -4,9 +4,9 @@
 
 ---
 
-## 📊 Phase 8 進捗スナップショット (2026-05-18 更新)
+## 📊 Phase 8 進捗スナップショット (2026-05-18 更新, Step 3 完了)
 
-ブランチ: `impl/8-venue-login-skeleton`（HEAD: 9f50b42 以降）
+ブランチ: `impl/8-venue-login-skeleton`（HEAD: 756fb4a 以降、Step 3 sub-step 完了済み）
 
 | ステップ | 状態 | 備考 |
 |---|---|---|
@@ -24,13 +24,30 @@
 | §3.3 `live_runner.py` (Step 2 レビュー反映) | ✅ 完了 | (F1) 未購読 instrument の DepthUpdate/KlineUpdate を `_is_subscribed` helper で gating (§9.9 ADR)、(F3) 未使用 import 整理、(Simplify) `_run` の type 別分岐前に共通 gate 集約。2 件追加 PASS |
 | §3.3 **live/reducer_bridge.py** (Step 2e) | ✅ 完了 | live KlineUpdate(pydantic, ts_ns) → reducer KlineUpdate(dataclass, timestamp_ms) converter + `LiveReducerBridge`（bus → ReplayTimeUpdated→KlineUpdate の順で apply）。5 件 PASS |
 | §3.3 `reducer_bridge.py` (Step 2e ハードン) | ✅ 完了 | (F2) `data_engine.apply_replay_event` の例外で _run が死んだとき silent dead しないよう `last_error` プロパティ + `_task.done()` 受理。LiveRunner と同 semantics（§9.8 ADR を bridge にも適用）。1 件追加 PASS |
-| §3.4 gRPC RPC 5 種 + 127.0.0.1 bind | ✅ 完了 | Subscribe/Unsubscribe 本体は NOT_IMPLEMENTED スタブ |
+| §3.4 gRPC RPC 5 種 + 127.0.0.1 bind | ✅ 完了 | proto 5 RPC + 127.0.0.1 bind + ハンドラ骨組み |
+| §3.4 SubscribeMarketData / UnsubscribeMarketData 本実装 (Step 3) | ✅ 完了 | servicer に dedicated asyncio loop thread + LiveRunner/LiveReducerBridge 配線、LIVE_ADAPTER_NOT_CONFIGURED guard、Replay teardown 順序整流。21 件 PASS (test_grpc_phase8.py) |
+| §3.4 GetState への live_last_error 露出 (Step 3.9/3.10) | ✅ 完了 | TradingState.live_last_error: Optional[str] 追加 (models.py)、Runner.last_error / Bridge.last_error から最新値を毎 GetState で吸い上げ |
 | §3.5 Rust UI (`venue_capabilities.rs` / Footer toggle / Sidebar Live universe) | ⏳ 未実装 | bevy-engine スキル必読 |
 | §0.5.2 UI_LAYOUT サイドカー切替 | ⏳ 未実装 | ExecutionMode 別保存先 |
 
-**累計テスト**: `python/tests/live` で **85 passed**（Step C 初期 +6 / Step C ハードン +3 / Step 1 live_runner +1 / Step 2 live_runner +5 / Step 2 ハードン live_runner +2 / Step 2 レビュー反映 live_runner +2 / Step 2e reducer_bridge +5 / Step 2e ハードン reducer_bridge +1）。回帰なし。
+**累計テスト**: `python/tests/live` で **85 passed** + `tests/test_grpc_phase8.py` **21 passed** (Step 3 完了時点)。回帰なし。
 
-**フル実行 (Step 2 + 全ハードン完了時点)**: `cd python && uv run pytest -m "not slow"` で **516 passed / 3 skipped / 64 deselected / 0 failed**。`cargo test` も全 PASS。
+**フル実行 (Step 3 完了時点)**: `cd python && uv run pytest -m "not slow"` で **522 passed / 3 skipped / 64 deselected / 0 failed**（Step 3 で +6 件純増）。`cargo test` も全 PASS（core 17 / backend_integration 2）。
+
+**Step 3 完了 (2026-05-18)**: §3.4 の Subscribe/Unsubscribe を NOT_IMPLEMENTED スタブから本実装へ昇格。servicer は同期 gRPC handler、Runner/Bridge は async という不整合を **dedicated asyncio loop thread** + `run_coroutine_threadsafe()` で橋渡しした。
+
+- ✅ **3.1〜3.4 servicer 配線**: `GrpcDataEngineServer.__init__` に `live_adapter_factory` kwarg + `_live_runner`/`_live_bridge`/`_live_loop`/`_live_thread`/`_live_timeout_s` 属性追加。dedicated loop thread を 1 本起動し永続化。`SubscribeMarketData` / `UnsubscribeMarketData` ハンドラは `run_coroutine_threadsafe(runner.subscribe(...), self._live_loop).result(timeout=...)` でブロッキング待機。
+- ✅ **3.3 LIVE_ADAPTER_NOT_CONFIGURED guard**: SetExecutionMode が LiveManual/LiveAuto 要求のとき factory 未設定なら mode_manager 遷移前に reject（silent green failure 防止）。
+- ✅ **3.4 Replay teardown 順序**: ExecutionMode を Live → Replay へ戻す際、`bridge.stop()` を `runner.stop()` より先に呼ぶ。逆順だと bus に閉じた `_iter` が消費を諦めた直後の publish で `RuntimeError: event loop is closed` の risk。
+- ✅ **3.6/3.8 Subscribe/Unsubscribe 本実装**: `runner is None → EXECUTION_MODE_PRECONDITION` reject、success 時は LiveRunner.subscribe/unsubscribe を dedicated loop で実行。channels は accept-and-ignore（LiveRunner 側で {trades,depth} 固定、§9.5 ADR）。
+- ✅ **3.9 TradingState.live_last_error**: `Optional[str]` field を `python/engine/models.py::TradingState` に追加（既存 Optional field の末尾、default=None）。Replay 系の field は触らない。
+- ✅ **3.10 GetState 配線**: `GetState` 呼び出しごとに `runner.last_error` / `bridge.last_error` の `f"{type(err).__name__}: {err}"` を `live_last_error` に書き込む。両方 None なら None。UI は既存 `TradingState.model_dump_json()` 経路で受信できる。
+
+設計判断 (Step 3 全体):
+
+- **dedicated loop thread の理由**: gRPC servicer の各ハンドラは別 thread から呼ばれる。`asyncio.run()` をハンドラ内で呼ぶと、(i) ハンドラごとに新規 loop が生まれ Runner/Bridge の task が「別 loop に attached」エラーで死ぬ、(ii) `bus.subscribe()` が ハンドラ A の loop で作った Queue を ハンドラ B の loop で await して "attached to a different loop" になる。**1 つの永続 loop を 1 つの thread で持ち、全 servicer ハンドラはそこに `run_coroutine_threadsafe` する** のが唯一安全（§9.11 ADR）。
+- **`live_last_error` を bus event 追加でなく TradingState field に乗せた理由**: §9.8 ADR（runner.last_error を bus 経由にしない）と同根。reducer は live 専用 event を扱う義務を負わず、`TradingState` の 1 field 追加で UI まで自然に届く。Replay モードでは常に None。
+- **Replay 系 field を破壊しないこと**: `TradingState` は Replay 系の long-running state を抱える既存型。Step 3.9 で追加した `live_last_error` は **常に末尾**、default=None、Replay 経路は touch 禁止。
 
 **Step 2 完了 (2026-05-18)**: §3.3 の Step 1 で残した 4 項目を 5 サブステップ (2a〜2e) に分解し連続実装、その後 2 サイクルのハードン:
 
@@ -253,6 +270,60 @@ async def _run(self):
 
 `bridge.start()` 内で `bus.subscribe()` を `create_task` 前に同期完了させる §7 ADR は維持（restart 時も同じ — 再度 `self._iter = self._bus.subscribe()` を取り直す）。
 
+### 9.11 なぜ gRPC servicer は dedicated asyncio loop thread を 1 本持つか（Step 3 ADR）
+
+gRPC servicer は同期 thread pool 上で各 RPC ハンドラが呼ばれる。一方 LiveRunner / LiveReducerBridge / LiveEventBus は `asyncio` ベース。橋渡し方法の選択肢:
+
+| 案 | 採否 | 理由 |
+|---|---|---|
+| A: ハンドラ内で `asyncio.run(runner.subscribe(...))` | ✗ 不採用 | ハンドラ呼び出しごとに新規 loop が生成され、Runner/Bridge の long-running task と Queue が「別 loop に attached」エラーで死ぬ |
+| B: ハンドラ内で `loop = asyncio.new_event_loop()` を毎回張る | ✗ 不採用 | A と同根。`bus.subscribe()` の Queue が複数 loop を跨ぐ |
+| C: servicer に永続 thread + 永続 loop を 1 本持たせ、全ハンドラから `run_coroutine_threadsafe(coro, loop)` | ✅ 採用 | Runner / Bridge / Bus が同一 loop に attached のまま動き続け、ハンドラは同期世界からブロッキング `.result()` で待てる |
+
+実装は `GrpcDataEngineServer._ensure_live_loop()` で `asyncio.new_event_loop()` + daemon `threading.Thread(target=loop.run_forever)` を 1 本起こし、各 RPC ハンドラから `asyncio.run_coroutine_threadsafe(coro, self._live_loop).result(timeout=self._live_timeout_s)` で同期化する。
+
+**注意**: ハンドラ内で `import asyncio` を関数内に書くと **enclosing scope での local 化 → closure 内参照が NameError** になるケースがあった（test fixture の `live_adapter_factory` で実害）。`import asyncio` は module top で 1 回だけ。
+
+### 9.12 なぜ Replay モードへ戻す teardown は `bridge.stop() → runner.stop()` の順か（Step 3 ADR）
+
+ExecutionMode を LiveAuto/LiveManual → Replay に戻すとき、両者は逆順だと race を起こす:
+
+- 旧順 (`runner.stop()` → `bridge.stop()`): runner が adapter 切断と aggregator 解放を行うが、bus への publish task はまだ生きており、bridge 側の `_iter` (=`bus.subscribe()` で取った queue) は次の publish を待っている。runner 内の最後の flush で **bus に publish された event を bridge が pull する直前**に bus 自身が teardown され、`RuntimeError: event loop is closed` / queue 例外が出る risk があった。
+- 新順 (`bridge.stop()` → `runner.stop()`): bridge が先に subscribe を解除すると、bus 側の subscriber list から消える。runner の最終 publish は subscriber 0 の bus に届くだけで害がない。次に runner を止める。
+
+実装上は `_teardown_live_components_async` で `bridge.stop()` を await → `runner.stop()` を await → 属性を None に戻す（loop と thread は再 LiveManual 用に残す）。
+
+### 9.13 なぜ `LIVE_ADAPTER_NOT_CONFIGURED` を mode_manager 遷移前で reject するか（Step 3 ADR）
+
+SetExecutionMode が LiveManual/LiveAuto を要求し、しかし servicer に `live_adapter_factory` が未注入の場合、選択肢:
+
+| 案 | 採否 | 理由 |
+|---|---|---|
+| A: mode_manager 遷移後、`_start_live_components` 内で silent return | ✗ 不採用 | response が success=True を返してしまい、mode_manager だけ Live、runner は None という silent green failure |
+| B: mode_manager 遷移後、例外 raise → rollback | ✗ 不採用 | mode_manager に rollback API なく、`current_mode` 直書きは脆い |
+| C: mode_manager 呼ぶ前に factory チェック → 即 reject、mode_manager に触れない | ✅ 採用 | 状態遷移自体が起きないので rollback 不要、response は `success=False, error_code="LIVE_ADAPTER_NOT_CONFIGURED"` |
+
+本番 `serve()` での default は `live_adapter_factory=None`（実 venue adapter は §3.2 で実装予定）。テストでは `MockVenueAdapter` を返す factory を明示注入。Mock 経路を本番に仮注入しない（実 venue 未接続との境界を曖昧にしないため）。
+
+### 9.14 なぜ `TradingState.live_last_error` を新規 field として追加したか（Step 3.9/3.10 ADR）
+
+LiveRunner / LiveReducerBridge の例外は §9.8 / §9.10 ADR により bus に publish せず `last_error` プロパティ side-channel に閉じている。これを UI まで届けるルートが必要。
+
+選択肢:
+
+| 案 | 採否 | 理由 |
+|---|---|---|
+| A: 新 RPC `GetLiveError` を追加 | ✗ 不採用 | UI ポーリングを別 RPC で増やすのは冗長。GetState は既に 60Hz で呼ばれている |
+| B: GetState 内の `TradingState` に `live_last_error: Optional[str]` field を追加 | ✅ 採用 | Replay モードでは常に None。Live モードでは runner/bridge の最新 `f"{type(err).__name__}: {err}"` を毎 GetState で吸い上げ。UI は既存配線で受信できる |
+| C: 既存 `last_error` (Replay 用) に live を相乗り | ✗ 不採用 | semantics が混ざり、Replay モードで live error が見えてしまう |
+| D: proto に `BackendStatusUpdate` + streaming RPC 追加 | ✗ 不採用 | engine_pb2_grpc.py absolute-import 罠の再現リスク + scope 膨張、Phase 9 watchdog に持ち越し |
+
+実装メモ:
+
+- field は `python/engine/models.py::TradingState` に `live_last_error: Optional[str] = Field(None, description="...")` で追加（既存 field は touch 禁止、新規 reducer も追加しない）。
+- servicer の `GetState` で `f"{type(err).__name__}: {err}"` 形式（traceback / secret は載せない）。runner.last_error を優先し、None なら bridge.last_error を見る。
+- 値クリアは「Live モード再 enter」「VenueLogin 成功」のタイミング（runner/bridge 再生成で `last_error = None` に戻る）。
+
 ### 9. なぜ proto 再生成後に `engine_pb2_grpc.py` を手で直すか
 
 `grpc_tools.protoc` の挙動として、生成された `engine_pb2_grpc.py:6` 付近の import が `import engine_pb2 as engine__pb2`（absolute）になる。本プロジェクトは `python/engine/proto/` パッケージ内に置くので、`from . import engine_pb2 as engine__pb2`（relative）に直す必要がある。
@@ -269,6 +340,14 @@ async def _run(self):
 - テスト実行は `cd python && uv run pytest tests/live/ tests/exchanges/ -v` 等
 - HTTP モックは `pytest-httpx` の `HTTPXMock` fixture を使う（既存 `test_binance_rest.py` パターン参照）
 - async テストは `asyncio.run(...)` で同期化する（pytest-asyncio は本プロジェクト未導入、`conftest.py` に asyncio_mode 設定なし）
+
+### gRPC servicer ↔ asyncio bridge を書く時のハマり所 (Step 3 で確立)
+
+- **`import asyncio` は必ず module top に置く**。関数内に `import asyncio` を書くと、Python の name resolution の都合で enclosing scope の `asyncio` が local 化され、その関数の closure 内で `NameError: cannot access free variable 'asyncio' where it is not associated with a value in enclosing scope` が出るケースがあった（Step 3 fixture teardown 修正時に実害）。`import asyncio` は module top で 1 回だけ。
+- **`asyncio.run()` を servicer ハンドラ内で呼ばない**。新規 loop が生まれて Runner/Bridge の long-running task が attached された loop と乖離する。servicer は dedicated loop thread を 1 本持ち、全ハンドラから `asyncio.run_coroutine_threadsafe(coro, loop).result(timeout=...)` で同期待ち（§9.11 ADR）。
+- **`bus.subscribe()` を返す Queue は生成した loop でしか await できない**。bus を生成した loop と subscribe を呼ぶ loop が違うと "attached to a different loop" が即発火する。bus/runner/bridge 全部を dedicated loop で生成する。test fixture teardown でも、別 loop で `asyncio.run(servicer._teardown_live_components_async())` を呼ぶと同症状になる。**同期 wrapper `servicer._teardown_live_components()`**（内部で `run_coroutine_threadsafe` する）を使うのが正解。
+- **teardown 順序は subscriber → publisher**。Live → Replay モード切替時は `bridge.stop()` → `runner.stop()` の順（§9.12 ADR）。逆順だと最終 publish 時に bus が無く `RuntimeError: event loop is closed` の risk。
+- **`run_coroutine_threadsafe(...).result()` のタイムアウト**: gRPC ハンドラは Bevy UI からの同期 RPC なので、`.result(timeout=self._live_timeout_s)` (default 5.0s) を付けて deadlock リカバリしやすくする。タイムアウト時は `SUBSCRIBE_FAILED` / `UNSUBSCRIBE_FAILED` / `LIVE_RUNTIME_SPAWN_FAILED` で fail-soft に Response 返却。
 
 ### proto 変更時
 
@@ -748,15 +827,16 @@ python/engine/
   - 結果として `reducer.py` がこれまで通り `TradingState` を更新
 - Live 側でも `nautilus_trader` の `DataEngine` をホストする。ただし `TradingNode` (live execution) は **使わない**。発注経路を握らないため、誤って実発注しないことを構造的に担保する。
 
-### 3.4 Backend: gRPC RPC 追加 🟡 骨組み完了 / Subscribe 本体未実装
+### 3.4 Backend: gRPC RPC 追加 ✅ 完了 (Step 3 まで)
 
-> **進捗 (2026-05-18)**:
+> **進捗 (2026-05-18, Step 3 完了)**:
 > - ✅ proto に 5 RPC + メッセージ追加（VenueLogin / VenueLogout / SubscribeMarketData / UnsubscribeMarketData / SetExecutionMode）
 > - ✅ proto 再生成 + `engine_pb2_grpc.py` の absolute import 罠を手修正済み
 > - ✅ bind を `[::]:19876` → `127.0.0.1:19876` に変更
 > - ✅ server_grpc に 5 ハンドラ実装（credentials_source allowlist、UNSUPPORTED_FOR_VENUE、UNKNOWN_VENUE、INVALID_MODE、EXECUTION_MODE_PRECONDITION のガード）
 > - ✅ `serve()` で `VenueStateMachine` → `DataEngine` → `ModeManager` → `attach_mode_manager` → servicer 注入の組み立て
-> - ⏳ VenueLogin の本体（subprocess spawn + state 遷移）と Subscribe/UnsubscribeMarketData の実体は `NOT_IMPLEMENTED` を返すスタブ状態。WS step 完了後に置換
+> - ✅ **Step 3**: SubscribeMarketData / UnsubscribeMarketData の本実装完了。servicer は dedicated asyncio loop thread を 1 本持ち、`run_coroutine_threadsafe()` で LiveRunner / LiveReducerBridge を駆動。LIVE_ADAPTER_NOT_CONFIGURED guard、EXECUTION_MODE_PRECONDITION guard、Replay teardown 順序 (bridge → runner) を反映。`TradingState.live_last_error: Optional[str]` を追加し、GetState で runner/bridge の最新例外を `f"{type(err).__name__}: {err}"` 形式で露出。21/21 PASS。
+> - ⏳ VenueLogin の subprocess spawn 本体は引き続きスタブ（Step 4 で tkinter 子プロセス spawn を実装）。
 
 `python/proto/engine.proto` への追加（既存の `service DataEngine` ブロックに追記。`service Engine` という単一サービスは存在しないため間違えないこと）:
 
