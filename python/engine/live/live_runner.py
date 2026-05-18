@@ -1,25 +1,31 @@
-"""LiveRunner — adapter → aggregator → event_bus pipeline (Phase 8 §3, Step 1).
+"""LiveRunner — adapter → aggregator → event_bus pipeline (Phase 8 §3, Step 1+2).
 
-責務 (Step 1 スコープ):
-- subscribe(instrument_id): adapter に {"trades"} を購読し、
-  内部に TickBarAggregator を 1 個作る。
+責務:
+- subscribe(instrument_id): adapter に {"trades", "depth"} を購読し、
+  intervals_ns で指定された各 interval に対して TickBarAggregator を生成する。
 - start(): adapter.events() を消費する background task を起動。
-  TradesUpdate を aggregator.on_tick に流し、bar が確定したら
-  self.bus.publish(KlineUpdate) する。
+  - TradesUpdate → 当該 instrument の全 aggregator に on_tick、確定 bar を bus.publish
+  - DepthUpdate / KlineUpdate (venue 直送) → そのまま bus.publish (aggregator 迂回)
 - stop(): background task を cancel して await し、bus を close。
 
+Step 2 で追加:
+- DepthUpdate pass-through
+- venue 直送 KlineUpdate pass-through (集約済み bar を venue が送ってくる経路)
+- 複数 instrument (subscribe を複数回呼べる)
+- 複数 interval (LiveRunner(intervals_ns=[60s, 300s, ...]))
+
 Step スコープ外:
-- reducer 接続 / Nautilus 型変換
-- depth / kline 直 pass-through
-- 複数 interval
+- reducer / DataEngine 接続（別途 Step 2e で converter を作る）
 """
 from __future__ import annotations
 
 import asyncio
-from typing import Optional
+from typing import Iterable, Optional, Sequence, Union
 
 from engine.live.adapter import (
+    DepthUpdate,
     InstrumentId,
+    KlineUpdate,
     LiveVenueAdapter,
     TradesUpdate,
 )
@@ -28,38 +34,64 @@ from engine.live.event_bus import LiveEventBus
 
 
 class LiveRunner:
-    def __init__(self, adapter: LiveVenueAdapter, interval_ns: int) -> None:
-        if interval_ns <= 0:
-            raise ValueError("interval_ns must be positive")
+    def __init__(
+        self,
+        adapter: LiveVenueAdapter,
+        interval_ns: Optional[int] = None,
+        intervals_ns: Optional[Iterable[int]] = None,
+    ) -> None:
+        intervals = _normalize_intervals(interval_ns, intervals_ns)
         self._adapter = adapter
-        self._interval_ns = interval_ns
-        self._aggregators: dict[InstrumentId, TickBarAggregator] = {}
+        self._intervals_ns: tuple[int, ...] = intervals
+        # 各 instrument は interval ごとに 1 個の aggregator を持つ
+        self._aggregators: dict[InstrumentId, list[TickBarAggregator]] = {}
         self.bus: LiveEventBus = LiveEventBus()
         self._task: Optional[asyncio.Task[None]] = None
+        self._last_error: Optional[BaseException] = None
 
     async def subscribe(self, instrument_id: InstrumentId) -> None:
-        await self._adapter.subscribe(instrument_id, {"trades"})
-        self._aggregators[instrument_id] = TickBarAggregator(
-            instrument_id=instrument_id,
-            interval_ns=self._interval_ns,
-        )
+        # idempotent: 既に登録済みなら何もしない
+        if instrument_id in self._aggregators:
+            return
+        # 先に aggregator を登録してから adapter に subscribe する。
+        # こうすることで start() 後に subscribe() が呼ばれた場合でも
+        # adapter.subscribe() 完了前に到着した最初の tick を取りこぼさない。
+        self._aggregators[instrument_id] = [
+            TickBarAggregator(instrument_id=instrument_id, interval_ns=iv)
+            for iv in self._intervals_ns
+        ]
+        try:
+            await self._adapter.subscribe(instrument_id, {"trades", "depth"})
+        except BaseException:
+            # adapter 側で失敗したら登録を巻き戻す
+            self._aggregators.pop(instrument_id, None)
+            raise
 
     async def start(self) -> None:
-        if self._task is not None:
+        if self._task is not None and not self._task.done():
             return
+        self._last_error = None
         self._task = asyncio.create_task(self._run())
 
     async def _run(self) -> None:
         try:
             async for evt in self._adapter.events():
                 if isinstance(evt, TradesUpdate):
-                    agg = self._aggregators.get(evt.instrument_id)
-                    if agg is None:
+                    aggs = self._aggregators.get(evt.instrument_id)
+                    if aggs is None:
                         continue
-                    closed = agg.on_tick(evt)
-                    if closed is not None:
-                        await self.bus.publish(closed)
+                    for agg in aggs:
+                        closed = agg.on_tick(evt)
+                        if closed is not None:
+                            await self.bus.publish(closed)
+                elif isinstance(evt, DepthUpdate):
+                    await self.bus.publish(evt)
+                elif isinstance(evt, KlineUpdate):
+                    await self.bus.publish(evt)
         except asyncio.CancelledError:
+            return
+        except BaseException as exc:
+            self._last_error = exc
             return
 
     async def stop(self) -> None:
@@ -71,3 +103,27 @@ class LiveRunner:
                 pass
             self._task = None
         await self.bus.close()
+
+    @property
+    def last_error(self) -> Optional[BaseException]:
+        return self._last_error
+
+
+def _normalize_intervals(
+    interval_ns: Optional[int],
+    intervals_ns: Optional[Iterable[int]],
+) -> tuple[int, ...]:
+    if interval_ns is None and intervals_ns is None:
+        raise ValueError("either interval_ns or intervals_ns must be provided")
+    if interval_ns is not None and intervals_ns is not None:
+        raise ValueError("specify only one of interval_ns or intervals_ns")
+    if intervals_ns is not None:
+        result = tuple(int(iv) for iv in intervals_ns)
+        if not result:
+            raise ValueError("intervals_ns must not be empty")
+    else:
+        result = (int(interval_ns),)  # type: ignore[arg-type]
+    for iv in result:
+        if iv <= 0:
+            raise ValueError("interval_ns must be positive")
+    return result

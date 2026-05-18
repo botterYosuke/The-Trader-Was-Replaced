@@ -16,7 +16,13 @@ from __future__ import annotations
 
 import asyncio
 
-from engine.live.adapter import KlineUpdate, TradesUpdate
+from engine.live.adapter import (
+    DepthLevel,
+    DepthUpdate,
+    KlineUpdate,
+    TradesUpdate,
+    VenueCredentials,
+)
 from engine.live.mock_adapter import MockVenueAdapter
 from engine.live.live_runner import LiveRunner
 
@@ -24,10 +30,10 @@ from engine.live.live_runner import LiveRunner
 INTERVAL_NS = 60 * 1_000_000_000  # 1 分
 
 
-def _tick(ts_ns: int, price: float, size: float = 1.0) -> TradesUpdate:
+def _tick(ts_ns: int, price: float, size: float = 1.0, instrument_id: str = "7203.TSE") -> TradesUpdate:
     return TradesUpdate(
         kind="trades",
-        instrument_id="7203.TSE",
+        instrument_id=instrument_id,
         ts_ns=ts_ns,
         price=price,
         size=size,
@@ -66,7 +72,7 @@ def test_live_runner_aggregates_ticks_into_kline_via_bus() -> None:
         adapter = MockVenueAdapter()
         runner = LiveRunner(adapter=adapter, interval_ns=INTERVAL_NS)
 
-        await adapter.login(__import__("engine.live.adapter", fromlist=["VenueCredentials"]).VenueCredentials(
+        await adapter.login(VenueCredentials(
             credentials_source="env", environment_hint="demo",
         ))
         await runner.subscribe("7203.TSE")
@@ -100,3 +106,386 @@ def test_live_runner_aggregates_ticks_into_kline_via_bus() -> None:
     assert bar.close         == 110.0
     assert bar.low           == 100.0
     assert bar.volume        ==   2.0
+
+
+def test_live_runner_passes_depth_update_through_bus() -> None:
+    """RED (Step 2a): DepthUpdate は aggregation を経由せず bus に pass-through される。
+
+    シナリオ:
+      1. MockVenueAdapter + LiveRunner(interval_ns=1min)
+      2. runner.subscribe("7203.TSE") で adapter に trades + depth 両方を購読
+         （LiveRunner は depth pass-through のため depth も購読する）
+      3. consumer = runner.bus.subscribe()
+      4. runner.start()
+      5. adapter.emit_depth_snapshot で DepthUpdate を 1 件注入
+      6. consumer から取れる最初の event が DepthUpdate そのものであること
+
+    Step 1 と違い、aggregator は経由しないので即時 publish される。
+    """
+    ts_ns = 28333333 * INTERVAL_NS
+
+    async def scenario() -> DepthUpdate:
+        adapter = MockVenueAdapter()
+        runner = LiveRunner(adapter=adapter, interval_ns=INTERVAL_NS)
+
+        await adapter.login(VenueCredentials(
+            credentials_source="env", environment_hint="demo",
+        ))
+        await runner.subscribe("7203.TSE")
+
+        consumer = runner.bus.subscribe()
+        await runner.start()
+
+        adapter.emit_depth_snapshot(
+            "7203.TSE",
+            ts_ns,
+            bids=[DepthLevel(price=100.0, size=10.0)],
+            asks=[DepthLevel(price=101.0, size=5.0)],
+        )
+
+        try:
+            it = consumer.__aiter__()
+            evt = await asyncio.wait_for(it.__anext__(), timeout=1.0)
+        finally:
+            await runner.stop()
+
+        assert isinstance(evt, DepthUpdate)
+        return evt
+
+    depth = asyncio.run(scenario())
+
+    assert depth.instrument_id == "7203.TSE"
+    assert depth.ts_ns         == ts_ns
+    assert depth.bids[0].price == 100.0
+    assert depth.bids[0].size  == 10.0
+    assert depth.asks[0].price == 101.0
+    assert depth.asks[0].size  == 5.0
+
+
+def test_live_runner_passes_direct_kline_update_through_bus() -> None:
+    """RED (Step 2b): venue から直接届く KlineUpdate は aggregator を迂回して bus に流す。
+
+    シナリオ:
+      - aggregator は tick からの集約用。venue が既に集約済み bar を送ってきた場合は
+        aggregator を一切経由せず、そのまま pass-through する。
+      - adapter.inject_tick(KlineUpdate(...)) で 1 本注入し、
+        consumer から取れる最初の event がその KlineUpdate そのもの（同一値）であること。
+    """
+    ts_ns = 28333333 * INTERVAL_NS
+    bar_in = KlineUpdate(
+        kind="kline",
+        instrument_id="7203.TSE",
+        ts_ns=ts_ns,
+        open=100.0, high=110.0, low=95.0, close=105.0, volume=42.0,
+    )
+
+    async def scenario() -> KlineUpdate:
+        adapter = MockVenueAdapter()
+        runner = LiveRunner(adapter=adapter, interval_ns=INTERVAL_NS)
+
+        await adapter.login(VenueCredentials(
+            credentials_source="env", environment_hint="demo",
+        ))
+        await runner.subscribe("7203.TSE")
+
+        consumer = runner.bus.subscribe()
+        await runner.start()
+
+        adapter.inject_tick(bar_in)
+
+        try:
+            it = consumer.__aiter__()
+            evt = await asyncio.wait_for(it.__anext__(), timeout=1.0)
+        finally:
+            await runner.stop()
+
+        assert isinstance(evt, KlineUpdate)
+        return evt
+
+    bar = asyncio.run(scenario())
+    assert bar == bar_in
+
+
+def test_live_runner_aggregates_multiple_instruments_independently() -> None:
+    """RED (Step 2c): 複数 instrument を同時に subscribe したとき、
+    各 aggregator が独立に bar を確定して bus に publish する。
+
+    シナリオ:
+      - "7203.TSE" と "9984.TSE" を subscribe
+      - 同一分に両方 1 本ずつ tick → 次分 tick で両方の直前 bar 確定
+      - bus から 2 件 KlineUpdate を取得し、instrument_id 別に振り分けて検証
+    """
+    base_ns = 28333333 * INTERVAL_NS
+
+    async def scenario() -> dict[str, KlineUpdate]:
+        adapter = MockVenueAdapter()
+        runner = LiveRunner(adapter=adapter, interval_ns=INTERVAL_NS)
+
+        await adapter.login(VenueCredentials(
+            credentials_source="env", environment_hint="demo",
+        ))
+        await runner.subscribe("7203.TSE")
+        await runner.subscribe("9984.TSE")
+
+        consumer = runner.bus.subscribe()
+        await runner.start()
+
+        adapter.inject_tick(_tick(base_ns + 0, price=100.0, size=1.0, instrument_id="7203.TSE"))
+        adapter.inject_tick(_tick(base_ns + 0, price=200.0, size=2.0, instrument_id="9984.TSE"))
+        # 次分 tick で両 instrument の直前 bar が確定
+        adapter.inject_tick(_tick(base_ns + INTERVAL_NS, price=101.0, size=1.0, instrument_id="7203.TSE"))
+        adapter.inject_tick(_tick(base_ns + INTERVAL_NS, price=201.0, size=1.0, instrument_id="9984.TSE"))
+
+        bars: dict[str, KlineUpdate] = {}
+        try:
+            it = consumer.__aiter__()
+            for _ in range(2):
+                evt = await asyncio.wait_for(it.__anext__(), timeout=1.0)
+                assert isinstance(evt, KlineUpdate)
+                bars[evt.instrument_id] = evt
+        finally:
+            await runner.stop()
+        return bars
+
+    bars = asyncio.run(scenario())
+    assert set(bars.keys()) == {"7203.TSE", "9984.TSE"}
+    assert bars["7203.TSE"].open  == 100.0
+    assert bars["7203.TSE"].close == 100.0
+    assert bars["7203.TSE"].volume == 1.0
+    assert bars["7203.TSE"].ts_ns == base_ns
+    assert bars["9984.TSE"].open  == 200.0
+    assert bars["9984.TSE"].close == 200.0
+    assert bars["9984.TSE"].volume == 2.0
+    assert bars["9984.TSE"].ts_ns == base_ns
+
+
+def test_live_runner_supports_multiple_intervals_per_instrument() -> None:
+    """RED (Step 2d): LiveRunner(intervals_ns=[1m, 2m]) で 1 tick が両方の
+    aggregator に流れ、それぞれの境界で独立に bar が確定する。
+
+    シナリオ:
+      - intervals = [1min, 2min]
+      - tick at t=base, t=base+1min, t=base+2min
+      - 期待:
+        * 1m aggregator: [base, base+1min) と [base+1min, base+2min) の 2 本確定
+        * 2m aggregator: [base, base+2min) の 1 本確定
+      - bar の interval は KlineUpdate に持たないため、(ts_ns, volume) の組で識別する:
+        * (base,       1.0) = 1m@base   open=close=100
+        * (base+1min,  1.0) = 1m@base+1min open=close=110
+        * (base,       2.0) = 2m@base   open=100 close=110
+    """
+    INTERVAL_2M = 2 * INTERVAL_NS
+    base_ns = 14166666 * INTERVAL_2M  # 1m と 2m 両方の bucket 境界
+
+    async def scenario() -> list[KlineUpdate]:
+        adapter = MockVenueAdapter()
+        runner = LiveRunner(adapter=adapter, intervals_ns=[INTERVAL_NS, INTERVAL_2M])
+
+        await adapter.login(VenueCredentials(
+            credentials_source="env", environment_hint="demo",
+        ))
+        await runner.subscribe("7203.TSE")
+
+        consumer = runner.bus.subscribe()
+        await runner.start()
+
+        adapter.inject_tick(_tick(base_ns + 0,             price=100.0, size=1.0))
+        adapter.inject_tick(_tick(base_ns + INTERVAL_NS,   price=110.0, size=1.0))
+        adapter.inject_tick(_tick(base_ns + INTERVAL_2M,   price=120.0, size=1.0))
+
+        bars: list[KlineUpdate] = []
+        try:
+            it = consumer.__aiter__()
+            for _ in range(3):
+                evt = await asyncio.wait_for(it.__anext__(), timeout=1.0)
+                assert isinstance(evt, KlineUpdate)
+                bars.append(evt)
+        finally:
+            await runner.stop()
+        return bars
+
+    bars = asyncio.run(scenario())
+    keys = {(b.ts_ns, b.volume) for b in bars}
+    assert keys == {
+        (base_ns,                  1.0),  # 1m @ base
+        (base_ns + INTERVAL_NS,    1.0),  # 1m @ base+1m
+        (base_ns,                  2.0),  # 2m @ base
+    }
+    # 2m bar の close は同分内の最後着順 (110 — 120 は次 2m bucket 開始)
+    bar_2m = next(b for b in bars if b.ts_ns == base_ns and b.volume == 2.0)
+    assert bar_2m.open  == 100.0
+    assert bar_2m.close == 110.0
+    assert bar_2m.high  == 110.0
+    assert bar_2m.low   == 100.0
+
+
+def test_live_runner_accepts_single_interval_int_for_backwards_compat() -> None:
+    """interval_ns=int (Step 1 シグネチャ) でも従来通り動作する。"""
+    base_ns = 28333333 * INTERVAL_NS
+
+    async def scenario() -> KlineUpdate:
+        adapter = MockVenueAdapter()
+        runner = LiveRunner(adapter=adapter, interval_ns=INTERVAL_NS)
+        await adapter.login(VenueCredentials(
+            credentials_source="env", environment_hint="demo",
+        ))
+        await runner.subscribe("7203.TSE")
+        consumer = runner.bus.subscribe()
+        await runner.start()
+        adapter.inject_tick(_tick(base_ns + 0,            price=100.0))
+        adapter.inject_tick(_tick(base_ns + INTERVAL_NS,  price=110.0))
+        try:
+            it = consumer.__aiter__()
+            evt = await asyncio.wait_for(it.__anext__(), timeout=1.0)
+        finally:
+            await runner.stop()
+        assert isinstance(evt, KlineUpdate)
+        return evt
+
+    bar = asyncio.run(scenario())
+    assert bar.ts_ns  == base_ns
+    assert bar.open   == 100.0
+    assert bar.close  == 100.0
+
+
+def test_live_runner_subscribe_after_start_does_not_drop_first_tick() -> None:
+    """RED: start() 後に subscribe() を呼んだとき、adapter.subscribe 完了直後
+    （aggregator 登録の前）に届いた tick が drop される race を観測する。
+
+    LiveRunner.subscribe() は
+        await self._adapter.subscribe(...)        # suspend point
+        self._aggregators[instrument_id] = [...]  # 登録
+    の順なので、suspend 中に background _run task が tick を読み、
+    _aggregators.get(instrument_id) が None で握り潰される可能性がある。
+
+    再現方法:
+      - adapter.subscribe を「親 subscribe 完了 → 同一分 tick 2 本 + 次分 1 本
+        を inject_tick → return」する wrapper に差し替える。
+      - LiveRunner.start() → runner.subscribe("7203.TSE") の順に呼ぶ。
+      - 期待: 1 件目の KlineUpdate が open=100, close=110, volume=2.0
+        （= subscribe 中に inject された 2 本が aggregator に届いた証拠）。
+      - 現実装では timeout か、close/volume が次分 tick 1 本ぶんしか入らず FAIL。
+    """
+    base_ns = 28333333 * INTERVAL_NS
+
+    async def scenario() -> KlineUpdate:
+        adapter = MockVenueAdapter()
+        runner = LiveRunner(adapter=adapter, interval_ns=INTERVAL_NS)
+
+        await adapter.login(VenueCredentials(
+            credentials_source="env", environment_hint="demo",
+        ))
+
+        # adapter.subscribe をラップ: 親の subscribe が return した直後
+        # （= LiveRunner.subscribe 内で aggregator が登録される前）に
+        # 同一分 2 本 + 次分 1 本を queue に積む。
+        original_subscribe = adapter.subscribe
+
+        async def racing_subscribe(instrument_id: str, channels):
+            await original_subscribe(instrument_id, channels)
+            adapter.inject_tick(_tick(base_ns + 0,              price=100.0, size=1.0))
+            adapter.inject_tick(_tick(base_ns + 10_000_000_000, price=110.0, size=1.0))
+            adapter.inject_tick(_tick(base_ns + INTERVAL_NS,    price= 90.0, size=1.0))
+            # 強制的に background _run に制御を渡し、aggregator 登録前に
+            # tick を pop させて drop race を発火させる。
+            await asyncio.sleep(0)
+
+        adapter.subscribe = racing_subscribe  # type: ignore[assignment]
+
+        consumer = runner.bus.subscribe()
+        await runner.start()
+        await runner.subscribe("7203.TSE")
+
+        try:
+            it = consumer.__aiter__()
+            evt = await asyncio.wait_for(it.__anext__(), timeout=1.0)
+        finally:
+            await runner.stop()
+
+        assert isinstance(evt, KlineUpdate)
+        return evt
+
+    bar = asyncio.run(scenario())
+
+    assert bar.instrument_id == "7203.TSE"
+    assert bar.ts_ns         == base_ns
+    assert bar.open          == 100.0
+    assert bar.high          == 110.0
+    assert bar.low           == 100.0
+    assert bar.close         == 110.0
+    assert bar.volume        ==   2.0
+
+
+def test_live_runner_can_restart_after_run_task_dies_with_exception() -> None:
+    """RED (サイクル 2): adapter.events() が例外を投げて _run task が die した後、
+    再度 start() を呼べば新しい _run task が立ち上がり、再注入された tick が
+    bus に流れること。さらに die 原因の例外が runner.last_error から取得できる。
+
+    現実装の問題:
+      - _run が例外で死ぬと self._task は done 状態のまま残るので、
+        2 回目の start() は `if self._task is not None: return` で no-op になり、
+        runner は永久に events() を読まなくなる（silent dead）。
+      - 例外が外から観測できない（呼び元はなぜ止まったか分からない）。
+
+    案 C の仕様:
+      - start(): self._task is None or self._task.done() なら新規 task を作る。
+      - _run の例外（CancelledError 以外）は self._last_error に保存し、
+        runner.last_error プロパティ（読み取り専用）で取得できる。
+      - bus への error publish はしない（LiveEvent union は触らない）。
+    """
+    base_ns = 28333333 * INTERVAL_NS
+    boom = RuntimeError("adapter stream blew up")
+
+    async def scenario() -> tuple[KlineUpdate, BaseException | None]:
+        adapter = MockVenueAdapter()
+        runner = LiveRunner(adapter=adapter, interval_ns=INTERVAL_NS)
+
+        await adapter.login(VenueCredentials(
+            credentials_source="env", environment_hint="demo",
+        ))
+        await runner.subscribe("7203.TSE")
+
+        # adapter.events() を「1 回 yield せず即例外を投げる」async generator に差し替える。
+        async def exploding_events():
+            raise boom
+            yield  # pragma: no cover  (generator にするためのダミー)
+
+        adapter.events = exploding_events  # type: ignore[assignment]
+
+        await runner.start()
+        # _run が例外で死ぬまで yield を回す
+        for _ in range(5):
+            await asyncio.sleep(0)
+
+        assert runner._task is not None and runner._task.done(), \
+            "precondition: _run task should have died from the injected exception"
+        captured_error = runner.last_error
+        assert captured_error is boom, \
+            f"last_error should expose the cause exception, got {captured_error!r}"
+
+        # ここから restart: events() を正常な queue ベースに戻し、
+        # start() を再度呼べば新しい _run task が立ち上がること。
+        adapter.events = MockVenueAdapter.events.__get__(adapter, MockVenueAdapter)  # type: ignore[assignment]
+
+        consumer = runner.bus.subscribe()
+        await runner.start()  # 現実装ではここが no-op → 以下の tick が永遠に消費されず timeout
+
+        adapter.inject_tick(_tick(base_ns + 0,            price=100.0, size=1.0))
+        adapter.inject_tick(_tick(base_ns + INTERVAL_NS,  price=110.0, size=1.0))
+
+        try:
+            it = consumer.__aiter__()
+            evt = await asyncio.wait_for(it.__anext__(), timeout=1.0)
+        finally:
+            await runner.stop()
+
+        assert isinstance(evt, KlineUpdate)
+        return evt, captured_error
+
+    bar, err = asyncio.run(scenario())
+    assert err is boom
+    assert bar.instrument_id == "7203.TSE"
+    assert bar.ts_ns         == base_ns
+    assert bar.open          == 100.0
+    assert bar.close         == 100.0
+    assert bar.volume        == 1.0
