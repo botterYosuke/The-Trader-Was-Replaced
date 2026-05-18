@@ -393,6 +393,58 @@ async def test_event_ws_raises_without_websockets_package(monkeypatch):
         await ws.run(cb)
 
 
+async def test_event_ws_normal_close_triggers_backoff_not_storm(monkeypatch):
+    """Bug fix: 正常 close (StopAsyncIteration) でも backoff に乗せ、
+    reconnect storm を防ぐ。0.2s 中 reconnect 回数が爆発しないこと。"""
+    monkeypatch.setattr(tws_mod, "_BACKOFF_CAPS", (0.05,))
+
+    stop = asyncio.Event()
+    connect_counter = {"n": 0}
+
+    # auto_close=True で frame 配り終わったら即 StopAsyncIteration → 正常 close.
+    def _fake_connect(url: str, **kwargs: Any) -> _FakeWs:
+        connect_counter["n"] += 1
+        return _FakeWs([], auto_close=True)
+
+    monkeypatch.setattr(tws_mod, "websockets",
+                        type("_M", (), {"connect": staticmethod(_fake_connect)}))
+    monkeypatch.setattr(tws_mod, "_HAS_WEBSOCKETS", True)
+
+    async def cb(*_a, **_k) -> None: ...
+
+    ws = TachibanaEventWs("wss://example/ws", stop, ticker="7203")
+
+    async def _stopper() -> None:
+        await asyncio.sleep(0.2)
+        stop.set()
+
+    await asyncio.gather(ws.run(cb), _stopper())
+    # backoff=0.05s なので 0.2s 中 reconnect は最大 ~5 回程度。
+    # 現状 (バグ) は backoff なしで 1000+ 回連結する。10 回を上限とする。
+    assert connect_counter["n"] <= 10, (
+        f"reconnect storm detected: {connect_counter['n']} connects in 0.2s"
+    )
+
+
+async def test_event_ws_proxy_none_passed_explicitly(monkeypatch):
+    """Bug fix: proxy 未指定でも connect_kwargs に proxy=None を明示渡し、
+    websockets 16.0 の env-proxy 自動採用を抑止する。"""
+    stop = asyncio.Event()
+
+    async def cb(*_a, **_k) -> None:
+        stop.set()
+
+    fake = _FakeWs([_encode_frame_sjis([("p_cmd", "KP")])],
+                   auto_close=False, idle_event=stop)
+    rec = _install_fake_ws(monkeypatch, fake)
+    ws = TachibanaEventWs("wss://example/ws", stop, ticker="7203")
+    await asyncio.wait_for(ws.run(cb), timeout=2.0)
+    # proxy kwarg は呼び出しに存在し、かつ値が None であること。
+    kwargs = rec["calls"][0]["kwargs"]
+    assert "proxy" in kwargs, "proxy kwarg must be passed explicitly"
+    assert kwargs["proxy"] is None
+
+
 # ---------------------------------------------------------------------------
 # TickerEventWsHub — multi-subscriber multiplexer (Phase 8 §3.2 A3.2b)
 # ---------------------------------------------------------------------------
