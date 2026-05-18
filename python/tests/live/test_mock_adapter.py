@@ -53,6 +53,8 @@ def test_mock_adapter_fetch_instruments_is_deterministic() -> None:
       - 2 回呼び出して内容が完全一致（決定的）
     """
     adapter = MockVenueAdapter()
+    creds = VenueCredentials(credentials_source="env", environment_hint="demo")
+    asyncio.run(adapter.login(creds))
 
     first = asyncio.run(adapter.fetch_instruments())
     second = asyncio.run(adapter.fetch_instruments())
@@ -90,6 +92,8 @@ def test_mock_adapter_subscribe_then_inject_tick_flows_via_events() -> None:
     )
 
     async def scenario() -> TradesUpdate:
+        creds = VenueCredentials(credentials_source="env", environment_hint="demo")
+        await adapter.login(creds)
         await adapter.subscribe(instrument_id, {"trades"})
         adapter.inject_tick(tick)  # 同期メソッド想定（subscribe 後に内部 queue へ push）
         it = adapter.events().__aiter__()
@@ -125,6 +129,8 @@ def test_mock_adapter_unsubscribe_stops_flow_to_events() -> None:
     )
 
     async def scenario() -> None:
+        creds = VenueCredentials(credentials_source="env", environment_hint="demo")
+        await adapter.login(creds)
         await adapter.subscribe(instrument_id, {"trades"})
         await adapter.unsubscribe(instrument_id)
         adapter.inject_tick(tick)  # unsubscribe 済みなので queue には積まれない想定
@@ -157,6 +163,8 @@ def test_mock_adapter_emit_depth_snapshot_flows_via_events() -> None:
     asks = [DepthLevel(price=2500.0, size=200.0), DepthLevel(price=2500.5, size=400.0)]
 
     async def scenario() -> DepthUpdate:
+        creds = VenueCredentials(credentials_source="env", environment_hint="demo")
+        await adapter.login(creds)
         await adapter.subscribe(instrument_id, {"depth"})
         adapter.emit_depth_snapshot(instrument_id, ts_ns, bids, asks)
         it = adapter.events().__aiter__()
@@ -170,3 +178,67 @@ def test_mock_adapter_emit_depth_snapshot_flows_via_events() -> None:
     assert received.ts_ns == ts_ns
     assert list(received.bids) == bids
     assert list(received.asks) == asks
+
+
+def test_mock_adapter_fetch_instruments_without_login_raises() -> None:
+    """C-6 RED: login していない状態で fetch_instruments を呼ぶと RuntimeError。
+
+    Step D の live_runner が `login -> fetch_instruments` の順序を誤った場合に
+    早期検出する保護網。tachibana / kabu でも未認証では銘柄マスタが取れないので
+    実環境とも整合する。
+    """
+    import pytest
+
+    adapter = MockVenueAdapter()
+    with pytest.raises(RuntimeError, match="not logged in"):
+        asyncio.run(adapter.fetch_instruments())
+
+
+def test_mock_adapter_subscribe_without_login_raises() -> None:
+    """C-7 RED: login していない状態で subscribe を呼ぶと RuntimeError。
+
+    §3.3 起動順序の保護網: `event_bus.subscribe -> adapter.login ->
+    adapter.subscribe` の順序違反を mock 段階で検出する。
+    """
+    import pytest
+
+    adapter = MockVenueAdapter()
+    with pytest.raises(RuntimeError, match="not logged in"):
+        asyncio.run(adapter.subscribe("7203.TSE", {"trades"}))
+
+
+def test_mock_adapter_logout_clears_subscriptions() -> None:
+    """C-8 RED: logout 後は既存 subscription がクリアされ inject_tick が no-op。
+
+    実 venue の WebSocket 切断と同じ意味論: logout すると session が終わり
+    購読も無効化される。logout 後に再 login → 改めて subscribe しない限り
+    inject_tick した event は events() に流れない。
+    """
+    from engine.live.adapter import TradesUpdate
+
+    import pytest
+
+    adapter = MockVenueAdapter()
+    instrument_id = "7203.TSE"
+    tick = TradesUpdate(
+        kind="trades",
+        instrument_id=instrument_id,
+        ts_ns=1_700_000_000_000_000_000,
+        price=2500.0,
+        size=100.0,
+        aggressor_side="buy",
+    )
+
+    async def scenario() -> None:
+        creds = VenueCredentials(credentials_source="env", environment_hint="demo")
+        await adapter.login(creds)
+        await adapter.subscribe(instrument_id, {"trades"})
+        await adapter.logout()
+        # login し直すが、subscribe はやり直さない
+        await adapter.login(creds)
+        adapter.inject_tick(tick)
+        it = adapter.events().__aiter__()
+        await asyncio.wait_for(it.__anext__(), timeout=0.2)
+
+    with pytest.raises(asyncio.TimeoutError):
+        asyncio.run(scenario())

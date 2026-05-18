@@ -62,8 +62,8 @@ def test_venue_credentials_rejects_plain_password_fields() -> None:
     assert creds.credentials_source == "prompt"
     assert creds.environment_hint == "demo"
     # password / user_id 等のフィールドは存在しないこと
-    assert "password" not in creds.model_fields
-    assert "user_id" not in creds.model_fields
+    assert "password" not in VenueCredentials.model_fields
+    assert "user_id" not in VenueCredentials.model_fields
 
 
 def test_venue_credentials_source_allowlist() -> None:

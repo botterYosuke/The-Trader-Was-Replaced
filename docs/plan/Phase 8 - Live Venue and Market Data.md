@@ -27,7 +27,13 @@
 
 **完了直近**: Step C `live/mock_adapter.py` — `MockVenueAdapter` を 5 段 RED→GREEN (C-1 Protocol 適合 / C-2 login-logout state / C-3 fetch_instruments deterministic / C-4 subscribe + inject_tick→events / C-4b unsubscribe stops flow / C-5 emit_depth_snapshot→DepthUpdate) で実装。pair-relay (Navigator/Driver 2 層) で運用。Protocol を一切変えず、テスト制御は mock 固有メソッド `inject_tick(event)` / `emit_depth_snapshot(instrument_id, ts_ns, bids, asks)` で補った。`venue_id="MOCK"`、`is_logged_in` は mock 固有属性。
 
-**フル実行時の既知の事前問題（Step C と無関係）**: `python/tests/test_grpc_phase8.py` がフル `pytest -m "not slow"` 実行時のみ 7 件失敗（テスト間状態汚染）。単独実行 + Step C ファイル退避状態の baseline でも再現する事前問題。Step D 前または並行で切り分けが望ましい。
+**フル実行ステータス**: `cd python && uv run pytest -m "not slow"` で **497 passed / 3 skipped / 64 deselected / 0 failed**。Step C 完了時点で観測されていた `test_grpc_phase8.py` フル実行時失敗は、同コミット (`ef34711`) に含まれた token auth ガード追加で解消済み（汚染ではなく proto field 同期の中間状態が原因だった）。
+
+**Step C 追加ハードン (2026-05-18 後追い)**: レビュー指摘を受けて mock を動作順序限定にハード化:
+- `logout()` で `_subscribed` と `_queue` をクリア（実 venue WebSocket 切断と同じ意味論）
+- `fetch_instruments` / `subscribe` を未 login で呼ぶと `RuntimeError("MockVenueAdapter is not logged in")` を raise
+- 新規 3 テスト追加 (C-6 fetch without login / C-7 subscribe without login / C-8 logout clears subscriptions)、既存 C-3/C-4/C-4b/C-5 を login 先行に更新
+- channel-gating は §9.6 ADR 通り **意図的に不採用**（test の意思表示の問題、実 venue は channel ごとに別 endpoint）
 
 ---
 

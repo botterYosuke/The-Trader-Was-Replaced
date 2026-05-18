@@ -39,9 +39,19 @@ class MockVenueAdapter:
         self.is_logged_in = True
 
     async def logout(self) -> None:
+        # logout は session 終了相当: 購読も内部 queue もクリアする (C-8)。
+        # 実 venue の WebSocket 切断時と同じ意味論。
         self.is_logged_in = False
+        self._subscribed.clear()
+        while not self._queue.empty():
+            self._queue.get_nowait()
+
+    def _require_login(self) -> None:
+        if not self.is_logged_in:
+            raise RuntimeError("MockVenueAdapter is not logged in")
 
     async def fetch_instruments(self) -> list[InstrumentRaw]:
+        self._require_login()
         return [
             InstrumentRaw(
                 code="7203",
@@ -62,6 +72,7 @@ class MockVenueAdapter:
     async def subscribe(
         self, instrument_id: InstrumentId, channels: set[Channel]
     ) -> None:
+        self._require_login()
         self._subscribed.setdefault(instrument_id, set()).update(channels)
 
     async def unsubscribe(self, instrument_id: InstrumentId) -> None:
