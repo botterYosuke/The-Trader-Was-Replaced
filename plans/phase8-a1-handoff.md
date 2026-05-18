@@ -26,13 +26,13 @@ HEAD: `daaac07 fix(tachibana): serialize EVENT WS reconnect on subscribe-after-s
 | **A3.3 ✅** | `af37286` → `daaac07` | `TachibanaAdapter.subscribe` / `unsubscribe` / `events` を `TickerEventWsHub` + `FdFrameProcessor` に配線。logout で全 hub aclose + registry clear。EVENT WS reconnect serialize + `_run` silent death restart | tachibana scope GREEN |
 | **B1 dirty チェック ✅** | (この session) | 引継ぎ指示にあった dirty 2 件 (`tachibana_ws.py` +74/-13, `test_tachibana_ws.py` +159) は `3f8cab2` / `263537a` で既に commit 済み。working tree clean を確認 | — |
 | **B1 ✅** | `5b4cf08` (RED-1 fetch_token 7) → `2511c57` (RED-2 adapter env 6) → `2a37b0c` (GREEN) | `kabusapi_auth.fetch_token()` 新設 (POST /token + R10 masked log) + `KabuStationAdapter.login('env')` 配線 (`DEV_KABU_API_PASSWORD` + prod は `endpoint("token", env="prod")` 経由で `KABU_ALLOW_PROD` ガード自動発火)。kabusapi tests 38 passed | regression 648 passed / 3 skipped / 0 failed |
+| **B2 ✅** | `1e72001` (RED 3) → `1bdc276` (GREEN) | `KabuStationAdapter.fetch_instruments` MVP = `return []`。ユーザー決定事項 L84 「kabu fetch_instruments は空 list」に従い HTTP を叩かない。`subscribe` 時の `/symbol` lazy fetch は B4 以降。既存 stub `test_fetch_instruments_raises_not_implemented` 削除、新 3 件追加 (empty / type / no-login) | regression 652 passed / 3 skipped / 0 failed |
 
 > note: 同 session で想定外 commit (`60b7bc0` / `eb13ed2` = `.claude/skills/zed/src/` 1.5M 行) を rebase --onto で drop。`c5215df ｓ` は `16d7099 zed` として再積み (149 行 SKILL.md add)。保険 branch `backup/pre-rebase-1519f69` 残置 (要らなければ `git branch -D`)。
 
 ## 残タスク
 
-- **B2** `kabusapi.fetch_instruments` (lazy = 空 list、subscribe 時 GET `/symbol`) ← 次着手
-- **B3** `kabusapi_register.RegisterSet` (50-symbol LRU)
+- **B3** `kabusapi_register.RegisterSet` (50-symbol LRU) ← 次着手
 - **B4** `kabusapi_ws.py` + adapter (ping_interval=None 必須)
 - **D1** `-m slow` smoke test (tachibana + kabu 各 1 本)
 - **D2** 計画書更新 + 完了報告
