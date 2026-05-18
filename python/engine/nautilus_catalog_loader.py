@@ -13,13 +13,25 @@ read clearly:
     runner.run_bars(load_bars(catalog_path, instrument_ids=[...]))
 """
 
+import os
 from pathlib import Path
 from typing import Any, Optional
 
 
 def _resolve_catalog_path(catalog_path: str | Path) -> str:
-    # ParquetDataCatalog requires an existing absolute path.
-    p = Path(catalog_path).resolve()
+    raw = os.fspath(catalog_path)
+    # UNC paths become file://host/... in DataFusion, which has no ObjectStore
+    # for the host component -> "No suitable object store found". Map the share
+    # to a drive letter and pass that instead.
+    if raw.startswith("\\\\") or raw.startswith("//"):
+        raise ValueError(
+            f"UNC catalog paths are not supported (got {raw!r}). "
+            "Map the share to a drive letter (e.g. S:) and pass that instead."
+        )
+    # NOTE: Path.resolve() on Windows walks reparse points and rewrites
+    # mapped drives (S:\) back to their UNC form (\\host\share\...). Use
+    # absolute() -- it only prepends CWD when the path is relative.
+    p = Path(raw).absolute()
     if not p.exists():
         raise FileNotFoundError(f"Catalog path does not exist: {p}")
     return str(p)

@@ -91,7 +91,7 @@ def test_load_bars_resolves_path_and_queries_with_bar_class(patched_catalog):
     assert len(result) == 1
     assert len(_FakeCatalog.instances) == 1
     catalog = _FakeCatalog.instances[0]
-    assert catalog.path == str(patched_catalog.resolve())
+    assert catalog.path == str(patched_catalog)
     assert catalog.queries[0]["data_cls"] is Bar
     assert catalog.queries[0]["identifiers"] == ["AAPL.NASDAQ"]
     assert catalog.queries[0]["start"] == 1

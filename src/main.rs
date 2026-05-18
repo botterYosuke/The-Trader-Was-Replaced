@@ -840,7 +840,7 @@ mod tests {
             start_engine_accepted: true,
             ..ReplayStartupProgress::default()
         };
-        apply(
+        let last_run = apply(
             BackendStatusUpdate::RunComplete {
                 startup_id: Some(7),
                 run_id: "r1".into(),
@@ -854,6 +854,35 @@ mod tests {
         assert!(progress.baseline_timestamp_ms.is_none());
         assert!(progress.started_at_elapsed.is_none());
         assert!(!progress.start_engine_accepted);
+        assert!(matches!(last_run.state, RunState::Completed { .. }));
+    }
+
+    /// #7b strict: a `RunComplete` whose `startup_id == None` (legacy / unrelated)
+    /// must not close a freshly-opened progress window. Pairs with the matching
+    /// `apply_run_complete_with_stale_startup_id_keeps_progress` test for
+    /// `Some(other)` and adds the `None` case the plan calls out explicitly.
+    #[test]
+    fn apply_run_complete_with_none_startup_id_keeps_progress() {
+        let mut progress = ReplayStartupProgress {
+            visible: true,
+            startup_id: 7,
+            phase: ReplayStartupPhase::WaitingForFirstTick,
+            start_engine_accepted: true,
+            ..ReplayStartupProgress::default()
+        };
+        apply(
+            BackendStatusUpdate::RunComplete {
+                startup_id: None,
+                run_id: "r1".into(),
+                summary_json: "{}".into(),
+            },
+            &mut progress,
+        );
+        assert!(
+            progress.visible,
+            "RunComplete with no startup_id must not close the new window"
+        );
+        assert_eq!(progress.phase, ReplayStartupPhase::WaitingForFirstTick);
     }
 
     #[test]

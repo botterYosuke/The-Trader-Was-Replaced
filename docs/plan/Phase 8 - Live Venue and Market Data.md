@@ -1,18 +1,5 @@
 # Phase 8: Live Venue & Market Data — Implementation Plan
 
-> **ソース現状スナップショット（2026-05-18 棚卸し）**
->
-> 本計画書は Phase 7 完了直後の前提で執筆されたが、その後 Phase 7.5b（Instrument Picker）が完了し、現在は `impl/7.6-replay-startup-progress-window` ブランチで作業中。Phase 8 の実装はまだ 0 行も入っていない。棚卸しで判明した既存コードとの差分を反映済み:
->
-> - **proto ファイル位置**: `python/engine/proto/engine.proto` ではなく [`python/proto/engine.proto`](../../python/proto/engine.proto)。`python/engine/proto/` には生成物 (`engine_pb2.py` / `engine_pb2_grpc.py`) のみ
-> - **gRPC サービス名**: 単一 `service Engine` ではなく `service Health` + `service DataEngine` の 2 本立て。Phase 8 の新規 RPC は `DataEngine` 側に追加する
-> - **`engine-client` crate は存在しない**: Cargo は workspace ではなく `backcast` 単一クレート。venue capabilities 等の Rust 側型は `src/` 直下に置く
-> - **`src/ui/floating/` ディレクトリは存在しない**: UI は [`src/ui/`](../../src/ui/) 直下にフラット配置されており、[`src/ui/floating_window.rs`](../../src/ui/floating_window.rs) という単一ファイルだけが「floating」名を持つ。Phase 8 で追加する `ladder.rs` / `order_panel.rs` も `src/ui/` 直下に置く
-> - **menu_bar.rs に Phase 7 の Venue 予約枠は無い**: [src/ui/menu_bar.rs](../../src/ui/menu_bar.rs) 現状は File (Open/Save/Save As) と Edit (Undo/Redo) のみで、`Venue` メニューも `File → New` 項目も存在しない。Phase 8 で **新設** する（既存項目の書き換えではない）
-> - **`Engine.Shutdown` RPC は未実装**: 現状は `Stop` / `StopEngine` / `StopReplay` のみ。Phase 8 で graceful shutdown を要求する場合は新規 RPC を追加するか、`SIGINT` / `SIGBREAK` 経路に統一する
-> - **server_grpc の bind**: [python/engine/server_grpc.py:708](../../python/engine/server_grpc.py#L708) が依然 `add_insecure_port(f"[::]:{port}")` のままで、§3.4 ADR「`127.0.0.1` バインド」の修正は未適用
-> - 本ブランチ Phase 7.6 (Replay Startup Progress Window) は Phase 8 計画に直接干渉しない見込み
-
 [Tranceparent Headless Replay](./Tranceparent%20Headless%20Replay.md) Phase 8 を具体化する。Phase 6/7 で完成した **Replay 系統**（`replay_runner.py` + Replay State Machine + Snapshot Reducer + Bevy UI）を一切壊さずに、その横に **Live 系統** を新設し、実取引会場（Tachibana e支店 / kabu ステーション）からの認証・銘柄メタデータ・マーケットデータ購読までを headless backend に取り込む。注文・口座同期は Phase 9、Replay→Live のストラテジー昇格は Phase 10 で扱う。
 
 ## Goals

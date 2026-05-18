@@ -122,9 +122,9 @@ fn spawn_text_field_row(
                     // Must be tall enough to hold one line of cosmic-edit
                     // text after DPI scaling (set_initial_scale doubles the
                     // initial Metrics on a 2x DPI display, so line_height
-                    // goes from 14 to 28). A row shorter than the scaled
+                    // goes from 7 to 14). A row shorter than the scaled
                     // line_height produces 0 layout runs and no glyphs.
-                    height: Val::Px(30.0),
+                    height: Val::Px(16.0),
                     ..default()
                 },
                 host_marker,
@@ -319,7 +319,7 @@ pub fn spawn_scenario_startup_input_fields(
         let entity = commands
             .spawn((
                 TextEdit,
-                CosmicEditBuffer::new(font_system, Metrics::new(12.0, 14.0))
+                CosmicEditBuffer::new(font_system, Metrics::new(5.5, 7.0))
                     .with_text(font_system, "", text_attrs),
                 // render_texture reads font_color from DefaultAttrs (not from
                 // the Attrs passed to set_text). Without this, font_color

@@ -31,6 +31,7 @@ Correct usage::
     )
 """
 
+import os
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Callable, List
@@ -66,6 +67,15 @@ def _write_bars_to_catalog(
     price_precision: int,
 ) -> JQuantsCatalogResult:
     """Convert rows → Bars → write to ParquetDataCatalog. Returns JQuantsCatalogResult."""
+    raw = os.fspath(catalog_path)
+    # UNC paths become file://host/... in DataFusion, which has no ObjectStore
+    # for the host component -> "No suitable object store found". Map the share
+    # to a drive letter and pass that instead.
+    if raw.startswith("\\\\") or raw.startswith("//"):
+        raise ValueError(
+            f"UNC catalog paths are not supported (got {raw!r}). "
+            "Map the share to a drive letter (e.g. S:) and pass that instead."
+        )
     from nautilus_trader.model.data import Bar, BarType
     from nautilus_trader.model.objects import Price, Quantity
     from nautilus_trader.persistence.catalog import ParquetDataCatalog
@@ -95,7 +105,7 @@ def _write_bars_to_catalog(
             )
         )
 
-    catalog_dir = catalog_path.resolve()
+    catalog_dir = catalog_path.absolute()
     catalog_dir.mkdir(parents=True, exist_ok=True)
     ParquetDataCatalog(str(catalog_dir)).write_data(bars)
 
