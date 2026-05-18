@@ -52,7 +52,9 @@ class KabuStationAdapter:
         self._token = None
 
     async def fetch_instruments(self) -> list[InstrumentRaw]:
-        raise NotImplementedError("Phase 8 後半 HTTP client step で実装")
+        # Phase 8 §3.2 B2 MVP: handoff「ユーザー決定事項」L84 に基づき空 list 返却。
+        # /symbol lazy fetch は B4 以降で subscribe 経由に実装。
+        return []
 
     async def subscribe(
         self, instrument_id: InstrumentId, channels: set[Channel]
