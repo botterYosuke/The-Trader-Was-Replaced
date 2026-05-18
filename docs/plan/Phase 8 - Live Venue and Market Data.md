@@ -14,7 +14,7 @@
 | §3.2 LiveVenueAdapter Protocol + venue helper 骨組み | ✅ 完了 | URL builder / auth / codec / file_store / instrument_mapping / mask_secrets |
 | §3.2 **LiveEvent discriminated union** | ✅ 完了 | KlineUpdate/TradesUpdate/DepthUpdate/DepthLevel、Pydantic v2 frozen、`kind` discriminator |
 | §3.2.1 login_dialog_runner NDJSON 骨組み | ✅ 完了 | tkinter UI 本体は未実装 |
-| §3.2 venue I/O 本体（HTTP/WS）| ⏳ 未実装 | tachibana/kabu login / fetch_instruments / WebSocket |
+| §3.2 venue I/O 本体（HTTP/WS）| 🟡 一部完了 | tachibana: login / fetch_instruments / EVENT WS 配線完了 (A1-A3.3)。kabu: login env path 完了 (B1, `fetch_token` + `KabuStationAdapter.login('env')`、`ResultCode` 正規化済み)。残: kabu fetch_instruments (B2) / kabu register (B3) / kabu WebSocket (B4) / smoke (D1) |
 | §3.3 **live/event_bus.py** | ✅ 完了 | asyncio.Queue fan-out、late-subscribe で履歴 replay しない |
 | §3.3 **live/aggregator.py** | ✅ 完了 | `TickBarAggregator` 1m 固定、close=last-write-wins、空 bar 埋めなし |
 | §3.3 **live/mock_adapter.py (Step C)** | ✅ 完了 | Protocol 準拠 deterministic mock、`inject_tick` / `emit_depth_snapshot` でテスト制御、6 件 PASS |
@@ -721,10 +721,11 @@ class LiveVenueAdapter(Protocol):
 > - ✅ `exchanges/tachibana_codec.py`（Shift-JIS `errors="ignore"` 禁止、R8 `""→[]` 正規化、ミニマル EVENT frame parser）
 > - ✅ `exchanges/tachibana_file_store.py`（`TACHIBANA_SESSION_PATH` env override、JST 当日有効性、冪等 clear）
 > - ✅ `exchanges/kabusapi_url.py`（BASE_URL 1 箇所、KABU_ALLOW_PROD ガード、`symbol_key`、`endpoint`）
-> - ✅ `exchanges/kabusapi_auth.py`（例外階層、R7 二段判定、X-API-KEY ヘッダ helper）
-> - ✅ `exchanges/tachibana.py` / `exchanges/kabusapi.py`（Adapter Protocol 適合骨格、login/fetch/subscribe/events は `NotImplementedError`、kabu の `session_cache` は `UNSUPPORTED_FOR_VENUE` で reject）
+> - ✅ `exchanges/kabusapi_auth.py`（例外階層、R7 二段判定、X-API-KEY ヘッダ helper、**`fetch_token` (B1, 2026-05-18): POST /token + masked log + `ResultCode` 正規化**）
+> - ✅ `exchanges/tachibana.py` (login env + fetch_instruments + subscribe/unsubscribe/events 配線完了)
+> - 🟡 `exchanges/kabusapi.py` (`KabuStationAdapter.login('env')` 完了 B1; fetch_instruments / subscribe / events は `NotImplementedError`、`session_cache` は `UNSUPPORTED_FOR_VENUE` reject)
 > - ✅ `live/mock_adapter.py` (Step C 完了 2026-05-18): `MockVenueAdapter` Protocol 準拠、`venue_id="MOCK"`、`is_logged_in` 状態、`fetch_instruments` 固定 2 件 (7203 / 9984)、`subscribe`/`unsubscribe` の `_subscribed: dict[InstrumentId, set[Channel]]` 管理、`inject_tick(event)` / `emit_depth_snapshot(...)` でテスト制御、`events()` は単一 `asyncio.Queue[LiveEvent]` の drain async generator。6 件 PASS
-> - ⏳ 未実装: `tachibana_ws.py` / `tachibana_master.py` / `tachibana_login_flow.py` / `kabusapi_ws.py` / `kabusapi_*.py` REST 各種 / `kabusapi_login_flow.py` / `kabusapi_ratelimit.py` / `kabusapi_register.py` / 各 adapter の HTTP I/O 本体
+> - ⏳ 未実装: `tachibana_login_flow.py` / `kabusapi_ws.py` / `kabusapi_*.py` REST 各種 (fetch_instruments / register) / `kabusapi_login_flow.py` / `kabusapi_ratelimit.py` / `kabusapi_register.py`
 
 venue 共通の抽象は `python/engine/live/` に置き、venue 固有のプロトコル実装は **`python/engine/exchanges/` 配下に venue 名で集約**する（tachibana skill `.claude/skills/tachibana/SKILL.md` の規約 R1 / F-L1 を踏襲。「立花プロトコル固有のヘルパーは Rust に書かない／Python は `exchanges/tachibana*.py` に集める」）。kabusapi も同方針で `exchanges/kabusapi*.py` に置き、Python に集約する（kabu skill「Python 実装ヘルパー」の命名規約に準拠）。
 
