@@ -1,6 +1,10 @@
+use backcast::backend_supervisor::{
+    BackendLifecycle, BackendLifecycleHandle, BackendSupervisorPlugin, SupervisorTaskSeed,
+    run_supervisor,
+};
 use backcast::camera::{pancam_suppression_over_editor_system, setup_camera};
 use backcast::grid::GridPlugin;
-use backcast::backend_supervisor::{BackendSupervisorPlugin, SupervisorTaskSeed, run_supervisor};
+use backcast::replay::{ReplayStartupPhase, ReplayStartupProgress};
 use backcast::trading::{
     AvailableInstruments, BackendChannel, BackendStartupStage, BackendStatus, BackendStatusUpdate,
     ExecutionMode, ExecutionModeRes, LastPrices, LastRunResult, PortfolioOrder, PortfolioPosition,
@@ -9,12 +13,11 @@ use backcast::trading::{
     VenueState, VenueStatusRes, backend_update_system, engine, parse_summary_json,
     price_simulation_system, tickers_source_to_wire,
 };
-use backcast::replay::{ReplayStartupPhase, ReplayStartupProgress};
 use backcast::ui::UiPlugin;
 use backcast::ui::replay_startup_window::{
     animate_replay_startup_bar_system, auto_hide_replay_startup_window_system,
-    replay_startup_close_button_system, replay_startup_timeout_system,
-    spawn_replay_startup_window, update_replay_startup_window_system,
+    replay_startup_close_button_system, replay_startup_timeout_system, spawn_replay_startup_window,
+    update_replay_startup_window_system,
 };
 use bevy::prelude::*;
 use bevy_pancam::{PanCamPlugin, PanCamSystemSet};
@@ -88,11 +91,19 @@ fn fire_list_instruments(
                             market: i.market,
                         })
                         .collect();
-                    info!("ListInstruments(auto) ok: {} instruments", instruments.len());
-                    let _ = li_status_tx
-                        .send(BackendStatusUpdate::InstrumentsListed { source, instruments });
+                    info!(
+                        "ListInstruments(auto) ok: {} instruments",
+                        instruments.len()
+                    );
+                    let _ = li_status_tx.send(BackendStatusUpdate::InstrumentsListed {
+                        source,
+                        instruments,
+                    });
                 } else {
-                    warn!("ListInstruments(auto) returned !success: {}", inner.error_message);
+                    warn!(
+                        "ListInstruments(auto) returned !success: {}",
+                        inner.error_message
+                    );
                     let _ = li_status_tx.send(BackendStatusUpdate::InstrumentsListFailed {
                         source,
                         error: inner.error_message,
@@ -126,7 +137,9 @@ async fn main() {
         // (desktop_app() の 5s は trading UI には粗すぎたため短縮)。
         .insert_resource(bevy::winit::WinitSettings {
             focused_mode: bevy::winit::UpdateMode::reactive(std::time::Duration::from_millis(200)),
-            unfocused_mode: bevy::winit::UpdateMode::reactive_low_power(std::time::Duration::from_secs(2)),
+            unfocused_mode: bevy::winit::UpdateMode::reactive_low_power(
+                std::time::Duration::from_secs(2),
+            ),
         })
         .add_plugins(PanCamPlugin)
         .add_plugins(UiPlugin)
@@ -146,7 +159,15 @@ async fn main() {
         .insert_resource(LastPrices::default())
         .insert_resource(SelectedSymbol::default())
         .insert_resource(tokio_handle)
-        .add_systems(Startup, (setup_camera, setup_backend_connection, spawn_supervisor_task_system, spawn_replay_startup_window))
+        .add_systems(
+            Startup,
+            (
+                setup_camera,
+                setup_backend_connection,
+                spawn_supervisor_task_system,
+                spawn_replay_startup_window,
+            ),
+        )
         .add_systems(
             Update,
             (
@@ -304,7 +325,10 @@ fn apply_status_update(
             tickers.status = TickersStatus::InFlight;
             // list is kept (shows stale data while in-flight)
         }
-        BackendStatusUpdate::InstrumentsListed { source, instruments } => {
+        BackendStatusUpdate::InstrumentsListed {
+            source,
+            instruments,
+        } => {
             tickers.source = source;
             tickers.status = TickersStatus::Loaded;
             tickers.list = instruments;
@@ -338,12 +362,11 @@ fn apply_available_failed(
     available.in_flight.remove(&end_date);
 }
 
-fn spawn_supervisor_task_system(
-    tokio: Res<TokioHandle>,
-    mut seed: ResMut<SupervisorTaskSeed>,
-) {
+fn spawn_supervisor_task_system(tokio: Res<TokioHandle>, mut seed: ResMut<SupervisorTaskSeed>) {
     if let Some((config, lifecycle_tx, cmd_rx, ownership_tx)) = seed.inner.take() {
-        tokio.0.spawn(run_supervisor(config, lifecycle_tx, cmd_rx, ownership_tx));
+        tokio
+            .0
+            .spawn(run_supervisor(config, lifecycle_tx, cmd_rx, ownership_tx));
     }
 }
 
@@ -351,6 +374,7 @@ fn setup_backend_connection(
     mut commands: Commands,
     settings: Res<TradingSettings>,
     tokio_handle: Res<TokioHandle>,
+    lifecycle_handle: Res<BackendLifecycleHandle>,
 ) {
     let (tx, rx) = mpsc::unbounded_channel();
     commands.insert_resource(BackendChannel { rx });
@@ -379,41 +403,73 @@ fn setup_backend_connection(
     let catalog_path = settings.catalog_path.clone();
 
     let handle = tokio_handle.0.clone();
+    let mut lifecycle_rx = lifecycle_handle.subscribe();
     handle.spawn(async move {
-        let mut client = loop {
-            match DataEngineClient::connect(url.clone()).await {
+        // Ready 駆動再接続ループ。supervisor が Ready を立てるまで connect しない。
+        loop {
+            // (1) 次の Ready を待つ。すでに Ready なら即通過。
+            if lifecycle_rx
+                .wait_for(|s| matches!(s, BackendLifecycle::Ready))
+                .await
+                .is_err()
+            {
+                // watch sender (supervisor) が drop された = アプリ終了。task を畳む。
+                return;
+            }
+
+            // (2) Ready 到達 → connect。Ready 後の connect は構造的に 1 発成功する想定。
+            //     失敗したら Error を出して外側ループへ戻り、次の lifecycle 変化を待つ。
+            let mut client = match DataEngineClient::connect(url.clone()).await {
                 Ok(c) => {
                     let _ = status_tx.send(BackendStatusUpdate::Connected(true));
-                    break c;
+                    info!("Backend connection established.");
+                    let _ = status_tx.send(BackendStatusUpdate::Running(true));
+                    c
                 }
                 Err(e) => {
-                    let err_msg = format!("Failed to connect: {}", e);
+                    let err_msg = format!("Failed to connect after Ready: {}", e);
                     error!("{}", err_msg);
                     let _ = status_tx.send(BackendStatusUpdate::Error(err_msg));
-                    tokio::time::sleep(tokio::time::Duration::from_secs(2)).await;
+                    if lifecycle_rx.changed().await.is_err() {
+                        return;
+                    }
+                    continue;
                 }
-            }
-        };
+            };
 
-        // Backend manages its own lifecycle; no explicit Start call needed.
-        info!("Backend connection established.");
-        let _ = status_tx.send(BackendStatusUpdate::Running(true));
+            // (3) 再接続のたびに initial ListInstruments を必ず 1 回再発火する。
+            // Pre-login this falls back to the Replay catalog (plan §3.5 1002);
+            // after VenueLogin success we re-fire below to overwrite with the
+            // Live venue universe.
+            fire_list_instruments(&client, &token, TickersSource::ReplayCatalogFallback, &status_tx);
 
-        // Phase 8 §3.5: fetch the initial instrument universe once on connect.
-        // Pre-login this falls back to the Replay catalog (plan §3.5 1002);
-        // after VenueLogin success we re-fire below to overwrite with the
-        // Live venue universe.
-        fire_list_instruments(&client, &token, TickersSource::ReplayCatalogFallback, &status_tx);
+            // Phase 8 §3.5 subtask 5: dedupe venue_state / execution_mode pushes
+            // by tracking the previous raw string we saw from BackendTradingState.
+            // dedupe state は inner loop ごとに reset。
+            let mut prev_venue: Option<String> = None;
+            let mut prev_mode: Option<String> = None;
 
-        // Phase 8 §3.5 subtask 5: dedupe venue_state / execution_mode pushes
-        // by tracking the previous raw string we saw from BackendTradingState.
-        let mut prev_venue: Option<String> = None;
-        let mut prev_mode: Option<String> = None;
+            // (4) Ready 前 / Restart 中に溜まった古い transport command を破棄する。
+            while transport_rx.try_recv().is_ok() {}
 
-        loop {
-            // Drain transport commands before polling state so the UI feels responsive.
-            while let Ok(cmd) = transport_rx.try_recv() {
-                match cmd {
+            // (5) inner main loop: transport drain + GetState polling + lifecycle 監視。
+            loop {
+                tokio::select! {
+                    changed = lifecycle_rx.changed() => {
+                        if changed.is_err() {
+                            return; // supervisor drop
+                        }
+                        let state = *lifecycle_rx.borrow();
+                        if !matches!(state, BackendLifecycle::Ready) {
+                            info!("Backend lifecycle left Ready ({:?}); leaving inner loop.", state);
+                            break;
+                        }
+                    }
+
+                    _ = async {
+                        // Drain transport commands before polling state so the UI feels responsive.
+                        while let Ok(cmd) = transport_rx.try_recv() {
+                            match cmd {
                     TransportCommand::Pause => {
                         let req = tonic::Request::new(PauseReplayRequest {
                             request_id: String::new(),
@@ -811,11 +867,11 @@ fn setup_backend_connection(
                 }
             }
 
-            let request = tonic::Request::new(GetStateRequest {
-                token: token.clone(),
-            });
+                        let request = tonic::Request::new(GetStateRequest {
+                            token: token.clone(),
+                        });
 
-            match tokio::time::timeout(tokio::time::Duration::from_secs(5), client.get_state(request)).await {
+                        match tokio::time::timeout(tokio::time::Duration::from_secs(5), client.get_state(request)).await {
                 Ok(Ok(response)) => {
                     let json_data = response.into_inner().json_data;
                     match serde_json::from_str::<backcast::trading::BackendTradingState>(&json_data) {
@@ -870,22 +926,21 @@ fn setup_backend_connection(
                         }
                     }
                 }
-                Ok(Err(e)) => {
-                    let err_msg = format!("gRPC error: {}", e);
-                    error!("{}. Attempting to reconnect...", err_msg);
-                    let _ = status_tx.send(BackendStatusUpdate::Error(err_msg));
-                    if let Ok(c) = DataEngineClient::connect(url.clone()).await {
-                        client = c;
-                        let _ = status_tx.send(BackendStatusUpdate::Connected(true));
-                    }
-                }
-                Err(_) => {
-                    // Backend busy (e.g. during LoadReplayData / engine_runner.run).
-                    // Not a connection failure — skip reconnect to avoid noise.
-                    warn!("GetState timed out (backend busy), will retry next poll");
+                        Ok(Err(e)) => {
+                            let err_msg = format!("gRPC error: {}", e);
+                            error!("{}", err_msg);
+                            let _ = status_tx.send(BackendStatusUpdate::Error(err_msg));
+                        }
+                        Err(_) => {
+                            // Backend busy (e.g. during LoadReplayData / engine_runner.run).
+                            // Not a connection failure — skip reconnect to avoid noise.
+                            warn!("GetState timed out (backend busy), will retry next poll");
+                        }
+                        }
+                        tokio::time::sleep(tokio::time::Duration::from_millis(interval)).await;
+                    } => {}
                 }
             }
-            tokio::time::sleep(tokio::time::Duration::from_millis(interval)).await;
         }
     });
 }
@@ -1209,12 +1264,18 @@ mod tests {
 
     #[test]
     fn parse_replay_granularity_daily() {
-        assert_eq!(parse_replay_granularity("Daily").unwrap(), ReplayGranularity::Daily as i32);
+        assert_eq!(
+            parse_replay_granularity("Daily").unwrap(),
+            ReplayGranularity::Daily as i32
+        );
     }
 
     #[test]
     fn parse_replay_granularity_minute() {
-        assert_eq!(parse_replay_granularity("Minute").unwrap(), ReplayGranularity::Minute as i32);
+        assert_eq!(
+            parse_replay_granularity("Minute").unwrap(),
+            ReplayGranularity::Minute as i32
+        );
     }
 
     #[test]
@@ -1231,14 +1292,21 @@ mod tests {
     // --- InstrumentsListed arm (Phase 8 §3.5 / Phase 8.7 §3.3 D6c) ---
 
     fn t(id: &str) -> Ticker {
-        Ticker { id: id.into(), name: id.into(), market: String::new() }
+        Ticker {
+            id: id.into(),
+            name: id.into(),
+            market: String::new(),
+        }
     }
 
     #[test]
     fn apply_instruments_listed_overwrites_tickers() {
         use backcast::trading::{TickersSource, TickersStatus};
         let mut progress = ReplayStartupProgress::default();
-        let mut tickers = Tickers { list: vec![t("OLD.TSE")], ..Tickers::default() };
+        let mut tickers = Tickers {
+            list: vec![t("OLD.TSE")],
+            ..Tickers::default()
+        };
         apply_with_tickers(
             BackendStatusUpdate::InstrumentsListed {
                 source: TickersSource::ReplayCatalogFallback,
@@ -1248,7 +1316,11 @@ mod tests {
             &mut tickers,
         );
         assert_eq!(
-            tickers.list.iter().map(|x| x.id.as_str()).collect::<Vec<_>>(),
+            tickers
+                .list
+                .iter()
+                .map(|x| x.id.as_str())
+                .collect::<Vec<_>>(),
             vec!["1301.TSE", "7203.TSE"],
             "InstrumentsListed must replace (not merge with) the prior universe",
         );
@@ -1260,7 +1332,10 @@ mod tests {
     fn apply_instruments_listed_empty_clears_tickers() {
         use backcast::trading::TickersSource;
         let mut progress = ReplayStartupProgress::default();
-        let mut tickers = Tickers { list: vec![t("1301.TSE")], ..Tickers::default() };
+        let mut tickers = Tickers {
+            list: vec![t("1301.TSE")],
+            ..Tickers::default()
+        };
         apply_with_tickers(
             BackendStatusUpdate::InstrumentsListed {
                 source: TickersSource::LiveVenue,
@@ -1318,7 +1393,9 @@ mod tests {
             ("8306".to_string(), 500.0_f64),
         ]);
         apply_with_last_prices(
-            BackendStatusUpdate::LastPricesUpdated { prices: new_prices.clone() },
+            BackendStatusUpdate::LastPricesUpdated {
+                prices: new_prices.clone(),
+            },
             &mut progress,
             &mut last_prices,
         );
@@ -1336,7 +1413,9 @@ mod tests {
             map: HashMap::from([("7203".to_string(), 100.0_f64)]),
         };
         apply_with_last_prices(
-            BackendStatusUpdate::LastPricesUpdated { prices: HashMap::new() },
+            BackendStatusUpdate::LastPricesUpdated {
+                prices: HashMap::new(),
+            },
             &mut progress,
             &mut last_prices,
         );
