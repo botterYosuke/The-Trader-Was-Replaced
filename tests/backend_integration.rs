@@ -542,7 +542,9 @@ async fn run_attach_and_await_terminal(config: SupervisorConfig) -> BackendLifec
     let (lt, mut lr) = watch::channel(BackendLifecycle::Disabled);
     let (ct, cr) = mpsc::unbounded_channel();
     drop(ct);
-    tokio::spawn(run_supervisor(config, lt, cr));
+    let (ownership_tx, _ownership_rx) =
+        watch::channel(backcast::backend_supervisor::BackendOwnership::default());
+    tokio::spawn(run_supervisor(config, lt, cr, ownership_tx));
     tokio::time::timeout(
         Duration::from_secs(5),
         lr.wait_for(|s| {

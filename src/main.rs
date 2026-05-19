@@ -342,8 +342,8 @@ fn spawn_supervisor_task_system(
     tokio: Res<TokioHandle>,
     mut seed: ResMut<SupervisorTaskSeed>,
 ) {
-    if let Some((config, lifecycle_tx, cmd_rx)) = seed.inner.take() {
-        tokio.0.spawn(run_supervisor(config, lifecycle_tx, cmd_rx));
+    if let Some((config, lifecycle_tx, cmd_rx, ownership_tx)) = seed.inner.take() {
+        tokio.0.spawn(run_supervisor(config, lifecycle_tx, cmd_rx, ownership_tx));
     }
 }
 

@@ -216,7 +216,9 @@ pub async fn run_supervisor(
     config: SupervisorConfig,
     lifecycle_tx: watch::Sender<BackendLifecycle>,
     mut cmd_rx: mpsc::UnboundedReceiver<SupervisorCommand>,
+    ownership_tx: watch::Sender<BackendOwnership>,
 ) {
+    let _ = &ownership_tx; // wired in 4-B-2b-ii-beta (spawn path)
     if !config.enabled {
         let _ = lifecycle_tx.send(BackendLifecycle::Disabled);
         return;
@@ -378,6 +380,21 @@ impl BackendLifecycleHandle {
     }
 }
 
+/// Read-side handle to the ownership watch channel. The supervisor task flips
+/// `own_process=true` via the matching `watch::Sender` when it spawns the
+/// backend itself; AppExit cleanup (later Step) reads this to decide whether to
+/// fire the `Shutdown` RPC. (C-7b)
+#[derive(Resource, Clone)]
+pub struct BackendOwnershipHandle {
+    rx: watch::Receiver<BackendOwnership>,
+}
+
+impl BackendOwnershipHandle {
+    pub fn current(&self) -> BackendOwnership {
+        *self.rx.borrow()
+    }
+}
+
 /// Sender side of the supervisor command channel; lives as a Bevy resource so
 /// Footer / AppExit systems can enqueue Restart / Shutdown. (C-7b)
 #[derive(Resource, Clone)]
@@ -393,6 +410,7 @@ pub struct SupervisorTaskSeed {
         SupervisorConfig,
         watch::Sender<BackendLifecycle>,
         mpsc::UnboundedReceiver<SupervisorCommand>,
+        watch::Sender<BackendOwnership>,
     )>,
 }
 
@@ -411,13 +429,14 @@ impl Plugin for BackendSupervisorPlugin {
             BackendLifecycle::Disabled
         };
         let (lifecycle_tx, lifecycle_rx) = watch::channel(initial);
+        let (ownership_tx, ownership_rx) = watch::channel(BackendOwnership::default());
         let (cmd_tx, cmd_rx) = mpsc::unbounded_channel::<SupervisorCommand>();
 
         app.insert_resource(BackendLifecycleHandle { rx: lifecycle_rx })
-            .insert_resource(BackendOwnership::default())
+            .insert_resource(BackendOwnershipHandle { rx: ownership_rx })
             .insert_resource(SupervisorCommandSender { tx: cmd_tx })
             .insert_resource(SupervisorTaskSeed {
-                inner: Some((config, lifecycle_tx, cmd_rx)),
+                inner: Some((config, lifecycle_tx, cmd_rx, ownership_tx)),
             });
     }
 }
@@ -469,9 +488,9 @@ mod tests {
 
         let own = app
             .world()
-            .get_resource::<BackendOwnership>()
-            .expect("BackendOwnership inserted");
-        assert!(!own.own_process);
+            .get_resource::<BackendOwnershipHandle>()
+            .expect("BackendOwnershipHandle inserted");
+        assert!(!own.current().own_process);
     }
 
     #[test]
@@ -516,7 +535,8 @@ mod tests {
         let (lt, lr) = watch::channel(BackendLifecycle::Disabled);
         let (ct, cr) = mpsc::unbounded_channel();
         drop(ct);
-        run_supervisor(config, lt, cr).await;
+        let (ot, _or) = watch::channel(BackendOwnership::default());
+        run_supervisor(config, lt, cr, ot).await;
         assert_eq!(
             *lr.borrow(),
             BackendLifecycle::StartupFailed("BACKEND_NOT_REACHABLE")
