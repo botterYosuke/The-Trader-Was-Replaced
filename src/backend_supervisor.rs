@@ -13,6 +13,10 @@
 //! state machine driver (TCP probe, spawn, Health.Check tick, GetState
 //! handshake, stdout drain) lands in Step 4-B.
 
+use crate::trading::engine::{
+    data_engine_client::DataEngineClient, health_check_response::ServingStatus,
+    health_client::HealthClient, GetStateRequest, HealthCheckRequest,
+};
 use bevy::prelude::*;
 use tokio::sync::mpsc;
 use tokio::sync::watch;
@@ -125,7 +129,7 @@ pub async fn run_supervisor(
         return;
     }
 
-    let _authority = match parse_backend_url(&config.url) {
+    let authority = match parse_backend_url(&config.url) {
         Ok(a) => a,
         Err(code) => {
             bevy::log::error!("[backend] invalid BACKEND_URL {:?}: {}", config.url, code);
@@ -137,17 +141,26 @@ pub async fn run_supervisor(
     let _ = lifecycle_tx.send(BackendLifecycle::NotStarted);
     let _ = lifecycle_tx.send(BackendLifecycle::ProbingExisting);
 
-    // TODO(4-B-2): TCP probe of `_authority` (2s budget, 200ms tick).
-    // TODO(4-B-2): on probe success -> Channel::from_shared -> Health.Check tick.
-    // TODO(4-B-2): on probe fail x2 -> if autospawn: preflight + spawn_python_backend
-    //              else: StartupFailed(BACKEND_NOT_REACHABLE).
-    // TODO(4-B-2): GetState handshake -> Ready / SERVICER_MISSING / TOKEN_MISMATCH.
+    // TODO(4-B-2b): on probe fail -> if autospawn: preflight + spawn_python_backend.
 
-    // 4-B-1 placeholder: model the AUTOSPAWN=0 short-circuit so the env wiring
-    // is testable now. (Real probe replaces this in 4-B-2.)
-    if !config.autospawn {
-        bevy::log::warn!("[backend] BACKEND_AUTOSPAWN=0 and probe stub treats backend as unreachable");
+    // TCP probe: 100ms timeout, single attempt for 4-B-2a attach path.
+    let probe_ok = tokio::time::timeout(
+        std::time::Duration::from_millis(100),
+        tokio::net::TcpStream::connect(&authority),
+    )
+    .await
+    .map(|r| r.is_ok())
+    .unwrap_or(false);
+
+    if !probe_ok {
+        bevy::log::warn!(
+            "[backend] TCP probe of {} failed (4-B-2a: spawn path not yet wired)",
+            authority
+        );
         let _ = lifecycle_tx.send(BackendLifecycle::StartupFailed("BACKEND_NOT_REACHABLE"));
+        // fall through to command drain loop
+    } else {
+        run_attach_handshake(&config, &lifecycle_tx).await;
     }
 
     // Keep the task alive draining commands so the channel doesn't error on send.
@@ -161,6 +174,77 @@ pub async fn run_supervisor(
                     let _ = tx.send(());
                 }
             }
+        }
+    }
+}
+
+/// Attach-path handshake (4-B-2a): connect Health + DataEngine clients, tick
+/// Health.Check up to 10 times (200ms apart) for SERVING, then GetState once.
+/// Maps outcomes to terminal `StartupFailed(_)` codes or `Ready` per C-1/C-3.
+/// Never returns early on failure: callers fall through to the command drain.
+async fn run_attach_handshake(
+    config: &SupervisorConfig,
+    lifecycle_tx: &watch::Sender<BackendLifecycle>,
+) {
+    let mut health = match HealthClient::connect(config.url.clone()).await {
+        Ok(c) => c,
+        Err(_) => {
+            let _ = lifecycle_tx.send(BackendLifecycle::StartupFailed("BACKEND_HANDSHAKE_FAILED"));
+            return;
+        }
+    };
+    let mut data = match DataEngineClient::connect(config.url.clone()).await {
+        Ok(c) => c,
+        Err(_) => {
+            let _ = lifecycle_tx.send(BackendLifecycle::StartupFailed("BACKEND_HANDSHAKE_FAILED"));
+            return;
+        }
+    };
+
+    // Health.Check tick: 200ms interval, max 10 attempts, looking for SERVING.
+    let mut serving = false;
+    for _ in 0..10 {
+        match health
+            .check(HealthCheckRequest {
+                service: "DataEngine".to_string(),
+            })
+            .await
+        {
+            Ok(resp) => {
+                let status = resp.into_inner().status;
+                if status == ServingStatus::Serving as i32 {
+                    serving = true;
+                    break;
+                } else if status == ServingStatus::ServiceUnknown as i32 {
+                    let _ = lifecycle_tx
+                        .send(BackendLifecycle::StartupFailed("BACKEND_IDENTITY_MISMATCH"));
+                    return;
+                }
+            }
+            Err(_) => {}
+        }
+        tokio::time::sleep(std::time::Duration::from_millis(200)).await;
+    }
+
+    if !serving {
+        let _ = lifecycle_tx.send(BackendLifecycle::StartupFailed("BACKEND_STARTUP_TIMEOUT"));
+        return;
+    }
+
+    match data
+        .get_state(GetStateRequest {
+            token: config.token.clone(),
+        })
+        .await
+    {
+        Ok(_) => {
+            let _ = lifecycle_tx.send(BackendLifecycle::Ready);
+        }
+        Err(e) if e.code() == tonic::Code::Unauthenticated => {
+            let _ = lifecycle_tx.send(BackendLifecycle::StartupFailed("BACKEND_TOKEN_MISMATCH"));
+        }
+        Err(_) => {
+            let _ = lifecycle_tx.send(BackendLifecycle::StartupFailed("BACKEND_HANDSHAKE_FAILED"));
         }
     }
 }
@@ -330,7 +414,7 @@ mod tests {
     async fn run_supervisor_autospawn_zero_short_circuits() {
         let config = SupervisorConfig {
             enabled: true,
-            url: "http://127.0.0.1:19876".to_string(),
+            url: "http://127.0.0.1:1".to_string(),
             token: "x".to_string(),
             autospawn: false,
             cwd: None,

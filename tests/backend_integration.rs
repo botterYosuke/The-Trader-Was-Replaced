@@ -3,16 +3,24 @@ use backcast::trading::engine::{
     GetStateRequest, GetStateResponse, ListAllListedSymbolsRequest, ListAllListedSymbolsResponse,
     ListInstrumentsRequest, ListInstrumentsResponse, LoadReplayDataRequest, PauseReplayRequest,
     ReplayControlResponse, ResumeReplayRequest, SetExecutionModeRequest,
-    SetExecutionModeResponse, SetReplaySpeedRequest, StartEngineRequest, StartEngineResponse,
+    SetExecutionModeResponse, SetReplaySpeedRequest, ShutdownRequest, ShutdownResponse,
+    StartEngineRequest, StartEngineResponse,
     StartResponse, StepReplayRequest, StopEngineRequest, StopReplayRequest, StopRequest,
     StopResponse, SubscribeRequest, SubscribeResponse, UnsubscribeRequest, VenueControlResponse,
     VenueLoginRequest, VenueLoginResponse, VenueLogoutRequest,
     data_engine_server::{DataEngine, DataEngineServer},
 };
+use backcast::trading::engine::{
+    health_check_response::ServingStatus,
+    health_server::{Health, HealthServer},
+    HealthCheckRequest, HealthCheckResponse,
+};
+use backcast::backend_supervisor::{run_supervisor, BackendLifecycle, SupervisorConfig};
 use backcast::trading::{BackendTradingState, StartRequest};
 use serde_json::json;
 use std::net::SocketAddr;
-use tokio::sync::oneshot;
+use std::time::Duration;
+use tokio::sync::{mpsc, oneshot, watch};
 use tonic::{Request, Response, Status, transport::Server};
 
 // Mock gRPC server implementation
@@ -20,6 +28,24 @@ use tonic::{Request, Response, Status, transport::Server};
 pub struct MyDataEngine {
     pub token: String,
     pub running: std::sync::Arc<std::sync::atomic::AtomicBool>,
+}
+
+/// Minimal Health servicer for supervisor attach-path tests. Always returns the
+/// configured `status` (a `ServingStatus` int code) for every Check call.
+struct MockHealth {
+    status: i32,
+}
+
+#[tonic::async_trait]
+impl Health for MockHealth {
+    async fn check(
+        &self,
+        _req: Request<HealthCheckRequest>,
+    ) -> Result<Response<HealthCheckResponse>, Status> {
+        Ok(Response::new(HealthCheckResponse {
+            status: self.status,
+        }))
+    }
 }
 
 #[tonic::async_trait]
@@ -222,6 +248,16 @@ impl DataEngine for MyDataEngine {
         self.running
             .store(false, std::sync::atomic::Ordering::SeqCst);
         Ok(Response::new(StopResponse { success: true }))
+    }
+
+    async fn shutdown(
+        &self,
+        _request: Request<ShutdownRequest>,
+    ) -> Result<Response<ShutdownResponse>, Status> {
+        Ok(Response::new(ShutdownResponse {
+            accepted: true,
+            error_code: String::new(),
+        }))
     }
 
     async fn list_instruments(
@@ -475,4 +511,215 @@ async fn test_reconnect_logic() {
 
     let _ = tx_close2.send(());
     server_handle2.await.unwrap();
+}
+
+/// Health servicer that returns NOT_SERVING for the first `n` Check calls, then
+/// SERVING. Used by the delayed-SERVING-within-budget attach test.
+struct DelayedHealth {
+    not_serving_count: usize,
+    calls: std::sync::Arc<std::sync::atomic::AtomicUsize>,
+}
+
+#[tonic::async_trait]
+impl Health for DelayedHealth {
+    async fn check(
+        &self,
+        _req: Request<HealthCheckRequest>,
+    ) -> Result<Response<HealthCheckResponse>, Status> {
+        let n = self.calls.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+        let status = if n < self.not_serving_count {
+            ServingStatus::NotServing as i32
+        } else {
+            ServingStatus::Serving as i32
+        };
+        Ok(Response::new(HealthCheckResponse { status }))
+    }
+}
+
+/// Drive `run_supervisor` against an already-listening attach server and wait
+/// for a terminal lifecycle state (Ready or StartupFailed), 5s budget.
+async fn run_attach_and_await_terminal(config: SupervisorConfig) -> BackendLifecycle {
+    let (lt, mut lr) = watch::channel(BackendLifecycle::Disabled);
+    let (ct, cr) = mpsc::unbounded_channel();
+    drop(ct);
+    tokio::spawn(run_supervisor(config, lt, cr));
+    tokio::time::timeout(
+        Duration::from_secs(5),
+        lr.wait_for(|s| {
+            matches!(
+                s,
+                BackendLifecycle::Ready | BackendLifecycle::StartupFailed(_)
+            )
+        }),
+    )
+    .await
+    .expect("supervisor reached a terminal state within 5s")
+    .expect("watch channel stayed open");
+    *lr.borrow()
+}
+
+#[tokio::test]
+async fn attach_serving_then_getstate_ok_reaches_ready() {
+    let addr: SocketAddr = "127.0.0.1:50061".parse().unwrap();
+    let token = "good-token".to_string();
+    let (tx_close, rx_close) = oneshot::channel::<()>();
+
+    let health = MockHealth {
+        status: ServingStatus::Serving as i32,
+    };
+    let engine = MyDataEngine {
+        token: token.clone(),
+        ..Default::default()
+    };
+    let server_handle = tokio::spawn(async move {
+        Server::builder()
+            .add_service(HealthServer::new(health))
+            .add_service(DataEngineServer::new(engine))
+            .serve_with_shutdown(addr, async {
+                rx_close.await.ok();
+            })
+            .await
+            .unwrap();
+    });
+    tokio::time::sleep(Duration::from_millis(100)).await;
+
+    let config = SupervisorConfig {
+        enabled: true,
+        url: format!("http://{}", addr),
+        token: token.clone(),
+        autospawn: false,
+        cwd: None,
+        python_bin: None,
+    };
+    let outcome = run_attach_and_await_terminal(config).await;
+    assert_eq!(outcome, BackendLifecycle::Ready);
+
+    let _ = tx_close.send(());
+    server_handle.await.unwrap();
+}
+
+#[tokio::test]
+async fn attach_service_unknown_reaches_identity_mismatch() {
+    let addr: SocketAddr = "127.0.0.1:50062".parse().unwrap();
+    let (tx_close, rx_close) = oneshot::channel::<()>();
+
+    let health = MockHealth {
+        status: ServingStatus::ServiceUnknown as i32,
+    };
+    let engine = MyDataEngine {
+        token: "good-token".to_string(),
+        ..Default::default()
+    };
+    let server_handle = tokio::spawn(async move {
+        Server::builder()
+            .add_service(HealthServer::new(health))
+            .add_service(DataEngineServer::new(engine))
+            .serve_with_shutdown(addr, async {
+                rx_close.await.ok();
+            })
+            .await
+            .unwrap();
+    });
+    tokio::time::sleep(Duration::from_millis(100)).await;
+
+    let config = SupervisorConfig {
+        enabled: true,
+        url: format!("http://{}", addr),
+        token: "good-token".to_string(),
+        autospawn: false,
+        cwd: None,
+        python_bin: None,
+    };
+    let outcome = run_attach_and_await_terminal(config).await;
+    assert_eq!(
+        outcome,
+        BackendLifecycle::StartupFailed("BACKEND_IDENTITY_MISMATCH")
+    );
+
+    let _ = tx_close.send(());
+    server_handle.await.unwrap();
+}
+
+#[tokio::test]
+async fn attach_getstate_unauthenticated_reaches_token_mismatch() {
+    let addr: SocketAddr = "127.0.0.1:50063".parse().unwrap();
+    let (tx_close, rx_close) = oneshot::channel::<()>();
+
+    let health = MockHealth {
+        status: ServingStatus::Serving as i32,
+    };
+    // Server token differs from the supervisor config token -> get_state 401.
+    let engine = MyDataEngine {
+        token: "server-token".to_string(),
+        ..Default::default()
+    };
+    let server_handle = tokio::spawn(async move {
+        Server::builder()
+            .add_service(HealthServer::new(health))
+            .add_service(DataEngineServer::new(engine))
+            .serve_with_shutdown(addr, async {
+                rx_close.await.ok();
+            })
+            .await
+            .unwrap();
+    });
+    tokio::time::sleep(Duration::from_millis(100)).await;
+
+    let config = SupervisorConfig {
+        enabled: true,
+        url: format!("http://{}", addr),
+        token: "client-token".to_string(),
+        autospawn: false,
+        cwd: None,
+        python_bin: None,
+    };
+    let outcome = run_attach_and_await_terminal(config).await;
+    assert_eq!(
+        outcome,
+        BackendLifecycle::StartupFailed("BACKEND_TOKEN_MISMATCH")
+    );
+
+    let _ = tx_close.send(());
+    server_handle.await.unwrap();
+}
+
+#[tokio::test]
+async fn attach_delayed_serving_within_budget_reaches_ready() {
+    let addr: SocketAddr = "127.0.0.1:50064".parse().unwrap();
+    let token = "good-token".to_string();
+    let (tx_close, rx_close) = oneshot::channel::<()>();
+
+    let health = DelayedHealth {
+        not_serving_count: 3,
+        calls: std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0)),
+    };
+    let engine = MyDataEngine {
+        token: token.clone(),
+        ..Default::default()
+    };
+    let server_handle = tokio::spawn(async move {
+        Server::builder()
+            .add_service(HealthServer::new(health))
+            .add_service(DataEngineServer::new(engine))
+            .serve_with_shutdown(addr, async {
+                rx_close.await.ok();
+            })
+            .await
+            .unwrap();
+    });
+    tokio::time::sleep(Duration::from_millis(100)).await;
+
+    let config = SupervisorConfig {
+        enabled: true,
+        url: format!("http://{}", addr),
+        token: token.clone(),
+        autospawn: false,
+        cwd: None,
+        python_bin: None,
+    };
+    let outcome = run_attach_and_await_terminal(config).await;
+    assert_eq!(outcome, BackendLifecycle::Ready);
+
+    let _ = tx_close.send(());
+    server_handle.await.unwrap();
 }
