@@ -40,6 +40,20 @@ tests/                                  python/tests/
 ### 1. Tests BEFORE Code（Red → Green → Refactor）
 テストを先に書き、失敗させてから実装する。
 
+**Rust の compile-order 制約**: Rust では参照先のシンボル（関数・型・enum variant）が
+存在しないとテスト自体がコンパイルできないため、Python のような厳密な「テスト先行 RED」が
+取れない。Rust UI system（Bevy）や新 enum variant を足すときは「実装 + 既存テスト修正を 1 手」
+→ その後にテスト追加、という順になる。**RED 先行の主戦場は Python 側**に置き、Rust は
+コンパイルが通る最小単位ごとに `cargo check`（test 抜き）→ テスト追加後に `cargo check --tests`
+の順で刻むと中間状態の破壊が最小になる。
+
+**serde/struct フィールド追加の全リテラル破壊トラップ**: `#[derive]` 構造体や serde 構造体に
+フィールドを 1 つ足すと、`..Default::default()` を使わず**全フィールドを明示**しているテスト
+リテラルが軒並み `missing field` でコンパイルエラーになる。フィールド追加時は
+`rg "StructName \{"` で全構築箇所を洗い出し、同じ 1 手で `field: None,` 追記 or
+`..Default::default()` 化すること（本番側は `::default()` 経由で無傷でも、テスト fixture が
+明示リテラルだと割れる）。
+
 ### 2. Test Placement
 
 | テスト種別 | 場所 | コマンド |

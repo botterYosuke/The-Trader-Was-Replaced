@@ -297,6 +297,9 @@ fn apply_status_update(
         BackendStatusUpdate::ExecutionModeChanged { mode } => {
             exec_mode.mode = mode;
         }
+        BackendStatusUpdate::ConfiguredVenueDiscovered { venue_id } => {
+            venue_status.configured_venue = venue_id;
+        }
         BackendStatusUpdate::InstrumentsListStarted { source } => {
             tickers.source = source;
             tickers.status = TickersStatus::InFlight;
@@ -398,6 +401,7 @@ fn setup_backend_connection(
         // by tracking the previous raw string we saw from BackendTradingState.
         let mut prev_venue: Option<String> = None;
         let mut prev_mode: Option<String> = None;
+        let mut prev_configured_venue: Option<Option<String>> = None;
 
         loop {
             // Drain transport commands before polling state so the UI feels responsive.
@@ -850,6 +854,12 @@ fn setup_backend_connection(
                                     }
                                 }
                                 prev_mode = state.execution_mode.clone();
+                            }
+                            if prev_configured_venue.as_ref() != Some(&state.configured_venue) {
+                                let _ = status_tx.send(BackendStatusUpdate::ConfiguredVenueDiscovered {
+                                    venue_id: state.configured_venue.clone(),
+                                });
+                                prev_configured_venue = Some(state.configured_venue.clone());
                             }
                             // Phase 8 §3.5: push last_prices map as a typed
                             // status update. Overwrite semantics — Replay 切替

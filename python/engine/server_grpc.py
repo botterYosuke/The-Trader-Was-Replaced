@@ -379,7 +379,11 @@ class GrpcDataEngineServer(
 
         state = self.engine.get_current_state()
         state = state.model_copy(
-            update={"live_last_error": live_last_error, "last_prices": last_prices}
+            update={
+                "live_last_error": live_last_error,
+                "last_prices": last_prices,
+                "configured_venue": self._live_venue_id,
+            }
         )
         return engine_pb2.GetStateResponse(json_data=state.model_dump_json())
 

@@ -58,7 +58,8 @@ use crate::ui::instruments_universe_prune::{
 };
 use crate::ui::restore::restore_fixed_registry_on_replay_entry_system;
 use crate::ui::menu_bar::{
-    gate_venue_menu_items_system, handle_strategy_file_load_system, handle_strategy_run_system,
+    gate_venue_menu_items_system, hide_unconfigured_venue_items_system,
+    handle_strategy_file_load_system, handle_strategy_run_system,
     log_strategy_file_load_requested_system, log_strategy_run_requested_system, menu_item_system,
     menu_keyboard_system, menu_top_level_system, restore_last_strategy_system, spawn_menu_bar,
     sync_menu_popup_visibility_system, update_strategy_status_label_system,
@@ -225,6 +226,7 @@ impl Plugin for UiPlugin {
                 menu_keyboard_system,
                 sync_menu_popup_visibility_system,
                 gate_venue_menu_items_system,
+                hide_unconfigured_venue_items_system,
                 picker_searchbox_input_system,
                 picker_list_rebuild_system
                     .after(picker_searchbox_input_system)

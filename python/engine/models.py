@@ -57,6 +57,10 @@ class TradingState(_BoundaryModel):
     )
     venue_state: Optional[str] = Field(None, description="Venue 接続状態 (例: CONNECTED/DISCONNECTED)")
     venue_id: Optional[str] = Field(None, description="接続中の Venue 識別子 (例: TACHIBANA)")
+    configured_venue: Optional[str] = Field(
+        None,
+        description="バックエンド起動時の --live-venue 設定 venue (例: TACHIBANA / KABU)。未設定なら None"
+    )
     subscribed_instruments: List[str] = Field(default_factory=list, description="購読中の銘柄シンボル一覧")
     instruments_loaded: int = Field(0, ge=0, description="ListInstruments で読み込んだ銘柄件数 (Rust BackendStatusUpdate::VenueChanged.instruments_loaded 配線元)")
 

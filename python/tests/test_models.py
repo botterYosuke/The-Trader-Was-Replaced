@@ -102,3 +102,15 @@ def test_trading_state_live_last_error_is_last_field():
         f"live_last_error must be last; got order: {keys}"
     )
 
+
+def test_trading_state_configured_venue_default_is_none():
+    state = TradingState(price=100.0, history=[90.0])
+    assert state.configured_venue is None
+
+def test_trading_state_configured_venue_roundtrip():
+    import json
+    state = TradingState(price=100.0, history=[90.0], configured_venue="TACHIBANA")
+    assert state.configured_venue == "TACHIBANA"
+    data = json.loads(state.model_dump_json())
+    assert data["configured_venue"] == "TACHIBANA"
+

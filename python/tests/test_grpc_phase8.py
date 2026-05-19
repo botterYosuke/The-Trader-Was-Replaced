@@ -1358,3 +1358,13 @@ def test_phase8_live_loop_logs_uncaught_asyncio_exception(
     ), (
         f"expected loop exception to be logged, got: {msgs!r}"
     )
+
+
+def test_get_state_exposes_configured_venue(phase8_grpc_server_with_live):
+    """Step 1: GetState の JSON に servicer._live_venue_id が
+    configured_venue として現れる。with_live fixture は live_venue_id='MOCK'。"""
+    port, token, *_ = phase8_grpc_server_with_live
+    stub = _stub(port)
+    resp = stub.GetState(engine_pb2.GetStateRequest(token=token))
+    payload = json.loads(resp.json_data)
+    assert payload["configured_venue"] == "MOCK"

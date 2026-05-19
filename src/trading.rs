@@ -61,6 +61,8 @@ pub struct BackendTradingState {
     pub instruments_loaded: Option<u32>,
     #[serde(default)]
     pub last_prices: HashMap<String, f64>,
+    #[serde(default)]
+    pub configured_venue: Option<String>,
 }
 
 #[derive(Resource, Default)]
@@ -482,6 +484,7 @@ pub struct VenueStatusRes {
     pub state: VenueState,
     pub venue_id: Option<String>,
     pub instruments_loaded: u32,
+    pub configured_venue: Option<String>,
 }
 
 #[derive(Resource, Debug, Clone, Default)]
@@ -670,6 +673,9 @@ pub enum BackendStatusUpdate {
     LastPricesUpdated {
         prices: HashMap<String, f64>,
     },
+    ConfiguredVenueDiscovered {
+        venue_id: Option<String>,
+    },
 }
 
 #[cfg(test)]
@@ -766,6 +772,7 @@ mod tests {
             venue_id: None,
             instruments_loaded: None,
             last_prices: HashMap::new(),
+            configured_venue: None,
         };
         tx.send(new_state).unwrap();
 
@@ -817,6 +824,7 @@ mod tests {
             venue_id: None,
             instruments_loaded: None,
             last_prices: HashMap::new(),
+            configured_venue: None,
         };
         tx.send(new_state).unwrap();
 
@@ -868,6 +876,7 @@ mod tests {
             venue_id: None,
             instruments_loaded: None,
             last_prices: HashMap::new(),
+            configured_venue: None,
         };
         tx.send(new_state).unwrap();
 
