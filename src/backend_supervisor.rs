@@ -116,6 +116,99 @@ pub fn parse_backend_url(url: &str) -> Result<String, &'static str> {
     Ok(format!("{}:{}", host, port))
 }
 
+/// Resolve the working directory used as the base for `.venv` discovery and
+/// `PYTHONPATH=<cwd>/python`. (C-4)
+///
+/// Order: `BACKEND_CWD` env -> (release) walk up from `current_exe().parent()`
+/// to a dir containing `Cargo.toml` -> (debug) `CARGO_MANIFEST_DIR`.
+/// Returns `Err("BACKEND_CWD_NOT_FOUND")` if the release walk finds no
+/// `Cargo.toml` ancestor.
+pub fn resolve_cwd(cfg_cwd: Option<&str>) -> Result<std::path::PathBuf, &'static str> {
+    // 1. explicit BACKEND_CWD (already snapshotted into SupervisorConfig.cwd)
+    if let Some(c) = cfg_cwd {
+        return Ok(std::path::PathBuf::from(c));
+    }
+    // 3. debug: compile-time manifest dir
+    #[cfg(debug_assertions)]
+    {
+        return Ok(std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR")));
+    }
+    // 2. release: walk up from current_exe parent looking for Cargo.toml
+    #[cfg(not(debug_assertions))]
+    {
+        let exe = std::env::current_exe().map_err(|_| "BACKEND_CWD_NOT_FOUND")?;
+        let mut dir = exe.parent();
+        while let Some(d) = dir {
+            if d.join("Cargo.toml").is_file() {
+                return Ok(d.to_path_buf());
+            }
+            dir = d.parent();
+        }
+        Err("BACKEND_CWD_NOT_FOUND")
+    }
+}
+
+/// Resolve the Python interpreter path. (C-4)
+///
+/// Order: explicit `PYTHON_BIN` (already in cfg) -> `<cwd>/.venv/{bin/python |
+/// Scripts/python.exe}` -> `<cwd>/venv/...`. No PATH fallback. Returns
+/// `Err("BACKEND_VENV_NOT_FOUND")` if no candidate exists on disk.
+pub fn resolve_python_bin(
+    cfg_python_bin: Option<&str>,
+    cwd: &std::path::Path,
+) -> Result<std::path::PathBuf, &'static str> {
+    if let Some(p) = cfg_python_bin {
+        return Ok(std::path::PathBuf::from(p));
+    }
+    #[cfg(windows)]
+    let rel = ["Scripts", "python.exe"];
+    #[cfg(not(windows))]
+    let rel = ["bin", "python"];
+
+    for venv_dir in [".venv", "venv"] {
+        let cand = cwd.join(venv_dir).join(rel[0]).join(rel[1]);
+        if cand.is_file() {
+            return Ok(cand);
+        }
+    }
+    Err("BACKEND_VENV_NOT_FOUND")
+}
+
+/// Preflight `<python_bin> -c "import engine"` with a 5s timeout, inheriting
+/// `PYTHONPATH=<cwd>/python`. Only invoked when `PYTHON_BIN` was set
+/// explicitly. (C-4)
+///
+/// Returns `Err("BACKEND_VENV_NOT_FOUND")` on non-zero exit, spawn failure, or
+/// timeout. Logs a distinct line on timeout before failing.
+pub fn run_preflight(
+    python_bin: &std::path::Path,
+    cwd: &std::path::Path,
+) -> Result<(), &'static str> {
+    use wait_timeout::ChildExt;
+
+    let pythonpath = cwd.join("python");
+    let mut child = std::process::Command::new(python_bin)
+        .args(["-c", "import engine"])
+        .env("PYTHONPATH", &pythonpath)
+        .stdout(std::process::Stdio::null())
+        .stderr(std::process::Stdio::null())
+        .spawn()
+        .map_err(|_| "BACKEND_VENV_NOT_FOUND")?;
+
+    match child.wait_timeout(std::time::Duration::from_secs(5)) {
+        Ok(Some(status)) if status.success() => Ok(()),
+        Ok(Some(_)) => Err("BACKEND_VENV_NOT_FOUND"),
+        Ok(None) => {
+            // timed out
+            let _ = child.kill();
+            let _ = child.wait();
+            bevy::log::warn!("[backend] PYTHON_BIN preflight timed out — assuming venv mismatch");
+            Err("BACKEND_VENV_NOT_FOUND")
+        }
+        Err(_) => Err("BACKEND_VENV_NOT_FOUND"),
+    }
+}
+
 /// The single supervisor Tokio task (C-7b). Drives the backend through its
 /// lifecycle. 4-B-1 scope: env gate + URL parse + AUTOSPAWN=0 short-circuit;
 /// TCP probe / spawn / Health.Check / GetState handshake land in 4-B-2.
@@ -428,5 +521,87 @@ mod tests {
             *lr.borrow(),
             BackendLifecycle::StartupFailed("BACKEND_NOT_REACHABLE")
         );
+    }
+
+    // --- 4-B-2b-i: pure resolver / preflight unit tests ---
+
+    #[test]
+    fn resolve_cwd_uses_explicit_backend_cwd() {
+        let got = resolve_cwd(Some("/tmp/explicit-cwd")).expect("explicit cwd ok");
+        assert_eq!(got, std::path::PathBuf::from("/tmp/explicit-cwd"));
+    }
+
+    #[test]
+    fn resolve_python_bin_uses_explicit_bin_without_disk_check() {
+        let got = resolve_python_bin(Some("/no/such/python"), std::path::Path::new("/irrelevant"))
+            .expect("explicit bin ok");
+        assert_eq!(got, std::path::PathBuf::from("/no/such/python"));
+    }
+
+    #[test]
+    fn resolve_python_bin_finds_dotvenv_when_present() {
+        let dir = tempfile::tempdir().unwrap();
+        let cwd = dir.path();
+        #[cfg(windows)]
+        let rel = std::path::Path::new(".venv").join("Scripts").join("python.exe");
+        #[cfg(not(windows))]
+        let rel = std::path::Path::new(".venv").join("bin").join("python");
+        let py = cwd.join(&rel);
+        std::fs::create_dir_all(py.parent().unwrap()).unwrap();
+        std::fs::write(&py, b"#!/bin/sh\n").unwrap();
+
+        let got = resolve_python_bin(None, cwd).expect("dotvenv python found");
+        assert_eq!(got, py);
+    }
+
+    #[test]
+    fn resolve_python_bin_missing_venv_errors() {
+        let dir = tempfile::tempdir().unwrap();
+        let err = resolve_python_bin(None, dir.path()).unwrap_err();
+        assert_eq!(err, "BACKEND_VENV_NOT_FOUND");
+    }
+
+    #[test]
+    fn run_preflight_succeeds_for_trivial_import() {
+        let Some(py) = which_python3() else { return };
+        let dir = tempfile::tempdir().unwrap();
+        let pkg = dir.path().join("python");
+        std::fs::create_dir_all(&pkg).unwrap();
+        std::fs::write(pkg.join("engine.py"), b"# importable shim\n").unwrap();
+        let r = run_preflight(&py, dir.path());
+        assert_eq!(r, Ok(()));
+    }
+
+    #[test]
+    fn run_preflight_fails_for_unimportable_module() {
+        let Some(py) = which_python3() else { return };
+        let dir = tempfile::tempdir().unwrap(); // no python/engine.py shim
+        let err = run_preflight(&py, dir.path()).unwrap_err();
+        assert_eq!(err, "BACKEND_VENV_NOT_FOUND");
+    }
+
+    #[test]
+    fn run_preflight_fails_for_nonexistent_bin() {
+        let dir = tempfile::tempdir().unwrap();
+        let err = run_preflight(
+            std::path::Path::new("/no/such/python-binary-xyz"),
+            dir.path(),
+        )
+        .unwrap_err();
+        assert_eq!(err, "BACKEND_VENV_NOT_FOUND");
+    }
+
+    /// Best-effort host python3 locator for preflight tests. Returns None
+    /// (test self-skips) if no system python3 is on PATH.
+    fn which_python3() -> Option<std::path::PathBuf> {
+        let out = std::process::Command::new("python3")
+            .arg("--version")
+            .output()
+            .ok()?;
+        if out.status.success() {
+            Some(std::path::PathBuf::from("python3"))
+        } else {
+            None
+        }
     }
 }
