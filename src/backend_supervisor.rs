@@ -269,7 +269,7 @@ pub fn spawn_python_backend(
 pub async fn run_supervisor(
     config: SupervisorConfig,
     lifecycle_tx: watch::Sender<BackendLifecycle>,
-    cmd_rx: mpsc::UnboundedReceiver<SupervisorCommand>,
+    mut cmd_rx: mpsc::UnboundedReceiver<SupervisorCommand>,
     ownership_tx: watch::Sender<BackendOwnership>,
 ) {
     if !config.enabled {
@@ -301,7 +301,7 @@ pub async fn run_supervisor(
     if probe_ok {
         // Attach path: an existing backend answered the probe.
         if run_attach_handshake(&config, &lifecycle_tx).await {
-            run_post_ready_monitor(&config, &lifecycle_tx, None).await;
+            run_post_ready_monitor(&config, &lifecycle_tx, None, false, &mut cmd_rx).await;
         }
     } else if !config.autospawn {
         // AUTOSPAWN=0: no existing backend and we are forbidden to start one.
@@ -431,7 +431,7 @@ pub async fn run_supervisor(
         )
         .await;
         if ready {
-            run_post_ready_monitor(&config, &lifecycle_tx, Some(child)).await;
+            run_post_ready_monitor(&config, &lifecycle_tx, Some(child), true, &mut cmd_rx).await;
         } else {
             // Handshake failed before Ready: drop the child handle (cleanup of
             // an orphaned subprocess is Step 5-2b / Job Object in Phase 8 Step 4.6).
@@ -581,10 +581,68 @@ fn classify_child_exit(status: std::process::ExitStatus) -> BackendLifecycle {
     }
 }
 
+/// Graceful shutdown sequence triggered by `SupervisorCommand::Shutdown` (C-8).
+///
+/// - `own_process == true` (we spawned it): fire the `Shutdown` RPC with a 1.0s
+///   deadline, then `wait_timeout(800ms)` the child on a blocking thread; if it
+///   has not exited, `kill()` + `wait_timeout(200ms)`. Publishes `Stopped`.
+/// - `own_process == false` (attach): never fire the RPC and never kill — the
+///   backend is externally managed (avoid collateral kill, C-3). Just publish
+///   `Stopped` so the UI reflects that we are tearing down.
+///
+/// Total budget on the spawn path is 1.0 + 0.8 + 0.2 = 2.0s; the AppExit
+/// main-thread waiter (Step 5-2b-ii) allows 2.5s with a 500ms margin.
+async fn handle_shutdown(
+    config: &SupervisorConfig,
+    lifecycle_tx: &watch::Sender<BackendLifecycle>,
+    child: &mut Option<Child>,
+    own_process: bool,
+) {
+    let _ = lifecycle_tx.send(BackendLifecycle::ShuttingDown);
+
+    if own_process {
+        match DataEngineClient::connect(config.url.clone()).await {
+            Ok(mut data) => {
+                let rpc = data.shutdown(crate::trading::engine::ShutdownRequest {
+                    token: config.token.clone(),
+                    grace_seconds: 0,
+                });
+                match tokio::time::timeout(std::time::Duration::from_secs(1), rpc).await {
+                    Ok(Ok(_)) => bevy::log::info!("[backend] Shutdown RPC accepted"),
+                    Ok(Err(e)) => bevy::log::warn!("[backend] Shutdown RPC error: {}", e),
+                    Err(_) => bevy::log::warn!("[backend] Shutdown RPC timed out (1.0s)"),
+                }
+            }
+            Err(e) => bevy::log::warn!("[backend] Shutdown RPC connect failed: {}", e),
+        }
+
+        if let Some(c) = child.take() {
+            let _ = tokio::task::spawn_blocking(move || {
+                use wait_timeout::ChildExt;
+                let mut c = c;
+                match c.wait_timeout(std::time::Duration::from_millis(800)) {
+                    Ok(Some(_)) => {}
+                    _ => {
+                        let _ = c.kill();
+                        let _ = c.wait_timeout(std::time::Duration::from_millis(200));
+                    }
+                }
+            })
+            .await;
+        }
+    } else {
+        bevy::log::info!("[backend] Shutdown on attach path: leaving external backend running");
+    }
+
+    let _ = lifecycle_tx.send(BackendLifecycle::Stopped);
+}
+
 async fn run_post_ready_monitor(
     config: &SupervisorConfig,
     lifecycle_tx: &watch::Sender<BackendLifecycle>,
     mut child: Option<Child>,
+    own_process: bool,
+    cmd_rx: &mut mpsc::UnboundedReceiver<SupervisorCommand>,
 ) {
     let mut health = match HealthClient::connect(config.url.clone()).await {
         Ok(c) => c,
@@ -600,65 +658,84 @@ async fn run_post_ready_monitor(
     let mut shutting_down = false;
 
     loop {
-        tokio::time::sleep(std::time::Duration::from_millis(200)).await;
-
-        // Subprocess-exit check (spawn path only; attach passes None). A clean
-        // exit (code 0) is a graceful Stopped; any non-zero / signal exit after
-        // Ready is a crash. (Step 5-2a, plan L532)
-        if let Some(c) = child.as_mut() {
-            match c.try_wait() {
-                Ok(Some(exit)) => {
-                    let _ = lifecycle_tx.send(classify_child_exit(exit));
-                    return;
+        tokio::select! {
+            _ = tokio::time::sleep(std::time::Duration::from_millis(200)) => {
+                // Subprocess-exit check (spawn path only; attach passes None). A clean
+                // exit (code 0) is a graceful Stopped; any non-zero / signal exit after
+                // Ready is a crash. (Step 5-2a, plan L532)
+                if let Some(c) = child.as_mut() {
+                    match c.try_wait() {
+                        Ok(Some(exit)) => {
+                            let _ = lifecycle_tx.send(classify_child_exit(exit));
+                            return;
+                        }
+                        Ok(None) => {} // still running
+                        Err(e) => {
+                            bevy::log::warn!("[backend] child try_wait failed: {}", e);
+                        }
+                    }
                 }
-                Ok(None) => {} // still running
-                Err(e) => {
-                    bevy::log::warn!("[backend] child try_wait failed: {}", e);
+
+                let status = match health
+                    .check(HealthCheckRequest {
+                        service: "DataEngine".to_string(),
+                    })
+                    .await
+                {
+                    Ok(resp) => Some(resp.into_inner().status),
+                    Err(_) => None,
+                };
+
+                if status == Some(ServingStatus::Serving as i32) {
+                    consecutive_failures = 0;
+                    not_serving_streak = 0;
+                    if shutting_down {
+                        // Transient NOT_SERVING recovered before Stopped.
+                        shutting_down = false;
+                        let _ = lifecycle_tx.send(BackendLifecycle::Ready);
+                    }
+                } else if status == Some(ServingStatus::NotServing as i32) {
+                    // Graceful shutdown signal: never counts as a crash.
+                    consecutive_failures = 0;
+                    if !shutting_down {
+                        shutting_down = true;
+                        not_serving_streak = 1;
+                        let _ = lifecycle_tx.send(BackendLifecycle::ShuttingDown);
+                    } else {
+                        not_serving_streak += 1;
+                        if not_serving_streak >= 30 {
+                            let _ = lifecycle_tx.send(BackendLifecycle::Stopped);
+                            return;
+                        }
+                    }
+                } else {
+                    // Err or unexpected status (UNKNOWN / SERVICE_UNKNOWN / etc.).
+                    // During ShuttingDown a failure is expected as the server tears
+                    // down; only count crashes while we still believe we are Ready.
+                    if !shutting_down {
+                        consecutive_failures += 1;
+                        if consecutive_failures >= 3 {
+                            let _ = lifecycle_tx.send(BackendLifecycle::Crashed);
+                            return;
+                        }
+                    }
                 }
             }
-        }
-
-        let status = match health
-            .check(HealthCheckRequest {
-                service: "DataEngine".to_string(),
-            })
-            .await
-        {
-            Ok(resp) => Some(resp.into_inner().status),
-            Err(_) => None,
-        };
-
-        if status == Some(ServingStatus::Serving as i32) {
-            consecutive_failures = 0;
-            not_serving_streak = 0;
-            if shutting_down {
-                // Transient NOT_SERVING recovered before Stopped.
-                shutting_down = false;
-                let _ = lifecycle_tx.send(BackendLifecycle::Ready);
-            }
-        } else if status == Some(ServingStatus::NotServing as i32) {
-            // Graceful shutdown signal: never counts as a crash.
-            consecutive_failures = 0;
-            if !shutting_down {
-                shutting_down = true;
-                not_serving_streak = 1;
-                let _ = lifecycle_tx.send(BackendLifecycle::ShuttingDown);
-            } else {
-                not_serving_streak += 1;
-                if not_serving_streak >= 30 {
-                    let _ = lifecycle_tx.send(BackendLifecycle::Stopped);
-                    return;
-                }
-            }
-        } else {
-            // Err or unexpected status (UNKNOWN / SERVICE_UNKNOWN / etc.).
-            // During ShuttingDown a failure is expected as the server tears
-            // down; only count crashes while we still believe we are Ready.
-            if !shutting_down {
-                consecutive_failures += 1;
-                if consecutive_failures >= 3 {
-                    let _ = lifecycle_tx.send(BackendLifecycle::Crashed);
-                    return;
+            cmd = cmd_rx.recv() => {
+                match cmd {
+                    Some(SupervisorCommand::Shutdown { reply_tx, .. }) => {
+                        handle_shutdown(config, lifecycle_tx, &mut child, own_process).await;
+                        if let Some(tx) = reply_tx {
+                            let _ = tx.send(());
+                        }
+                        return;
+                    }
+                    Some(SupervisorCommand::Restart) => {
+                        bevy::log::info!("[backend] Restart received during monitor (no-op stub)");
+                    }
+                    None => {
+                        return;
+                    }
                 }
             }
         }

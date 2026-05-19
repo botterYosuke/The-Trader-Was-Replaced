@@ -1,4 +1,6 @@
-use backcast::backend_supervisor::{run_supervisor, BackendLifecycle, SupervisorConfig};
+use backcast::backend_supervisor::{
+    run_supervisor, BackendLifecycle, SupervisorCommand, SupervisorConfig,
+};
 use backcast::trading::engine::{
     data_engine_server::{DataEngine, DataEngineServer},
     EngineState, ForceStopReplayRequest, GetPortfolioRequest, GetPortfolioResponse,
@@ -789,8 +791,7 @@ async fn post_ready_health_failures_reach_crashed() {
         python_bin: None,
     };
     let (lt, mut lr) = watch::channel(BackendLifecycle::Disabled);
-    let (ct, cr) = mpsc::unbounded_channel();
-    drop(ct);
+    let (_ct, cr) = mpsc::unbounded_channel();
     let (ownership_tx, _ownership_rx) =
         watch::channel(backcast::backend_supervisor::BackendOwnership::default());
     tokio::spawn(run_supervisor(config, lt, cr, ownership_tx));
@@ -856,8 +857,7 @@ async fn post_ready_not_serving_reaches_stopped() {
         python_bin: None,
     };
     let (lt, mut lr) = watch::channel(BackendLifecycle::Disabled);
-    let (ct, cr) = mpsc::unbounded_channel();
-    drop(ct);
+    let (_ct, cr) = mpsc::unbounded_channel();
     let (ownership_tx, _ownership_rx) =
         watch::channel(backcast::backend_supervisor::BackendOwnership::default());
     tokio::spawn(run_supervisor(config, lt, cr, ownership_tx));
@@ -934,8 +934,7 @@ async fn post_ready_not_serving_recovers_to_ready() {
         python_bin: None,
     };
     let (lt, mut lr) = watch::channel(BackendLifecycle::Disabled);
-    let (ct, cr) = mpsc::unbounded_channel();
-    drop(ct);
+    let (_ct, cr) = mpsc::unbounded_channel();
     let (ownership_tx, _ownership_rx) =
         watch::channel(backcast::backend_supervisor::BackendOwnership::default());
     tokio::spawn(run_supervisor(config, lt, cr, ownership_tx));
@@ -970,6 +969,76 @@ async fn post_ready_not_serving_recovers_to_ready() {
     )
     .await
     .expect("recovered to Ready")
+    .expect("watch open");
+
+    let _ = tx_close.send(());
+    server_handle.await.unwrap();
+}
+
+#[tokio::test]
+async fn shutdown_command_attach_reaches_stopped() {
+    let addr: SocketAddr = "127.0.0.1:50074".parse().unwrap();
+    let token = "good-token".to_string();
+    let (tx_close, rx_close) = oneshot::channel::<()>();
+
+    let status = std::sync::Arc::new(std::sync::atomic::AtomicI32::new(
+        ServingStatus::Serving as i32,
+    ));
+    let unavailable = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
+    let health = SwitchableHealth {
+        status: status.clone(),
+        unavailable: unavailable.clone(),
+    };
+    let engine = MyDataEngine {
+        token: token.clone(),
+        ..Default::default()
+    };
+    let server_handle = tokio::spawn(async move {
+        Server::builder()
+            .add_service(HealthServer::new(health))
+            .add_service(DataEngineServer::new(engine))
+            .serve_with_shutdown(addr, async {
+                rx_close.await.ok();
+            })
+            .await
+            .unwrap();
+    });
+    tokio::time::sleep(Duration::from_millis(100)).await;
+
+    let config = SupervisorConfig {
+        enabled: true,
+        url: format!("http://{}", addr),
+        token: token.clone(),
+        autospawn: false,
+        cwd: None,
+        python_bin: None,
+    };
+    let (lt, mut lr) = watch::channel(BackendLifecycle::Disabled);
+    let (ct, cr) = mpsc::unbounded_channel();
+    let (ownership_tx, _ownership_rx) =
+        watch::channel(backcast::backend_supervisor::BackendOwnership::default());
+    tokio::spawn(run_supervisor(config, lt, cr, ownership_tx));
+
+    tokio::time::timeout(
+        Duration::from_secs(5),
+        lr.wait_for(|s| matches!(s, BackendLifecycle::Ready)),
+    )
+    .await
+    .expect("reached Ready")
+    .expect("watch open");
+
+    ct.send(SupervisorCommand::Shutdown {
+        grace_seconds: 0,
+        reply_tx: None,
+    })
+    .expect("send Shutdown");
+
+    tokio::time::timeout(
+        Duration::from_secs(5),
+        lr.wait_for(|s| matches!(s, BackendLifecycle::Stopped)),
+    )
+    .await
+    .expect("reached Stopped")
     .expect("watch open");
 
     let _ = tx_close.send(());
