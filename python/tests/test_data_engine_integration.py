@@ -59,12 +59,6 @@ def test_catalog_route_fallback_on_value_error(tmp_path):
     from unittest.mock import MagicMock, patch
 
     engine = DataEngine(nautilus_catalog_path=str(tmp_path / "cat"))
-    # jquants_loader_base_dir property が必要 → まだ存在しないので AttributeError で RED になる
-    _ = engine.jquants_loader_base_dir  # RED tripwire
-
-    fake_result = MagicMock()
-    fake_result.catalog_path = str(tmp_path / "cat")
-    fake_result.bar_type = "7203.TSE-1-MINUTE-LAST-EXTERNAL"
 
     fake_provider = MagicMock()
     fake_provider.get_next_tick.return_value = (1.0, 100.0, 105.0, 99.0, 103.0)
@@ -75,10 +69,7 @@ def test_catalog_route_fallback_on_value_error(tmp_path):
             "engine.core.NautilusBarsReplayProvider",
             side_effect=[ValueError("no data"), fake_provider],
         ),
-        patch(
-            "engine.core.ensure_jquants_catalog",
-            return_value=fake_result,
-        ) as mock_ensure,
+        patch("engine.core.ensure_jquants_catalog") as mock_ensure,
     ):
         success, error = engine.load_replay_data(
             instrument_ids=["7203.TSE"],
@@ -98,10 +89,6 @@ def test_catalog_route_fallback_on_file_not_found_error(tmp_path):
 
     engine = DataEngine(nautilus_catalog_path=str(tmp_path / "cat"))
 
-    fake_result = MagicMock()
-    fake_result.catalog_path = str(tmp_path / "cat")
-    fake_result.bar_type = "7203.TSE-1-MINUTE-LAST-EXTERNAL"
-
     fake_provider = MagicMock()
     fake_provider.get_next_tick.return_value = (1.0, 100.0, 105.0, 99.0, 103.0)
     fake_provider.is_exhausted.return_value = False
@@ -111,10 +98,7 @@ def test_catalog_route_fallback_on_file_not_found_error(tmp_path):
             "engine.core.NautilusBarsReplayProvider",
             side_effect=[FileNotFoundError("missing parquet"), fake_provider],
         ),
-        patch(
-            "engine.core.ensure_jquants_catalog",
-            return_value=fake_result,
-        ) as mock_ensure,
+        patch("engine.core.ensure_jquants_catalog") as mock_ensure,
     ):
         success, error = engine.load_replay_data(
             instrument_ids=["7203.TSE"],
