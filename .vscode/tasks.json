@@ -27,7 +27,7 @@
         {
             "label": "start backend (replay)",
             "type": "shell",
-            "command": "$repo='${workspaceFolder}'; $art=$env:ARTIFACTS_PATH; if (-not $art -and (Test-Path \"$repo\\.env\")) { foreach ($line in Get-Content \"$repo\\.env\") { if ($line -match '^\\s*ARTIFACTS_PATH\\s*=\\s*[''\"]?([^''\"#]+)[''\"]?\\s*(?:#.*)?$') { $art=$Matches[1].Trim(); break } } }; if (-not $art) { $art='artifacts' }; if (-not [System.IO.Path]::IsPathRooted($art)) { $art=Join-Path $repo $art }; $catalog=Join-Path $art 'jquants-catalog'; uv run python -m engine --token testtoken --jquants-catalog-path $catalog",
+            "command": "$repo='${workspaceFolder}'; $art=$env:ARTIFACTS_PATH; if (-not $art -and (Test-Path \"$repo\\.env\")) { foreach ($line in Get-Content \"$repo\\.env\") { if ($line -match '^\\s*ARTIFACTS_PATH\\s*=\\s*(.+?)\\s*(?:#.*)?$') { $art=$Matches[1].Trim().Trim([char]34).Trim([char]39); break } } }; if (-not $art) { $art='artifacts' }; if (-not [System.IO.Path]::IsPathRooted($art)) { $art=Join-Path $repo $art }; $catalog=Join-Path $art 'jquants-catalog'; uv run python -m engine --token testtoken --jquants-catalog-path $catalog",
             "isBackground": true,
             "dependsOn": [
                 "kill port 19876"

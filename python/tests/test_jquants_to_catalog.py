@@ -101,10 +101,11 @@ def test_jquants_csv_converted_then_replayed_via_grpc(grpc_server_empty_engine, 
     channel = grpc.insecure_channel(f"localhost:{port}")
     stub = engine_pb2_grpc.DataEngineStub(channel)
 
+    # D17: pass instrument_id ("7203.TSE"), not bar_type string
     load_resp = stub.LoadReplayData(
         engine_pb2.LoadReplayDataRequest(
             request_id="r1",
-            instrument_ids=[bar_type_str],
+            instrument_ids=["7203.TSE"],
             granularity=engine_pb2.DAILY,
             catalog_path=str(catalog_dir),
             token=token,
@@ -167,10 +168,11 @@ def test_jquants_minute_csv_converted_then_replayed_via_grpc(
     channel = grpc.insecure_channel(f"localhost:{port}")
     stub = engine_pb2_grpc.DataEngineStub(channel)
 
+    # D17: pass instrument_id ("7203.TSE"), not bar_type string
     load_resp = stub.LoadReplayData(
         engine_pb2.LoadReplayDataRequest(
             request_id="r1",
-            instrument_ids=[bar_type_str],
+            instrument_ids=["7203.TSE"],
             granularity=engine_pb2.MINUTE,
             catalog_path=str(catalog_dir),
             token=token,
@@ -280,8 +282,9 @@ def test_ensure_jquants_catalog_replayed_via_engine(tmp_path):
     )
 
     engine = DataEngine()
+    # D17: pass instrument_id ("7203.TSE"), not bar_type string
     ok, err = engine.load_replay_data(
-        instrument_ids=[result.bar_type],
+        instrument_ids=["7203.TSE"],
         granularity="Daily",
         catalog_path=result.catalog_path,
     )
