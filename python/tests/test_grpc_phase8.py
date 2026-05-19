@@ -1073,3 +1073,73 @@ def test_venue_login_no_display_does_not_fallback_in_release(phase8_grpc_server_
 
     assert resp.success is False
     assert resp.error_code == "NO_DISPLAY_AVAILABLE"
+
+
+def test_venue_login_no_display_fallbacks_to_env_in_debug(phase8_grpc_server_with_tachibana, monkeypatch):
+    """Debug build env-retries adapter.login with credentials_source='env' after NO_DISPLAY_AVAILABLE."""
+    port, token, engine, venue_sm, mm, servicer = phase8_grpc_server_with_tachibana
+    stub = _stub(port)
+    monkeypatch.setattr("engine.server_grpc.IS_DEBUG_BUILD", True)
+
+    recorded_sources: list[str] = []
+
+    from engine.live.mock_adapter import MockVenueAdapter
+
+    original_login = MockVenueAdapter.login
+
+    async def spy_login(self, creds):
+        recorded_sources.append(creds.credentials_source)
+        await original_login(self, creds)
+
+    monkeypatch.setattr(MockVenueAdapter, "login", spy_login)
+
+    with patch.object(
+        servicer, "_handle_prompt_login",
+        new=AsyncMock(return_value=(False, "NO_DISPLAY_AVAILABLE", None)),
+    ):
+        resp = stub.VenueLogin(
+            engine_pb2.VenueLoginRequest(
+                venue_id="TACHIBANA",
+                credentials_source="prompt",
+                token=token,
+            )
+        )
+
+    assert len(recorded_sources) >= 1
+    assert recorded_sources[-1] == "env"
+    assert resp.success is True
+    assert resp.error_code == ""
+
+
+@pytest.mark.parametrize(
+    "fixture_name, venue_id, error_code",
+    [
+        ("phase8_grpc_server_with_kabu", "KABU", "LOGIN_INVALID_RESPONSE"),
+        ("phase8_grpc_server_with_tachibana", "TACHIBANA", "LOGIN_SUBPROCESS_CRASHED"),
+        ("phase8_grpc_server_with_tachibana", "TACHIBANA", "LOGIN_INVALID_RESPONSE"),
+    ],
+    ids=["kabu_empty_cred_file", "tachibana_crash", "tachibana_invalid_json"],
+)
+def test_venue_login_prompt_failure_propagates_and_tears_down(
+    request, fixture_name, venue_id, error_code,
+):
+    port, token, engine, venue_sm, mm, servicer = request.getfixturevalue(fixture_name)
+    stub = _stub(port)
+
+    with patch.object(
+        servicer, "_handle_prompt_login",
+        new=AsyncMock(return_value=(False, error_code, None)),
+    ):
+        resp = stub.VenueLogin(
+            engine_pb2.VenueLoginRequest(
+                venue_id=venue_id,
+                credentials_source="prompt",
+                token=token,
+            )
+        )
+
+    assert resp.success is False
+    assert resp.error_code == error_code
+    assert servicer._live_runner is None
+    assert servicer._live_bridge is None
+    assert venue_sm.current == "DISCONNECTED"
