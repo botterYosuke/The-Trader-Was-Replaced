@@ -14,6 +14,7 @@
 //! handshake, stdout drain) lands in Step 4-B.
 
 use bevy::prelude::*;
+use tokio::sync::mpsc;
 use tokio::sync::watch;
 
 /// Lifecycle phases of the Python backend process / connection.
@@ -54,6 +55,116 @@ impl BackendLifecycle {
     }
 }
 
+/// Commands sent from Bevy systems (Footer Restart button / AppExit handler)
+/// to the supervisor task via an mpsc channel. (C-7b)
+#[derive(Debug)]
+pub enum SupervisorCommand {
+    /// Footer [Restart Backend] button.
+    Restart,
+    /// AppExit / manual Shutdown. `reply_tx` is a std::sync::mpsc::SyncSender
+    /// so the main-thread AppExit handler (outside the Tokio runtime context)
+    /// can block on it with recv_timeout. `None` when no ack is required.
+    Shutdown {
+        grace_seconds: u32,
+        reply_tx: Option<std::sync::mpsc::SyncSender<()>>,
+    },
+}
+
+/// Supervisor-side env snapshot, read once when the task is spawned. (C-3..C-4)
+#[derive(Debug, Clone)]
+pub struct SupervisorConfig {
+    pub enabled: bool,
+    pub url: String,
+    pub token: String,
+    pub autospawn: bool,
+    pub cwd: Option<String>,
+    pub python_bin: Option<String>,
+}
+
+impl SupervisorConfig {
+    pub fn from_env() -> Self {
+        Self {
+            enabled: std::env::var("BACKEND_ENABLED")
+                .map(|v| v.to_lowercase() == "true")
+                .unwrap_or(false),
+            url: std::env::var("BACKEND_URL")
+                .unwrap_or_else(|_| "http://127.0.0.1:19876".to_string()),
+            token: std::env::var("BACKEND_TOKEN").unwrap_or_else(|_| "dev-token".to_string()),
+            autospawn: std::env::var("BACKEND_AUTOSPAWN")
+                .map(|v| v != "0")
+                .unwrap_or(true),
+            cwd: std::env::var("BACKEND_CWD").ok().filter(|s| !s.is_empty()),
+            python_bin: std::env::var("PYTHON_BIN").ok().filter(|s| !s.is_empty()),
+        }
+    }
+}
+
+/// Parse `BACKEND_URL` into a `host:port` authority for TCP probing.
+/// Only `http://` is accepted (Phase 8 has no TLS); a missing port is an
+/// error. Returns `Err("BACKEND_URL_INVALID")` on any structural problem. (C-3)
+pub fn parse_backend_url(url: &str) -> Result<String, &'static str> {
+    let parsed = url::Url::parse(url).map_err(|_| "BACKEND_URL_INVALID")?;
+    if parsed.scheme() != "http" {
+        return Err("BACKEND_URL_INVALID");
+    }
+    let host = parsed.host_str().ok_or("BACKEND_URL_INVALID")?;
+    let port = parsed.port().ok_or("BACKEND_URL_INVALID")?;
+    Ok(format!("{}:{}", host, port))
+}
+
+/// The single supervisor Tokio task (C-7b). Drives the backend through its
+/// lifecycle. 4-B-1 scope: env gate + URL parse + AUTOSPAWN=0 short-circuit;
+/// TCP probe / spawn / Health.Check / GetState handshake land in 4-B-2.
+pub async fn run_supervisor(
+    config: SupervisorConfig,
+    lifecycle_tx: watch::Sender<BackendLifecycle>,
+    mut cmd_rx: mpsc::UnboundedReceiver<SupervisorCommand>,
+) {
+    if !config.enabled {
+        let _ = lifecycle_tx.send(BackendLifecycle::Disabled);
+        return;
+    }
+
+    let _authority = match parse_backend_url(&config.url) {
+        Ok(a) => a,
+        Err(code) => {
+            bevy::log::error!("[backend] invalid BACKEND_URL {:?}: {}", config.url, code);
+            let _ = lifecycle_tx.send(BackendLifecycle::StartupFailed(code));
+            return;
+        }
+    };
+
+    let _ = lifecycle_tx.send(BackendLifecycle::NotStarted);
+    let _ = lifecycle_tx.send(BackendLifecycle::ProbingExisting);
+
+    // TODO(4-B-2): TCP probe of `_authority` (2s budget, 200ms tick).
+    // TODO(4-B-2): on probe success -> Channel::from_shared -> Health.Check tick.
+    // TODO(4-B-2): on probe fail x2 -> if autospawn: preflight + spawn_python_backend
+    //              else: StartupFailed(BACKEND_NOT_REACHABLE).
+    // TODO(4-B-2): GetState handshake -> Ready / SERVICER_MISSING / TOKEN_MISMATCH.
+
+    // 4-B-1 placeholder: model the AUTOSPAWN=0 short-circuit so the env wiring
+    // is testable now. (Real probe replaces this in 4-B-2.)
+    if !config.autospawn {
+        bevy::log::warn!("[backend] BACKEND_AUTOSPAWN=0 and probe stub treats backend as unreachable");
+        let _ = lifecycle_tx.send(BackendLifecycle::StartupFailed("BACKEND_NOT_REACHABLE"));
+    }
+
+    // Keep the task alive draining commands so the channel doesn't error on send.
+    while let Some(cmd) = cmd_rx.recv().await {
+        match cmd {
+            SupervisorCommand::Restart => {
+                bevy::log::info!("[backend] Restart received (no-op in 4-B-1 stub)");
+            }
+            SupervisorCommand::Shutdown { reply_tx, .. } => {
+                if let Some(tx) = reply_tx {
+                    let _ = tx.send(());
+                }
+            }
+        }
+    }
+}
+
 /// Whether this Bevy process owns the Python subprocess (spawn path) or just
 /// attached to an existing one. AppExit cleanup only fires `Shutdown` RPC when
 /// `own_process == true` (prevents collateral kill of an externally-managed
@@ -90,6 +201,24 @@ impl BackendLifecycleHandle {
     }
 }
 
+/// Sender side of the supervisor command channel; lives as a Bevy resource so
+/// Footer / AppExit systems can enqueue Restart / Shutdown. (C-7b)
+#[derive(Resource, Clone)]
+pub struct SupervisorCommandSender {
+    pub tx: mpsc::UnboundedSender<SupervisorCommand>,
+}
+
+/// One-shot carrier for the pieces the Startup system needs to spawn the
+/// supervisor task. `take()`-d exactly once by the main.rs Startup system.
+#[derive(Resource)]
+pub struct SupervisorTaskSeed {
+    pub inner: Option<(
+        SupervisorConfig,
+        watch::Sender<BackendLifecycle>,
+        mpsc::UnboundedReceiver<SupervisorCommand>,
+    )>,
+}
+
 /// Bevy plugin that wires the supervisor into the App.
 ///
 /// 4-A scope: inserts a `BackendLifecycleHandle` whose state is permanently
@@ -98,19 +227,21 @@ pub struct BackendSupervisorPlugin;
 
 impl Plugin for BackendSupervisorPlugin {
     fn build(&self, app: &mut App) {
-        // Create the watch channel up-front so any system added in the same
-        // App build can clone the Receiver. The Sender is dropped at the end
-        // of this function in 4-A; that is intentional — the Receiver will
-        // simply report the last value (`Disabled`) forever.
-        //
-        // In 4-B we will instead move the Sender into the supervisor Tokio
-        // task spawned from a Startup system.
-        let (tx, rx) = watch::channel(BackendLifecycle::Disabled);
-        // TODO(4-B): move `tx` into the supervisor task spawned in Startup.
-        drop(tx);
+        let config = SupervisorConfig::from_env();
+        let initial = if config.enabled {
+            BackendLifecycle::NotStarted
+        } else {
+            BackendLifecycle::Disabled
+        };
+        let (lifecycle_tx, lifecycle_rx) = watch::channel(initial);
+        let (cmd_tx, cmd_rx) = mpsc::unbounded_channel::<SupervisorCommand>();
 
-        app.insert_resource(BackendLifecycleHandle { rx })
-            .insert_resource(BackendOwnership::default());
+        app.insert_resource(BackendLifecycleHandle { rx: lifecycle_rx })
+            .insert_resource(BackendOwnership::default())
+            .insert_resource(SupervisorCommandSender { tx: cmd_tx })
+            .insert_resource(SupervisorTaskSeed {
+                inner: Some((config, lifecycle_tx, cmd_rx)),
+            });
     }
 }
 
@@ -164,5 +295,54 @@ mod tests {
             .get_resource::<BackendOwnership>()
             .expect("BackendOwnership inserted");
         assert!(!own.own_process);
+    }
+
+    #[test]
+    fn parse_backend_url_accepts_http_host_port() {
+        assert_eq!(
+            parse_backend_url("http://127.0.0.1:19876"),
+            Ok("127.0.0.1:19876".to_string())
+        );
+    }
+
+    #[test]
+    fn parse_backend_url_rejects_https() {
+        assert_eq!(
+            parse_backend_url("https://127.0.0.1:19876"),
+            Err("BACKEND_URL_INVALID")
+        );
+    }
+
+    #[test]
+    fn parse_backend_url_rejects_missing_port() {
+        assert_eq!(
+            parse_backend_url("http://127.0.0.1/"),
+            Err("BACKEND_URL_INVALID")
+        );
+    }
+
+    #[test]
+    fn parse_backend_url_rejects_garbage() {
+        assert_eq!(parse_backend_url("not a url"), Err("BACKEND_URL_INVALID"));
+    }
+
+    #[tokio::test]
+    async fn run_supervisor_autospawn_zero_short_circuits() {
+        let config = SupervisorConfig {
+            enabled: true,
+            url: "http://127.0.0.1:19876".to_string(),
+            token: "x".to_string(),
+            autospawn: false,
+            cwd: None,
+            python_bin: None,
+        };
+        let (lt, lr) = watch::channel(BackendLifecycle::Disabled);
+        let (ct, cr) = mpsc::unbounded_channel();
+        drop(ct);
+        run_supervisor(config, lt, cr).await;
+        assert_eq!(
+            *lr.borrow(),
+            BackendLifecycle::StartupFailed("BACKEND_NOT_REACHABLE")
+        );
     }
 }

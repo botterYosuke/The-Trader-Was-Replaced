@@ -1,6 +1,6 @@
 use backcast::camera::{pancam_suppression_over_editor_system, setup_camera};
 use backcast::grid::GridPlugin;
-use backcast::backend_supervisor::BackendSupervisorPlugin;
+use backcast::backend_supervisor::{BackendSupervisorPlugin, SupervisorTaskSeed, run_supervisor};
 use backcast::trading::{
     AvailableInstruments, BackendChannel, BackendStartupStage, BackendStatus, BackendStatusUpdate,
     ExecutionMode, ExecutionModeRes, LastPrices, LastRunResult, PortfolioOrder, PortfolioPosition,
@@ -146,7 +146,7 @@ async fn main() {
         .insert_resource(LastPrices::default())
         .insert_resource(SelectedSymbol::default())
         .insert_resource(tokio_handle)
-        .add_systems(Startup, (setup_camera, setup_backend_connection, spawn_replay_startup_window))
+        .add_systems(Startup, (setup_camera, setup_backend_connection, spawn_supervisor_task_system, spawn_replay_startup_window))
         .add_systems(
             Update,
             (
@@ -336,6 +336,15 @@ fn apply_available_failed(
 ) {
     available.last_error = Some((end_date, error));
     available.in_flight.remove(&end_date);
+}
+
+fn spawn_supervisor_task_system(
+    tokio: Res<TokioHandle>,
+    mut seed: ResMut<SupervisorTaskSeed>,
+) {
+    if let Some((config, lifecycle_tx, cmd_rx)) = seed.inner.take() {
+        tokio.0.spawn(run_supervisor(config, lifecycle_tx, cmd_rx));
+    }
 }
 
 fn setup_backend_connection(
