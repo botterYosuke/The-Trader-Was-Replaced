@@ -7,6 +7,7 @@ import asyncio
 import tempfile
 import threading
 import time
+import signal
 from concurrent import futures
 from datetime import datetime, timezone
 from pathlib import Path
@@ -14,6 +15,7 @@ from typing import Optional
 
 import grpc
 
+from . import process_lifecycle
 from .core import DataEngine
 from .live._build_mode import IS_DEBUG_BUILD
 from .live.live_adapter_factory import build_live_adapter_factory
@@ -302,7 +304,29 @@ class GrpcDataEngineServer(
         if self.venue_sm is not None and self.venue_sm.current != "DISCONNECTED":
             self.venue_sm.reset()
 
+    def Shutdown(self, request, context):
+        # C-6: token 一致確認 → start_shutdown() 戻り値で 4 段判定
+        if request.token != self.token:
+            return engine_pb2.ShutdownResponse(
+                accepted=False, error_code="INVALID_TOKEN"
+            )
+        grace = int(request.grace_seconds)
+        if not process_lifecycle.start_shutdown(grace_seconds=grace):
+            return engine_pb2.ShutdownResponse(
+                accepted=False, error_code="ALREADY_SHUTTING_DOWN"
+            )
+        return engine_pb2.ShutdownResponse(accepted=True, error_code="")
+
     def Check(self, request, context):
+        # C-1: service フィルタ。"" (default) と "DataEngine" のみ受理
+        if request.service not in ("", "DataEngine"):
+            return engine_pb2.HealthCheckResponse(
+                status=engine_pb2.HealthCheckResponse.SERVICE_UNKNOWN
+            )
+        if process_lifecycle.is_shutting_down():
+            return engine_pb2.HealthCheckResponse(
+                status=engine_pb2.HealthCheckResponse.NOT_SERVING
+            )
         return engine_pb2.HealthCheckResponse(
             status=engine_pb2.HealthCheckResponse.SERVING
         )
@@ -1403,11 +1427,18 @@ def serve(
 
     server.add_insecure_port(f"127.0.0.1:{port}")
     logging.info(f"Starting gRPC server on port {port}")
+
+    # Step 3: shutdown 経路を process_lifecycle に集約
+    process_lifecycle.set_components(server=server, engine=engine, servicer=servicer)
+
+    def _on_signal(*_):
+        process_lifecycle.start_shutdown()
+
+    signal.signal(signal.SIGINT, _on_signal)
+    if hasattr(signal, "SIGBREAK"):  # Windows only
+        signal.signal(signal.SIGBREAK, _on_signal)
+
     server.start()
     print(f"GRPC_LISTENING port={port}", flush=True)
-    try:
-        while True:
-            time.sleep(86400)
-    except KeyboardInterrupt:
-        engine.stop()
-        server.stop(0)
+    server.wait_for_termination()
+    return
