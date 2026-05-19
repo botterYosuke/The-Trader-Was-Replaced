@@ -58,7 +58,9 @@ def test_catalog_route_fallback_on_value_error(tmp_path):
     ensure_jquants_catalog を経由して再試行し成功することを確認する。"""
     from unittest.mock import MagicMock, patch
 
-    engine = DataEngine(nautilus_catalog_path=str(tmp_path / "cat"))
+    jq_loader = MagicMock()
+    jq_loader.base_dir = tmp_path / "jq"
+    de = DataEngine(nautilus_catalog_path=str(tmp_path / "cat"), jquants_loader=jq_loader)
 
     fake_provider = MagicMock()
     fake_provider.get_next_tick.return_value = (1.0, 100.0, 105.0, 99.0, 103.0)
@@ -71,7 +73,7 @@ def test_catalog_route_fallback_on_value_error(tmp_path):
         ),
         patch("engine.core.ensure_jquants_catalog") as mock_ensure,
     ):
-        success, error = engine.load_replay_data(
+        success, error = de.load_replay_data(
             instrument_ids=["7203.TSE"],
             start_date="2024-07-01",
             end_date="2024-07-01",
@@ -87,7 +89,9 @@ def test_catalog_route_fallback_on_file_not_found_error(tmp_path):
     ensure_jquants_catalog 経由の fallback が動くことを確認する。"""
     from unittest.mock import MagicMock, patch
 
-    engine = DataEngine(nautilus_catalog_path=str(tmp_path / "cat"))
+    jq_loader = MagicMock()
+    jq_loader.base_dir = tmp_path / "jq"
+    de = DataEngine(nautilus_catalog_path=str(tmp_path / "cat"), jquants_loader=jq_loader)
 
     fake_provider = MagicMock()
     fake_provider.get_next_tick.return_value = (1.0, 100.0, 105.0, 99.0, 103.0)
@@ -100,7 +104,7 @@ def test_catalog_route_fallback_on_file_not_found_error(tmp_path):
         ),
         patch("engine.core.ensure_jquants_catalog") as mock_ensure,
     ):
-        success, error = engine.load_replay_data(
+        success, error = de.load_replay_data(
             instrument_ids=["7203.TSE"],
             start_date="2024-07-01",
             end_date="2024-07-01",
@@ -138,6 +142,30 @@ def test_catalog_route_no_fallback_when_provider_succeeds(tmp_path):
         )
 
     assert success, error
+    mock_ensure.assert_not_called()
+
+
+def test_catalog_route_no_fallback_when_no_jquants_loader(tmp_path):
+    """jquants_loader が無い場合、catalog miss 時に fallback せず即 False を返す。"""
+    from unittest.mock import MagicMock, patch
+
+    de = DataEngine(nautilus_catalog_path=str(tmp_path / "cat"))  # no jquants_loader
+
+    with (
+        patch(
+            "engine.core.NautilusBarsReplayProvider",
+            side_effect=ValueError("no data"),
+        ),
+        patch("engine.core.ensure_jquants_catalog") as mock_ensure,
+    ):
+        success, error = de.load_replay_data(
+            instrument_ids=["7203.TSE"],
+            start_date="2024-07-01",
+            end_date="2024-07-01",
+            granularity="Minute",
+        )
+
+    assert not success
     mock_ensure.assert_not_called()
 
 

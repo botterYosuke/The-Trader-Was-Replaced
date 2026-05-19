@@ -4,6 +4,7 @@ __pycache__/
 .pytest_cache/
 .env
 .cocoindex_code/
+.vscode/
 # wandb local artifact dirs created by wandb.init() (publish_run.py / resume scripts)
 wandb/
 target/

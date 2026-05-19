@@ -25,7 +25,11 @@ from .jquants_loader import JQuantsLoader
 from .paths import listed_symbols_artifact_path
 from engine.strategy_runtime.catalog_data_loader import load_bars_for_scenario, normalize_granularity
 from engine.jquants_to_catalog import ensure_jquants_catalog
-from engine.strategy_runtime.engine_runner import run as engine_run
+
+
+def engine_run(*args, **kwargs):
+    from engine.strategy_runtime.engine_runner import run
+    return run(*args, **kwargs)
 
 
 _INSTRUMENT_ID_RE = re.compile(r"^(.+?)-\d+-[A-Z]")

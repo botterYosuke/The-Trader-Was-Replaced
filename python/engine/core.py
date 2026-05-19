@@ -179,7 +179,7 @@ class DataEngine:
                             end=end_date or None,
                         )
                     except (ValueError, FileNotFoundError) as first_err:
-                        if not (start_date and end_date):
+                        if not (self.jquants_loader_base_dir and start_date and end_date):
                             return False, f"{iid}: {first_err}"
                         try:
                             ensure_jquants_catalog(
