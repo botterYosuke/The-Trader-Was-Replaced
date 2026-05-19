@@ -92,7 +92,6 @@ pub enum MenuItem {
     VenueConnectTachibanaProd,
     VenueConnectKabuVerify,
     VenueConnectKabuProd,
-    VenueConnectMock,
     VenueDisconnect,
 }
 
