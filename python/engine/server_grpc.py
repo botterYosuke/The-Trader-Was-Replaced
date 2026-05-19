@@ -1391,6 +1391,7 @@ def serve(
     server.add_insecure_port(f"127.0.0.1:{port}")
     logging.info(f"Starting gRPC server on port {port}")
     server.start()
+    print(f"GRPC_LISTENING port={port}", flush=True)
     try:
         while True:
             time.sleep(86400)
