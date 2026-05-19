@@ -517,13 +517,26 @@ pub enum TickersStatus {
 /// Convert a `TickersSource` to the wire string sent as
 /// `ListInstrumentsRequest.source`. Returns `None` for `Unknown` (the field
 /// is omitted from the request so the backend applies its own default).
+/// Both `ReplayCatalogFallback` and `LocalVenueSnapshot` send `"local"` because
+/// the backend routes both to the same `_list_instruments_local` path.
 pub fn tickers_source_to_wire(source: TickersSource) -> Option<String> {
     match source {
         TickersSource::Unknown => None,
-        TickersSource::ReplayCatalogFallback => Some("local".to_string()),
-        TickersSource::LocalVenueSnapshot => Some("local".to_string()),
+        TickersSource::ReplayCatalogFallback | TickersSource::LocalVenueSnapshot => {
+            Some("local".to_string())
+        }
         TickersSource::LiveVenue => Some("live".to_string()),
     }
+}
+
+/// Returns `true` when the venue state represents an active live connection.
+pub fn is_venue_live(state: VenueState) -> bool {
+    matches!(state, VenueState::Connected | VenueState::Subscribed)
+}
+
+/// Returns `true` for any live execution mode (manual or auto).
+pub fn is_live_mode(mode: ExecutionMode) -> bool {
+    matches!(mode, ExecutionMode::LiveManual | ExecutionMode::LiveAuto)
 }
 
 /// Sidebar instrument row. Phase 8 §3.5: name/market are filled by the venue

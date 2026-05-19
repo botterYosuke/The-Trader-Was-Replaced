@@ -17,6 +17,7 @@ use std::time::{Duration, Instant};
 use crate::trading::{
     AvailableInstruments, BackendStatus, ExecutionMode, ExecutionModeRes, Tickers, TickersSource,
     TickersStatus, TransportCommand, TransportCommandSender, VenueState, VenueStatusRes,
+    is_live_mode, is_venue_live,
 };
 use crate::ui::components::{
     InstrumentRegistry, ScenarioMetadata, SidebarAddInstrumentButton,
@@ -621,23 +622,15 @@ pub fn auto_fetch_live_universe_on_connect_system(
     let cur_mode = exec_mode.mode;
     let was_mode = prev_mode.replace(cur_mode);
 
-    let became_connected = matches!(cur_venue, VenueState::Connected | VenueState::Subscribed)
-        && !matches!(
-            was_venue,
-            Some(VenueState::Connected) | Some(VenueState::Subscribed)
-        );
-    let became_live = matches!(cur_mode, ExecutionMode::LiveManual | ExecutionMode::LiveAuto)
-        && !matches!(
-            was_mode,
-            Some(ExecutionMode::LiveManual) | Some(ExecutionMode::LiveAuto)
-        );
+    let became_connected = is_venue_live(cur_venue)
+        && !was_venue.is_some_and(is_venue_live);
+    let became_live = is_live_mode(cur_mode)
+        && !was_mode.is_some_and(is_live_mode);
 
     // Trigger 1: VenueState が live になった瞬間（Live mode 前提）
-    let trigger_by_venue = became_connected
-        && matches!(cur_mode, ExecutionMode::LiveManual | ExecutionMode::LiveAuto);
+    let trigger_by_venue = became_connected && is_live_mode(cur_mode);
     // Trigger 2: ExecutionMode が Live になった瞬間（VenueState すでに live 前提）
-    let trigger_by_mode = became_live
-        && matches!(cur_venue, VenueState::Connected | VenueState::Subscribed);
+    let trigger_by_mode = became_live && is_venue_live(cur_venue);
 
     if !(trigger_by_venue || trigger_by_mode) {
         return;
@@ -708,32 +701,33 @@ pub fn subscribe_added_instruments_system(
 ) {
     let cur_mode = exec_mode.mode;
     let mode_changed = prev_mode.replace(cur_mode) != Some(cur_mode);
+    // `current` always built to keep `prev_ids` accurate for future mode switches.
+    // Clones of `prev_ids` (for bulk path) and `added` Vec are deferred until needed.
     let current: HashSet<String> = registry.ids.iter().cloned().collect();
-    let added: Vec<String> = current.difference(&prev_ids).cloned().collect();
-    let prev_for_bulk = prev_ids.clone();
-    *prev_ids = current.clone();
-    if !matches!(cur_mode, ExecutionMode::LiveManual | ExecutionMode::LiveAuto) {
+    if !is_live_mode(cur_mode) {
+        *prev_ids = current;
         return;
     }
     let Some(tx) = sender.as_ref() else {
+        *prev_ids = current;
         return;
     };
-    // mode 切替直後 frame: survivor を bulk subscribe（上限 50）
+    // mode 切替直後 frame: prev_ids に残っている survivor を bulk subscribe（上限 50）。
     if mode_changed {
         const BULK_SUBSCRIBE_CAP: usize = 50;
-        let survivors: Vec<String> = prev_for_bulk
+        let survivors: Vec<String> = prev_ids
             .intersection(&current)
             .take(BULK_SUBSCRIBE_CAP)
             .cloned()
             .collect();
+        *prev_ids = current;
         for id in survivors {
             let _ = tx.tx.send(TransportCommand::SubscribeMarketData { instrument_id: id });
         }
         return;
     }
-    if added.is_empty() {
-        return;
-    }
+    let added: Vec<String> = current.difference(&prev_ids).cloned().collect();
+    *prev_ids = current;
     for id in added {
         let _ = tx.tx.send(TransportCommand::SubscribeMarketData { instrument_id: id });
     }

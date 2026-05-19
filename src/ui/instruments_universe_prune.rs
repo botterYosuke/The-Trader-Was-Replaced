@@ -5,6 +5,7 @@ use bevy::prelude::*;
 use crate::trading::{
     AvailableInstruments, ExecutionMode, ExecutionModeRes, Tickers, TickersSource, TickersStatus,
     TransportCommand, TransportCommandSender, VenueState, VenueStatusRes,
+    is_live_mode, is_venue_live,
 };
 use crate::ui::components::{InstrumentRegistry, ScenarioMetadata};
 use crate::ui::instrument_picker::parse_scenario_end;
@@ -57,9 +58,7 @@ pub fn prune_instruments_outside_universe_system(
                 tickers.source,
                 TickersSource::LiveVenue | TickersSource::LocalVenueSnapshot,
             );
-            // D19: venue が今この瞬間に配信中であることを必須にする。
-            let venue_ok = matches!(venue.state, VenueState::Connected | VenueState::Subscribed);
-            if status_ok && source_ok && venue_ok {
+            if status_ok && source_ok && is_venue_live(venue.state) {
                 Some(tickers.list.iter().map(|t| t.id.clone()).collect())
             } else {
                 None
@@ -97,20 +96,16 @@ pub fn unsubscribe_removed_instruments_system(
 ) {
     let cur_mode = exec_mode.mode;
     let mode_changed = prev_mode.replace(cur_mode) != Some(cur_mode);
+    // `current` is always built to keep `prev_ids` accurate for future mode switches.
+    // `removed` is only built when we will actually send unsubscribes.
     let current: HashSet<String> = registry.ids.iter().cloned().collect();
+    if mode_changed || !is_live_mode(cur_mode) {
+        *prev_ids = current;
+        return;
+    }
     let removed: Vec<String> = prev_ids.difference(&current).cloned().collect();
     *prev_ids = current;
-    // v5 修正: mode 切替直後 frame は diff を skip し prev_ids だけ更新する。
-    if mode_changed {
-        return;
-    }
     if removed.is_empty() {
-        return;
-    }
-    if !matches!(
-        cur_mode,
-        ExecutionMode::LiveManual | ExecutionMode::LiveAuto
-    ) {
         return;
     }
     let Some(tx) = sender.as_ref() else {
@@ -135,12 +130,8 @@ pub fn invalidate_tickers_on_venue_disconnect_system(
 ) {
     let cur = venue.state;
     let was = prev_state.replace(cur);
-    let was_live = matches!(
-        was,
-        Some(VenueState::Connected) | Some(VenueState::Subscribed)
-    );
-    let is_live = matches!(cur, VenueState::Connected | VenueState::Subscribed);
-    if !was_live || is_live {
+    let was_live = was.is_some_and(is_venue_live);
+    if !was_live || is_venue_live(cur) {
         return;
     }
     // 配信が落ちた瞬間。list は UI 表示用に維持し、source/status だけリセット。
