@@ -395,30 +395,40 @@ pub fn update_footer_system(
 
     // Replay state badge
     let replay = data.replay_state.as_deref().unwrap_or("IDLE");
+    let state_text = format!("state: {}", replay);
+    let state_color = match replay {
+        "RUNNING" => Color::srgb(0.20, 1.00, 0.45),
+        "PAUSED" => Color::srgb(1.00, 0.75, 0.20),
+        "LOADED" => Color::srgb(0.35, 0.70, 1.00),
+        _ => Color::srgb(0.45, 0.45, 0.45), // IDLE
+    };
     for (mut text, mut color) in &mut state_q {
-        text.0 = format!("state: {}", replay);
-        color.0 = match replay {
-            "RUNNING" => Color::srgb(0.20, 1.00, 0.45),
-            "PAUSED" => Color::srgb(1.00, 0.75, 0.20),
-            "LOADED" => Color::srgb(0.35, 0.70, 1.00),
-            _ => Color::srgb(0.45, 0.45, 0.45), // IDLE
-        };
+        // 規約 2: 差分書き込み — avoid change-detection thrash per frame.
+        if text.0 != state_text {
+            text.0 = state_text.clone();
+        }
+        if color.0 != state_color {
+            color.0 = state_color;
+        }
     }
 
     // gRPC status
+    let (grpc_text, grpc_color) = if !settings.backend_enabled {
+        ("grpc: DISABLED", Color::srgb(0.38, 0.38, 0.38))
+    } else if status.connected {
+        ("grpc: OK", Color::srgb(0.20, 1.00, 0.45))
+    } else if status.last_error.is_some() {
+        ("grpc: ERR", Color::srgb(1.00, 0.28, 0.28))
+    } else {
+        ("grpc: ...", Color::srgb(0.80, 0.75, 0.25))
+    };
     for (mut text, mut color) in &mut grpc_q {
-        if !settings.backend_enabled {
-            text.0 = "grpc: DISABLED".to_string();
-            color.0 = Color::srgb(0.38, 0.38, 0.38);
-        } else if status.connected {
-            text.0 = "grpc: OK".to_string();
-            color.0 = Color::srgb(0.20, 1.00, 0.45);
-        } else if status.last_error.is_some() {
-            text.0 = "grpc: ERR".to_string();
-            color.0 = Color::srgb(1.00, 0.28, 0.28);
-        } else {
-            text.0 = "grpc: ...".to_string();
-            color.0 = Color::srgb(0.80, 0.75, 0.25);
+        // 規約 2: 差分書き込み — avoid change-detection thrash per frame.
+        if text.0 != grpc_text {
+            text.0 = grpc_text.to_string();
+        }
+        if color.0 != grpc_color {
+            color.0 = grpc_color;
         }
     }
 

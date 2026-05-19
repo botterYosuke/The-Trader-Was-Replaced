@@ -70,3 +70,57 @@ def test_does_not_mutate_nested_source() -> None:
     snapshot = {"outer": {"password": "p"}}
     _ = mask_secrets(src)
     assert src == snapshot
+
+
+# --- Post-merge fix (MEDIUM-3): extended secret keyword coverage --------------
+
+def test_masks_cookie_and_set_cookie_headers() -> None:
+    src = {"cookie": "sessionid=abc123", "set-cookie": "auth=xyz", "user": "alice"}
+    out = mask_secrets(src)
+    assert out["cookie"] == "***"
+    assert out["set-cookie"] == "***"
+    assert out["user"] == "alice"
+
+
+def test_masks_authorization_and_bearer() -> None:
+    src = {"authorization": "Bearer abc.def", "Bearer": "tok", "user": "alice"}
+    out = mask_secrets(src)
+    assert out["authorization"] == "***"
+    assert out["Bearer"] == "***"
+    assert out["user"] == "alice"
+
+
+def test_masks_apikey_case_variants() -> None:
+    src = {
+        "apiKey": "sk-1",
+        "APIKey": "sk-2",
+        "API_KEY": "sk-3",
+        "api-key": "sk-4",
+        "api_key": "sk-5",
+        "ApIKeY": "sk-6",
+        "user": "alice",
+    }
+    out = mask_secrets(src)
+    assert out["apiKey"] == "***"
+    assert out["APIKey"] == "***"
+    assert out["API_KEY"] == "***"
+    assert out["api-key"] == "***"
+    assert out["api_key"] == "***"
+    assert out["ApIKeY"] == "***"
+    assert out["user"] == "alice"
+
+
+def test_masks_second_password_variants() -> None:
+    src = {
+        "SECOND_PASSWORD": "x",
+        "second_password": "y",
+        "second-password": "z",
+        "sSecondPassword": "w",
+        "user": "alice",
+    }
+    out = mask_secrets(src)
+    assert out["SECOND_PASSWORD"] == "***"
+    assert out["second_password"] == "***"
+    assert out["second-password"] == "***"
+    assert out["sSecondPassword"] == "***"
+    assert out["user"] == "alice"

@@ -636,28 +636,36 @@ fn setup_backend_connection(
                         });
                     }
                     TransportCommand::SetExecutionMode { mode } => {
-                        let req = tonic::Request::new(SetExecutionModeRequest {
-                            mode: mode.as_wire_str().to_string(),
-                            token: token.clone(),
-                        });
-                        match client.set_execution_mode(req).await {
-                            Ok(r) => {
-                                let inner = r.into_inner();
-                                if inner.success {
-                                    info!(
-                                        "SetExecutionMode ok, backend execution_mode={}",
-                                        inner.execution_mode
-                                    );
-                                } else {
-                                    error!(
-                                        "SetExecutionMode rejected: error_code={:?} target={}",
-                                        inner.error_code,
-                                        mode.as_wire_str()
-                                    );
+                        // Spawn so the pump loop is not blocked while the
+                        // backend processes the mode switch (sibling commands
+                        // like FetchAvailableInstruments / StartEngine follow
+                        // the same pattern).
+                        let mut sem_client = client.clone();
+                        let sem_token = token.clone();
+                        tokio::spawn(async move {
+                            let req = tonic::Request::new(SetExecutionModeRequest {
+                                mode: mode.as_wire_str().to_string(),
+                                token: sem_token,
+                            });
+                            match sem_client.set_execution_mode(req).await {
+                                Ok(r) => {
+                                    let inner = r.into_inner();
+                                    if inner.success {
+                                        info!(
+                                            "SetExecutionMode ok, backend execution_mode={}",
+                                            inner.execution_mode
+                                        );
+                                    } else {
+                                        error!(
+                                            "SetExecutionMode rejected: error_code={:?} target={}",
+                                            inner.error_code,
+                                            mode.as_wire_str()
+                                        );
+                                    }
                                 }
+                                Err(e) => error!("SetExecutionMode failed: {}", e),
                             }
-                            Err(e) => error!("SetExecutionMode failed: {}", e),
-                        }
+                        });
                     }
                     TransportCommand::FetchAvailableInstruments { end_date } => {
                         let mut fetch_client = client.clone();

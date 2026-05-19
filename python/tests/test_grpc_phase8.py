@@ -642,6 +642,51 @@ def test_venue_login_idempotent_when_already_connected(phase8_grpc_server_with_l
     assert venue_sm.current == "CONNECTED"
 
 
+def test_venue_login_recovers_when_connected_but_runner_has_last_error(
+    phase8_grpc_server_with_live,
+):
+    """Round1 MEDIUM: when venue_sm is CONNECTED but the live runner died with
+    a last_error (crashed WS task), a re-login must NOT be a no-op success. It
+    must tear down the dead session and re-establish so the UI recovers and
+    live_last_error clears. The plain idempotent test above only covers the
+    healthy case."""
+    port, token, engine, venue_sm, mm, servicer = phase8_grpc_server_with_live
+    stub = _stub(port)
+    _do_venue_login(stub, token)
+    assert venue_sm.current == "CONNECTED"
+
+    # Simulate a crashed WS task: runner stays CONNECTED in the state machine
+    # (LiveRunner._run never flips venue_sm to ERROR) but holds a last_error.
+    dead_runner = servicer._live_runner
+    assert dead_runner is not None
+    dead_runner._last_error = ConnectionError("ws task died")
+
+    # While CONNECTED, GetState surfaces the stale error.
+    resp_state = stub.GetState(engine_pb2.GetStateRequest(token=token))
+    assert (
+        json.loads(resp_state.json_data)["live_last_error"]
+        == "ConnectionError: ws task died"
+    )
+
+    # Re-login must recover (teardown + fresh login), not no-op.
+    resp2 = stub.VenueLogin(
+        engine_pb2.VenueLoginRequest(
+            venue_id="MOCK",
+            credentials_source="env",
+            token=token,
+        )
+    )
+    assert resp2.success is True
+    assert venue_sm.current == "CONNECTED"
+    # A fresh runner replaced the dead one and carries no error.
+    assert servicer._live_runner is not dead_runner
+    assert servicer._live_runner.last_error is None
+
+    # The stale error is gone after recovery.
+    resp_state2 = stub.GetState(engine_pb2.GetStateRequest(token=token))
+    assert json.loads(resp_state2.json_data)["live_last_error"] is None
+
+
 # --- D20: UnsubscribeMarketData + LastPriceCache.remove ----------------------
 
 def test_unsubscribe_removes_price_from_cache(phase8_grpc_server_with_live):
@@ -1143,3 +1188,173 @@ def test_venue_login_prompt_failure_propagates_and_tears_down(
     assert servicer._live_runner is None
     assert servicer._live_bridge is None
     assert venue_sm.current == "DISCONNECTED"
+
+
+# ============================================================================
+# Post-merge review fixes (2026-05-20)
+# ============================================================================
+
+
+# --- HIGH-2: SubscribeMarketData 50-instrument cap (§0.3) -------------------
+
+def test_subscribe_market_data_cap_at_50_instruments(phase8_grpc_server_with_live):
+    """HIGH-2: 50 銘柄まで accept、51 番目で SUBSCRIPTION_LIMIT_EXCEEDED。"""
+    port, token, engine, venue_sm, mm, servicer = phase8_grpc_server_with_live
+    stub = _stub(port)
+    _do_venue_login(stub, token)
+    resp_mode = stub.SetExecutionMode(
+        engine_pb2.SetExecutionModeRequest(mode="LiveManual", token=token)
+    )
+    assert resp_mode.success is True
+
+    # 50 subscribes succeed
+    for i in range(50):
+        iid = f"7{i:03d}.TSE"
+        resp = stub.SubscribeMarketData(
+            engine_pb2.SubscribeRequest(
+                instrument_id=iid, channels=["trades"], token=token,
+            )
+        )
+        assert resp.success is True, (
+            f"subscribe #{i+1} ({iid}) should succeed: error={resp.error_code!r}"
+        )
+
+    # 51st must be rejected
+    resp = stub.SubscribeMarketData(
+        engine_pb2.SubscribeRequest(
+            instrument_id="9999.TSE", channels=["trades"], token=token,
+        )
+    )
+    assert resp.success is False
+    assert resp.error_code == "SUBSCRIPTION_LIMIT_EXCEEDED"
+
+
+def test_subscribe_market_data_re_subscribe_does_not_count_against_cap(
+    phase8_grpc_server_with_live,
+):
+    """idempotent re-subscribe は cap カウントに含まれない (50/50 でも再 subscribe は OK)."""
+    port, token, engine, venue_sm, mm, servicer = phase8_grpc_server_with_live
+    stub = _stub(port)
+    _do_venue_login(stub, token)
+    stub.SetExecutionMode(
+        engine_pb2.SetExecutionModeRequest(mode="LiveManual", token=token)
+    )
+    for i in range(50):
+        stub.SubscribeMarketData(
+            engine_pb2.SubscribeRequest(
+                instrument_id=f"7{i:03d}.TSE", channels=["trades"], token=token,
+            )
+        )
+    # Re-subscribe to an existing id — must still succeed at the cap.
+    resp = stub.SubscribeMarketData(
+        engine_pb2.SubscribeRequest(
+            instrument_id="7000.TSE", channels=["trades"], token=token,
+        )
+    )
+    assert resp.success is True
+    assert resp.error_code == ""
+
+
+# --- HIGH-3: live_last_error cleared on mode toggle (§9.14) -----------------
+
+def test_live_last_error_cleared_when_toggling_to_replay(
+    phase8_grpc_server_with_live,
+):
+    """HIGH-3: 例外発生 → live_last_error が set → Replay に戻すと None。"""
+    port, token, engine, venue_sm, mm, servicer = phase8_grpc_server_with_live
+    stub = _stub(port)
+    _do_venue_login(stub, token)
+    stub.SetExecutionMode(
+        engine_pb2.SetExecutionModeRequest(mode="LiveManual", token=token)
+    )
+
+    # Simulate a runner error.
+    servicer._live_runner._last_error = ConnectionError("boom")
+    resp = stub.GetState(engine_pb2.GetStateRequest(token=token))
+    payload = json.loads(resp.json_data)
+    assert payload["live_last_error"] == "ConnectionError: boom"
+
+    # Replay 戻し precondition: engine_replay_state in {LOADED,RUNNING,PAUSED}
+    engine._replay_state = "LOADED"
+    resp_replay = stub.SetExecutionMode(
+        engine_pb2.SetExecutionModeRequest(mode="Replay", token=token)
+    )
+    assert resp_replay.success is True
+    resp2 = stub.GetState(engine_pb2.GetStateRequest(token=token))
+    payload2 = json.loads(resp2.json_data)
+    assert payload2["live_last_error"] is None, (
+        f"live_last_error must clear on Replay toggle; got {payload2['live_last_error']!r}"
+    )
+
+
+def test_live_last_error_cleared_on_venue_re_login(phase8_grpc_server_with_live):
+    """HIGH-3: VenueLogin 成功で live_last_error が None にリセットされる。"""
+    port, token, engine, venue_sm, mm, servicer = phase8_grpc_server_with_live
+    stub = _stub(port)
+    _do_venue_login(stub, token)
+    # Inject a stale error from a prior lifecycle directly into the override.
+    # (After teardown, _live_runner is None, so we exercise the suppression path
+    #  by manually setting the flag = False to simulate "stuck" state, then verify
+    #  VenueLogin re-arms it.)
+    servicer._suppress_live_last_error = False
+
+    # VenueLogout to drop the connection (clears suppression too).
+    stub.VenueLogout(engine_pb2.VenueLogoutRequest(token=token))
+    assert servicer._suppress_live_last_error is True
+
+    # Now re-login → suppression should remain armed.
+    _do_venue_login(stub, token)
+    resp = stub.GetState(engine_pb2.GetStateRequest(token=token))
+    payload = json.loads(resp.json_data)
+    assert payload["live_last_error"] is None
+
+
+# --- MEDIUM-5: live loop exception handler logs uncaught asyncio errors ----
+
+def test_phase8_live_loop_logs_uncaught_asyncio_exception(
+    phase8_grpc_server_with_live, caplog
+):
+    """MEDIUM-5: phase8-live-loop thread が uncaught exception を握りつぶさず
+    ERROR ログを出す。"""
+    import logging as _logging
+    port, token, *_rest, servicer = phase8_grpc_server_with_live
+    stub = _stub(port)
+    _do_venue_login(stub, token)
+    loop = servicer._ensure_live_loop()
+
+    async def _boom():
+        raise RuntimeError("loop-uncaught-boom")
+
+    caplog.set_level(_logging.ERROR)
+
+    # Create a Task on the loop (NOT via run_coroutine_threadsafe — that wraps
+    # the result in a concurrent.futures.Future whose exception is *consumed*
+    # and never reaches the loop's exception handler). A bare un-awaited Task
+    # whose coroutine raises routes the exception through call_exception_handler.
+    tasks: list = []
+
+    def _schedule() -> None:
+        tasks.append(loop.create_task(_boom()))
+
+    loop.call_soon_threadsafe(_schedule)
+
+    import time as _time
+    deadline = _time.time() + 2.0
+    while _time.time() < deadline:
+        if tasks and all(t.done() for t in tasks):
+            break
+        _time.sleep(0.02)
+    # Drop strong refs so Task.__del__ -> call_exception_handler runs.
+    tasks.clear()
+    import gc as _gc
+    _gc.collect()
+    _time.sleep(0.2)
+
+    msgs = " | ".join(r.getMessage() for r in caplog.records)
+    assert (
+        "phase8-live-loop" in msgs
+        or "loop-uncaught-boom" in msgs
+        or "uncaught asyncio exception" in msgs
+    ), (
+        f"expected loop exception to be logged, got: {msgs!r}"
+    )

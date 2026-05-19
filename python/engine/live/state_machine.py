@@ -24,7 +24,10 @@ _ALLOWED: dict[str, set[str]] = {
     "CONNECTED": {"SUBSCRIBED", "ERROR"},
     "SUBSCRIBED": {"RECONNECTING", "ERROR"},
     "RECONNECTING": {"SUBSCRIBED", "ERROR"},
-    "ERROR": set(),
+    # ERROR は外部 transition_to("DISCONNECTED") も許容する (Phase 8 post-merge fix):
+    # _fail() などのリカバリ経路で reset() を経由せず明示的に DISCONNECTED へ
+    # 戻したいケースを許可する。reset() による DISCONNECTED 復帰は引き続き有効。
+    "ERROR": {"DISCONNECTED"},
 }
 
 

@@ -191,6 +191,10 @@ class GrpcDataEngineServer(
         self._live_thread = None
         self._live_price_cache: Optional[LastPriceCache] = None
         self._live_timeout_s = 5.0
+        # When True, suppress live_last_error on the next GetState. Armed on
+        # Live re-enter / VenueLogin success / Replay toggle, cleared lazily by
+        # the next observed error from runner/bridge.
+        self._suppress_live_last_error: bool = False
         # D21: venue id from --live-venue flag, uppercase normalized
         self._live_venue_id: Optional[str] = live_venue_id.upper() if live_venue_id else None
 
@@ -228,9 +232,28 @@ class GrpcDataEngineServer(
 
         loop = asyncio.new_event_loop()
 
+        def _loop_exception_handler(_loop, ctx):
+            # Post-merge fix (MEDIUM-5): mask any secrets that may have ended up
+            # in the asyncio context (exception args / message) before logging.
+            try:
+                from engine.live.logging import mask_secrets
+                masked = mask_secrets({k: str(v) for k, v in ctx.items()})
+            except Exception:
+                masked = {"message": "<context masking failed>"}
+            logging.error("phase8-live-loop uncaught asyncio exception: %s", masked)
+
         def run_loop():
             asyncio.set_event_loop(loop)
-            loop.run_forever()
+            loop.set_exception_handler(_loop_exception_handler)
+            try:
+                loop.run_forever()
+            except BaseException:
+                # Post-merge fix (MEDIUM-5): never let the loop thread die
+                # silently — log loudly so the failure is observable.
+                logging.exception(
+                    "phase8-live-loop thread crashed in run_forever()"
+                )
+                raise
 
         self._live_loop = loop
         self._live_thread = threading.Thread(
@@ -279,7 +302,7 @@ class GrpcDataEngineServer(
         if cache is not None:
             await cache.stop()
         if runner is not None:
-            await runner.stop()
+            await runner.aclose()
 
     def _teardown_live_components(self):
         if self._live_runner is None and self._live_bridge is None:
@@ -297,6 +320,9 @@ class GrpcDataEngineServer(
             self._live_runner = None
             self._live_bridge = None
             self._live_price_cache = None
+            # Arm clear-on-toggle: a prior lifecycle's last_error must not bleed
+            # into the next Live session or stay visible after returning to Replay.
+            self._suppress_live_last_error = True
         # v5.2 Claim 2: reset venue_sm to DISCONNECTED so next Live entry
         # requires VenueLogin again (ensures adapter.is_logged_in invariant).
         if self.venue_sm is not None and self.venue_sm.current != "DISCONNECTED":
@@ -307,14 +333,28 @@ class GrpcDataEngineServer(
             status=engine_pb2.HealthCheckResponse.SERVING
         )
 
+    def _resolve_live_last_error(self) -> Optional[BaseException]:
+        err = self._live_runner.last_error if self._live_runner is not None else None
+        if err is None and self._live_bridge is not None:
+            err = self._live_bridge.last_error
+        return err
+
     def GetState(self, request, context):
         if request.token != self.token:
             context.abort(grpc.StatusCode.UNAUTHENTICATED, "Invalid token")
 
-        err = self._live_runner.last_error if self._live_runner is not None else None
-        if err is None and self._live_bridge is not None:
-            err = self._live_bridge.last_error
-        live_last_error = f"{type(err).__name__}: {err}" if err is not None else None
+        err = self._resolve_live_last_error()
+        # Clear-on-mode-toggle: while the suppression flag is set, GetState
+        # reports None until a *new* error bubbles up from runner/bridge.
+        if self._suppress_live_last_error and err is None:
+            live_last_error = None
+        elif self._suppress_live_last_error and err is not None:
+            # A fresh error appeared after the suppression was armed — that
+            # means the new lifecycle hit a real failure. Stop suppressing.
+            self._suppress_live_last_error = False
+            live_last_error = f"{type(err).__name__}: {err}"
+        else:
+            live_last_error = f"{type(err).__name__}: {err}" if err is not None else None
 
         # D8: mode-aware last_prices dispatch
         mode = self.mode_manager.current_mode if self.mode_manager else "Replay"
@@ -1102,12 +1142,25 @@ class GrpcDataEngineServer(
                 venue_state=venue_state, instruments_loaded=0,
             )
 
-        # Idempotent: already CONNECTED/SUBSCRIBED → no-op success
+        # Idempotent: already CONNECTED/SUBSCRIBED → no-op success — UNLESS the
+        # runner/bridge died with a last_error. LiveRunner._run() never transitions
+        # venue_sm to ERROR, so a crashed WS task leaves the state machine
+        # stale-CONNECTED while no data flows. Detect the dead session, tear it
+        # down, and fall through to a fresh login attempt so re-login recovers.
         if self.venue_sm is not None and self.venue_sm.current in ("CONNECTED", "SUBSCRIBED"):
-            return engine_pb2.VenueLoginResponse(
-                success=True, error_code="",
-                venue_state=self.venue_sm.current, instruments_loaded=0,
+            live_err = self._resolve_live_last_error()
+            if live_err is None:
+                return engine_pb2.VenueLoginResponse(
+                    success=True, error_code="",
+                    venue_state=self.venue_sm.current, instruments_loaded=0,
+                )
+            logging.warning(
+                "VenueLogin: venue_sm=%s but live runner/bridge has last_error=%r; "
+                "tearing down dead session to re-establish",
+                self.venue_sm.current, live_err,
             )
+            if self._live_runner is not None or self._live_bridge is not None:
+                self._teardown_live_components()
 
         # AUTHENTICATING 中の二重起動防止
         if self.venue_sm is not None and self.venue_sm.current == "AUTHENTICATING":
@@ -1199,6 +1252,8 @@ class GrpcDataEngineServer(
                     self.venue_sm.transition_to("AUTHENTICATING")
                 if self.venue_sm is not None and self.venue_sm.current == "AUTHENTICATING":
                     self.venue_sm.transition_to("CONNECTED")
+                # Arm clear-on-toggle: suppress stale errors from a prior session.
+                self._suppress_live_last_error = True
                 return True, ""
             except ValueError as exc:
                 # adapter 層が定義する判別可能エラーは error_code として透過。
@@ -1288,6 +1343,10 @@ class GrpcDataEngineServer(
             execution_mode=applied,
         )
 
+    # kabuステーション API 上限 (R6). LiveRunner 自体に gating が無いので
+    # servicer 層で拒否する。re-subscribe は cap 計算から外す。
+    _MAX_LIVE_SUBSCRIPTIONS = 50
+
     def SubscribeMarketData(self, request, context):
         if request.token != self.token:
             context.abort(grpc.StatusCode.UNAUTHENTICATED, "Invalid token")
@@ -1296,6 +1355,19 @@ class GrpcDataEngineServer(
             return engine_pb2.SubscribeResponse(
                 success=False,
                 error_code="EXECUTION_MODE_PRECONDITION",
+            )
+        # 50 銘柄 cap: 新規 instrument のみカウント (re-subscribe は no-op)
+        try:
+            already = self._live_runner.subscribed_ids()
+        except Exception:
+            already = set()
+        if (
+            request.instrument_id not in already
+            and len(already) >= self._MAX_LIVE_SUBSCRIPTIONS
+        ):
+            return engine_pb2.SubscribeResponse(
+                success=False,
+                error_code="SUBSCRIPTION_LIMIT_EXCEEDED",
             )
         # request.channels は accept-and-ignore (LiveRunner 側で {"trades","depth"} 固定)
         loop = self._ensure_live_loop()

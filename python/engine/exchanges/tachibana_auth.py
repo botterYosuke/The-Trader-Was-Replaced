@@ -256,21 +256,28 @@ class StartupLatch:
 
 
 def _validate_virtual_urls(payload: dict[str, Any]) -> None:
-    """MEDIUM-C3-3 — REST URLs must be https://, WS must be wss://."""
+    """REST URLs must be https://, WS must be wss://.
+
+    Virtual URLs are session-secret (they embed the ND= token), so errors
+    route through mask_secrets() rather than logging the raw URL.
+    """
+    from engine.live.logging import mask_secrets
+
     for key in ("sUrlRequest", "sUrlMaster", "sUrlPrice", "sUrlEvent"):
         url = payload.get(key, "")
         if not isinstance(url, str) or not url.startswith("https://"):
             log.error(
-                "tachibana login: %s did not start with https:// (got %r)",
+                "tachibana login: %s did not start with https:// (masked=%r)",
                 key,
-                url,
+                mask_secrets({key: url}),
             )
             raise LoginError(_MSG_VIRTUAL_URL_INVALID, code="login_failed")
     ws = payload.get("sUrlEventWebSocket", "")
     if not isinstance(ws, str) or not ws.startswith("wss://"):
         log.error(
-            "tachibana login: sUrlEventWebSocket did not start with wss:// (got %r)",
-            ws,
+            "tachibana login: sUrlEventWebSocket did not start with wss:// "
+            "(masked=%r)",
+            mask_secrets({"sUrlEventWebSocket": ws}),
         )
         raise LoginError(_MSG_VIRTUAL_URL_INVALID, code="login_failed")
 

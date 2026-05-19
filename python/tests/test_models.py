@@ -91,3 +91,14 @@ def test_trading_state_extra_forbid_still_holds_for_new_payload():
             subscribed_instruments=["1301.TSE"],
             foo=1,
         )
+
+
+def test_trading_state_live_last_error_is_last_field():
+    """§9.14 ADR (post-merge fix HIGH-1): live_last_error must be the LAST field
+    in TradingState so the Rust deserializer can treat it as a tail-appended
+    optional field."""
+    keys = list(TradingState.model_fields.keys())
+    assert keys[-1] == "live_last_error", (
+        f"live_last_error must be last; got order: {keys}"
+    )
+

@@ -183,12 +183,6 @@ async def test_login_session_cache_backward_compat_no_last_p_no(monkeypatch, tmp
     assert adapter._session.zyoutoeki_kazei_c == ""  # default empty string
 
 
-async def test_login_prompt_raises_not_implemented():
-    creds = VenueCredentials(credentials_source="prompt")
-    with pytest.raises(NotImplementedError):
-        await TachibanaAdapter().login(creds)
-
-
 async def test_login_env_missing_user_id_raises(monkeypatch):
     monkeypatch.delenv("DEV_TACHIBANA_USER_ID", raising=False)
     monkeypatch.setenv("DEV_TACHIBANA_PASSWORD", "pwd")
@@ -688,6 +682,151 @@ async def test_logout_clears_hubs_and_processors(monkeypatch, httpx_mock: HTTPXM
     assert adapter._processors == {}
 
 
+# ---------------------------------------------------------------------------
+# Post-merge review fixes (2026-05-20)
+# ---------------------------------------------------------------------------
+
+
+# HIGH-1: fetch_instruments must surface server-side error envelopes
+async def test_fetch_instruments_raises_on_session_expired(
+    monkeypatch, httpx_mock: HTTPXMock
+):
+    """payload with p_errno='2' must raise SessionExpiredError, not return []."""
+    from engine.exchanges.tachibana_auth import SessionExpiredError
+
+    adapter = await _login_demo(monkeypatch, httpx_mock)
+    err_payload = (
+        json.dumps({"p_errno": "2", "sResultCode": "0", "sCLMID": "CLMEventDownload"})
+        .encode("shift_jis")
+    )
+    httpx_mock.add_response(url=_MASTER_URL_RE, method="GET", content=err_payload)
+
+    with pytest.raises(SessionExpiredError):
+        await adapter.fetch_instruments()
+
+
+async def test_fetch_instruments_raises_on_api_error(
+    monkeypatch, httpx_mock: HTTPXMock
+):
+    """payload with sResultCode='-1' must raise ApiError."""
+    from engine.exchanges.tachibana_auth import ApiError
+
+    adapter = await _login_demo(monkeypatch, httpx_mock)
+    err_payload = (
+        json.dumps(
+            {"p_errno": "0", "sResultCode": "-1", "sResultText": "boom",
+             "sCLMID": "CLMEventDownload"}
+        ).encode("shift_jis")
+    )
+    httpx_mock.add_response(url=_MASTER_URL_RE, method="GET", content=err_payload)
+
+    with pytest.raises(ApiError):
+        await adapter.fetch_instruments()
+
+
+async def test_fetch_instruments_raises_on_service_out_of_hours(
+    monkeypatch, httpx_mock: HTTPXMock
+):
+    """payload with p_errno='-62' must raise ApiError (service hours)."""
+    from engine.exchanges.tachibana_auth import ApiError
+
+    adapter = await _login_demo(monkeypatch, httpx_mock)
+    err_payload = (
+        json.dumps({"p_errno": "-62", "sResultCode": "0", "sCLMID": "CLMEventDownload"})
+        .encode("shift_jis")
+    )
+    httpx_mock.add_response(url=_MASTER_URL_RE, method="GET", content=err_payload)
+
+    with pytest.raises(ApiError):
+        await adapter.fetch_instruments()
+
+
+# MEDIUM-2: events() must terminate after logout()
+async def test_events_returns_after_logout(monkeypatch, httpx_mock: HTTPXMock):
+    """events() AsyncIterator must terminate (StopAsyncIteration) when logout fires."""
+    _install_stub_hub(monkeypatch)
+    adapter = await _login_demo(monkeypatch, httpx_mock)
+
+    async def scenario() -> None:
+        gen = adapter.events()
+        consumer_done = asyncio.Event()
+
+        async def consume() -> None:
+            try:
+                async for _ in gen:
+                    pass
+            finally:
+                consumer_done.set()
+
+        task = asyncio.create_task(consume())
+        # Give the consumer time to park on the queue.
+        await asyncio.sleep(0.01)
+        await adapter.logout()
+        await asyncio.wait_for(consumer_done.wait(), timeout=1.0)
+        await task
+
+    await scenario()
+
+
+# MEDIUM-3: master fetch read-timeout must be generous for multi-MB stream
+def test_master_read_timeout_is_at_least_300s():
+    from engine.exchanges import tachibana as _tach_mod
+
+    assert getattr(_tach_mod, "_MASTER_READ_TIMEOUT", 0) >= 300
+
+
+# MEDIUM-4: credentials_source='prompt' wires to run_dialog
+async def test_login_prompt_success_loads_session(monkeypatch, tmp_path):
+    """run_dialog returns success → adapter loads the saved session and is_logged_in."""
+    import json as _json
+    from datetime import datetime
+    from zoneinfo import ZoneInfo
+
+    today = datetime.now(ZoneInfo("Asia/Tokyo")).date().isoformat()
+    session_data = {
+        "issued_jst_date": today,
+        "url_request": "https://demo/request/",
+        "url_master": "https://demo/master/",
+        "url_price": "https://demo/price/",
+        "url_event": "https://demo/event/",
+        "url_event_ws": "wss://demo/event_ws/",
+        "zyoutoeki_kazei_c": "1",
+        "last_p_no": 1_000_000_000,
+    }
+    session_file = tmp_path / "session.json"
+    session_file.write_text(_json.dumps(session_data), encoding="utf-8")
+    monkeypatch.setenv("TACHIBANA_SESSION_PATH", str(session_file))
+
+    def _fake_run_dialog(env_hint: str) -> dict:
+        return {"success": True, "error_code": ""}
+
+    monkeypatch.setattr(
+        "engine.exchanges.tachibana_login_flow.run_dialog", _fake_run_dialog
+    )
+
+    adapter = TachibanaAdapter(environment="demo")
+    await adapter.login(VenueCredentials(credentials_source="prompt"))
+
+    assert adapter.is_logged_in is True
+    assert str(adapter._session.url_event_ws) == "wss://demo/event_ws/"
+
+
+async def test_login_prompt_user_cancel_raises(monkeypatch, tmp_path):
+    """run_dialog returns success=False → login raises ValueError (USER_CANCELLED)."""
+    monkeypatch.setenv("TACHIBANA_SESSION_PATH", str(tmp_path / "noexist.json"))
+
+    def _fake_run_dialog(env_hint: str) -> dict:
+        return {"success": False, "error_code": "USER_CANCELLED"}
+
+    monkeypatch.setattr(
+        "engine.exchanges.tachibana_login_flow.run_dialog", _fake_run_dialog
+    )
+
+    adapter = TachibanaAdapter(environment="demo")
+    with pytest.raises(ValueError, match="USER_CANCELLED"):
+        await adapter.login(VenueCredentials(credentials_source="prompt"))
+
+
 async def test_logout_makes_subscribe_raise(monkeypatch, httpx_mock: HTTPXMock):
     """logout 後 subscribe は session 無しで RuntimeError(login) を投げる。"""
     _install_stub_hub(monkeypatch)
@@ -758,6 +897,86 @@ async def test_subscribe_builds_event_ws_url_with_expected_params(
     assert "p_eno=0" in url
     # "," is percent-encoded as %2C by build_event_url
     assert "p_evt_cmd=ST%2CKP%2CFD" in url
+
+
+# ---------------------------------------------------------------------------
+# Round 2 — Post-merge review fixes (2026-05-20)
+# ---------------------------------------------------------------------------
+
+
+# HIGH-1 (Round 2): logout enqueues a None sentinel; the next login() must
+# recreate the queue so the new events() consumer does not pop the stale
+# sentinel and terminate immediately.
+async def test_events_after_relogin_does_not_see_stale_sentinel(
+    monkeypatch, httpx_mock: HTTPXMock,
+):
+    _install_stub_hub(monkeypatch)
+    adapter = await _login_demo(monkeypatch, httpx_mock)
+    await adapter.subscribe("7203.TSE", {"trades", "depth"})
+
+    # First session: logout drains a None sentinel into the queue.
+    await adapter.logout()
+
+    # Second session: env login again (re-add mock response for the new GET).
+    _add_login_response(httpx_mock, _ok_login_payload())
+    await adapter.login(VenueCredentials(credentials_source="env"))
+    await adapter.subscribe("7203.TSE", {"trades", "depth"})
+    hub = _RecordingStubHub.instances[-1]
+
+    gen = adapter.events()
+
+    async def driver():
+        await hub.fire("FD", _fd_fields_first_frame(), recv_ts_ms=1_700_000_000_000)
+
+    drive_task = asyncio.create_task(driver())
+    # If the stale None leaks the iterator terminates immediately
+    # (StopAsyncIteration), failing this wait_for with a different error.
+    evt = await asyncio.wait_for(gen.__anext__(), timeout=1.0)
+    await drive_task
+
+    assert evt.kind == "depth"
+
+
+# MEDIUM-1 (Round 2): master fetch must wrap UnicodeDecodeError into ApiError.
+async def test_fetch_instruments_wraps_unicode_decode_error_as_api_error(
+    monkeypatch, httpx_mock: HTTPXMock,
+):
+    from engine.exchanges.tachibana_auth import ApiError
+
+    adapter = await _login_demo(monkeypatch, httpx_mock)
+    # 0x81 is a Shift-JIS lead byte that requires a valid trail (0x40-0xFC
+    # excluding 0x7F). Feeding 0x81 0xFF makes the incremental decoder raise
+    # UnicodeDecodeError under errors="strict".
+    bad_bytes = b"\x81\xff\x81\xff"
+    httpx_mock.add_response(url=_MASTER_URL_RE, method="GET", content=bad_bytes)
+
+    with pytest.raises(ApiError) as exc_info:
+        await adapter.fetch_instruments()
+    assert exc_info.value.code == "MASTER_DECODE_FAILED"
+    assert isinstance(exc_info.value.__cause__, UnicodeDecodeError)
+
+
+# MEDIUM-2 (Round 2): error envelope scan must cover the full records list,
+# not just records[0]. Server may interleave a valid record before the
+# error envelope.
+async def test_fetch_instruments_scans_all_records_for_error_envelope(
+    monkeypatch, httpx_mock: HTTPXMock,
+):
+    from engine.exchanges.tachibana_auth import SessionExpiredError
+
+    adapter = await _login_demo(monkeypatch, httpx_mock)
+    # Valid issue record at index 0, error envelope at index 1, no terminator.
+    valid = {"sCLMID": "CLMIssueMstKabu", "sIssueCode": "7203",
+             "sIssueName": "トヨタ自動車"}
+    err = {"p_errno": "2", "sResultCode": "0", "sCLMID": "CLMEventDownload"}
+    body = (
+        json.dumps(valid, ensure_ascii=False).encode("shift_jis")
+        + json.dumps(err, ensure_ascii=False).encode("shift_jis")
+    )
+    httpx_mock.add_response(url=_MASTER_URL_RE, method="GET", content=body)
+
+    with pytest.raises(SessionExpiredError):
+        await adapter.fetch_instruments()
 
 
 async def test_subscribe_passes_processor_reset_as_on_connect(

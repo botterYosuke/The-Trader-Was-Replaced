@@ -257,6 +257,9 @@ async def test_put_register_posts_symbols_with_token_header(
 async def test_put_register_returns_false_on_nonzero_result_code(
     monkeypatch, httpx_mock: HTTPXMock
 ):
+    """Post-merge review HIGH-1: 4002001 -> KabuRegisterFullError (not silent False)."""
+    from engine.exchanges.kabusapi_auth import KabuRegisterFullError
+
     monkeypatch.setenv("DEV_KABU_API_PASSWORD", "pw")
     httpx_mock.add_response(
         url=endpoint("token", env="verify"),
@@ -266,13 +269,13 @@ async def test_put_register_returns_false_on_nonzero_result_code(
     httpx_mock.add_response(
         url=endpoint("register", env="verify"),
         method="PUT",
-        json={"ResultCode": 4002001, "Message": "register full"},
+        json={"Code": 4002001, "Message": "register full"},
     )
 
     adapter = KabuStationAdapter(environment="verify")
     await adapter.login(VenueCredentials(credentials_source="env"))
-    ok = await adapter._put_register([("7203", 1)])
-    assert ok is False
+    with pytest.raises(KabuRegisterFullError):
+        await adapter._put_register([("7203", 1)])
 
 
 # ---------------------------------------------------------------------------
@@ -310,7 +313,7 @@ async def test_subscribe_calls_put_register_and_creates_processor(
     assert len(put_reqs) == 1
     body = _json.loads(put_reqs[0].content)
     assert body == {"Symbols": [{"Symbol": "7203", "Exchange": 1}]}
-    assert "7203" in adapter._processors
+    assert ("7203", 1) in adapter._processors
     assert ("7203", 1) in adapter._register_set
 
 
@@ -342,8 +345,8 @@ async def test_subscribe_then_unsubscribe_replays_remaining_symbols(
     assert len(put_reqs) == 3
     last_body = _json.loads(put_reqs[-1].content)
     assert last_body == {"Symbols": [{"Symbol": "9984", "Exchange": 1}]}
-    assert "7203" not in adapter._processors
-    assert "9984" in adapter._processors
+    assert ("7203", 1) not in adapter._processors
+    assert ("9984", 1) in adapter._processors
 
 
 async def test_subscribe_rejects_non_tse_suffix(monkeypatch, httpx_mock: HTTPXMock):
@@ -376,8 +379,8 @@ async def test_on_frame_emits_depth_and_trade_into_queue():
 
     adapter = KabuStationAdapter(environment="verify")
     adapter._token = "tkn"
-    adapter._processors["7203"] = KabuPushFrameProcessor(symbol="7203")
-    adapter._processors["7203"].process(
+    adapter._processors[("7203", 1)] = KabuPushFrameProcessor(symbol="7203")
+    adapter._processors[("7203", 1)].process(
         {
             "CurrentPrice": 1000.0,
             "TradingVolume": 100.0,
@@ -416,7 +419,7 @@ async def test_on_frame_skips_trade_when_codec_returns_none():
 
     adapter = KabuStationAdapter(environment="verify")
     adapter._token = "tkn"
-    adapter._processors["7203"] = KabuPushFrameProcessor(symbol="7203")
+    adapter._processors[("7203", 1)] = KabuPushFrameProcessor(symbol="7203")
 
     await adapter._on_frame(
         {
@@ -466,6 +469,12 @@ async def test_logout_cancels_ws_task_and_clears_state(
         method="PUT",
         json={"ResultCode": 0, "RegistList": []},
     )
+    httpx_mock.add_response(
+        url=endpoint("unregister/all", env="verify"),
+        method="PUT",
+        json={"Code": 0},
+        is_reusable=True,
+    )
 
     async def _fake_connect(**kwargs):
         await asyncio.Event().wait()
@@ -512,12 +521,14 @@ async def test_subscribe_rolls_back_state_on_register_failure(
     httpx_mock.add_response(
         url=endpoint("register", env="verify"),
         method="PUT",
-        json={"ResultCode": 4002001, "Message": "register full"},
+        json={"Code": 4002001, "Message": "register full"},
     )
+
+    from engine.exchanges.kabusapi_auth import KabuRegisterFullError
 
     adapter = KabuStationAdapter(environment="verify")
     await adapter.login(VenueCredentials(credentials_source="env"))
-    with pytest.raises(RuntimeError, match="register"):
+    with pytest.raises(KabuRegisterFullError):
         await adapter.subscribe("7203.TSE", {"trades"})
 
     assert adapter._processors == {}
@@ -601,6 +612,12 @@ async def test_unsubscribe_rejects_non_tse_suffix(
         method="PUT",
         json={"ResultCode": 0, "RegistList": []},
     )
+    httpx_mock.add_response(
+        url=endpoint("unregister/all", env="verify"),
+        method="PUT",
+        json={"Code": 0},
+        is_reusable=True,
+    )
 
     async def _fake_connect(**kwargs):
         await asyncio.Event().wait()
@@ -615,7 +632,7 @@ async def test_unsubscribe_rejects_non_tse_suffix(
     with pytest.raises(ValueError, match="suffix|OSE"):
         await adapter.unsubscribe("7203.OSE")
 
-    assert "7203" in adapter._processors
+    assert ("7203", 1) in adapter._processors
     assert ("7203", 1) in adapter._register_set
 
     await adapter.logout()
@@ -684,7 +701,13 @@ async def test_subscribe_duplicate_with_put_failure_preserves_existing_state(
     httpx_mock.add_response(
         url=endpoint("register", env="verify"),
         method="PUT",
-        json={"ResultCode": 4002001, "Message": "register full"},
+        json={"Code": 4002001, "Message": "register full"},
+    )
+    httpx_mock.add_response(
+        url=endpoint("unregister/all", env="verify"),
+        method="PUT",
+        json={"Code": 0},
+        is_reusable=True,
     )
 
     async def _fake_connect(**kwargs):
@@ -693,17 +716,19 @@ async def test_subscribe_duplicate_with_put_failure_preserves_existing_state(
     import engine.exchanges.kabusapi_ws as _ws_mod
     monkeypatch.setattr(_ws_mod, "connect", _fake_connect)
 
+    from engine.exchanges.kabusapi_auth import KabuRegisterFullError
+
     adapter = KabuStationAdapter(environment="verify")
     await adapter.login(VenueCredentials(credentials_source="env"))
     await adapter.subscribe("7203.TSE", {"trades"})
-    first_processor = adapter._processors["7203"]
+    first_processor = adapter._processors[("7203", 1)]
 
-    with pytest.raises(RuntimeError, match="register"):
+    with pytest.raises(KabuRegisterFullError):
         await adapter.subscribe("7203.TSE", {"trades"})
 
     # 既存 state は破壊されていない
     assert ("7203", 1) in adapter._register_set
-    assert adapter._processors.get("7203") is first_processor
+    assert adapter._processors.get(("7203", 1)) is first_processor
 
     await adapter.logout()
 
@@ -728,7 +753,378 @@ async def test_unsubscribe_raises_and_preserves_state_on_put_failure(
     httpx_mock.add_response(
         url=endpoint("register", env="verify"),
         method="PUT",
-        json={"ResultCode": 4002001, "Message": "register sync failed"},
+        json={"Code": 4002001, "Message": "register sync failed"},
+    )
+
+    async def _fake_connect(**kwargs):
+        await asyncio.Event().wait()
+
+    import engine.exchanges.kabusapi_ws as _ws_mod
+    monkeypatch.setattr(_ws_mod, "connect", _fake_connect)
+
+    from engine.exchanges.kabusapi_auth import KabuRegisterFullError
+
+    adapter = KabuStationAdapter(environment="verify")
+    await adapter.login(VenueCredentials(credentials_source="env"))
+    await adapter.subscribe("7203.TSE", {"trades"})
+
+    with pytest.raises(KabuRegisterFullError):
+        await adapter.unsubscribe("7203.TSE")
+
+    # PUT が失敗したら local state はそのまま (server/local skew 防止)
+    assert ("7203", 1) in adapter._register_set
+    assert ("7203", 1) in adapter._processors
+
+    # logout will attempt PUT /unregister/all (post-merge MEDIUM-2) — provide mock
+    httpx_mock.add_response(
+        url=endpoint("unregister/all", env="verify"),
+        method="PUT",
+        json={"Code": 0},
+        is_reusable=True,
+    )
+    await adapter.logout()
+
+
+# ===========================================================================
+# Post-merge review fixes (2026-05-20)
+# ===========================================================================
+
+
+async def test_put_register_http_401_raises_api_error(
+    monkeypatch, httpx_mock: HTTPXMock
+):
+    """HIGH-1: HTTP 401 from PUT /register must surface as KabuApiError
+    (via check_response, not silent False)."""
+    from engine.exchanges.kabusapi_auth import KabuApiError
+
+    monkeypatch.setenv("DEV_KABU_API_PASSWORD", "pw")
+    httpx_mock.add_response(
+        url=endpoint("token", env="verify"),
+        method="POST",
+        json={"ResultCode": 0, "Token": "tkn"},
+    )
+    httpx_mock.add_response(
+        url=endpoint("register", env="verify"),
+        method="PUT",
+        status_code=401,
+        json={"Code": 4001005, "Message": "token expired"},
+    )
+
+    adapter = KabuStationAdapter(environment="verify")
+    await adapter.login(VenueCredentials(credentials_source="env"))
+    with pytest.raises(KabuApiError):
+        await adapter._put_register([("7203", 1)])
+
+
+async def test_put_register_code_4001005_raises_token_expired(
+    monkeypatch, httpx_mock: HTTPXMock
+):
+    """HIGH-1: HTTP 200 + Code 4001005 → KabuTokenExpiredError (re-auth path)."""
+    from engine.exchanges.kabusapi_auth import KabuTokenExpiredError
+
+    monkeypatch.setenv("DEV_KABU_API_PASSWORD", "pw")
+    httpx_mock.add_response(
+        url=endpoint("token", env="verify"),
+        method="POST",
+        json={"ResultCode": 0, "Token": "tkn"},
+    )
+    httpx_mock.add_response(
+        url=endpoint("register", env="verify"),
+        method="PUT",
+        json={"Code": 4001005, "Message": "token expired"},
+    )
+
+    adapter = KabuStationAdapter(environment="verify")
+    await adapter.login(VenueCredentials(credentials_source="env"))
+    with pytest.raises(KabuTokenExpiredError):
+        await adapter._put_register([("7203", 1)])
+
+
+async def test_on_frame_keys_processor_by_symbol_and_exchange():
+    """HIGH-2: same Symbol under different Exchange must use distinct processors.
+
+    R4: kabu symbol key = "<Symbol>@<Exchange>". Keying by Symbol alone
+    collides TSE(1) and 名証(3) state.
+    """
+    from engine.exchanges.kabusapi_ws_codec import KabuPushFrameProcessor
+
+    adapter = KabuStationAdapter(environment="verify")
+    adapter._token = "tkn"
+    proc_tse = KabuPushFrameProcessor(symbol="5401")
+    proc_meisho = KabuPushFrameProcessor(symbol="5401")
+    adapter._processors[("5401", 1)] = proc_tse
+    adapter._processors[("5401", 3)] = proc_meisho
+
+    await adapter._on_frame(
+        {
+            "Symbol": "5401",
+            "Exchange": 1,
+            "CurrentPrice": 100.0,
+            "TradingVolume": 10.0,
+            "CurrentPriceTime": "2026-05-20T09:00:00",
+        }
+    )
+    await adapter._on_frame(
+        {
+            "Symbol": "5401",
+            "Exchange": 3,
+            "CurrentPrice": 200.0,
+            "TradingVolume": 20.0,
+            "CurrentPriceTime": "2026-05-20T09:00:00",
+        }
+    )
+
+    assert proc_tse._prev_volume == 10.0
+    assert proc_meisho._prev_volume == 20.0
+
+
+async def test_ws_reconnect_resets_processors(monkeypatch, httpx_mock: HTTPXMock):
+    """HIGH-3: on WS reconnect, every processor's reset() must be called
+    BEFORE new frames are dispatched (codec docstring contract)."""
+    from engine.exchanges.kabusapi_ws_codec import KabuPushFrameProcessor
+
+    monkeypatch.setenv("DEV_KABU_API_PASSWORD", "pw")
+    httpx_mock.add_response(
+        url=endpoint("token", env="verify"),
+        method="POST",
+        json={"ResultCode": 0, "Token": "tkn"},
+    )
+    httpx_mock.add_response(
+        url=endpoint("register", env="verify"),
+        method="PUT",
+        json={"Code": 0, "RegistList": []},
+        is_reusable=True,
+    )
+    httpx_mock.add_response(
+        url=endpoint("unregister/all", env="verify"),
+        method="PUT",
+        json={"Code": 0},
+        is_reusable=True,
+    )
+
+    reset_count = {"n": 0}
+
+    class _SpyProcessor(KabuPushFrameProcessor):
+        def reset(self):
+            reset_count["n"] += 1
+            super().reset()
+
+    import engine.exchanges.kabusapi_ws as _ws_mod
+
+    async def _fake_connect(*, env, on_message, register_set, put_register,
+                            on_reconnect=None):
+        # Simulate a reconnect by invoking the on_reconnect hook once.
+        if on_reconnect is not None:
+            result = on_reconnect()
+            if asyncio.iscoroutine(result):
+                await result
+
+    monkeypatch.setattr(_ws_mod, "connect", _fake_connect)
+
+    adapter = KabuStationAdapter(environment="verify")
+    await adapter.login(VenueCredentials(credentials_source="env"))
+    spy = _SpyProcessor(symbol="7203")
+    adapter._processors[("7203", 1)] = spy
+    adapter._register_set.register("7203", 1)
+
+    await adapter.subscribe("7203.TSE", {"trades"})
+
+    for _ in range(10):
+        await asyncio.sleep(0)
+
+    assert reset_count["n"] >= 1, "on_reconnect callback should reset processors"
+
+    await adapter.logout()
+
+
+async def test_put_register_rate_limited_to_10_per_second(
+    monkeypatch, httpx_mock: HTTPXMock
+):
+    """MEDIUM-1: PUT /register is info-class (R5: 10 req/s). >10 calls in
+    <1s must observe delays."""
+    monkeypatch.setenv("DEV_KABU_API_PASSWORD", "pw")
+    httpx_mock.add_response(
+        url=endpoint("token", env="verify"),
+        method="POST",
+        json={"ResultCode": 0, "Token": "tkn"},
+    )
+    httpx_mock.add_response(
+        url=endpoint("register", env="verify"),
+        method="PUT",
+        json={"Code": 0, "RegistList": []},
+        is_reusable=True,
+    )
+
+    fake_now = {"t": 0.0}
+    sleeps: list[float] = []
+
+    def _time_source() -> float:
+        return fake_now["t"]
+
+    async def _fake_sleep(d: float) -> None:
+        sleeps.append(d)
+        fake_now["t"] += d
+
+    adapter = KabuStationAdapter(environment="verify", time_source=_time_source)
+    await adapter.login(VenueCredentials(credentials_source="env"))
+    # Inject the sleep stub into the adapter (not global asyncio.sleep, since
+    # httpx mock transport may need real sleep).
+    adapter._rate_limit_sleep = _fake_sleep  # type: ignore[attr-defined]
+
+    for _ in range(11):
+        await adapter._put_register([("7203", 1)])
+
+    assert any(s > 0 for s in sleeps), (
+        f"expected rate-limiter to insert a sleep; got sleeps={sleeps}"
+    )
+
+
+async def test_logout_issues_unregister_all(monkeypatch, httpx_mock: HTTPXMock):
+    """MEDIUM-2: logout() must call PUT /unregister/all (R6 cleanup) when
+    there is at least one prior registration."""
+    monkeypatch.setenv("DEV_KABU_API_PASSWORD", "pw")
+    httpx_mock.add_response(
+        url=endpoint("token", env="verify"),
+        method="POST",
+        json={"ResultCode": 0, "Token": "tkn"},
+    )
+    httpx_mock.add_response(
+        url=endpoint("register", env="verify"),
+        method="PUT",
+        json={"Code": 0, "RegistList": []},
+    )
+    httpx_mock.add_response(
+        url=endpoint("unregister/all", env="verify"),
+        method="PUT",
+        json={"Code": 0},
+    )
+
+    async def _fake_connect(**kwargs):
+        await asyncio.Event().wait()
+
+    import engine.exchanges.kabusapi_ws as _ws_mod
+    monkeypatch.setattr(_ws_mod, "connect", _fake_connect)
+
+    adapter = KabuStationAdapter(environment="verify")
+    await adapter.login(VenueCredentials(credentials_source="env"))
+    await adapter.subscribe("7203.TSE", {"trades"})
+    await adapter.logout()
+
+    put_reqs = [
+        r for r in httpx_mock.get_requests()
+        if r.method == "PUT" and str(r.url).endswith("/unregister/all")
+    ]
+    assert len(put_reqs) == 1
+
+
+async def test_logout_tolerates_unregister_all_failure(
+    monkeypatch, httpx_mock: HTTPXMock
+):
+    """MEDIUM-2: logout() must tolerate unregister/all failures (token may
+    already be invalid)."""
+    import httpx as _httpx
+
+    monkeypatch.setenv("DEV_KABU_API_PASSWORD", "pw")
+    httpx_mock.add_response(
+        url=endpoint("token", env="verify"),
+        method="POST",
+        json={"ResultCode": 0, "Token": "tkn"},
+    )
+    httpx_mock.add_response(
+        url=endpoint("register", env="verify"),
+        method="PUT",
+        json={"Code": 0, "RegistList": []},
+    )
+
+    def _boom(request):
+        raise _httpx.ConnectError("body gone")
+
+    httpx_mock.add_callback(
+        _boom, url=endpoint("unregister/all", env="verify"), method="PUT"
+    )
+
+    async def _fake_connect(**kwargs):
+        await asyncio.Event().wait()
+
+    import engine.exchanges.kabusapi_ws as _ws_mod
+    monkeypatch.setattr(_ws_mod, "connect", _fake_connect)
+
+    adapter = KabuStationAdapter(environment="verify")
+    await adapter.login(VenueCredentials(credentials_source="env"))
+    await adapter.subscribe("7203.TSE", {"trades"})
+    await adapter.logout()
+    assert adapter._token is None
+
+
+async def test_last_error_exposes_ws_task_exception(
+    monkeypatch, httpx_mock: HTTPXMock
+):
+    """MEDIUM-3: WS task death must surface via adapter.last_error side-channel."""
+    from engine.exchanges.kabusapi_auth import KabuConnectionError
+
+    monkeypatch.setenv("DEV_KABU_API_PASSWORD", "pw")
+    httpx_mock.add_response(
+        url=endpoint("token", env="verify"),
+        method="POST",
+        json={"ResultCode": 0, "Token": "tkn"},
+    )
+    httpx_mock.add_response(
+        url=endpoint("register", env="verify"),
+        method="PUT",
+        json={"Code": 0, "RegistList": []},
+        is_reusable=True,
+    )
+    httpx_mock.add_response(
+        url=endpoint("unregister/all", env="verify"),
+        method="PUT",
+        json={"Code": 0},
+        is_reusable=True,
+    )
+
+    async def _dying_connect(**kwargs):
+        raise KabuConnectionError("ws upstream gone (last_error test)")
+
+    import engine.exchanges.kabusapi_ws as _ws_mod
+    monkeypatch.setattr(_ws_mod, "connect", _dying_connect)
+
+    adapter = KabuStationAdapter(environment="verify")
+    await adapter.login(VenueCredentials(credentials_source="env"))
+    await adapter.subscribe("7203.TSE", {"trades"})
+
+    for _ in range(20):
+        await asyncio.sleep(0)
+        if adapter.last_error is not None:
+            break
+
+    assert isinstance(adapter.last_error, KabuConnectionError)
+    assert "ws upstream gone" in str(adapter.last_error)
+
+    # Round2: consume the unregister/all matcher via logout (also covers
+    # pytest-httpx teardown ERROR caveat in MEMORY.md).
+    await adapter.logout()
+
+
+# ===========================================================================
+# Round 2 post-merge review fixes (2026-05-20)
+# ===========================================================================
+
+
+async def test_logout_propagates_cancelled_error_during_unregister_all(
+    monkeypatch, httpx_mock: HTTPXMock
+):
+    """Round2 HIGH-1: cancelling logout() while PUT /unregister/all is in
+    flight must propagate asyncio.CancelledError (not swallow it via
+    `except BaseException`)."""
+    monkeypatch.setenv("DEV_KABU_API_PASSWORD", "pw")
+    httpx_mock.add_response(
+        url=endpoint("token", env="verify"),
+        method="POST",
+        json={"ResultCode": 0, "Token": "tkn"},
+    )
+    httpx_mock.add_response(
+        url=endpoint("register", env="verify"),
+        method="PUT",
+        json={"Code": 0, "RegistList": []},
     )
 
     async def _fake_connect(**kwargs):
@@ -741,11 +1137,518 @@ async def test_unsubscribe_raises_and_preserves_state_on_put_failure(
     await adapter.login(VenueCredentials(credentials_source="env"))
     await adapter.subscribe("7203.TSE", {"trades"})
 
-    with pytest.raises(RuntimeError, match="unregister"):
-        await adapter.unsubscribe("7203.TSE")
+    # Replace _client.put with one that hangs forever — we want to cancel
+    # while it is awaiting.
+    hang_event = asyncio.Event()
 
-    # PUT が失敗したら local state はそのまま (server/local skew 防止)
-    assert ("7203", 1) in adapter._register_set
-    assert "7203" in adapter._processors
+    async def _hanging_put(*args, **kwargs):
+        await hang_event.wait()  # never set
+        raise AssertionError("unreachable")
+
+    adapter._client.put = _hanging_put  # type: ignore[assignment]
+
+    task = asyncio.create_task(adapter.logout())
+    # Let logout() reach the put() await.
+    for _ in range(5):
+        await asyncio.sleep(0)
+
+    task.cancel()
+    with pytest.raises(asyncio.CancelledError):
+        await task
+
+
+async def test_logout_unregister_all_has_timeout(monkeypatch, httpx_mock: HTTPXMock):
+    """Round2 HIGH-2: PUT /unregister/all must have its own inner timeout so
+    a hung kabu body cannot block logout indefinitely. logout() should
+    complete within a small window even if the call hangs."""
+    monkeypatch.setenv("DEV_KABU_API_PASSWORD", "pw")
+    httpx_mock.add_response(
+        url=endpoint("token", env="verify"),
+        method="POST",
+        json={"ResultCode": 0, "Token": "tkn"},
+    )
+    httpx_mock.add_response(
+        url=endpoint("register", env="verify"),
+        method="PUT",
+        json={"Code": 0, "RegistList": []},
+    )
+
+    async def _fake_connect(**kwargs):
+        await asyncio.Event().wait()
+
+    import engine.exchanges.kabusapi_ws as _ws_mod
+    monkeypatch.setattr(_ws_mod, "connect", _fake_connect)
+
+    adapter = KabuStationAdapter(environment="verify")
+    await adapter.login(VenueCredentials(credentials_source="env"))
+    await adapter.subscribe("7203.TSE", {"trades"})
+
+    # Simulate a kabu body that hangs indefinitely. Without an inner
+    # timeout on the PUT call, logout() would block forever — wait_for at
+    # 2.0s would raise. With the fix the inner httpx timeout (a few sec)
+    # surfaces, the except clause logs and continues, and logout completes.
+    async def _hanging_put(*args, **kwargs):
+        # Honour any timeout= passed by the adapter. If the adapter passes
+        # no timeout, this sleeps long enough to exceed the outer wait_for.
+        timeout = kwargs.get("timeout")
+        if timeout is not None and hasattr(timeout, "read") and timeout.read:
+            await asyncio.sleep(min(timeout.read, 0.5))
+            import httpx as _httpx
+            raise _httpx.ReadTimeout("kabu hung (inner timeout)", request=None)
+        await asyncio.sleep(30.0)  # bury the outer wait_for if no inner timeout
+
+    adapter._client.put = _hanging_put  # type: ignore[assignment]
+
+    # If the inner timeout is missing, _hanging_put sleeps 30s and the outer
+    # wait_for raises TimeoutError. With the fix logout() returns within 2s.
+    await asyncio.wait_for(adapter.logout(), timeout=2.0)
+    assert adapter._token is None
+
+
+async def test_login_clears_prior_last_error(monkeypatch, httpx_mock: HTTPXMock):
+    """Round2 MEDIUM-1: a successful login() must clear adapter._last_error
+    so callers polling `last_error` for fresh sessions don't see stale state."""
+    monkeypatch.setenv("DEV_KABU_API_PASSWORD", "pw")
+    httpx_mock.add_response(
+        url=endpoint("token", env="verify"),
+        method="POST",
+        json={"ResultCode": 0, "Token": "tkn"},
+    )
+
+    adapter = KabuStationAdapter(environment="verify")
+    adapter._last_error = RuntimeError("prior session boom")  # type: ignore[assignment]
+
+    await adapter.login(VenueCredentials(credentials_source="env"))
+
+    assert adapter.last_error is None
+
+
+async def test_on_frame_missing_exchange_resolves_via_processors(
+    monkeypatch, httpx_mock: HTTPXMock
+):
+    """Round2 MEDIUM-2a: when Exchange is missing from a frame and only one
+    processor matches the symbol, route to that processor (do NOT default
+    to TSE=1)."""
+    from engine.exchanges.kabusapi_ws_codec import KabuPushFrameProcessor
+
+    monkeypatch.setenv("DEV_KABU_API_PASSWORD", "pw")
+    httpx_mock.add_response(
+        url=endpoint("token", env="verify"),
+        method="POST",
+        json={"ResultCode": 0, "Token": "tkn"},
+    )
+
+    adapter = KabuStationAdapter(environment="verify")
+    await adapter.login(VenueCredentials(credentials_source="env"))
+
+    # Only register for 名証 (Exchange=3) — NOT TSE.
+    seen_calls: list[dict] = []
+
+    class _SpyProc(KabuPushFrameProcessor):
+        def process(self, msg):
+            seen_calls.append(msg)
+            return None, None
+
+    adapter._processors[("5401", 3)] = _SpyProc(symbol="5401")
+
+    # Frame omits Exchange. Old code would default to 1 and silently drop;
+    # new code must look up the only matching symbol → (5401, 3).
+    await adapter._on_frame(
+        {
+            "Symbol": "5401",
+            "CurrentPrice": 100.0,
+            "TradingVolume": 10.0,
+            "CurrentPriceTime": "2026-05-20T09:00:00",
+        }
+    )
+
+    assert len(seen_calls) == 1, (
+        f"frame should route to the single registered (5401,3) processor; "
+        f"got {len(seen_calls)} calls"
+    )
+
+
+async def test_on_frame_missing_exchange_drops_when_ambiguous(
+    monkeypatch, httpx_mock: HTTPXMock, caplog
+):
+    """Round2 MEDIUM-2b: when Exchange is missing AND multiple processors
+    match the symbol, the frame must be dropped (no processor invoked)
+    and a warning logged."""
+    import logging as _logging
+
+    from engine.exchanges.kabusapi_ws_codec import KabuPushFrameProcessor
+
+    monkeypatch.setenv("DEV_KABU_API_PASSWORD", "pw")
+    httpx_mock.add_response(
+        url=endpoint("token", env="verify"),
+        method="POST",
+        json={"ResultCode": 0, "Token": "tkn"},
+    )
+
+    adapter = KabuStationAdapter(environment="verify")
+    await adapter.login(VenueCredentials(credentials_source="env"))
+
+    invoked: list[tuple[str, int]] = []
+
+    class _SpyProc(KabuPushFrameProcessor):
+        def __init__(self, symbol, exchange):
+            super().__init__(symbol=symbol)
+            self._exchange = exchange
+
+        def process(self, msg):
+            invoked.append((self.symbol, self._exchange))
+            return None, None
+
+    adapter._processors[("5401", 1)] = _SpyProc("5401", 1)
+    adapter._processors[("5401", 3)] = _SpyProc("5401", 3)
+
+    with caplog.at_level(_logging.WARNING, logger="engine.exchanges.kabusapi"):
+        await adapter._on_frame(
+            {
+                "Symbol": "5401",
+                "CurrentPrice": 100.0,
+                "TradingVolume": 10.0,
+                "CurrentPriceTime": "2026-05-20T09:00:00",
+            }
+        )
+
+    assert invoked == [], (
+        f"ambiguous frame must be dropped; got invocations on {invoked}"
+    )
+    assert any(
+        "ambiguous" in rec.message.lower() or "5401" in rec.message
+        for rec in caplog.records
+    ), "expected a warning log about ambiguous symbol routing"
+
+
+async def test_ws_on_reconnect_not_invoked_on_first_connect(
+    monkeypatch, httpx_mock: HTTPXMock
+):
+    """Round2 MEDIUM-3: kabusapi_ws.connect() must NOT invoke on_reconnect
+    on the first successful connect (only on 2nd+). This guards against
+    regressions where a reset would wipe brand-new processor state before
+    the first frame arrives."""
+    import engine.exchanges.kabusapi_ws as _ws_mod
+
+    reconnect_calls = {"n": 0}
+
+    class _FakeWs:
+        def __init__(self):
+            self._sent: list[str] = []
+
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, *_a):
+            return False
+
+        async def recv(self):
+            # End the connect() loop by raising CancelledError, which
+            # propagates out of `connect()`.
+            raise asyncio.CancelledError()
+
+        async def send(self, msg):
+            self._sent.append(msg)
+
+    def _fake_connect_factory(url, **kwargs):
+        return _FakeWs()
+
+    monkeypatch.setattr(_ws_mod.websockets, "connect", _fake_connect_factory)
+
+    async def _on_reconnect():
+        reconnect_calls["n"] += 1
+
+    async def _put_register(symbols):
+        return True
+
+    from engine.exchanges.kabusapi_register import RegisterSet
+    rs = RegisterSet()
+
+    async def _on_message(_msg):
+        pass
+
+    with pytest.raises(asyncio.CancelledError):
+        await _ws_mod.connect(
+            env="verify",
+            on_message=_on_message,
+            register_set=rs,
+            put_register=_put_register,
+            on_reconnect=_on_reconnect,
+        )
+
+    assert reconnect_calls["n"] == 0, (
+        f"on_reconnect must NOT fire on first connect; got {reconnect_calls['n']} calls"
+    )
+
+
+async def test_ws_reconnect_resets_processors_gated_by_call_count(
+    monkeypatch, httpx_mock: HTTPXMock
+):
+    """Round2 MEDIUM-3: the adapter-level reconnect-reset test must mirror the
+    real ws gating (fire on_reconnect only on the 2nd+ connect). A fake that
+    fires on first connect would let a buggy adapter regression through."""
+    from engine.exchanges.kabusapi_ws_codec import KabuPushFrameProcessor
+
+    monkeypatch.setenv("DEV_KABU_API_PASSWORD", "pw")
+    httpx_mock.add_response(
+        url=endpoint("token", env="verify"),
+        method="POST",
+        json={"ResultCode": 0, "Token": "tkn"},
+    )
+    httpx_mock.add_response(
+        url=endpoint("register", env="verify"),
+        method="PUT",
+        json={"Code": 0, "RegistList": []},
+        is_reusable=True,
+    )
+    httpx_mock.add_response(
+        url=endpoint("unregister/all", env="verify"),
+        method="PUT",
+        json={"Code": 0},
+        is_reusable=True,
+    )
+
+    reset_count = {"n": 0}
+
+    class _SpyProcessor(KabuPushFrameProcessor):
+        def reset(self):
+            reset_count["n"] += 1
+            super().reset()
+
+    import engine.exchanges.kabusapi_ws as _ws_mod
+
+    call_count = {"n": 0}
+
+    async def _fake_connect(*, env, on_message, register_set, put_register,
+                            on_reconnect=None):
+        # Mirror real gating: fire on_reconnect ONLY on the 2nd+ call.
+        call_count["n"] += 1
+        if call_count["n"] >= 2 and on_reconnect is not None:
+            result = on_reconnect()
+            if asyncio.iscoroutine(result):
+                await result
+        # Simulate the per-connect lifetime by returning quickly; the adapter
+        # will see the task finish but that's fine for the assertion.
+
+    # We need 2 calls; have _fake_connect simulate a reconnect by being
+    # invoked twice from a wrapping loop.
+    async def _looping_connect(**kwargs):
+        await _fake_connect(**kwargs)
+        await _fake_connect(**kwargs)
+
+    monkeypatch.setattr(_ws_mod, "connect", _looping_connect)
+
+    adapter = KabuStationAdapter(environment="verify")
+    await adapter.login(VenueCredentials(credentials_source="env"))
+    spy = _SpyProcessor(symbol="7203")
+    adapter._processors[("7203", 1)] = spy
+    adapter._register_set.register("7203", 1)
+
+    await adapter.subscribe("7203.TSE", {"trades"})
+
+    for _ in range(10):
+        await asyncio.sleep(0)
+
+    assert reset_count["n"] == 1, (
+        f"reset() must fire exactly once (on the 2nd connect), got "
+        f"{reset_count['n']}"
+    )
 
     await adapter.logout()
+
+    await adapter.logout()
+
+
+# ===========================================================================
+# Round 3 post-merge review fixes (2026-05-20)
+# ===========================================================================
+
+
+async def test_logout_tolerates_oserror_during_unregister_all(
+    monkeypatch, httpx_mock: HTTPXMock
+):
+    """Round3 MEDIUM-1: a closed/half-open client can raise raw OSError /
+    ConnectionResetError from the transport during shutdown races. These
+    must be swallowed by the best-effort cleanup, not propagated."""
+    monkeypatch.setenv("DEV_KABU_API_PASSWORD", "pw")
+    httpx_mock.add_response(
+        url=endpoint("token", env="verify"),
+        method="POST",
+        json={"ResultCode": 0, "Token": "tkn"},
+    )
+    httpx_mock.add_response(
+        url=endpoint("register", env="verify"),
+        method="PUT",
+        json={"Code": 0, "RegistList": []},
+    )
+
+    async def _fake_connect(**kwargs):
+        await asyncio.Event().wait()
+
+    import engine.exchanges.kabusapi_ws as _ws_mod
+    monkeypatch.setattr(_ws_mod, "connect", _fake_connect)
+
+    adapter = KabuStationAdapter(environment="verify")
+    await adapter.login(VenueCredentials(credentials_source="env"))
+    await adapter.subscribe("7203.TSE", {"trades"})
+
+    async def _oserror_put(*args, **kwargs):
+        raise OSError("connection reset")
+
+    adapter._client.put = _oserror_put  # type: ignore[assignment]
+
+    # Must not propagate OSError out of best-effort logout.
+    await adapter.logout()
+    assert adapter._token is None
+
+
+async def test_on_frame_ambiguous_exchange_warns_once_per_symbol(
+    monkeypatch, httpx_mock: HTTPXMock, caplog
+):
+    """Round3 MEDIUM-2: ambiguous-Exchange warning must be rate-limited to
+    once per symbol per session. Subsequent drops log at DEBUG to avoid
+    log spam at kabu PUSH rates."""
+    import logging as _logging
+
+    from engine.exchanges.kabusapi_ws_codec import KabuPushFrameProcessor
+
+    monkeypatch.setenv("DEV_KABU_API_PASSWORD", "pw")
+    httpx_mock.add_response(
+        url=endpoint("token", env="verify"),
+        method="POST",
+        json={"ResultCode": 0, "Token": "tkn"},
+    )
+
+    adapter = KabuStationAdapter(environment="verify")
+    await adapter.login(VenueCredentials(credentials_source="env"))
+
+    class _SpyProc(KabuPushFrameProcessor):
+        def process(self, msg):
+            return None, None
+
+    adapter._processors[("5401", 1)] = _SpyProc(symbol="5401")
+    adapter._processors[("5401", 3)] = _SpyProc(symbol="5401")
+
+    frame = {
+        "Symbol": "5401",
+        "CurrentPrice": 100.0,
+        "TradingVolume": 10.0,
+        "CurrentPriceTime": "2026-05-20T09:00:00",
+    }
+
+    with caplog.at_level(_logging.DEBUG, logger="engine.exchanges.kabusapi"):
+        for _ in range(10):
+            await adapter._on_frame(dict(frame))
+
+    warnings = [
+        r for r in caplog.records
+        if r.levelno == _logging.WARNING and "5401" in r.message
+    ]
+    assert len(warnings) == 1, (
+        f"expected exactly 1 WARNING for ambiguous symbol 5401, got {len(warnings)}"
+    )
+
+
+async def test_on_frame_ambiguous_warning_resets_on_login(
+    monkeypatch, httpx_mock: HTTPXMock, caplog
+):
+    """Round3 MEDIUM-2: the warned-once set must reset on login() so a fresh
+    session emits the warning again."""
+    import logging as _logging
+
+    from engine.exchanges.kabusapi_ws_codec import KabuPushFrameProcessor
+
+    monkeypatch.setenv("DEV_KABU_API_PASSWORD", "pw")
+    httpx_mock.add_response(
+        url=endpoint("token", env="verify"),
+        method="POST",
+        json={"ResultCode": 0, "Token": "tkn"},
+        is_reusable=True,
+    )
+
+    adapter = KabuStationAdapter(environment="verify")
+    await adapter.login(VenueCredentials(credentials_source="env"))
+
+    class _SpyProc(KabuPushFrameProcessor):
+        def process(self, msg):
+            return None, None
+
+    adapter._processors[("5401", 1)] = _SpyProc(symbol="5401")
+    adapter._processors[("5401", 3)] = _SpyProc(symbol="5401")
+
+    frame = {
+        "Symbol": "5401",
+        "CurrentPrice": 100.0,
+        "TradingVolume": 10.0,
+        "CurrentPriceTime": "2026-05-20T09:00:00",
+    }
+
+    with caplog.at_level(_logging.WARNING, logger="engine.exchanges.kabusapi"):
+        await adapter._on_frame(dict(frame))
+        await adapter._on_frame(dict(frame))  # second time: DEBUG (no WARNING)
+
+    initial_warnings = [
+        r for r in caplog.records
+        if r.levelno == _logging.WARNING and "5401" in r.message
+    ]
+    assert len(initial_warnings) == 1
+
+    # Fresh login → reset warned set.
+    await adapter.login(VenueCredentials(credentials_source="env"))
+    adapter._processors[("5401", 1)] = _SpyProc(symbol="5401")
+    adapter._processors[("5401", 3)] = _SpyProc(symbol="5401")
+
+    caplog.clear()
+    with caplog.at_level(_logging.WARNING, logger="engine.exchanges.kabusapi"):
+        await adapter._on_frame(dict(frame))
+
+    post_login_warnings = [
+        r for r in caplog.records
+        if r.levelno == _logging.WARNING and "5401" in r.message
+    ]
+    assert len(post_login_warnings) == 1, (
+        "warned set must reset on login() so a fresh session emits WARNING again"
+    )
+
+
+async def test_login_does_not_clear_last_error_on_prompt_result_empty_token():
+    """Round3 MEDIUM-3: when login() raises early (prompt_result with empty
+    token), _last_error must retain its prior value. Clearing only happens
+    on the success path."""
+    adapter = KabuStationAdapter()
+    prior = ValueError("prior")
+    adapter._last_error = prior
+
+    # Bypass pydantic by constructing a creds object with empty token.
+    # The adapter's own early raise (PROMPT_RESULT_MISSING_TOKEN) must fire
+    # without first clearing _last_error.
+    class _Creds:
+        credentials_source = "prompt_result"
+        token = ""
+
+    with pytest.raises(ValueError, match="PROMPT_RESULT_MISSING_TOKEN"):
+        await adapter.login(_Creds())  # type: ignore[arg-type]
+
+    assert adapter.last_error is prior, (
+        "login() must not clear _last_error before the early-validation raise"
+    )
+
+
+async def test_login_clears_last_error_on_success_only(
+    monkeypatch, httpx_mock: HTTPXMock
+):
+    """Round3 MEDIUM-3: success path still clears _last_error (preserve the
+    Round 2 contract)."""
+    monkeypatch.setenv("DEV_KABU_API_PASSWORD", "pw")
+    httpx_mock.add_response(
+        url=endpoint("token", env="verify"),
+        method="POST",
+        json={"ResultCode": 0, "Token": "tkn"},
+    )
+
+    adapter = KabuStationAdapter(environment="verify")
+    adapter._last_error = RuntimeError("prior")
+
+    await adapter.login(VenueCredentials(credentials_source="env"))
+
+    assert adapter.last_error is None

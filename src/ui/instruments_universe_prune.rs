@@ -59,6 +59,18 @@ pub fn prune_instruments_outside_universe_system(
                 TickersSource::LiveVenue | TickersSource::LocalVenueSnapshot,
             );
             if status_ok && source_ok && is_venue_live(venue.state) {
+                // Empty list = transient universe fetch (e.g., venue returned []).
+                // Mirror the Replay early-return: treat as "universe undetermined" and
+                // skip the prune so we don't wipe the entire InstrumentRegistry.
+                if tickers.list.is_empty() {
+                    debug!(
+                        "auto-prune: skipping Live prune — tickers.list is empty \
+                         (status=Loaded, source={:?}, venue={:?}); \
+                         treating as transient and preserving registry",
+                        tickers.source, venue.state
+                    );
+                    return;
+                }
                 Some(tickers.list.iter().map(|t| t.id.clone()).collect())
             } else {
                 None
@@ -366,6 +378,31 @@ mod tests {
 
         let ids = app.world().resource::<InstrumentRegistry>().ids.clone();
         assert_eq!(ids.len(), 2); // D19 gate blocks prune
+    }
+
+    #[test]
+    fn prune_skips_when_live_tickers_list_is_empty() {
+        // HIGH-1 regression: a transient Live universe fetch returning []
+        // must NOT wipe the InstrumentRegistry.
+        let mut app = make_app();
+        set_registry(&mut app, &["1301.TSE", "7203.TSE"]);
+        set_mode(&mut app, ExecutionMode::LiveManual);
+        set_tickers(
+            &mut app,
+            &[], // empty list — gates otherwise satisfied
+            TickersSource::LiveVenue,
+            TickersStatus::Loaded,
+        );
+        set_venue(&mut app, VenueState::Subscribed);
+        app.add_systems(Update, prune_instruments_outside_universe_system);
+        app.update();
+
+        let ids = app.world().resource::<InstrumentRegistry>().ids.clone();
+        assert_eq!(
+            ids.len(),
+            2,
+            "empty tickers.list under Live must NOT prune registry"
+        );
     }
 
     #[test]
