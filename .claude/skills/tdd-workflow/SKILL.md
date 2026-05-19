@@ -299,6 +299,64 @@ def test_load_bars_real_api(real_loader):  # 実 API はスローテスト
     assert len(bars) > 0
 ```
 
+### WRONG: テスト関数内で `import engine.x.y` するとローカル変数 `engine` が上書きされる
+```python
+def test_something():
+    engine = DataEngine(...)        # DataEngine インスタンス
+    import engine.strategy_runtime.strategy_loader  # ← Python の仕様で engine が module に変わる!
+    engine._last_replay_catalog_path = str(tmp_path / "cat")  # DataEngine ではなく module に set!
+```
+
+### CORRECT: テスト冒頭で文字列 patch のみ使い、インスタンス変数名を engine 以外にするか、lazy import を書かない
+```python
+def test_something(monkeypatch):
+    de = DataEngine(...)            # 変数名を engine にしない
+    monkeypatch.setattr(
+        "engine.strategy_runtime.strategy_loader.load", mock_load
+    )
+    de._last_replay_catalog_path = str(tmp_path / "cat")  # 正しく de に set される
+```
+
+### WRONG: `monkeypatch.setattr(engine.__class__, "prop", ...)` でクラスを汚染
+```python
+monkeypatch.setattr(engine.__class__, "jquants_loader_base_dir", property(lambda self: str(tmp_path)))
+# DataEngine クラス自体が変更され、同セッション内の全インスタンスに副作用が出る
+```
+
+### CORRECT: コンストラクタで依存を渡す（クラスに触らない）
+```python
+_jq_loader = mock.MagicMock()
+_jq_loader.base_dir = tmp_path / "jq"
+de = DataEngine(jquants_loader=_jq_loader)  # property が自然に base_dir を返す
+```
+
+### WRONG: SUT が `.__name__` を参照する箇所を素の MagicMock で mock する
+```python
+strategy_cls = mock.MagicMock()
+# server_grpc.py 内で strategy_cls.__name__ を f-string に使うと AttributeError
+```
+
+### CORRECT: `__name__` を明示的に設定する
+```python
+strategy_cls = mock.MagicMock(__name__="MockStrategy")
+```
+
+### WRONG: monkeypatch したい関数がテスト対象ファイル内で lazy import されている
+```python
+# server_grpc.py の StartEngine 内部:
+def StartEngine(self, ...):
+    from engine.strategy_runtime.engine_runner import run as engine_run  # 関数スコープ import
+    ...
+# monkeypatch.setattr("engine.server_grpc.engine_run", mock_run) が効かない
+```
+
+### CORRECT: module レベルで import し、monkeypatch ターゲットとして確立する
+```python
+# server_grpc.py のトップレベル:
+from engine.strategy_runtime.engine_runner import run as engine_run
+# これで "engine.server_grpc.engine_run" が monkeypatch で差し替えられる
+```
+
 ---
 
 ## テスト実行コマンド早見表

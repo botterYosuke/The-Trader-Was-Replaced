@@ -23,6 +23,9 @@ from .proto import engine_pb2, engine_pb2_grpc
 from .replay import BaseReplayProvider
 from .jquants_loader import JQuantsLoader
 from .paths import listed_symbols_artifact_path
+from engine.strategy_runtime.catalog_data_loader import load_bars_for_scenario, normalize_granularity
+from engine.jquants_to_catalog import ensure_jquants_catalog
+from engine.strategy_runtime.engine_runner import run as engine_run
 
 
 _INSTRUMENT_ID_RE = re.compile(r"^(.+?)-\d+-[A-Z]")
@@ -404,13 +407,41 @@ class GrpcDataEngineServer(
             )
 
         try:
-            from engine.strategy_runtime.catalog_data_loader import load_bars_for_scenario
             bars_by_instrument = load_bars_for_scenario(catalog_path, scenario)
             total_bars = sum(len(v) for v in bars_by_instrument.values())
             per_instrument = {str(k): len(v) for k, v in bars_by_instrument.items()}
             logging.info(
                 f"StartEngine: bars loaded total={total_bars} per_instrument={per_instrument}"
             )
+
+            base_dir = self.engine.jquants_loader_base_dir
+            if base_dir:
+                missing = [str(k) for k, v in bars_by_instrument.items() if not v]
+                if missing:
+                    gran = normalize_granularity(scenario["granularity"])
+                    for symbol in missing:
+                        try:
+                            ensure_jquants_catalog(
+                                base_dir=base_dir,
+                                catalog_path=catalog_path,
+                                instrument_id=symbol,
+                                start_date=scenario["start"],
+                                end_date=scenario["end"],
+                                granularity=gran,
+                            )
+                        except (ValueError, FileNotFoundError) as e:
+                            logging.warning("ensure_jquants_catalog skipped %s: %s", symbol, e)
+                    bars_by_instrument = load_bars_for_scenario(catalog_path, scenario)
+
+            still_missing = [str(k) for k, v in bars_by_instrument.items() if not v]
+            if still_missing:
+                return engine_pb2.StartEngineResponse(
+                    success=False,
+                    request_id=request.request_id,
+                    current_state=self._current_engine_state(),
+                    error_code="NO_BARS_AFTER_FALLBACK",
+                    error_message=f"No bars after catalog fallback: {still_missing}",
+                )
         except Exception as exc:
             logging.error(f"StartEngine: catalog bars load failed: {exc}")
             return engine_pb2.StartEngineResponse(
@@ -439,7 +470,6 @@ class GrpcDataEngineServer(
                 make_run_id,
                 get_run_buffer_base_dir,
             )
-            from engine.strategy_runtime.engine_runner import run as engine_run
             from engine.strategy_runtime.summary import compute_summary, write_summary_json
 
             instruments = scenario.get("instruments") or [scenario.get("instrument", "unknown")]
