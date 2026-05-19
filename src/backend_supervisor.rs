@@ -301,7 +301,7 @@ pub async fn run_supervisor(
     if probe_ok {
         // Attach path: an existing backend answered the probe.
         if run_attach_handshake(&config, &lifecycle_tx).await {
-            run_post_ready_monitor(&config, &lifecycle_tx).await;
+            run_post_ready_monitor(&config, &lifecycle_tx, None).await;
         }
     } else if !config.autospawn {
         // AUTOSPAWN=0: no existing backend and we are forbidden to start one.
@@ -430,11 +430,12 @@ pub async fn run_supervisor(
             "BACKEND_SERVICER_MISSING",
         )
         .await;
-        // Keep `child` alive until the task ends (drop kills nothing on its own;
-        // explicit cleanup is Step 5). Bind to silence unused warnings.
-        let _ = &mut child;
         if ready {
-            run_post_ready_monitor(&config, &lifecycle_tx).await;
+            run_post_ready_monitor(&config, &lifecycle_tx, Some(child)).await;
+        } else {
+            // Handshake failed before Ready: drop the child handle (cleanup of
+            // an orphaned subprocess is Step 5-2b / Job Object in Phase 8 Step 4.6).
+            let _ = &mut child;
         }
     }
 
@@ -569,9 +570,21 @@ async fn run_health_and_getstate_handshake(
 /// handling, and the crash-loop counter (§3.8.6) are out of scope here and land
 /// in Step 5-2. The loop ends (and the caller falls through to `drain_commands`)
 /// once it publishes a terminal `Crashed` or `Stopped`.
+/// Map a post-Ready subprocess exit to a terminal lifecycle state. A clean
+/// exit (status code 0) is a graceful `Stopped`; any non-zero or
+/// signal-terminated exit after Ready is a `Crashed`. (Step 5-2a)
+fn classify_child_exit(status: std::process::ExitStatus) -> BackendLifecycle {
+    if status.success() {
+        BackendLifecycle::Stopped
+    } else {
+        BackendLifecycle::Crashed
+    }
+}
+
 async fn run_post_ready_monitor(
     config: &SupervisorConfig,
     lifecycle_tx: &watch::Sender<BackendLifecycle>,
+    mut child: Option<Child>,
 ) {
     let mut health = match HealthClient::connect(config.url.clone()).await {
         Ok(c) => c,
@@ -588,6 +601,22 @@ async fn run_post_ready_monitor(
 
     loop {
         tokio::time::sleep(std::time::Duration::from_millis(200)).await;
+
+        // Subprocess-exit check (spawn path only; attach passes None). A clean
+        // exit (code 0) is a graceful Stopped; any non-zero / signal exit after
+        // Ready is a crash. (Step 5-2a, plan L532)
+        if let Some(c) = child.as_mut() {
+            match c.try_wait() {
+                Ok(Some(exit)) => {
+                    let _ = lifecycle_tx.send(classify_child_exit(exit));
+                    return;
+                }
+                Ok(None) => {} // still running
+                Err(e) => {
+                    bevy::log::warn!("[backend] child try_wait failed: {}", e);
+                }
+            }
+        }
 
         let status = match health
             .check(HealthCheckRequest {
@@ -967,6 +996,22 @@ mod tests {
         )
         .unwrap_err();
         assert_eq!(err, "BACKEND_VENV_NOT_FOUND");
+    }
+
+    #[test]
+    fn classify_child_exit_zero_is_stopped() {
+        let status = std::process::Command::new("true")
+            .status()
+            .expect("spawn /usr/bin/true");
+        assert_eq!(classify_child_exit(status), BackendLifecycle::Stopped);
+    }
+
+    #[test]
+    fn classify_child_exit_nonzero_is_crashed() {
+        let status = std::process::Command::new("false")
+            .status()
+            .expect("spawn /usr/bin/false");
+        assert_eq!(classify_child_exit(status), BackendLifecycle::Crashed);
     }
 
     /// Best-effort host python3 locator for preflight tests. Returns None
