@@ -42,9 +42,13 @@ pub fn prune_instruments_outside_universe_system(
             let Some(end) = parse_scenario_end(&scenario) else {
                 return;
             };
+            // 空リスト（カタログにメタデータが無くて count=0 で返ってきた場合）は
+            // 「ユニバース未確定」として扱い、プルーニングをスキップする。
+            // None（キー未登録）と同様に早期 return で抜ける。
             available
                 .by_end_date
                 .get(&end)
+                .filter(|v| !v.is_empty())
                 .map(|v| v.iter().cloned().collect())
         }
         ExecutionMode::LiveManual | ExecutionMode::LiveAuto => {
