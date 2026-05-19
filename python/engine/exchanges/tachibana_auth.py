@@ -198,6 +198,20 @@ class PNoCounter:
     def peek(self) -> int:
         return self._value
 
+    def restore(self, value: int) -> None:
+        if value > self._value:
+            self._value = value
+
+    def fast_forward(self, value: int) -> None:
+        """Advance the counter past ``value`` so the next ``next()`` exceeds it.
+
+        Unlike ``restore``, this guarantees forward progress even when the
+        current ``_value`` is already greater than ``value`` (clock skew between
+        the subprocess that consumed p_no and this counter's ``time.time()``
+        seed). Required for the session_cache resume path (R4 monotonic).
+        """
+        self._value = max(self._value, value) + 1
+
 
 @dataclass(frozen=True, slots=True)
 class TachibanaSession:

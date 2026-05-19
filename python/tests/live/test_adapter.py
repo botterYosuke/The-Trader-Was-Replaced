@@ -21,6 +21,10 @@ class _DummyAdapter:
 
     venue_id = "DUMMY"
 
+    @property
+    def is_logged_in(self) -> bool:
+        return False
+
     async def login(self, creds: VenueCredentials) -> None:
         return None
 
@@ -67,12 +71,14 @@ def test_venue_credentials_rejects_plain_password_fields() -> None:
 
 
 def test_venue_credentials_source_allowlist() -> None:
-    """credentials_source は prompt / session_cache / env のみ受理。
+    """credentials_source は prompt / session_cache / env / prompt_result のみ受理。
 
     §3.2 項目 5: 未知値は INVALID_CREDENTIALS_SOURCE で reject。
     """
     for src in ("prompt", "session_cache", "env"):
         VenueCredentials(credentials_source=src)  # type: ignore[arg-type]
+    # prompt_result はトークン必須なので別途検査
+    VenueCredentials(credentials_source="prompt_result", token="t")
 
     with pytest.raises(Exception):  # pydantic ValidationError
         VenueCredentials(credentials_source="keyring")  # type: ignore[arg-type]
@@ -80,6 +86,23 @@ def test_venue_credentials_source_allowlist() -> None:
         VenueCredentials(credentials_source="file")  # type: ignore[arg-type]
     with pytest.raises(Exception):
         VenueCredentials(credentials_source="")  # type: ignore[arg-type]
+
+
+def test_venue_credentials_prompt_result_valid() -> None:
+    """prompt_result + token が pydantic validation を通る。"""
+    creds = VenueCredentials(credentials_source="prompt_result", token="my-token")
+    assert creds.credentials_source == "prompt_result"
+    assert creds.token == "my-token"
+
+
+def test_venue_credentials_prompt_result_rejects_missing_token() -> None:
+    """prompt_result は token 必須。token=None / "" は ValidationError。"""
+    with pytest.raises(Exception):
+        VenueCredentials(credentials_source="prompt_result", token=None)
+    with pytest.raises(Exception):
+        VenueCredentials(credentials_source="prompt_result", token="")
+    with pytest.raises(Exception):
+        VenueCredentials(credentials_source="prompt_result")
 
 
 def test_instrument_raw_minimum_fields() -> None:

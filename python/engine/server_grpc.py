@@ -2,7 +2,9 @@ import json
 import logging
 import os
 import re
+import sys
 import asyncio
+import tempfile
 import threading
 import time
 from concurrent import futures
@@ -13,6 +15,7 @@ from typing import Optional
 import grpc
 
 from .core import DataEngine
+from .live._build_mode import IS_DEBUG_BUILD
 from .live.live_adapter_factory import build_live_adapter_factory
 from .live.live_runner import LiveRunner
 from .live.reducer_bridge import LiveReducerBridge
@@ -125,6 +128,21 @@ def _resolve_latest_end_date_from_catalog(catalog_path: str) -> Optional[str]:
     return bounds[1] if bounds else None
 
 
+def _sweep_stale_cred_files(max_age_s: float = 60.0) -> None:
+    """Delete leftover ttwr_cred_*.json files older than ``max_age_s`` seconds."""
+    try:
+        tmp_dir = Path(tempfile.gettempdir())
+        now = time.time()
+        for stale in tmp_dir.glob("ttwr_cred_*.json"):
+            try:
+                if now - stale.stat().st_mtime > max_age_s:
+                    stale.unlink()
+            except OSError:
+                continue
+    except OSError:
+        pass
+
+
 def _scan_catalog_instruments(catalog_path: str) -> list[str]:
     bar_dir = Path(catalog_path) / "data" / "bar"
     if not bar_dir.exists():
@@ -137,6 +155,17 @@ def _scan_catalog_instruments(catalog_path: str) -> list[str]:
         if m:
             seen.add(m.group(1))
     return sorted(seen)
+
+
+_ADAPTER_ERROR_CODES = frozenset({
+    "SESSION_CACHE_MISSING",
+    "SESSION_CACHE_EXPIRED",
+    "PROMPT_RESULT_MISSING_TOKEN",
+})
+
+
+def _live_login_timeout_s() -> float:
+    return float(os.environ.get("LIVE_LOGIN_TIMEOUT_S", "180"))
 
 
 class GrpcDataEngineServer(
@@ -166,7 +195,7 @@ class GrpcDataEngineServer(
         self._live_venue_id: Optional[str] = live_venue_id.upper() if live_venue_id else None
 
     _KNOWN_VENUES = {"TACHIBANA", "KABU", "MOCK"}  # D26: MOCK added
-    _KNOWN_CRED_SOURCES = {"prompt", "session_cache", "env"}
+    _KNOWN_CRED_SOURCES = {"prompt", "session_cache", "env", "prompt_result"}
     _KNOWN_MODES = {"Replay", "LiveManual", "LiveAuto"}
 
     def _current_engine_state(self):
@@ -226,12 +255,15 @@ class GrpcDataEngineServer(
         self._live_bridge = bridge
         self._live_price_cache = cache
 
-    def _start_live_components(self):
+    def _start_live_components(self, environment_hint: Optional[str] = None):
         if self._live_runner is not None and self._live_bridge is not None:
             return
         if self._live_adapter_factory is None:
             return
-        adapter = self._live_adapter_factory()
+        # PermissionError on Windows can leak ttwr_cred_*.json from a prior
+        # VenueLogin; sweep here where no concurrent login holds the file.
+        _sweep_stale_cred_files()
+        adapter = self._live_adapter_factory(environment_hint)
         loop = self._ensure_live_loop()
         future = asyncio.run_coroutine_threadsafe(
             self._start_live_components_async(adapter), loop
@@ -897,6 +929,124 @@ class GrpcDataEngineServer(
             resolved_end_date=resolved_end_date,
         )
 
+    async def _handle_prompt_login(
+        self, venue_id: str, env_hint: str
+    ) -> tuple[bool, str, Optional[str]]:
+        """Spawn login_dialog_runner subprocess and handle cross-platform IPC.
+
+        Returns (success, error_code, token_or_none).
+        Tachibana: token_or_none is always None (uses session_cache on disk).
+        Kabu: token_or_none is the bearer token from cred-path file.
+        """
+        cred_path = ""
+        if venue_id.upper() == "KABU":
+            fd, cred_path = tempfile.mkstemp(prefix="ttwr_cred_", suffix=".json")
+            os.close(fd)
+            if os.name == "posix":
+                os.chmod(cred_path, 0o600)
+        args = [
+            sys.executable, "-m", "engine.live.login_dialog_runner",
+            "--venue", venue_id.lower(),
+            "--env", env_hint,
+        ]
+        if cred_path:
+            args.extend(["--cred-path", cred_path])
+        stderr_drain = None
+        try:
+            proc = await asyncio.create_subprocess_exec(
+                *args,
+                stdout=asyncio.subprocess.PIPE,
+                stderr=asyncio.subprocess.PIPE,
+            )
+            stderr_drain = asyncio.ensure_future(proc.stderr.read())
+            try:
+                line = await asyncio.wait_for(
+                    proc.stdout.readline(),
+                    timeout=_live_login_timeout_s(),
+                )
+            except asyncio.TimeoutError:
+                proc.kill()
+                await proc.wait()
+                stderr_drain.cancel()
+                return False, "LOGIN_TIMEOUT", None
+
+            if not line:
+                try:
+                    stderr_bytes = await asyncio.wait_for(stderr_drain, timeout=5.0)
+                except (asyncio.TimeoutError, asyncio.CancelledError):
+                    stderr_bytes = b""
+                logging.error(
+                    "login_dialog_runner exited without result: %s",
+                    stderr_bytes.decode("utf-8", errors="replace"),
+                )
+                await proc.wait()
+                return False, "LOGIN_SUBPROCESS_CRASHED", None
+
+            try:
+                result = json.loads(line)
+            except json.JSONDecodeError:
+                proc.kill()
+                await proc.wait()
+                return False, "LOGIN_INVALID_RESPONSE", None
+
+            if not result.get("success"):
+                try:
+                    await asyncio.wait_for(proc.wait(), timeout=5.0)
+                except asyncio.TimeoutError:
+                    proc.kill()
+                    await proc.wait()
+                return False, result.get("error_code") or "AUTH_FAILED", None
+
+            try:
+                await asyncio.wait_for(proc.wait(), timeout=10.0)
+            except asyncio.TimeoutError:
+                proc.kill()
+                await proc.wait()
+                return False, "LOGIN_TIMEOUT", None
+
+            if proc.returncode != 0:
+                return False, result.get("error_code") or "LOGIN_NONZERO_EXIT", None
+
+            token: Optional[str] = None
+            if cred_path:
+                try:
+                    with open(cred_path, "rb") as f:
+                        blob = f.read()
+                except OSError as exc:
+                    logging.warning("cred_path read failed: %s", exc)
+                    return False, "LOGIN_INVALID_RESPONSE", None
+                if not blob:
+                    return False, "LOGIN_INVALID_RESPONSE", None
+                try:
+                    payload = json.loads(blob.decode("utf-8"))
+                except (json.JSONDecodeError, UnicodeDecodeError):
+                    return False, "LOGIN_INVALID_RESPONSE", None
+                if not isinstance(payload, dict):
+                    return False, "LOGIN_INVALID_RESPONSE", None
+                tok = payload.get("token")
+                if not isinstance(tok, str) or not tok:
+                    return False, "LOGIN_INVALID_RESPONSE", None
+                token = tok
+            return True, "", token
+        finally:
+            if stderr_drain is not None and not stderr_drain.done():
+                stderr_drain.cancel()
+                try:
+                    await stderr_drain
+                except (asyncio.CancelledError, Exception):
+                    pass
+            if cred_path:
+                try:
+                    os.unlink(cred_path)
+                except FileNotFoundError:
+                    pass
+                except PermissionError:
+                    logging.warning(
+                        "cred_path leak (Windows handle race): %s — "
+                        "stale file will be swept on next _start_live_components",
+                        cred_path,
+                    )
+
     def VenueLogin(self, request, context):
         if request.token != self.token:
             context.abort(grpc.StatusCode.UNAUTHENTICATED, "Invalid token")
@@ -914,82 +1064,156 @@ class GrpcDataEngineServer(
 
         if venue_id not in self._KNOWN_VENUES:
             return engine_pb2.VenueLoginResponse(
-                success=False,
-                error_code="UNKNOWN_VENUE",
-                venue_state=venue_state,
-                instruments_loaded=0,
+                success=False, error_code="UNKNOWN_VENUE",
+                venue_state=venue_state, instruments_loaded=0,
             )
 
         # Preserve backward compat: KABU session_cache is unsupported
         if venue_id == "KABU" and cred_source == "session_cache":
             return engine_pb2.VenueLoginResponse(
-                success=False,
-                error_code="UNSUPPORTED_FOR_VENUE",
-                venue_state=venue_state,
-                instruments_loaded=0,
+                success=False, error_code="UNSUPPORTED_FOR_VENUE",
+                venue_state=venue_state, instruments_loaded=0,
             )
 
         # D26: validate against configured factory venue (1 backend = 1 venue)
         if self._live_adapter_factory is None:
             return engine_pb2.VenueLoginResponse(
-                success=False,
-                error_code="LIVE_ADAPTER_NOT_CONFIGURED",
-                venue_state=venue_state,
-                instruments_loaded=0,
+                success=False, error_code="LIVE_ADAPTER_NOT_CONFIGURED",
+                venue_state=venue_state, instruments_loaded=0,
             )
 
         configured_venue = (self._live_venue_id or venue_id).upper()
         if configured_venue != venue_id:
             return engine_pb2.VenueLoginResponse(
-                success=False,
-                error_code="VENUE_MISMATCH",
-                venue_state=venue_state,
-                instruments_loaded=0,
+                success=False, error_code="VENUE_MISMATCH",
+                venue_state=venue_state, instruments_loaded=0,
             )
 
         # Idempotent: already CONNECTED/SUBSCRIBED → no-op success
         if self.venue_sm is not None and self.venue_sm.current in ("CONNECTED", "SUBSCRIBED"):
             return engine_pb2.VenueLoginResponse(
-                success=True,
-                error_code="",
-                venue_state=self.venue_sm.current,
-                instruments_loaded=0,
+                success=True, error_code="",
+                venue_state=self.venue_sm.current, instruments_loaded=0,
             )
 
-        try:
-            # (1) Bootstrap live components (idempotent)
-            self._start_live_components()
-            runner = self._live_runner
-            adapter = runner.adapter  # D10
-
-            # (2) adapter.login if not already logged in
-            if not getattr(adapter, "is_logged_in", True):
-                from engine.live.adapter import VenueCredentials
-                loop = self._ensure_live_loop()
-                creds = VenueCredentials(
-                    credentials_source=cred_source,
-                    environment_hint=(getattr(request, "environment_hint", None) or None),
-                )
-                fut = asyncio.run_coroutine_threadsafe(adapter.login(creds), loop)
-                fut.result(timeout=self._live_timeout_s)
-
-            # (3) venue_sm transitions: DISCONNECTED → AUTHENTICATING → CONNECTED
-            if self.venue_sm is not None and self.venue_sm.current == "DISCONNECTED":
-                self.venue_sm.transition_to("AUTHENTICATING")
-                self.venue_sm.transition_to("CONNECTED")
-
-        except Exception as exc:
-            logging.exception("VenueLogin failed: %s", exc)
+        # AUTHENTICATING 中の二重起動防止
+        if self.venue_sm is not None and self.venue_sm.current == "AUTHENTICATING":
             return engine_pb2.VenueLoginResponse(
-                success=False,
-                error_code="VENUE_LOGIN_FAILED",
+                success=False, error_code="ALREADY_AUTHENTICATING",
+                venue_state="AUTHENTICATING", instruments_loaded=0,
+            )
+
+        env_hint = getattr(request, "environment_hint", None) or None
+
+        def _fail(error_code: str) -> engine_pb2.VenueLoginResponse:
+            if self._live_runner is not None or self._live_bridge is not None:
+                self._teardown_live_components()
+            # _teardown_live_components only resets venue_sm when a live runner
+            # existed; cover the "failed before _start_live_components" path so
+            # AUTHENTICATING never sticks and dead-locks the next VenueLogin.
+            if self.venue_sm is not None and self.venue_sm.current == "AUTHENTICATING":
+                try:
+                    self.venue_sm.transition_to("ERROR")
+                except Exception:
+                    pass
+                self.venue_sm.reset()
+            return engine_pb2.VenueLoginResponse(
+                success=False, error_code=error_code,
                 venue_state=self.venue_sm.current if self.venue_sm else "DISCONNECTED",
                 instruments_loaded=0,
             )
 
+        def _attempt(effective_source: str):
+            """Returns (handled: bool, error_code: str).
+
+            handled=True, error_code="" → success path
+            handled=True, error_code!="" → _fail(error_code)
+            handled=False, error_code="NO_DISPLAY_AVAILABLE" → retry with "env" (debug only)
+            """
+            try:
+                self._start_live_components(environment_hint=env_hint)
+                runner = self._live_runner
+                adapter = runner.adapter
+                loop = self._ensure_live_loop()
+
+                if effective_source == "prompt":
+                    if self.venue_sm is not None and self.venue_sm.current == "DISCONNECTED":
+                        self.venue_sm.transition_to("AUTHENTICATING")
+
+                    if venue_id == "TACHIBANA":
+                        effective_env = env_hint if env_hint in ("demo", "prod") else "demo"
+                    else:
+                        effective_env = env_hint if env_hint in ("verify", "prod") else "verify"
+
+                    fut = asyncio.run_coroutine_threadsafe(
+                        self._handle_prompt_login(venue_id, effective_env),
+                        loop,
+                    )
+                    # TODO(将来): VenueLoginStream で逐次 push できるようにする
+                    success, ec, token = fut.result(timeout=_live_login_timeout_s() + 10)
+
+                    if not success:
+                        if ec == "NO_DISPLAY_AVAILABLE" and IS_DEBUG_BUILD:
+                            return False, ec  # caller retries with "env"
+                        return True, ec
+
+                    from engine.live.adapter import VenueCredentials
+                    if venue_id == "TACHIBANA":
+                        adapter_creds = VenueCredentials(
+                            credentials_source="session_cache",
+                            environment_hint=effective_env,
+                        )
+                    else:
+                        adapter_creds = VenueCredentials(
+                            credentials_source="prompt_result",
+                            environment_hint=effective_env,
+                            token=token,
+                        )
+                else:
+                    from engine.live.adapter import VenueCredentials
+                    adapter_creds = VenueCredentials(
+                        credentials_source=effective_source,
+                        environment_hint=env_hint,
+                    )
+
+                if not adapter.is_logged_in:
+                    login_fut = asyncio.run_coroutine_threadsafe(
+                        adapter.login(adapter_creds), loop,
+                    )
+                    login_fut.result(timeout=_live_login_timeout_s())
+
+                if self.venue_sm is not None and self.venue_sm.current == "DISCONNECTED":
+                    self.venue_sm.transition_to("AUTHENTICATING")
+                if self.venue_sm is not None and self.venue_sm.current == "AUTHENTICATING":
+                    self.venue_sm.transition_to("CONNECTED")
+                return True, ""
+            except ValueError as exc:
+                # adapter 層が定義する判別可能エラーは error_code として透過。
+                # それ以外の ValueError は VENUE_LOGIN_FAILED に丸める。
+                code = str(exc)
+                if code in _ADAPTER_ERROR_CODES:
+                    logging.warning("VenueLogin adapter error (source=%s): %s", effective_source, code)
+                    return True, code
+                logging.exception("VenueLogin attempt failed (source=%s): %s", effective_source, exc)
+                return True, "VENUE_LOGIN_FAILED"
+            except Exception as exc:
+                logging.exception("VenueLogin attempt failed (source=%s): %s", effective_source, exc)
+                return True, "VENUE_LOGIN_FAILED"
+
+        handled, error_code = _attempt(cred_source)
+        if not handled and cred_source == "prompt":
+            if IS_DEBUG_BUILD:
+                if self._live_runner is not None or self._live_bridge is not None:
+                    self._teardown_live_components()
+                handled, error_code = _attempt("env")
+            else:
+                error_code = "NO_DISPLAY_AVAILABLE"
+
+        if error_code:
+            return _fail(error_code)
+
         return engine_pb2.VenueLoginResponse(
-            success=True,
-            error_code="",
+            success=True, error_code="",
             venue_state=self.venue_sm.current if self.venue_sm else "CONNECTED",
             instruments_loaded=0,
         )

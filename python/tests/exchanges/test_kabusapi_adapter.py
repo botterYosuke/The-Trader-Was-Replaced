@@ -56,6 +56,47 @@ def test_logout_clears_token():
 
 
 # ---------------------------------------------------------------------------
+# Phase 8 §3.2 Step 0: is_logged_in property
+# ---------------------------------------------------------------------------
+
+
+def test_is_logged_in_false_when_no_token():
+    adapter = KabuStationAdapter()
+    assert adapter.is_logged_in is False
+
+
+def test_is_logged_in_true_when_token_set():
+    adapter = KabuStationAdapter()
+    adapter._token = "x"
+    assert adapter.is_logged_in is True
+
+
+# ---------------------------------------------------------------------------
+# Phase 8 §3.2 Step 0: login(prompt_result)
+# ---------------------------------------------------------------------------
+
+
+async def test_login_prompt_result_success():
+    """prompt_result + token="tok" → _token が設定される。"""
+    adapter = KabuStationAdapter()
+    creds = VenueCredentials(credentials_source="prompt_result", token="tok")
+    await adapter.login(creds)
+    assert adapter._token == "tok"
+
+
+async def test_login_prompt_result_no_token():
+    """prompt_result + token=None / "" は pydantic レイヤで ValidationError。
+
+    Fix #6: VenueCredentials が prompt_result の token 必須を model validator で弾く。
+    adapter.login まで届かない。
+    """
+    with pytest.raises(Exception):  # pydantic ValidationError
+        VenueCredentials(credentials_source="prompt_result", token=None)
+    with pytest.raises(Exception):
+        VenueCredentials(credentials_source="prompt_result", token="")
+
+
+# ---------------------------------------------------------------------------
 # Phase 8 §3.2 B1: login(env) wire-up — POST /token + token 保存
 # kabu skill: env key は API password 1 個のみ (DEV_KABU_API_PASSWORD)
 # prod 解禁は KABU_ALLOW_PROD=1 (kabusapi_url.base_url 経由で発火)

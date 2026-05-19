@@ -1,6 +1,6 @@
 use crate::trading::{
     ExecutionMode, ExecutionModeRes, LastRunResult, RunState, StrategyRunConfig, TradingData,
-    TransportCommand, TransportCommandSender,
+    TransportCommand, TransportCommandSender, VenueStatusRes, is_venue_busy_for_menu,
 };
 use crate::ui::components::ScenarioMetadata;
 use crate::ui::components::{
@@ -333,6 +333,69 @@ fn send_venue_login(
     }
 }
 
+const BTN_DISABLED: Color = Color::srgba(0.20, 0.20, 0.20, 0.5);
+const TEXT_NORMAL: Color = Color::srgb(0.82, 0.82, 0.82);
+const TEXT_DISABLED: Color = Color::srgba(0.40, 0.40, 0.40, 0.5);
+
+fn venue_connect_is_tachibana(item: &MenuItem) -> bool {
+    matches!(
+        item,
+        MenuItem::VenueConnectTachibanaDemo | MenuItem::VenueConnectTachibanaProd
+    )
+}
+
+fn venue_connect_is_kabu(item: &MenuItem) -> bool {
+    matches!(
+        item,
+        MenuItem::VenueConnectKabuVerify | MenuItem::VenueConnectKabuProd
+    )
+}
+
+/// Returns true if the given Venue→Connect MenuItem should be disabled in the
+/// current VenueStatusRes (occupied slot — same or opposite venue is busy).
+fn venue_connect_disabled(item: &MenuItem, status: &VenueStatusRes) -> bool {
+    let is_connect = venue_connect_is_tachibana(item) || venue_connect_is_kabu(item);
+    if !is_connect {
+        return false;
+    }
+    is_venue_busy_for_menu(status.state)
+}
+
+/// Drives the disabled / normal background+text color of Venue→Connect buttons.
+///
+/// Runs every frame (no `is_changed()` gate) so that the Hover/None color
+/// updates inside `menu_item_system` — which fire on `Changed<Interaction>` —
+/// cannot leave a disabled button stuck on the hover color on later frames.
+pub fn gate_venue_menu_items_system(
+    mut btn_q: Query<(&MenuItem, &Interaction, &mut BackgroundColor, &Children), With<Button>>,
+    mut text_q: Query<&mut TextColor>,
+    status: Res<VenueStatusRes>,
+) {
+    for (item, interaction, mut bg, children) in &mut btn_q {
+        let is_connect = venue_connect_is_tachibana(item) || venue_connect_is_kabu(item);
+        if !is_connect {
+            continue;
+        }
+        let disabled = is_venue_busy_for_menu(status.state);
+        // Pressed lasts one frame and is handled by `menu_item_system`; leave
+        // its visual indicator (BTN_PRESSED) alone here.
+        if !matches!(interaction, Interaction::Pressed) {
+            let target_bg = if disabled { BTN_DISABLED } else { BTN_NORMAL };
+            if bg.0 != target_bg {
+                bg.0 = target_bg;
+            }
+        }
+        let target_text = if disabled { TEXT_DISABLED } else { TEXT_NORMAL };
+        for &child in children.iter() {
+            if let Ok(mut tc) = text_q.get_mut(child) {
+                if tc.0 != target_text {
+                    tc.0 = target_text;
+                }
+            }
+        }
+    }
+}
+
 pub fn menu_item_system(
     mut query: Query<
         (&Interaction, &mut BackgroundColor, &MenuItem),
@@ -346,6 +409,7 @@ pub fn menu_item_system(
     mut redo_ev: EventWriter<RedoMenuRequested>,
     sender: Option<Res<TransportCommandSender>>,
     execution_mode: Res<ExecutionModeRes>,
+    venue_status: Res<VenueStatusRes>,
 ) {
     for (interaction, mut bg, item) in &mut query {
         match interaction {
@@ -422,17 +486,21 @@ pub fn menu_item_system(
                             error!("menu: SetExecutionMode(LiveManual) send failed (transport channel closed)");
                         }
                     }
-                    MenuItem::VenueConnectTachibanaDemo => {
-                        send_venue_login(&sender, "tachibana", "demo");
-                    }
-                    MenuItem::VenueConnectTachibanaProd => {
-                        send_venue_login(&sender, "tachibana", "prod");
-                    }
-                    MenuItem::VenueConnectKabuVerify => {
-                        send_venue_login(&sender, "kabu", "verify");
-                    }
-                    MenuItem::VenueConnectKabuProd => {
-                        send_venue_login(&sender, "kabu", "prod");
+                    MenuItem::VenueConnectTachibanaDemo
+                    | MenuItem::VenueConnectTachibanaProd
+                    | MenuItem::VenueConnectKabuVerify
+                    | MenuItem::VenueConnectKabuProd => {
+                        if is_venue_busy_for_menu(venue_status.state) {
+                            warn!("menu: VenueConnect blocked (venue busy, state={:?})", venue_status.state);
+                            continue;
+                        }
+                        let (venue, env) = match item {
+                            MenuItem::VenueConnectTachibanaDemo => ("tachibana", "demo"),
+                            MenuItem::VenueConnectTachibanaProd => ("tachibana", "prod"),
+                            MenuItem::VenueConnectKabuVerify => ("kabu", "verify"),
+                            _ => ("kabu", "prod"),
+                        };
+                        send_venue_login(&sender, venue, env);
                     }
                     MenuItem::VenueDisconnect => {
                         let Some(sender) = sender.as_ref() else {
@@ -446,8 +514,26 @@ pub fn menu_item_system(
                     }
                 }
             }
-            Interaction::Hovered => bg.0 = BTN_HOVER,
-            Interaction::None => bg.0 = BTN_NORMAL,
+            Interaction::Hovered => {
+                let target = if venue_connect_disabled(item, &venue_status) {
+                    BTN_DISABLED
+                } else {
+                    BTN_HOVER
+                };
+                if bg.0 != target {
+                    bg.0 = target;
+                }
+            }
+            Interaction::None => {
+                let target = if venue_connect_disabled(item, &venue_status) {
+                    BTN_DISABLED
+                } else {
+                    BTN_NORMAL
+                };
+                if bg.0 != target {
+                    bg.0 = target;
+                }
+            }
         }
     }
 }
@@ -1095,5 +1181,155 @@ mod tests {
 
         let last_run = app.world().resource::<LastRunResult>();
         assert!(matches!(last_run.state, RunState::Idle));
+    }
+
+    // Venue menu gating: while is_venue_busy_for_menu(state) is true, all
+    // Connect items (both venues) become disabled. menu_item_system applies
+    // the same guard at press time so the gRPC call is also suppressed.
+
+    use crate::trading::{VenueState, VenueStatusRes};
+
+    fn build_app_for_menu_gating(state: VenueState, venue_id: Option<&str>) -> (App, Entity, Entity) {
+        let mut app = App::new();
+        app.init_resource::<OpenMenu>();
+        app.insert_resource(VenueStatusRes {
+            state,
+            venue_id: venue_id.map(|s| s.to_string()),
+            instruments_loaded: 0,
+        });
+        app.add_systems(Update, gate_venue_menu_items_system);
+
+        let text_t = app
+            .world_mut()
+            .spawn((Text::new("Connect Tachibana (Demo)"), TextColor(TEXT_NORMAL)))
+            .id();
+        let btn_t = app
+            .world_mut()
+            .spawn((
+                Button,
+                Interaction::None,
+                BackgroundColor(BTN_NORMAL),
+                MenuItem::VenueConnectTachibanaDemo,
+            ))
+            .add_child(text_t)
+            .id();
+
+        let text_k = app
+            .world_mut()
+            .spawn((Text::new("Connect kabuStation (Verify)"), TextColor(TEXT_NORMAL)))
+            .id();
+        let btn_k = app
+            .world_mut()
+            .spawn((
+                Button,
+                Interaction::None,
+                BackgroundColor(BTN_NORMAL),
+                MenuItem::VenueConnectKabuVerify,
+            ))
+            .add_child(text_k)
+            .id();
+
+        app.update();
+        (app, btn_t, btn_k)
+    }
+
+    #[test]
+    fn test_gate_venue_menu_disables_kabu_when_tachibana_authenticating() {
+        let (app, _btn_t, btn_k) = build_app_for_menu_gating(
+            VenueState::Authenticating,
+            Some("tachibana"),
+        );
+        let bg = app.world().get::<BackgroundColor>(btn_k).unwrap();
+        assert_eq!(bg.0, BTN_DISABLED, "kabu Connect should be disabled while tachibana is AUTHENTICATING");
+    }
+
+    #[test]
+    fn test_gate_venue_menu_disables_kabu_when_tachibana_connected() {
+        let (app, _btn_t, btn_k) = build_app_for_menu_gating(
+            VenueState::Connected,
+            Some("tachibana"),
+        );
+        let bg = app.world().get::<BackgroundColor>(btn_k).unwrap();
+        assert_eq!(bg.0, BTN_DISABLED, "kabu Connect should be disabled while tachibana is CONNECTED");
+    }
+
+    #[test]
+    fn test_gate_venue_menu_disables_same_venue_when_authenticating() {
+        let (app, btn_t, _btn_k) = build_app_for_menu_gating(
+            VenueState::Authenticating,
+            Some("tachibana"),
+        );
+        let bg = app.world().get::<BackgroundColor>(btn_t).unwrap();
+        assert_eq!(bg.0, BTN_DISABLED, "same-venue Connect (tachibana) must also be disabled while AUTHENTICATING");
+    }
+
+    #[test]
+    fn test_gate_venue_menu_enables_all_when_disconnected() {
+        let (app, btn_t, btn_k) = build_app_for_menu_gating(VenueState::Disconnected, None);
+        let bg_t = app.world().get::<BackgroundColor>(btn_t).unwrap();
+        let bg_k = app.world().get::<BackgroundColor>(btn_k).unwrap();
+        assert_eq!(bg_t.0, BTN_NORMAL, "tachibana Connect should be normal when DISCONNECTED");
+        assert_eq!(bg_k.0, BTN_NORMAL, "kabu Connect should be normal when DISCONNECTED");
+    }
+
+    fn build_app_for_menu_press(
+        state: VenueState,
+        item: MenuItem,
+    ) -> (App, Entity, tokio::sync::mpsc::UnboundedReceiver<TransportCommand>) {
+        let mut app = App::new();
+        app.init_resource::<OpenMenu>();
+        app.insert_resource(VenueStatusRes {
+            state,
+            venue_id: Some("tachibana".to_string()),
+            instruments_loaded: 0,
+        });
+        app.insert_resource(ExecutionModeRes::default());
+        app.add_event::<LayoutSaveRequested>();
+        app.add_event::<LayoutSaveAsRequested>();
+        app.add_event::<LayoutLoadDialogRequested>();
+        app.add_event::<UndoMenuRequested>();
+        app.add_event::<RedoMenuRequested>();
+
+        let (tx, rx) = tokio::sync::mpsc::unbounded_channel::<TransportCommand>();
+        app.insert_resource(TransportCommandSender { tx });
+
+        app.add_systems(Update, menu_item_system);
+
+        let btn = app
+            .world_mut()
+            .spawn((
+                Button,
+                Interaction::Pressed,
+                BackgroundColor(BTN_NORMAL),
+                item,
+            ))
+            .id();
+
+        app.update();
+        (app, btn, rx)
+    }
+
+    #[test]
+    fn test_venue_connect_pressed_during_other_venue_busy_is_ignored() {
+        let (_app, _btn, mut rx) = build_app_for_menu_press(
+            VenueState::Connected,
+            MenuItem::VenueConnectKabuVerify,
+        );
+        assert!(
+            rx.try_recv().is_err(),
+            "VenueConnect on opposite venue must NOT send VenueLogin when slot is busy"
+        );
+    }
+
+    #[test]
+    fn test_venue_connect_same_venue_pressed_during_authenticating_is_ignored() {
+        let (_app, _btn, mut rx) = build_app_for_menu_press(
+            VenueState::Authenticating,
+            MenuItem::VenueConnectTachibanaDemo,
+        );
+        assert!(
+            rx.try_recv().is_err(),
+            "VenueConnect on same venue must NOT send VenueLogin while AUTHENTICATING"
+        );
     }
 }

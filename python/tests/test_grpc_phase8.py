@@ -1,6 +1,6 @@
 import asyncio
 import json
-from unittest.mock import MagicMock
+from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 from concurrent import futures
@@ -229,11 +229,16 @@ def phase8_grpc_server_with_live():
 
 
 def _do_venue_login(stub, token, venue_id="MOCK"):
-    """Helper: perform VenueLogin via gRPC (D21 precondition for SetExecutionMode)."""
+    """Helper: perform VenueLogin via gRPC (D21 precondition for SetExecutionMode).
+
+    MOCK venue uses "env" source to avoid spawning a subprocess login dialog.
+    Real venues (TACHIBANA / KABU) use "prompt" in production; tests may override.
+    """
+    cred_source = "env" if venue_id.upper() == "MOCK" else "prompt"
     resp = stub.VenueLogin(
         engine_pb2.VenueLoginRequest(
             venue_id=venue_id,
-            credentials_source="prompt",
+            credentials_source=cred_source,
             token=token,
         )
     )
@@ -577,7 +582,7 @@ def test_venue_login_mock_returns_success(phase8_grpc_server_with_live):
     resp = stub.VenueLogin(
         engine_pb2.VenueLoginRequest(
             venue_id="MOCK",
-            credentials_source="prompt",
+            credentials_source="env",
             token=token,
         )
     )
@@ -592,7 +597,7 @@ def test_venue_login_normalizes_lowercase_venue_id(phase8_grpc_server_with_live)
     resp = stub.VenueLogin(
         engine_pb2.VenueLoginRequest(
             venue_id="mock",
-            credentials_source="prompt",
+            credentials_source="env",
             token=token,
         )
     )
@@ -625,11 +630,11 @@ def test_venue_login_idempotent_when_already_connected(phase8_grpc_server_with_l
     stub = _stub(port)
     _do_venue_login(stub, token)
     assert venue_sm.current == "CONNECTED"
-    # 2 回目
+    # 2 回目 (idempotent — already CONNECTED skips login logic)
     resp2 = stub.VenueLogin(
         engine_pb2.VenueLoginRequest(
             venue_id="MOCK",
-            credentials_source="prompt",
+            credentials_source="env",
             token=token,
         )
     )
@@ -780,3 +785,291 @@ def test_venue_mismatch_rejected_when_live_venue_id_configured():
         )
     finally:
         server.stop(0)
+
+
+# ---------------------------------------------------------------------------
+# Step 5 tests: _handle_prompt_login + new VenueLogin behaviors
+# ---------------------------------------------------------------------------
+
+@pytest.fixture
+def phase8_grpc_server_with_tachibana():
+    """TACHIBANA MOCK-backed server (uses MockVenueAdapter under TACHIBANA venue_id)."""
+    token = "test-token"
+    venue_sm = VenueStateMachine()
+    engine = DataEngine(state_machine=venue_sm)
+    mm = ModeManager(venue_sm, engine)
+    engine.attach_mode_manager(mm)
+
+    # Use a factory that returns a MockVenueAdapter but is registered as TACHIBANA
+    def tachibana_factory(env_hint=None):
+        adapter = MockVenueAdapter()
+        adapter.venue_id = "TACHIBANA"
+        return adapter
+
+    server = grpc.server(futures.ThreadPoolExecutor(max_workers=2))
+    servicer = GrpcDataEngineServer(
+        token, engine, mode_manager=mm, venue_sm=venue_sm,
+        live_adapter_factory=tachibana_factory,
+        live_venue_id="TACHIBANA",
+    )
+    engine_pb2_grpc.add_DataEngineServicer_to_server(servicer, server)
+    engine_pb2_grpc.add_HealthServicer_to_server(servicer, server)
+    port = server.add_insecure_port("[::]:0")
+    server.start()
+
+    yield (port, token, engine, venue_sm, mm, servicer)
+
+    if servicer._live_runner is not None or servicer._live_bridge is not None:
+        servicer._teardown_live_components()
+    server.stop(0)
+
+
+@pytest.fixture
+def phase8_grpc_server_with_kabu():
+    """KABU MOCK-backed server."""
+    token = "test-token"
+    venue_sm = VenueStateMachine()
+    engine = DataEngine(state_machine=venue_sm)
+    mm = ModeManager(venue_sm, engine)
+    engine.attach_mode_manager(mm)
+
+    def kabu_factory(env_hint=None):
+        adapter = MockVenueAdapter()
+        adapter.venue_id = "KABU"
+        return adapter
+
+    server = grpc.server(futures.ThreadPoolExecutor(max_workers=2))
+    servicer = GrpcDataEngineServer(
+        token, engine, mode_manager=mm, venue_sm=venue_sm,
+        live_adapter_factory=kabu_factory,
+        live_venue_id="KABU",
+    )
+    engine_pb2_grpc.add_DataEngineServicer_to_server(servicer, server)
+    engine_pb2_grpc.add_HealthServicer_to_server(servicer, server)
+    port = server.add_insecure_port("[::]:0")
+    server.start()
+
+    yield (port, token, engine, venue_sm, mm, servicer)
+
+    if servicer._live_runner is not None or servicer._live_bridge is not None:
+        servicer._teardown_live_components()
+    server.stop(0)
+
+
+def test_venue_login_prompt_tachibana_uses_subprocess(phase8_grpc_server_with_tachibana):
+    """_handle_prompt_login が呼ばれ、成功時に session_cache 経路で adapter.login が呼ばれる。"""
+    port, token, engine, venue_sm, mm, servicer = phase8_grpc_server_with_tachibana
+    stub = _stub(port)
+
+    with patch.object(
+        servicer, "_handle_prompt_login",
+        new=AsyncMock(return_value=(True, "", None)),
+    ):
+        resp = stub.VenueLogin(
+            engine_pb2.VenueLoginRequest(
+                venue_id="TACHIBANA",
+                credentials_source="prompt",
+                token=token,
+            )
+        )
+
+    assert resp.success is True, f"expected success, got error_code={resp.error_code!r}"
+    assert resp.error_code == ""
+    assert venue_sm.current == "CONNECTED"
+    # adapter.login was called → MockVenueAdapter.is_logged_in == True
+    adapter = servicer._live_runner.adapter
+    assert adapter.is_logged_in is True
+
+
+def test_venue_login_prompt_kabu_writes_token(phase8_grpc_server_with_kabu):
+    """_handle_prompt_login が (True, "", "tok") を返すとき adapter._token == "tok"."""
+    port, token_val, engine, venue_sm, mm, servicer = phase8_grpc_server_with_kabu
+    stub = _stub(port)
+
+    with patch.object(
+        servicer, "_handle_prompt_login",
+        new=AsyncMock(return_value=(True, "", "bearer-tok-123")),
+    ):
+        resp = stub.VenueLogin(
+            engine_pb2.VenueLoginRequest(
+                venue_id="KABU",
+                credentials_source="prompt",
+                token=token_val,
+            )
+        )
+
+    assert resp.success is True, f"expected success, got error_code={resp.error_code!r}"
+    assert venue_sm.current == "CONNECTED"
+    # MockVenueAdapter.login sets is_logged_in=True (token is passed as creds.token)
+    adapter = servicer._live_runner.adapter
+    assert adapter.is_logged_in is True
+
+
+def test_venue_login_prompt_failure_tears_down(phase8_grpc_server_with_tachibana):
+    """_handle_prompt_login が (False, "AUTH_FAILED", None) を返すと resp.success is False."""
+    port, token, engine, venue_sm, mm, servicer = phase8_grpc_server_with_tachibana
+    stub = _stub(port)
+
+    with patch.object(
+        servicer, "_handle_prompt_login",
+        new=AsyncMock(return_value=(False, "AUTH_FAILED", None)),
+    ):
+        resp = stub.VenueLogin(
+            engine_pb2.VenueLoginRequest(
+                venue_id="TACHIBANA",
+                credentials_source="prompt",
+                token=token,
+            )
+        )
+
+    assert resp.success is False
+    assert resp.error_code == "AUTH_FAILED"
+
+
+def test_venue_login_already_authenticating(phase8_grpc_server_with_tachibana):
+    """venue_sm が AUTHENTICATING の間は二重起動を拒否する。"""
+    port, token, engine, venue_sm, mm, servicer = phase8_grpc_server_with_tachibana
+    stub = _stub(port)
+
+    # Force AUTHENTICATING state
+    venue_sm.transition_to("AUTHENTICATING")
+
+    resp = stub.VenueLogin(
+        engine_pb2.VenueLoginRequest(
+            venue_id="TACHIBANA",
+            credentials_source="prompt",
+            token=token,
+        )
+    )
+    assert resp.success is False
+    assert resp.error_code == "ALREADY_AUTHENTICATING"
+    assert resp.venue_state == "AUTHENTICATING"
+
+
+def test_venue_login_timeout(phase8_grpc_server_with_tachibana):
+    """_handle_prompt_login が (False, "LOGIN_TIMEOUT", None) を返すと error_code == LOGIN_TIMEOUT。"""
+    port, token, engine, venue_sm, mm, servicer = phase8_grpc_server_with_tachibana
+    stub = _stub(port)
+
+    with patch.object(
+        servicer, "_handle_prompt_login",
+        new=AsyncMock(return_value=(False, "LOGIN_TIMEOUT", None)),
+    ):
+        resp = stub.VenueLogin(
+            engine_pb2.VenueLoginRequest(
+                venue_id="TACHIBANA",
+                credentials_source="prompt",
+                token=token,
+            )
+        )
+
+    assert resp.success is False
+    assert resp.error_code == "LOGIN_TIMEOUT"
+
+
+def test_venue_login_prompt_result_is_known_cred_source(phase8_grpc_server_with_live):
+    """prompt_result は _KNOWN_CRED_SOURCES に含まれる (INVALID_ARGUMENT にならない)。"""
+    port, token, engine, venue_sm, mm, servicer = phase8_grpc_server_with_live
+    stub = _stub(port)
+    # prompt_result with MOCK will go through env-like path (not prompt subprocess)
+    # and call adapter.login with prompt_result credentials
+    resp = stub.VenueLogin(
+        engine_pb2.VenueLoginRequest(
+            venue_id="MOCK",
+            credentials_source="prompt_result",
+            token=token,
+        )
+    )
+    # Should NOT raise INVALID_ARGUMENT — it may succeed or fail for other reasons
+    # The key assertion: no gRPC INVALID_ARGUMENT status
+    assert resp.error_code != "INVALID_CREDENTIALS_SOURCE"
+
+
+def test_venue_login_adapter_value_error_propagates_as_error_code(phase8_grpc_server_with_tachibana):
+    """ValueError("SESSION_CACHE_MISSING") from adapter.login propagates as-is."""
+    port, token, engine, venue_sm, mm, servicer = phase8_grpc_server_with_tachibana
+    stub = _stub(port)
+
+    with patch.object(
+        servicer, "_handle_prompt_login",
+        new=AsyncMock(return_value=(True, "", None)),
+    ):
+        original_factory = servicer._live_adapter_factory
+
+        def raising_factory(env_hint=None):
+            adapter = original_factory(env_hint) if original_factory else MockVenueAdapter()
+            adapter.venue_id = "TACHIBANA"
+            async def raising_login(creds):
+                raise ValueError("SESSION_CACHE_MISSING")
+            adapter.login = raising_login
+            adapter.is_logged_in = False
+            return adapter
+
+        servicer._live_adapter_factory = raising_factory
+
+        resp = stub.VenueLogin(
+            engine_pb2.VenueLoginRequest(
+                venue_id="TACHIBANA",
+                credentials_source="prompt",
+                token=token,
+            )
+        )
+
+    assert resp.success is False
+    assert resp.error_code == "SESSION_CACHE_MISSING"
+
+
+def test_venue_login_adapter_unknown_value_error_falls_to_generic(phase8_grpc_server_with_tachibana):
+    """ValueError outside the allowlist is collapsed to VENUE_LOGIN_FAILED."""
+    port, token, engine, venue_sm, mm, servicer = phase8_grpc_server_with_tachibana
+    stub = _stub(port)
+
+    with patch.object(
+        servicer, "_handle_prompt_login",
+        new=AsyncMock(return_value=(True, "", None)),
+    ):
+        original_factory = servicer._live_adapter_factory
+
+        def raising_factory(env_hint=None):
+            adapter = original_factory(env_hint) if original_factory else MockVenueAdapter()
+            adapter.venue_id = "TACHIBANA"
+            async def raising_login(creds):
+                raise ValueError("something_else")
+            adapter.login = raising_login
+            adapter.is_logged_in = False
+            return adapter
+
+        servicer._live_adapter_factory = raising_factory
+
+        resp = stub.VenueLogin(
+            engine_pb2.VenueLoginRequest(
+                venue_id="TACHIBANA",
+                credentials_source="prompt",
+                token=token,
+            )
+        )
+
+    assert resp.success is False
+    assert resp.error_code == "VENUE_LOGIN_FAILED"
+
+
+def test_venue_login_no_display_does_not_fallback_in_release(phase8_grpc_server_with_tachibana, monkeypatch):
+    """Release build does not env-retry after NO_DISPLAY_AVAILABLE."""
+    port, token, engine, venue_sm, mm, servicer = phase8_grpc_server_with_tachibana
+    stub = _stub(port)
+    monkeypatch.setattr("engine.server_grpc.IS_DEBUG_BUILD", False)
+
+    with patch.object(
+        servicer, "_handle_prompt_login",
+        new=AsyncMock(return_value=(False, "NO_DISPLAY_AVAILABLE", None)),
+    ):
+        resp = stub.VenueLogin(
+            engine_pb2.VenueLoginRequest(
+                venue_id="TACHIBANA",
+                credentials_source="prompt",
+                token=token,
+            )
+        )
+
+    assert resp.success is False
+    assert resp.error_code == "NO_DISPLAY_AVAILABLE"

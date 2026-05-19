@@ -534,6 +534,16 @@ pub fn is_venue_live(state: VenueState) -> bool {
     matches!(state, VenueState::Connected | VenueState::Subscribed)
 }
 
+/// Returns `true` when the venue is in any state that occupies the slot
+/// (Authenticating / Connected / Subscribed). Used by menu_bar gating
+/// to disable opposite-venue Connect items.
+pub fn is_venue_busy_for_menu(state: VenueState) -> bool {
+    matches!(
+        state,
+        VenueState::Authenticating | VenueState::Connected | VenueState::Subscribed,
+    )
+}
+
 /// Returns `true` for any live execution mode (manual or auto).
 pub fn is_live_mode(mode: ExecutionMode) -> bool {
     matches!(mode, ExecutionMode::LiveManual | ExecutionMode::LiveAuto)
@@ -1142,5 +1152,30 @@ mod tests {
             }
             _ => panic!("expected UnsubscribeMarketData variant"),
         }
+    }
+
+    #[test]
+    fn test_is_venue_busy_for_menu_authenticating() {
+        assert!(is_venue_busy_for_menu(VenueState::Authenticating));
+    }
+
+    #[test]
+    fn test_is_venue_busy_for_menu_connected() {
+        assert!(is_venue_busy_for_menu(VenueState::Connected));
+    }
+
+    #[test]
+    fn test_is_venue_busy_for_menu_subscribed() {
+        assert!(is_venue_busy_for_menu(VenueState::Subscribed));
+    }
+
+    #[test]
+    fn test_is_venue_busy_for_menu_disconnected() {
+        assert!(!is_venue_busy_for_menu(VenueState::Disconnected));
+    }
+
+    #[test]
+    fn test_is_venue_busy_for_menu_error() {
+        assert!(!is_venue_busy_for_menu(VenueState::Error));
     }
 }

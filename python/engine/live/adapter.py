@@ -11,7 +11,7 @@ from __future__ import annotations
 
 from typing import Annotated, AsyncIterator, Literal, Protocol, Union, runtime_checkable
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, model_validator
 
 # --- 基本型エイリアス ---
 
@@ -33,10 +33,19 @@ class VenueCredentials(BaseModel):
     subprocess / env / cache から取得する。
     """
 
-    credentials_source: Literal["prompt", "session_cache", "env"]
+    credentials_source: Literal["prompt", "session_cache", "env", "prompt_result"]
     environment_hint: str | None = None  # "prod" / "demo" 等のヒント
+    token: str | None = None  # kabu prompt_result 専用
 
     model_config = {"frozen": True}
+
+    @model_validator(mode="after")
+    def _validate_prompt_result_requires_token(self) -> "VenueCredentials":
+        if self.credentials_source == "prompt_result" and not self.token:
+            raise ValueError(
+                "credentials_source='prompt_result' requires a non-empty token"
+            )
+        return self
 
 
 class InstrumentRaw(BaseModel):
@@ -128,6 +137,9 @@ class LiveVenueAdapter(Protocol):
     """
 
     venue_id: str  # "TACHIBANA" / "KABU"
+
+    @property
+    def is_logged_in(self) -> bool: ...
 
     async def login(self, creds: VenueCredentials) -> None: ...
     async def logout(self) -> None: ...

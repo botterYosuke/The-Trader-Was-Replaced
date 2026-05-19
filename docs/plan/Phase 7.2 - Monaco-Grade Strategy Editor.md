@@ -77,6 +77,7 @@ pub struct FindMatchSpans {
 #[derive(Component, Default)]
 pub struct BracketSpans {
     pub pair: Option<[(usize /*line*/, std::ops::Range<usize>); 2]>,
+    pub prev_pair: Option<[(usize, std::ops::Range<usize>); 2]>,  // 和集合計算用 (⚠️ Phase A の完全定義と一致させること)
 }
 
 pub struct SpanStyle {
@@ -175,7 +176,10 @@ pub fn compose_attrs_for_line(
 
 ⚠️ **`chain()` 全段連結はしない**。1-5 は既存 `.after(...)` 個別指定で接続済 (mod.rs:230-237 参照)、新規 6-8 は以下で接続:
 - `6` は `.after(sync_strategy_buffer_to_editor_system)`
-- `7a/7b/7c` はそれぞれ `.after(sync_strategy_buffer_to_editor_system).after(sync_find_editors_to_state_system).before(apply_highlight_layers_system)`
+- `7a (compute_syntax_spans_system)` は `.after(sync_strategy_buffer_to_editor_system).before(apply_highlight_layers_system)` (source 確定後にトークナイズ、Find state には非依存)
+- `7b (compute_find_match_spans_system)` は `.after(sync_find_editors_to_state_system).before(apply_highlight_layers_system)` (Find query が sync 済みであれば source も確定している)
+- `7c (compute_bracket_spans_system)` は `.after(sync_strategy_buffer_to_editor_system).before(apply_highlight_layers_system)` (cursor 読取のみ、Find state には非依存)
+- ⚠️ 3 つとも共通で `sync_find_editors_to_state_system` に依存するわけではない。実装例コード (add_systems セクション) と一致させること
 - `8` は `.after(7a, 7b, 7c)`
 
 各 compute_*_spans system は **`set_attrs_list` を呼ばない**。Span Component を書き換えるだけ。これにより「Find クリア時の前回範囲復元」のような状態跨ぎロジックが不要になり、`apply_highlight_layers_system` が dirty 行を `compose_attrs_for_line` で**毎回再生成**するだけで正しい色に収束する (zed スキル Caveat 6 の重ね順問題は composer の固定順序で自動解決)。
@@ -235,7 +239,11 @@ fn init_syntect_highlighter(mut commands: Commands) {
     // ⚠️ load_defaults_newlines は数十〜百 ms。Startup で 1 回だけ実行
     let syntax_set = syntect::parsing::SyntaxSet::load_defaults_newlines();
     let theme_set = syntect::highlighting::ThemeSet::load_defaults();
-    let theme = theme_set.themes["base16-mocha.dark"].clone();  // Dracula 風で読みやすい既定
+    let theme = theme_set.themes.get("base16-mocha.dark")
+        .expect("syntect ThemeSet::load_defaults() must include base16-mocha.dark")
+        .clone();  // Dracula 風で読みやすい既定
+    // ⚠️ `themes["key"]` は HashMap の直接 index で、key 不在時にパニックメッセージが不明確になる。
+    // .get().expect() を使うことで原因が明示される。
     let python_syntax = syntax_set
         .find_syntax_by_extension("py")
         .expect("syntect default set includes python")
@@ -511,6 +519,8 @@ fn span_from_match(m: &MatchSpan, is_current: bool) -> SpanStyle {
 
 **レイアウト調整 (重要):**
 
+⚠️ **Phase B 着手前に `EDITOR_SIZE` の使用箇所を確認すること**: 現状 `EDITOR_SIZE = Vec2(440, 320)` は `spawn_strategy_editor_panel` 内でエディタ Sprite の `custom_size` とパネル全体サイズの両方に流用されている。Phase B では以下に分離するが、修正漏れを避けるために `grep -n "EDITOR_SIZE" src/ui/strategy_editor.rs` で全使用箇所を確認してから置換マップを作ること。
+
 現状 `EDITOR_SIZE = Vec2(440, 320)` がエディタ Sprite の `custom_size` でもあり、root window 全体の幅も実質これに従属。Phase B は以下に分離:
 
 - `EDITOR_PANEL_SIZE = Vec2(440.0, 320.0)` — 既存定数のリネーム、floating window の content_area サイズ
@@ -589,6 +599,8 @@ fn tab_input_system(
     ) { ... }
     ```
     `StrategyEditorId.region_key` でジョイン → `fragment.source` の現在行から `len() - trim_start().len()` でインデント幅を計算。**`fragment.source` は editor entity ではなく root entity にあるため、`With<StrategyEditorContent>` query と `With<WindowRoot>` query を組み合わせる必須**。
+    
+    ⚠️ **cursor 行番号の取得手順**: Enter を押した時点では cosmic_edit がまだ改行を処理していない (我々が `keys.reset(KeyCode::Enter)` で抑止するため)。改行前の cursor 行番号を `editor.with_buffer(|b| b.cursor().line)` で取得し、その index で `fragment.source.lines().nth(cursor_line)` を引いて前行インデントを計算する。`Wrap::None` 固定により source 行番号 == layout 行番号が保証されるのでインデックスが一致する。
   - `editor.action(&mut font_system.0, Action::Insert('\n'))` → `editor.action(&mut font_system.0, Action::Insert(' '))` を indent 幅ぶん繰り返す
   - **`keys.reset(KeyCode::Enter)`** を呼んで cosmic_edit の Enter 処理を抑止
   - **末尾で `CosmicTextChanged` を手動 send** — これが無いと改行が autosave / undo / highlight に伝播しない
@@ -600,6 +612,9 @@ fn tab_input_system(
     ```rust
     let next_char = editor.with_buffer(|b| {
         let cursor = b.cursor();
+        // ⚠️ cursor.index は **バイトオフセット** (cosmic_text の Cursor 定義による)。
+        // line.text()[cursor.index..] は UTF-8 の有効なバイト境界を前提とする。
+        // cosmic_text はカーソル位置を常に文字境界に揃えるので安全。
         b.lines.get(cursor.line)
             .and_then(|line| line.text()[cursor.index..].chars().next())
     });
@@ -705,28 +720,141 @@ fn tab_input_system(
 
   この system は **history / autosave / fragment には絶対に触らない**。`Without<StrategyEditorContent>` を二重ガードとして明示する (マーカーの取り違えを compile 時に近い形で検出)。
 
-- `find_replace_ui_system` — **bevy_egui は現状 Cargo.toml に無いので、既存 `spawn_floating_window` ヘルパで世界空間の小型パネルを `manage_find_panel_lifecycle_system` で 1 回だけ spawn する**。パネル内に `CosmicEditBuffer` × 2 (query / replacement、各 `MaxLines(1)` + 専用マーカー `FindQueryEditor` / `FindReplacementEditor`) と、行/件数表示用 `Text2d`、「Prev」「Next」「Replace」「Replace All」用の Sprite + Pointer<Click> observer 4 個を子配置。bevy_egui を導入する案も検討余地はあるが、Phase 7.2 の最短ルートとしては既存パターンの再利用を優先する
+- (注) **`find_replace_ui_system` という名称は廃止** — Find パネルの UI 構築責務は `manage_find_panel_lifecycle_system` に統合済み。登録する system 名は `manage_find_panel_lifecycle_system` のみ。**bevy_egui は現状 Cargo.toml に無いので、既存 `spawn_floating_window` ヘルパで世界空間の小型パネルを `manage_find_panel_lifecycle_system` で 1 回だけ spawn する**。パネル内に `CosmicEditBuffer` × 2 (query / replacement、各 `MaxLines(1)` + 専用マーカー `FindQueryEditor` / `FindReplacementEditor`) と、行/件数表示用 `Text2d`、「Prev」「Next」「Replace」「Replace All」用の Sprite + Pointer<Click> observer 4 個を子配置。
 - `compute_find_match_spans_system` (旧 `find_match_recompute_system`) — `state.is_changed()` (Resource 変化) または `Changed<StrategyFragment>` フィルタに引っかかるエントリが存在する場合に全マッチ再計算。実装例:
   ```rust
   fn compute_find_match_spans_system(
-      state: Res<FindReplaceState>,
+      mut state: ResMut<FindReplaceState>,  // ⚠️ ResMut 必須 — state.matches/state.current を更新するため
       changed_frags: Query<(), (With<WindowRoot>, Changed<StrategyFragment>)>,
       fragments_q: Query<(&StrategyEditorId, &StrategyFragment), With<WindowRoot>>,
       mut editor_q: Query<(&StrategyEditorId, &mut FindMatchSpans), With<StrategyEditorContent>>,
   ) {
+      // state が変化 OR source が変化のどちらかで発火 (両方変化なしならスキップ)
       if !state.is_changed() && changed_frags.is_empty() { return; }
-      // ... 再計算ロジック
+      
+      // ① prev_match_lines を matches 更新前に保存 (クリア時に dirty 行へ含めるため必須)
+      for (_, mut spans) in &mut editor_q {
+          spans.prev_match_lines = spans.matches.iter().map(|m| m.line).collect();
+      }
+      
+      // ② 新しいマッチ列を計算して state.matches に書き込む
+      // (plain substring match — regex は v2)
+      let new_matches: Vec<MatchSpan> = /* fragment.source で state.query を走査 */ vec![];
+      
+      // ③ クエリが変わったか source が変わったか判断して current をリセット
+      // state が Changed = query/replacement が変わった → 先頭マッチを表示するため 0 にリセット
+      // source が Changed (changed_frags) のみ → 同じクエリで再検索、current は保持
+      if state.is_changed() {
+          state.current = 0;  // query が変わったら先頭から
+      }
+      state.matches = new_matches;
+      
+      // ③b state.current を新マッチ列の範囲内にクランプ (マッチ数が減った場合に越境しないよう)
+      let n = state.matches.len();
+      if n == 0 {
+          state.current = 0;
+      } else {
+          state.current = state.current.min(n - 1);  // 範囲外なら末尾に
+      }
+      
+      // ④ editor の FindMatchSpans.matches / current_idx / prev_match_lines を更新
+      // target_editor の region_key で一致する editor entity を探し:
+      //   spans.matches = state.matches.clone();
+      //   spans.current_idx = if n > 0 { Some(state.current) } else { None };
+      // (spans.prev_match_lines は ① で更新済み)
   }
   ```
-  ⚠️ `FindReplaceState` は Resource なので `Changed<FindReplaceState>` を Query フィルタとして使えない。`Res<FindReplaceState>.is_changed()` で判定すること (plain substring match、regex は v2)。結果は対象 editor の **`FindMatchSpans` Component に書き込むだけ**で attrs には触らない。再計算冒頭で `prev_match_lines = matches.iter().map(|m| m.line).collect()` を保存してから `matches` を更新するので、`apply_highlight_layers_system` がクリア時にも旧行を dirty 集合に入れて base 色に戻せる (`FindMatchSpans::prev_match_lines` フィールド定義参照)
+  ⚠️ `FindReplaceState` は Resource なので `Changed<FindReplaceState>` を Query フィルタとして使えない。`ResMut<FindReplaceState>.is_changed()` で判定すること (plain substring match、regex は v2)。**`Res<FindReplaceState>` (immutable) で宣言すると `state.matches`/`state.current` の書き込みが compile error になる**。`spans.prev_match_lines` は `spans.matches` を更新する前に保存すること (更新後だと前回行が失われて旧マッチ色が残る)
 - **`apply_find_match_highlight_system` は廃止** — マッチ列の attrs 適用は `apply_highlight_layers_system` (composer) が責務として持つ。Find システムは「state を更新するだけ」。これで syntax / find / bracket のクリア順事故が構造的に発生しない
-- `find_scroll_to_match_system` — `FindMatchSpans.current_idx` 変更で `editor.with_buffer_mut(|b| b.set_scroll(Scroll { line: match.line.saturating_sub(viewport_lines / 2), vertical: 0.0, horizontal: 0.0 }))` で対象行を画面中央へ、`editor.set_redraw(true)`
+- **`find_navigate_system`** (新規) — Enter / F3 で「次のマッチ」、Shift+Enter / Shift+F3 で「前のマッチ」へ移動。`FindReplaceState.is_open && !matches.is_empty()` のときのみ動作:
+  ```rust
+  fn find_navigate_system(
+      keys: Res<ButtonInput<KeyCode>>,
+      focused: Res<FocusedWidget>,  // ⚠️ 必須 — query editor にフォーカス中は Enter を navigation に使わない
+      mut state: ResMut<FindReplaceState>,
+      mut editor_q: Query<(Entity, &StrategyEditorId, &mut FindMatchSpans), With<StrategyEditorContent>>,
+  ) {
+      if !state.is_open || state.matches.is_empty() { return; }
+      
+      let shift = keys.any_pressed([KeyCode::ShiftLeft, KeyCode::ShiftRight]);
+      let f3_pressed = keys.just_pressed(KeyCode::F3);
+      let enter_pressed = keys.just_pressed(KeyCode::Enter);
+      
+      // ⚠️ query editor にフォーカス中は Enter = query 確定の意味 → navigation には F3 のみ使用
+      let query_editor_focused = state.query_editor
+          .is_some_and(|qe| focused.0 == Some(qe));
+      
+      // 括弧で優先度を明示 (&&は||より結合強度が高いが読みやすさのため明記)
+      let forward = (f3_pressed && !shift) || (!query_editor_focused && enter_pressed && !shift);
+      let backward = (f3_pressed && shift) || (!query_editor_focused && enter_pressed && shift);
+      if !forward && !backward { return; }
+      
+      let n = state.matches.len();
+      if forward {
+          state.current = (state.current + 1) % n;
+      } else {
+          state.current = (state.current + n - 1) % n;
+      }
+      
+      // current_idx を editor entity に反映 — target_editor から region_key を引いてジョイン
+      // (compute_find_match_spans_system と同じ 2-query join パターン)
+      if let Some(target_entity) = state.target_editor {
+          if let Ok((_, target_id, mut spans)) = editor_q.get_mut(target_entity) {
+              spans.current_idx = if n > 0 { Some(state.current) } else { None };
+          }
+      }
+      // ⚠️ `editor_q.get_mut(target_entity)` は target_editor が editor entity (StrategyEditorContent)
+      // を指している場合に使える直接アクセス。`target_editor` に `StrategyEditorContent` entity を
+      // 正しく保存してあることが前提 (Ctrl+F 押下時に FocusedWidget.0 を target_editor にセット)。
+  }
+  ```
+  実行順: `.after(compute_find_match_spans_system).before(find_scroll_to_match_system)`
+
+- **`find_scroll_to_match_system`** — `Changed<FindMatchSpans>` (current_idx 変更時) で対象行を画面中央へスクロール:
+  ```rust
+  fn find_scroll_to_match_system(
+      state: Res<FindReplaceState>,
+      mut editor_q: Query<
+          (Option<&mut CosmicEditor>, &mut CosmicEditBuffer, &FindMatchSpans),
+          (With<StrategyEditorContent>, Changed<FindMatchSpans>),
+      >,
+  ) {
+      if !state.is_open { return; }
+      for (editor_opt, mut buffer, spans) in &mut editor_q {
+          let Some(current_idx) = spans.current_idx else { continue };
+          let Some(m) = spans.matches.get(current_idx) else { continue };
+          // viewport_lines は buffer サイズ ÷ line_height で計算。粗い近似 (16) で可
+          let viewport_lines = 16usize;
+          let target_line = m.line.saturating_sub(viewport_lines / 2);
+          let scroll = cosmic_text::Scroll { line: target_line, vertical: 0.0, horizontal: 0.0 };
+          if let Some(mut editor) = editor_opt {
+              editor.with_buffer_mut(|b| b.set_scroll(scroll));
+              editor.set_redraw(true);
+          } else {
+              buffer.0.set_scroll(scroll);
+              buffer.0.set_redraw(true);
+          }
+      }
+  }
+  ```
+  実行順: `.after(find_navigate_system)` (current_idx が確定した後にスクロール)
 - Cmd/Ctrl+F で開く: `ResMut<ButtonInput<KeyCode>>` で modifier + KeyF を見て `is_open = true` + `target_editor = focused_widget.0` をセット (panel spawn は `manage_find_panel_lifecycle_system` が次フレーム検出してから)、**spawn 後に `FocusedWidget` を `state.query_editor` のエンティティに切り替える** (lifecycle system 末尾で transition 検出して 1 回だけ実行)
 - Esc で閉じる: `is_open = false` をセット + `FocusedWidget` を `target_editor` に戻す。despawn は `manage_find_panel_lifecycle_system` が次フレームで実施
 
 **target_editor の lifecycle (重要):**
 
-- find が開いている状態で対象 editor の panel が閉じられる/despawn される可能性 → `find_match_recompute_system` 冒頭で `editor_q.get(target_editor).is_err()` なら `FindReplaceState::default()` でリセット
+- find が開いている状態で対象 editor の panel が閉じられる/despawn される可能性 → `compute_find_match_spans_system` 冒頭で孤児チェックを行い `FindReplaceState::default()` でリセット:
+  ```rust
+  // compute_find_match_spans_system の冒頭に追加
+  if let Some(target) = state.target_editor {
+      if editor_q.get(target).is_err() {
+          // target_editor が despawn 済み → state をリセット (Find panel も lifecycle system が次フレームで despawn)
+          *state = FindReplaceState::default();
+          return;
+      }
+  }
+  ```
+  ⚠️ `editor_q` は `With<StrategyEditorContent>` フィルタ付きで OK (`target_editor` は editor entity)
 - multi-spawn 時は「最後に focus していた editor」を対象とする (グローバル単一の FindReplaceState で十分、Zed の per-pane search は将来)
 
 ## 触るファイル一覧
@@ -749,7 +877,7 @@ fn tab_input_system(
   - `Phase A`: `compute_syntax_spans_system` / `compute_bracket_spans_system` / `apply_highlight_layers_system`
   - `Phase B`: `update_gutter_text_system` / `sync_gutter_scroll_system` / `update_scrollbar_thumb_system`
   - `Phase C`: `tab_input_system` / `enter_autoindent_system` / `bracket_autoclose_system` (順序は `before(InputSet)` or `after(InputSet)` で個別指定)
-  - `Phase E`: `manage_find_panel_lifecycle_system` / `sync_find_editors_to_state_system` / `compute_find_match_spans_system` / `find_scroll_to_match_system` (apply_find_match_highlight_system は廃止 — composer 統合済)
+  - `Phase E`: `manage_find_panel_lifecycle_system` / `sync_find_editors_to_state_system` / `compute_find_match_spans_system` / `find_navigate_system` / `find_scroll_to_match_system` (apply_find_match_highlight_system は廃止 — composer 統合済)
   - **新規 highlight 系の接続**:
     - `sync_find_editors_to_state_system.after(sync_strategy_buffer_to_editor_system)`
     - `compute_syntax_spans_system.after(sync_strategy_buffer_to_editor_system).before(apply_highlight_layers_system)`
@@ -780,7 +908,9 @@ fn tab_input_system(
 
 **unchanged だが確認のみ:**
 - `crates/bevy_cosmic_edit/src/input.rs` — `KeyCode::Tab` が `Key::Character` でないため `match` の `_ => ()` で吸われる動作の再確認 (line 497–508)、`InputSet` の存在 (line 31)
+- `crates/bevy_cosmic_edit/src/input.rs` — **ガター entity の input 排除確認**: input system が `With<TextEdit2d>` フィルタを持つか確認。持つなら `TextEdit2d` を付けないだけでガターへの input が自動排除される。持たない場合は別途排除策 (FocusedWidget に設定しない等) が必要
 - `crates/bevy_cosmic_edit/src/buffer.rs` — `set_redraw` の public 性 (line 142, 160, 215, 246) 再確認
+- `crates/bevy_cosmic_edit/src/` — **`get_text()` メソッドの存在確認** (Caveat 32 参照)。`Buffer::get_text()` が未実装なら `tab_input_system` / `enter_autoindent_system` / `bracket_autoclose_system` で代替 `b.lines.iter().map(|l| l.text()).collect::<Vec<_>>().join("\n")` を使う。**Phase A 着手前に 1 度確認しておくと Phase C で詰まらない**
 - `src/ui/editor_history.rs` — Undo/Redo 後の `PendingStrategySnapshotRestore` 経路で `fragment.source` が書き換わり、`Changed<StrategyFragment>` 経由で再ハイライトが走ることを確認
 
 ## 再利用する既存ピース
@@ -808,7 +938,7 @@ fn tab_input_system(
 9. **`Scroll::line` は layout 行、`Scroll::vertical` は line 内 pixel** — wrap を None に固定すれば source 行 == layout 行で gutter と一致
 10. **Undo/Redo 後の再ハイライト** — `fragment.source` を書き換える経路 (PendingStrategySnapshotRestore) を通れば自動で `Changed<StrategyFragment>` が立つ。dirty フィールドには触らない
 11. **`fragment.dirty` は autosave 専用** — highlight 用には Bevy 標準の `Changed<StrategyFragment>` を使う (二重利用は競合の元)
-12. **Find target_editor の lifecycle** — 開いた瞬間の `FocusedWidget.0` を `target_editor` に保存、Esc 時にそこへ戻す。target editor が despawn 済みなら state をリセット (Caveat 31 の `With<WindowRoot>` query で `q.get(e).is_err()` チェック — `target_editor` は `StrategyEditorContent` を持つ editor entity なので `With<StrategyEditorContent>` query を使うこと)
+12. **Find target_editor の lifecycle** — 開いた瞬間の `FocusedWidget.0` を `target_editor` に保存、Esc 時にそこへ戻す。target editor が despawn 済みなら state をリセット。⚠️ **孤児チェック用 query は `Query<(), With<StrategyEditorContent>>`** (`target_editor` は editor entity で `StrategyEditorContent` を持つ)。Caveat 31 は `panel_root` (`WindowRoot` entity) 専用の別問題 — `target_editor` には `With<WindowRoot>` フィルタを使ってはいけない (常に `Err` で誤リセットが発生する)
 13. **`EditorScrollThumb` は `target_editor: Entity` を carry する** — multi-spawn で thumb が複数並ぶため、observer から「どのエディタを操作するか」を引けるようにする
 14. **EDITOR_PANEL_SIZE と EDITOR_TEXT_SIZE を分離** — 既存 `EDITOR_SIZE` は panel サイズ意味で残し、エディタ Sprite には `EDITOR_TEXT_SIZE = panel - gutter - scrollbar` を渡す。混同するとパネルごと縮む
 15. **`add_systems` タプル 20 上限** — Phase A〜E で 10 個以上のシステムを追加するので、既存登録数次第で chain 分割
@@ -818,7 +948,7 @@ fn tab_input_system(
 19. **`StrategyFragment` と `CosmicEditBuffer` は別 entity** — root entity に `WindowRoot + StrategyFragment + StrategyEditorId`、child editor entity に `StrategyEditorContent + CosmicEditBuffer + Option<CosmicEditor> + StrategyEditorId + SyntaxSpans + FindMatchSpans + BracketSpans`。1 つの Query で両方は取れない。**`fragments_q: Query<.., (With<WindowRoot>, Changed<StrategyFragment>)>` + `editor_q: Query<.., With<StrategyEditorContent>>` の 2 段ジョイン**を `StrategyEditorId.region_key` で行う (既存 sync 群と同じパターン)
 20. **`BufferLine::set_attrs_list` 単独では再描画されない** — `set_attrs_list` 内部の `reset_shaping` は字形再計算フラグであって、render が見る Buffer 全体の `redraw` flag は別。attrs 更新後に **`buffer.set_redraw(true)`** (CosmicEditBuffer なら `b.set_redraw(true)`、editor 内部 buffer なら `editor.with_buffer_mut(|b| b.set_redraw(true))` + `editor.set_redraw(true)`) を明示
 21. **Find editor は `StrategyEditorContent` を絶対に付けない** — 専用マーカー `FindQueryEditor` / `FindReplacementEditor` を使う。誤って `StrategyEditorContent` を付けると Find 入力の `CosmicTextChanged` が `sync_editor_to_strategy_buffer_system` に拾われ、Strategy Editor の `fragment.source` が Find 文字列で上書きされる事故になる。さらに composer も `With<StrategyEditorContent>` フィルタなので Find editor は plain text 表示 (それで正しい)
-22. **bracket span は別行をまたぐ + 部分復元しない** — opener と closer は通常別行にある (`pair: [(line, range); 2]`)。**「前回の bracket 範囲だけ syntax 色に戻す」ロジックは書かない**。代わりに `BracketSpans` に `pair` と `prev_pair` を持たせ、両方の行を dirty に入れて composer に再生成させる (= 各行は SyntaxSpans + FindMatchSpans + 現在の BracketSpans から毎回フル合成される)。これで bracket クリア時の syntax 色復元事故が構造的に消える
+22. **bracket span は別行をまたぐ + 部分復元しない** — opener と closer は通常別行にある (`pair: [(line, range); 2]`)。**「前回の bracket 範囲だけ syntax 色に戻す」ロジックは書かない**。代わりに `BracketSpans` に `pair` と `prev_pair` を持たせ、両方の行を dirty に入れて composer に再生成させる (= 各行は SyntaxSpans + FindMatchSpans + 現在の BracketSpans から毎回フル合成される)。これで bracket クリア時の syntax 色復元事故が構造的に消える。**補足**: `prev_pair` は `compose_attrs_for_line` には直接渡さず、dirty 行の集合計算にのみ使用する。`compose` 時は現在の `pair` だけを `bracket_spans` として渡せば、前回位置の行が dirty に含まれているため「`pair` に存在しない行の bracket 色は `base → syntax → find` のみで合成」され自動的に元の色に戻る。明示的に「前回位置を syntax 色に戻す」処理は不要。
 23. **incremental parse / tree-sitter は Phase F に降格** — Phase A v1 (syntect 全文再トークナイズ) は Python 1KB で数 ms、500 行でも `Changed<StrategyFragment>` 駆動なのでアイドル時 0 コスト。**実測で目視ラグが観測されない限り Phase F は着手しない**。先に着手すると `Tree::edit(&InputEdit)` の diff 計算経路 (`CosmicTextChanged` は全文しか持たない) の設計拡張が必要になり、composer 以降の安定化を後回しにすることになる
 24. **Phase C のカスタム編集は `CosmicTextChanged` を手動 send** (Critical) — `crates/bevy_cosmic_edit/src/input.rs:518` で確認した通り `CosmicTextChanged` は cosmic_edit input system 内で `is_edit = true` のときだけ発火する。Tab (cosmic_edit が無視)、Enter (我々が `keys.reset` で抑止)、bracket closer (我々が `editor.action(Action::Insert(closer))` を直接呼ぶ) のいずれも cosmic_edit のイベント発火パスを通らない。**各カスタム編集 system の末尾で `EventWriter<CosmicTextChanged>` を経由して `(entity, editor.with_buffer_mut(|b| b.get_text()))` を手動 send** しないと、`sync_editor_to_strategy_buffer_system` → `fragment.source` 更新 → autosave / undo / 再 highlight すべてが空振りする。同一フレーム内に同じ entity / 全文を 2 度 send しても既存 sync 系の short-circuit (`fragment.source == *new_text` で continue) で安全
 25. **初期 seed を `with_rich_text([("", ...)], ...)` で空 spans に置換しない** (Critical) — 現行 `src/ui/strategy_editor.rs:154-162` は `with_text(font_system, &seed, default_attrs)` で seed を buffer 構築と同時に注入している。空 `with_rich_text` に置換すると seed が消える (Phase A v1 の highlight は `set_attrs_list` で attrs だけ差し替えるため、テキストは挿入されない)。**`with_text` を維持し、初期色は `Changed<StrategyFragment>` で `compute_syntax_spans_system` が spawn 直後のフレームに自動で 1 度走る** (`Added<T>` は `Changed<T>` に包含されるため追加フィルタ不要) か、`with_rich_text(&[(seed.as_str(), default_attrs)], default_attrs)` で seed を span として渡す
