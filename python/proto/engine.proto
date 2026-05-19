@@ -15,6 +15,7 @@ message HealthCheckResponse {
     UNKNOWN = 0;
     SERVING = 1;
     NOT_SERVING = 2;
+    SERVICE_UNKNOWN = 3;
   }
   ServingStatus status = 1;
 }
@@ -69,6 +70,9 @@ service DataEngine {
   rpc SubscribeMarketData (SubscribeRequest) returns (SubscribeResponse);
   rpc UnsubscribeMarketData (UnsubscribeRequest) returns (SubscribeResponse);
   rpc SetExecutionMode (SetExecutionModeRequest) returns (SetExecutionModeResponse);
+
+  // Lifecycle (Step 2: backend-startup-sync)
+  rpc Shutdown (ShutdownRequest) returns (ShutdownResponse);
 }
 
 message GetStateRequest {
@@ -298,4 +302,14 @@ message SetExecutionModeResponse {
   bool success = 1;
   string error_code = 2;
   string execution_mode = 3;
+}
+
+message ShutdownRequest {
+  string token = 1;
+  uint32 grace_seconds = 2;
+}
+
+message ShutdownResponse {
+  bool accepted = 1;
+  string error_code = 2;
 }
