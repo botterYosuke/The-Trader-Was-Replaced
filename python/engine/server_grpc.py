@@ -963,6 +963,11 @@ class GrpcDataEngineServer(
     def VenueLogout(self, request, context):
         if request.token != self.token:
             context.abort(grpc.StatusCode.UNAUTHENTICATED, "Invalid token")
+        # Fix 1: stop live runner, bridge, price cache, and reset venue state machine
+        if self._live_runner is not None or self._live_bridge is not None:
+            self._teardown_live_components()
+        elif self.venue_sm is not None and self.venue_sm.current != "DISCONNECTED":
+            self.venue_sm.reset()
         return engine_pb2.VenueControlResponse(success=True, error_code="")
 
     def SetExecutionMode(self, request, context):
@@ -1119,6 +1124,7 @@ def serve(
         mode_manager=mm,
         venue_sm=venue_sm,
         live_adapter_factory=live_adapter_factory,
+        live_venue_id=live_venue,
     )
 
     engine_pb2_grpc.add_HealthServicer_to_server(servicer, server)

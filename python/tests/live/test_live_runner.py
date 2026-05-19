@@ -30,6 +30,19 @@ from engine.live.live_runner import LiveRunner
 INTERVAL_NS = 60 * 1_000_000_000  # 1 分
 
 
+async def _next_kline(it, timeout: float = 1.0) -> KlineUpdate:
+    """Fix 2: bus now publishes TradesUpdate before KlineUpdate.
+    Skip TradesUpdate events and return the first KlineUpdate."""
+    deadline = asyncio.get_event_loop().time() + timeout
+    while True:
+        remaining = deadline - asyncio.get_event_loop().time()
+        if remaining <= 0:
+            raise asyncio.TimeoutError("timed out waiting for KlineUpdate")
+        evt = await asyncio.wait_for(it.__anext__(), timeout=remaining)
+        if isinstance(evt, KlineUpdate):
+            return evt
+
+
 def _tick(ts_ns: int, price: float, size: float = 1.0, instrument_id: str = "7203.TSE") -> TradesUpdate:
     return TradesUpdate(
         kind="trades",
@@ -86,14 +99,13 @@ def test_live_runner_aggregates_ticks_into_kline_via_bus() -> None:
         # 次の分の 1 本目 → 直前 bar 確定 emit のトリガ（close=90 は次 bar 側）
         adapter.inject_tick(_tick(base_ns + INTERVAL_NS,      price= 90.0, size=1.0))
 
-        # 直前 bar が来るのを 1 件だけ待つ
+        # 直前 bar が来るのを 1 件だけ待つ (TradesUpdate は _next_kline でスキップ)
         try:
             it = consumer.__aiter__()
-            evt = await asyncio.wait_for(it.__anext__(), timeout=1.0)
+            evt = await _next_kline(it, timeout=1.0)
         finally:
             await runner.stop()
 
-        assert isinstance(evt, KlineUpdate)
         return evt
 
     bar = asyncio.run(scenario())
@@ -239,9 +251,9 @@ def test_live_runner_aggregates_multiple_instruments_independently() -> None:
         bars: dict[str, KlineUpdate] = {}
         try:
             it = consumer.__aiter__()
-            for _ in range(2):
-                evt = await asyncio.wait_for(it.__anext__(), timeout=1.0)
-                assert isinstance(evt, KlineUpdate)
+            # Fix 2: skip TradesUpdate, collect 2 KlineUpdates
+            while len(bars) < 2:
+                evt = await _next_kline(it, timeout=1.0)
                 bars[evt.instrument_id] = evt
         finally:
             await runner.stop()
@@ -296,9 +308,9 @@ def test_live_runner_supports_multiple_intervals_per_instrument() -> None:
         bars: list[KlineUpdate] = []
         try:
             it = consumer.__aiter__()
-            for _ in range(3):
-                evt = await asyncio.wait_for(it.__anext__(), timeout=1.0)
-                assert isinstance(evt, KlineUpdate)
+            # Fix 2: skip TradesUpdate, collect 3 KlineUpdates
+            while len(bars) < 3:
+                evt = await _next_kline(it, timeout=1.0)
                 bars.append(evt)
         finally:
             await runner.stop()
@@ -336,10 +348,9 @@ def test_live_runner_accepts_single_interval_int_for_backwards_compat() -> None:
         adapter.inject_tick(_tick(base_ns + INTERVAL_NS,  price=110.0))
         try:
             it = consumer.__aiter__()
-            evt = await asyncio.wait_for(it.__anext__(), timeout=1.0)
+            evt = await _next_kline(it, timeout=1.0)
         finally:
             await runner.stop()
-        assert isinstance(evt, KlineUpdate)
         return evt
 
     bar = asyncio.run(scenario())
@@ -398,11 +409,10 @@ def test_live_runner_subscribe_after_start_does_not_drop_first_tick() -> None:
 
         try:
             it = consumer.__aiter__()
-            evt = await asyncio.wait_for(it.__anext__(), timeout=1.0)
+            evt = await _next_kline(it, timeout=1.0)
         finally:
             await runner.stop()
 
-        assert isinstance(evt, KlineUpdate)
         return evt
 
     bar = asyncio.run(scenario())
@@ -475,11 +485,10 @@ def test_live_runner_can_restart_after_run_task_dies_with_exception() -> None:
 
         try:
             it = consumer.__aiter__()
-            evt = await asyncio.wait_for(it.__anext__(), timeout=1.0)
+            evt = await _next_kline(it, timeout=1.0)
         finally:
             await runner.stop()
 
-        assert isinstance(evt, KlineUpdate)
         return evt, captured_error
 
     bar, err = asyncio.run(scenario())
@@ -539,6 +548,43 @@ def test_live_runner_drops_depth_for_unsubscribed_instrument() -> None:
 
     depth = asyncio.run(scenario())
     assert depth.instrument_id == "7203.TSE"
+
+
+def test_trades_update_published_to_bus() -> None:
+    """Fix 2: TradesUpdate が来たとき、aggregator に渡す前後に関わらず
+    bus に publish される（bar が確定しない場合でも TradesUpdate 自体が流れる）。"""
+    ts_ns = 28333333 * INTERVAL_NS
+
+    async def scenario() -> TradesUpdate:
+        adapter = MockVenueAdapter()
+        runner = LiveRunner(adapter=adapter, interval_ns=INTERVAL_NS)
+        await adapter.login(VenueCredentials(
+            credentials_source="env", environment_hint="demo",
+        ))
+        await runner.subscribe("7203.TSE")
+
+        consumer = runner.bus.subscribe()
+        await runner.start()
+
+        # 1 本だけ inject (bar 確定には至らない)
+        adapter.inject_tick(_tick(ts_ns + 0, price=100.0, size=1.0))
+
+        try:
+            it = consumer.__aiter__()
+            evt = await asyncio.wait_for(it.__anext__(), timeout=1.0)
+        finally:
+            await runner.stop()
+
+        # TradesUpdate が bus に publish されていることを確認
+        assert isinstance(evt, TradesUpdate), (
+            f"Expected TradesUpdate on bus, got {type(evt).__name__}"
+        )
+        return evt
+
+    trade = asyncio.run(scenario())
+    assert trade.instrument_id == "7203.TSE"
+    assert trade.price == 100.0
+    assert trade.size == 1.0
 
 
 def test_live_runner_drops_direct_kline_for_unsubscribed_instrument() -> None:

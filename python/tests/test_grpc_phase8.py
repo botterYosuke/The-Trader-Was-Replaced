@@ -710,3 +710,73 @@ def test_get_state_live_last_prices_filtered_by_subscribed_ids(
     payload = json.loads(resp.json_data)
     # subscribed_ids() == empty set → last_prices should be {} (filtered out)
     assert payload["last_prices"] == {}
+
+
+# --- Fix 1: VenueLogout tears down live components --------------------------
+
+def test_venue_logout_tears_down_live_components(phase8_grpc_server_with_live):
+    """Fix 1: VenueLogout を呼ぶと _live_runner が None になり
+    venue_sm.current が DISCONNECTED に戻る。"""
+    port, token, engine, venue_sm, mm, servicer = phase8_grpc_server_with_live
+    stub = _stub(port)
+
+    # VenueLogin で runner を起動する
+    _do_venue_login(stub, token)
+    assert servicer._live_runner is not None, "precondition: runner should exist after VenueLogin"
+    assert venue_sm.current == "CONNECTED"
+
+    resp = stub.VenueLogout(engine_pb2.VenueLogoutRequest(token=token))
+    assert resp.success is True
+    assert servicer._live_runner is None, "VenueLogout must nil-out _live_runner"
+    assert venue_sm.current == "DISCONNECTED", "VenueLogout must reset venue_sm to DISCONNECTED"
+
+
+# --- Fix 3: live_venue_id must be forwarded to GrpcDataEngineServer ----------
+
+def test_venue_mismatch_rejected_when_live_venue_id_configured():
+    """Fix 3: GrpcDataEngineServer(live_venue_id='KABU') に対して
+    VenueLogin(venue='TACHIBANA') を送ると VENUE_MISMATCH が返る。
+    (live_venue_id が渡っていないと configured_venue == venue_id になり
+     常に一致してしまうバグの回帰テスト)"""
+    from engine.live.live_adapter_factory import build_live_adapter_factory
+
+    token = "test-token"
+    venue_sm = VenueStateMachine()
+    engine_obj = DataEngine(state_machine=venue_sm)
+    mm = ModeManager(venue_sm, engine_obj)
+    engine_obj.attach_mode_manager(mm)
+
+    # KABU 向けファクトリは build_live_adapter_factory で作れるが、
+    # ここでは live_venue_id の配線確認だけなので MOCK ファクトリで十分
+    mock_factory = build_live_adapter_factory("MOCK")
+
+    server = grpc.server(futures.ThreadPoolExecutor(max_workers=2))
+    servicer = GrpcDataEngineServer(
+        token,
+        engine_obj,
+        mode_manager=mm,
+        venue_sm=venue_sm,
+        live_adapter_factory=mock_factory,
+        live_venue_id="KABU",  # Fix 3: this must be wired through
+    )
+    engine_pb2_grpc.add_DataEngineServicer_to_server(servicer, server)
+    engine_pb2_grpc.add_HealthServicer_to_server(servicer, server)
+    port = server.add_insecure_port("[::]:0")
+    server.start()
+
+    try:
+        stub = _stub(port)
+        resp = stub.VenueLogin(
+            engine_pb2.VenueLoginRequest(
+                venue_id="TACHIBANA",
+                credentials_source="prompt",
+                token=token,
+            )
+        )
+        assert resp.success is False
+        assert resp.error_code == "VENUE_MISMATCH", (
+            f"live_venue_id='KABU' なのに TACHIBANA を受け入れてはならない. "
+            f"got error_code={resp.error_code!r}"
+        )
+    finally:
+        server.stop(0)

@@ -95,6 +95,9 @@ class LiveRunner:
                 if not self._is_subscribed(evt.instrument_id):
                     continue
                 if isinstance(evt, TradesUpdate):
+                    # Fix 2: publish the raw TradesUpdate so LastPriceCache can
+                    # use trade fallback pricing, then also run aggregation.
+                    await self.bus.publish(evt)
                     for agg in self._aggregators[evt.instrument_id]:
                         closed = agg.on_tick(evt)
                         if closed is not None:
