@@ -1,6 +1,6 @@
 use backcast::backend_supervisor::{
-    BackendLifecycle, BackendLifecycleHandle, BackendSupervisorPlugin, SupervisorTaskSeed,
-    run_supervisor,
+    BackendLifecycle, BackendLifecycleHandle, BackendSupervisorPlugin, SupervisorCommand,
+    SupervisorCommandSender, SupervisorTaskSeed, run_supervisor,
 };
 use backcast::camera::{pancam_suppression_over_editor_system, setup_camera};
 use backcast::grid::GridPlugin;
@@ -183,6 +183,7 @@ async fn main() {
                 pancam_suppression_over_editor_system.before(PanCamSystemSet),
             ),
         )
+        .add_systems(Last, app_exit_shutdown_system)
         .run();
 }
 
@@ -367,6 +368,59 @@ fn spawn_supervisor_task_system(tokio: Res<TokioHandle>, mut seed: ResMut<Superv
         tokio
             .0
             .spawn(run_supervisor(config, lifecycle_tx, cmd_rx, ownership_tx));
+    }
+}
+
+/// On `AppExit`, ask the supervisor to gracefully shut down the backend and
+/// block the main thread (up to 2.5s) until it acks. The supervisor decides
+/// whether to actually fire the Shutdown RPC based on `own_process` (C-8), so
+/// this system always sends the command regardless of ownership. Runs in `Last`
+/// so it observes the `AppExit` raised earlier this frame (by `exit_on_all_closed`
+/// or a manual quit) before the winit runner checks `should_exit()`.
+/// Decide whether `AppExit` cleanup should fire a graceful `Shutdown` to the
+/// supervisor. We skip states where the backend isn't running (or never
+/// started): the supervisor task may have dropped its cmd_rx, so a Shutdown
+/// send would never be acked — sending would just burn the 2.5s timeout.
+fn should_send_graceful_shutdown(lifecycle: BackendLifecycle) -> bool {
+    !matches!(
+        lifecycle,
+        BackendLifecycle::Disabled
+            | BackendLifecycle::Stopped
+            | BackendLifecycle::Crashed
+            | BackendLifecycle::StartupFailed(_)
+    )
+}
+
+fn app_exit_shutdown_system(
+    mut app_exit: EventReader<AppExit>,
+    cmd_sender: Res<SupervisorCommandSender>,
+    lifecycle: Res<BackendLifecycleHandle>,
+) {
+    if app_exit.read().next().is_none() {
+        return;
+    }
+    if !should_send_graceful_shutdown(lifecycle.current()) {
+        return;
+    }
+
+    let (tx, rx) = std::sync::mpsc::sync_channel::<()>(1);
+    if cmd_sender
+        .tx
+        .send(SupervisorCommand::Shutdown {
+            grace_seconds: 0,
+            reply_tx: Some(tx),
+        })
+        .is_err()
+    {
+        warn!("[backend] AppExit: supervisor command channel closed; skipping graceful shutdown");
+        return;
+    }
+
+    match rx.recv_timeout(std::time::Duration::from_millis(2500)) {
+        Ok(()) => info!("[backend] AppExit: graceful shutdown acked"),
+        Err(_) => warn!(
+            "[backend] AppExit: shutdown ack timed out after 2.5s; exiting anyway (child may be orphaned)"
+        ),
     }
 }
 
@@ -948,8 +1002,9 @@ fn setup_backend_connection(
 #[cfg(test)]
 mod tests {
     use super::{
-        ReplayGranularity, ReplayStartupPhase, ReplayStartupProgress, apply_available_failed,
-        apply_available_loaded, apply_status_update, parse_replay_granularity,
+        BackendLifecycle, ReplayGranularity, ReplayStartupPhase, ReplayStartupProgress,
+        apply_available_failed, apply_available_loaded, apply_status_update,
+        parse_replay_granularity, should_send_graceful_shutdown,
     };
     use backcast::trading::{
         AvailableInstruments, BackendStartupStage, BackendStatus, BackendStatusUpdate,
@@ -1020,6 +1075,25 @@ mod tests {
             tickers,
             &mut last_prices,
         );
+    }
+
+    #[test]
+    fn graceful_shutdown_only_for_live_states() {
+        // Backend が動いていない / 終了済みの状態では Shutdown を送らない
+        // (supervisor の cmd_rx が drop 済みで ack が返らず 2.5s timeout を焼くだけ)。
+        assert!(!should_send_graceful_shutdown(BackendLifecycle::Disabled));
+        assert!(!should_send_graceful_shutdown(BackendLifecycle::Stopped));
+        assert!(!should_send_graceful_shutdown(BackendLifecycle::Crashed));
+        assert!(!should_send_graceful_shutdown(BackendLifecycle::StartupFailed(
+            "BACKEND_NOT_REACHABLE"
+        )));
+
+        // 起動中 / 稼働中 / shutdown 進行中は ack を待つ価値があるので送る。
+        assert!(should_send_graceful_shutdown(BackendLifecycle::NotStarted));
+        assert!(should_send_graceful_shutdown(BackendLifecycle::ProbingExisting));
+        assert!(should_send_graceful_shutdown(BackendLifecycle::Spawning));
+        assert!(should_send_graceful_shutdown(BackendLifecycle::Ready));
+        assert!(should_send_graceful_shutdown(BackendLifecycle::ShuttingDown));
     }
 
     #[test]
