@@ -1,6 +1,6 @@
 ---
 name: tachibana-e-api
-description: 立花証券 e支店 API（v4r7/v4r8、tachibana）でコードを書く・運用するときの必読スキル。「立花」「e支店」「ｅ支店」「tachibana」「kabuka.e-shiten.jp」「demo-kabuka」「sUrlRequest」「sUrlEvent」「CLMAuthLoginRequest」「CLMKabuNewOrder」「sCLMID」「sResultCode」「p_errno」「sJsonOfmt」に触れたら必ず起動する。CLMAuthLoginRequest によるログイン、仮想 URL（sUrlRequest/Master/Price/Event/EventWebSocket）の取り扱い、`{virtual_url}?{JSON文字列}` 独自形式、p_no/p_sd_date/sJsonOfmt の必須化、p_errno と sResultCode の二段判定、Shift-JIS、空配列が "" で返る件、第二暗証番号の必須化、CLMKabuNewOrder のパラメータ、EVENT/WebSocket の ^A^B^C 区切り、CLMEventDownload マスタの特殊フロー、flowsurface ローカル起動時の debug/release・.env・セッションキャッシュ・ポート衝突の落とし穴を扱う。
+description: 立花証券 e支店 API（v4r7/v4r8、tachibana）でコードを書く・レビューする・計画書を検証するときの必読スキル。「立花」「e支店」「ｅ支店」「tachibana」「kabuka.e-shiten.jp」「demo-kabuka」「sUrlRequest」「sUrlEvent」「CLMAuthLoginRequest」「CLMKabuNewOrder」「sCLMID」「sResultCode」「p_errno」「sJsonOfmt」「TachibanaSession」「PNoCounter」「p_no」「session_cache」「zyoutoeki_kazei_c」「計画書レビュー」「plan document」「設計書」に触れたら必ず起動する。CLMAuthLoginRequest によるログイン、仮想 URL（sUrlRequest/Master/Price/Event/EventWebSocket）の取り扱い、`{virtual_url}?{JSON文字列}` 独自形式、p_no/p_sd_date/sJsonOfmt の必須化、p_errno と sResultCode の二段判定、Shift-JIS、空配列が "" で返る件、第二暗証番号の必須化、CLMKabuNewOrder のパラメータ、EVENT/WebSocket の ^A^B^C 区切り、CLMEventDownload マスタの特殊フロー、flowsurface ローカル起動時の debug/release・.env・セッションキャッシュ・ポート衝突の落とし穴を扱う。
 ---
 
 # 立花証券・ｅ支店・ＡＰＩ スキル
