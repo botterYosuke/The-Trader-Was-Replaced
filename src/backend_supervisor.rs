@@ -18,6 +18,9 @@ use crate::trading::engine::{
     health_client::HealthClient, GetStateRequest, HealthCheckRequest,
 };
 use bevy::prelude::*;
+use std::io::{BufRead, BufReader};
+use std::process::{Child, Command, Stdio};
+use std::sync::OnceLock;
 use tokio::sync::mpsc;
 use tokio::sync::watch;
 
@@ -129,6 +132,18 @@ pub fn build_backend_command_args(token: &str, port: u16) -> Vec<String> {
     ]
 }
 
+/// Parse a backend stdout line for the readiness sentinel
+/// `GRPC_LISTENING port=<n>`. Returns the advertised port on match, else
+/// `None`. Pure (regex compiled once via OnceLock) so the contract is
+/// golden-testable without spawning a subprocess. (C-5)
+pub fn parse_sentinel_line(line: &str) -> Option<u16> {
+    static RE: OnceLock<regex::Regex> = OnceLock::new();
+    let re = RE.get_or_init(|| regex::Regex::new(r"^GRPC_LISTENING port=(\d+)$").unwrap());
+    re.captures(line.trim())
+        .and_then(|c| c.get(1))
+        .and_then(|m| m.as_str().parse::<u16>().ok())
+}
+
 /// Resolve the working directory used as the base for `.venv` discovery and
 /// `PYTHONPATH=<cwd>/python`. (C-4)
 ///
@@ -222,16 +237,33 @@ pub fn run_preflight(
     }
 }
 
+/// Spawn `python -m engine --token <t> --port <p>` with stdout/stderr piped
+/// and `PYTHONPATH=<cwd>/python`. Pure command construction + spawn; the
+/// caller owns the returned `Child` (C-7b) and drains the pipes. (C-4/C-5)
+pub fn spawn_python_backend(
+    python_bin: &std::path::Path,
+    cwd: &std::path::Path,
+    token: &str,
+    port: u16,
+) -> std::io::Result<Child> {
+    Command::new(python_bin)
+        .args(build_backend_command_args(token, port))
+        .env("PYTHONPATH", cwd.join("python"))
+        .current_dir(cwd)
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+}
+
 /// The single supervisor Tokio task (C-7b). Drives the backend through its
 /// lifecycle. 4-B-1 scope: env gate + URL parse + AUTOSPAWN=0 short-circuit;
 /// TCP probe / spawn / Health.Check / GetState handshake land in 4-B-2.
 pub async fn run_supervisor(
     config: SupervisorConfig,
     lifecycle_tx: watch::Sender<BackendLifecycle>,
-    mut cmd_rx: mpsc::UnboundedReceiver<SupervisorCommand>,
+    cmd_rx: mpsc::UnboundedReceiver<SupervisorCommand>,
     ownership_tx: watch::Sender<BackendOwnership>,
 ) {
-    let _ = &ownership_tx; // wired in 4-B-2b-ii-beta (spawn path)
     if !config.enabled {
         let _ = lifecycle_tx.send(BackendLifecycle::Disabled);
         return;
@@ -249,9 +281,7 @@ pub async fn run_supervisor(
     let _ = lifecycle_tx.send(BackendLifecycle::NotStarted);
     let _ = lifecycle_tx.send(BackendLifecycle::ProbingExisting);
 
-    // TODO(4-B-2b): on probe fail -> if autospawn: preflight + spawn_python_backend.
-
-    // TCP probe: 100ms timeout, single attempt for 4-B-2a attach path.
+    // TCP probe: 100ms timeout, single attempt.
     let probe_ok = tokio::time::timeout(
         std::time::Duration::from_millis(100),
         tokio::net::TcpStream::connect(&authority),
@@ -260,22 +290,123 @@ pub async fn run_supervisor(
     .map(|r| r.is_ok())
     .unwrap_or(false);
 
-    if !probe_ok {
-        bevy::log::warn!(
-            "[backend] TCP probe of {} failed (4-B-2a: spawn path not yet wired)",
-            authority
-        );
-        let _ = lifecycle_tx.send(BackendLifecycle::StartupFailed("BACKEND_NOT_REACHABLE"));
-        // fall through to command drain loop
-    } else {
+    if probe_ok {
+        // Attach path: an existing backend answered the probe.
         run_attach_handshake(&config, &lifecycle_tx).await;
+    } else if !config.autospawn {
+        // AUTOSPAWN=0: no existing backend and we are forbidden to start one.
+        bevy::log::warn!("[backend] TCP probe of {} failed, AUTOSPAWN=0", authority);
+        let _ = lifecycle_tx.send(BackendLifecycle::StartupFailed("BACKEND_NOT_REACHABLE"));
+    } else {
+        // Spawn path (C-3b): probe failed and AUTOSPAWN=1.
+        // Resolve cwd / interpreter / preflight on a blocking thread (these
+        // touch the filesystem and may run a 5s preflight subprocess).
+        let resolve_cfg = config.clone();
+        let resolved = tokio::task::spawn_blocking(move || {
+            let cwd = resolve_cwd(resolve_cfg.cwd.as_deref())?;
+            let python_bin = resolve_python_bin(resolve_cfg.python_bin.as_deref(), &cwd)?;
+            // Preflight only when PYTHON_BIN was set explicitly (C-4).
+            if resolve_cfg.python_bin.is_some() {
+                run_preflight(&python_bin, &cwd)?;
+            }
+            Ok::<_, &'static str>((cwd, python_bin))
+        })
+        .await;
+
+        let (cwd, python_bin) = match resolved {
+            Ok(Ok(paths)) => paths,
+            Ok(Err(code)) => {
+                bevy::log::error!("[backend] spawn preflight failed: {}", code);
+                let _ = lifecycle_tx.send(BackendLifecycle::StartupFailed(code));
+                drain_commands(cmd_rx).await;
+                return;
+            }
+            Err(e) => {
+                bevy::log::error!("[backend] spawn preflight join error: {}", e);
+                let _ = lifecycle_tx
+                    .send(BackendLifecycle::StartupFailed("BACKEND_CWD_NOT_FOUND"));
+                drain_commands(cmd_rx).await;
+                return;
+            }
+        };
+
+        // Extract the port from BACKEND_URL for the --port arg.
+        let port = match url::Url::parse(&config.url).ok().and_then(|u| u.port()) {
+            Some(p) => p,
+            None => {
+                let _ = lifecycle_tx.send(BackendLifecycle::StartupFailed("BACKEND_URL_INVALID"));
+                drain_commands(cmd_rx).await;
+                return;
+            }
+        };
+
+        // Spawn the subprocess.
+        let mut child = match spawn_python_backend(&python_bin, &cwd, &config.token, port) {
+            Ok(c) => c,
+            Err(e) => {
+                bevy::log::error!("[backend] failed to spawn python backend: {}", e);
+                let _ = lifecycle_tx.send(BackendLifecycle::StartupFailed("BACKEND_VENV_NOT_FOUND"));
+                drain_commands(cmd_rx).await;
+                return;
+            }
+        };
+
+        // We started it: claim ownership before announcing Spawning.
+        let _ = ownership_tx.send(BackendOwnership { own_process: true });
+        let _ = lifecycle_tx.send(BackendLifecycle::Spawning);
+
+        // Drain stdout/stderr on dedicated OS threads. stdout lines are scanned
+        // for the readiness sentinel and forwarded to `_sentinel_rx` (consumed
+        // in 4-B-2b); stderr is logged at warn. (C-5)
+        let (sentinel_tx, _sentinel_rx) = mpsc::channel::<u16>(16);
+        if let Some(stdout) = child.stdout.take() {
+            let tx = sentinel_tx.clone();
+            std::thread::spawn(move || {
+                let reader = BufReader::new(stdout);
+                for line in reader.lines().map_while(Result::ok) {
+                    if let Some(p) = parse_sentinel_line(&line) {
+                        if let Err(e) = tx.try_send(p) {
+                            bevy::log::warn!("[backend] sentinel channel send failed: {}", e);
+                        }
+                    } else {
+                        bevy::log::info!("[backend] {}", line);
+                    }
+                }
+            });
+        }
+        if let Some(stderr) = child.stderr.take() {
+            std::thread::spawn(move || {
+                let reader = BufReader::new(stderr);
+                for line in reader.lines().map_while(Result::ok) {
+                    bevy::log::warn!("[backend] {}", line);
+                }
+            });
+        }
+
+        // 4-B-2b-ii-β-2a: handshake is invoked WITHOUT waiting on the sentinel
+        // yet. The `tokio::select!` integration that makes the sentinel the
+        // fastest probe trigger lands in β-2b. `child` is held alive here so
+        // the pipes stay open; AppExit cleanup / crash detection (Step 5) take
+        // ownership of it later.
+        run_health_and_getstate_handshake(&config, &lifecycle_tx, 75, "BACKEND_SERVICER_MISSING")
+            .await;
+        // Keep `child` alive until the task ends (drop kills nothing on its own;
+        // explicit cleanup is Step 5). Bind to silence unused warnings.
+        let _ = &mut child;
     }
 
     // Keep the task alive draining commands so the channel doesn't error on send.
+    drain_commands(cmd_rx).await;
+}
+
+/// Drain the supervisor command channel until all senders drop. Restart /
+/// Shutdown handling is still a stub here (real handling lands in Step 5);
+/// this keeps the task alive so command sends from Bevy don't error.
+async fn drain_commands(mut cmd_rx: mpsc::UnboundedReceiver<SupervisorCommand>) {
     while let Some(cmd) = cmd_rx.recv().await {
         match cmd {
             SupervisorCommand::Restart => {
-                bevy::log::info!("[backend] Restart received (no-op in 4-B-1 stub)");
+                bevy::log::info!("[backend] Restart received (no-op stub)");
             }
             SupervisorCommand::Shutdown { reply_tx, .. } => {
                 if let Some(tx) = reply_tx {
@@ -575,12 +706,52 @@ mod tests {
         );
     }
 
+    #[tokio::test]
+    async fn run_supervisor_spawn_path_venv_not_found() {
+        // Probe fails (port 1 is unreachable), AUTOSPAWN=1, explicit PYTHON_BIN
+        // that does not exist on disk -> preflight fails before any real spawn.
+        let config = SupervisorConfig {
+            enabled: true,
+            url: "http://127.0.0.1:1".to_string(),
+            token: "x".to_string(),
+            autospawn: true,
+            cwd: Some("/tmp".to_string()),
+            python_bin: Some("/no/such/python-binary-xyz".to_string()),
+        };
+        let (lt, lr) = watch::channel(BackendLifecycle::Disabled);
+        let (ct, cr) = mpsc::unbounded_channel();
+        drop(ct);
+        let (ot, _or) = watch::channel(BackendOwnership::default());
+        run_supervisor(config, lt, cr, ot).await;
+        assert_eq!(
+            *lr.borrow(),
+            BackendLifecycle::StartupFailed("BACKEND_VENV_NOT_FOUND")
+        );
+    }
+
     #[test]
     fn build_backend_command_args_golden() {
         assert_eq!(
             build_backend_command_args("tok", 19876),
             vec!["-m", "engine", "--token", "tok", "--port", "19876"]
         );
+    }
+
+    #[test]
+    fn parse_sentinel_line_matches_grpc_listening() {
+        assert_eq!(parse_sentinel_line("GRPC_LISTENING port=19876"), Some(19876));
+    }
+
+    #[test]
+    fn parse_sentinel_line_trims_trailing_newline() {
+        assert_eq!(parse_sentinel_line("GRPC_LISTENING port=50051\n"), Some(50051));
+    }
+
+    #[test]
+    fn parse_sentinel_line_ignores_non_sentinel() {
+        assert_eq!(parse_sentinel_line("[engine] starting up"), None);
+        assert_eq!(parse_sentinel_line("GRPC_LISTENING port=abc"), None);
+        assert_eq!(parse_sentinel_line("prefix GRPC_LISTENING port=1"), None);
     }
 
     // --- 4-B-2b-i: pure resolver / preflight unit tests ---
