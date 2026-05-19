@@ -116,6 +116,19 @@ pub fn parse_backend_url(url: &str) -> Result<String, &'static str> {
     Ok(format!("{}:{}", host, port))
 }
 
+/// Build the argv tail for `python -m engine`. Pure (no env/IO) so the
+/// command-line contract (C-4) is unit-testable without spawning.
+pub fn build_backend_command_args(token: &str, port: u16) -> Vec<String> {
+    vec![
+        "-m".to_string(),
+        "engine".to_string(),
+        "--token".to_string(),
+        token.to_string(),
+        "--port".to_string(),
+        port.to_string(),
+    ]
+}
+
 /// Resolve the working directory used as the base for `.venv` discovery and
 /// `PYTHONPATH=<cwd>/python`. (C-4)
 ///
@@ -281,6 +294,21 @@ async fn run_attach_handshake(
     config: &SupervisorConfig,
     lifecycle_tx: &watch::Sender<BackendLifecycle>,
 ) {
+    run_health_and_getstate_handshake(config, lifecycle_tx, 10, "BACKEND_HANDSHAKE_FAILED").await
+}
+
+/// Shared Health.Check -> GetState handshake body for both attach and spawn
+/// paths. `max_health_ticks` bounds the SERVING poll (attach=10, spawn=75);
+/// `getstate_unimplemented_code` is the terminal code emitted when GetState
+/// returns `Unimplemented` (attach="BACKEND_HANDSHAKE_FAILED",
+/// spawn="BACKEND_SERVICER_MISSING"). Never returns early on failure beyond
+/// publishing the terminal `StartupFailed(_)`.
+async fn run_health_and_getstate_handshake(
+    config: &SupervisorConfig,
+    lifecycle_tx: &watch::Sender<BackendLifecycle>,
+    max_health_ticks: u32,
+    getstate_unimplemented_code: &'static str,
+) {
     let mut health = match HealthClient::connect(config.url.clone()).await {
         Ok(c) => c,
         Err(_) => {
@@ -296,9 +324,10 @@ async fn run_attach_handshake(
         }
     };
 
-    // Health.Check tick: 200ms interval, max 10 attempts, looking for SERVING.
+    // Health.Check tick: 200ms interval, max `max_health_ticks` attempts,
+    // looking for SERVING.
     let mut serving = false;
-    for _ in 0..10 {
+    for _ in 0..max_health_ticks {
         match health
             .check(HealthCheckRequest {
                 service: "DataEngine".to_string(),
@@ -337,6 +366,9 @@ async fn run_attach_handshake(
         }
         Err(e) if e.code() == tonic::Code::Unauthenticated => {
             let _ = lifecycle_tx.send(BackendLifecycle::StartupFailed("BACKEND_TOKEN_MISMATCH"));
+        }
+        Err(e) if e.code() == tonic::Code::Unimplemented => {
+            let _ = lifecycle_tx.send(BackendLifecycle::StartupFailed(getstate_unimplemented_code));
         }
         Err(_) => {
             let _ = lifecycle_tx.send(BackendLifecycle::StartupFailed("BACKEND_HANDSHAKE_FAILED"));
@@ -540,6 +572,14 @@ mod tests {
         assert_eq!(
             *lr.borrow(),
             BackendLifecycle::StartupFailed("BACKEND_NOT_REACHABLE")
+        );
+    }
+
+    #[test]
+    fn build_backend_command_args_golden() {
+        assert_eq!(
+            build_backend_command_args("tok", 19876),
+            vec!["-m", "engine", "--token", "tok", "--port", "19876"]
         );
     }
 
