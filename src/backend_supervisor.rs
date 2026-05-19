@@ -7,15 +7,10 @@
 //! Footer; ECS systems never drive transitions themselves.
 //!
 //! See plans/backend-startup-sync.md §Step 4 (C-1 .. C-8) for the full spec.
-//!
-//! NOTE (4-A scope): this file currently provides only the type skeleton and a
-//! placeholder plugin that publishes `BackendLifecycle::Disabled`. The actual
-//! state machine driver (TCP probe, spawn, Health.Check tick, GetState
-//! handshake, stdout drain) lands in Step 4-B.
 
 use crate::trading::engine::{
-    data_engine_client::DataEngineClient, health_check_response::ServingStatus,
-    health_client::HealthClient, GetStateRequest, HealthCheckRequest,
+    GetStateRequest, HealthCheckRequest, data_engine_client::DataEngineClient,
+    health_check_response::ServingStatus, health_client::HealthClient,
 };
 use bevy::prelude::*;
 use std::io::{BufRead, BufReader};
@@ -24,11 +19,24 @@ use std::sync::OnceLock;
 use tokio::sync::mpsc;
 use tokio::sync::watch;
 
+/// Error codes carried by `BackendLifecycle::StartupFailed` and surfaced to the
+/// Footer / logs. Centralized so the set can't drift across call sites.
+pub mod error_code {
+    pub const URL_INVALID: &str = "BACKEND_URL_INVALID";
+    pub const NOT_REACHABLE: &str = "BACKEND_NOT_REACHABLE";
+    pub const STARTUP_TIMEOUT: &str = "BACKEND_STARTUP_TIMEOUT";
+    pub const SERVICER_MISSING: &str = "BACKEND_SERVICER_MISSING";
+    pub const TOKEN_MISMATCH: &str = "BACKEND_TOKEN_MISMATCH";
+    pub const HANDSHAKE_FAILED: &str = "BACKEND_HANDSHAKE_FAILED";
+    pub const IDENTITY_MISMATCH: &str = "BACKEND_IDENTITY_MISMATCH";
+    pub const VENV_NOT_FOUND: &str = "BACKEND_VENV_NOT_FOUND";
+    pub const CWD_NOT_FOUND: &str = "BACKEND_CWD_NOT_FOUND";
+}
+
 /// Lifecycle phases of the Python backend process / connection.
 ///
-/// `&'static str` payload on `StartupFailed` carries the error code
-/// (`BACKEND_NOT_REACHABLE`, `BACKEND_URL_INVALID`, `BACKEND_IDENTITY_MISMATCH`,
-/// `BACKEND_TOKEN_MISMATCH`, `BACKEND_SERVICER_MISSING`, `BACKEND_STARTUP_TIMEOUT`).
+/// `&'static str` payload on `StartupFailed` carries the error code; the
+/// complete set lives in the [`error_code`] module.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum BackendLifecycle {
     /// `BACKEND_ENABLED=false` — supervisor is inert.
@@ -110,12 +118,12 @@ impl SupervisorConfig {
 /// Only `http://` is accepted (Phase 8 has no TLS); a missing port is an
 /// error. Returns `Err("BACKEND_URL_INVALID")` on any structural problem. (C-3)
 pub fn parse_backend_url(url: &str) -> Result<String, &'static str> {
-    let parsed = url::Url::parse(url).map_err(|_| "BACKEND_URL_INVALID")?;
+    let parsed = url::Url::parse(url).map_err(|_| error_code::URL_INVALID)?;
     if parsed.scheme() != "http" {
-        return Err("BACKEND_URL_INVALID");
+        return Err(error_code::URL_INVALID);
     }
-    let host = parsed.host_str().ok_or("BACKEND_URL_INVALID")?;
-    let port = parsed.port().ok_or("BACKEND_URL_INVALID")?;
+    let host = parsed.host_str().ok_or(error_code::URL_INVALID)?;
+    let port = parsed.port().ok_or(error_code::URL_INVALID)?;
     Ok(format!("{}:{}", host, port))
 }
 
@@ -172,7 +180,7 @@ pub fn resolve_cwd(cfg_cwd: Option<&str>) -> Result<std::path::PathBuf, &'static
     // 2. release: walk up from current_exe parent looking for Cargo.toml
     #[cfg(not(debug_assertions))]
     {
-        let exe = std::env::current_exe().map_err(|_| "BACKEND_CWD_NOT_FOUND")?;
+        let exe = std::env::current_exe().map_err(|_| error_code::CWD_NOT_FOUND)?;
         let mut dir = exe.parent();
         while let Some(d) = dir {
             if d.join("Cargo.toml").is_file() {
@@ -180,7 +188,7 @@ pub fn resolve_cwd(cfg_cwd: Option<&str>) -> Result<std::path::PathBuf, &'static
             }
             dir = d.parent();
         }
-        Err("BACKEND_CWD_NOT_FOUND")
+        Err(error_code::CWD_NOT_FOUND)
     }
 }
 
@@ -207,7 +215,7 @@ pub fn resolve_python_bin(
             return Ok(cand);
         }
     }
-    Err("BACKEND_VENV_NOT_FOUND")
+    Err(error_code::VENV_NOT_FOUND)
 }
 
 /// Preflight `<python_bin> -c "import engine"` with a 5s timeout, inheriting
@@ -229,19 +237,19 @@ pub fn run_preflight(
         .stdout(std::process::Stdio::null())
         .stderr(std::process::Stdio::null())
         .spawn()
-        .map_err(|_| "BACKEND_VENV_NOT_FOUND")?;
+        .map_err(|_| error_code::VENV_NOT_FOUND)?;
 
     match child.wait_timeout(std::time::Duration::from_secs(5)) {
         Ok(Some(status)) if status.success() => Ok(()),
-        Ok(Some(_)) => Err("BACKEND_VENV_NOT_FOUND"),
+        Ok(Some(_)) => Err(error_code::VENV_NOT_FOUND),
         Ok(None) => {
             // timed out
             let _ = child.kill();
             let _ = child.wait();
             bevy::log::warn!("[backend] PYTHON_BIN preflight timed out — assuming venv mismatch");
-            Err("BACKEND_VENV_NOT_FOUND")
+            Err(error_code::VENV_NOT_FOUND)
         }
-        Err(_) => Err("BACKEND_VENV_NOT_FOUND"),
+        Err(_) => Err(error_code::VENV_NOT_FOUND),
     }
 }
 
@@ -264,8 +272,8 @@ pub fn spawn_python_backend(
 }
 
 /// The single supervisor Tokio task (C-7b). Drives the backend through its
-/// lifecycle. 4-B-1 scope: env gate + URL parse + AUTOSPAWN=0 short-circuit;
-/// TCP probe / spawn / Health.Check / GetState handshake land in 4-B-2.
+/// lifecycle: env gate + URL parse, TCP probe, spawn / preflight, readiness
+/// sentinel, Health.Check + GetState handshake, then the post-Ready monitor.
 pub async fn run_supervisor(
     config: SupervisorConfig,
     lifecycle_tx: watch::Sender<BackendLifecycle>,
@@ -306,7 +314,7 @@ pub async fn run_supervisor(
     } else if !config.autospawn {
         // AUTOSPAWN=0: no existing backend and we are forbidden to start one.
         bevy::log::warn!("[backend] TCP probe of {} failed, AUTOSPAWN=0", authority);
-        let _ = lifecycle_tx.send(BackendLifecycle::StartupFailed("BACKEND_NOT_REACHABLE"));
+        let _ = lifecycle_tx.send(BackendLifecycle::StartupFailed(error_code::NOT_REACHABLE));
     } else {
         // Spawn path (C-3b): probe failed and AUTOSPAWN=1.
         // Resolve cwd / interpreter / preflight on a blocking thread (these
@@ -333,7 +341,8 @@ pub async fn run_supervisor(
             }
             Err(e) => {
                 bevy::log::error!("[backend] spawn preflight join error: {}", e);
-                let _ = lifecycle_tx.send(BackendLifecycle::StartupFailed("BACKEND_CWD_NOT_FOUND"));
+                let _ =
+                    lifecycle_tx.send(BackendLifecycle::StartupFailed(error_code::CWD_NOT_FOUND));
                 drain_commands(cmd_rx).await;
                 return;
             }
@@ -343,7 +352,7 @@ pub async fn run_supervisor(
         let port = match url::Url::parse(&config.url).ok().and_then(|u| u.port()) {
             Some(p) => p,
             None => {
-                let _ = lifecycle_tx.send(BackendLifecycle::StartupFailed("BACKEND_URL_INVALID"));
+                let _ = lifecycle_tx.send(BackendLifecycle::StartupFailed(error_code::URL_INVALID));
                 drain_commands(cmd_rx).await;
                 return;
             }
@@ -355,7 +364,7 @@ pub async fn run_supervisor(
             Err(e) => {
                 bevy::log::error!("[backend] failed to spawn python backend: {}", e);
                 let _ =
-                    lifecycle_tx.send(BackendLifecycle::StartupFailed("BACKEND_VENV_NOT_FOUND"));
+                    lifecycle_tx.send(BackendLifecycle::StartupFailed(error_code::VENV_NOT_FOUND));
                 drain_commands(cmd_rx).await;
                 return;
             }
@@ -366,8 +375,8 @@ pub async fn run_supervisor(
         let _ = lifecycle_tx.send(BackendLifecycle::Spawning);
 
         // Drain stdout/stderr on dedicated OS threads. stdout lines are scanned
-        // for the readiness sentinel and forwarded to `_sentinel_rx` (consumed
-        // in 4-B-2b); stderr is logged at warn. (C-5)
+        // for the readiness sentinel and forwarded to `sentinel_rx`; stderr is
+        // logged at warn. (C-5)
         let (sentinel_tx, mut sentinel_rx) = mpsc::channel::<u16>(16);
         if let Some(stdout) = child.stdout.take() {
             let tx = sentinel_tx.clone();
@@ -393,8 +402,8 @@ pub async fn run_supervisor(
             });
         }
 
-        // 4-B-2b-ii-β-2b: wait for the readiness sentinel up to a bounded
-        // timeout so it becomes the fastest trigger to start the handshake.
+        // Wait for the readiness sentinel up to a bounded timeout so it becomes
+        // the fastest trigger to start the handshake.
         // If the sentinel arrives we validate its advertised port; a mismatch
         // is logged but non-fatal (the handshake still probes BACKEND_URL).
         // If the timeout fires first we fall through to the handshake anyway,
@@ -421,20 +430,20 @@ pub async fn run_supervisor(
             }
         }
 
-        // `child` is held alive here so the pipes stay open; AppExit cleanup /
-        // crash detection (Step 5) take ownership of it later.
+        // `child` is held alive here so the pipes stay open; the post-Ready
+        // monitor takes ownership of it for crash / shutdown handling.
         let ready = run_health_and_getstate_handshake(
             &config,
             &lifecycle_tx,
             75,
-            "BACKEND_SERVICER_MISSING",
+            error_code::SERVICER_MISSING,
         )
         .await;
         if ready {
             run_post_ready_monitor(&config, &lifecycle_tx, Some(child), true, &mut cmd_rx).await;
         } else {
             // Handshake failed before Ready: drop the child handle (cleanup of
-            // an orphaned subprocess is Step 5-2b / Job Object in Phase 8 Step 4.6).
+            // an orphaned subprocess is handled separately via the Job Object).
             let _ = &mut child;
         }
     }
@@ -443,9 +452,10 @@ pub async fn run_supervisor(
     drain_commands(cmd_rx).await;
 }
 
-/// Drain the supervisor command channel until all senders drop. Restart /
-/// Shutdown handling is still a stub here (real handling lands in Step 5);
-/// this keeps the task alive so command sends from Bevy don't error.
+/// Drain the supervisor command channel on paths that never reach the
+/// post-Ready monitor (e.g. after `StartupFailed`). Real Restart / Shutdown
+/// handling lives in `run_post_ready_monitor`; here we only keep the task alive
+/// and reply to Shutdown acks so command sends from Bevy don't error.
 async fn drain_commands(mut cmd_rx: mpsc::UnboundedReceiver<SupervisorCommand>) {
     while let Some(cmd) = cmd_rx.recv().await {
         match cmd {
@@ -461,7 +471,7 @@ async fn drain_commands(mut cmd_rx: mpsc::UnboundedReceiver<SupervisorCommand>) 
     }
 }
 
-/// Attach-path handshake (4-B-2a): connect Health + DataEngine clients, tick
+/// Attach-path handshake: connect Health + DataEngine clients, tick
 /// Health.Check up to 10 times (200ms apart) for SERVING, then GetState once.
 /// Maps outcomes to terminal `StartupFailed(_)` codes or `Ready` per C-1/C-3.
 /// Never returns early on failure: callers fall through to the command drain.
@@ -469,7 +479,7 @@ async fn run_attach_handshake(
     config: &SupervisorConfig,
     lifecycle_tx: &watch::Sender<BackendLifecycle>,
 ) -> bool {
-    run_health_and_getstate_handshake(config, lifecycle_tx, 10, "BACKEND_HANDSHAKE_FAILED").await
+    run_health_and_getstate_handshake(config, lifecycle_tx, 10, error_code::HANDSHAKE_FAILED).await
 }
 
 /// Shared Health.Check -> GetState handshake body for both attach and spawn
@@ -487,14 +497,18 @@ async fn run_health_and_getstate_handshake(
     let mut health = match HealthClient::connect(config.url.clone()).await {
         Ok(c) => c,
         Err(_) => {
-            let _ = lifecycle_tx.send(BackendLifecycle::StartupFailed("BACKEND_HANDSHAKE_FAILED"));
+            let _ = lifecycle_tx.send(BackendLifecycle::StartupFailed(
+                error_code::HANDSHAKE_FAILED,
+            ));
             return false;
         }
     };
     let mut data = match DataEngineClient::connect(config.url.clone()).await {
         Ok(c) => c,
         Err(_) => {
-            let _ = lifecycle_tx.send(BackendLifecycle::StartupFailed("BACKEND_HANDSHAKE_FAILED"));
+            let _ = lifecycle_tx.send(BackendLifecycle::StartupFailed(
+                error_code::HANDSHAKE_FAILED,
+            ));
             return false;
         }
     };
@@ -515,8 +529,9 @@ async fn run_health_and_getstate_handshake(
                     serving = true;
                     break;
                 } else if status == ServingStatus::ServiceUnknown as i32 {
-                    let _ = lifecycle_tx
-                        .send(BackendLifecycle::StartupFailed("BACKEND_IDENTITY_MISMATCH"));
+                    let _ = lifecycle_tx.send(BackendLifecycle::StartupFailed(
+                        error_code::IDENTITY_MISMATCH,
+                    ));
                     return false;
                 }
             }
@@ -526,7 +541,7 @@ async fn run_health_and_getstate_handshake(
     }
 
     if !serving {
-        let _ = lifecycle_tx.send(BackendLifecycle::StartupFailed("BACKEND_STARTUP_TIMEOUT"));
+        let _ = lifecycle_tx.send(BackendLifecycle::StartupFailed(error_code::STARTUP_TIMEOUT));
         return false;
     }
 
@@ -541,7 +556,7 @@ async fn run_health_and_getstate_handshake(
             true
         }
         Err(e) if e.code() == tonic::Code::Unauthenticated => {
-            let _ = lifecycle_tx.send(BackendLifecycle::StartupFailed("BACKEND_TOKEN_MISMATCH"));
+            let _ = lifecycle_tx.send(BackendLifecycle::StartupFailed(error_code::TOKEN_MISMATCH));
             false
         }
         Err(e) if e.code() == tonic::Code::Unimplemented => {
@@ -549,7 +564,9 @@ async fn run_health_and_getstate_handshake(
             false
         }
         Err(_) => {
-            let _ = lifecycle_tx.send(BackendLifecycle::StartupFailed("BACKEND_HANDSHAKE_FAILED"));
+            let _ = lifecycle_tx.send(BackendLifecycle::StartupFailed(
+                error_code::HANDSHAKE_FAILED,
+            ));
             false
         }
     }
@@ -566,13 +583,12 @@ async fn run_health_and_getstate_handshake(
 /// - 30 consecutive `NOT_SERVING` while `ShuttingDown` (~6s) -> `Stopped`.
 /// - SERVING again while `ShuttingDown` -> back to `Ready` (transient recovery).
 ///
-/// Subprocess-exit monitoring (`child.try_wait`), Restart/Shutdown command
-/// handling, and the crash-loop counter (§3.8.6) are out of scope here and land
-/// in Step 5-2. The loop ends (and the caller falls through to `drain_commands`)
-/// once it publishes a terminal `Crashed` or `Stopped`.
+/// The loop also monitors subprocess exit (`child.try_wait`) and handles
+/// Restart/Shutdown commands. It ends (and the caller falls through to
+/// `drain_commands`) once it publishes a terminal `Crashed` or `Stopped`.
 /// Map a post-Ready subprocess exit to a terminal lifecycle state. A clean
 /// exit (status code 0) is a graceful `Stopped`; any non-zero or
-/// signal-terminated exit after Ready is a `Crashed`. (Step 5-2a)
+/// signal-terminated exit after Ready is a `Crashed`.
 fn classify_child_exit(status: std::process::ExitStatus) -> BackendLifecycle {
     if status.success() {
         BackendLifecycle::Stopped
@@ -591,7 +607,7 @@ fn classify_child_exit(status: std::process::ExitStatus) -> BackendLifecycle {
 ///   `Stopped` so the UI reflects that we are tearing down.
 ///
 /// Total budget on the spawn path is 1.0 + 0.8 + 0.2 = 2.0s; the AppExit
-/// main-thread waiter (Step 5-2b-ii) allows 2.5s with a 500ms margin.
+/// main-thread waiter allows 2.5s with a 500ms margin.
 async fn handle_shutdown(
     config: &SupervisorConfig,
     lifecycle_tx: &watch::Sender<BackendLifecycle>,
@@ -662,7 +678,7 @@ async fn run_post_ready_monitor(
             _ = tokio::time::sleep(std::time::Duration::from_millis(200)) => {
                 // Subprocess-exit check (spawn path only; attach passes None). A clean
                 // exit (code 0) is a graceful Stopped; any non-zero / signal exit after
-                // Ready is a crash. (Step 5-2a, plan L532)
+                // Ready is a crash.
                 if let Some(c) = child.as_mut() {
                     match c.try_wait() {
                         Ok(Some(exit)) => {
@@ -812,10 +828,9 @@ pub struct SupervisorTaskSeed {
     )>,
 }
 
-/// Bevy plugin that wires the supervisor into the App.
-///
-/// 4-A scope: inserts a `BackendLifecycleHandle` whose state is permanently
-/// `Disabled`. The actual supervisor Tokio task is spawned in 4-B.
+/// Bevy plugin that wires the supervisor into the App. Inserts the lifecycle /
+/// ownership / command resources and a `SupervisorTaskSeed`; the main.rs
+/// Startup system `take()`s the seed and spawns the supervisor Tokio task.
 pub struct BackendSupervisorPlugin;
 
 impl Plugin for BackendSupervisorPlugin {
