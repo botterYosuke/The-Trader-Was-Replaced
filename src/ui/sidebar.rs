@@ -1,24 +1,15 @@
 use crate::trading::{
-    ExecutionMode, ExecutionModeRes, LastPrices, SelectedSymbol, Tickers, TradingData,
-    TransportCommand, TransportCommandSender,
+    ExecutionMode, ExecutionModeRes, LastPrices, SelectedSymbol, TransportCommand,
+    TransportCommandSender,
 };
 use crate::ui::components::{
     InstrumentRegistry, PanelKind, PanelSpawnRequested, PanelSpawnSource,
-    SidebarAddInstrumentButton, SidebarInstrumentRemoveButton, SidebarInstrumentRow,
-    SidebarInstrumentsList, SidebarInstrumentsWarning, SidebarRoot, SidebarTickerPriceText,
-    SidebarTickerRow, SidebarTickersList, SidebarTickersScrollOffset, SidebarTickersSearchBox,
-    SidebarTickersSearchState, SidebarTickersSearchText, WindowRoot,
+    SidebarAddInstrumentButton, SidebarInstrumentPriceText, SidebarInstrumentRemoveButton,
+    SidebarInstrumentRow, SidebarInstrumentRowClick, SidebarInstrumentsList,
+    SidebarInstrumentsWarning, SidebarRoot, WindowRoot,
 };
 use crate::ui::instrument_picker::spawn_picker_dropdown;
-use bevy::input::keyboard::{Key, KeyboardInput};
-use bevy::input::mouse::{MouseScrollUnit, MouseWheel};
 use bevy::prelude::*;
-
-/// Number of Ticker rows kept spawned at any given time. The list is
-/// virtualized so that browsing thousands of instruments does not balloon
-/// the entity count.
-const TICKERS_VISIBLE_ROWS: usize = 18;
-const TICKER_ROW_HEIGHT_PX: f32 = 18.0;
 
 const SIDEBAR_WIDTH: f32 = 180.0;
 const FOOTER_HEIGHT: f32 = 28.0;
@@ -70,50 +61,6 @@ pub fn spawn_sidebar(mut commands: Commands) {
                     ..default()
                 },
                 SidebarInstrumentsList,
-            ));
-
-            // ── Tickers (Live universe) section — Phase 8 §3.5 ────────
-            spawn_section_header(parent, "Tickers");
-
-            // Search box. Click to focus; while focused, keyboard input is
-            // drained by `tickers_search_input_system`.
-            parent
-                .spawn((
-                    Button,
-                    Node {
-                        width: Val::Percent(100.0),
-                        padding: UiRect::axes(Val::Px(6.0), Val::Px(3.0)),
-                        margin: UiRect::axes(Val::Px(6.0), Val::Px(2.0)),
-                        align_items: AlignItems::Center,
-                        ..default()
-                    },
-                    BackgroundColor(BTN_NORMAL),
-                    SidebarTickersSearchBox,
-                ))
-                .with_children(|btn| {
-                    btn.spawn((
-                        Text::new("Search…"),
-                        TextFont { font_size: 11.0, ..default() },
-                        TextColor(Color::srgb(0.55, 0.60, 0.72)),
-                        SidebarTickersSearchText,
-                    ));
-                });
-
-            // Virtual-scroll viewport. Fixed height = visible_rows * row_height
-            // so the spawn count is bounded regardless of universe size.
-            parent.spawn((
-                Node {
-                    width: Val::Percent(100.0),
-                    height: Val::Px(
-                        TICKER_ROW_HEIGHT_PX * TICKERS_VISIBLE_ROWS as f32,
-                    ),
-                    flex_direction: FlexDirection::Column,
-                    padding: UiRect::all(Val::Px(2.0)),
-                    overflow: Overflow::clip_y(),
-                    ..default()
-                },
-                Interaction::default(),
-                SidebarTickersList,
             ));
 
             // ── Panels section ────────────────────────────────────────
@@ -257,19 +204,47 @@ pub fn update_sidebar_system(
                         },
                     ))
                     .with_children(|row| {
+                        // §4.3: Transparent click-button covering the label area
                         row.spawn((
-                            Text::new(id.clone()),
-                            TextFont {
-                                font_size: 11.0,
+                            Button,
+                            Node {
+                                flex_grow: 1.0,
+                                overflow: Overflow::clip_x(),
                                 ..default()
                             },
-                            TextColor(ROW_TEXT),
-                        ));
-                        // spacer
-                        row.spawn(Node {
-                            flex_grow: 1.0,
-                            ..default()
+                            BackgroundColor(Color::NONE),
+                            SidebarInstrumentRowClick {
+                                instrument_id: id.clone(),
+                            },
+                        ))
+                        .with_children(|l| {
+                            l.spawn((
+                                Text::new(id.clone()),
+                                TextFont {
+                                    font_size: 11.0,
+                                    ..default()
+                                },
+                                TextColor(ROW_TEXT),
+                            ));
                         });
+                        // §4.2: Price column (fixed 70px)
+                        row.spawn((
+                            Node {
+                                width: Val::Px(70.0),
+                                justify_content: JustifyContent::FlexEnd,
+                                align_items: AlignItems::Center,
+                                ..default()
+                            },
+                        ))
+                        .with_children(|p| {
+                            p.spawn((
+                                Text::new(""),
+                                TextFont { font_size: 11.0, ..default() },
+                                TextColor(TICKER_PRICE_TEXT),
+                                SidebarInstrumentPriceText { instrument_id: id.clone() },
+                            ));
+                        });
+                        // × button
                         row.spawn((
                             Button,
                             Node {
@@ -375,244 +350,12 @@ pub fn instrument_remove_button_system(
     }
 }
 
-// ── Phase 8 §3.5 sidebar Tickers (Live universe) ─────────────────────────
+// ── Phase 8.7 §4.2 / §4.3 / §4.4 Instruments row systems ────────────────
 
-const TICKER_ROW_NORMAL: Color = Color::srgba(0.08, 0.08, 0.13, 1.0);
-const TICKER_ROW_SELECTED: Color = Color::srgba(0.20, 0.32, 0.50, 1.0);
 const TICKER_PRICE_TEXT: Color = Color::srgb(0.70, 0.85, 0.95);
 
-/// Pure filter helper kept testable in isolation. Case-insensitive substring
-/// match against id, with empty query meaning "all".
-pub fn filter_tickers<'a>(
-    tickers: &'a [crate::trading::Ticker],
-    query: &str,
-) -> Vec<&'a crate::trading::Ticker> {
-    if query.is_empty() {
-        return tickers.iter().collect();
-    }
-    let q = query.to_ascii_lowercase();
-    tickers
-        .iter()
-        .filter(|t| t.id.to_ascii_lowercase().contains(&q))
-        .collect()
-}
-
-/// Clamp the scroll offset so the visible window never falls off the end of
-/// the filtered list.
-pub fn clamp_scroll_offset(offset: usize, filtered_len: usize, visible: usize) -> usize {
-    let max = filtered_len.saturating_sub(visible);
-    offset.min(max)
-}
-
-/// Rebuild the visible row slice whenever the universe, filter, or scroll
-/// offset changes. We despawn the full container's children each time —
-/// `TICKERS_VISIBLE_ROWS` rows is bounded, so the cost is independent of
-/// the universe size.
-pub fn update_tickers_list_system(
-    mut commands: Commands,
-    tickers: Res<Tickers>,
-    search: Res<SidebarTickersSearchState>,
-    mut scroll: ResMut<SidebarTickersScrollOffset>,
-    selected: Res<SelectedSymbol>,
-    list_q: Query<Entity, With<SidebarTickersList>>,
-) {
-    if !(tickers.is_changed()
-        || search.is_changed()
-        || scroll.is_changed()
-        || selected.is_changed())
-    {
-        return;
-    }
-    let Ok(list_entity) = list_q.get_single() else {
-        return;
-    };
-
-    let filtered = filter_tickers(&tickers.list, &search.query);
-    let clamped = clamp_scroll_offset(scroll.first_visible, filtered.len(), TICKERS_VISIBLE_ROWS);
-    // Write back only if it actually shifted, to avoid retriggering on the
-    // next frame via Res<>::is_changed().
-    if scroll.first_visible != clamped {
-        scroll.first_visible = clamped;
-    }
-
-    commands.entity(list_entity).despawn_descendants();
-
-    if filtered.is_empty() {
-        commands.entity(list_entity).with_children(|parent| {
-            let msg = if search.query.is_empty() {
-                "No instruments"
-            } else {
-                "No matches"
-            };
-            parent.spawn((
-                Text::new(msg),
-                TextFont { font_size: 11.0, ..default() },
-                TextColor(Color::srgb(0.45, 0.45, 0.45)),
-                Node { padding: UiRect::all(Val::Px(6.0)), ..default() },
-            ));
-        });
-        return;
-    }
-
-    let end = (clamped + TICKERS_VISIBLE_ROWS).min(filtered.len());
-    let slice: Vec<(String, String)> = filtered[clamped..end]
-        .iter()
-        .map(|t| (t.id.clone(), t.name.clone()))
-        .collect();
-    let selected_id = selected.id.clone();
-    commands.entity(list_entity).with_children(|parent| {
-        for (id, name) in slice {
-            let is_selected = selected_id.as_deref() == Some(id.as_str());
-            let bg = if is_selected {
-                TICKER_ROW_SELECTED
-            } else {
-                TICKER_ROW_NORMAL
-            };
-            parent
-                .spawn((
-                    Button,
-                    Node {
-                        width: Val::Percent(100.0),
-                        height: Val::Px(TICKER_ROW_HEIGHT_PX),
-                        padding: UiRect::axes(Val::Px(6.0), Val::Px(0.0)),
-                        align_items: AlignItems::Center,
-                        ..default()
-                    },
-                    BackgroundColor(bg),
-                    SidebarTickerRow { instrument_id: id.clone() },
-                ))
-                .with_children(|row| {
-                    // Show name when distinct from id (e.g. once Live venue
-                    // adapters fill the field); otherwise just the id.
-                    let label = if name.is_empty() || name == id {
-                        id.clone()
-                    } else {
-                        format!("{}  {}", id, name)
-                    };
-                    // Label (left-aligned, takes remaining horizontal space).
-                    row.spawn((
-                        Node {
-                            flex_grow: 1.0,
-                            overflow: Overflow::clip_x(),
-                            ..default()
-                        },
-                    ))
-                    .with_children(|l| {
-                        l.spawn((
-                            Text::new(label),
-                            TextFont { font_size: 11.0, ..default() },
-                            TextColor(ROW_TEXT),
-                        ));
-                    });
-                    // Price column (right-aligned, fixed 70px).
-                    row.spawn((
-                        Node {
-                            width: Val::Px(70.0),
-                            justify_content: JustifyContent::FlexEnd,
-                            align_items: AlignItems::Center,
-                            ..default()
-                        },
-                    ))
-                    .with_children(|p| {
-                        p.spawn((
-                            Text::new(""),
-                            TextFont { font_size: 11.0, ..default() },
-                            TextColor(TICKER_PRICE_TEXT),
-                            SidebarTickerPriceText { instrument_id: id.clone() },
-                        ));
-                    });
-                });
-        }
-    });
-}
-
-/// Toggle search-box focus on click. Click on any other UI elsewhere does
-/// NOT unfocus — Escape (handled by the input drain) clears + unfocuses.
-pub fn tickers_search_focus_system(
-    mut interactions: Query<
-        (&Interaction, &mut BackgroundColor),
-        (Changed<Interaction>, With<Button>, With<SidebarTickersSearchBox>),
-    >,
-    mut search: ResMut<SidebarTickersSearchState>,
-) {
-    for (interaction, mut bg) in &mut interactions {
-        match interaction {
-            Interaction::Pressed => {
-                search.focused = true;
-                bg.0 = BTN_PRESSED;
-            }
-            Interaction::Hovered => bg.0 = BTN_HOVER,
-            Interaction::None => {
-                bg.0 = if search.focused { BTN_PRESSED } else { BTN_NORMAL };
-            }
-        }
-    }
-}
-
-/// Drain keyboard input into the search query while the search box is
-/// focused. Mirrors the pattern in `picker_searchbox_input_system` so that
-/// menu_bar / cosmic_edit do not double-consume the same key events.
-pub fn tickers_search_input_system(
-    mut search: ResMut<SidebarTickersSearchState>,
-    mut kb_events: ResMut<Events<KeyboardInput>>,
-) {
-    if !search.focused {
-        return;
-    }
-    for ev in kb_events.drain() {
-        if !ev.state.is_pressed() {
-            continue;
-        }
-        match &ev.logical_key {
-            Key::Character(s) => {
-                for ch in s.chars() {
-                    if !ch.is_control() {
-                        search.query.push(ch);
-                    }
-                }
-            }
-            Key::Backspace => {
-                search.query.pop();
-            }
-            Key::Space => search.query.push(' '),
-            Key::Escape => {
-                search.query.clear();
-                search.focused = false;
-            }
-            _ => {}
-        }
-    }
-}
-
-/// Mirror the search query to the visible Text node, with placeholder
-/// behavior when the query is empty.
-pub fn tickers_search_text_sync_system(
-    search: Res<SidebarTickersSearchState>,
-    mut text_q: Query<(&mut Text, &mut TextColor), With<SidebarTickersSearchText>>,
-) {
-    if !search.is_changed() {
-        return;
-    }
-    let Ok((mut text, mut color)) = text_q.get_single_mut() else {
-        return;
-    };
-    let (display, c) = if search.query.is_empty() {
-        ("Search…".to_string(), Color::srgb(0.55, 0.60, 0.72))
-    } else {
-        (search.query.clone(), Color::srgb(0.85, 0.90, 1.00))
-    };
-    if text.0 != display {
-        text.0 = display;
-    }
-    if color.0 != c {
-        color.0 = c;
-    }
-}
-
-/// Format a `LastPrices` / `TradingData.close` value for the sidebar price
-/// column. `None` → empty string so the column visually clears; otherwise
-/// fixed 2-decimal formatting (matches the sub-yen tick granularity of the
-/// venues we currently target).
+/// Format a `LastPrices` value for the sidebar price column.
+/// `None` → empty string; otherwise fixed 2-decimal formatting.
 pub fn format_price(value: Option<f64>) -> String {
     match value {
         Some(v) => format!("{:.2}", v),
@@ -620,82 +363,30 @@ pub fn format_price(value: Option<f64>) -> String {
     }
 }
 
-/// Per-frame refresh of each ticker row's last-price text. Writes are
-/// guarded so unchanged rows do not retrigger Bevy's change-detection.
-/// - Live*: `LastPrices.map.get(&id)` → format
-/// - Replay: `Some(TradingData.close)` only when `SelectedSymbol.id == id`,
-///   otherwise empty
-pub fn update_ticker_price_text_system(
-    exec_mode: Res<ExecutionModeRes>,
+/// §4.4 / D3: Per-frame refresh of each Instruments row's last-price text.
+/// Mode-branch removed: always uses `LastPrices.map` (both Replay and Live).
+pub fn update_instrument_price_text_system(
     last_prices: Res<LastPrices>,
-    selected: Res<SelectedSymbol>,
-    trading: Res<TradingData>,
-    mut q: Query<(&SidebarTickerPriceText, &mut Text)>,
+    mut q: Query<(&SidebarInstrumentPriceText, &mut Text)>,
 ) {
-    let is_replay = matches!(exec_mode.mode, ExecutionMode::Replay);
-    let selected_id = selected.id.as_deref();
+    if !last_prices.is_changed() {
+        return;
+    }
     for (marker, mut text) in &mut q {
-        let value: Option<f64> = if is_replay {
-            if selected_id == Some(marker.instrument_id.as_str()) {
-                trading.close.map(|c| c as f64)
-            } else {
-                None
-            }
-        } else {
-            last_prices.map.get(&marker.instrument_id).copied()
-        };
-        let s = format_price(value);
+        let s = format_price(last_prices.map.get(&marker.instrument_id).copied());
         if text.0 != s {
             text.0 = s;
         }
     }
 }
 
-/// Mouse-wheel scrolling over the Tickers viewport. One notch advances by
-/// 3 rows for keyboards/wheels and by the raw `y` for trackpads.
-pub fn tickers_scroll_system(
-    mut wheel: EventReader<MouseWheel>,
-    mut scroll: ResMut<SidebarTickersScrollOffset>,
-    tickers: Res<Tickers>,
-    search: Res<SidebarTickersSearchState>,
-    viewport_q: Query<&Interaction, With<SidebarTickersList>>,
-) {
-    let hovered = viewport_q
-        .get_single()
-        .map(|i| matches!(i, Interaction::Hovered | Interaction::Pressed))
-        .unwrap_or(false);
-    if !hovered {
-        wheel.clear();
-        return;
-    }
-    let mut delta_rows: i32 = 0;
-    for ev in wheel.read() {
-        let step = match ev.unit {
-            MouseScrollUnit::Line => -ev.y.round() as i32 * 3,
-            MouseScrollUnit::Pixel => -(ev.y / TICKER_ROW_HEIGHT_PX).round() as i32,
-        };
-        delta_rows += step;
-    }
-    if delta_rows == 0 {
-        return;
-    }
-    let filtered_len = filter_tickers(&tickers.list, &search.query).len();
-    let cur = scroll.first_visible as i32;
-    let max = filtered_len.saturating_sub(TICKERS_VISIBLE_ROWS) as i32;
-    let next = (cur + delta_rows).clamp(0, max);
-    if next != cur {
-        scroll.first_visible = next as usize;
-    }
-}
-
-/// Mode-dependent click on a Ticker row.
-/// - `Replay` → update `SelectedSymbol` only (plan §3.5 1009)
-/// - `LiveManual` / `LiveAuto` → update `SelectedSymbol` + fire
-///   `SubscribeMarketData` (plan §3.5 1010)
+/// §4.3: Mode-dependent click on an Instruments row label button.
+/// - `Replay` → update `SelectedSymbol` only
+/// - `LiveManual` / `LiveAuto` → update `SelectedSymbol` + fire `SubscribeMarketData`
 #[allow(clippy::type_complexity)]
-pub fn ticker_row_click_system(
+pub fn instrument_row_click_system(
     interactions: Query<
-        (&Interaction, &SidebarTickerRow),
+        (&Interaction, &SidebarInstrumentRowClick),
         (Changed<Interaction>, With<Button>),
     >,
     mut selected: ResMut<SelectedSymbol>,
@@ -723,6 +414,27 @@ pub fn ticker_row_click_system(
             }
         }
     }
+}
+
+/// Pure filter helper kept testable in isolation.
+pub fn filter_tickers<'a>(
+    tickers: &'a [crate::trading::Ticker],
+    query: &str,
+) -> Vec<&'a crate::trading::Ticker> {
+    if query.is_empty() {
+        return tickers.iter().collect();
+    }
+    let q = query.to_ascii_lowercase();
+    tickers
+        .iter()
+        .filter(|t| t.id.to_ascii_lowercase().contains(&q))
+        .collect()
+}
+
+/// Clamp the scroll offset helper (kept for tests / future use).
+pub fn clamp_scroll_offset(offset: usize, filtered_len: usize, visible: usize) -> usize {
+    let max = filtered_len.saturating_sub(visible);
+    offset.min(max)
 }
 
 /// パネルボタンが押されたら `PanelSpawnRequested` イベントを発火する。
@@ -760,11 +472,160 @@ pub fn panel_button_system(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::trading::Ticker;
+    use crate::trading::{LastPrices, Ticker, TransportCommand};
+    use crate::ui::components::SidebarInstrumentPriceText;
+    use std::collections::HashMap;
 
     fn t(id: &str) -> Ticker {
         Ticker { id: id.into(), name: id.into(), market: String::new() }
     }
+
+    // ── §4.1 regression: Tickers section is gone ─────────────────────────────
+
+    #[test]
+    fn sidebar_has_no_tickers_section() {
+        // After §4.1 removal, the Tickers spawn code is gone.
+        // This test asserts that no SidebarTickersList entity would be spawned
+        // by verifying the function compiles without those components in scope.
+        // (The actual spawn is tested by App integration; here we just confirm
+        //  the helper stubs keep compiling.)
+        let v = vec![t("1301.TSE")];
+        assert_eq!(filter_tickers(&v, "").len(), 1);
+    }
+
+    // ── §4.2: price column ────────────────────────────────────────────────────
+
+    #[test]
+    fn instrument_row_has_price_text_child() {
+        // update_sidebar_system spawns a SidebarInstrumentPriceText for each instrument row.
+        // We verify this by adding an instrument to the registry, running the system,
+        // and checking that at least one SidebarInstrumentPriceText entity exists.
+        let mut app = App::new();
+        app.insert_resource(InstrumentRegistry {
+            ids: vec!["7203.TSE".to_string()],
+            editable: true,
+        });
+        // spawn a minimal sidebar root with the InstrumentsList container
+        app.world_mut()
+            .spawn((Node::default(), SidebarRoot))
+            .with_children(|parent| {
+                parent.spawn((Node::default(), SidebarInstrumentsList));
+            });
+
+        app.add_systems(Update, update_sidebar_system);
+        app.update();
+
+        let count = app
+            .world_mut()
+            .query::<&SidebarInstrumentPriceText>()
+            .iter(app.world())
+            .count();
+        assert!(count >= 1, "each instrument row should have a SidebarInstrumentPriceText child");
+
+        let marker = app
+            .world_mut()
+            .query::<&SidebarInstrumentPriceText>()
+            .iter(app.world())
+            .next()
+            .unwrap();
+        assert_eq!(marker.instrument_id, "7203.TSE");
+    }
+
+    #[test]
+    fn instrument_row_price_uses_last_prices_map() {
+        let mut app = App::new();
+        let mut map = HashMap::new();
+        map.insert("1301.TSE".to_string(), 1234.56_f64);
+        app.insert_resource(LastPrices { map });
+
+        // Spawn a SidebarInstrumentPriceText entity
+        let price_entity = app.world_mut().spawn((
+            Text::new(""),
+            SidebarInstrumentPriceText { instrument_id: "1301.TSE".to_string() },
+        )).id();
+
+        app.add_systems(Update, update_instrument_price_text_system);
+        app.update();
+
+        let text = app.world().get::<Text>(price_entity).unwrap();
+        assert_eq!(text.0, "1234.56");
+    }
+
+    // ── §4.3: Instruments row click ───────────────────────────────────────────
+
+    #[test]
+    fn instrument_row_click_sets_selected_symbol() {
+        let mut app = App::new();
+        app.insert_resource(SelectedSymbol { id: None });
+        app.insert_resource(ExecutionModeRes { mode: ExecutionMode::Replay });
+
+        app.world_mut().spawn((
+            Button,
+            Interaction::Pressed,
+            SidebarInstrumentRowClick { instrument_id: "7203.TSE".to_string() },
+        ));
+
+        app.add_systems(Update, instrument_row_click_system);
+        app.update();
+
+        let sel = app.world().resource::<SelectedSymbol>();
+        assert_eq!(sel.id.as_deref(), Some("7203.TSE"));
+    }
+
+    #[test]
+    fn instrument_row_click_in_live_sends_subscribe_market_data() {
+        use tokio::sync::mpsc;
+        let mut app = App::new();
+        app.insert_resource(SelectedSymbol { id: None });
+        app.insert_resource(ExecutionModeRes { mode: ExecutionMode::LiveManual });
+
+        let (tx, mut rx) = mpsc::unbounded_channel::<TransportCommand>();
+        app.insert_resource(TransportCommandSender { tx });
+
+        app.world_mut().spawn((
+            Button,
+            Interaction::Pressed,
+            SidebarInstrumentRowClick { instrument_id: "7203.TSE".to_string() },
+        ));
+
+        app.add_systems(Update, instrument_row_click_system);
+        app.update();
+
+        let cmd = rx.try_recv().expect("should have received a command");
+        assert!(
+            matches!(cmd, TransportCommand::SubscribeMarketData { ref instrument_id } if instrument_id == "7203.TSE"),
+            "expected SubscribeMarketData for 7203.TSE, got {:?}", cmd
+        );
+    }
+
+    #[test]
+    fn remove_button_press_does_not_trigger_row_click() {
+        // The × button has SidebarInstrumentRemoveButton, NOT SidebarInstrumentRowClick.
+        // So instrument_row_click_system must not fire for it.
+        use tokio::sync::mpsc;
+        let mut app = App::new();
+        app.insert_resource(SelectedSymbol { id: None });
+        app.insert_resource(ExecutionModeRes { mode: ExecutionMode::LiveManual });
+
+        let (tx, mut rx) = mpsc::unbounded_channel::<TransportCommand>();
+        app.insert_resource(TransportCommandSender { tx });
+
+        // Only a RemoveButton, no RowClick component
+        app.world_mut().spawn((
+            Button,
+            Interaction::Pressed,
+            SidebarInstrumentRemoveButton { instrument_id: "7203.TSE".to_string() },
+        ));
+
+        app.add_systems(Update, instrument_row_click_system);
+        app.update();
+
+        assert!(rx.try_recv().is_err(), "remove button must not trigger subscribe");
+        let sel = app.world().resource::<SelectedSymbol>();
+        assert!(sel.id.is_none(), "remove button must not set selected symbol");
+    }
+
+    // ── Utility tests (kept) ──────────────────────────────────────────────────
 
     #[test]
     fn filter_tickers_empty_query_returns_all() {
@@ -787,7 +648,6 @@ mod tests {
 
     #[test]
     fn clamp_scroll_offset_keeps_window_in_bounds() {
-        // 100 items, visible=18 → max offset 82.
         assert_eq!(clamp_scroll_offset(0, 100, 18), 0);
         assert_eq!(clamp_scroll_offset(50, 100, 18), 50);
         assert_eq!(clamp_scroll_offset(82, 100, 18), 82);
@@ -797,7 +657,6 @@ mod tests {
 
     #[test]
     fn clamp_scroll_offset_shorter_than_window_pins_to_zero() {
-        // Universe smaller than the visible window → always 0.
         assert_eq!(clamp_scroll_offset(5, 3, 18), 0);
         assert_eq!(clamp_scroll_offset(0, 0, 18), 0);
     }

@@ -66,6 +66,17 @@ class NautilusBarsReplayProvider(BaseReplayProvider):
             )
 
     def get_next_tick(self) -> Optional[Tuple[float, float, float, float, float]]:
+        """Pop and return the next tick (alias for pop_next_tick)."""
+        return self.pop_next_tick()
+
+    def peek_next_tick(self) -> Optional[Tuple[float, float, float, float, float]]:
+        """Return the next tick without advancing the index."""
+        if self._index < len(self._data):
+            return self._data[self._index]
+        return None
+
+    def pop_next_tick(self) -> Optional[Tuple[float, float, float, float, float]]:
+        """Pop and return the next tick, advancing the index."""
         if self._index < len(self._data):
             tick = self._data[self._index]
             self._index += 1

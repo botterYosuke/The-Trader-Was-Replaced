@@ -10,6 +10,19 @@ from .reducer import KlineUpdate, ReducerState, ReplayEvent, ReplayTimeUpdated, 
 from .replay import BaseReplayProvider, NautilusBarsReplayProvider
 
 
+def instrument_id_to_bar_type(instrument_id: str, granularity: str) -> str:
+    """Convert instrument id + granularity to NautilusBarsReplayProvider bar_type string.
+
+    D17: instrument_ids ("1301.TSE") → BarType ("1301.TSE-1-MINUTE-LAST-EXTERNAL")
+    """
+    gran_map = {
+        "Minute": "1-MINUTE-LAST-EXTERNAL",
+        "Daily": "1-DAY-LAST-EXTERNAL",
+    }
+    spec = gran_map.get(granularity, "1-MINUTE-LAST-EXTERNAL")
+    return f"{instrument_id}-{spec}"
+
+
 class DataEngine:
     def __init__(
         self,
@@ -46,6 +59,9 @@ class DataEngine:
         self._event_log: list[ReplayEvent] = []
         self._last_replay_catalog_path: Optional[str] = None
         self.last_portfolio: Optional[dict] = None
+        # D9/D24: multi-instrument replay support
+        self._replay_providers: dict[str, NautilusBarsReplayProvider] = {}
+        self._replay_primary_id: str = ""
 
         # Initialize the first visible state.
         if self._mode == "replay" and self._replay_provider:
@@ -151,17 +167,26 @@ class DataEngine:
                 if granularity not in ("Daily", "Minute"):
                     return False, f"Unsupported granularity for nautilus catalog: {granularity!r}"
 
-                try:
-                    provider = NautilusBarsReplayProvider(
-                        catalog_path=effective_catalog_path,
-                        bar_type=instrument_ids[0],
-                        start=start_date or None,
-                        end=end_date or None,
-                    )
-                except (ValueError, FileNotFoundError) as e:
-                    return False, str(e)
+                # D17: instrument_ids are instrument IDs ("1301.TSE"), convert to BarType
+                providers: dict[str, NautilusBarsReplayProvider] = {}
+                for iid in instrument_ids:
+                    bar_type = instrument_id_to_bar_type(iid, granularity)
+                    try:
+                        providers[iid] = NautilusBarsReplayProvider(
+                            catalog_path=effective_catalog_path,
+                            bar_type=bar_type,
+                            start=start_date or None,
+                            end=end_date or None,
+                        )
+                    except (ValueError, FileNotFoundError) as e:
+                        return False, f"{iid}: {e}"
 
-                self._prime_provider_locked(provider)
+                # Prime with first instrument (primary)
+                primary_iid = instrument_ids[0]
+                self._prime_provider_locked(providers[primary_iid])
+                # D9/D24: store multi-provider dict
+                self._replay_providers = providers
+                self._replay_primary_id = primary_iid
                 self._last_replay_catalog_path = effective_catalog_path
                 self._replay_state = "LOADED"
                 return True, None
@@ -277,8 +302,42 @@ class DataEngine:
         Advance exactly one tick.
 
         The _locked suffix means callers must already hold self._lock.
+
+        D24: multi-instrument support — peek all providers, find min_ts,
+        drain all providers with that ts in one tick (so same-timestamp bars
+        from multiple instruments appear "simultaneously").
         """
-        if self._replay_provider:
+        if self._replay_providers:
+            # D24: multi-instrument path
+            pending = []
+            for iid, p in self._replay_providers.items():
+                tick = p.peek_next_tick()
+                if tick is not None:
+                    pending.append((tick[0], iid, p))
+            if not pending:
+                self._is_exhausted = True
+                logging.info("Replay data exhausted (all providers)")
+                return
+            pending.sort(key=lambda x: x[0])
+            min_ts = pending[0][0]
+            ts_ms = int(min_ts * 1000)
+            # ReplayTimeUpdated fires once per ts group
+            self._apply_event_locked(ReplayTimeUpdated(timestamp_ms=ts_ms))
+            # Pop and emit KlineUpdate for all providers at min_ts
+            for ts, iid, p in pending:
+                if ts != min_ts:
+                    break  # sorted, so all remaining are > min_ts
+                popped = p.pop_next_tick()
+                if popped is None:
+                    continue
+                _, o, h, l, c = popped
+                self._apply_event_locked(KlineUpdate(
+                    timestamp_ms=ts_ms, close=c, open=o, high=h, low=l,
+                    open_time_ms=ts_ms, instrument_id=iid,
+                ))
+            self._is_exhausted = all(p.is_exhausted() for p in self._replay_providers.values())
+        elif self._replay_provider:
+            # Legacy single-provider path (backward compat)
             tick = self._replay_provider.get_next_tick()
             if tick:
                 ts, o, h, l, c = tick
@@ -304,6 +363,11 @@ class DataEngine:
             self._is_running = False
             self._replay_state = "PAUSED"
             return True, None
+
+    def get_replay_last_prices(self) -> dict:
+        """D8/D9: Return per-instrument last close prices for Replay mode sidebar."""
+        with self._lock:
+            return dict(self._rs.per_id_close)
 
     def get_current_state(self) -> TradingState:
         """Return the current trading state as a read-only snapshot."""

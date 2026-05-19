@@ -22,7 +22,7 @@ def _ns_to_ms(nanoseconds: int) -> int:
     return nanoseconds // 1_000_000
 
 
-def bar_to_kline_update(bar) -> KlineUpdate:
+def bar_to_kline_update(bar, instrument_id: str = "") -> KlineUpdate:
     ts_ms = _ns_to_ms(bar.ts_event)
     return KlineUpdate(
         timestamp_ms=ts_ms,
@@ -31,6 +31,7 @@ def bar_to_kline_update(bar) -> KlineUpdate:
         high=bar.high.as_double(),
         low=bar.low.as_double(),
         close=bar.close.as_double(),
+        instrument_id=instrument_id,
     )
 
 

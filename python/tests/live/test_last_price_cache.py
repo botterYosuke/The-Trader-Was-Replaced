@@ -172,8 +172,12 @@ class TestLastPriceCacheQuoteMid:
         assert snap1 == {"7203": 999.0, "9999": 1.0}
         assert snap2 == {"7203": 101.0}
 
-    def test_kline_update_is_ignored(self) -> None:
-        """KlineUpdate のみ流す → snapshot() == {} (quote_mid/last_trade とも空)"""
+    def test_kline_update_ingest_as_last_kline_fallback(self) -> None:
+        """D27: KlineUpdate.close → _last_kline (fallback when no quote/trade).
+
+        KlineUpdate のみ流す → snapshot()["7203"] == kline.close
+        (quote_mid/last_trade が無い銘柄では _last_kline が出る)
+        """
         kline = self.KlineUpdate(
             kind="kline",
             instrument_id="7203",
@@ -191,6 +195,70 @@ class TestLastPriceCacheQuoteMid:
             await cache.start()
             await bus.publish(kline)
             await asyncio.sleep(0.05)
+            snap = cache.snapshot()
+            await cache.stop()
+            await bus.close()
+            return snap
+
+        assert asyncio.run(scenario()) == {"7203": 105.0}
+
+    def test_kline_update_lower_priority_than_quote_mid(self) -> None:
+        """D27: quote_mid takes priority over _last_kline.
+
+        KlineUpdate(close=105) → Depth(bid=100, ask=102) の順 → snapshot は 101.0 (quote_mid)
+        """
+        kline = self.KlineUpdate(
+            kind="kline",
+            instrument_id="7203",
+            ts_ns=1_700_000_000_000_000_000,
+            open=100.0,
+            high=110.0,
+            low=90.0,
+            close=105.0,
+            volume=1000.0,
+        )
+        depth = self.DepthUpdate(
+            kind="depth",
+            instrument_id="7203",
+            ts_ns=1_700_000_000_000_000_001,
+            bids=(self.DepthLevel(price=100.0, size=1.0),),
+            asks=(self.DepthLevel(price=102.0, size=1.0),),
+        )
+
+        async def scenario() -> dict[str, float]:
+            bus = self.LiveEventBus()
+            cache = self.LastPriceCache(bus=bus)
+            await cache.start()
+            await bus.publish(kline)
+            await bus.publish(depth)
+            await asyncio.sleep(0.05)
+            snap = cache.snapshot()
+            await cache.stop()
+            await bus.close()
+            return snap
+
+        assert asyncio.run(scenario()) == {"7203": 101.0}
+
+    def test_remove_clears_kline_price(self) -> None:
+        """D20/D27: remove(id) must pop from _last_kline too."""
+        kline = self.KlineUpdate(
+            kind="kline",
+            instrument_id="7203",
+            ts_ns=1_700_000_000_000_000_000,
+            open=100.0,
+            high=110.0,
+            low=90.0,
+            close=105.0,
+            volume=1000.0,
+        )
+
+        async def scenario() -> dict[str, float]:
+            bus = self.LiveEventBus()
+            cache = self.LastPriceCache(bus=bus)
+            await cache.start()
+            await bus.publish(kline)
+            await asyncio.sleep(0.05)
+            cache.remove("7203")
             snap = cache.snapshot()
             await cache.stop()
             await bus.close()

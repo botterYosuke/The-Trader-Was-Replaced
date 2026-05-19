@@ -28,6 +28,7 @@ class LastPriceCache:
         self._bus = bus
         self._quote_mid: dict[str, float] = {}
         self._last_trade: dict[str, float] = {}
+        self._last_kline: dict[str, float] = {}  # D27: KlineUpdate.close fallback
         self._task: Optional[asyncio.Task[None]] = None
         self._iter: Optional[AsyncIterator] = None
         self._last_error: Optional[BaseException] = None
@@ -51,7 +52,8 @@ class LastPriceCache:
                 elif isinstance(evt, TradesUpdate):
                     self._last_trade[evt.instrument_id] = evt.price
                 elif isinstance(evt, KlineUpdate):
-                    pass  # 明示的に無視
+                    # D27: ingest KlineUpdate.close as fallback price
+                    self._last_kline[evt.instrument_id] = evt.close
         except asyncio.CancelledError:
             return
         except BaseException as exc:
@@ -69,14 +71,23 @@ class LastPriceCache:
         self._task = None
 
     def snapshot(self) -> dict[str, float]:
-        ids = set(self._quote_mid) | set(self._last_trade)
+        """Return current prices: quote_mid > last_trade > last_kline priority."""
+        ids = set(self._quote_mid) | set(self._last_trade) | set(self._last_kline)
         out: dict[str, float] = {}
         for iid in ids:
             if iid in self._quote_mid:
                 out[iid] = self._quote_mid[iid]
-            else:
+            elif iid in self._last_trade:
                 out[iid] = self._last_trade[iid]
+            else:
+                out[iid] = self._last_kline[iid]
         return out
+
+    def remove(self, instrument_id: str) -> None:
+        """D20/D27: Remove instrument from all caches to prevent stale prices on re-add."""
+        self._quote_mid.pop(instrument_id, None)
+        self._last_trade.pop(instrument_id, None)
+        self._last_kline.pop(instrument_id, None)
 
     @property
     def last_error(self) -> Optional[BaseException]:

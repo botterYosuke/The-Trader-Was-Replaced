@@ -92,6 +92,7 @@ pub enum MenuItem {
     VenueConnectTachibanaProd,
     VenueConnectKabuVerify,
     VenueConnectKabuProd,
+    VenueConnectMock,
     VenueDisconnect,
 }
 
@@ -149,51 +150,52 @@ pub struct SidebarInstrumentsList;
 #[derive(Component, Debug)]
 pub struct SidebarInstrumentsWarning;
 
-// ── Phase 8 §3.5 sidebar Tickers (Live universe browser) ─────────────────
+// ── Phase 8 §3.5 sidebar Tickers (Live universe browser) — §4.1 kept for compat ─
 
 /// Marker for the Tickers section's row container (virtual-scroll slice).
+/// Kept for Resource init in UiPlugin; section spawn removed in §4.1.
 #[derive(Component, Debug)]
 pub struct SidebarTickersList;
 
-/// Marker for the search-box outer Button. Click toggles focus (see
-/// `tickers_search_focus_system`).
+/// Marker for the search-box outer Button. Click toggles focus.
+/// Kept for Resource init; section spawn removed in §4.1.
 #[derive(Component, Debug)]
 pub struct SidebarTickersSearchBox;
 
-/// Marker for the Text node inside the search box that mirrors
-/// `SidebarTickersSearchState.query`.
+/// Marker for the Text node inside the search box.
+/// Kept for Resource init; section spawn removed in §4.1.
 #[derive(Component, Debug)]
 pub struct SidebarTickersSearchText;
 
-/// Per-row marker that carries the clicked instrument id. Mode-dependent
-/// click dispatch lives in `ticker_row_click_system`.
-#[derive(Component, Debug, Clone)]
-pub struct SidebarTickerRow {
-    pub instrument_id: String,
-}
-
-/// Marker for the per-row "last price" Text child inside a `SidebarTickerRow`.
-/// The id is duplicated here so the update system can match against
-/// `LastPrices.map` / `SelectedSymbol` without traversing the parent.
-#[derive(Component, Debug, Clone)]
-pub struct SidebarTickerPriceText {
-    pub instrument_id: String,
-}
-
-/// Visible-window offset for the Tickers virtual scroller. Clamped to
-/// `0..=(filtered.len().saturating_sub(visible_rows))` on each render.
+/// Visible-window offset for the Tickers virtual scroller.
+/// Kept as Resource for UiPlugin init; actual scroller removed in §4.1.
 #[derive(Resource, Debug, Default, Clone, Copy)]
 pub struct SidebarTickersScrollOffset {
     pub first_visible: usize,
 }
 
-/// Tickers search-box state. `focused` is set by click on the search box
-/// and consumed by `tickers_search_input_system` to drain keyboard input
-/// (Esc clears + unfocuses).
+/// Tickers search-box state.
+/// Kept as Resource for UiPlugin init; actual search UI removed in §4.1.
 #[derive(Resource, Debug, Default, Clone)]
 pub struct SidebarTickersSearchState {
     pub query: String,
     pub focused: bool,
+}
+
+// ── Phase 8.7 §4.1–4.3 Instruments row enhancements ─────────────────────────
+
+/// Marker for the "last price" Text child inside a `SidebarInstrumentRow`.
+/// Renamed from `SidebarTickerPriceText` in §4.1 / §4.2.
+#[derive(Component, Debug, Clone)]
+pub struct SidebarInstrumentPriceText {
+    pub instrument_id: String,
+}
+
+/// Marker for the transparent click-button inside a `SidebarInstrumentRow`
+/// (the label area). Mode-dependent dispatch in `instrument_row_click_system`.
+#[derive(Component, Debug, Clone)]
+pub struct SidebarInstrumentRowClick {
+    pub instrument_id: String,
 }
 
 /// floating window の × ボタンに貼るマーカー。
@@ -442,7 +444,8 @@ pub struct ScenarioLoadedFromFile {
     pub source_path: PathBuf,
     pub instruments: Vec<String>,
     pub end: Option<String>,
-    pub has_instruments_ref: bool,
+    /// `None` = inline instruments (editable), `Some(path)` = resolved from ref (locked).
+    pub ref_path: Option<String>,
 }
 
 /// `parse_scenario_system` がサイドカー JSON を **読まなかった / scenario キーが無い**
@@ -586,7 +589,7 @@ mod instrument_registry_tests {
 }
 
 /// `ScenarioLoadedFromFile` を受け、registry を JSON 由来の内容で置き換える。
-/// `editable = !has_instruments_ref`。ファイル由来の代入は writeback の
+/// `editable = ref_path.is_none()`。ファイル由来の代入は writeback の
 /// revision を flushed と同値に保ち、Run 直前 inline flush を起動させない（計画書 §3.2）。
 pub fn sync_registry_from_scenario_loaded_system(
     mut events: EventReader<ScenarioLoadedFromFile>,
@@ -595,7 +598,7 @@ pub fn sync_registry_from_scenario_loaded_system(
 ) {
     for ev in events.read() {
         registry.replace_all(&ev.instruments);
-        registry.editable = !ev.has_instruments_ref;
+        registry.editable = ev.ref_path.is_none();
         writeback.revision = writeback.flushed_revision;
         writeback.last_error = None;
     }
@@ -637,7 +640,7 @@ mod sync_registry_from_scenario_loaded_tests {
             source_path: std::path::PathBuf::from("dummy.py"),
             instruments: vec!["7203.T".into(), "9984.T".into()],
             end: None,
-            has_instruments_ref: true,
+            ref_path: Some("universe/foo.json".to_string()),
         });
         app.update();
         let reg = app.world().resource::<InstrumentRegistry>();
@@ -659,7 +662,7 @@ mod sync_registry_from_scenario_loaded_tests {
             source_path: std::path::PathBuf::from("dummy.py"),
             instruments: vec!["7203.T".into()],
             end: None,
-            has_instruments_ref: false,
+            ref_path: None,
         });
         app.update();
         let reg = app.world().resource::<InstrumentRegistry>();
@@ -680,7 +683,7 @@ mod sync_registry_from_scenario_loaded_tests {
             source_path: std::path::PathBuf::from("dummy.py"),
             instruments: vec!["7203.T".into()],
             end: None,
-            has_instruments_ref: false,
+            ref_path: None,
         });
         app.update();
         let wb = app.world().resource::<ScenarioInstrumentsWritebackState>();
@@ -770,17 +773,26 @@ pub struct ScenarioWritebackPaths {
     pub cache_sidecar: Option<PathBuf>,
 }
 
-/// registry が dirty (`revision != flushed_revision`) かつ `editable == true` のときに、
+/// registry が dirty (`revision != flushed_revision`) かつ `editable == true` かつ
+/// `ExecutionMode == Replay` のときに、
 /// 元 sidecar (`<original_path stem>.json`) と cache sidecar (`paths.cache_sidecar`) の
 /// `scenario.instruments` だけを registry.ids で置換する。
+///
+/// §5.4 設計: `mark_registry_dirty_system` は mode 不問で revision を bump し続けるが、
+/// writeback 本体は Replay mode のときだけ実行する。これにより Live 中に蓄積した revision を
+/// Replay 再入直後の最初の tick で 1 回 flush できる（Q2 成立）。
 pub fn writeback_scenario_instruments_system(
     registry: Res<InstrumentRegistry>,
     paths: Res<ScenarioWritebackPaths>,
     target: Res<ScenarioReadTarget>,
     mut writeback: ResMut<ScenarioInstrumentsWritebackState>,
     mut watch: ResMut<ScenarioFileWatchState>,
+    exec_mode: Res<crate::trading::ExecutionModeRes>,
 ) {
     if !registry.editable {
+        return;
+    }
+    if !matches!(exec_mode.mode, crate::trading::ExecutionMode::Replay) {
         return;
     }
     if writeback.revision == writeback.flushed_revision {
@@ -819,12 +831,18 @@ pub fn writeback_scenario_instruments_system(
 /// (registry.editable && revision != flushed_revision) で起動する。
 /// scenario.instruments と registry が同値なら no-op
 /// (ScenarioMetadata の change detection を毎 tick 汚さないため)。
+///
+/// §5.4 設計: Replay gate を追加。Live 中は skip し、Replay 再入後に flush する。
 pub fn sync_scenario_metadata_from_registry_system(
     registry: Res<InstrumentRegistry>,
     writeback: Res<ScenarioInstrumentsWritebackState>,
     mut scenario: ResMut<ScenarioMetadata>,
+    exec_mode: Res<crate::trading::ExecutionModeRes>,
 ) {
     if !registry.editable {
+        return;
+    }
+    if !matches!(exec_mode.mode, crate::trading::ExecutionMode::Replay) {
         return;
     }
     if writeback.revision == writeback.flushed_revision {
@@ -1002,6 +1020,9 @@ mod writeback_scenario_instruments_tests {
         app.init_resource::<ScenarioInstrumentsWritebackState>();
         app.init_resource::<ScenarioFileWatchState>();
         app.init_resource::<ScenarioReadTarget>();
+        app.insert_resource(crate::trading::ExecutionModeRes {
+            mode: crate::trading::ExecutionMode::Replay,
+        });
         {
             let mut reg = app.world_mut().resource_mut::<InstrumentRegistry>();
             reg.replace_all(&["1301.TSE".to_string(), "7203.TSE".to_string()]);
@@ -1067,6 +1088,9 @@ mod writeback_scenario_instruments_tests {
         app.init_resource::<ScenarioInstrumentsWritebackState>();
         app.init_resource::<ScenarioFileWatchState>();
         app.init_resource::<ScenarioReadTarget>();
+        app.insert_resource(crate::trading::ExecutionModeRes {
+            mode: crate::trading::ExecutionMode::Replay,
+        });
         {
             let mut reg = app.world_mut().resource_mut::<InstrumentRegistry>();
             reg.replace_all(&["NEW.T".to_string()]);
@@ -1147,6 +1171,9 @@ mod writeback_scenario_instruments_tests {
         app.init_resource::<ScenarioInstrumentsWritebackState>();
         app.init_resource::<ScenarioFileWatchState>();
         app.init_resource::<ScenarioReadTarget>();
+        app.insert_resource(crate::trading::ExecutionModeRes {
+            mode: crate::trading::ExecutionMode::Replay,
+        });
         {
             let mut reg = app.world_mut().resource_mut::<InstrumentRegistry>();
             reg.replace_all(&["1301.TSE".to_string(), "7203.TSE".to_string()]);
@@ -1207,6 +1234,9 @@ mod writeback_scenario_instruments_tests {
         app.init_resource::<ScenarioInstrumentsWritebackState>();
         app.init_resource::<ScenarioFileWatchState>();
         app.init_resource::<ScenarioReadTarget>();
+        app.insert_resource(crate::trading::ExecutionModeRes {
+            mode: crate::trading::ExecutionMode::Replay,
+        });
         {
             let mut reg = app.world_mut().resource_mut::<InstrumentRegistry>();
             reg.replace_all(&["NEW.T".to_string()]);
@@ -1273,6 +1303,7 @@ mod writeback_scenario_instruments_tests {
         app.init_resource::<ScenarioInstrumentsWritebackState>();
         app.init_resource::<ScenarioFileWatchState>();
         app.init_resource::<ScenarioReadTarget>();
+        app.init_resource::<crate::trading::ExecutionModeRes>();
         {
             let mut reg = app.world_mut().resource_mut::<InstrumentRegistry>();
             reg.replace_all(&["NEW.T".to_string()]);
@@ -1332,6 +1363,9 @@ mod writeback_scenario_instruments_tests {
         app.init_resource::<ScenarioInstrumentsWritebackState>();
         app.init_resource::<ScenarioFileWatchState>();
         app.init_resource::<ScenarioReadTarget>();
+        app.insert_resource(crate::trading::ExecutionModeRes {
+            mode: crate::trading::ExecutionMode::Replay,
+        });
         {
             let mut reg = app.world_mut().resource_mut::<InstrumentRegistry>();
             reg.replace_all(&["RETRY.T".to_string()]);
@@ -1411,6 +1445,9 @@ mod writeback_scenario_instruments_tests {
         app.init_resource::<ScenarioFileWatchState>();
         app.insert_resource(ScenarioReadTarget(Some(original_json.clone())));
         app.init_resource::<ScenarioMetadata>();
+        app.insert_resource(crate::trading::ExecutionModeRes {
+            mode: crate::trading::ExecutionMode::Replay,
+        });
         app.add_event::<ScenarioLoadedFromFile>();
         app.add_event::<ScenarioClearedFromFile>();
 
@@ -1857,6 +1894,9 @@ mod writeback_scenario_instruments_tests {
             running: false,
             last_error: None,
         });
+        app.insert_resource(crate::trading::ExecutionModeRes {
+            mode: crate::trading::ExecutionMode::Replay,
+        });
         app.init_resource::<InstrumentRegistry>();
         app.init_resource::<ScenarioMetadata>();
         app.init_resource::<ScenarioFileWatchState>();
@@ -2068,6 +2108,9 @@ mod writeback_scenario_instruments_tests {
             running: false,
             last_error: None,
         });
+        app.insert_resource(crate::trading::ExecutionModeRes {
+            mode: crate::trading::ExecutionMode::Replay,
+        });
         app.init_resource::<InstrumentRegistry>();
         app.init_resource::<ScenarioMetadata>();
         app.init_resource::<ScenarioFileWatchState>();
@@ -2189,6 +2232,9 @@ mod writeback_scenario_instruments_tests {
             connected: true,
             running: false,
             last_error: None,
+        });
+        app.insert_resource(crate::trading::ExecutionModeRes {
+            mode: crate::trading::ExecutionMode::Replay,
         });
         app.init_resource::<InstrumentRegistry>();
         init_strategy_run_resources(&mut app);
@@ -2421,6 +2467,9 @@ mod writeback_scenario_instruments_tests {
         app.insert_resource(ScenarioWritebackPaths {
             cache_sidecar: Some(cache_json_path.clone()),
         });
+        app.insert_resource(crate::trading::ExecutionModeRes {
+            mode: crate::trading::ExecutionMode::Replay,
+        });
         app.init_resource::<InstrumentRegistry>();
         app.init_resource::<ScenarioMetadata>();
         app.init_resource::<ScenarioFileWatchState>();
@@ -2555,6 +2604,9 @@ mod writeback_scenario_instruments_tests {
             cache_sidecar: Some(cache_json_path.clone()),
         });
         app.insert_resource(TransportCommandSender { tx });
+        app.insert_resource(crate::trading::ExecutionModeRes {
+            mode: crate::trading::ExecutionMode::Replay,
+        });
         app.init_resource::<InstrumentRegistry>();
         init_strategy_run_resources(&mut app);
         app.init_resource::<ScenarioMetadata>();
@@ -2701,6 +2753,10 @@ mod writeback_scenario_instruments_tests {
             instruments: vec!["OLD.T".to_string()],
             ..Default::default()
         });
+        // Replay mode（mode gate を通過させ、editable=false gate で skip させる）
+        app.insert_resource(crate::trading::ExecutionModeRes {
+            mode: crate::trading::ExecutionMode::Replay,
+        });
         app.add_systems(Update, sync_scenario_metadata_from_registry_system);
         app.update();
 
@@ -2726,6 +2782,10 @@ mod writeback_scenario_instruments_tests {
             instruments: vec!["OLD.T".to_string()],
             ..Default::default()
         });
+        // Replay mode（mode gate を通過させ、revision_clean gate で skip させる）
+        app.insert_resource(crate::trading::ExecutionModeRes {
+            mode: crate::trading::ExecutionMode::Replay,
+        });
         app.add_systems(Update, sync_scenario_metadata_from_registry_system);
         app.update();
 
@@ -2750,6 +2810,10 @@ mod writeback_scenario_instruments_tests {
         app.insert_resource(ScenarioMetadata {
             instruments: vec!["SAME.T".to_string(), "OTHER.T".to_string()],
             ..Default::default()
+        });
+        // Replay mode（mode gate を通過させ、同値ガードで no-op させる）
+        app.insert_resource(crate::trading::ExecutionModeRes {
+            mode: crate::trading::ExecutionMode::Replay,
         });
         app.add_systems(Update, sync_scenario_metadata_from_registry_system);
         app.update();
@@ -2779,6 +2843,9 @@ mod writeback_scenario_instruments_tests {
             instruments: vec!["OLD.T".to_string()],
             ..Default::default()
         });
+        app.insert_resource(crate::trading::ExecutionModeRes {
+            mode: crate::trading::ExecutionMode::Replay,
+        });
         app.add_systems(Update, sync_scenario_metadata_from_registry_system);
         app.update();
 
@@ -2786,6 +2853,254 @@ mod writeback_scenario_instruments_tests {
         assert_eq!(
             scen.instruments,
             vec!["1301.TSE".to_string(), "7203.TSE".to_string()]
+        );
+    }
+
+    // ─── Step 8: writeback gate に Replay AND（D2 補強、v4 修正）─────────────
+
+    /// §5.4 v4 重要 pin: Live mode 中に registry が mutate されても
+    /// `mark_registry_dirty_system` は gate なしで revision を +1 する。
+    /// これにより Replay 再入時の writeback 発火条件（revision != flushed_revision）が成立する。
+    #[test]
+    fn mark_registry_dirty_increments_revision_even_in_live_mode() {
+        let mut app = App::new();
+        app.init_resource::<InstrumentRegistry>();
+        app.init_resource::<ScenarioInstrumentsWritebackState>();
+        // Live mode を明示（mark_registry_dirty_system は ExecutionModeRes を使わないが
+        // 念のため Live mode でテストすることで「Replay gate なし」を pin する）
+        app.insert_resource(crate::trading::ExecutionModeRes {
+            mode: crate::trading::ExecutionMode::LiveManual,
+        });
+        app.add_systems(Update, mark_registry_dirty_system);
+
+        app.update();
+        let baseline = app
+            .world()
+            .resource::<ScenarioInstrumentsWritebackState>()
+            .revision;
+
+        // Live mode のまま registry を mutate
+        {
+            let mut reg = app.world_mut().resource_mut::<InstrumentRegistry>();
+            reg.replace_all(&["7203.T".to_string()]);
+        }
+        app.update();
+
+        let wb = app.world().resource::<ScenarioInstrumentsWritebackState>();
+        assert_eq!(
+            wb.revision,
+            baseline + 1,
+            "mark_registry_dirty_system は Live mode でも revision を +1 する（Replay gate なし）"
+        );
+    }
+
+    /// §5.4 Live 中に registry が prune されると revision > flushed_revision のまま
+    /// sidecar は更新されない（writeback の Replay gate が skip する）。
+    #[test]
+    fn live_prune_skips_writeback_but_keeps_revision_pending() {
+        let dir = tempfile::tempdir().unwrap();
+        let cache_json = dir.path().join("cache_app_state.json");
+        let initial = r#"{"scenario": {"schema_version": 2, "instruments": ["1301.TSE", "7203.TSE"], "start": "2025-01-06", "end": "2025-01-10", "granularity": "Daily", "initial_cash": 1000000}}"#;
+        fs::write(&cache_json, initial).unwrap();
+        let cache_before = fs::read(&cache_json).unwrap();
+
+        let mut app = App::new();
+        app.insert_resource(ScenarioWritebackPaths {
+            cache_sidecar: Some(cache_json.clone()),
+        });
+        app.init_resource::<InstrumentRegistry>();
+        app.init_resource::<ScenarioInstrumentsWritebackState>();
+        app.init_resource::<ScenarioFileWatchState>();
+        app.init_resource::<ScenarioReadTarget>();
+        // Live mode を明示
+        app.insert_resource(crate::trading::ExecutionModeRes {
+            mode: crate::trading::ExecutionMode::LiveManual,
+        });
+        {
+            let mut reg = app.world_mut().resource_mut::<InstrumentRegistry>();
+            reg.replace_all(&["1301.TSE".to_string()]);
+            reg.editable = true;
+        }
+        // revision を dirty 状態にしておく（Live 中の prune 相当）
+        {
+            let mut wb = app
+                .world_mut()
+                .resource_mut::<ScenarioInstrumentsWritebackState>();
+            wb.revision = 3;
+            wb.flushed_revision = 2;
+        }
+        app.add_systems(Update, writeback_scenario_instruments_system);
+        app.update();
+
+        // sidecar は変更されていない
+        assert_eq!(
+            fs::read(&cache_json).unwrap(),
+            cache_before,
+            "Live mode では writeback が Replay gate でスキップされ sidecar は変更されない"
+        );
+        // revision は pending のまま
+        let wb = app.world().resource::<ScenarioInstrumentsWritebackState>();
+        assert_ne!(
+            wb.revision, wb.flushed_revision,
+            "Live 中は flushed_revision が追いつかず revision が pending のまま残る"
+        );
+    }
+
+    /// §5.4 Q2 成立 pin: Live mode で registry が prune されて revision が上がった後、
+    /// Replay に切り替えると最初の tick で sidecar に flush される。
+    #[test]
+    fn replay_reentry_flushes_live_pruned_state_to_sidecar() {
+        let dir = tempfile::tempdir().unwrap();
+        let cache_json = dir.path().join("cache_app_state.json");
+        let initial = r#"{"scenario": {"schema_version": 2, "instruments": ["1301.TSE", "7203.TSE"], "start": "2025-01-06", "end": "2025-01-10", "granularity": "Daily", "initial_cash": 1000000}}"#;
+        fs::write(&cache_json, initial).unwrap();
+
+        let mut app = App::new();
+        app.insert_resource(ScenarioWritebackPaths {
+            cache_sidecar: Some(cache_json.clone()),
+        });
+        app.init_resource::<InstrumentRegistry>();
+        app.init_resource::<ScenarioInstrumentsWritebackState>();
+        app.init_resource::<ScenarioFileWatchState>();
+        app.init_resource::<ScenarioReadTarget>();
+        // Live mode からスタート（明示的に設定）
+        app.insert_resource(crate::trading::ExecutionModeRes {
+            mode: crate::trading::ExecutionMode::LiveManual,
+        });
+        {
+            // Live で 7203.TSE が prune されて 1 銘柄になった状態
+            let mut reg = app.world_mut().resource_mut::<InstrumentRegistry>();
+            reg.replace_all(&["1301.TSE".to_string()]);
+            reg.editable = true;
+        }
+        {
+            // Live 中に revision が bump されて pending 状態
+            let mut wb = app
+                .world_mut()
+                .resource_mut::<ScenarioInstrumentsWritebackState>();
+            wb.revision = 5;
+            wb.flushed_revision = 4;
+        }
+        app.add_systems(Update, writeback_scenario_instruments_system);
+
+        // Live tick: writeback は gate でスキップ
+        app.update();
+        {
+            let wb = app.world().resource::<ScenarioInstrumentsWritebackState>();
+            assert_ne!(
+                wb.revision, wb.flushed_revision,
+                "Live 中は flush されない"
+            );
+        }
+
+        // Replay に切り替え
+        {
+            let mut exec_mode = app
+                .world_mut()
+                .resource_mut::<crate::trading::ExecutionModeRes>();
+            exec_mode.mode = crate::trading::ExecutionMode::Replay;
+        }
+
+        // Replay 再入後の最初の tick: flush が走る
+        app.update();
+
+        let wb = app.world().resource::<ScenarioInstrumentsWritebackState>();
+        assert_eq!(
+            wb.flushed_revision, wb.revision,
+            "Replay 再入直後の tick で flushed_revision が追いつく（Q2 成立）"
+        );
+
+        // sidecar が Live で減った状態（1 銘柄）で更新されている
+        let updated: serde_json::Value =
+            serde_json::from_str(&fs::read_to_string(&cache_json).unwrap()).unwrap();
+        assert_eq!(
+            updated["scenario"]["instruments"],
+            serde_json::json!(["1301.TSE"]),
+            "Replay 再入後の sidecar は Live で prune された状態を反映する"
+        );
+    }
+
+    /// §5.4 assert_metadata_in_sync（= sync_scenario_metadata_from_registry_system）は
+    /// Live mode 中は skip される。
+    #[test]
+    fn assert_metadata_in_sync_skipped_in_live() {
+        let mut app = App::new();
+        app.insert_resource(InstrumentRegistry {
+            ids: vec!["NEW.T".to_string()],
+            editable: true,
+        });
+        app.insert_resource(ScenarioInstrumentsWritebackState {
+            revision: 3,
+            flushed_revision: 2,
+            last_error: None,
+        });
+        app.insert_resource(ScenarioMetadata {
+            instruments: vec!["OLD.T".to_string()],
+            ..Default::default()
+        });
+        // Live mode を明示（デフォルトが変わっても pin されるよう explicit に設定）
+        app.insert_resource(crate::trading::ExecutionModeRes {
+            mode: crate::trading::ExecutionMode::LiveManual,
+        });
+        app.add_systems(Update, sync_scenario_metadata_from_registry_system);
+        app.update();
+
+        // Live mode のため scenario.instruments は更新されない
+        let scen = app.world().resource::<ScenarioMetadata>();
+        assert_eq!(
+            scen.instruments,
+            vec!["OLD.T".to_string()],
+            "Live mode 中は sync_scenario_metadata_from_registry_system が skip される"
+        );
+    }
+
+    /// §5.4 regression pin: Replay mode 中の manual edit は引き続き sidecar に書かれる。
+    #[test]
+    fn replay_manual_edit_writes_sidecar_as_before() {
+        let dir = tempfile::tempdir().unwrap();
+        let cache_json = dir.path().join("cache_app_state.json");
+        let initial = r#"{"scenario": {"schema_version": 2, "instruments": ["1301.TSE"], "start": "2025-01-06", "end": "2025-01-10", "granularity": "Daily", "initial_cash": 1000000}}"#;
+        fs::write(&cache_json, initial).unwrap();
+
+        let mut app = App::new();
+        app.insert_resource(ScenarioWritebackPaths {
+            cache_sidecar: Some(cache_json.clone()),
+        });
+        app.init_resource::<InstrumentRegistry>();
+        app.init_resource::<ScenarioInstrumentsWritebackState>();
+        app.init_resource::<ScenarioFileWatchState>();
+        app.init_resource::<ScenarioReadTarget>();
+        // Replay mode
+        app.insert_resource(crate::trading::ExecutionModeRes {
+            mode: crate::trading::ExecutionMode::Replay,
+        });
+        {
+            let mut reg = app.world_mut().resource_mut::<InstrumentRegistry>();
+            reg.replace_all(&["1301.TSE".to_string(), "7203.TSE".to_string()]);
+            reg.editable = true;
+        }
+        {
+            let mut wb = app
+                .world_mut()
+                .resource_mut::<ScenarioInstrumentsWritebackState>();
+            wb.revision = 1;
+            wb.flushed_revision = 0;
+        }
+        app.add_systems(Update, writeback_scenario_instruments_system);
+        app.update();
+
+        let wb = app.world().resource::<ScenarioInstrumentsWritebackState>();
+        assert_eq!(
+            wb.flushed_revision, wb.revision,
+            "Replay 中の manual edit は sidecar に書かれる"
+        );
+
+        let updated: serde_json::Value =
+            serde_json::from_str(&fs::read_to_string(&cache_json).unwrap()).unwrap();
+        assert_eq!(
+            updated["scenario"]["instruments"],
+            serde_json::json!(["1301.TSE", "7203.TSE"]),
+            "Replay manual edit が sidecar の instruments を更新する（regression pin）"
         );
     }
 }
