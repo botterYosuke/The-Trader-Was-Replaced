@@ -5,16 +5,16 @@
             "name": "replay - Rust: Debug (CodeLLDB)",
             "type": "lldb",
             "request": "launch",
-            "program": "${workspaceFolder}/target/debug/Backcast.exe",
+            "program": "${workspaceFolder}/target/debug/backcast",
             "args": [
                 "--mode",
                 "replay",
                 "--engine-cmd",
-                "${workspaceFolder}/.venv/Scripts/python.exe"
+                "${workspaceFolder}/.venv/bin/python"
             ],
             "cwd": "${workspaceFolder}",
             "env": {
-                "PATH": "${workspaceFolder}/.venv/Scripts;${env:PATH}",
+                "PATH": "${workspaceFolder}/.venv/bin:${env:PATH}",
                 "BACKEND_ENABLED": "true",
                 "BACKEND_TOKEN": "testtoken",
                 "RUST_LOG": "info"

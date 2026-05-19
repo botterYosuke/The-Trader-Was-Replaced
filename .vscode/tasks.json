@@ -17,7 +17,7 @@
         {
             "label": "kill port 19876",
             "type": "shell",
-            "command": "$p = (Get-NetTCPConnection -LocalPort 19876 -ErrorAction SilentlyContinue).OwningProcess; if ($p) { Stop-Process -Id $p -Force; Write-Output 'killed existing backend' } else { Write-Output 'port 19876 free' }",
+            "command": "PID=$(lsof -ti:19876 2>/dev/null); if [ -n \"$PID\" ]; then kill -9 $PID && echo 'killed existing backend'; else echo 'port 19876 free'; fi",
             "problemMatcher": [],
             "presentation": {
                 "reveal": "silent",
@@ -27,7 +27,7 @@
         {
             "label": "start backend (replay)",
             "type": "shell",
-            "command": "$repo='${workspaceFolder}'; $art=$env:ARTIFACTS_PATH; if (-not $art -and (Test-Path \"$repo\\.env\")) { foreach ($line in Get-Content \"$repo\\.env\") { if ($line -match '^\\s*ARTIFACTS_PATH\\s*=\\s*[''\"]?([^''\"#]+)[''\"]?\\s*(?:#.*)?$') { $art=$Matches[1].Trim(); break } } }; if (-not $art) { $art='artifacts' }; if (-not [System.IO.Path]::IsPathRooted($art)) { $art=Join-Path $repo $art }; $catalog=Join-Path $art 'jquants-catalog'; uv run python -m engine --token testtoken --jquants-catalog-path $catalog",
+            "command": "ART=\"${env:ARTIFACTS_PATH}\"; [ -z \"$ART\" ] && ART=\"${workspaceFolder}/artifacts\"; [[ \"$ART\" != /* ]] && ART=\"${workspaceFolder}/$ART\"; cd \"${workspaceFolder}\" && uv run python -m engine --token testtoken --jquants-catalog-path \"$ART/jquants-catalog\"",
             "isBackground": true,
             "dependsOn": [
                 "kill port 19876"
@@ -51,7 +51,7 @@
         {
             "label": "stop backend (replay)",
             "type": "shell",
-            "command": "$p = (Get-NetTCPConnection -LocalPort 19876 -ErrorAction SilentlyContinue).OwningProcess; if ($p) { Stop-Process -Id $p -Force; Write-Output 'backend stopped' } else { Write-Output 'backend already stopped' }",
+            "command": "PID=$(lsof -ti:19876 2>/dev/null); if [ -n \"$PID\" ]; then kill -9 $PID && echo 'backend stopped'; else echo 'backend already stopped'; fi",
             "problemMatcher": [],
             "presentation": {
                 "reveal": "silent"
