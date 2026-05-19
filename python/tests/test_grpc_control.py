@@ -650,3 +650,180 @@ def test_grpc_load_replay_data_rejects_when_jquants_data_missing(tmp_path):
         assert "rows" in resp.error_message.lower()
     finally:
         server.stop(0)
+
+
+# ---------------------------------------------------------------------------
+# Catalog fallback in StartEngine (unit-level: mock out heavy IO)
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.slow
+def test_start_engine_catalog_fallback_retries_and_succeeds(tmp_path, monkeypatch):
+    """
+    bars 空 → ensure_jquants_catalog 呼ばれ retry 成功 → success=True。
+    """
+    import unittest.mock as mock
+    import collections
+
+    token = "test-token"
+    _jq_loader = mock.MagicMock()
+    _jq_loader.base_dir = tmp_path / "jq"
+    engine = DataEngine(jquants_loader=_jq_loader)
+
+    servicer = GrpcDataEngineServer(token, engine)
+    context = mock.MagicMock()
+
+    FakeKey = collections.namedtuple("FakeKey", ["instrument_id"])
+    fake_bar = mock.MagicMock()
+    fake_key = FakeKey(instrument_id="7203.TSE-1s-BID-EXTERNAL")
+
+    call_count = {"n": 0}
+
+    def _load_bars(catalog_path, scenario):
+        call_count["n"] += 1
+        if call_count["n"] == 1:
+            return {fake_key: []}
+        return {fake_key: [fake_bar]}
+
+    monkeypatch.setattr(
+        "engine.server_grpc.load_bars_for_scenario",
+        _load_bars,
+        raising=False,
+    )
+    ensure_calls = []
+    monkeypatch.setattr(
+        "engine.server_grpc.ensure_jquants_catalog",
+        lambda **kw: ensure_calls.append(kw) or mock.MagicMock(rows_written=10),
+        raising=False,
+    )
+    monkeypatch.setattr(
+        "engine.strategy_runtime.strategy_loader.load",
+        lambda path: (mock.MagicMock(), {"instruments": ["7203.TSE"], "granularity": "Daily", "start": "2024-07-01", "end": "2024-07-31"}, mock.MagicMock(__name__="MockStrategy")),
+        raising=False,
+    )
+    monkeypatch.setattr("engine.server_grpc.engine_run", mock.MagicMock(), raising=False)
+
+    engine._replay_state = "LOADED"
+    engine._last_replay_catalog_path = str(tmp_path / "catalog")
+
+    request = engine_pb2.StartEngineRequest(
+        request_id="fallback-retry-1",
+        token=token,
+        config=engine_pb2.EngineStartConfig(
+            strategy_file=_STRATEGY_7203_DAILY,
+            instrument_ids=["7203.TSE"],
+            granularity=engine_pb2.DAILY,
+        ),
+    )
+    resp = servicer.StartEngine(request, context)
+
+    assert len(ensure_calls) == 1, "ensure_jquants_catalog should be called once"
+    assert call_count["n"] == 2, "load_bars_for_scenario should be called twice"
+    assert resp.success, f"expected success=True, got error: {resp.error_message}"
+
+
+def test_start_engine_no_fallback_when_bars_present(tmp_path, monkeypatch):
+    """
+    bars が既にある → ensure_jquants_catalog 呼ばれない → success=True。
+    """
+    import unittest.mock as mock
+    import collections
+
+    token = "test-token"
+    _jq_loader = mock.MagicMock()
+    _jq_loader.base_dir = tmp_path / "jq"
+    engine = DataEngine(jquants_loader=_jq_loader)
+
+    servicer = GrpcDataEngineServer(token, engine)
+    context = mock.MagicMock()
+
+    FakeKey = collections.namedtuple("FakeKey", ["instrument_id"])
+    fake_bar = mock.MagicMock()
+    fake_key = FakeKey(instrument_id="7203.TSE-1s-BID-EXTERNAL")
+
+    monkeypatch.setattr(
+        "engine.server_grpc.load_bars_for_scenario",
+        lambda catalog_path, scenario: {fake_key: [fake_bar]},
+        raising=False,
+    )
+    ensure_calls = []
+    monkeypatch.setattr(
+        "engine.server_grpc.ensure_jquants_catalog",
+        lambda **kw: ensure_calls.append(kw),
+        raising=False,
+    )
+    monkeypatch.setattr(
+        "engine.strategy_runtime.strategy_loader.load",
+        lambda path: (mock.MagicMock(), {"instruments": ["7203.TSE"], "granularity": "Daily", "start": "2024-07-01", "end": "2024-07-31"}, mock.MagicMock(__name__="MockStrategy")),
+        raising=False,
+    )
+    monkeypatch.setattr("engine.server_grpc.engine_run", mock.MagicMock(), raising=False)
+
+    engine._replay_state = "LOADED"
+    engine._last_replay_catalog_path = str(tmp_path / "catalog")
+
+    request = engine_pb2.StartEngineRequest(
+        request_id="no-fallback-1",
+        token=token,
+        config=engine_pb2.EngineStartConfig(
+            strategy_file=_STRATEGY_7203_DAILY,
+            instrument_ids=["7203.TSE"],
+            granularity=engine_pb2.DAILY,
+        ),
+    )
+    resp = servicer.StartEngine(request, context)
+
+    assert len(ensure_calls) == 0, "ensure_jquants_catalog must NOT be called when bars are present"
+    assert resp.success, f"expected success=True, got error: {resp.error_message}"
+
+
+def test_start_engine_fails_when_csv_missing_after_fallback(tmp_path, monkeypatch):
+    """
+    CSV 無し (ensure_jquants_catalog 失敗) → retry 後も bars 空 → success=False。
+    """
+    import unittest.mock as mock
+    import collections
+
+    token = "test-token"
+    _jq_loader = mock.MagicMock()
+    _jq_loader.base_dir = tmp_path / "jq"
+    engine = DataEngine(jquants_loader=_jq_loader)
+
+    servicer = GrpcDataEngineServer(token, engine)
+    context = mock.MagicMock()
+
+    FakeKey = collections.namedtuple("FakeKey", ["instrument_id"])
+    fake_key = FakeKey(instrument_id="7203.TSE-1s-BID-EXTERNAL")
+
+    monkeypatch.setattr(
+        "engine.server_grpc.load_bars_for_scenario",
+        lambda catalog_path, scenario: {fake_key: []},
+        raising=False,
+    )
+    monkeypatch.setattr(
+        "engine.server_grpc.ensure_jquants_catalog",
+        lambda **kw: (_ for _ in ()).throw(FileNotFoundError("no csv")),
+        raising=False,
+    )
+    monkeypatch.setattr(
+        "engine.strategy_runtime.strategy_loader.load",
+        lambda path: (mock.MagicMock(), {"instruments": ["7203.TSE"], "granularity": "Daily", "start": "2024-07-01", "end": "2024-07-31"}, mock.MagicMock(__name__="MockStrategy")),
+        raising=False,
+    )
+
+    engine._replay_state = "LOADED"
+    engine._last_replay_catalog_path = str(tmp_path / "catalog")
+
+    request = engine_pb2.StartEngineRequest(
+        request_id="csv-missing-1",
+        token=token,
+        config=engine_pb2.EngineStartConfig(
+            strategy_file=_STRATEGY_7203_DAILY,
+            instrument_ids=["7203.TSE"],
+            granularity=engine_pb2.DAILY,
+        ),
+    )
+    resp = servicer.StartEngine(request, context)
+
+    assert not resp.success, "expected success=False when CSV is missing"
+    assert "No bars" in resp.error_message, f"unexpected error: {resp.error_message}"

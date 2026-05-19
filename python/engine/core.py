@@ -178,8 +178,26 @@ class DataEngine:
                             start=start_date or None,
                             end=end_date or None,
                         )
-                    except (ValueError, FileNotFoundError) as e:
-                        return False, f"{iid}: {e}"
+                    except (ValueError, FileNotFoundError) as first_err:
+                        if not (start_date and end_date):
+                            return False, f"{iid}: {first_err}"
+                        try:
+                            ensure_jquants_catalog(
+                                base_dir=self.jquants_loader_base_dir,
+                                catalog_path=effective_catalog_path,
+                                instrument_id=iid,
+                                start_date=start_date,
+                                end_date=end_date,
+                                granularity=granularity,
+                            )
+                            providers[iid] = NautilusBarsReplayProvider(
+                                catalog_path=effective_catalog_path,
+                                bar_type=bar_type,
+                                start=start_date or None,
+                                end=end_date or None,
+                            )
+                        except (ValueError, FileNotFoundError) as e:
+                            return False, f"{iid}: {e}"
 
                 # Prime with first instrument (primary)
                 primary_iid = instrument_ids[0]
@@ -492,6 +510,10 @@ class DataEngine:
     def is_exhausted(self) -> bool:
         with self._lock:
             return self._is_exhausted
+
+    @property
+    def jquants_loader_base_dir(self) -> str | None:
+        return str(self._jquants_loader.base_dir) if self._jquants_loader else None
 
     @property
     def mode(self) -> str:
