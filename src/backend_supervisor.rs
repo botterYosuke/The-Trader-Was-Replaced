@@ -300,7 +300,9 @@ pub async fn run_supervisor(
 
     if probe_ok {
         // Attach path: an existing backend answered the probe.
-        run_attach_handshake(&config, &lifecycle_tx).await;
+        if run_attach_handshake(&config, &lifecycle_tx).await {
+            run_post_ready_monitor(&config, &lifecycle_tx).await;
+        }
     } else if !config.autospawn {
         // AUTOSPAWN=0: no existing backend and we are forbidden to start one.
         bevy::log::warn!("[backend] TCP probe of {} failed, AUTOSPAWN=0", authority);
@@ -331,8 +333,7 @@ pub async fn run_supervisor(
             }
             Err(e) => {
                 bevy::log::error!("[backend] spawn preflight join error: {}", e);
-                let _ = lifecycle_tx
-                    .send(BackendLifecycle::StartupFailed("BACKEND_CWD_NOT_FOUND"));
+                let _ = lifecycle_tx.send(BackendLifecycle::StartupFailed("BACKEND_CWD_NOT_FOUND"));
                 drain_commands(cmd_rx).await;
                 return;
             }
@@ -353,7 +354,8 @@ pub async fn run_supervisor(
             Ok(c) => c,
             Err(e) => {
                 bevy::log::error!("[backend] failed to spawn python backend: {}", e);
-                let _ = lifecycle_tx.send(BackendLifecycle::StartupFailed("BACKEND_VENV_NOT_FOUND"));
+                let _ =
+                    lifecycle_tx.send(BackendLifecycle::StartupFailed("BACKEND_VENV_NOT_FOUND"));
                 drain_commands(cmd_rx).await;
                 return;
             }
@@ -421,11 +423,19 @@ pub async fn run_supervisor(
 
         // `child` is held alive here so the pipes stay open; AppExit cleanup /
         // crash detection (Step 5) take ownership of it later.
-        run_health_and_getstate_handshake(&config, &lifecycle_tx, 75, "BACKEND_SERVICER_MISSING")
-            .await;
+        let ready = run_health_and_getstate_handshake(
+            &config,
+            &lifecycle_tx,
+            75,
+            "BACKEND_SERVICER_MISSING",
+        )
+        .await;
         // Keep `child` alive until the task ends (drop kills nothing on its own;
         // explicit cleanup is Step 5). Bind to silence unused warnings.
         let _ = &mut child;
+        if ready {
+            run_post_ready_monitor(&config, &lifecycle_tx).await;
+        }
     }
 
     // Keep the task alive draining commands so the channel doesn't error on send.
@@ -457,7 +467,7 @@ async fn drain_commands(mut cmd_rx: mpsc::UnboundedReceiver<SupervisorCommand>) 
 async fn run_attach_handshake(
     config: &SupervisorConfig,
     lifecycle_tx: &watch::Sender<BackendLifecycle>,
-) {
+) -> bool {
     run_health_and_getstate_handshake(config, lifecycle_tx, 10, "BACKEND_HANDSHAKE_FAILED").await
 }
 
@@ -472,19 +482,19 @@ async fn run_health_and_getstate_handshake(
     lifecycle_tx: &watch::Sender<BackendLifecycle>,
     max_health_ticks: u32,
     getstate_unimplemented_code: &'static str,
-) {
+) -> bool {
     let mut health = match HealthClient::connect(config.url.clone()).await {
         Ok(c) => c,
         Err(_) => {
             let _ = lifecycle_tx.send(BackendLifecycle::StartupFailed("BACKEND_HANDSHAKE_FAILED"));
-            return;
+            return false;
         }
     };
     let mut data = match DataEngineClient::connect(config.url.clone()).await {
         Ok(c) => c,
         Err(_) => {
             let _ = lifecycle_tx.send(BackendLifecycle::StartupFailed("BACKEND_HANDSHAKE_FAILED"));
-            return;
+            return false;
         }
     };
 
@@ -506,7 +516,7 @@ async fn run_health_and_getstate_handshake(
                 } else if status == ServingStatus::ServiceUnknown as i32 {
                     let _ = lifecycle_tx
                         .send(BackendLifecycle::StartupFailed("BACKEND_IDENTITY_MISMATCH"));
-                    return;
+                    return false;
                 }
             }
             Err(_) => {}
@@ -516,7 +526,7 @@ async fn run_health_and_getstate_handshake(
 
     if !serving {
         let _ = lifecycle_tx.send(BackendLifecycle::StartupFailed("BACKEND_STARTUP_TIMEOUT"));
-        return;
+        return false;
     }
 
     match data
@@ -527,15 +537,101 @@ async fn run_health_and_getstate_handshake(
     {
         Ok(_) => {
             let _ = lifecycle_tx.send(BackendLifecycle::Ready);
+            true
         }
         Err(e) if e.code() == tonic::Code::Unauthenticated => {
             let _ = lifecycle_tx.send(BackendLifecycle::StartupFailed("BACKEND_TOKEN_MISMATCH"));
+            false
         }
         Err(e) if e.code() == tonic::Code::Unimplemented => {
             let _ = lifecycle_tx.send(BackendLifecycle::StartupFailed(getstate_unimplemented_code));
+            false
         }
         Err(_) => {
             let _ = lifecycle_tx.send(BackendLifecycle::StartupFailed("BACKEND_HANDSHAKE_FAILED"));
+            false
+        }
+    }
+}
+
+/// Post-Ready monitor (Step 5-1). Polls `Health.Check(service="DataEngine")`
+/// on a 200ms tick after the handshake reached `Ready`, and drives the
+/// crash / graceful-shutdown transitions (C-2 / Step 5):
+///
+/// - 3 consecutive Health.Check failures (Err or any non-SERVING/non-NOT_SERVING
+///   status) outside ShuttingDown -> `Crashed`.
+/// - First `NOT_SERVING` while `Ready` -> `ShuttingDown` (graceful: the backend
+///   set `_shutting_down`, so this is NOT a crash).
+/// - 30 consecutive `NOT_SERVING` while `ShuttingDown` (~6s) -> `Stopped`.
+/// - SERVING again while `ShuttingDown` -> back to `Ready` (transient recovery).
+///
+/// Subprocess-exit monitoring (`child.try_wait`), Restart/Shutdown command
+/// handling, and the crash-loop counter (§3.8.6) are out of scope here and land
+/// in Step 5-2. The loop ends (and the caller falls through to `drain_commands`)
+/// once it publishes a terminal `Crashed` or `Stopped`.
+async fn run_post_ready_monitor(
+    config: &SupervisorConfig,
+    lifecycle_tx: &watch::Sender<BackendLifecycle>,
+) {
+    let mut health = match HealthClient::connect(config.url.clone()).await {
+        Ok(c) => c,
+        Err(_) => {
+            // Lost the connection right after Ready -> treat as a crash.
+            let _ = lifecycle_tx.send(BackendLifecycle::Crashed);
+            return;
+        }
+    };
+
+    let mut consecutive_failures: u32 = 0;
+    let mut not_serving_streak: u32 = 0;
+    let mut shutting_down = false;
+
+    loop {
+        tokio::time::sleep(std::time::Duration::from_millis(200)).await;
+
+        let status = match health
+            .check(HealthCheckRequest {
+                service: "DataEngine".to_string(),
+            })
+            .await
+        {
+            Ok(resp) => Some(resp.into_inner().status),
+            Err(_) => None,
+        };
+
+        if status == Some(ServingStatus::Serving as i32) {
+            consecutive_failures = 0;
+            not_serving_streak = 0;
+            if shutting_down {
+                // Transient NOT_SERVING recovered before Stopped.
+                shutting_down = false;
+                let _ = lifecycle_tx.send(BackendLifecycle::Ready);
+            }
+        } else if status == Some(ServingStatus::NotServing as i32) {
+            // Graceful shutdown signal: never counts as a crash.
+            consecutive_failures = 0;
+            if !shutting_down {
+                shutting_down = true;
+                not_serving_streak = 1;
+                let _ = lifecycle_tx.send(BackendLifecycle::ShuttingDown);
+            } else {
+                not_serving_streak += 1;
+                if not_serving_streak >= 30 {
+                    let _ = lifecycle_tx.send(BackendLifecycle::Stopped);
+                    return;
+                }
+            }
+        } else {
+            // Err or unexpected status (UNKNOWN / SERVICE_UNKNOWN / etc.).
+            // During ShuttingDown a failure is expected as the server tears
+            // down; only count crashes while we still believe we are Ready.
+            if !shutting_down {
+                consecutive_failures += 1;
+                if consecutive_failures >= 3 {
+                    let _ = lifecycle_tx.send(BackendLifecycle::Crashed);
+                    return;
+                }
+            }
         }
     }
 }
@@ -772,12 +868,18 @@ mod tests {
 
     #[test]
     fn parse_sentinel_line_matches_grpc_listening() {
-        assert_eq!(parse_sentinel_line("GRPC_LISTENING port=19876"), Some(19876));
+        assert_eq!(
+            parse_sentinel_line("GRPC_LISTENING port=19876"),
+            Some(19876)
+        );
     }
 
     #[test]
     fn parse_sentinel_line_trims_trailing_newline() {
-        assert_eq!(parse_sentinel_line("GRPC_LISTENING port=50051\n"), Some(50051));
+        assert_eq!(
+            parse_sentinel_line("GRPC_LISTENING port=50051\n"),
+            Some(50051)
+        );
     }
 
     #[test]
@@ -817,7 +919,9 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let cwd = dir.path();
         #[cfg(windows)]
-        let rel = std::path::Path::new(".venv").join("Scripts").join("python.exe");
+        let rel = std::path::Path::new(".venv")
+            .join("Scripts")
+            .join("python.exe");
         #[cfg(not(windows))]
         let rel = std::path::Path::new(".venv").join("bin").join("python");
         let py = cwd.join(&rel);

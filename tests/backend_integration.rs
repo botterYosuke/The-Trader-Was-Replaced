@@ -1,27 +1,26 @@
+use backcast::backend_supervisor::{run_supervisor, BackendLifecycle, SupervisorConfig};
 use backcast::trading::engine::{
+    data_engine_server::{DataEngine, DataEngineServer},
     EngineState, ForceStopReplayRequest, GetPortfolioRequest, GetPortfolioResponse,
     GetStateRequest, GetStateResponse, ListAllListedSymbolsRequest, ListAllListedSymbolsResponse,
     ListInstrumentsRequest, ListInstrumentsResponse, LoadReplayDataRequest, PauseReplayRequest,
-    ReplayControlResponse, ResumeReplayRequest, SetExecutionModeRequest,
-    SetExecutionModeResponse, SetReplaySpeedRequest, ShutdownRequest, ShutdownResponse,
-    StartEngineRequest, StartEngineResponse,
-    StartResponse, StepReplayRequest, StopEngineRequest, StopReplayRequest, StopRequest,
-    StopResponse, SubscribeRequest, SubscribeResponse, UnsubscribeRequest, VenueControlResponse,
-    VenueLoginRequest, VenueLoginResponse, VenueLogoutRequest,
-    data_engine_server::{DataEngine, DataEngineServer},
+    ReplayControlResponse, ResumeReplayRequest, SetExecutionModeRequest, SetExecutionModeResponse,
+    SetReplaySpeedRequest, ShutdownRequest, ShutdownResponse, StartEngineRequest,
+    StartEngineResponse, StartResponse, StepReplayRequest, StopEngineRequest, StopReplayRequest,
+    StopRequest, StopResponse, SubscribeRequest, SubscribeResponse, UnsubscribeRequest,
+    VenueControlResponse, VenueLoginRequest, VenueLoginResponse, VenueLogoutRequest,
 };
 use backcast::trading::engine::{
     health_check_response::ServingStatus,
     health_server::{Health, HealthServer},
     HealthCheckRequest, HealthCheckResponse,
 };
-use backcast::backend_supervisor::{run_supervisor, BackendLifecycle, SupervisorConfig};
 use backcast::trading::{BackendTradingState, StartRequest};
 use serde_json::json;
 use std::net::SocketAddr;
 use std::time::Duration;
 use tokio::sync::{mpsc, oneshot, watch};
-use tonic::{Request, Response, Status, transport::Server};
+use tonic::{transport::Server, Request, Response, Status};
 
 // Mock gRPC server implementation
 #[derive(Default)]
@@ -536,6 +535,31 @@ impl Health for DelayedHealth {
     }
 }
 
+/// Health servicer whose status is read from a shared atomic, so a test can
+/// flip it mid-run (SERVING -> NOT_SERVING / unavailable) to exercise the
+/// post-Ready monitor (Step 5-1).
+struct SwitchableHealth {
+    status: std::sync::Arc<std::sync::atomic::AtomicI32>,
+    /// When true, Check returns Err(unavailable) instead of the status code,
+    /// to simulate a hard crash (connection-level failure).
+    unavailable: std::sync::Arc<std::sync::atomic::AtomicBool>,
+}
+
+#[tonic::async_trait]
+impl Health for SwitchableHealth {
+    async fn check(
+        &self,
+        _req: Request<HealthCheckRequest>,
+    ) -> Result<Response<HealthCheckResponse>, Status> {
+        if self.unavailable.load(std::sync::atomic::Ordering::SeqCst) {
+            return Err(Status::unavailable("backend down"));
+        }
+        Ok(Response::new(HealthCheckResponse {
+            status: self.status.load(std::sync::atomic::Ordering::SeqCst),
+        }))
+    }
+}
+
 /// Drive `run_supervisor` against an already-listening attach server and wait
 /// for a terminal lifecycle state (Ready or StartupFailed), 5s budget.
 async fn run_attach_and_await_terminal(config: SupervisorConfig) -> BackendLifecycle {
@@ -721,6 +745,232 @@ async fn attach_delayed_serving_within_budget_reaches_ready() {
     };
     let outcome = run_attach_and_await_terminal(config).await;
     assert_eq!(outcome, BackendLifecycle::Ready);
+
+    let _ = tx_close.send(());
+    server_handle.await.unwrap();
+}
+
+#[tokio::test]
+async fn post_ready_health_failures_reach_crashed() {
+    let addr: SocketAddr = "127.0.0.1:50071".parse().unwrap();
+    let token = "good-token".to_string();
+    let (tx_close, rx_close) = oneshot::channel::<()>();
+
+    let status = std::sync::Arc::new(std::sync::atomic::AtomicI32::new(
+        ServingStatus::Serving as i32,
+    ));
+    let unavailable = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
+    let health = SwitchableHealth {
+        status: status.clone(),
+        unavailable: unavailable.clone(),
+    };
+    let engine = MyDataEngine {
+        token: token.clone(),
+        ..Default::default()
+    };
+    let server_handle = tokio::spawn(async move {
+        Server::builder()
+            .add_service(HealthServer::new(health))
+            .add_service(DataEngineServer::new(engine))
+            .serve_with_shutdown(addr, async {
+                rx_close.await.ok();
+            })
+            .await
+            .unwrap();
+    });
+    tokio::time::sleep(Duration::from_millis(100)).await;
+
+    let config = SupervisorConfig {
+        enabled: true,
+        url: format!("http://{}", addr),
+        token: token.clone(),
+        autospawn: false,
+        cwd: None,
+        python_bin: None,
+    };
+    let (lt, mut lr) = watch::channel(BackendLifecycle::Disabled);
+    let (ct, cr) = mpsc::unbounded_channel();
+    drop(ct);
+    let (ownership_tx, _ownership_rx) =
+        watch::channel(backcast::backend_supervisor::BackendOwnership::default());
+    tokio::spawn(run_supervisor(config, lt, cr, ownership_tx));
+
+    tokio::time::timeout(
+        Duration::from_secs(5),
+        lr.wait_for(|s| matches!(s, BackendLifecycle::Ready)),
+    )
+    .await
+    .expect("reached Ready")
+    .expect("watch open");
+
+    unavailable.store(true, std::sync::atomic::Ordering::SeqCst);
+
+    tokio::time::timeout(
+        Duration::from_secs(3),
+        lr.wait_for(|s| matches!(s, BackendLifecycle::Crashed)),
+    )
+    .await
+    .expect("reached Crashed")
+    .expect("watch open");
+
+    let _ = tx_close.send(());
+    server_handle.await.unwrap();
+}
+
+#[tokio::test]
+async fn post_ready_not_serving_reaches_stopped() {
+    let addr: SocketAddr = "127.0.0.1:50072".parse().unwrap();
+    let token = "good-token".to_string();
+    let (tx_close, rx_close) = oneshot::channel::<()>();
+
+    let status = std::sync::Arc::new(std::sync::atomic::AtomicI32::new(
+        ServingStatus::Serving as i32,
+    ));
+    let unavailable = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
+    let health = SwitchableHealth {
+        status: status.clone(),
+        unavailable: unavailable.clone(),
+    };
+    let engine = MyDataEngine {
+        token: token.clone(),
+        ..Default::default()
+    };
+    let server_handle = tokio::spawn(async move {
+        Server::builder()
+            .add_service(HealthServer::new(health))
+            .add_service(DataEngineServer::new(engine))
+            .serve_with_shutdown(addr, async {
+                rx_close.await.ok();
+            })
+            .await
+            .unwrap();
+    });
+    tokio::time::sleep(Duration::from_millis(100)).await;
+
+    let config = SupervisorConfig {
+        enabled: true,
+        url: format!("http://{}", addr),
+        token: token.clone(),
+        autospawn: false,
+        cwd: None,
+        python_bin: None,
+    };
+    let (lt, mut lr) = watch::channel(BackendLifecycle::Disabled);
+    let (ct, cr) = mpsc::unbounded_channel();
+    drop(ct);
+    let (ownership_tx, _ownership_rx) =
+        watch::channel(backcast::backend_supervisor::BackendOwnership::default());
+    tokio::spawn(run_supervisor(config, lt, cr, ownership_tx));
+
+    tokio::time::timeout(
+        Duration::from_secs(5),
+        lr.wait_for(|s| matches!(s, BackendLifecycle::Ready)),
+    )
+    .await
+    .expect("reached Ready")
+    .expect("watch open");
+
+    status.store(
+        ServingStatus::NotServing as i32,
+        std::sync::atomic::Ordering::SeqCst,
+    );
+
+    tokio::time::timeout(
+        Duration::from_secs(3),
+        lr.wait_for(|s| matches!(s, BackendLifecycle::ShuttingDown)),
+    )
+    .await
+    .expect("reached ShuttingDown")
+    .expect("watch open");
+
+    tokio::time::timeout(
+        Duration::from_secs(10),
+        lr.wait_for(|s| matches!(s, BackendLifecycle::Stopped)),
+    )
+    .await
+    .expect("reached Stopped")
+    .expect("watch open");
+
+    let _ = tx_close.send(());
+    server_handle.await.unwrap();
+}
+
+#[tokio::test]
+async fn post_ready_not_serving_recovers_to_ready() {
+    let addr: SocketAddr = "127.0.0.1:50073".parse().unwrap();
+    let token = "good-token".to_string();
+    let (tx_close, rx_close) = oneshot::channel::<()>();
+
+    let status = std::sync::Arc::new(std::sync::atomic::AtomicI32::new(
+        ServingStatus::Serving as i32,
+    ));
+    let unavailable = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
+    let health = SwitchableHealth {
+        status: status.clone(),
+        unavailable: unavailable.clone(),
+    };
+    let engine = MyDataEngine {
+        token: token.clone(),
+        ..Default::default()
+    };
+    let server_handle = tokio::spawn(async move {
+        Server::builder()
+            .add_service(HealthServer::new(health))
+            .add_service(DataEngineServer::new(engine))
+            .serve_with_shutdown(addr, async {
+                rx_close.await.ok();
+            })
+            .await
+            .unwrap();
+    });
+    tokio::time::sleep(Duration::from_millis(100)).await;
+
+    let config = SupervisorConfig {
+        enabled: true,
+        url: format!("http://{}", addr),
+        token: token.clone(),
+        autospawn: false,
+        cwd: None,
+        python_bin: None,
+    };
+    let (lt, mut lr) = watch::channel(BackendLifecycle::Disabled);
+    let (ct, cr) = mpsc::unbounded_channel();
+    drop(ct);
+    let (ownership_tx, _ownership_rx) =
+        watch::channel(backcast::backend_supervisor::BackendOwnership::default());
+    tokio::spawn(run_supervisor(config, lt, cr, ownership_tx));
+
+    tokio::time::timeout(
+        Duration::from_secs(5),
+        lr.wait_for(|s| matches!(s, BackendLifecycle::Ready)),
+    )
+    .await
+    .expect("reached Ready")
+    .expect("watch open");
+
+    status.store(
+        ServingStatus::NotServing as i32,
+        std::sync::atomic::Ordering::SeqCst,
+    );
+    tokio::time::timeout(
+        Duration::from_secs(3),
+        lr.wait_for(|s| matches!(s, BackendLifecycle::ShuttingDown)),
+    )
+    .await
+    .expect("reached ShuttingDown")
+    .expect("watch open");
+
+    status.store(
+        ServingStatus::Serving as i32,
+        std::sync::atomic::Ordering::SeqCst,
+    );
+    tokio::time::timeout(
+        Duration::from_secs(3),
+        lr.wait_for(|s| matches!(s, BackendLifecycle::Ready)),
+    )
+    .await
+    .expect("recovered to Ready")
+    .expect("watch open");
 
     let _ = tx_close.send(());
     server_handle.await.unwrap();
