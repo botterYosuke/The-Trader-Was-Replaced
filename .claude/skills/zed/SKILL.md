@@ -1,6 +1,14 @@
 ---
 name: zed
-description: The-Trader-Was-Replaced の Bevy フロントエンド (src/ui/**) で UI 機能を新規/改修するときの必読スキル。Zed エディタの完全ソースミラー (.claude/skills/zed/src/crates/) を「production-grade な先行事例」として参照し、GPUI / Rope / tree-sitter / LSP の固有 API を Bevy ECS / cosmic_text / bevy_egui / syntect に翻訳して提案する。Zed が同種の機能を持つ UI 全般で発動する — テキスト編集 (シンタックスハイライト, gutter, scrollbar, find/replace, auto-indent, bracket match, multi-cursor, diagnostics), picker / fuzzy 検索 (file finder, tab switcher, command palette, instrument picker, ticker list), workspace / panel / layout (dock, pane, project panel, status bar, breadcrumbs, notification toast, modal layer, drag-resize, persistence), theme / 色トークン, settings UI, action / keybinding。トリガー語: "Zed", "VSCode", "Monaco", "production editor", "fuzzy picker", "command palette", "コマンドパレット", "project panel", "プロジェクトパネル", "syntax highlight", "シンタックスハイライト", "gutter", "ガター", "scrollbar", "スクロールバー", "find & replace", "auto indent", "オートインデント", "bracket match", "ブラケットマッチ", "dock", "panel", "ドック", "workspace", "ワークスペース", "status bar", "ステータスバー", "breadcrumbs", "notification toast", "通知トースト", "modal layer", "theme", "テーマ", "syntect", "cosmic_edit", "bevy_cosmic_edit", "CosmicEditor", "CosmicEditBuffer", "strategy_editor", "instrument_picker", "sidebar tickers", "Phase 7.x"。src/ui/** を Edit/Write しようとする前に必ず読むこと（Zed と cosmic_edit のメンタルモデル差分でハマる）。Bevy ECS / WGPU / Asset の一般論は bevy-engine スキル、Rust テスト戦略は rust-testing スキルへ。
+description: |
+  Use this skill BEFORE editing `src/ui/**` in The-Trader-Was-Replaced, or whenever the user wants editor/IDE-style UI in our Bevy + bevy_cosmic_edit + bevy_egui + syntect frontend. Ships a Zed editor source mirror at `.claude/skills/zed/src/crates/` so you can read how a production desktop editor solves the same problem before writing Bevy code.
+
+  Trigger eagerly on:
+  - Any `src/ui/` file (`strategy_editor`, `instrument_picker`, `sidebar`, `menu_bar`, `footer`, `floating_window`, `layout_persistence`, `components`, `chart`, etc.) or a new panel/window/sidebar section.
+  - Editor vocabulary: gutter, scrollbar, syntax highlight, find/replace, auto-indent, bracket match, undo/redo, fuzzy picker, file finder, command palette, action dispatch, keybindings (Ctrl+P, Cmd+Shift+P, Alt+F), dock, status bar, breadcrumbs, toast, modal, theme/color tokens, dark/light, layout persistence, Phase 7.x.
+  - Mentions of Zed, VSCode, Monaco, or "production editor".
+
+  Skip backend, generic Bevy ECS, tests, E2E — dedicated skills exist.
 ---
 
 # zed — Bevy UI を Zed 参照で設計するスキル
