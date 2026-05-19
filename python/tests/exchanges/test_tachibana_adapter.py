@@ -46,6 +46,22 @@ def test_logout_clears_session():
 
 
 # ---------------------------------------------------------------------------
+# Phase 8 §3.2 Step 0: is_logged_in property
+# ---------------------------------------------------------------------------
+
+
+def test_is_logged_in_false_when_no_session():
+    adapter = TachibanaAdapter()
+    assert adapter.is_logged_in is False
+
+
+def test_is_logged_in_true_when_session_set():
+    adapter = TachibanaAdapter()
+    adapter._session = "sentinel"  # type: ignore[assignment]
+    assert adapter.is_logged_in is True
+
+
+# ---------------------------------------------------------------------------
 # Phase 8 §3.2 A1.5: login() wire-up
 # ---------------------------------------------------------------------------
 
@@ -81,10 +97,90 @@ def _add_login_response(httpx_mock: HTTPXMock, payload: dict) -> None:
     )
 
 
-async def test_login_session_cache_raises_not_implemented():
+async def test_login_session_cache_missing(monkeypatch, tmp_path):
+    """load_session が None を返す → SESSION_CACHE_MISSING。"""
+    monkeypatch.setenv("TACHIBANA_SESSION_PATH", str(tmp_path / "no_such.json"))
     creds = VenueCredentials(credentials_source="session_cache")
-    with pytest.raises(NotImplementedError):
+    with pytest.raises(ValueError, match="SESSION_CACHE_MISSING"):
         await TachibanaAdapter().login(creds)
+
+
+async def test_login_session_cache_expired(monkeypatch, tmp_path):
+    """有効な dict だが is_session_valid_for_today が False → SESSION_CACHE_EXPIRED。"""
+    import json as _json
+    session_file = tmp_path / "session.json"
+    session_file.write_text(
+        _json.dumps({"issued_jst_date": "2000-01-01", "url_request": "https://x/",
+                     "url_master": "https://x/", "url_price": "https://x/",
+                     "url_event": "https://x/", "url_event_ws": "wss://x/"}),
+        encoding="utf-8",
+    )
+    monkeypatch.setenv("TACHIBANA_SESSION_PATH", str(session_file))
+    creds = VenueCredentials(credentials_source="session_cache")
+    with pytest.raises(ValueError, match="SESSION_CACHE_EXPIRED"):
+        await TachibanaAdapter().login(creds)
+
+
+async def test_login_session_cache_restores(monkeypatch, tmp_path):
+    """save_session で書いた dict を差し込み、login 後に is_logged_in==True。
+    last_p_no が現在カウンタより大きい場合はカウンタを fast-forward する。
+    """
+    import json as _json
+    from datetime import datetime
+    from zoneinfo import ZoneInfo
+    today = datetime.now(ZoneInfo("Asia/Tokyo")).date().isoformat()
+    # last_p_no を現実の time.time() より確実に大きな値にして fast-forward を起動する
+    large_p_no = 9_999_999_999
+    session_data = {
+        "issued_jst_date": today,
+        "url_request": "https://demo/request/",
+        "url_master": "https://demo/master/",
+        "url_price": "https://demo/price/",
+        "url_event": "https://demo/event/",
+        "url_event_ws": "wss://demo/event_ws/",
+        "zyoutoeki_kazei_c": "1",
+        "last_p_no": large_p_no,
+    }
+    session_file = tmp_path / "session.json"
+    session_file.write_text(_json.dumps(session_data), encoding="utf-8")
+    monkeypatch.setenv("TACHIBANA_SESSION_PATH", str(session_file))
+
+    adapter = TachibanaAdapter()
+    await adapter.login(VenueCredentials(credentials_source="session_cache"))
+
+    assert adapter.is_logged_in is True
+    assert adapter._session.zyoutoeki_kazei_c == "1"
+    # fast-forward: last_p_no > 初期値(time.time()ベース) なので
+    # カウンタが last_p_no + 1 まで進む (clock-skew no-op を防ぐ +1 セマンティクス)。
+    assert adapter._p_no_counter.peek() == large_p_no + 1
+    # 次の next() は last_p_no を確実に上回る (R4: p_no 重複禁止)。
+    assert adapter._p_no_counter.next() > large_p_no
+
+
+async def test_login_session_cache_backward_compat_no_last_p_no(monkeypatch, tmp_path):
+    """last_p_no が dict にない旧フォーマットでも正常に復元できる。"""
+    import json as _json
+    from datetime import datetime
+    from zoneinfo import ZoneInfo
+    today = datetime.now(ZoneInfo("Asia/Tokyo")).date().isoformat()
+    session_data = {
+        "issued_jst_date": today,
+        "url_request": "https://demo/request/",
+        "url_master": "https://demo/master/",
+        "url_price": "https://demo/price/",
+        "url_event": "https://demo/event/",
+        "url_event_ws": "wss://demo/event_ws/",
+        # last_p_no なし (旧フォーマット)
+    }
+    session_file = tmp_path / "session.json"
+    session_file.write_text(_json.dumps(session_data), encoding="utf-8")
+    monkeypatch.setenv("TACHIBANA_SESSION_PATH", str(session_file))
+
+    adapter = TachibanaAdapter()
+    await adapter.login(VenueCredentials(credentials_source="session_cache"))
+
+    assert adapter.is_logged_in is True
+    assert adapter._session.zyoutoeki_kazei_c == ""  # default empty string
 
 
 async def test_login_prompt_raises_not_implemented():

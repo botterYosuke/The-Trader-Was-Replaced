@@ -41,12 +41,21 @@ class KabuStationAdapter:
         self._queue: asyncio.Queue = asyncio.Queue()
         self._ws_task: asyncio.Task | None = None
 
+    @property
+    def is_logged_in(self) -> bool:
+        return self._token is not None
+
     async def login(self, creds: VenueCredentials) -> None:
         if self._client.is_closed:
             self._client = httpx.AsyncClient()
         source = creds.credentials_source
         if source == "session_cache":
             raise ValueError("UNSUPPORTED_FOR_VENUE: kabu does not support session_cache")
+        if source == "prompt_result":
+            if not creds.token:
+                raise ValueError("PROMPT_RESULT_MISSING_TOKEN")
+            self._token = creds.token
+            return
         if source == "prompt":
             raise NotImplementedError("prompt credentials_source not yet supported for kabu")
         if source != "env":

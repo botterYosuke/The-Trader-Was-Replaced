@@ -52,17 +52,36 @@ class TachibanaAdapter:
         self._processors: dict[str, FdFrameProcessor] = {}
         self._queue: asyncio.Queue[LiveEvent] = asyncio.Queue()
 
+    @property
+    def is_logged_in(self) -> bool:
+        return self._session is not None
+
     async def login(self, creds: VenueCredentials) -> None:
         """Resolve credentials per `creds.credentials_source` and call auth.login().
 
-        MVP (Phase 8 §3.2 A1.5): `env` のみ実装。
-        `session_cache` / `prompt` は後続 step。
+        Phase 8 §3.2: env / session_cache 実装済み。prompt は後続 step。
         """
         source = creds.credentials_source
         if source == "session_cache":
-            raise NotImplementedError(
-                "credentials_source='session_cache' は後続 step で実装 (Phase 8 §3.2)"
+            from engine.exchanges.tachibana_file_store import load_session, is_session_valid_for_today
+            data = load_session()
+            if data is None:
+                raise ValueError("SESSION_CACHE_MISSING")
+            if not is_session_valid_for_today(data):
+                raise ValueError("SESSION_CACHE_EXPIRED")
+            from engine.exchanges.tachibana_url import RequestUrl, MasterUrl, PriceUrl, EventUrl
+            self._session = TachibanaSession(
+                url_request=RequestUrl(data["url_request"]),
+                url_master=MasterUrl(data["url_master"]),
+                url_price=PriceUrl(data["url_price"]),
+                url_event=EventUrl(data["url_event"]),
+                url_event_ws=data["url_event_ws"],
+                zyoutoeki_kazei_c=data.get("zyoutoeki_kazei_c", ""),
             )
+            last_p_no = data.get("last_p_no")
+            if isinstance(last_p_no, int):
+                self._p_no_counter.fast_forward(last_p_no)
+            return
         if source == "prompt":
             raise NotImplementedError(
                 "credentials_source='prompt' は後続 step で実装 (Phase 8 §3.2)"

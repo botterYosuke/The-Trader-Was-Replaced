@@ -1,18 +1,73 @@
-"""Tests for Phase 8 §3.2.1 login_dialog_runner skeleton."""
+"""Tests for Phase 8 §3.2.1 login_dialog_runner."""
 
 import json
+from unittest.mock import patch
 
 import pytest
 
-from engine.live import login_dialog_runner
 from engine.live.login_dialog_runner import main, parse_args
 
 
-def _parse_stdout(captured) -> dict:
-    """captured.out を NDJSON 1 行とみなして dict 化。"""
-    out = captured.out.strip()
-    assert out.count("\n") == 0, f"expected single line, got: {out!r}"
-    return json.loads(out)
+def test_missing_cred_path_for_kabu():
+    # --cred-path なし
+    result_lines = []
+    with patch("engine.live.login_dialog_runner.emit", side_effect=result_lines.append):
+        with patch("engine.live.login_dialog_runner.try_create_tk", return_value=True):
+            code = main(["--venue", "kabu", "--env", "verify"])
+    assert code == 0
+    assert result_lines[0]["error_code"] == "MISSING_CRED_PATH"
+
+
+def test_invalid_env_tachibana():
+    result_lines = []
+    with patch("engine.live.login_dialog_runner.emit", side_effect=result_lines.append):
+        code = main(["--venue", "tachibana", "--env", "verify"])
+    assert code == 0
+    assert result_lines[0]["error_code"] == "INVALID_ENV"
+
+
+def test_invalid_env_kabu():
+    result_lines = []
+    with patch("engine.live.login_dialog_runner.emit", side_effect=result_lines.append):
+        code = main(["--venue", "kabu", "--env", "demo"])
+    assert code == 0
+    assert result_lines[0]["error_code"] == "INVALID_ENV"
+
+
+def test_no_display_available():
+    result_lines = []
+    with patch("engine.live.login_dialog_runner.emit", side_effect=result_lines.append):
+        with patch("engine.live.login_dialog_runner.try_create_tk", return_value=False):
+            code = main(["--venue", "tachibana", "--env", "demo"])
+    assert code == 0
+    assert result_lines[0]["error_code"] == "NO_DISPLAY_AVAILABLE"
+
+
+def test_tachibana_success_dispatches_run_dialog():
+    result_lines = []
+    mock_result = {"success": True, "error_code": ""}
+    with patch("engine.live.login_dialog_runner.emit", side_effect=result_lines.append):
+        with patch("engine.live.login_dialog_runner.try_create_tk", return_value=True):
+            with patch("engine.exchanges.tachibana_login_flow.run_dialog", return_value=mock_result):
+                code = main(["--venue", "tachibana", "--env", "demo"])
+    assert code == 0
+    assert result_lines[0]["success"] is True
+
+
+def test_unknown_venue():
+    result_lines = []
+    with patch("engine.live.login_dialog_runner.emit", side_effect=result_lines.append):
+        code = main(["--venue", "unknown", "--env", "demo"])
+    assert code == 0
+    assert result_lines[0]["error_code"] == "UNKNOWN_VENUE"
+
+
+def test_missing_required_arg_returns_1():
+    result_lines = []
+    with patch("engine.live.login_dialog_runner.emit", side_effect=result_lines.append):
+        code = main(["--env", "demo"])
+    assert code == 1
+    assert result_lines[0]["error_code"] == "MISSING_REQUIRED_ARG"
 
 
 def test_parse_args_ok():
@@ -21,60 +76,39 @@ def test_parse_args_ok():
     assert ns.env == "demo"
 
 
-def test_unknown_venue(capsys, monkeypatch):
-    monkeypatch.setattr(login_dialog_runner, "try_create_tk", lambda: True)
-    rc = main(["--venue", "unknown", "--env", "demo"])
-    captured = capsys.readouterr()
-    payload = _parse_stdout(captured)
-    assert rc == 0
-    assert payload == {"type": "result", "success": False, "error_code": "UNKNOWN_VENUE"}
+def test_parse_args_cred_path_default():
+    ns = parse_args(["--venue", "kabu", "--env", "verify", "--cred-path", "/tmp/cred.json"])
+    assert ns.cred_path == "/tmp/cred.json"
 
 
-def test_missing_venue(capsys, monkeypatch):
-    monkeypatch.setattr(login_dialog_runner, "try_create_tk", lambda: True)
-    rc = main(["--env", "demo"])
-    captured = capsys.readouterr()
-    payload = _parse_stdout(captured)
-    assert rc == 0
-    assert payload["error_code"] == "UNKNOWN_VENUE"
+def test_kabu_prod_valid_env(monkeypatch):
+    monkeypatch.setenv("KABU_ALLOW_PROD", "1")
+    result_lines = []
+    mock_result = {"success": True, "error_code": ""}
+    with patch("engine.live.login_dialog_runner.emit", side_effect=result_lines.append):
+        with patch("engine.live.login_dialog_runner.try_create_tk", return_value=True):
+            with patch("engine.exchanges.kabusapi_login_flow.run_dialog", return_value=mock_result):
+                code = main(["--venue", "kabu", "--env", "prod", "--cred-path", "/tmp/c.json"])
+    assert code == 0
+    assert result_lines[0]["success"] is True
 
 
-def test_invalid_env(capsys, monkeypatch):
-    monkeypatch.setattr(login_dialog_runner, "try_create_tk", lambda: True)
-    rc = main(["--venue", "tachibana", "--env", "staging"])
-    captured = capsys.readouterr()
-    payload = _parse_stdout(captured)
-    assert rc == 0
-    assert payload["error_code"] == "INVALID_ENV"
+def test_kabu_prod_not_allowed_without_env_flag(monkeypatch):
+    """Fix #12: prod env_hint で KABU_ALLOW_PROD!=1 なら PROD_NOT_ALLOWED で前段拒否。"""
+    monkeypatch.delenv("KABU_ALLOW_PROD", raising=False)
+    result_lines = []
+    with patch("engine.live.login_dialog_runner.emit", side_effect=result_lines.append):
+        code = main(["--venue", "kabu", "--env", "prod", "--cred-path", "/tmp/c.json"])
+    assert code == 0
+    assert result_lines[0]["success"] is False
+    assert result_lines[0]["error_code"] == "PROD_NOT_ALLOWED"
 
 
-def test_headless_no_display(capsys, monkeypatch):
-    monkeypatch.setattr(login_dialog_runner, "try_create_tk", lambda: False)
-    rc = main(["--venue", "tachibana", "--env", "demo"])
-    captured = capsys.readouterr()
-    payload = _parse_stdout(captured)
-    assert rc == 0
-    assert payload["error_code"] == "NO_DISPLAY_AVAILABLE"
-
-
-def test_tk_available_not_implemented(capsys, monkeypatch):
-    monkeypatch.setattr(login_dialog_runner, "try_create_tk", lambda: True)
-    rc = main(["--venue", "tachibana", "--env", "demo"])
-    captured = capsys.readouterr()
-    payload = _parse_stdout(captured)
-    assert rc == 0
-    assert payload["error_code"] == "NOT_IMPLEMENTED"
-    assert payload["type"] == "result"
-    assert payload["success"] is False
-
-
-def test_stdout_is_single_ndjson_line(capsys, monkeypatch):
-    monkeypatch.setattr(login_dialog_runner, "try_create_tk", lambda: False)
-    main(["--venue", "tachibana", "--env", "demo"])
-    captured = capsys.readouterr()
-    raw = captured.out
-    assert raw.endswith("\n")
-    assert raw.count("\n") == 1
-    payload = json.loads(raw.strip())
-    assert isinstance(payload, dict)
-    assert payload.get("type") == "result"
+def test_tachibana_prod_not_allowed_without_env_flag(monkeypatch):
+    monkeypatch.delenv("TACHIBANA_ALLOW_PROD", raising=False)
+    result_lines = []
+    with patch("engine.live.login_dialog_runner.emit", side_effect=result_lines.append):
+        code = main(["--venue", "tachibana", "--env", "prod"])
+    assert code == 0
+    assert result_lines[0]["success"] is False
+    assert result_lines[0]["error_code"] == "PROD_NOT_ALLOWED"
