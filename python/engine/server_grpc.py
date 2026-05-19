@@ -959,6 +959,14 @@ class GrpcDataEngineServer(
                 stderr=asyncio.subprocess.PIPE,
             )
             stderr_drain = asyncio.ensure_future(proc.stderr.read())
+
+            async def _drain_stderr_text() -> str:
+                try:
+                    data = await asyncio.wait_for(stderr_drain, timeout=5.0)
+                except (asyncio.TimeoutError, asyncio.CancelledError):
+                    data = b""
+                return data.decode("utf-8", errors="replace")
+
             try:
                 line = await asyncio.wait_for(
                     proc.stdout.readline(),
@@ -971,13 +979,9 @@ class GrpcDataEngineServer(
                 return False, "LOGIN_TIMEOUT", None
 
             if not line:
-                try:
-                    stderr_bytes = await asyncio.wait_for(stderr_drain, timeout=5.0)
-                except (asyncio.TimeoutError, asyncio.CancelledError):
-                    stderr_bytes = b""
                 logging.error(
                     "login_dialog_runner exited without result: %s",
-                    stderr_bytes.decode("utf-8", errors="replace"),
+                    await _drain_stderr_text(),
                 )
                 await proc.wait()
                 return False, "LOGIN_SUBPROCESS_CRASHED", None
@@ -987,6 +991,10 @@ class GrpcDataEngineServer(
             except json.JSONDecodeError:
                 proc.kill()
                 await proc.wait()
+                logging.error(
+                    "login_dialog_runner emitted non-JSON stdout: %s",
+                    await _drain_stderr_text(),
+                )
                 return False, "LOGIN_INVALID_RESPONSE", None
 
             if not result.get("success"):
@@ -1005,6 +1013,11 @@ class GrpcDataEngineServer(
                 return False, "LOGIN_TIMEOUT", None
 
             if proc.returncode != 0:
+                logging.warning(
+                    "login_dialog_runner exited rc=%d after success-line: %s",
+                    proc.returncode,
+                    await _drain_stderr_text(),
+                )
                 return False, result.get("error_code") or "LOGIN_NONZERO_EXIT", None
 
             token: Optional[str] = None
