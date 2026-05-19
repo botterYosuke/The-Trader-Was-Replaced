@@ -206,6 +206,7 @@ cargo test --test backend_integration
 
 | 症状 | 原因 | 対処 |
 |---|---|---|
+| ExecutionMode トグルで Manual/Auto に切り替わらない・クリック無反応に見える | `execution_mode_toggle_system` (footer.rs) の既存 guard。`VenueState != Connected` のとき `WARN ExecutionMode→Live blocked: venue not connected (state=Disconnected)` を吐いて切替を拒否する | 立花/kabusapi など venue を接続するか、`apply_execution_mode_visibility_system` 系の挙動だけ確認したいなら `cargo test ui::` で代替（venue 接続なしでは Live モードに遷移できない） |
 | `grpc: DISABLED` のまま | `BACKEND_ENABLED` が GUI プロセスに渡っていない | `ProcessStartInfo.EnvironmentVariables` で明示渡し（§2.3） |
 | 起動直後から `state: RUNNING` | backend 側 `auto_start=True` | `python/engine/__main__.py` を `auto_start=False` |
 | Run ボタン無反応 | `grpc: DISABLED` / dirty buffer（`cached *` 表示） | backend 起動状態確認 + Save Cache を押してから Run |

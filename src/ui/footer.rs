@@ -457,7 +457,11 @@ pub fn transport_button_system(
     >,
     data: Res<TradingData>,
     sender: Res<TransportCommandSender>,
+    exec_mode: Res<ExecutionModeRes>,
 ) {
+    if !matches!(exec_mode.mode, ExecutionMode::Replay) {
+        return;
+    }
     for (interaction, mut bg, action) in &mut query {
         match interaction {
             Interaction::Pressed => {
@@ -504,7 +508,11 @@ pub fn speed_button_system(
     >,
     mut speed: ResMut<ReplaySpeed>,
     sender: Res<TransportCommandSender>,
+    exec_mode: Res<ExecutionModeRes>,
 ) {
+    if !matches!(exec_mode.mode, ExecutionMode::Replay) {
+        return;
+    }
     for (interaction, mut bg, SpeedButton(mult)) in &mut query {
         match interaction {
             Interaction::Pressed => {
@@ -565,7 +573,11 @@ pub fn footer_pause_resume_system(
     mut auto_save: ResMut<StrategyAutoSaveState>,
     mut run_events: EventWriter<StrategyRunRequested>,
     fragments_q: Query<(&StrategyEditorId, &StrategyFragment), With<WindowRoot>>,
+    exec_mode: Res<ExecutionModeRes>,
 ) {
+    if !matches!(exec_mode.mode, ExecutionMode::Replay) {
+        return;
+    }
     for (interaction, mut bg) in &mut query {
         match interaction {
             Interaction::Pressed => {
@@ -679,5 +691,345 @@ pub fn execution_mode_toggle_system(
         {
             error!("execution_mode: transport channel closed; SetExecutionMode dropped");
         }
+    }
+}
+
+/// ExecutionMode に応じて transport / speed ボタンの `Node.display` を切り替える。
+#[allow(clippy::type_complexity)]
+pub fn apply_execution_mode_visibility_system(
+    exec_mode: Res<ExecutionModeRes>,
+    mut transport_q: Query<&mut Node, (With<TransportButton>, Without<SpeedButton>)>,
+    mut speed_q: Query<&mut Node, (With<SpeedButton>, Without<TransportButton>)>,
+) {
+    if !exec_mode.is_changed() {
+        return;
+    }
+    let target = if matches!(exec_mode.mode, ExecutionMode::Replay) {
+        Display::Flex
+    } else {
+        Display::None
+    };
+    for mut node in &mut transport_q {
+        if node.display != target {
+            node.display = target;
+        }
+    }
+    for mut node in &mut speed_q {
+        if node.display != target {
+            node.display = target;
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::trading::{
+        ExecutionMode, ExecutionModeRes, LastRunResult, ReplaySpeed, TradingData, TransportCommand,
+        TransportCommandSender,
+    };
+    use crate::ui::components::{
+        PauseResumeButton, SpeedButton, StrategyBuffer, StrategyRunRequested, TransportButton,
+    };
+    use crate::ui::strategy_editor::StrategyAutoSaveState;
+    use tokio::sync::mpsc;
+
+    fn make_input_app() -> (App, mpsc::UnboundedReceiver<TransportCommand>) {
+        let mut app = App::new();
+        let (tx, rx) = mpsc::unbounded_channel::<TransportCommand>();
+        app.insert_resource(TransportCommandSender { tx })
+            .init_resource::<ExecutionModeRes>()
+            .init_resource::<TradingData>()
+            .init_resource::<ReplaySpeed>()
+            .init_resource::<StrategyBuffer>()
+            .init_resource::<LastRunResult>()
+            .init_resource::<StrategyAutoSaveState>()
+            .add_event::<StrategyRunRequested>();
+        app.add_systems(
+            Update,
+            (
+                transport_button_system,
+                footer_pause_resume_system,
+                speed_button_system,
+            ),
+        );
+        (app, rx)
+    }
+
+    fn spawn_pressed_transport(app: &mut App, kind: TransportButton) -> Entity {
+        app.world_mut()
+            .spawn((Node::default(), Button, Interaction::Pressed, kind))
+            .id()
+    }
+
+    fn spawn_pressed_pause_resume(app: &mut App) -> Entity {
+        app.world_mut()
+            .spawn((
+                Node::default(),
+                Button,
+                Interaction::Pressed,
+                TransportButton::PauseResume,
+                PauseResumeButton,
+            ))
+            .id()
+    }
+
+    fn spawn_pressed_speed(app: &mut App, mult: u32) -> Entity {
+        app.world_mut()
+            .spawn((Node::default(), Button, Interaction::Pressed, SpeedButton(mult)))
+            .id()
+    }
+
+    fn set_mode(app: &mut App, mode: ExecutionMode) {
+        app.world_mut().resource_mut::<ExecutionModeRes>().mode = mode;
+    }
+
+    #[test]
+    fn transport_command_not_sent_in_manual() {
+        let (mut app, mut rx) = make_input_app();
+        set_mode(&mut app, ExecutionMode::LiveManual);
+        app.world_mut().resource_mut::<TradingData>().replay_state = Some("RUNNING".into());
+        let _ = spawn_pressed_transport(&mut app, TransportButton::JumpToStart);
+        app.update();
+        assert!(
+            matches!(rx.try_recv(), Err(mpsc::error::TryRecvError::Empty)),
+            "no TransportCommand must be sent in LiveManual",
+        );
+    }
+
+    #[test]
+    fn transport_command_not_sent_in_auto() {
+        let (mut app, mut rx) = make_input_app();
+        set_mode(&mut app, ExecutionMode::LiveAuto);
+        app.world_mut().resource_mut::<TradingData>().replay_state = Some("RUNNING".into());
+        let _ = spawn_pressed_transport(&mut app, TransportButton::JumpToStart);
+        app.update();
+        assert!(
+            matches!(rx.try_recv(), Err(mpsc::error::TryRecvError::Empty)),
+            "no TransportCommand must be sent in LiveAuto",
+        );
+    }
+
+    #[test]
+    fn pause_resume_does_not_emit_run_event_in_manual() {
+        let (mut app, _rx) = make_input_app();
+        set_mode(&mut app, ExecutionMode::LiveManual);
+        app.world_mut().resource_mut::<TradingData>().replay_state = Some("IDLE".into());
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let cache_path = tmp.path().join("strategy_cache.py");
+        app.world_mut().resource_mut::<StrategyBuffer>().cache_path = Some(cache_path);
+        let _ = spawn_pressed_pause_resume(&mut app);
+        app.update();
+        let events = app.world().resource::<Events<StrategyRunRequested>>();
+        let mut reader = events.get_cursor();
+        assert_eq!(
+            reader.read(events).count(),
+            0,
+            "StrategyRunRequested must not be emitted in LiveManual",
+        );
+    }
+
+    #[test]
+    fn pause_resume_does_not_emit_run_event_in_auto() {
+        let (mut app, _rx) = make_input_app();
+        set_mode(&mut app, ExecutionMode::LiveAuto);
+        app.world_mut().resource_mut::<TradingData>().replay_state = Some("IDLE".into());
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let cache_path = tmp.path().join("strategy_cache.py");
+        app.world_mut().resource_mut::<StrategyBuffer>().cache_path = Some(cache_path);
+        let _ = spawn_pressed_pause_resume(&mut app);
+        app.update();
+        let events = app.world().resource::<Events<StrategyRunRequested>>();
+        let mut reader = events.get_cursor();
+        assert_eq!(
+            reader.read(events).count(),
+            0,
+            "StrategyRunRequested must not be emitted in LiveAuto",
+        );
+    }
+
+    #[test]
+    fn speed_command_not_sent_in_live() {
+        for mode in [ExecutionMode::LiveManual, ExecutionMode::LiveAuto] {
+            let (mut app, mut rx) = make_input_app();
+            set_mode(&mut app, mode);
+            let _ = spawn_pressed_speed(&mut app, 10);
+            app.update();
+            assert!(
+                matches!(rx.try_recv(), Err(mpsc::error::TryRecvError::Empty)),
+                "no SetSpeed must be sent in {:?}",
+                mode,
+            );
+            assert_eq!(
+                app.world().resource::<ReplaySpeed>().current,
+                1,
+                "ReplaySpeed.current must remain default (1) in {:?}",
+                mode,
+            );
+        }
+    }
+
+    #[test]
+    fn transport_command_sent_in_replay_smoke() {
+        let (mut app, mut rx) = make_input_app();
+        set_mode(&mut app, ExecutionMode::Replay);
+        app.world_mut().resource_mut::<TradingData>().replay_state = Some("RUNNING".into());
+        let _ = spawn_pressed_transport(&mut app, TransportButton::JumpToStart);
+        app.update();
+        match rx.try_recv() {
+            Ok(TransportCommand::ForceStop) => {}
+            other => panic!("expected ForceStop in Replay smoke, got {:?}", other),
+        }
+    }
+
+    fn make_visibility_app() -> App {
+        let mut app = App::new();
+        app.init_resource::<ExecutionModeRes>();
+        app.add_systems(Update, apply_execution_mode_visibility_system);
+        app
+    }
+
+    fn spawn_transport(app: &mut App, kind: TransportButton) -> Entity {
+        app.world_mut().spawn((Node::default(), kind)).id()
+    }
+
+    fn spawn_speed(app: &mut App, mult: u32) -> Entity {
+        app.world_mut().spawn((Node::default(), SpeedButton(mult))).id()
+    }
+
+    fn display_of(app: &App, e: Entity) -> Display {
+        app.world().entity(e).get::<Node>().unwrap().display
+    }
+
+    #[test]
+    fn transport_buttons_visible_in_replay() {
+        let mut app = make_visibility_app();
+        let entities = [
+            spawn_transport(&mut app, TransportButton::JumpToStart),
+            spawn_transport(&mut app, TransportButton::StepBack),
+            spawn_transport(&mut app, TransportButton::PauseResume),
+            spawn_transport(&mut app, TransportButton::StepForward),
+            spawn_transport(&mut app, TransportButton::ForceStop),
+        ];
+        app.update();
+        for e in entities {
+            assert_eq!(display_of(&app, e), Display::Flex);
+        }
+    }
+
+    #[test]
+    fn transport_buttons_flip_back_to_flex_on_replay_return() {
+        let mut app = make_visibility_app();
+        let e = spawn_transport(&mut app, TransportButton::JumpToStart);
+        set_mode(&mut app, ExecutionMode::LiveAuto);
+        app.update();
+        assert_eq!(display_of(&app, e), Display::None);
+        set_mode(&mut app, ExecutionMode::Replay);
+        app.update();
+        assert_eq!(
+            display_of(&app, e),
+            Display::Flex,
+            "visibility system must write Flex back when returning to Replay",
+        );
+    }
+
+    #[test]
+    fn transport_buttons_hidden_in_manual() {
+        let mut app = make_visibility_app();
+        let entities = [
+            spawn_transport(&mut app, TransportButton::JumpToStart),
+            spawn_transport(&mut app, TransportButton::StepBack),
+            spawn_transport(&mut app, TransportButton::PauseResume),
+            spawn_transport(&mut app, TransportButton::StepForward),
+            spawn_transport(&mut app, TransportButton::ForceStop),
+        ];
+        set_mode(&mut app, ExecutionMode::LiveManual);
+        app.update();
+        for e in entities {
+            assert_eq!(display_of(&app, e), Display::None);
+        }
+    }
+
+    #[test]
+    fn transport_buttons_hidden_in_auto() {
+        let mut app = make_visibility_app();
+        let entities = [
+            spawn_transport(&mut app, TransportButton::JumpToStart),
+            spawn_transport(&mut app, TransportButton::StepBack),
+            spawn_transport(&mut app, TransportButton::PauseResume),
+            spawn_transport(&mut app, TransportButton::StepForward),
+            spawn_transport(&mut app, TransportButton::ForceStop),
+        ];
+        set_mode(&mut app, ExecutionMode::LiveAuto);
+        app.update();
+        for e in entities {
+            assert_eq!(display_of(&app, e), Display::None);
+        }
+    }
+
+    #[test]
+    fn speed_buttons_visible_only_in_replay() {
+        let mut app = make_visibility_app();
+        let speeds = [
+            spawn_speed(&mut app, 1),
+            spawn_speed(&mut app, 2),
+            spawn_speed(&mut app, 5),
+            spawn_speed(&mut app, 10),
+            spawn_speed(&mut app, 50),
+        ];
+        app.update();
+        for e in speeds {
+            assert_eq!(display_of(&app, e), Display::Flex);
+        }
+        set_mode(&mut app, ExecutionMode::LiveManual);
+        app.update();
+        for e in speeds {
+            assert_eq!(display_of(&app, e), Display::None);
+        }
+        set_mode(&mut app, ExecutionMode::LiveAuto);
+        app.update();
+        for e in speeds {
+            assert_eq!(display_of(&app, e), Display::None);
+        }
+    }
+
+    #[test]
+    fn mode_switch_toggles_display() {
+        let mut app = make_visibility_app();
+        let t = spawn_transport(&mut app, TransportButton::JumpToStart);
+        let s = spawn_speed(&mut app, 1);
+        app.update();
+        assert_eq!(display_of(&app, t), Display::Flex);
+        assert_eq!(display_of(&app, s), Display::Flex);
+        set_mode(&mut app, ExecutionMode::LiveManual);
+        app.update();
+        assert_eq!(display_of(&app, t), Display::None);
+        assert_eq!(display_of(&app, s), Display::None);
+        set_mode(&mut app, ExecutionMode::LiveAuto);
+        app.update();
+        assert_eq!(display_of(&app, t), Display::None);
+        assert_eq!(display_of(&app, s), Display::None);
+        set_mode(&mut app, ExecutionMode::Replay);
+        app.update();
+        assert_eq!(display_of(&app, t), Display::Flex);
+        assert_eq!(display_of(&app, s), Display::Flex);
+    }
+
+    #[test]
+    fn system_skips_when_mode_unchanged() {
+        let mut app = make_visibility_app();
+        let e = spawn_transport(&mut app, TransportButton::JumpToStart);
+        app.update();
+        app.world_mut()
+            .entity_mut(e)
+            .get_mut::<Node>()
+            .unwrap()
+            .display = Display::None;
+        app.update();
+        assert_eq!(
+            display_of(&app, e),
+            Display::None,
+            "system must skip when ExecutionModeRes is unchanged",
+        );
     }
 }

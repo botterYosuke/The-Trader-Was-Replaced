@@ -764,6 +764,26 @@ fn rewrite_scenario_startup_params_atomic(
     })
 }
 
+/// Replay 以外のモードでは "Startup" パネル全体を非表示にする。
+pub fn apply_startup_panel_visibility_system(
+    exec_mode: Res<crate::trading::ExecutionModeRes>,
+    mut panel_q: Query<&mut Node, With<ScenarioStartupPanelRoot>>,
+) {
+    if !exec_mode.is_changed() {
+        return;
+    }
+    let target = if matches!(exec_mode.mode, crate::trading::ExecutionMode::Replay) {
+        Display::Flex
+    } else {
+        Display::None
+    };
+    for mut node in &mut panel_q {
+        if node.display != target {
+            node.display = target;
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1388,6 +1408,82 @@ mod tests {
         assert_eq!(
             scenario.get("unknown_field").unwrap().as_str(),
             Some("keep me")
+        );
+    }
+
+    use crate::trading::{ExecutionMode, ExecutionModeRes};
+
+    fn make_visibility_app() -> App {
+        let mut app = App::new();
+        app.init_resource::<ExecutionModeRes>();
+        app.add_systems(Update, apply_startup_panel_visibility_system);
+        app
+    }
+
+    fn spawn_panel(app: &mut App) -> Entity {
+        app.world_mut()
+            .spawn((Node::default(), ScenarioStartupPanelRoot))
+            .id()
+    }
+
+    #[test]
+    fn startup_panel_visible_in_replay() {
+        let mut app = make_visibility_app();
+        let e = spawn_panel(&mut app);
+        app.update();
+        assert_eq!(
+            app.world().entity(e).get::<Node>().unwrap().display,
+            Display::Flex,
+        );
+    }
+
+    #[test]
+    fn startup_panel_hidden_in_live_manual() {
+        let mut app = make_visibility_app();
+        let e = spawn_panel(&mut app);
+        app.world_mut().resource_mut::<ExecutionModeRes>().mode = ExecutionMode::LiveManual;
+        app.update();
+        assert_eq!(
+            app.world().entity(e).get::<Node>().unwrap().display,
+            Display::None,
+        );
+    }
+
+    #[test]
+    fn startup_panel_hidden_in_live_auto() {
+        let mut app = make_visibility_app();
+        let e = spawn_panel(&mut app);
+        app.world_mut().resource_mut::<ExecutionModeRes>().mode = ExecutionMode::LiveAuto;
+        app.update();
+        assert_eq!(
+            app.world().entity(e).get::<Node>().unwrap().display,
+            Display::None,
+        );
+    }
+
+    #[test]
+    fn mode_switch_toggles_panel_display() {
+        let mut app = make_visibility_app();
+        let e = spawn_panel(&mut app);
+
+        app.update();
+        assert_eq!(
+            app.world().entity(e).get::<Node>().unwrap().display,
+            Display::Flex,
+        );
+
+        app.world_mut().resource_mut::<ExecutionModeRes>().mode = ExecutionMode::LiveManual;
+        app.update();
+        assert_eq!(
+            app.world().entity(e).get::<Node>().unwrap().display,
+            Display::None,
+        );
+
+        app.world_mut().resource_mut::<ExecutionModeRes>().mode = ExecutionMode::Replay;
+        app.update();
+        assert_eq!(
+            app.world().entity(e).get::<Node>().unwrap().display,
+            Display::Flex,
         );
     }
 }

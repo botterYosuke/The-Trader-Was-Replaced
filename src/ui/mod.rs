@@ -259,6 +259,13 @@ impl Plugin for UiPlugin {
             )
                 .after(menu_keyboard_system)
                 .after(picker_searchbox_input_system),
+        )
+        .add_systems(
+            Update,
+            (
+                crate::ui::footer::apply_execution_mode_visibility_system,
+                crate::ui::scenario_startup_panel::apply_startup_panel_visibility_system,
+            ),
         );
     }
 }
