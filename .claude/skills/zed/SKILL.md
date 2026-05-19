@@ -1,149 +1,247 @@
 ---
 name: zed
-description: Phase 7.2「Monaco-Grade Strategy Editor」(docs/plan/Phase 7.2 - Monaco-Grade Strategy Editor.md) を実装する際の必読スキル。Bevy + bevy_cosmic_edit + syntect で組む Strategy Editor (src/ui/strategy_editor.rs, src/ui/components.rs, src/highlight.rs) に Monaco / VSCode 級の機能 — シンタックスハイライト, 行番号ガター, ステータスバー, スクロールバー, オートインデント, Tab→4sp, Find & Replace, ブラケットマッチ, 診断 — を載せる作業全般で発動する。Zed エディタのソースコードミラー (.claude/skills/zed/src/crates/) を「実装の正解」として参照し、GPUI 固有 API は Bevy ECS / cosmic_text / syntect に翻訳して提案する。トリガー語: "Phase 7.2", "Strategy Editor", "strategy_editor.rs", "シンタックスハイライト", "syntax highlight", "syntect", "Highlighter", "行番号", "gutter", "ガター", "LineNumberGutter", "status bar", "ステータスバー", "scrollbar", "scroll thumb", "EditorScrollThumb", "auto indent", "オートインデント", "tab_to_spaces", "Find & Replace", "FindReplaceState", "ブラケットマッチ", "bracket match", "diagnostics", "SyntaxDirty", "set_rich_text", "highlight_python", "Monaco", "VSCode", "code editor", "コードエディタ", "Python エディタ" 等が出たら必ず起動する。src/ui/strategy_editor.rs を Edit/Write しようとする前にも必ず読むこと（cosmic_edit と Zed のメンタルモデル差分でハマる)。
+description: The-Trader-Was-Replaced の Bevy フロントエンド (src/ui/**) で UI 機能を新規/改修するときの必読スキル。Zed エディタの完全ソースミラー (.claude/skills/zed/src/crates/) を「production-grade な先行事例」として参照し、GPUI / Rope / tree-sitter / LSP の固有 API を Bevy ECS / cosmic_text / bevy_egui / syntect に翻訳して提案する。Zed が同種の機能を持つ UI 全般で発動する — テキスト編集 (シンタックスハイライト, gutter, scrollbar, find/replace, auto-indent, bracket match, multi-cursor, diagnostics), picker / fuzzy 検索 (file finder, tab switcher, command palette, instrument picker, ticker list), workspace / panel / layout (dock, pane, project panel, status bar, breadcrumbs, notification toast, modal layer, drag-resize, persistence), theme / 色トークン, settings UI, action / keybinding。トリガー語: "Zed", "VSCode", "Monaco", "production editor", "fuzzy picker", "command palette", "コマンドパレット", "project panel", "プロジェクトパネル", "syntax highlight", "シンタックスハイライト", "gutter", "ガター", "scrollbar", "スクロールバー", "find & replace", "auto indent", "オートインデント", "bracket match", "ブラケットマッチ", "dock", "panel", "ドック", "workspace", "ワークスペース", "status bar", "ステータスバー", "breadcrumbs", "notification toast", "通知トースト", "modal layer", "theme", "テーマ", "syntect", "cosmic_edit", "bevy_cosmic_edit", "CosmicEditor", "CosmicEditBuffer", "strategy_editor", "instrument_picker", "sidebar tickers", "Phase 7.x"。src/ui/** を Edit/Write しようとする前に必ず読むこと（Zed と cosmic_edit のメンタルモデル差分でハマる）。Bevy ECS / WGPU / Asset の一般論は bevy-engine スキル、Rust テスト戦略は rust-testing スキルへ。
 ---
 
-# zed — Phase 7.2 実装ガイド
+# zed — Bevy UI を Zed 参照で設計するスキル
 
 ## 何のためのスキルか
 
-The-Trader-Was-Replaced の Strategy Editor (Bevy + bevy_cosmic_edit) を **Monaco / VSCode 級** に育てる Phase 7.2 を実装するとき、毎回ゼロから設計するのではなく、**Zed エディタの実装を「先行事例」として参照しながら**、それを Bevy ECS / cosmic_text / syntect に翻訳して提案するためのスキル。
+The-Trader-Was-Replaced の Bevy フロントエンドで新しい UI 機能を作る／既存機能を磨くときに、毎回ゼロから設計するのではなく、**Zed エディタの「動いている実装」を先行事例として参照しながら**、それを Bevy ECS / cosmic_text / bevy_egui / syntect に翻訳して提案するためのスキル。
 
-Zed は Rust 製の本物の production-grade エディタで、Phase 7.2 で必要な機能はすべて Zed の中に「動いている実装」として存在する。我々の方が制約は強い (cosmic_edit は単一 Buffer ベース・rope は無い・LSP も無い) が、**「どういう責務分割で書かれているか」「どこにエッジケースが潜むか」は Zed を読むのが最速**。
+Zed は Rust 製の production-grade デスクトップアプリで、我々が src/ui/** で欲しがる機能のほとんどは Zed のどこかに既に「責務分割された形」で存在する — テキストエディタ本体、行ガター、スクロールバー、ファジー picker、コマンドパレット、project panel、dock、status bar、breadcrumbs、通知 toast、modal layer、theme、settings UI、action ディスパッチ。我々の制約 (GPUI ではなく Bevy ECS、Rope なし、LSP なし、bevy_cosmic_edit のみ) のせいでそのまま写経はできないが、「どう責務を分割するか」「どこに edge case が潜むか」は Zed を 5 分読むのが最速。
 
 ## いつ発動するか / いつ発動しないか
 
 **発動する:**
-- `docs/plan/Phase 7.2 - Monaco-Grade Strategy Editor.md` 配下のサブステップ (7.2.0〜7.2.9) を実装するとき
-- `src/ui/strategy_editor.rs` / `src/ui/components.rs` / `src/highlight.rs` / `src/ui/find_replace.rs` を Edit/Write するとき
-- bevy_cosmic_edit の `Buffer::set_rich_text`, `CosmicEditor::with_buffer_mut`, `Attrs`, `AttrsOwned` を扱うとき
-- syntect の `SyntaxSet`, `ThemeSet`, `HighlightLines`, `LinesWithEndings` を扱うとき
-- 行番号ガター / スクロールバー / ステータスバー / Find&Replace / オートインデント / Tab/Enter キーフックを書くとき
+- `src/ui/**` 配下を Edit/Write しようとしている (strategy_editor, sidebar, footer, menu_bar, instrument_picker, orders, positions, chart, layout_persistence, floating_window, run_result_panel, scenario_startup_panel, replay_startup_window 等)
+- Zed が同種機能を持つ UI を新規/改修する:
+  - **テキスト編集系** — syntax highlight, gutter, scrollbar, find/replace, auto-indent, bracket match, multi-cursor, diagnostics, undo/redo transaction
+  - **リスト/picker 系** — fuzzy search, file finder, instrument picker, tab switcher, tickers list, virtual scroll, ハイライト付きマッチ表示
+  - **コマンド/メニュー系** — command palette, menu bar, context menu, key chord, action ディスパッチ
+  - **レイアウト系** — dockable panel, split pane, floating window, drag-resize, persistence, modal layer (z-order)
+  - **テーマ/色** — color tokens, dark/light, syntax theme, scale
+  - **検索** — in-buffer search, project-wide search, replace
+  - **診断/通知** — status bar, error squiggles, notification toast, activity indicator
+- bevy_cosmic_edit の Buffer/Editor API を扱う、または syntect / nucleo-matcher 等の採用判断
+- 「Zed だとどう書いてる?」「VSCode/Monaco みたいに ...」「production editor 風の ...」という要望
+- `Phase 7.x`「Monaco-Grade Strategy Editor」系のサブステップ実装 (旧 Phase 7.2 仕様も含む)
 
 **発動しない:**
-- Strategy Editor 以外の floating window (positions, orders, chart など) → `bevy-engine` スキルへ
-- Phase 7.1 以前の Undo/Redo そのものの実装 → 既に完了している前提で配線だけ扱う
-- バックエンド (Python/gRPC) 側の構文チェック RPC 設計 → 本スキル範囲外 (将来 P3)
+- バックエンド (Python/gRPC、戦略実行エンジン、scenario runner、cache) → `nautilus_trader` / `tachibana` / `kabusapi` スキルへ
+- Bevy ECS / Camera2d / Sprite / bevy_egui 単体の一般論 → `bevy-engine` スキルへ
+- bevy_egui で雑に作る一発もの debug HUD で Zed を参照する価値がないもの
+- Rust テスト戦略 → `rust-testing` / `tdd-workflow` スキルへ
+- E2E 手動検証 → `e2e-testing` スキルへ
 
-## 前提知識 (まず把握すること)
+## 前提知識 (これは先に把握すること)
 
 ### 我々のスタック
-- **Bevy 0.15** ECS — system / Resource / Component / Query / EventReader
+- **Bevy 0.15** ECS — system / Resource / Component / Query / EventReader / Observer
 - **bevy_cosmic_edit (ローカルフォーク)** `crates/bevy_cosmic_edit/` — `CosmicEditBuffer`, `CosmicEditor`, `TextEdit2d`, `FocusedWidget`, `CosmicBackgroundColor`
 - **cosmic_text** — `Buffer`, `Attrs`, `AttrsOwned`, `Color`, `Shaping`, `Metrics`
-- **syntect 5** (これから追加) — fancy-regex バックエンド, Windows 対応
+- **bevy_egui** — modal / overlay / 簡易 UI
+- **syntect 5** — fancy-regex バックエンド (Windows で onig=C を避けるため必須)、Startup で 1 回 load
+- **共通既存ピース** — `src/ui/floating_window.rs`, `layout_persistence.rs`, `components.rs` (色トークン), `menu_bar.rs`, `sidebar.rs`, `button.rs`
 
-`bevy-engine` スキル + `MEMORY.md` の **cosmic-edit Buffer メトリクスの DPI トラップ**, **cosmic-edit unfocused field 文字非表示** を必ず先に読むこと。Phase 7.2 でも同じ罠を踏む。
+並用前提: `bevy-engine` スキルで `add_systems` タプル 20 上限・observer・required components・Anchor の罠を先に押さえること。Phase 7.x でも同じ罠を踏む。
 
 ### Zed のスタック (我々には**ない**もの)
 - **GPUI** — Zed 独自の retained-mode UI フレームワーク (Bevy ECS とは別物)
-- **Rope** (`crates/rope`, `crates/text`) — 大規模テキスト用の永続データ構造
+- **Rope** (`crates/rope`, `crates/text`) — 大規模テキスト用永続データ構造
 - **MultiBuffer** (`crates/multi_buffer`) — 複数 Buffer の仮想結合
 - **tree-sitter** ベースのインクリメンタルパーサ (`crates/language/src/syntax_map`)
-- **LSP** クライアント全部
+- **LSP** クライアント
+- **fuzzy** マッチャ (`crates/fuzzy`, `crates/fuzzy_nucleo`)
 
-**翻訳ルール:**
-- GPUI の `Element` / `View` → Bevy の **Component + spawn ツリー**
-- GPUI の `Subscription` / `Observable` → Bevy の **Event + EventReader + `Changed<T>`**
-- Rope → cosmic_text の `Buffer` (＋我々の `StrategyBuffer.source: String`)
-- tree-sitter インクリメンタル → syntect の**全文再トークナイズ** (毎フレームではなく `SyntaxDirty` フラグ駆動)
-- LSP → **無し** (P3 で gRPC `CheckSyntax` または `rustpython-parser` を検討)
+**翻訳ルールの原則:**
+- GPUI `Element` / `View` → Bevy **Component + spawn ツリー**
+- GPUI `Subscription` / `Observable` → Bevy **Event + EventReader + `Changed<T>`**
+- `Rope` / `MultiBuffer` → cosmic_text の `Buffer` (＋我々の `*Buffer.source: String`)
+- tree-sitter インクリメンタル → syntect の**全文再トークナイズ** (Dirty フラグ駆動、毎フレームではない)
+- LSP → **無し** (当面は無視、診断は P3 で gRPC `CheckSyntax` か `rustpython-parser`)
+- ファジーマッチ → `nucleo-matcher` を直接、または subsequence 自前で十分
 
-これらの翻訳を**勝手にやらない**。Zed の責務分割 (どの関数が何を計算しているか) は真似て、API は cosmic_text / Bevy に置き換える。
+これらの翻訳を**勝手にやらない**。Zed の責務分割 (どの関数が何を計算しているか) は真似て、API は cosmic_text / Bevy / egui に置き換える。
 
-## サブステップ → Zed ソース対応表
+## UI ドメイン → Zed crate 対応表
 
-サブステップを実装する前に、対応する Zed のファイルを Read で開いて**「Zed はこの責務をどこに置いているか」「edge case として何を扱っているか」を 5 分眺める**こと。コピペするのではなく、**設計の感覚を借りる**ために読む。
+新しい UI を作るときは、まず該当ドメインの Zed crate を **1〜3 個 Read** して、責務分割と edge case のリストを 5 分眺める。`Z:` プレフィックスは `.claude/skills/zed/src/` を指す。
 
-`Z:` プレフィックスは `.claude/skills/zed/src/` を指す。
+### テキスト編集 (`src/ui/strategy_editor.rs` 系)
 
-| Sub-step | 機能 | Zed 参考実装 | 我々の翻訳先 |
-|----------|------|--------------|--------------|
-| 7.2.0 | Undo/Redo 配線に `SyntaxDirty` を仕込む | `Z:crates/multi_buffer/src/transaction.rs`, `Z:crates/editor/src/editor.rs` の `transact` / `end_transaction` 周辺 | `sync_strategy_buffer_to_editor_system` と `sync_editor_to_strategy_buffer_system` の両方で `syntax_dirty.0 = true` |
-| 7.2.1 | `syntect` を Cargo.toml に追加 | (Zed は tree-sitter を使うので直接の参考なし) | `syntect = { version = "5", default-features = false, features = ["default-syntaxes", "default-themes", "fancy-regex"] }` — Windows で onig (C) を避けるため fancy-regex 必須 |
-| 7.2.2 | `src/highlight.rs` — `Highlighter` Resource | `Z:crates/language/src/syntax_map.rs` (パーサ保持の仕方), `Z:crates/syntax_theme/src/syntax_theme.rs` (テーマ→色), `Z:crates/editor/src/display_map/custom_highlights.rs` (色を画面に乗せる側) | `SyntaxSet::load_defaults_newlines()` + `ThemeSet::load_defaults()` を Resource に保持。`highlight_python(&str) -> Vec<(&str, AttrsOwned)>` を提供。Startup で 1 回だけ生成。 |
-| 7.2.3 | `apply_syntax_highlight_system` | `Z:crates/editor/src/display_map.rs`, `Z:crates/editor/src/display_map/custom_highlights.rs` (どのタイミングで再計算するか), `Z:crates/editor/src/highlight_matching_bracket.rs` (差分的 highlight 更新の感覚) | `SyntaxDirty` フラグ駆動で `CosmicEditBuffer` と `CosmicEditor` 両方に `set_rich_text`。**MEMORY #4545** の罠を必ず踏まないこと |
-| 7.2.4 | 行番号ガター | `Z:crates/editor/src/element.rs` の `paint_gutter` / `layout_gutter` 周辺, `Z:crates/editor/src/indent_guides.rs` | `LineNumberGutter` Component を持った `Text2d` entity を content_area 左に並べる。`buffer.is_changed()` で更新。フォントメトリクスは `EDITOR_LINE_HEIGHT` と完全一致させる |
-| 7.2.5 | ステータスバー | `Z:crates/go_to_line/src/go_to_line.rs` (行/列の取り方), Zed 側は workspace の status bar crate (`crates/status_bar` 等) を使うが、我々は単一 Text2d で十分 | `CosmicEditor::cursor()` で `(line, index)` 取得。`history.record.can_undo()` で `↩` インジケータ。`StatusBar` Component |
-| 7.2.6 | Tab → 4 スペース | `Z:crates/editor/src/editor.rs` の `tab` / `tab_prev` action, `Z:crates/language/src/language_settings.rs` の `tab_size` | `KeyboardInput` を `EventReader` で読み `Key::Tab` を捕まえる。**cosmic_edit fork の `crates/bevy_cosmic_edit/src/input.rs` で Tab の default を無効化必須** (二重挿入バグ) |
-| 7.2.7 | オートインデント | `Z:crates/editor/src/editor.rs` の `newline` / `newline_above` / `newline_below` action, `Z:crates/language/src/language.rs` の `indent_size_for_line` / `IndentSize`, `Z:crates/editor/src/jsx_tag_auto_close.rs` (auto-* 系 system の構造例) | `KeyboardInput` で `Key::Enter` を捕まえ、`CosmicEditor::cursor()` で前行を取り `len - trim_start().len()` でインデント幅。前行が `:` で終わるなら +4。`insert_string(&indent, None)` |
-| 7.2.8 | スクロールバー | `Z:crates/editor/src/scroll.rs`, `Z:crates/editor/src/scroll/autoscroll.rs`, `Z:crates/editor/src/scroll/scroll_amount.rs` (スクロール量の概念), `Z:crates/editor/src/element.rs` の scrollbar paint | `EditorScrollThumb` Component を `Sprite` entity に。`CosmicEditor::with_buffer(|b| b.scroll().vertical)` で位置取得。トラック高/サム高は計画書の式そのまま |
-| 7.2.9 | Find & Replace | `Z:crates/search/src/buffer_search.rs`, `Z:crates/search/src/search_bar.rs`, `Z:crates/search/src/search.rs` (state machine 全般) | `FindReplaceState` Resource + `bevy_egui::egui::Window` で UI。マッチハイライトは `apply_syntax_highlight_system` の**後**に黄色 `Attrs` で上書き (順序重要) |
-| 将来 P2 | ブラケットマッチ | `Z:crates/editor/src/highlight_matching_bracket.rs`, `Z:crates/editor/src/bracket_colorization.rs` | カーソル位置で前後 1 文字見て `([{` ↔ `)]}` をペアスキャン。マッチ位置に `Attrs::color()` で上書き |
-| 将来 P3 | エラー診断 | `Z:crates/diagnostics/src/diagnostics.rs`, `Z:crates/diagnostics/src/diagnostic_renderer.rs`, `Z:crates/diagnostics/src/buffer_diagnostics.rs`, `Z:crates/language/src/diagnostic.rs` | ガター entity に `⚠` を行単位で重ねる。Python AST パースは `rustpython-parser` か gRPC RPC |
+| 機能 | Zed 参考 | 我々の翻訳先 |
+|------|----------|--------------|
+| エディタ本体構造 | `Z:crates/editor/src/editor.rs` | `CosmicEditBuffer + CosmicEditor` を 1 entity、`*Buffer` Resource に `source: String` |
+| 表示行マップ | `Z:crates/editor/src/display_map.rs`, `Z:crates/editor/src/display_map/custom_highlights.rs` | `Buffer::set_rich_text` を Dirty フラグ駆動で再生成 |
+| syntax 適用 | `Z:crates/syntax_theme/src/syntax_theme.rs`, `Z:crates/language/src/syntax_map.rs` | syntect の `HighlightLines` を `Highlighter` Resource に、Startup で 1 回ロード |
+| 行番号ガター | `Z:crates/editor/src/element.rs` (`paint_gutter` / `layout_gutter`), `Z:crates/editor/src/indent_guides.rs` | `LineNumberGutter` Component + `Text2d` を行ごとに spawn、共通 `EDITOR_LINE_HEIGHT` |
+| ステータスバー (行/列) | `Z:crates/go_to_line/src/go_to_line.rs`, `Z:crates/breadcrumbs/src/breadcrumbs.rs` | `CosmicEditor::cursor()` で `(line, index)` 取得、単一 `Text2d` で十分 |
+| スクロールバー | `Z:crates/editor/src/scroll.rs`, `Z:crates/editor/src/scroll/autoscroll.rs` | `EditorScrollThumb` Component + `Sprite`、`with_buffer(|b| b.scroll().vertical)` |
+| Find & Replace | `Z:crates/search/src/buffer_search.rs`, `Z:crates/search/src/search_bar.rs` | `FindReplaceState` Resource + `bevy_egui::Window`、マッチは構文色の**後**に上書き |
+| 自動インデント | `Z:crates/editor/src/editor.rs` (`newline` action), `Z:crates/language/src/language.rs` (`indent_size_for_line`) | `KeyboardInput` で Enter 捕獲、前行から `len - trim_start().len()` |
+| Tab→spaces | `Z:crates/editor/src/editor.rs` (`tab` action), `Z:crates/language/src/language_settings.rs` (`tab_size`) | `KeyboardInput` で Tab、cosmic_edit fork の `input.rs` で default を無効化 |
+| ブラケットマッチ | `Z:crates/editor/src/highlight_matching_bracket.rs`, `Z:crates/editor/src/bracket_colorization.rs` | カーソル前後 1 文字でペアスキャン、`Attrs::color()` 上書き |
+| Undo/Redo transaction | `Z:crates/multi_buffer/src/transaction.rs` | `editor_history.rs` の Record にまとめ、両方向 sync で Dirty フラグ |
+| マルチカーソル/選択 | `Z:crates/editor/src/selections_collection.rs` | 当面シングルカーソル、必要時のみ拡張 |
+| 診断オーバーレイ | `Z:crates/diagnostics/src/diagnostics.rs`, `Z:crates/diagnostics/src/buffer_diagnostics.rs`, `Z:crates/language/src/diagnostic.rs` | ガター entity に `⚠` を行単位で重ねる、Python は `rustpython-parser` か gRPC |
+| Outline / シンボル | `Z:crates/outline/src/outline.rs`, `Z:crates/outline_panel/src/outline_panel.rs` | 将来、関数定義などのリスト表示が要るときに参照 |
 
-## Zed を読むときの読み方
+### Picker / List / fuzzy 検索 (`src/ui/instrument_picker.rs`, `sidebar.rs` tickers)
 
-時間を浪費しないために:
+| 機能 | Zed 参考 | 我々の翻訳先 |
+|------|----------|--------------|
+| ファジーマッチロジック | `Z:crates/fuzzy/src/matcher.rs`, `Z:crates/fuzzy/src/strings.rs`, `Z:crates/fuzzy_nucleo/` | `nucleo-matcher` クレートを直接、もしくは subsequence マッチ |
+| picker UI (リスト + フィルタ + head) | `Z:crates/picker/src/picker.rs`, `Z:crates/picker/src/head.rs` | `bevy_egui::Window` + 仮想スクロール (`sidebar.rs` の Tickers を踏襲) |
+| マッチハイライト表示 | `Z:crates/picker/src/highlighted_match_with_paths.rs` | egui の `RichText` で色分け、もしくは `Text2d` の `TextSection` 分割 |
+| File finder | `Z:crates/file_finder/src/file_finder.rs`, `Z:crates/file_finder/src/file_finder_settings.rs` | `instrument_picker.rs` を雛形に拡張 |
+| Tab switcher (Cmd+P 風) | `Z:crates/tab_switcher/src/tab_switcher.rs` | `bevy_egui` modal + 既存 floating window の上位 z-order |
+| Recent projects | `Z:crates/recent_projects/src/recent_projects.rs` | `replay_startup_window.rs` / `scenario_startup_panel.rs` 拡張時の参考 |
 
-1. **対応表のファイルだけ開く**。Zed は数百 crate あるが、Phase 7.2 で見るべきは上の表だけ。
+### Command palette / Action / Menu / Keybinding
+
+| 機能 | Zed 参考 | 我々の翻訳先 |
+|------|----------|--------------|
+| Command palette | `Z:crates/command_palette/src/command_palette.rs`, `Z:crates/command_palette_hooks/src/command_palette_hooks.rs` | picker パターン + action 列挙、起動キーは `KeyboardInput` で捕獲 |
+| Action 定義 (型安全) | `Z:crates/zed_actions/src/lib.rs`, Zed の `actions!` マクロ | 1 アクション = 1 Bevy Event 型、`app.add_event::<MyAction>()` で配信 |
+| Menu bar | `Z:crates/title_bar/src/title_bar.rs` のメニュー周り | `src/ui/menu_bar.rs` 既存パターン (ドロップダウン、Alt+F/E) を踏襲 |
+| Modal layer (z-order) | `Z:crates/workspace/src/modal_layer.rs` | bevy_egui `Area::new(...).order(Order::Foreground)`、`FocusedWidget` を modal に向ける |
+| Key binding | `Z:crates/settings/src/keymap_file.rs`, Zed `assets/keymaps/*.json` | 当面ハードコード `KeyboardInput` 判定、将来設定化なら参考 |
+
+### Workspace / Panel / Layout / Persistence
+
+| 機能 | Zed 参考 | 我々の翻訳先 |
+|------|----------|--------------|
+| Workspace 全体構造 | `Z:crates/workspace/src/workspace.rs` | `src/ui/window.rs` + `layout_persistence.rs` |
+| Dockable panel | `Z:crates/workspace/src/dock.rs`, `Z:crates/workspace/src/pane.rs`, `Z:crates/workspace/src/pane_group.rs`, `Z:crates/panel/src/panel.rs` | `floating_window.rs` パターン拡張、drag-resize は Pointer observer |
+| Project panel | `Z:crates/project_panel/src/project_panel.rs` | `src/ui/sidebar.rs` の section 拡張に参考 |
+| Title bar / breadcrumbs | `Z:crates/title_bar/src/title_bar.rs`, `Z:crates/breadcrumbs/src/breadcrumbs.rs` | `src/ui/menu_bar.rs`, `footer.rs` |
+| 永続化 | `Z:crates/workspace/src/persistence.rs` | `src/ui/layout_persistence.rs`、version 上げて migrate |
+| Status bar | `Z:crates/workspace/src/status_bar.rs`, `Z:crates/activity_indicator/` | `src/ui/footer.rs` |
+| Notification toast | `Z:crates/workspace/src/notifications.rs`, `Z:crates/workspace/src/toast_layer.rs`, `Z:crates/notifications/` | `bevy_egui` toast + Bevy `Timer` Component、最大件数で古い物から消す |
+| Toolbar | `Z:crates/workspace/src/toolbar.rs` | 必要時 |
+
+### Theme / Color / Settings
+
+| 機能 | Zed 参考 | 我々の翻訳先 |
+|------|----------|--------------|
+| Theme schema | `Z:crates/theme/src/theme.rs`, `Z:crates/theme/src/default_colors.rs`, `Z:crates/theme/src/scale.rs` | `src/ui/components.rs` の色トークン定数群 |
+| Theme selector | `Z:crates/theme_selector/src/theme_selector.rs` | 将来 dark/light 切替を作るときに |
+| Syntax theme | `Z:crates/syntax_theme/src/syntax_theme.rs` | syntect の `Theme` をそのまま使う |
+| Settings 永続化 | `Z:crates/settings/src/settings.rs` | 構造体 + JSON、`layout_persistence.rs` と同居 |
+| Settings UI | `Z:crates/settings_ui/src/settings_ui.rs` | 将来、設定 modal を作るときに |
+
+## Zed を読むときの読み方 (時間を浪費しない)
+
+1. **対応表のファイルだけ開く**。Zed は 235 crates あるが、1 タスクで読むのは 1〜3 crate に絞る。
 2. **`pub fn` のシグネチャだけ眺める** → 責務分割を掴む。中身の GPUI / Rope 呼び出しは無視。
-3. **コメント / doc comment を読む** → Zed の rationale が分かる (例: なぜ rope なのか、なぜ MultiBuffer か)。
-4. **テストファイル** (`*_tests.rs`) があれば**先にそちらを読む** — エッジケースが入力例として並んでいる。例: `Z:crates/editor/src/editor_tests.rs` の auto-indent / bracket match テスト。
-5. **GPUI 固有 API (`cx.notify()`, `View`, `Element`) は読み飛ばしてよい** — 我々は Bevy ECS なので翻訳が要る。代わりに「どの state を変更したか」「どのイベントを発火したか」だけ抽出する。
+3. **doc コメント (`///`) を読む** → Zed の rationale が出ている (なぜ rope か、なぜ MultiBuffer か、なぜ modal_layer を分けているか)。
+4. **テスト (`*_tests.rs`) があれば先に読む** — edge case が入力例で並ぶ。例: `Z:crates/editor/src/editor_tests.rs` の auto-indent / bracket match、`Z:crates/picker/src/picker.rs` の selection 移動。
+5. **GPUI 固有 API (`cx.notify()`, `View`, `Element`, `Subscription`, `cx.spawn`) は読み飛ばす** — 翻訳パターン表で置き換える。「どの state を変更したか」「どのイベントを発火したか」だけ抽出。
+6. **圧倒されたら**: `crates/<domain>/src/lib.rs` から始めて `pub` exports を辿る。
 
 ## 翻訳パターン早見表
 
-| Zed (GPUI) | 我々 (Bevy + cosmic_edit) |
-|------------|--------------------------|
-| `cx.subscribe(&buffer, |this, _, event, cx| ...)` | `EventReader<CosmicTextChanged>` |
-| `cx.notify()` (再描画要求) | `buffer.set_redraw(true)` ＋ `Changed<T>` |
-| `buffer.read(cx).text()` | `StrategyBuffer.source` (String) |
-| `buffer.update(cx, |b, cx| b.edit(...))` | `editor.insert_string(s, None)` ＋ `Record::edit` push |
+| Zed (GPUI) | 我々 (Bevy + cosmic_edit / egui) |
+|------------|----------------------------------|
+| `cx.subscribe(&buffer, \|this,_,event,cx\| ...)` | `EventReader<CosmicTextChanged>` または自前 Event |
+| `cx.notify()` (再描画要求) | `buffer.set_redraw(true)` ＋ `Changed<T>` クエリ |
+| `buffer.read(cx).text()` | `*Buffer.source: String` |
+| `buffer.update(cx, \|b,cx\| b.edit(...))` | `editor.insert_string(s, None)` ＋ `Record::edit` push |
 | `HighlightMap` / `SyntaxLayer` | `syntect::easy::HighlightLines` |
-| `editor.scroll_position(cx)` | `editor.with_buffer(|b| b.scroll().vertical)` |
-| `editor.selections.newest::<usize>(cx)` | `editor.cursor()` (単一カーソル前提) |
+| `editor.scroll_position(cx)` | `editor.with_buffer(\|b\| b.scroll().vertical)` |
+| `editor.selections.newest::<usize>(cx)` | `editor.cursor()` (シングルカーソル前提) |
 | `Workspace::register_action(editor::Tab, ...)` | `KeyboardInput` EventReader + `Key::Tab` 判定 |
-| Zed の `KeymapContext` (`vim_mode && editing`) | `FocusedWidget` Resource で focused entity を見る |
-| GPUI の `div().child(line_numbers)` | 別 entity を spawn して content_area の子にする |
+| `KeymapContext` (`vim_mode && editing`) | `FocusedWidget` Resource + 自前条件 |
+| `div().child(line_numbers)` | 別 entity を spawn して content_area の子にする |
+| Picker `PickerDelegate` trait | `Resource` に `candidates: Vec<T>` + `filter: String`、毎フレーム再フィルタ |
+| `cx.spawn(async move {...})` | `bevy_tasks::AsyncComputeTaskPool` + Event で結果配信 |
+| `cx.theme().colors().background` | `components.rs` 内の `pub const BG: Color = ...` |
+| `actions!(mod_name, [DoFoo, DoBar])` | 1 アクション = 1 Bevy Event 型、`app.add_event::<DoFoo>()` |
+| `ModalView` trait | `bevy_egui::Area::new(...).order(Order::Foreground)` + `FocusedWidget` を一時的に占有 |
+| `cx.dispatch_action(Box::new(...))` | `EventWriter<MyAction>.send(MyAction)` |
 
-## 必ず守る Caveat (memory と過去 PR から)
+## 必ず守る Caveat (Bevy + cosmic_edit 側の都合)
 
-1. **CosmicEditor 内部 buffer 問題** (MEMORY: cosmic-edit-buffer-metrics-dpi-trap.md と関連 #4545)
-   `set_rich_text` は `CosmicEditBuffer` と `CosmicEditor::with_buffer_mut` の**両方**に呼ぶ。focused フィールドは editor 内部 buffer を見るので、片方だけだと色が反映されない。
+Zed のパターンを写しただけでは出てこない、Bevy/cosmic_edit/syntect 側の罠。Zed コードを読んだ後に必ず照合すること。
 
-2. **Sprite tint 問題** (MEMORY #4527)
-   ガター / スクロールバーの背景は `CosmicBackgroundColor` か Sprite だが、`Sprite.color` を暗色にすると tint が乗って想定外。`Sprite.color = Color::WHITE` ＋ image / 別 Component で色管理。
+### bevy_cosmic_edit / cosmic_text 系
+1. **CosmicEditor 内部 buffer 問題**  
+   `set_rich_text` / 内容変更は `CosmicEditBuffer` と `CosmicEditor::with_buffer_mut` の**両方**に呼ぶ。focused フィールドは editor 内部 buffer を見るので、片方だけだと色や内容が反映されない。
 
-3. **Tab / Enter キーの二重処理**
-   cosmic_edit の input system が同じキーを処理して二重挿入になる。`crates/bevy_cosmic_edit/src/input.rs` で Tab / Enter の default を無効化するパッチを当てた上で、我々の system だけが処理する状態にする。
+2. **Sprite tint 問題**  
+   ガター / スクロールバー / 通知トースト背景の `Sprite.color` を暗色にすると tint が乗って想定外。`Sprite.color = Color::WHITE` ＋ image / 別 Component で色管理。
 
-4. **syntect の初期化コスト**
-   `SyntaxSet::load_defaults_newlines()` は数十〜数百ms。**`Startup` で 1 回**だけ実行して `Highlighter` Resource に持つ。`Update` で呼ぶと毎フレーム重い。
+3. **Tab / Enter キーの二重処理**  
+   cosmic_edit の input system が同じキーを処理して二重挿入になる。`crates/bevy_cosmic_edit/src/input.rs` で Tab / Enter / メニュー用 Alt の default を無効化したうえで、我々の system だけが処理。
 
-5. **`set_rich_text` の存在確認**
-   bevy_cosmic_edit 0.26 / cosmic_text の `Buffer::set_rich_text` API シグネチャを `crates/bevy_cosmic_edit/` で先に Grep で確認。存在しない / 引数が違う場合は `set_line_attributes` / `BufferLine::set_attrs_list` でフォールバック。
+4. **行番号ガター・行内 widget のフォントメトリクス**  
+   `Text2d` の `line_height` を editor 本体と完全一致させないと行がズレる。`EDITOR_LINE_HEIGHT` を共通定数化して両側で使う。
 
-6. **Undo/Redo 後のハイライト再適用**
-   `history.replaying = true` の間は `sync_editor_to_strategy_buffer_system` の `Record::edit` push をスキップするが、**`apply_syntax_highlight_system` はスキップしない**。Undo/Redo 後こそ色を貼り直す必要がある。`sync_strategy_buffer_to_editor_system` 側で `syntax_dirty.0 = true` を立てる流れを system ordering で保証。
+### syntect 系
+5. **初期化コスト**  
+   `SyntaxSet::load_defaults_newlines()` は数十〜数百ms。**Startup で 1 回**だけ実行して `Highlighter` Resource に保持。Update で呼ぶと毎フレーム重い。
 
-7. **行番号ガターのフォントメトリクス**
-   `Text2d` のフォントメトリクス (line_height) を editor 本体と **完全一致**させないと行がズレる。`EDITOR_LINE_HEIGHT` を共通定数化して両方で使う。MEMORY: cosmic-edit-unfocused-field-invisible-text.md の DPI / line_height の罠と同じカテゴリの問題。
+6. **ハイライトの重ね順 (system ordering)**  
+   構文色 → Find マッチ → ブラケットマッチ → 診断、の順で `after()`。逆順だと上書きされて消える。
 
-8. **Find マッチハイライトの順序**
-   `apply_syntax_highlight_system` で構文色を塗った**後**に、Find マッチを別 system で黄色 `Attrs` で上書きする。逆順だと Find のハイライトが構文色に上書きされて消える。system ordering で `find_highlight_system.after(apply_syntax_highlight_system)`。
+7. **`set_rich_text` の存在確認**  
+   bevy_cosmic_edit / cosmic_text のバージョンで API シグネチャが変わる。`crates/bevy_cosmic_edit/` を先に Grep。なければ `set_line_attributes` / `BufferLine::set_attrs_list` でフォールバック。
 
-## 推奨ワークフロー (1 サブステップ = 1 turn 目安)
+### Undo/Redo / 双方向 sync 系
+8. **Undo/Redo 後のハイライト再適用**  
+   `history.replaying = true` の間は `sync_editor_to_*_system` の `Record::edit` push をスキップするが、**ハイライト/フィルタ等の派生 system はスキップしない**。Undo/Redo 後こそ Dirty フラグを立てて再計算する。`sync_*_to_editor_system` 側で Dirty 立て。
 
-サブステップを始めるたびに以下を実行:
+### Picker / Modal / 通知トースト系
+9. **bevy_egui modal の z-order**  
+   floating_window より上に出すには `egui::Order::Foreground` + `Area` で明示。`anchor` を使うとレイアウトが崩れる場合あり。Zed の `modal_layer.rs` の責務 = 「他の入力をブロックする層」を意識して、open 中は背後 entity への click/keyboard を遮断。
 
-1. 計画書 `docs/plan/Phase 7.2 - Monaco-Grade Strategy Editor.md` の該当サブステップ節を Read で開く
-2. 上の対応表で対応する Zed ファイルを 1〜3 個 Read で開いて 5 分眺める (`pub fn` とコメントだけ)
-3. 我々のコード (`src/ui/strategy_editor.rs` 等) を Read して既存構造を確認
-4. **設計を 3-5 行で要約してからコードを書く** (どの Component / Resource / system / event を足すか)
-5. Caveat 一覧と照合 (特に 1, 3, 4, 6 は毎サブステップで踏みうる)
-6. 実装 → `cargo check` → `cargo test --lib` → 目視 E2E
+10. **picker のフォーカス遷移**  
+    `FocusedWidget` Resource を modal open 時に textfield に向け、close 時に元 entity に戻す。**戻し忘れるとキー入力が無効化される**。Zed の `PickerDelegate::dismissed` と同じタイミング。
 
-複数サブステップにまたがる長い実装になる場合は `pair-relay` スキルへ切り替え、本スキルの内容を Navigator に引き継ぐこと。`src/ui/**` を触るので `bevy-engine` スキルも併用。
+11. **通知トーストの寿命管理**  
+    toast 1 件 = 1 entity (Bevy `Timer` Component 持ち)、`Timer::finished()` で despawn。最大件数を超えたら古い物から `Commands::entity(_).despawn()`。Zed `toast_layer.rs` の queue 管理 = 我々ではシンプルに `Query<&Timer, With<Toast>>` で十分。
 
-## 完了判定
+### Layout / 永続化 / z-order
+12. **layout_persistence の version**  
+    fields を増減したら version を上げて旧 JSON を migrate / 捨てる。互換性を雑にやると起動時 panic。Zed の `persistence.rs` の sqlite migration と同じ責務だが、我々は JSON + version int で OK。
 
-計画書末尾の「完了条件」チェックリストを満たすこと。特に:
+13. **z-order と pickability**  
+    Bevy で Sprite/Text を重ねる場合、`Transform.translation.z` ＋ `Pickable` の組み合わせで back-to-front 制御。重なってると click が通らない事故あり。modal は最前面 z + 背後 `Pickable::IGNORE`。
 
-- Python ファイルを開いて keyword / string / comment が色分けされる
-- **Ctrl+Z で Undo した後もシンタックスハイライトが正しく再適用される** (Caveat 6 のテスト)
-- Tab / Enter が二重挿入されない (Caveat 3)
-- `cargo check` / `cargo test` が通る
-- E2E: `test_strategy_daily.py` を開いて色付き → 編集 → Ctrl+Z → 色が再適用される
+## 推奨ワークフロー (UI 機能 1 単位 ≒ 1 turn)
 
-完了したら `post-impl-skill-update` を起動して本スキルの description / 対応表 / Caveat を実情にアップデートすること。Zed の該当ファイルパスは Zed 側 upstream の整理でズレる可能性があるので、その時点での実在を Glob で再確認してから更新する。
+新規 UI 機能 / 既存改修 1 件につき:
+
+1. **ドメインを上の対応表から特定** → 該当 Zed crate を 1〜3 個 Read (`pub fn` とコメントと `*_tests.rs`)。5 分で十分。
+2. **我々の既存隣接コードを Read** (`src/ui/<near-by>.rs`) — 再利用ポイント・既存パターンを特定。重複実装を避ける。
+3. **設計を 3-5 行で要約してからコードを書く** — どの Component / Resource / system / Event を足すか、既存のどれを再利用するか。
+4. **Caveat 一覧と照合** — 特に 1, 3, 5, 6, 7, 8, 10 はエディタ + modal 系で毎回踏みうる。
+5. **実装 → `cargo check` → `cargo test --lib` → 目視 E2E** (E2E は `e2e-testing` スキル併用)。
+6. **長丁場 (複数ファイル / 複数 phase) になりそうなら `pair-relay` スキルへ移行**、本スキルの該当節を Navigator に引き継ぐ。
+7. **完了したら `post-impl-skill-update` スキル発動** — 本スキルの description / 対応表 / Caveat を実情にアップデート。
+
+## このスキルの対象になっている src/ui/* (現状スナップショット)
+
+- `strategy_editor.rs` — Phase 7.2 で Monaco-grade 化済 (syntax highlight / gutter / scrollbar / find&replace / auto-indent / bracket match)
+- `instrument_picker.rs` — picker パターンの既存実装
+- `sidebar.rs` — virtual scroll + tickers リストの既存実装
+- `floating_window.rs` / `layout_persistence.rs` — workspace / persistence パターン
+- `menu_bar.rs` / `footer.rs` — title_bar / status_bar 相当
+- `chart.rs` / `orders.rs` / `positions.rs` / `buying_power.rs` / `run_result_panel.rs` — table / list / panel パターン (Zed の `editor_benchmarks` ではないが pane の概念は流用可)
+- `scenario_startup_panel.rs` / `replay_startup_window.rs` — recent_projects / welcome 系の参考になる側
+
+新機能を作るときはまずこれら**隣接ファイルを Read してから Zed を読む**。重複実装を避けるため。
+
+## 他スキルとの境界 (いつ切り替えるか)
+
+- Bevy ECS / WGPU / Asset / `add_systems` 20 上限・observer・required components の一般論 → **`bevy-engine`** スキル併用必須
+- バックエンド (Python/gRPC、nautilus_trader、戦略実行) → **`nautilus_trader`** / **`tachibana`** / **`kabusapi`** スキルへ
+- Rust テスト一般 (`#[cfg(test)] mod tests`、Bevy `App` テスト、`serial_test`、env var) → **`rust-testing`** スキル併用
+- Python テスト一般 (pytest / pytest-httpx / freezegun) → **`tdd-workflow`** スキル
+- E2E 手動検証 (`backcast.exe` + `python -m engine`、レイアウトの目視) → **`e2e-testing`** スキル
+- 大規模並列実装 (5 タスク以上、依存解決可能) → **`parallel-agent-dev`** スキル
+- 長丁場の段階実装 (TDD・複数ファイル・複数レイヤー) → **`pair-relay`** スキル (Navigator spawn 前に本スキル invoke 必須)
+- 学習目的・ユーザがドライバー → **`pair-nav`** スキル
+- 実装完了/コミット/フェーズ終了 → **`post-impl-skill-update`** スキル (CLAUDE.md 必須ルール)
+- 変更コードのレビュー (再利用・品質・効率) → **`simplify`** スキル

@@ -4,6 +4,7 @@
 Tests whether a skill's description causes Claude to trigger (read the skill)
 for a set of queries. Outputs results as JSON.
 """
+from __future__ import annotations
 
 import argparse
 import json
