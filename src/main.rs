@@ -1,5 +1,6 @@
 use backcast::camera::{pancam_suppression_over_editor_system, setup_camera};
 use backcast::grid::GridPlugin;
+use backcast::backend_supervisor::BackendSupervisorPlugin;
 use backcast::trading::{
     AvailableInstruments, BackendChannel, BackendStartupStage, BackendStatus, BackendStatusUpdate,
     ExecutionMode, ExecutionModeRes, LastPrices, LastRunResult, PortfolioOrder, PortfolioPosition,
@@ -130,6 +131,7 @@ async fn main() {
         .add_plugins(PanCamPlugin)
         .add_plugins(UiPlugin)
         .add_plugins(GridPlugin)
+        .add_plugins(BackendSupervisorPlugin)
         .insert_resource(TradingData::default())
         .insert_resource(TradingSettings::default())
         .insert_resource(BackendStatus::default())
