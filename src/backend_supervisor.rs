@@ -144,6 +144,14 @@ pub fn parse_sentinel_line(line: &str) -> Option<u16> {
         .and_then(|m| m.as_str().parse::<u16>().ok())
 }
 
+/// Check whether a sentinel-advertised port matches the expected port from
+/// BACKEND_URL. Returns `true` on match. Mismatch is non-fatal: the caller
+/// logs an error and continues on the Health.Check path (C-5). Pure so the
+/// contract is unit-testable without a subprocess.
+pub fn sentinel_port_matches(advertised: u16, expected: u16) -> bool {
+    advertised == expected
+}
+
 /// Resolve the working directory used as the base for `.venv` discovery and
 /// `PYTHONPATH=<cwd>/python`. (C-4)
 ///
@@ -358,7 +366,7 @@ pub async fn run_supervisor(
         // Drain stdout/stderr on dedicated OS threads. stdout lines are scanned
         // for the readiness sentinel and forwarded to `_sentinel_rx` (consumed
         // in 4-B-2b); stderr is logged at warn. (C-5)
-        let (sentinel_tx, _sentinel_rx) = mpsc::channel::<u16>(16);
+        let (sentinel_tx, mut sentinel_rx) = mpsc::channel::<u16>(16);
         if let Some(stdout) = child.stdout.take() {
             let tx = sentinel_tx.clone();
             std::thread::spawn(move || {
@@ -383,11 +391,36 @@ pub async fn run_supervisor(
             });
         }
 
-        // 4-B-2b-ii-β-2a: handshake is invoked WITHOUT waiting on the sentinel
-        // yet. The `tokio::select!` integration that makes the sentinel the
-        // fastest probe trigger lands in β-2b. `child` is held alive here so
-        // the pipes stay open; AppExit cleanup / crash detection (Step 5) take
-        // ownership of it later.
+        // 4-B-2b-ii-β-2b: wait for the readiness sentinel up to a bounded
+        // timeout so it becomes the fastest trigger to start the handshake.
+        // If the sentinel arrives we validate its advertised port; a mismatch
+        // is logged but non-fatal (the handshake still probes BACKEND_URL).
+        // If the timeout fires first we fall through to the handshake anyway,
+        // so a backend that never emits the sentinel still gets probed. (C-1/C-5)
+        tokio::select! {
+            maybe_port = sentinel_rx.recv() => {
+                match maybe_port {
+                    Some(p) if sentinel_port_matches(p, port) => {
+                        bevy::log::info!("[backend] readiness sentinel on port {}", p);
+                    }
+                    Some(p) => {
+                        bevy::log::error!(
+                            "[backend] sentinel port {} != expected {}; proceeding to handshake",
+                            p, port
+                        );
+                    }
+                    None => {
+                        bevy::log::warn!("[backend] sentinel channel closed before readiness");
+                    }
+                }
+            }
+            _ = tokio::time::sleep(std::time::Duration::from_secs(5)) => {
+                bevy::log::warn!("[backend] sentinel not received within 5s; proceeding to handshake");
+            }
+        }
+
+        // `child` is held alive here so the pipes stay open; AppExit cleanup /
+        // crash detection (Step 5) take ownership of it later.
         run_health_and_getstate_handshake(&config, &lifecycle_tx, 75, "BACKEND_SERVICER_MISSING")
             .await;
         // Keep `child` alive until the task ends (drop kills nothing on its own;
@@ -752,6 +785,16 @@ mod tests {
         assert_eq!(parse_sentinel_line("[engine] starting up"), None);
         assert_eq!(parse_sentinel_line("GRPC_LISTENING port=abc"), None);
         assert_eq!(parse_sentinel_line("prefix GRPC_LISTENING port=1"), None);
+    }
+
+    #[test]
+    fn sentinel_port_matches_on_equal() {
+        assert!(sentinel_port_matches(19876, 19876));
+    }
+
+    #[test]
+    fn sentinel_port_matches_false_on_mismatch() {
+        assert!(!sentinel_port_matches(50051, 19876));
     }
 
     // --- 4-B-2b-i: pure resolver / preflight unit tests ---
