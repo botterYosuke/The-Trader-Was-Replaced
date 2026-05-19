@@ -1332,6 +1332,10 @@ mod tests {
             .insert_resource(ScenarioWritebackPaths {
                 cache_sidecar: Some(cache_path.clone()),
             })
+            // writeback_scenario_instruments_system は ExecutionModeRes を要求する（Replay gate）
+            .insert_resource(crate::trading::ExecutionModeRes {
+                mode: crate::trading::ExecutionMode::Replay,
+            })
             .add_event::<ScenarioStartupParamCommit>()
             .add_systems(
                 Update,

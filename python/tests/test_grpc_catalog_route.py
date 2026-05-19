@@ -32,14 +32,18 @@ def catalog_grpc_server():
     server.stop(0)
 
 
+_INSTRUMENT_ID = "AAPL.NASDAQ"  # D17: instrument id (not bar_type)
+
+
 def _write_sample_catalog(catalog_path):
-    """Write 3 bars into a fresh ParquetDataCatalog. Returns the bar_type string used."""
+    """Write 3 bars into a fresh ParquetDataCatalog using instrument_id format."""
     from nautilus_trader.model.data import Bar, BarType
     from nautilus_trader.model.objects import Price, Quantity
     from nautilus_trader.persistence.catalog import ParquetDataCatalog
 
     catalog = ParquetDataCatalog(str(catalog_path.resolve()))
-    bar_type = BarType.from_str("AAPL.NASDAQ-1-MINUTE-LAST-EXTERNAL")
+    # D17: bar_type = instrument_id + granularity spec
+    bar_type = BarType.from_str(f"{_INSTRUMENT_ID}-1-MINUTE-LAST-EXTERNAL")
 
     def _bar(close: str, ts_event_ns: int) -> Bar:
         p = Price.from_str(close)
@@ -56,7 +60,6 @@ def _write_sample_catalog(catalog_path):
         _bar("105.00", 10_000_000_000),
         _bar("110.25", 15_000_000_000),
     ])
-    return str(bar_type)
 
 
 @pytest.mark.slow
@@ -64,7 +67,7 @@ def test_grpc_load_replay_data_with_catalog_path_then_step(catalog_grpc_server, 
     port, token, engine = catalog_grpc_server
     catalog_path = tmp_path / "catalog"
     catalog_path.mkdir()
-    bar_type_str = _write_sample_catalog(catalog_path)
+    _write_sample_catalog(catalog_path)
 
     channel = grpc.insecure_channel(f"localhost:{port}")
     stub = engine_pb2_grpc.DataEngineStub(channel)
@@ -72,7 +75,8 @@ def test_grpc_load_replay_data_with_catalog_path_then_step(catalog_grpc_server, 
     load_resp = stub.LoadReplayData(
         engine_pb2.LoadReplayDataRequest(
             request_id="r1",
-            instrument_ids=[bar_type_str],
+            # D17: pass instrument_id ("AAPL.NASDAQ"), not bar_type string
+            instrument_ids=[_INSTRUMENT_ID],
             granularity=engine_pb2.MINUTE,
             catalog_path=str(catalog_path),
             token=token,
@@ -111,7 +115,8 @@ def test_grpc_load_replay_data_without_catalog_path_field(catalog_grpc_server):
     resp = stub.LoadReplayData(
         engine_pb2.LoadReplayDataRequest(
             request_id="r1",
-            instrument_ids=["AAPL.NASDAQ-1-MINUTE-LAST-EXTERNAL"],
+            # D17: instrument_id format (not bar_type string)
+            instrument_ids=[_INSTRUMENT_ID],
             granularity=engine_pb2.MINUTE,
             token=token,
             # catalog_path intentionally omitted

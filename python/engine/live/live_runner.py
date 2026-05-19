@@ -48,6 +48,7 @@ class LiveRunner:
         self.bus: LiveEventBus = LiveEventBus()
         self._task: Optional[asyncio.Task[None]] = None
         self._last_error: Optional[BaseException] = None
+        self._loop: Optional[asyncio.AbstractEventLoop] = None  # D10: set by server_grpc
 
     async def subscribe(self, instrument_id: InstrumentId) -> None:
         # idempotent: 既に登録済みなら何もしない
@@ -94,6 +95,9 @@ class LiveRunner:
                 if not self._is_subscribed(evt.instrument_id):
                     continue
                 if isinstance(evt, TradesUpdate):
+                    # Fix 2: publish the raw TradesUpdate so LastPriceCache can
+                    # use trade fallback pricing, then also run aggregation.
+                    await self.bus.publish(evt)
                     for agg in self._aggregators[evt.instrument_id]:
                         closed = agg.on_tick(evt)
                         if closed is not None:
@@ -119,6 +123,34 @@ class LiveRunner:
     @property
     def last_error(self) -> Optional[BaseException]:
         return self._last_error
+
+    # D10: adapter exposure for VenueLogin RPC
+
+    @property
+    def adapter(self) -> "LiveVenueAdapter":
+        """Expose the underlying adapter for VenueLogin RPC (D10)."""
+        return self._adapter
+
+    def is_logged_in(self) -> bool:
+        """D10: Return True if adapter is logged in and bus is alive.
+
+        NOTE: field name is `self.bus` (public), NOT `self._bus`.
+        """
+        return getattr(self._adapter, "is_logged_in", True) and self.bus is not None
+
+    def fetch_instruments_blocking(self, timeout: float = 5.0):
+        """D10: Fetch instruments from adapter synchronously (from gRPC thread).
+
+        Requires _loop to be set (via _ensure_live_loop in server_grpc).
+        """
+        if self._loop is None:
+            raise RuntimeError("LiveRunner._loop not set; call _ensure_live_loop first")
+        fut = asyncio.run_coroutine_threadsafe(self._adapter.fetch_instruments(), self._loop)
+        return fut.result(timeout=timeout)
+
+    def subscribed_ids(self) -> set:
+        """D20: Return the set of currently subscribed instrument IDs."""
+        return set(self._aggregators.keys())
 
 
 def _normalize_intervals(

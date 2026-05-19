@@ -6,11 +6,13 @@ pub mod editor_history;
 pub mod floating_window;
 pub mod footer;
 pub mod instrument_picker;
+pub mod instruments_universe_prune;
 pub mod layout_persistence;
 pub mod menu_bar;
 pub mod orders;
 pub mod positions;
 pub mod replay_startup_window;
+pub mod restore;
 pub mod run_result_panel;
 pub mod scenario_parser;
 pub mod scenario_startup_panel;
@@ -45,9 +47,16 @@ use crate::ui::footer::{
     transport_button_system, update_footer_system, update_speed_buttons_system,
 };
 use crate::ui::instrument_picker::{
-    add_instrument_button_system, force_close_picker_on_lock_system, picker_list_rebuild_system,
-    picker_row_click_system, picker_searchbox_input_system, sync_picker_dropdown_visibility_system,
+    add_instrument_button_system, auto_fetch_available_on_replay_entry_system,
+    auto_fetch_live_universe_on_connect_system, force_close_picker_on_lock_system,
+    picker_list_rebuild_system, picker_row_click_system, picker_searchbox_input_system,
+    subscribe_added_instruments_system, sync_picker_dropdown_visibility_system,
 };
+use crate::ui::instruments_universe_prune::{
+    invalidate_tickers_on_venue_disconnect_system, prune_instruments_outside_universe_system,
+    unsubscribe_removed_instruments_system,
+};
+use crate::ui::restore::restore_fixed_registry_on_replay_entry_system;
 use crate::ui::menu_bar::{
     handle_strategy_file_load_system, handle_strategy_run_system,
     log_strategy_file_load_requested_system, log_strategy_run_requested_system, menu_item_system,
@@ -70,10 +79,8 @@ use crate::ui::components::{
     ScenarioStartupParams, SidebarTickersScrollOffset, SidebarTickersSearchState,
 };
 use crate::ui::sidebar::{
-    instrument_remove_button_system, panel_button_system, spawn_sidebar,
-    ticker_row_click_system, tickers_scroll_system, tickers_search_focus_system,
-    tickers_search_input_system, tickers_search_text_sync_system,
-    update_ticker_price_text_system, update_sidebar_system, update_tickers_list_system,
+    instrument_remove_button_system, instrument_row_click_system, panel_button_system,
+    spawn_sidebar, update_instrument_price_text_system, update_sidebar_system,
 };
 use crate::ui::strategy_editor::{
     StrategyAutoSaveState, apply_pending_app_edits_system, apply_strategy_snapshot_restore_system,
@@ -176,11 +183,23 @@ impl Plugin for UiPlugin {
                     parse_scenario_system,
                     sync_registry_from_scenario_loaded_system,
                     sync_registry_from_scenario_cleared_system,
+                    // §5.3 順序: status 更新後、Tickers 鮮度リセット → live universe fetch
+                    invalidate_tickers_on_venue_disconnect_system,
+                    auto_fetch_live_universe_on_connect_system,
+                    auto_fetch_available_on_replay_entry_system,
+                    // prune → Chart sync → unsubscribe/subscribe → restore → writeback
+                    prune_instruments_outside_universe_system,
+                    instrument_chart_sync_system,
+                    unsubscribe_removed_instruments_system,
+                    subscribe_added_instruments_system,
+                    restore_fixed_registry_on_replay_entry_system,
                     mark_registry_dirty_system,
                     sync_scenario_metadata_from_registry_system,
                     writeback_scenario_instruments_system,
-                    instrument_chart_sync_system,
-                    // ── 新規: scenario startup params (I2b) ──
+                )
+                    .chain(),
+                // ── 新規: scenario startup params (I2b) ──
+                (
                     sync_startup_params_from_scenario_system,
                     commit_startup_params_to_scenario_system,
                     write_startup_params_to_cache_sidecar_system,
@@ -188,21 +207,14 @@ impl Plugin for UiPlugin {
                     update_scenario_startup_param_ui_system,
                     enforce_scenario_startup_panel_readonly_system,
                 )
-                    .chain(),
+                    .chain()
+                    .after(writeback_scenario_instruments_system),
                 update_sidebar_system,
                 instrument_remove_button_system,
+                instrument_row_click_system.after(update_sidebar_system),
+                update_instrument_price_text_system.after(update_sidebar_system),
                 add_instrument_button_system.after(sync_registry_from_scenario_loaded_system),
                 force_close_picker_on_lock_system.after(mark_registry_dirty_system),
-                // Phase 8 §3.5 Tickers (Live universe) systems
-                tickers_search_focus_system,
-                tickers_search_input_system.before(picker_searchbox_input_system),
-                tickers_search_text_sync_system.after(tickers_search_input_system),
-                tickers_scroll_system,
-                update_tickers_list_system
-                    .after(tickers_search_input_system)
-                    .after(tickers_scroll_system),
-                ticker_row_click_system,
-                update_ticker_price_text_system.after(update_tickers_list_system),
             ),
         )
         .add_systems(

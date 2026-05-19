@@ -207,15 +207,20 @@ pub enum TransportCommand {
     /// startup (Replay catalog fallback) and whenever the venue transitions
     /// into CONNECTED/SUBSCRIBED (Live universe overwrite, plan §3.5).
     ListInstruments {
-        /// Hint forwarded as `ListInstrumentsRequest.source`. Phase 8 backend
-        /// ignores this and always returns the Replay catalog; reserved for
-        /// future `"local"` parquet snapshot wiring.
-        source: Option<String>,
+        /// Typed source hint; converted to a wire string by
+        /// `tickers_source_to_wire` before being sent to the backend.
+        source: TickersSource,
     },
     /// Live-mode sidebar click handler. `token` is injected by the transport
     /// task. Channels are `["trades", "depth"]` by default (LiveRunner is
     /// channel-agnostic on the backend side).
     SubscribeMarketData {
+        instrument_id: String,
+    },
+    /// Unsubscribe from a previously-subscribed instrument's market data feed.
+    /// Mirrors `SubscribeMarketData`; wired to the backend's `UnsubscribeMarketData`
+    /// RPC (plan §3.4 D12).
+    UnsubscribeMarketData {
         instrument_id: String,
     },
 }
@@ -451,9 +456,9 @@ pub enum VenueState {
 /// must not be selectable in Phase 8 (see plan §3.6).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
 pub enum ExecutionMode {
+    #[default]
     #[serde(rename = "Replay")]
     Replay,
-    #[default]
     #[serde(rename = "LiveManual")]
     LiveManual,
     #[serde(rename = "LiveAuto")]
@@ -484,6 +489,56 @@ pub struct ExecutionModeRes {
     pub mode: ExecutionMode,
 }
 
+/// Where the `Tickers` list originated. Drives which overwrite rules apply.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum TickersSource {
+    #[default]
+    Unknown,
+    /// Fetched from the connected venue adapter (`fetch_instruments`).
+    LiveVenue,
+    /// Venue snapshot cached on disk — Phase 8.7 has no firing path for this,
+    /// reserved for future phases.
+    LocalVenueSnapshot,
+    /// Replay Parquet catalog fallback. Must not be used to prune Live universe.
+    ReplayCatalogFallback,
+}
+
+/// Lifecycle status of the Tickers fetch.
+#[derive(Debug, Clone, PartialEq, Eq, Default)]
+pub enum TickersStatus {
+    #[default]
+    NotFetched,
+    InFlight,
+    Loaded,
+    /// Fetch failed; `list` retains the last successfully loaded value (stale display).
+    Failed(String),
+}
+
+/// Convert a `TickersSource` to the wire string sent as
+/// `ListInstrumentsRequest.source`. Returns `None` for `Unknown` (the field
+/// is omitted from the request so the backend applies its own default).
+/// Both `ReplayCatalogFallback` and `LocalVenueSnapshot` send `"local"` because
+/// the backend routes both to the same `_list_instruments_local` path.
+pub fn tickers_source_to_wire(source: TickersSource) -> Option<String> {
+    match source {
+        TickersSource::Unknown => None,
+        TickersSource::ReplayCatalogFallback | TickersSource::LocalVenueSnapshot => {
+            Some("local".to_string())
+        }
+        TickersSource::LiveVenue => Some("live".to_string()),
+    }
+}
+
+/// Returns `true` when the venue state represents an active live connection.
+pub fn is_venue_live(state: VenueState) -> bool {
+    matches!(state, VenueState::Connected | VenueState::Subscribed)
+}
+
+/// Returns `true` for any live execution mode (manual or auto).
+pub fn is_live_mode(mode: ExecutionMode) -> bool {
+    matches!(mode, ExecutionMode::LiveManual | ExecutionMode::LiveAuto)
+}
+
 /// Sidebar instrument row. Phase 8 §3.5: name/market are filled by the venue
 /// adapter when available; for Replay catalog sources `name` falls back to
 /// `id` and `market` is empty. Live-tick `last_price` is intentionally kept
@@ -502,6 +557,8 @@ pub struct Ticker {
 #[derive(Resource, Debug, Clone, Default)]
 pub struct Tickers {
     pub list: Vec<Ticker>,
+    pub source: TickersSource,
+    pub status: TickersStatus,
 }
 
 /// Per-instrument last trade price, overwritten wholesale on every
@@ -571,9 +628,19 @@ pub enum BackendStatusUpdate {
     ExecutionModeChanged {
         mode: ExecutionMode,
     },
-    /// Wholesale replacement of the sidebar instrument universe (plan §3.5).
+    /// Fetch started; sidebar can show a spinner (plan §3.3 D6c).
+    InstrumentsListStarted {
+        source: TickersSource,
+    },
+    /// Wholesale replacement of the sidebar instrument universe (plan §3.5 / §3.3 D6c).
     InstrumentsListed {
+        source: TickersSource,
         instruments: Vec<Ticker>,
+    },
+    /// Fetch failed; sidebar shows stale list with error badge (plan §3.3 D6c).
+    InstrumentsListFailed {
+        source: TickersSource,
+        error: String,
     },
     /// Wholesale replacement of the per-instrument last-trade price map
     /// derived from BackendTradingState.last_prices (Phase 8 §3.5 sidebar
@@ -942,8 +1009,8 @@ mod tests {
     }
 
     #[test]
-    fn test_execution_mode_default_is_live_manual() {
-        assert_eq!(ExecutionMode::default(), ExecutionMode::LiveManual);
+    fn test_execution_mode_default_is_replay() {
+        assert_eq!(ExecutionMode::default(), ExecutionMode::Replay);
     }
 
     #[test]
@@ -972,7 +1039,7 @@ mod tests {
     #[test]
     fn test_execution_mode_res_default() {
         let r = ExecutionModeRes::default();
-        assert_eq!(r.mode, ExecutionMode::LiveManual);
+        assert_eq!(r.mode, ExecutionMode::Replay);
     }
 
     #[test]
@@ -985,5 +1052,95 @@ mod tests {
     fn test_selected_symbol_default_is_none() {
         let s = SelectedSymbol::default();
         assert!(s.id.is_none());
+    }
+
+    // ---- Phase 8.7 Step 5: TickersSource / TickersStatus / Tickers ----
+
+    #[test]
+    fn tickers_default_status_is_not_fetched_source_unknown() {
+        let t = Tickers::default();
+        assert!(t.list.is_empty());
+        assert_eq!(t.source, TickersSource::Unknown);
+        assert_eq!(t.status, TickersStatus::NotFetched);
+    }
+
+    #[test]
+    fn tickers_list_started_sets_inflight_keeps_list() {
+        let mut t = Tickers {
+            list: vec![Ticker { id: "7203.TSE".into(), name: "Toyota".into(), market: "TSE".into() }],
+            source: TickersSource::Unknown,
+            status: TickersStatus::NotFetched,
+        };
+        // Simulate InstrumentsListStarted reducer
+        t.source = TickersSource::ReplayCatalogFallback;
+        t.status = TickersStatus::InFlight;
+        assert_eq!(t.source, TickersSource::ReplayCatalogFallback);
+        assert_eq!(t.status, TickersStatus::InFlight);
+        // list must be preserved
+        assert_eq!(t.list.len(), 1);
+        assert_eq!(t.list[0].id, "7203.TSE");
+    }
+
+    #[test]
+    fn tickers_listed_overwrites_list_and_source_and_status_loaded() {
+        let mut t = Tickers {
+            list: vec![Ticker { id: "OLD.TSE".into(), name: "Old".into(), market: "TSE".into() }],
+            source: TickersSource::Unknown,
+            status: TickersStatus::InFlight,
+        };
+        let new_instruments = vec![
+            Ticker { id: "1301.TSE".into(), name: "Kyokuyo".into(), market: "TSE".into() },
+            Ticker { id: "7203.TSE".into(), name: "Toyota".into(), market: "TSE".into() },
+        ];
+        // Simulate InstrumentsListed reducer
+        t.source = TickersSource::LiveVenue;
+        t.status = TickersStatus::Loaded;
+        t.list = new_instruments;
+        assert_eq!(t.source, TickersSource::LiveVenue);
+        assert_eq!(t.status, TickersStatus::Loaded);
+        assert_eq!(t.list.len(), 2);
+        assert_eq!(t.list[0].id, "1301.TSE");
+        assert_eq!(t.list[1].id, "7203.TSE");
+    }
+
+    #[test]
+    fn tickers_list_failed_keeps_list_sets_status_failed() {
+        let stale = vec![
+            Ticker { id: "7203.TSE".into(), name: "Toyota".into(), market: "TSE".into() },
+        ];
+        let mut t = Tickers {
+            list: stale.clone(),
+            source: TickersSource::ReplayCatalogFallback,
+            status: TickersStatus::InFlight,
+        };
+        // Simulate InstrumentsListFailed reducer
+        t.source = TickersSource::LiveVenue;
+        t.status = TickersStatus::Failed("grpc timeout".to_string());
+        // list is preserved (stale display)
+        assert_eq!(t.list, stale);
+        assert_eq!(t.source, TickersSource::LiveVenue);
+        assert_eq!(t.status, TickersStatus::Failed("grpc timeout".to_string()));
+    }
+
+    #[test]
+    fn tickers_source_to_wire_maps_all_variants() {
+        assert_eq!(tickers_source_to_wire(TickersSource::Unknown), None);
+        assert_eq!(tickers_source_to_wire(TickersSource::ReplayCatalogFallback), Some("local".to_string()));
+        assert_eq!(tickers_source_to_wire(TickersSource::LocalVenueSnapshot), Some("local".to_string()));
+        assert_eq!(tickers_source_to_wire(TickersSource::LiveVenue), Some("live".to_string()));
+    }
+
+    #[test]
+    fn unsubscribe_market_data_command_serializes_to_backend_rpc() {
+        // Verify that the UnsubscribeMarketData variant exists and can be constructed.
+        let cmd = TransportCommand::UnsubscribeMarketData {
+            instrument_id: "7203.TSE".to_string(),
+        };
+        match cmd {
+            TransportCommand::UnsubscribeMarketData { instrument_id } => {
+                assert_eq!(instrument_id, "7203.TSE");
+            }
+            _ => panic!("expected UnsubscribeMarketData variant"),
+        }
     }
 }

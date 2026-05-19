@@ -3,9 +3,10 @@ use backcast::grid::GridPlugin;
 use backcast::trading::{
     AvailableInstruments, BackendChannel, BackendStartupStage, BackendStatus, BackendStatusUpdate,
     ExecutionMode, ExecutionModeRes, LastPrices, LastRunResult, PortfolioOrder, PortfolioPosition,
-    PortfolioState, ReplaySpeed, RunState, SelectedSymbol, Ticker, Tickers, TradingData,
-    TradingSettings, TransportCommand, TransportCommandSender, VenueState, VenueStatusRes,
-    backend_update_system, engine, parse_summary_json, price_simulation_system,
+    PortfolioState, ReplaySpeed, RunState, SelectedSymbol, Ticker, Tickers, TickersSource,
+    TickersStatus, TradingData, TradingSettings, TransportCommand, TransportCommandSender,
+    VenueState, VenueStatusRes, backend_update_system, engine, parse_summary_json,
+    price_simulation_system, tickers_source_to_wire,
 };
 use backcast::replay::{ReplayStartupPhase, ReplayStartupProgress};
 use backcast::ui::UiPlugin;
@@ -23,7 +24,7 @@ use engine::{
     ListAllListedSymbolsRequest, ListInstrumentsRequest, LoadReplayDataRequest, PauseReplayRequest,
     ReplayGranularity, ResumeReplayRequest, SetExecutionModeRequest, SetReplaySpeedRequest,
     StartEngineRequest, StartEngineResponse, StepReplayRequest, SubscribeRequest,
-    VenueLoginRequest, VenueLogoutRequest,
+    UnsubscribeRequest, VenueLoginRequest, VenueLogoutRequest,
 };
 use tokio::sync::mpsc;
 
@@ -52,23 +53,26 @@ fn parse_execution_mode(s: &str) -> Option<ExecutionMode> {
     serde_json::from_value(serde_json::Value::String(s.to_owned())).ok()
 }
 
-/// Fire `ListInstruments` off the main polling loop and emit
-/// `InstrumentsListed` on success. Used at startup and on venue state
-/// transitions; the work runs on a separate task so the poll cadence
-/// is not gated on backend list latency.
+/// Fire `ListInstruments` off the main polling loop and emit the three-part
+/// `InstrumentsListStarted` / `InstrumentsListed` / `InstrumentsListFailed`
+/// sequence. Used at startup and on venue state transitions; the work runs
+/// on a separate task so the poll cadence is not gated on backend list latency.
 fn fire_list_instruments(
     client: &DataEngineClient<tonic::transport::Channel>,
     token: &str,
-    source: Option<String>,
+    source: TickersSource,
     status_tx: &mpsc::UnboundedSender<BackendStatusUpdate>,
 ) {
     let mut li_client = client.clone();
     let li_token = token.to_owned();
     let li_status_tx = status_tx.clone();
+    let wire_source = tickers_source_to_wire(source);
+    // Emit InFlight immediately before spawning so the sidebar can show a spinner.
+    let _ = li_status_tx.send(BackendStatusUpdate::InstrumentsListStarted { source });
     tokio::spawn(async move {
         let req = tonic::Request::new(ListInstrumentsRequest {
             token: li_token,
-            source,
+            source: wire_source,
         });
         match li_client.list_instruments(req).await {
             Ok(resp) => {
@@ -85,15 +89,22 @@ fn fire_list_instruments(
                         .collect();
                     info!("ListInstruments(auto) ok: {} instruments", instruments.len());
                     let _ = li_status_tx
-                        .send(BackendStatusUpdate::InstrumentsListed { instruments });
+                        .send(BackendStatusUpdate::InstrumentsListed { source, instruments });
                 } else {
                     warn!("ListInstruments(auto) returned !success: {}", inner.error_message);
-                    let _ = li_status_tx.send(BackendStatusUpdate::InstrumentsListed {
-                        instruments: Vec::new(),
+                    let _ = li_status_tx.send(BackendStatusUpdate::InstrumentsListFailed {
+                        source,
+                        error: inner.error_message,
                     });
                 }
             }
-            Err(e) => error!("ListInstruments(auto) failed: {}", e),
+            Err(e) => {
+                error!("ListInstruments(auto) failed: {}", e);
+                let _ = li_status_tx.send(BackendStatusUpdate::InstrumentsListFailed {
+                    source,
+                    error: e.to_string(),
+                });
+            }
         }
     });
 }
@@ -286,8 +297,20 @@ fn apply_status_update(
         BackendStatusUpdate::ExecutionModeChanged { mode } => {
             exec_mode.mode = mode;
         }
-        BackendStatusUpdate::InstrumentsListed { instruments } => {
+        BackendStatusUpdate::InstrumentsListStarted { source } => {
+            tickers.source = source;
+            tickers.status = TickersStatus::InFlight;
+            // list is kept (shows stale data while in-flight)
+        }
+        BackendStatusUpdate::InstrumentsListed { source, instruments } => {
+            tickers.source = source;
+            tickers.status = TickersStatus::Loaded;
             tickers.list = instruments;
+        }
+        BackendStatusUpdate::InstrumentsListFailed { source, error } => {
+            tickers.source = source;
+            tickers.status = TickersStatus::Failed(error);
+            // list is kept (stale display)
         }
         BackendStatusUpdate::LastPricesUpdated { prices } => {
             last_prices.map = prices;
@@ -369,7 +392,7 @@ fn setup_backend_connection(
         // Pre-login this falls back to the Replay catalog (plan §3.5 1002);
         // after VenueLogin success we re-fire below to overwrite with the
         // Live venue universe.
-        fire_list_instruments(&client, &token, None, &status_tx);
+        fire_list_instruments(&client, &token, TickersSource::ReplayCatalogFallback, &status_tx);
 
         // Phase 8 §3.5 subtask 5: dedupe venue_state / execution_mode pushes
         // by tracking the previous raw string we saw from BackendTradingState.
@@ -708,6 +731,29 @@ fn setup_backend_connection(
                     TransportCommand::ListInstruments { source } => {
                         fire_list_instruments(&client, &token, source, &status_tx);
                     }
+                    TransportCommand::UnsubscribeMarketData { instrument_id } => {
+                        let req = tonic::Request::new(engine::UnsubscribeRequest {
+                            instrument_id: instrument_id.clone(),
+                            token: token.clone(),
+                        });
+                        match client.unsubscribe_market_data(req).await {
+                            Ok(r) => {
+                                let inner = r.into_inner();
+                                if inner.success {
+                                    info!("UnsubscribeMarketData ok: {}", instrument_id);
+                                } else {
+                                    warn!(
+                                        "UnsubscribeMarketData rejected: {} error_code={}",
+                                        instrument_id, inner.error_code
+                                    );
+                                }
+                            }
+                            Err(e) => error!(
+                                "UnsubscribeMarketData failed: {} err={}",
+                                instrument_id, e
+                            ),
+                        }
+                    }
                     TransportCommand::SubscribeMarketData { instrument_id } => {
                         let req = tonic::Request::new(SubscribeRequest {
                             instrument_id: instrument_id.clone(),
@@ -775,18 +821,9 @@ fn setup_backend_connection(
                                                 venue_id: state.venue_id.clone(),
                                                 instruments_loaded: state.instruments_loaded.unwrap_or(0),
                                             });
-                                            // Phase 8 §3.5: overwrite Tickers with the Live
-                                            // venue universe whenever we (re-)enter a state
-                                            // where the backend has instrument metadata
-                                            // available (plan §0.5.1 / §3.5 1001).
-                                            if matches!(
-                                                vs,
-                                                VenueState::Connected | VenueState::Subscribed
-                                            ) {
-                                                fire_list_instruments(
-                                                    &client, &token, None, &status_tx,
-                                                );
-                                            }
+                                            // D15: venue-transition fire_list_instruments removed.
+                                            // Live universe is now auto-fetched by
+                                            // auto_fetch_live_universe_on_connect_system (§4.6.1).
                                         }
                                         None => warn!("unknown venue_state from backend: {:?}", s),
                                     }
@@ -1180,7 +1217,7 @@ mod tests {
         assert!(parse_replay_granularity("").is_err());
     }
 
-    // --- InstrumentsListed arm (Phase 8 §3.5) ---
+    // --- InstrumentsListed arm (Phase 8 §3.5 / Phase 8.7 §3.3 D6c) ---
 
     fn t(id: &str) -> Ticker {
         Ticker { id: id.into(), name: id.into(), market: String::new() }
@@ -1188,10 +1225,12 @@ mod tests {
 
     #[test]
     fn apply_instruments_listed_overwrites_tickers() {
+        use backcast::trading::{TickersSource, TickersStatus};
         let mut progress = ReplayStartupProgress::default();
-        let mut tickers = Tickers { list: vec![t("OLD.TSE")] };
+        let mut tickers = Tickers { list: vec![t("OLD.TSE")], ..Tickers::default() };
         apply_with_tickers(
             BackendStatusUpdate::InstrumentsListed {
+                source: TickersSource::ReplayCatalogFallback,
                 instruments: vec![t("1301.TSE"), t("7203.TSE")],
             },
             &mut progress,
@@ -1202,14 +1241,20 @@ mod tests {
             vec!["1301.TSE", "7203.TSE"],
             "InstrumentsListed must replace (not merge with) the prior universe",
         );
+        assert_eq!(tickers.source, TickersSource::ReplayCatalogFallback);
+        assert_eq!(tickers.status, TickersStatus::Loaded);
     }
 
     #[test]
     fn apply_instruments_listed_empty_clears_tickers() {
+        use backcast::trading::TickersSource;
         let mut progress = ReplayStartupProgress::default();
-        let mut tickers = Tickers { list: vec![t("1301.TSE")] };
+        let mut tickers = Tickers { list: vec![t("1301.TSE")], ..Tickers::default() };
         apply_with_tickers(
-            BackendStatusUpdate::InstrumentsListed { instruments: vec![] },
+            BackendStatusUpdate::InstrumentsListed {
+                source: TickersSource::LiveVenue,
+                instruments: vec![],
+            },
             &mut progress,
             &mut tickers,
         );

@@ -132,6 +132,9 @@ _V3_TYPES: dict[str, type] = {
     "granularity": str,
     "initial_cash": int,
 }
+_V3_REQUIRED_BASE: frozenset[str] = frozenset({
+    "schema_version", "start", "end", "granularity", "initial_cash",
+})
 _V3_OPTIONAL: frozenset[str] = frozenset({"strategy_init_kwargs"})
 
 
@@ -192,9 +195,24 @@ def validate(d: dict) -> None:  # type: ignore[type-arg]
         _check_types(d, {k: v for k, v in _V2_TYPES.items() if k != "instruments"})
         _check_str_list(d, "instruments")
     elif sv == 3:
-        _check_keys(d, frozenset(_V3_TYPES), _V3_OPTIONAL)
-        _check_types(d, {k: v for k, v in _V3_TYPES.items() if k != "instruments"})
-        _check_str_list(d, "instruments")
+        has_inline = "instruments" in d
+        has_ref = "instruments_ref" in d
+        if not (has_inline or has_ref):
+            raise ScenarioValidationError(
+                "SCENARIO v3 requires either 'instruments' or 'instruments_ref'"
+            )
+        allowed_extra = _V3_OPTIONAL | frozenset(
+            (["instruments"] if has_inline else [])
+            + (["instruments_ref"] if has_ref else [])
+        )
+        _check_keys(d, _V3_REQUIRED_BASE, allowed_extra)
+        _check_types(d, {k: v for k, v in _V3_TYPES.items() if k not in ("instruments",)})
+        if has_inline:
+            _check_str_list(d, "instruments")
+        if has_ref and not isinstance(d["instruments_ref"], str):
+            raise ScenarioValidationError(
+                "SCENARIO['instruments_ref'] must be str"
+            )
     else:
         raise ScenarioValidationError(
             f"SCENARIO schema_version must be 1, 2 or 3, got {sv!r}"
@@ -218,6 +236,109 @@ def normalize_scenario(d: dict) -> dict:  # type: ignore[type-arg]
         out["instruments"] = out.pop("instrument")
         return out
     return d
+
+
+# ---------------------------------------------------------------------------
+# resolve_instruments_ref
+# ---------------------------------------------------------------------------
+
+
+def _resolve_json_pointer(data: object, pointer: str) -> object:
+    """RFC 6901 最小実装: '/key' および '/key/0' 程度のポインタを解決する。
+
+    pointer は '/' で始まる必要がある（例: '/instruments', '/universe/0'）。
+    """
+    if not pointer.startswith("/"):
+        raise ScenarioValidationError(
+            f"instruments_ref JSON pointer must start with '/': {pointer!r}"
+        )
+    tokens = pointer[1:].split("/")
+    current = data
+    for token in tokens:
+        # RFC 6901 escape sequences
+        token = token.replace("~1", "/").replace("~0", "~")
+        if isinstance(current, dict):
+            if token not in current:
+                raise ScenarioValidationError(
+                    f"instruments_ref JSON pointer key not found: {token!r}"
+                )
+            current = current[token]
+        elif isinstance(current, list):
+            try:
+                idx = int(token)
+            except ValueError:
+                raise ScenarioValidationError(
+                    f"instruments_ref JSON pointer index must be int, got {token!r}"
+                )
+            if idx < 0 or idx >= len(current):
+                raise ScenarioValidationError(
+                    f"instruments_ref JSON pointer index out of range: {idx}"
+                )
+            current = current[idx]
+        else:
+            raise ScenarioValidationError(
+                f"instruments_ref JSON pointer cannot traverse {type(current).__name__}"
+            )
+    return current
+
+
+def resolve_instruments_ref(scenario: dict, sidecar_path: Path) -> list:  # type: ignore[type-arg]
+    """'instruments_ref' フィールドを解決して instruments の list[str] を返す。
+
+    値の形式:
+      - "<relative-path>.json"               (bare path、root が list[str])
+      - "<relative-path>.json#/<pointer>"    (JSON pointer 付き)
+
+    sidecar_path.parent / relative_path を読み、結果を返す。
+    失敗時は ScenarioValidationError を raise する（fail-closed）。
+    """
+    ref_value = scenario.get("instruments_ref")
+    if ref_value is None:
+        raise ScenarioValidationError("resolve_instruments_ref called but 'instruments_ref' is absent")
+
+    if not isinstance(ref_value, str):
+        raise ScenarioValidationError(
+            f"SCENARIO['instruments_ref'] must be str, got {type(ref_value).__name__}"
+        )
+
+    # Split on '#' to separate path from optional JSON pointer
+    if "#" in ref_value:
+        rel_path_str, pointer = ref_value.split("#", 1)
+    else:
+        rel_path_str = ref_value
+        pointer = None
+
+    target_path = sidecar_path.parent / rel_path_str
+    if not target_path.exists():
+        raise ScenarioValidationError(
+            f"instruments_ref target not found: {target_path}"
+        )
+
+    try:
+        raw = json.loads(target_path.read_text(encoding="utf-8"))
+    except json.JSONDecodeError as exc:
+        raise ScenarioValidationError(
+            f"instruments_ref target is not valid JSON: {target_path}: {exc}"
+        ) from exc
+
+    if pointer is not None:
+        resolved = _resolve_json_pointer(raw, pointer)
+    else:
+        resolved = raw
+
+    if not isinstance(resolved, list):
+        raise ScenarioValidationError(
+            f"instruments_ref resolved value must be list, got {type(resolved).__name__}"
+        )
+    if len(resolved) == 0:
+        raise ScenarioValidationError("instruments_ref resolved to an empty list")
+    for i, item in enumerate(resolved):
+        if not isinstance(item, str):
+            raise ScenarioValidationError(
+                f"instruments_ref resolved list[{i}] must be str, got {type(item).__name__}"
+            )
+
+    return resolved
 
 
 # ---------------------------------------------------------------------------
@@ -249,6 +370,10 @@ def load_scenario(strategy_path: Path) -> dict:  # type: ignore[type-arg]
         if isinstance(doc, dict) and "scenario" in doc:
             d = doc["scenario"]
             d = normalize_scenario(d)
+            if "instruments_ref" in d:
+                instruments = resolve_instruments_ref(d, sidecar)
+                d = dict(d)
+                d["instruments"] = instruments
             validate(d)
             return d
         # サイドカーはあるが "scenario" キーが無い（layout-only サイドカー）

@@ -130,7 +130,8 @@ def _write_sample_catalog(catalog_path: Path) -> str:
         _bar("2000.00", 1_000_000_000),
         _bar("2010.00", 2_000_000_000),
     ])
-    return str(bar_type)
+    # D17: callers should pass instrument_id ("1301.TSE"), not bar_type string
+    return "1301.TSE"
 
 
 @pytest.mark.slow

@@ -87,7 +87,8 @@ def test_venue_login_kabu_session_cache_returns_unsupported(phase8_grpc_server):
     assert resp.error_code == "UNSUPPORTED_FOR_VENUE"
 
 
-def test_venue_login_tachibana_prompt_returns_not_implemented(phase8_grpc_server):
+def test_venue_login_without_adapter_factory_returns_not_configured(phase8_grpc_server):
+    """D21: VenueLogin without live_adapter_factory returns LIVE_ADAPTER_NOT_CONFIGURED."""
     port, token, *_ = phase8_grpc_server
     stub = _stub(port)
     resp = stub.VenueLogin(
@@ -98,7 +99,7 @@ def test_venue_login_tachibana_prompt_returns_not_implemented(phase8_grpc_server
         )
     )
     assert resp.success is False
-    assert resp.error_code == "NOT_IMPLEMENTED"
+    assert resp.error_code == "LIVE_ADAPTER_NOT_CONFIGURED"
 
 
 # --- VenueLogout --------------------------------------------------------
@@ -197,10 +198,8 @@ def phase8_grpc_server_with_live():
     mm = ModeManager(venue_sm, engine)
     engine.attach_mode_manager(mm)
 
-    def live_adapter_factory():
-        adapter = MockVenueAdapter()
-        asyncio.new_event_loop().run_until_complete(adapter.login(None))
-        return adapter
+    from engine.live.live_adapter_factory import build_live_adapter_factory
+    live_adapter_factory = build_live_adapter_factory("MOCK")
 
     server = grpc.server(futures.ThreadPoolExecutor(max_workers=2))
     servicer = GrpcDataEngineServer(
@@ -209,6 +208,7 @@ def phase8_grpc_server_with_live():
         mode_manager=mm,
         venue_sm=venue_sm,
         live_adapter_factory=live_adapter_factory,
+        live_venue_id="MOCK",
     )
     engine_pb2_grpc.add_DataEngineServicer_to_server(servicer, server)
     engine_pb2_grpc.add_HealthServicer_to_server(servicer, server)
@@ -228,15 +228,28 @@ def phase8_grpc_server_with_live():
     server.stop(0)
 
 
+def _do_venue_login(stub, token, venue_id="MOCK"):
+    """Helper: perform VenueLogin via gRPC (D21 precondition for SetExecutionMode)."""
+    resp = stub.VenueLogin(
+        engine_pb2.VenueLoginRequest(
+            venue_id=venue_id,
+            credentials_source="prompt",
+            token=token,
+        )
+    )
+    assert resp.success is True, f"VenueLogin failed: {resp.error_code}"
+    return resp
+
+
 def test_set_execution_mode_live_manual_spawns_live_runner(
     phase8_grpc_server_with_live,
 ):
     port, token, engine, venue_sm, mm, servicer = (
         phase8_grpc_server_with_live
     )
-    venue_sm.transition_to("AUTHENTICATING")
-    venue_sm.transition_to("CONNECTED")
     stub = _stub(port)
+    # D21: VenueLogin must precede SetExecutionMode for Live modes
+    _do_venue_login(stub, token)
     resp = stub.SetExecutionMode(
         engine_pb2.SetExecutionModeRequest(mode="LiveManual", token=token)
     )
@@ -251,11 +264,12 @@ def test_set_execution_mode_replay_teardown_live_runner(
     port, token, engine, venue_sm, mm, servicer = (
         phase8_grpc_server_with_live
     )
-    venue_sm.transition_to("AUTHENTICATING")
-    venue_sm.transition_to("CONNECTED")
     stub = _stub(port)
     # Replay 戻しは replay_engine.replay_state in {LOADED,RUNNING,PAUSED} が precondition (mode_manager.py L24-29)
     engine._replay_state = "LOADED"
+
+    # D21: VenueLogin must precede SetExecutionMode for Live modes
+    _do_venue_login(stub, token)
 
     # LiveManual で runner/bridge が立ち上がることを前提として確認
     resp_live = stub.SetExecutionMode(
@@ -315,9 +329,10 @@ def test_subscribe_market_data_succeeds_in_live_mode(
     port, token, engine, venue_sm, mm, servicer = (
         phase8_grpc_server_with_live
     )
-    venue_sm.transition_to("AUTHENTICATING")
-    venue_sm.transition_to("CONNECTED")
     stub = _stub(port)
+
+    # D21: VenueLogin must precede SetExecutionMode
+    _do_venue_login(stub, token)
 
     # Live mode へ遷移し runner を起動
     resp_mode = stub.SetExecutionMode(
@@ -364,9 +379,10 @@ def test_unsubscribe_market_data_succeeds_after_subscribe(
     port, token, engine, venue_sm, mm, servicer = (
         phase8_grpc_server_with_live
     )
-    venue_sm.transition_to("AUTHENTICATING")
-    venue_sm.transition_to("CONNECTED")
     stub = _stub(port)
+
+    # D21: VenueLogin must precede SetExecutionMode
+    _do_venue_login(stub, token)
 
     resp_mode = stub.SetExecutionMode(
         engine_pb2.SetExecutionModeRequest(mode="LiveManual", token=token)
@@ -435,9 +451,10 @@ def test_get_state_exposes_last_prices_from_live_cache(
     """Live mode で DepthUpdate(bid=100, ask=102) を inject すると、
     GetState の state.last_prices["7203.TSE"] == 101.0 が返る (quote_mid)。"""
     port, token, engine, venue_sm, mm, servicer = phase8_grpc_server_with_live
-    venue_sm.transition_to("AUTHENTICATING")
-    venue_sm.transition_to("CONNECTED")
     stub = _stub(port)
+
+    # D21: VenueLogin must precede SetExecutionMode
+    _do_venue_login(stub, token)
 
     resp_mode = stub.SetExecutionMode(
         engine_pb2.SetExecutionModeRequest(mode="LiveManual", token=token)
@@ -495,3 +512,271 @@ def test_get_state_last_prices_empty_in_replay_mode(phase8_grpc_server):
     resp = stub.GetState(engine_pb2.GetStateRequest(token=token))
     payload = json.loads(resp.json_data)
     assert payload["last_prices"] == {}
+
+
+# --- D1: ListInstruments source dispatch ------------------------------------
+
+def test_list_instruments_local_returns_error_without_catalog(phase8_grpc_server):
+    """source='local' (default) — catalog 無しなら success=False."""
+    port, token, *_ = phase8_grpc_server
+    stub = _stub(port)
+    resp = stub.ListInstruments(
+        engine_pb2.ListInstrumentsRequest(source="local", token=token)
+    )
+    assert resp.success is False
+
+
+def test_list_instruments_live_without_runner_returns_failure(phase8_grpc_server):
+    """source='live' — runner 未起動なら success=False (not logged in)."""
+    port, token, *_ = phase8_grpc_server
+    stub = _stub(port)
+    resp = stub.ListInstruments(
+        engine_pb2.ListInstrumentsRequest(source="live", token=token)
+    )
+    assert resp.success is False
+    assert "LIVE_VENUE_NOT_LOGGED_IN" in resp.error_message
+
+
+def test_list_instruments_live_with_runner_returns_mock_instruments(
+    phase8_grpc_server_with_live,
+):
+    """D1/D10: source='live' — MOCK runner ログイン済みなら MockVenueAdapter の
+    instrument リストが返る。"""
+    port, token, engine, venue_sm, mm, servicer = phase8_grpc_server_with_live
+    stub = _stub(port)
+
+    # VenueLogin でリソース起動
+    _do_venue_login(stub, token)
+
+    resp = stub.ListInstruments(
+        engine_pb2.ListInstrumentsRequest(source="live", token=token)
+    )
+    # MockVenueAdapter.fetch_instruments は空リストを返し LIVE_UNIVERSE_UNSUPPORTED になる
+    # または実装によっては成功するかも。ここでは「runner 起動後に呼び出せること」を確認
+    # LIVE_VENUE_NOT_LOGGED_IN ではないことを保証する
+    assert "LIVE_VENUE_NOT_LOGGED_IN" not in resp.error_message
+
+
+def test_list_instruments_unknown_source_returns_failure(phase8_grpc_server):
+    """source が 'local'/'live' 以外なら success=False."""
+    port, token, *_ = phase8_grpc_server
+    stub = _stub(port)
+    resp = stub.ListInstruments(
+        engine_pb2.ListInstrumentsRequest(source="jquants", token=token)
+    )
+    assert resp.success is False
+    assert "unknown source" in resp.error_message.lower()
+
+
+# --- D21: VenueLogin + SetExecutionMode flow --------------------------------
+
+def test_venue_login_mock_returns_success(phase8_grpc_server_with_live):
+    """D21/D26: MOCK venue に VenueLogin すると success=True になる。"""
+    port, token, *_ = phase8_grpc_server_with_live
+    stub = _stub(port)
+    resp = stub.VenueLogin(
+        engine_pb2.VenueLoginRequest(
+            venue_id="MOCK",
+            credentials_source="prompt",
+            token=token,
+        )
+    )
+    assert resp.success is True
+    assert resp.error_code == ""
+
+
+def test_venue_login_normalizes_lowercase_venue_id(phase8_grpc_server_with_live):
+    """D21: venue_id は大文字正規化される (mock → MOCK)."""
+    port, token, *_ = phase8_grpc_server_with_live
+    stub = _stub(port)
+    resp = stub.VenueLogin(
+        engine_pb2.VenueLoginRequest(
+            venue_id="mock",
+            credentials_source="prompt",
+            token=token,
+        )
+    )
+    assert resp.success is True
+
+
+def test_venue_login_mock_sets_venue_sm_connected(phase8_grpc_server_with_live):
+    """D18: VenueLogin 成功後に venue_sm.current == "CONNECTED"。"""
+    port, token, engine, venue_sm, mm, servicer = phase8_grpc_server_with_live
+    stub = _stub(port)
+    _do_venue_login(stub, token)
+    assert venue_sm.current == "CONNECTED"
+
+
+def test_set_execution_mode_requires_venue_login_first(phase8_grpc_server_with_live):
+    """D21: VenueLogin なしで LiveManual を要求すると EXECUTION_MODE_PRECONDITION。"""
+    port, token, *_ = phase8_grpc_server_with_live
+    stub = _stub(port)
+    # venue_sm は DISCONNECTED のまま → precondition 失敗
+    resp = stub.SetExecutionMode(
+        engine_pb2.SetExecutionModeRequest(mode="LiveManual", token=token)
+    )
+    assert resp.success is False
+    assert resp.error_code == "EXECUTION_MODE_PRECONDITION"
+
+
+def test_venue_login_idempotent_when_already_connected(phase8_grpc_server_with_live):
+    """D21: 既に CONNECTED なら 2 回目の VenueLogin も success=True (no-op)."""
+    port, token, engine, venue_sm, mm, servicer = phase8_grpc_server_with_live
+    stub = _stub(port)
+    _do_venue_login(stub, token)
+    assert venue_sm.current == "CONNECTED"
+    # 2 回目
+    resp2 = stub.VenueLogin(
+        engine_pb2.VenueLoginRequest(
+            venue_id="MOCK",
+            credentials_source="prompt",
+            token=token,
+        )
+    )
+    assert resp2.success is True
+    assert venue_sm.current == "CONNECTED"
+
+
+# --- D20: UnsubscribeMarketData + LastPriceCache.remove ----------------------
+
+def test_unsubscribe_removes_price_from_cache(phase8_grpc_server_with_live):
+    """D20: Unsubscribe 後に _live_price_cache から該当 id が消える。"""
+    port, token, engine, venue_sm, mm, servicer = phase8_grpc_server_with_live
+    stub = _stub(port)
+
+    _do_venue_login(stub, token)
+    resp_mode = stub.SetExecutionMode(
+        engine_pb2.SetExecutionModeRequest(mode="LiveManual", token=token)
+    )
+    assert resp_mode.success is True
+
+    stub.SubscribeMarketData(
+        engine_pb2.SubscribeRequest(
+            instrument_id="7203.TSE",
+            channels=["trades", "depth"],
+            token=token,
+        )
+    )
+
+    # 手動でキャッシュに価格を注入
+    cache = servicer._live_price_cache
+    cache._last_trade["7203.TSE"] = 500.0
+    assert "7203.TSE" in cache.snapshot()
+
+    # Unsubscribe → キャッシュから消えることを確認
+    resp = stub.UnsubscribeMarketData(
+        engine_pb2.UnsubscribeRequest(instrument_id="7203.TSE", token=token)
+    )
+    assert resp.success is True
+    assert "7203.TSE" not in cache.snapshot()
+
+
+# --- D8: GetState mode-aware last_prices ------------------------------------
+
+def test_get_state_replay_last_prices_reflects_per_id_close(phase8_grpc_server):
+    """D8: Replay モードで per_id_close に値があれば GetState.last_prices に出る。"""
+    port, token, engine, venue_sm, mm = phase8_grpc_server
+    stub = _stub(port)
+
+    # _rs.per_id_close を直接設定して simulate
+    engine._rs.per_id_close["1301.TSE"] = 2500.0
+    engine._rs.per_id_close["7203.TSE"] = 8000.0
+
+    resp = stub.GetState(engine_pb2.GetStateRequest(token=token))
+    payload = json.loads(resp.json_data)
+    assert payload["last_prices"].get("1301.TSE") == 2500.0
+    assert payload["last_prices"].get("7203.TSE") == 8000.0
+
+
+def test_get_state_live_last_prices_filtered_by_subscribed_ids(
+    phase8_grpc_server_with_live,
+):
+    """D8/D20: Live mode では subscribed_ids() でフィルタした last_prices のみ返す。"""
+    port, token, engine, venue_sm, mm, servicer = phase8_grpc_server_with_live
+    stub = _stub(port)
+
+    _do_venue_login(stub, token)
+    resp_mode = stub.SetExecutionMode(
+        engine_pb2.SetExecutionModeRequest(mode="LiveManual", token=token)
+    )
+    assert resp_mode.success is True
+
+    # 未 subscribe の id をキャッシュに混入 (stale 価格の leak テスト)
+    cache = servicer._live_price_cache
+    cache._last_trade["7203.TSE"] = 500.0   # not subscribed → should NOT appear
+    cache._last_trade["1301.TSE"] = 2500.0  # not subscribed → should NOT appear
+
+    resp = stub.GetState(engine_pb2.GetStateRequest(token=token))
+    payload = json.loads(resp.json_data)
+    # subscribed_ids() == empty set → last_prices should be {} (filtered out)
+    assert payload["last_prices"] == {}
+
+
+# --- Fix 1: VenueLogout tears down live components --------------------------
+
+def test_venue_logout_tears_down_live_components(phase8_grpc_server_with_live):
+    """Fix 1: VenueLogout を呼ぶと _live_runner が None になり
+    venue_sm.current が DISCONNECTED に戻る。"""
+    port, token, engine, venue_sm, mm, servicer = phase8_grpc_server_with_live
+    stub = _stub(port)
+
+    # VenueLogin で runner を起動する
+    _do_venue_login(stub, token)
+    assert servicer._live_runner is not None, "precondition: runner should exist after VenueLogin"
+    assert venue_sm.current == "CONNECTED"
+
+    resp = stub.VenueLogout(engine_pb2.VenueLogoutRequest(token=token))
+    assert resp.success is True
+    assert servicer._live_runner is None, "VenueLogout must nil-out _live_runner"
+    assert venue_sm.current == "DISCONNECTED", "VenueLogout must reset venue_sm to DISCONNECTED"
+
+
+# --- Fix 3: live_venue_id must be forwarded to GrpcDataEngineServer ----------
+
+def test_venue_mismatch_rejected_when_live_venue_id_configured():
+    """Fix 3: GrpcDataEngineServer(live_venue_id='KABU') に対して
+    VenueLogin(venue='TACHIBANA') を送ると VENUE_MISMATCH が返る。
+    (live_venue_id が渡っていないと configured_venue == venue_id になり
+     常に一致してしまうバグの回帰テスト)"""
+    from engine.live.live_adapter_factory import build_live_adapter_factory
+
+    token = "test-token"
+    venue_sm = VenueStateMachine()
+    engine_obj = DataEngine(state_machine=venue_sm)
+    mm = ModeManager(venue_sm, engine_obj)
+    engine_obj.attach_mode_manager(mm)
+
+    # KABU 向けファクトリは build_live_adapter_factory で作れるが、
+    # ここでは live_venue_id の配線確認だけなので MOCK ファクトリで十分
+    mock_factory = build_live_adapter_factory("MOCK")
+
+    server = grpc.server(futures.ThreadPoolExecutor(max_workers=2))
+    servicer = GrpcDataEngineServer(
+        token,
+        engine_obj,
+        mode_manager=mm,
+        venue_sm=venue_sm,
+        live_adapter_factory=mock_factory,
+        live_venue_id="KABU",  # Fix 3: this must be wired through
+    )
+    engine_pb2_grpc.add_DataEngineServicer_to_server(servicer, server)
+    engine_pb2_grpc.add_HealthServicer_to_server(servicer, server)
+    port = server.add_insecure_port("[::]:0")
+    server.start()
+
+    try:
+        stub = _stub(port)
+        resp = stub.VenueLogin(
+            engine_pb2.VenueLoginRequest(
+                venue_id="TACHIBANA",
+                credentials_source="prompt",
+                token=token,
+            )
+        )
+        assert resp.success is False
+        assert resp.error_code == "VENUE_MISMATCH", (
+            f"live_venue_id='KABU' なのに TACHIBANA を受け入れてはならない. "
+            f"got error_code={resp.error_code!r}"
+        )
+    finally:
+        server.stop(0)

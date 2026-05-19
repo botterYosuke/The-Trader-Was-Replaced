@@ -235,6 +235,7 @@ impl DataEngine for MyDataEngine {
             success: true,
             instrument_ids: vec![],
             error_message: "".to_string(),
+            instruments: vec![],
         }))
     }
 

@@ -201,6 +201,7 @@ pub fn spawn_menu_bar(mut commands: Commands) {
                     spawn_menu_item(p, "Connect Tachibana (Prod)", MenuItem::VenueConnectTachibanaProd);
                     spawn_menu_item(p, "Connect kabuStation (Verify)", MenuItem::VenueConnectKabuVerify);
                     spawn_menu_item(p, "Connect kabuStation (Prod)", MenuItem::VenueConnectKabuProd);
+                    spawn_menu_item(p, "Connect Mock (Demo)", MenuItem::VenueConnectMock);
                     spawn_menu_item(p, "Disconnect", MenuItem::VenueDisconnect);
                 });
             });
@@ -433,6 +434,9 @@ pub fn menu_item_system(
                     }
                     MenuItem::VenueConnectKabuProd => {
                         send_venue_login(&sender, "kabu", "prod");
+                    }
+                    MenuItem::VenueConnectMock => {
+                        send_venue_login(&sender, "mock", "demo");
                     }
                     MenuItem::VenueDisconnect => {
                         let Some(sender) = sender.as_ref() else {

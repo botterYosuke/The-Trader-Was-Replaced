@@ -142,6 +142,7 @@ class GrpcDataEngineServer(
         mode_manager=None,
         venue_sm=None,
         live_adapter_factory=None,
+        live_venue_id: Optional[str] = None,
     ):
         self.token = token
         self.engine = engine
@@ -154,8 +155,10 @@ class GrpcDataEngineServer(
         self._live_thread = None
         self._live_price_cache: Optional[LastPriceCache] = None
         self._live_timeout_s = 5.0
+        # D21: venue id from --live-venue flag, uppercase normalized
+        self._live_venue_id: Optional[str] = live_venue_id.upper() if live_venue_id else None
 
-    _KNOWN_VENUES = {"TACHIBANA", "KABU"}
+    _KNOWN_VENUES = {"TACHIBANA", "KABU", "MOCK"}  # D26: MOCK added
     _KNOWN_CRED_SOURCES = {"prompt", "session_cache", "env"}
     _KNOWN_MODES = {"Replay", "LiveManual", "LiveAuto"}
 
@@ -205,6 +208,8 @@ class GrpcDataEngineServer(
             return
 
         runner = LiveRunner(adapter=adapter, interval_ns=60 * 1_000_000_000)
+        # D10: wire the event loop reference so fetch_instruments_blocking works
+        runner._loop = self._live_loop
         bridge = LiveReducerBridge(bus=runner.bus, data_engine=self.engine)
         cache = LastPriceCache(bus=runner.bus)
         await bridge.start()
@@ -253,6 +258,10 @@ class GrpcDataEngineServer(
             self._live_runner = None
             self._live_bridge = None
             self._live_price_cache = None
+        # v5.2 Claim 2: reset venue_sm to DISCONNECTED so next Live entry
+        # requires VenueLogin again (ensures adapter.is_logged_in invariant).
+        if self.venue_sm is not None and self.venue_sm.current != "DISCONNECTED":
+            self.venue_sm.reset()
 
     def Check(self, request, context):
         return engine_pb2.HealthCheckResponse(
@@ -268,11 +277,27 @@ class GrpcDataEngineServer(
             err = self._live_bridge.last_error
         live_last_error = f"{type(err).__name__}: {err}" if err is not None else None
 
-        last_prices = (
-            self._live_price_cache.snapshot()
-            if self._live_price_cache is not None
-            else {}
-        )
+        # D8: mode-aware last_prices dispatch
+        mode = self.mode_manager.current_mode if self.mode_manager else "Replay"
+        if mode in ("LiveManual", "LiveAuto"):
+            raw = (
+                self._live_price_cache.snapshot()
+                if self._live_price_cache is not None
+                else {}
+            )
+            # D20 二段ガード: filter by subscribed_ids to prevent stale prices
+            runner = self._live_runner
+            if runner is not None:
+                try:
+                    subscribed = runner.subscribed_ids()
+                    last_prices = {k: v for k, v in raw.items() if k in subscribed}
+                except Exception:
+                    last_prices = raw  # subscribed_ids broken → fall back
+            else:
+                last_prices = raw
+        else:  # Replay
+            last_prices = self.engine.get_replay_last_prices()
+
         state = self.engine.get_current_state()
         state = state.model_copy(
             update={"live_last_error": live_last_error, "last_prices": last_prices}
@@ -440,14 +465,30 @@ class GrpcDataEngineServer(
                 )
                 rb.finish()
 
-                # Expose ALL bars to GetState so the chart can draw multiple candles.
+                # D16: Expose ALL bars (all instruments) to GetState for multi-instrument chart.
                 # bars[0] was already primed by _prime_provider_locked; inject bars[1:].
+                # Primary instrument uses instrument_id="" to update history/price/ohlc
+                # (backward compat). Secondary instruments use their actual id (per_id_close only).
                 from .nautilus_adapter import bar_to_kline_update
-                for bars in bars_by_instrument.values():
-                    if bars:
-                        for bar in bars[1:]:
-                            self.engine.apply_replay_event(bar_to_kline_update(bar))
-                    break
+                primary_iid = self.engine._replay_primary_id  # "" for legacy single-provider
+                first = True
+                for iid, bars in bars_by_instrument.items():
+                    if not bars:
+                        continue
+                    iid_str = str(iid)
+                    # primary instrument: also emit with "" id to update history
+                    is_primary_instrument = first or (iid_str == primary_iid)
+                    first = False
+                    for bar in bars[1:]:
+                        if is_primary_instrument:
+                            # Emit with empty id → updates history/price/ohlc
+                            self.engine.apply_replay_event(
+                                bar_to_kline_update(bar, instrument_id="")
+                            )
+                        # Emit with actual id → updates per_id_close (D9)
+                        self.engine.apply_replay_event(
+                            bar_to_kline_update(bar, instrument_id=iid_str)
+                        )
 
                 summary = compute_summary(rb.run_dir)
                 write_summary_json(rb.run_dir, summary)
@@ -625,6 +666,55 @@ class GrpcDataEngineServer(
         if request.token != self.token:
             context.abort(grpc.StatusCode.UNAUTHENTICATED, "Invalid token")
 
+        # D1: source dispatch — "local" (default) vs "live"
+        source = (getattr(request, "source", None) or "local").lower()
+        if source not in {"local", "live"}:
+            return engine_pb2.ListInstrumentsResponse(
+                success=False,
+                error_message=f"unknown source: {source}",
+            )
+
+        if source == "live":
+            return self._list_instruments_live(context)
+        return self._list_instruments_local(context)
+
+    def _list_instruments_live(self, context):
+        """D1/D10: Fetch instruments from live adapter (must be logged in)."""
+        runner = self._live_runner
+        if runner is None or not runner.is_logged_in():
+            return engine_pb2.ListInstrumentsResponse(
+                success=False,
+                error_message="LIVE_VENUE_NOT_LOGGED_IN",
+            )
+        try:
+            raws = runner.fetch_instruments_blocking(timeout=self._live_timeout_s)
+        except Exception as exc:
+            return engine_pb2.ListInstrumentsResponse(
+                success=False,
+                error_message=f"fetch_instruments failed: {exc}",
+            )
+        # v4 fix: empty list == adapter not implemented, treat as failure
+        if not raws:
+            return engine_pb2.ListInstrumentsResponse(
+                success=False,
+                error_message="LIVE_UNIVERSE_UNSUPPORTED",
+            )
+        instruments = [
+            engine_pb2.Instrument(
+                id=f"{r.code}.{r.market}",
+                name=r.name,
+                market=r.market,
+            )
+            for r in raws
+        ]
+        return engine_pb2.ListInstrumentsResponse(
+            success=True,
+            instrument_ids=[i.id for i in instruments],
+            instruments=instruments,
+        )
+
+    def _list_instruments_local(self, context):
+        """D1: List instruments from local catalog (existing logic)."""
         catalog_path = self.engine.last_replay_catalog_path or self.engine._jquants_catalog_path
         if not catalog_path:
             return engine_pb2.ListInstrumentsResponse(
@@ -633,9 +723,6 @@ class GrpcDataEngineServer(
             )
 
         try:
-            from pathlib import Path
-            import re
-
             bar_dir = Path(catalog_path) / "data" / "bar"
             if not bar_dir.exists():
                 return engine_pb2.ListInstrumentsResponse(
@@ -653,9 +740,6 @@ class GrpcDataEngineServer(
 
             ids = sorted(seen)
             logging.info("ListInstruments: found %d instruments: %s", len(ids), ids)
-            # Phase 8 §3.5: also populate the structured `instruments` field.
-            # Replay catalog dirs only expose the id; name falls back to id and
-            # market is left empty until a Live venue adapter backs this RPC.
             instruments = [
                 engine_pb2.Instrument(id=i, name=i, market="") for i in ids
             ]
@@ -782,15 +866,19 @@ class GrpcDataEngineServer(
     def VenueLogin(self, request, context):
         if request.token != self.token:
             context.abort(grpc.StatusCode.UNAUTHENTICATED, "Invalid token")
-        if request.credentials_source not in self._KNOWN_CRED_SOURCES:
+
+        cred_source = request.credentials_source or "prompt"
+        if cred_source not in self._KNOWN_CRED_SOURCES:
             context.abort(
                 grpc.StatusCode.INVALID_ARGUMENT,
                 "INVALID_CREDENTIALS_SOURCE",
             )
 
+        # D21: normalize venue_id to uppercase (UI sends lowercase "tachibana"/"kabu"/"mock")
+        venue_id = (request.venue_id or "").upper()
         venue_state = self.venue_sm.current if self.venue_sm is not None else "DISCONNECTED"
 
-        if request.venue_id not in self._KNOWN_VENUES:
+        if venue_id not in self._KNOWN_VENUES:
             return engine_pb2.VenueLoginResponse(
                 success=False,
                 error_code="UNKNOWN_VENUE",
@@ -798,7 +886,8 @@ class GrpcDataEngineServer(
                 instruments_loaded=0,
             )
 
-        if request.venue_id == "KABU" and request.credentials_source == "session_cache":
+        # Preserve backward compat: KABU session_cache is unsupported
+        if venue_id == "KABU" and cred_source == "session_cache":
             return engine_pb2.VenueLoginResponse(
                 success=False,
                 error_code="UNSUPPORTED_FOR_VENUE",
@@ -806,16 +895,79 @@ class GrpcDataEngineServer(
                 instruments_loaded=0,
             )
 
+        # D26: validate against configured factory venue (1 backend = 1 venue)
+        if self._live_adapter_factory is None:
+            return engine_pb2.VenueLoginResponse(
+                success=False,
+                error_code="LIVE_ADAPTER_NOT_CONFIGURED",
+                venue_state=venue_state,
+                instruments_loaded=0,
+            )
+
+        configured_venue = (self._live_venue_id or venue_id).upper()
+        if configured_venue != venue_id:
+            return engine_pb2.VenueLoginResponse(
+                success=False,
+                error_code="VENUE_MISMATCH",
+                venue_state=venue_state,
+                instruments_loaded=0,
+            )
+
+        # Idempotent: already CONNECTED/SUBSCRIBED → no-op success
+        if self.venue_sm is not None and self.venue_sm.current in ("CONNECTED", "SUBSCRIBED"):
+            return engine_pb2.VenueLoginResponse(
+                success=True,
+                error_code="",
+                venue_state=self.venue_sm.current,
+                instruments_loaded=0,
+            )
+
+        try:
+            # (1) Bootstrap live components (idempotent)
+            self._start_live_components()
+            runner = self._live_runner
+            adapter = runner.adapter  # D10
+
+            # (2) adapter.login if not already logged in
+            if not getattr(adapter, "is_logged_in", True):
+                from engine.live.adapter import VenueCredentials
+                loop = self._ensure_live_loop()
+                creds = VenueCredentials(
+                    credentials_source=cred_source,
+                    environment_hint=(getattr(request, "environment_hint", None) or None),
+                )
+                fut = asyncio.run_coroutine_threadsafe(adapter.login(creds), loop)
+                fut.result(timeout=self._live_timeout_s)
+
+            # (3) venue_sm transitions: DISCONNECTED → AUTHENTICATING → CONNECTED
+            if self.venue_sm is not None and self.venue_sm.current == "DISCONNECTED":
+                self.venue_sm.transition_to("AUTHENTICATING")
+                self.venue_sm.transition_to("CONNECTED")
+
+        except Exception as exc:
+            logging.exception("VenueLogin failed: %s", exc)
+            return engine_pb2.VenueLoginResponse(
+                success=False,
+                error_code="VENUE_LOGIN_FAILED",
+                venue_state=self.venue_sm.current if self.venue_sm else "DISCONNECTED",
+                instruments_loaded=0,
+            )
+
         return engine_pb2.VenueLoginResponse(
-            success=False,
-            error_code="NOT_IMPLEMENTED",
-            venue_state=venue_state,
+            success=True,
+            error_code="",
+            venue_state=self.venue_sm.current if self.venue_sm else "CONNECTED",
             instruments_loaded=0,
         )
 
     def VenueLogout(self, request, context):
         if request.token != self.token:
             context.abort(grpc.StatusCode.UNAUTHENTICATED, "Invalid token")
+        # Fix 1: stop live runner, bridge, price cache, and reset venue state machine
+        if self._live_runner is not None or self._live_bridge is not None:
+            self._teardown_live_components()
+        elif self.venue_sm is not None and self.venue_sm.current != "DISCONNECTED":
+            self.venue_sm.reset()
         return engine_pb2.VenueControlResponse(success=True, error_code="")
 
     def SetExecutionMode(self, request, context):
@@ -849,19 +1001,11 @@ class GrpcDataEngineServer(
                 execution_mode="",
             )
         if applied in ("LiveManual", "LiveAuto"):
-            try:
-                self._start_live_components()
-            except RuntimeError as exc:
+            # D21: VenueLogin must have been called first. If runner is None, reject.
+            if self._live_runner is None:
                 return engine_pb2.SetExecutionModeResponse(
                     success=False,
-                    error_code=str(exc),
-                    execution_mode="",
-                )
-            except Exception as exc:
-                logging.exception("SetExecutionMode: failed to start live components")
-                return engine_pb2.SetExecutionModeResponse(
-                    success=False,
-                    error_code="LIVE_START_FAILED",
+                    error_code="VENUE_LOGIN_REQUIRED",
                     execution_mode="",
                 )
         elif applied == "Replay" and (self._live_runner is not None or self._live_bridge is not None):
@@ -918,6 +1062,9 @@ class GrpcDataEngineServer(
                 success=False,
                 error_code="UNSUBSCRIBE_FAILED",
             )
+        # D20: remove from price cache to prevent stale prices on re-add
+        if self._live_price_cache is not None:
+            self._live_price_cache.remove(request.instrument_id)
         return engine_pb2.SubscribeResponse(success=True, error_code="")
 
 
@@ -977,6 +1124,7 @@ def serve(
         mode_manager=mm,
         venue_sm=venue_sm,
         live_adapter_factory=live_adapter_factory,
+        live_venue_id=live_venue,
     )
 
     engine_pb2_grpc.add_HealthServicer_to_server(servicer, server)

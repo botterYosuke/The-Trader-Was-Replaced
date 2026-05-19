@@ -27,4 +27,8 @@ def build_live_adapter_factory(venue: str) -> Callable[[], LiveVenueAdapter]:
         return lambda: TachibanaAdapter()
     if venue == "KABU":
         return lambda: KabuStationAdapter()
+    # D26: MOCK venue for development/testing without real venue connection
+    if venue == "MOCK":
+        from engine.live.mock_adapter import MockVenueAdapter
+        return lambda: MockVenueAdapter()
     raise UnknownVenueError(f"unknown venue: {venue!r}")

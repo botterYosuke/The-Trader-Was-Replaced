@@ -69,8 +69,9 @@ def test_catalog_route_loads_and_primes_first_bar(patched_load_bars):
     catalog_dir, calls = patched_load_bars
     engine = DataEngine(nautilus_catalog_path=str(catalog_dir))
 
+    # D17: pass instrument_id ("AAPL.NASDAQ"), not BarType string
     success, error = engine.load_replay_data(
-        instrument_ids=["AAPL.NASDAQ-1-MINUTE-LAST-EXTERNAL"],
+        instrument_ids=["AAPL.NASDAQ"],
         start_date="2024-07-01",
         end_date="2024-07-02",
         granularity="Minute",
@@ -83,7 +84,7 @@ def test_catalog_route_loads_and_primes_first_bar(patched_load_bars):
     assert state.price == 100.0
     assert state.timestamp_ms == 5_000
 
-    # load_bars was called with the bar_type passed as identifier.
+    # D17: load_bars is called with the converted BarType string
     assert calls["instrument_ids"] == ["AAPL.NASDAQ-1-MINUTE-LAST-EXTERNAL"]
     assert calls["start"] == "2024-07-01"
     assert calls["end"] == "2024-07-02"
@@ -93,8 +94,9 @@ def test_catalog_route_rejects_trade_granularity(patched_load_bars):
     catalog_dir, _ = patched_load_bars
     engine = DataEngine(nautilus_catalog_path=str(catalog_dir))
 
+    # D17: pass instrument_id
     success, error = engine.load_replay_data(
-        instrument_ids=["AAPL.NASDAQ-1-MINUTE-LAST-EXTERNAL"],
+        instrument_ids=["AAPL.NASDAQ"],
         granularity="Trade",
     )
 
@@ -107,8 +109,9 @@ def test_catalog_route_step_advances_through_bars(patched_load_bars):
     catalog_dir, _ = patched_load_bars
     engine = DataEngine(nautilus_catalog_path=str(catalog_dir))
 
+    # D17: pass instrument_id
     assert engine.load_replay_data(
-        instrument_ids=["AAPL.NASDAQ-1-MINUTE-LAST-EXTERNAL"],
+        instrument_ids=["AAPL.NASDAQ"],
         granularity="Minute",
     )[0]
     assert engine.start_engine()[0]
@@ -136,8 +139,9 @@ def test_catalog_route_propagates_no_data_error(tmp_path, monkeypatch):
     monkeypatch.setattr(loader_mod, "load_bars", lambda *a, **kw: [])
 
     engine = DataEngine(nautilus_catalog_path=str(catalog_dir))
+    # D17: pass instrument_id
     success, error = engine.load_replay_data(
-        instrument_ids=["AAPL.NASDAQ-1-MINUTE-LAST-EXTERNAL"],
+        instrument_ids=["AAPL.NASDAQ"],
         granularity="Minute",
     )
 
@@ -161,8 +165,9 @@ def test_catalog_route_takes_priority_over_jquants_loader(patched_load_bars):
         jquants_loader=_SentinelLoader(),
     )
 
+    # D17: pass instrument_id
     success, error = engine.load_replay_data(
-        instrument_ids=["AAPL.NASDAQ-1-MINUTE-LAST-EXTERNAL"],
+        instrument_ids=["AAPL.NASDAQ"],
         granularity="Minute",
     )
     assert success, error
@@ -205,8 +210,9 @@ def test_real_catalog_route_round_trip(tmp_path):
     ])
 
     engine = DataEngine(nautilus_catalog_path=str(catalog_path))
+    # D17: pass instrument_id ("AAPL.NASDAQ"), not bar_type string
     success, error = engine.load_replay_data(
-        instrument_ids=[str(bar_type)],
+        instrument_ids=["AAPL.NASDAQ"],
         granularity="Minute",
     )
     assert success, error
