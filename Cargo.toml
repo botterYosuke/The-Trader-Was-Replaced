@@ -16,6 +16,7 @@ serde_json = "1.0"
 rfd = "0.17.2"
 dirs = "6.0.0"
 bevy_cosmic_edit = "0.26"
+syntect = { version = "5", default-features = false, features = ["default-fancy"] }
 undo = "0.52"
 chrono = "0.4"
 url = "2"

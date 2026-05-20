@@ -18,6 +18,8 @@ pub mod scenario_parser;
 pub mod scenario_startup_panel;
 pub mod sidebar;
 pub mod strategy_editor;
+pub mod strategy_editor_highlight;
+pub mod strategy_editor_compose;
 pub mod systems;
 pub mod window;
 
@@ -88,6 +90,10 @@ use crate::ui::strategy_editor::{
     debounced_strategy_autosave_system, sync_editor_to_strategy_buffer_system,
     sync_strategy_buffer_to_editor_system, undo_redo_system, update_strategy_editor_zoom_system,
 };
+use crate::ui::strategy_editor_compose::apply_highlight_layers_system;
+use crate::ui::strategy_editor_highlight::{
+    compute_bracket_spans_system, compute_syntax_spans_system, init_syntect_highlighter,
+};
 use crate::ui::systems::{button_system, update_price_display, update_status_indicator};
 use crate::ui::window::instrument_chart_sync_system;
 use bevy::prelude::*;
@@ -148,6 +154,8 @@ impl Plugin for UiPlugin {
                 spawn_scenario_startup_input_fields.after(spawn_scenario_startup_panel),
                 // 起動時に固定 cache から復元する（CacheRestoreRequested 発火）
                 restore_last_strategy_system,
+                // highlight pipeline: syntect SyntaxSet/Theme を resource として用意
+                init_syntect_highlighter,
             ),
         )
         .add_systems(
@@ -268,6 +276,20 @@ impl Plugin for UiPlugin {
             (
                 crate::ui::footer::apply_execution_mode_visibility_system,
                 crate::ui::scenario_startup_panel::apply_startup_panel_visibility_system,
+            ),
+        )
+        // ── highlight pipeline (Phase A) ──
+        // span 計算は buffer→editor 同期の後に走らせ、合成 (apply) はその両者の後。
+        .add_systems(
+            Update,
+            (
+                compute_syntax_spans_system
+                    .after(sync_strategy_buffer_to_editor_system)
+                    .before(apply_highlight_layers_system),
+                compute_bracket_spans_system
+                    .after(sync_strategy_buffer_to_editor_system)
+                    .before(apply_highlight_layers_system),
+                apply_highlight_layers_system,
             ),
         );
     }

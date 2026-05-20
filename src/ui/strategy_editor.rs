@@ -14,6 +14,7 @@ use bevy_cosmic_edit::{
     CosmicBackgroundColor, CosmicFontSystem, CosmicRenderScale, CosmicTextAlign, CursorColor,
     ScrollEnabled,
 };
+use crate::ui::strategy_editor_highlight::{BracketSpans, FindMatchSpans, SyntaxSpans};
 use bevy_cosmic_edit::{CosmicTextChanged, prelude::*};
 
 // ── Bevy native 版 Strategy Editor ─────────────
@@ -167,6 +168,13 @@ pub fn spawn_strategy_editor_panel(
             CosmicBackgroundColor(EDITOR_BG),
             Transform::from_xyz(0.0, 0.0, 0.1),
             StrategyEditorContent,
+            // highlight pipeline 用 span コンポーネント (Phase A)。
+            // 3 個をネストして 1 Bundle 要素に畳む (tuple Bundle の 15 要素上限回避)。
+            (
+                SyntaxSpans::default(),
+                FindMatchSpans::default(),
+                BracketSpans::default(),
+            ),
             // editor child にも StrategyEditorId を貼ることで、CosmicTextChanged から
             // region_key を即引きできる (root への親辿りが不要)。
             StrategyEditorId {
