@@ -231,7 +231,7 @@ Zed のパターンを写しただけでは出てこない、Bevy/cosmic_edit/sy
 
 ## このスキルの対象になっている src/ui/* (現状スナップショット)
 
-- `strategy_editor.rs` — Phase 7.2 で Monaco-grade 化済 (syntax highlight / gutter / scrollbar / find&replace / auto-indent / bracket match)
+- `strategy_editor.rs` — Phase 7.2 進行中。**Phase A 完了**: syntax highlight (syntect 全文再トークナイズ) + bracket match + Layer Composer (`strategy_editor_highlight.rs` / `strategy_editor_compose.rs`、span source を固定順で合成し `apply_highlight_layers_system` だけが `set_attrs_list` を呼ぶ)。**未実装 (Phase B/C/E)**: 行番号 gutter・scrollbar・Tab→spaces/auto-indent・find&replace。新パネルや span source を足すときは composer の固定順序 (default→syntax→find→current_find→bracket) を踏襲する
 - `instrument_picker.rs` — picker パターンの既存実装
 - `sidebar.rs` — virtual scroll + tickers リストの既存実装
 - `floating_window.rs` / `layout_persistence.rs` — workspace / persistence パターン

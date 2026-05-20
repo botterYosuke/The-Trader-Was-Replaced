@@ -139,6 +139,12 @@ commands.spawn((
 （`Camera2dBundle` → `Camera2d` 単体、`Text2dBundle` → `Text2d` / `TextFont` / `TextColor`
 の 3 分割）。新規コードでは **必ずタプル spawn** にする。
 
+**⚠️ spawn タプルの `Bundle` 実装は 15 要素まで**（`add_systems` の 20 上限とは別物）。
+既存の大きい spawn（例: `strategy_editor.rs` の editor entity は 13 要素）に component を
+足して 16 要素以上になると `the trait Bundle is not implemented for (...)` でコンパイル不可。
+**解決**: 追加分をサブタプルにネストすると 1 要素として数えられる（13 + `(A, B, C)` = 14）。
+挙動は同一。`commands.spawn((Existing, ..., (NewA, NewB, NewC), More))` の形にする。
+
 ### 規約 5: Drag ハンドラでは PanCam のズーム scale を必ず掛ける
 
 タイトルバー等で `Trigger<Pointer<Drag>>` を扱うとき、`drag.event().delta` は
