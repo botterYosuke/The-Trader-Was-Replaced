@@ -2,16 +2,18 @@ use backcast::backend_supervisor::{
     BackendLifecycle, BackendLifecycleHandle, BackendSupervisorPlugin, SupervisorCommand,
     SupervisorCommandSender, SupervisorTaskSeed, run_supervisor,
 };
+use backcast::backend_sync::{
+    BackendEventChannel, StatusUpdateChannel, backend_event_drain_system, status_update_system,
+};
 use backcast::camera::{pancam_suppression_over_editor_system, setup_camera};
 use backcast::grid::GridPlugin;
-use backcast::replay::{ReplayStartupPhase, ReplayStartupProgress};
+use backcast::replay::ReplayStartupProgress;
 use backcast::trading::{
     AvailableInstruments, BackendChannel, BackendStartupStage, BackendStatus, BackendStatusUpdate,
     ExecutionMode, ExecutionModeRes, LastPrices, LastRunResult, PortfolioOrder, PortfolioPosition,
-    PortfolioState, ReplaySpeed, RunState, SelectedSymbol, Ticker, Tickers, TickersSource,
-    TickersStatus, TradingSettings, TransportCommand, TransportCommandSender,
-    VenueState, VenueStatusRes, backend_update_system, engine, parse_summary_json,
-    tickers_source_to_wire,
+    PortfolioState, ReplaySpeed, SelectedSymbol, Ticker, Tickers, TickersSource, TradingSettings,
+    TransportCommand, TransportCommandSender, VenueState, VenueStatusRes, backend_update_system,
+    engine, tickers_source_to_wire,
 };
 use backcast::ui::UiPlugin;
 use backcast::ui::replay_startup_window::{
@@ -21,7 +23,6 @@ use backcast::ui::replay_startup_window::{
 };
 use bevy::prelude::*;
 use bevy_pancam::{PanCamPlugin, PanCamSystemSet};
-use chrono::NaiveDate;
 use engine::data_engine_client::DataEngineClient;
 use engine::{
     EngineKind, EngineStartConfig, ForceStopReplayRequest, GetPortfolioRequest, GetStateRequest,
@@ -187,229 +188,6 @@ async fn main() {
         )
         .add_systems(Last, app_exit_shutdown_system)
         .run();
-}
-
-#[derive(Resource)]
-struct StatusUpdateChannel {
-    rx: mpsc::UnboundedReceiver<BackendStatusUpdate>,
-}
-
-fn status_update_system(
-    mut status: ResMut<BackendStatus>,
-    mut channel: ResMut<StatusUpdateChannel>,
-    mut last_run: ResMut<LastRunResult>,
-    mut portfolio: ResMut<PortfolioState>,
-    mut available: ResMut<AvailableInstruments>,
-    mut progress: ResMut<ReplayStartupProgress>,
-    mut venue_status: ResMut<VenueStatusRes>,
-    mut exec_mode: ResMut<ExecutionModeRes>,
-    mut tickers: ResMut<Tickers>,
-    mut last_prices: ResMut<LastPrices>,
-) {
-    while let Ok(update) = channel.rx.try_recv() {
-        apply_status_update(
-            update,
-            &mut status,
-            &mut last_run,
-            &mut portfolio,
-            &mut available,
-            &mut progress,
-            &mut venue_status,
-            &mut exec_mode,
-            &mut tickers,
-            &mut last_prices,
-        );
-    }
-}
-
-#[derive(Resource)]
-struct BackendEventChannel {
-    rx: mpsc::UnboundedReceiver<backcast::trading::BackendEvent>,
-}
-
-fn backend_event_drain_system(mut channel: ResMut<BackendEventChannel>) {
-    use backcast::trading::BackendEvent;
-    while let Ok(event) = channel.rx.try_recv() {
-        match event {
-            BackendEvent::SecretRequired {
-                request_id,
-                venue,
-                kind,
-                purpose,
-            } => info!(
-                "[backend-event] SecretRequired request_id={request_id} venue={venue} kind={kind} purpose={purpose}"
-            ),
-            BackendEvent::OrderEvent {
-                order_id,
-                venue_order_id,
-                client_order_id,
-                status,
-                filled_qty,
-                avg_price,
-                ts_ms,
-            } => info!(
-                "[backend-event] OrderEvent order_id={order_id} venue_order_id={venue_order_id} client_order_id={client_order_id} status={status} filled_qty={filled_qty} avg_price={avg_price} ts_ms={ts_ms}"
-            ),
-            BackendEvent::AccountEvent {
-                cash,
-                buying_power,
-                positions,
-                ts_ms,
-            } => info!(
-                "[backend-event] AccountEvent cash={cash} buying_power={buying_power} positions={} ts_ms={ts_ms}",
-                positions.len()
-            ),
-            BackendEvent::VenueLogoutDetected { venue } => {
-                info!("[backend-event] VenueLogoutDetected venue={venue}")
-            }
-        }
-    }
-}
-
-fn apply_status_update(
-    update: BackendStatusUpdate,
-    status: &mut BackendStatus,
-    last_run: &mut LastRunResult,
-    portfolio: &mut PortfolioState,
-    available: &mut AvailableInstruments,
-    progress: &mut ReplayStartupProgress,
-    venue_status: &mut VenueStatusRes,
-    exec_mode: &mut ExecutionModeRes,
-    tickers: &mut Tickers,
-    last_prices: &mut LastPrices,
-) {
-    match update {
-        BackendStatusUpdate::Connected(c) => status.connected = c,
-        BackendStatusUpdate::Running(r) => status.running = r,
-        BackendStatusUpdate::Error(e) => {
-            status.last_error = Some(e);
-            status.connected = false;
-        }
-        BackendStatusUpdate::RunStarted => {
-            last_run.state = RunState::Running;
-        }
-        BackendStatusUpdate::ReplayStartup { startup_id, stage } => {
-            if progress.visible && progress.startup_id == startup_id {
-                progress.phase = match stage {
-                    BackendStartupStage::ResettingReplay => ReplayStartupPhase::ResettingReplay,
-                    BackendStartupStage::LoadingData => ReplayStartupPhase::LoadingData,
-                    BackendStartupStage::StartingStrategy => ReplayStartupPhase::StartingStrategy,
-                    BackendStartupStage::WaitingForFirstTick => {
-                        ReplayStartupPhase::WaitingForFirstTick
-                    }
-                };
-                if matches!(stage, BackendStartupStage::WaitingForFirstTick) {
-                    progress.start_engine_accepted = true;
-                }
-            }
-        }
-        BackendStatusUpdate::RunComplete {
-            startup_id,
-            run_id,
-            summary_json,
-        } => {
-            info!("RunComplete: run_id={} summary={}", run_id, summary_json);
-            last_run.parsed_summary = parse_summary_json(&summary_json);
-            last_run.run_id = Some(run_id);
-            last_run.summary_json = Some(summary_json);
-            last_run.state = RunState::Completed;
-
-            if let Some(sid) = startup_id
-                && progress.visible
-                && progress.startup_id == sid
-            {
-                progress.visible = false;
-                progress.phase = ReplayStartupPhase::Idle;
-                progress.detail = None;
-                progress.baseline_timestamp_ms = None;
-                progress.started_at_elapsed = None;
-                progress.start_engine_accepted = false;
-            }
-        }
-        BackendStatusUpdate::RunFailed { startup_id, error } => {
-            if let Some(sid) = startup_id
-                && progress.visible
-                && progress.startup_id == sid
-            {
-                progress.error = Some(error.clone());
-            }
-            last_run.state = RunState::Failed { error };
-        }
-        BackendStatusUpdate::PortfolioLoaded {
-            buying_power,
-            cash,
-            equity,
-            positions,
-            orders,
-        } => {
-            portfolio.buying_power = buying_power;
-            portfolio.cash = cash;
-            portfolio.equity = equity;
-            portfolio.positions = positions;
-            portfolio.orders = orders;
-            portfolio.loaded = true;
-        }
-        BackendStatusUpdate::AvailableInstrumentsLoaded { end_date, ids } => {
-            apply_available_loaded(available, end_date, ids);
-        }
-        BackendStatusUpdate::AvailableInstrumentsFetchFailed { end_date, error } => {
-            apply_available_failed(available, end_date, error);
-        }
-        BackendStatusUpdate::VenueChanged {
-            state,
-            venue_id,
-            instruments_loaded,
-        } => {
-            venue_status.state = state;
-            venue_status.venue_id = venue_id;
-            venue_status.instruments_loaded = instruments_loaded;
-        }
-        BackendStatusUpdate::ExecutionModeChanged { mode } => {
-            exec_mode.mode = mode;
-        }
-        BackendStatusUpdate::ConfiguredVenueDiscovered { venue_id } => {
-            venue_status.configured_venue = venue_id;
-        }
-        BackendStatusUpdate::InstrumentsListStarted { source } => {
-            tickers.source = source;
-            tickers.status = TickersStatus::InFlight;
-            // list is kept (shows stale data while in-flight)
-        }
-        BackendStatusUpdate::InstrumentsListed {
-            source,
-            instruments,
-        } => {
-            tickers.source = source;
-            tickers.status = TickersStatus::Loaded;
-            tickers.list = instruments;
-        }
-        BackendStatusUpdate::InstrumentsListFailed { source, error } => {
-            tickers.source = source;
-            tickers.status = TickersStatus::Failed(error);
-            // list is kept (stale display)
-        }
-        BackendStatusUpdate::LastPricesUpdated { prices } => {
-            last_prices.map = prices;
-        }
-    }
-}
-
-fn apply_available_loaded(
-    available: &mut AvailableInstruments,
-    end_date: NaiveDate,
-    ids: Vec<String>,
-) {
-    available.by_end_date.insert(end_date, ids);
-    available.in_flight.remove(&end_date);
-}
-
-fn apply_available_failed(
-    available: &mut AvailableInstruments,
-    end_date: NaiveDate,
-    error: String,
-) {
-    available.last_error = Some((end_date, error));
-    available.in_flight.remove(&end_date);
 }
 
 fn spawn_supervisor_task_system(tokio: Res<TokioHandle>, mut seed: ResMut<SupervisorTaskSeed>) {
@@ -1195,10 +973,13 @@ fn setup_backend_connection(
 #[cfg(test)]
 mod tests {
     use super::{
-        BackendLifecycle, ReplayGranularity, ReplayStartupPhase, ReplayStartupProgress,
-        apply_available_failed, apply_available_loaded, apply_status_update,
-        parse_replay_granularity, should_send_graceful_shutdown,
+        BackendLifecycle, ReplayGranularity, ReplayStartupProgress, parse_replay_granularity,
+        should_send_graceful_shutdown,
     };
+    use backcast::backend_sync::{
+        apply_available_failed, apply_available_loaded, apply_status_update,
+    };
+    use backcast::replay::ReplayStartupPhase;
     use backcast::trading::{
         AvailableInstruments, BackendStartupStage, BackendStatus, BackendStatusUpdate,
         ExecutionModeRes, LastPrices, LastRunResult, PortfolioState, RunState, Ticker, Tickers,
