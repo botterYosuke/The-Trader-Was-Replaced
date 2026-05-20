@@ -6,7 +6,7 @@ use bevy::prelude::*;
 use bevy_cosmic_edit::cosmic_text::{self, Attrs, AttrsList, Color, Edit};
 use bevy_cosmic_edit::{CosmicEditBuffer, CosmicEditor, DefaultAttrs};
 
-/// Find マッチ (非カレント) の前景色。plan の RGB 値。
+/// Find マッチ (非カレント) の前景色。
 pub const FIND_MATCH_FG: Color = Color::rgba(255, 180, 80, 255);
 /// Find マッチ (カレント) の前景色。
 pub const FIND_CURRENT_MATCH_FG: Color = Color::rgba(255, 240, 0, 255);
@@ -42,7 +42,7 @@ pub fn compose_attrs_for_line(
     list
 }
 
-/// span の fg を base に重ねた Attrs を返す (Phase A v1 は foreground のみ)。
+/// span の fg を base に重ねた Attrs を返す。
 /// fg が None の span は base の色をそのまま使う。
 fn apply_span<'a>(base: Attrs<'a>, span: &SpanStyle) -> Attrs<'a> {
     match span.fg {
@@ -126,6 +126,7 @@ pub fn apply_highlight_layers_system(
 
         // dirty 行ごとに AttrsList を再構築して適用する。
         // 行データの取得には editor 側 buffer を優先 (editor があれば編集中のテキストはそちら)。
+        let empty: Vec<SpanStyle> = Vec::new();
         let apply = |b: &mut cosmic_text::Buffer| {
             for &i in &dirty {
                 if i >= b.lines.len() {
@@ -133,7 +134,6 @@ pub fn apply_highlight_layers_system(
                 }
 
                 // syntax span (この行) — 無ければ空。
-                let empty: Vec<SpanStyle> = Vec::new();
                 let syntax_spans: &[SpanStyle] = syntax.lines.get(i).unwrap_or(&empty);
 
                 // find span (この行, current を除く) と current_find。

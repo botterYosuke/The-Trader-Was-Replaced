@@ -1,7 +1,6 @@
 use crate::ui::components::{StrategyEditorId, StrategyFragment, WindowRoot};
 use crate::ui::strategy_editor::StrategyEditorContent;
 use bevy::prelude::*;
-use bevy::utils::HashMap;
 use bevy_cosmic_edit::CosmicEditor;
 use bevy_cosmic_edit::cosmic_text::{self, Edit};
 use bevy_cosmic_edit::prelude::FocusedWidget;
@@ -37,7 +36,7 @@ pub fn init_syntect_highlighter(mut commands: Commands) {
     });
 }
 
-/// 1 行内の 1 span 分のスタイル。Phase A v1 では foreground のみ (bg フィールドは持たない)。
+/// 1 行内の 1 span 分のスタイル。foreground のみ持つ (cosmic_text::Attrs に背景色 API が無いため)。
 pub struct SpanStyle {
     pub byte_range: std::ops::Range<usize>,
     pub fg: Option<cosmic_text::Color>,
@@ -55,7 +54,7 @@ pub struct SyntaxSpans {
     pub lines: Vec<Vec<SpanStyle>>,
 }
 
-/// Find マッチ結果 (Phase A では定義のみ。書き込む system は Phase E)。
+/// Find マッチ結果。find/replace の検索 system が書き込み、composer がレンダリングに使う。
 #[derive(Component, Default)]
 pub struct FindMatchSpans {
     pub matches: Vec<MatchSpan>,
@@ -71,7 +70,7 @@ pub struct BracketSpans {
 }
 
 /// syntect の 1 行分 `(Style, &str)` 列を、行内 byte offset を累積しながら
-/// `Vec<SpanStyle>` に変換する。SpanStyle は foreground のみ (2 フィールド)。
+/// `Vec<SpanStyle>` に変換する。
 fn convert_syntect_ranges_to_spans(
     ranges: &[(syntect::highlighting::Style, &str)],
 ) -> Vec<SpanStyle> {
@@ -131,7 +130,7 @@ pub fn compute_syntax_spans_system(
 pub fn compute_bracket_spans_system(
     focused: Res<FocusedWidget>,
     mut editor_q: Query<(Entity, &CosmicEditor, &mut BracketSpans), With<StrategyEditorContent>>,
-    mut last_cursor: Local<HashMap<Entity, cosmic_text::Cursor>>,
+    mut last_cursor: Local<Option<(Entity, cosmic_text::Cursor)>>,
 ) {
     let Some(focused_entity) = focused.0 else {
         return;
@@ -141,10 +140,10 @@ pub fn compute_bracket_spans_system(
     };
 
     let cursor = editor.cursor();
-    if last_cursor.get(&entity) == Some(&cursor) {
+    if *last_cursor == Some((entity, cursor)) {
         return;
     }
-    last_cursor.insert(entity, cursor);
+    *last_cursor = Some((entity, cursor));
 
     let new_pair = editor.with_buffer(|buffer| find_bracket_pair(buffer, cursor));
 
