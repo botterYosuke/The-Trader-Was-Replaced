@@ -36,22 +36,22 @@
 - [x] **A2 replay_pause_resume** ★★★ be:`mock`  ← v1
   - seam: `RunStrategy` → `Pause` → `Resume`
   - 観測: Running 中に `TradingSession.timestamp_ms` 停止 → 再進行 → `Completed`
-- [ ] **A3 replay_step_forward** ★★ be:`mock`
+- [x] **A3 replay_step_forward** ★★ be:`mock`
   - seam: `StepForward` × N
   - 観測: step ごとに `TradingSession.timestamp_ms` が 1 単位進む
-- [ ] **A4 replay_force_stop** ★★ be:`mock`
+- [x] **A4 replay_force_stop** ★★ be:`mock`
   - seam: Running 中に `ForceStop`
   - 観測: `RunState` が `Running` を抜ける
-- [ ] **A5 replay_set_speed** ★ be:`mock`
+- [ ] **A5 replay_set_speed** ★ be:`mock`（保留: `BackendStatusUpdate` に speed ack variant が無く、backend→ECS seam で観測できない。transport task の lib 抽出=Phase A-full 待ち）
   - seam: `SetSpeed(N)`
   - 観測: `ReplaySpeed.current == N`（backend ack）
 - [x] **A6 replay_failed_strategy** ★★★ be:`mock`  ← v1
   - seam: 壊れた strategy で `RunStrategy`
   - 観測: `RunStarted` → `RunFailed` → `RunState::Failed{error}`、error 文字列が surface
-- [ ] **A7 replay_startup_progress** ★★ be:`mock`
+- [x] **A7 replay_startup_progress** ★★ be:`mock`
   - seam: `RunStrategy`
   - 観測: `ReplayStartup` 4 stage（Resetting→Loading→Starting→WaitingFirstTick）が `ReplayStartupProgress` に反映
-- [ ] **A8 stale_startup_id_ignored** ★★ be:`mock`（回帰しやすい）
+- [x] **A8 stale_startup_id_ignored** ★★ be:`mock`（回帰しやすい）
   - seam: 旧 `startup_id` の status update を後追い注入
   - 観測: 古い update が新しい startup window を閉じない（相関 ID ロジック）
 
@@ -60,84 +60,84 @@
 - [x] **B1 portfolio_populated_after_run** ★★★ be:`mock`  ← v1
   - seam: RunComplete 後の `PortfolioLoaded`
   - 観測: `PortfolioState.loaded == true`、positions/orders/equity 充填
-- [ ] **B2 run_summary_parsed** ★★ be:`mock`
+- [x] **B2 run_summary_parsed** ★★ be:`mock`
   - seam: `RunComplete{summary_json}`
   - 観測: `LastRunResult.parsed_summary`（fills_count, equity_points, total_pnl）が parse 済み
 
 ## C. 銘柄ユニバース / サイドバー
 
-- [ ] **C1 list_instruments_replay** ★★ be:`mock`
+- [x] **C1 list_instruments_replay** ★★ be:`mock`
   - seam: `ListInstruments(ReplayCatalogFallback)`
   - 観測: `TickersStatus: InFlight→Loaded`、`Tickers` 充填、source 設定
-- [ ] **C2 list_instruments_failed** ★★ be:`mock`
+- [x] **C2 list_instruments_failed** ★★ be:`mock`
   - seam: `ListInstruments` 失敗
   - 観測: `TickersStatus::Failed`、旧 list 保持（stale 表示）
-- [ ] **C3 fetch_available_instruments** ★ be:`mock`
+- [x] **C3 fetch_available_instruments** ★ be:`mock`
   - seam: `FetchAvailableInstruments(end_date)`
   - 観測: `AvailableInstruments.by_end_date[end_date]` 充填、`in_flight` クリア
-- [ ] **C4 fetch_available_failed** ★ be:`mock`
+- [x] **C4 fetch_available_failed** ★ be:`mock`
   - seam: `FetchAvailableInstruments` 失敗
   - 観測: `AvailableInstruments.last_error` セット
-- [ ] **C5 select_instrument** ★ be:`mock`
+- [ ] **C5 select_instrument** ★ be:`mock`（保留: UI 駆動のみ — `SelectedSymbol` は backend→ECS seam を通らない）
   - seam: `SelectedSymbol` 更新
   - 観測: 選択銘柄が反映
 
 ## D. Venue ライフサイクル（Live）
 
-- [ ] **D1 venue_login_success** ★★ be:`mock`
+- [x] **D1 venue_login_success** ★★ be:`mock`
   - seam: `VenueLogin`
   - 観測: `VenueState: Disconnected→Authenticating→Connected`
-- [ ] **D2 venue_subscribed** ★ be:`mock`
+- [x] **D2 venue_subscribed** ★ be:`mock`
   - seam: login 後
   - 観測: `Connected→Subscribed`、`instruments_loaded` 反映
-- [ ] **D3 venue_login_error** ★★ be:`mock`
+- [x] **D3 venue_login_error** ★★ be:`mock`
   - seam: login 失敗
   - 観測: `VenueState::Error`
-- [ ] **D4 venue_logout** ★ be:`mock`
+- [x] **D4 venue_logout** ★ be:`mock`
   - seam: `VenueLogout`
   - 観測: `→Disconnected`
-- [ ] **D5 venue_logout_detected** ★ be:`mock`
+- [ ] **D5 venue_logout_detected** ★ be:`mock`（保留: event seam — `backend_event_drain_system` が resource を変えない。実装には `src/backend_sync.rs` 拡張が必要）
   - seam: `BackendEvent::VenueLogoutDetected`
   - 観測: 外部ログアウトで状態クリア
-- [ ] **D6 venue_reconnecting** ★★ be:`mock`
+- [x] **D6 venue_reconnecting** ★★ be:`mock`
   - seam: `VenueChanged(Reconnecting)`
   - 観測: `Reconnecting` 表示（issue の network reconnect）
-- [ ] **D7 live_universe_overwrite** ★★ be:`mock`
+- [x] **D7 live_universe_overwrite** ★★ be:`mock`
   - seam: Connected で `ListInstruments(LiveVenue)`
   - 観測: Live universe が Replay fallback を**上書き**（prune しない不変条件）
 
 ## E. 実行モード
 
-- [ ] **E1 set_execution_mode** ★★ be:`mock`
+- [x] **E1 set_execution_mode** ★★ be:`mock`
   - seam: `SetExecutionMode(LiveManual)`
   - 観測: backend authoritative → `ExecutionModeChanged` → `ExecutionModeRes.mode == LiveManual`
 
 ## F. ライブ市場データ / 注文・口座イベント（Phase 9/10）
 
-- [ ] **F1 subscribe_market_data** ★ be:`mock`
+- [x] **F1 subscribe_market_data** ★ be:`mock`
   - seam: `SubscribeMarketData(id)`
   - 観測: `LastPricesUpdated` → `LastPrices` 充填
-- [ ] **F2 unsubscribe_market_data** ★ be:`mock`
+- [x] **F2 unsubscribe_market_data** ★ be:`mock`
   - seam: `UnsubscribeMarketData(id)`
   - 観測: price 更新停止
-- [ ] **F3 order_event** ★ be:`mock`
+- [ ] **F3 order_event** ★ be:`mock`（保留: event seam — `backend_event_drain_system` が resource を変えない。`src/backend_sync.rs` 拡張が必要）
   - seam: `BackendEvent::OrderEvent`
   - 観測: `PortfolioState.orders` に fill 反映
-- [ ] **F4 account_event** ★ be:`mock`
+- [ ] **F4 account_event** ★ be:`mock`（保留: event seam — 同上）
   - seam: `BackendEvent::AccountEvent`
   - 観測: `PortfolioState` の cash/buying_power/positions 更新
-- [ ] **F5 secret_required** ★ be:`mock`
+- [ ] **F5 secret_required** ★ be:`mock`（保留: event seam — pending-secret resource 自体が未実装）
   - seam: `BackendEvent::SecretRequired`
   - 観測: pending-secret 状態（第二暗証要求）
 
 ## G. バックエンド接続 / 自己修復（既存 supervisor テストと一部重複）
 
-- [ ] **G1 backend_connect_status** ★★ be:`mock`
+- [x] **G1 backend_connect_status** ★★ be:`mock`
   - seam: supervisor Ready → connect
   - 観測: `BackendStatus` Connected/Running true（footer `grpc: OK`）
-- [ ] **G2 backend_reconnect_selfheal** ★★ be:`mock`
-  - seam: 接続断 → 復帰
-  - 観測: status トグル後に復旧（self-heal commit の回帰防止）
+- [x] **G2 backend_reconnect_selfheal** ★★ be:`mock`
+  - seam: `Error` で接続断 → `Connected(true)` で復帰
+  - 観測: `Error` で `connected=false`+`last_error` 記録 → 再 `Connected(true)` で `connected` 復旧（self-heal commit の回帰防止）
 - [ ] **G3 backend_disabled_sim** ★ be:`none`
   - seam: `backend_enabled = false`
   - 観測: `grpc: DISABLED`、send は no-op
@@ -160,25 +160,40 @@
   `backcast::backend_sync::*` を import する形に変更。`cargo check --tests` は通る
   （残る warning は **既存のもの**: `instruments_universe_prune.rs:163/165`、
   `restore.rs:41`、`main.rs:33 UnsubscribeRequest`。いずれも本作業と無関係）。
-- ⬜ **未着手（次の担当へ）**:
-  1. `tests/e2e/support/mod.rs` に `Harness` を実装。`MinimalPlugins` の headless `App` を組み、
-     `StatusUpdateChannel`/`BackendChannel`/`BackendEventChannel` と全 trading resource +
-     `ReplayStartupProgress` を insert し、`status_update_system` + `backend_update_system` +
-     `backend_event_drain_system` を `Update` に追加。`status_tx`/`backend_tx`/`event_tx` を保持し、
-     `send_status()` / `push_state()` / `tick()`(=`app.update()`) / `run_state()` 等の helper を生やす。
-     ⚠️ `TradingSettings` は **`backend_enabled: true` で明示構築**（`backend_update_system` が
-     disabled だと早期 return する）。`from_env()` は env 依存なので使わない。
-  2. テストバイナリ `tests/e2e_replay.rs` を作り、`#[path = "e2e/support/mod.rs"] mod support;`
-     で取り込む（`tests/` 直下の `.rs` だけが test crate になる。`tests/e2e/` 配下はビルドされない）。
-  3. v1 の 4 本（A1/A2/A6/B1）を実装:
-     - **A1**: `RunStarted`→assert `RunState::Running`→`RunComplete{summary_json}`→assert
-       `Completed` + `parsed_summary`(fills_count/total_pnl)。
-     - **A6**: `RunStarted`→`RunFailed{error}`→assert `RunState::Failed{error}`。
-     - **B1**: `PortfolioLoaded{..}`→assert `PortfolioState.loaded==true` + equity/positions。
-     - **A2**: `RunStarted`→`push_state(ts=1000)`→assert `TradingSession.timestamp_ms==1000`→
-       (state を送らない=pause) tick して不変→`push_state(ts=2000)`→assert 2000→`RunComplete`。
-       ※ pause/resume の本来のセマンティクス（`Pause`/`Resume` を gRPC で送る）は transport task
-       依存。v1 では「backend が押し出す replay clock を UI が忠実にミラーする」ことの検証に留める。
+- ✅ **v1 ハーネス + 4 本実装済み（A1/A2/A6/B1、`cargo test --test e2e_replay` で 4 passed）**:
+  1. `tests/e2e/support/mod.rs` に `Harness` を実装済み。`MinimalPlugins` の headless `App` に
+     `StatusUpdateChannel`/`BackendChannel`/`BackendEventChannel` + 全 trading resource +
+     `ReplayStartupProgress` を insert し、`backend_update_system`/`status_update_system`/
+     `backend_event_drain_system` を `Update` に登録。`status_tx`/`backend_tx`/`event_tx` を保持し、
+     `send_status()`/`send_event()`/`push_state(ts)`/`tick()`/`run_state()`/`last_run()`/
+     `portfolio()`/`timestamp_ms()` helper を提供。`TradingSettings` は `backend_enabled: true` で
+     明示構築（`from_env()` 不使用）。`push_state` は `BackendTradingState` を serde_json で最小構築。
+  2. テストバイナリ `tests/e2e_replay.rs` を作成済み（`#[path = "e2e/support/mod.rs"] mod support;`）。
+  3. v1 の 4 本実装済み: **A1**=RunStarted→Running→RunComplete→Completed+parsed_summary、
+     **A6**=RunStarted→RunFailed→Failed{error}、**B1**=PortfolioLoaded→loaded+equity/positions/orders、
+     **A2**=RunStarted→push_state(1000)→pause(tick 不変)→push_state(2000)→RunComplete。
+     ※ A2 の pause/resume は backend が押し出す replay clock のミラー検証に留める（gRPC 経由の
+     `Pause`/`Resume` は transport task 依存 = Phase A-full）。
+- ✅ **v2 で 19 本追加（`cargo test --test e2e_replay` で 23 passed）**: A3/A4/A7/A8、B2、
+  C1/C2/C3/C4、D1/D2/D3/D4/D6/D7、E1、F1/F2、G1。`tests/e2e/support/mod.rs` に観測アクセサ
+  （`venue()`/`exec_mode()`/`tickers()`/`available()`/`last_prices()`/`startup_progress()`/
+  `backend_connected()`/`backend_running()`）と、startup window を開く `begin_startup(id)` を追加。
+  A3 は A2 と同じく backend が押し出す replay clock のミラー検証。A4 は force-stop が
+  backend→ECS では `RunComplete` として現れる（`Running` を抜けることを観測）。A8 は古い
+  `startup_id` の `RunComplete` が startup window を閉じないことの回帰テスト。D7 は Live universe が
+  Replay fallback list を wholesale 上書きする不変条件。
+- ✅ **G2 backend_reconnect_selfheal 追加（24 passed）**: `Error` で `connected=false`+`last_error`
+  記録 → 再 `Connected(true)` で `connected` が復帰することを観測（連続断・復旧が status seam だけで
+  決定論的に書けるため、supervisor task に依存せず実装できた）。`backend_last_error()` アクセサを追加。
+- ⬜ **保留（同ハーネスでは観測不能）**:
+  - **A5 set_speed**: `BackendStatusUpdate` に speed ack variant が無い（Phase A-full 待ち）。
+  - **C5 select_instrument**: `SelectedSymbol` は UI 駆動のみで backend→ECS seam を通らない。
+  - **D5/F3/F4/F5（event seam）**: `backend_event_drain_system` が `info!` するだけで resource を
+    変えないため assert 不可。実装には `src/backend_sync.rs` の event drain に
+    `PortfolioState`/`VenueStatusRes`/pending-secret resource 反映を足し、本番 `main.rs` の挙動と
+    一致させる必要がある（スコープ拡大 = 依頼者確認待ち）。
+  - **G3 backend_disabled**: `backend_enabled=false` が前提だが `Harness` は `true` 固定で構築する。
+    観測には disabled 版ハーネス（または builder 引数）の追加が必要。
 - 📌 **設計メモ**: 本 v1 は backend→ECS の片側（`BackendStatusUpdate` 注入）を駆動する。
   反対側（`TransportCommand`→gRPC→`BackendStatusUpdate`）は既に `tests/backend_integration.rs`
   が mock tonic サーバでカバー済み。**両者で end-to-end をカバー**する構図。完全な単一プロセス
