@@ -130,6 +130,9 @@ const MS_TIME_STEPS: [u64; 10] = [
 ];
 
 /// timeframe (ms) に対応する step テーブルを選ぶ (flowsurface `calc_time_step` の match)。
+///
+/// flowsurface 同様、1/3/5/15/30 分以外の 1..=30 分 (2,4,6-14,16-29) と 31 分以上は
+/// すべて `HOURLY_TIME_STEPS` にフォールバックする (timeseries.rs:84-92 の内側 `_` 相当)。
 fn time_steps_for(timeframe_ms: u64) -> &'static [u64] {
     let tf_min = timeframe_ms / 60_000;
     match tf_min {
@@ -139,7 +142,6 @@ fn time_steps_for(timeframe_ms: u64) -> &'static [u64] {
         5 => &M5_TIME_STEPS,
         15 => &M5_TIME_STEPS[..7],
         30 => &M5_TIME_STEPS[..6],
-        2 | 4 | 6..=14 | 16..=29 => &M1_TIME_STEPS,
         _ => &HOURLY_TIME_STEPS,
     }
 }
@@ -386,6 +388,16 @@ mod tests {
         assert_eq!(step, step_ms);
         assert_eq!(rounded, 5 * 60_000, "floor to minute boundary");
         assert!(rounded <= earliest);
+    }
+
+    #[test]
+    fn time_step_unlisted_timeframe_uses_hourly_table() {
+        // flowsurface 同様、2 分足など未列挙 timeframe は HOURLY テーブルを使う (M1 ではない)。
+        // 48h 窓 / want=6 → HOURLY は 8h step、M1 だと 3h step になるので 8h が出れば HOURLY 確定。
+        let earliest = 0;
+        let latest = 48 * 60 * 60_000;
+        let (step, _r) = calc_optimal_time_step(earliest, latest, 6, 2 * 60_000);
+        assert_eq!(step, 8 * 60 * 60_000, "2min timeframe must fall back to HOURLY table");
     }
 
     #[test]
