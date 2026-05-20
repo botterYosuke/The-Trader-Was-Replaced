@@ -20,7 +20,7 @@
 | 5 | TachibanaExecutionClient | ✅ 完了 (2026-05-21、未コミット) — CLMKabuNewOrder/Correct/Cancel + 第二暗証番号都度収集 + EC→OrderEvent。**EC 情報コードは e-station 参照実装で確定**。残課題: 口座レベル EC 購読 URL 構成 + `build_event_url` の comma %2C 問題（要 Demo 検証） |
 | 6 | KabusapiExecutionClient | ✅ 完了 (2026-05-21、未コミット) — POST /sendorder + PUT /cancelorder + 訂正=取消→新規変換(補償) + GET /orders 1s polling→OrderEvent + fetch_account。**proto / Rust 変更ゼロ**。残課題: 実 verify 環境 smoke (§5.1 layer-3) + AccountType の config 化 |
 | 7 | Venue Health Watchdog | ✅ 完了 (2026-05-21、未コミット) — kabu `check_health`(GET /apisoftlimit→4001007/4001017) + `live/health_watchdog.py`(poll型・debounce) + Tachibana SS=閉局 push 検知(⚠️TENTATIVE) + server_grpc 配線(`_publish_venue_logout`) + Rust ReloginModal(通知のみ) |
-| 8 | Backend Auto-Restart + Idle Shutdown | ⬜ 未着手 |
+| 8 | Backend Auto-Restart + Idle Shutdown | 🔶 一部完了 (2026-05-21) — **§3.7 Idle gRPC Shutdown ✅** (`live/idle_shutdown.py` + interceptor + monitor + `BACKEND_SUPERVISED=1` gate)。**§3.8 Auto-Restart + in-flight re-sync ⬜ 未着手** (supervisor 上位ループの crash-loop 再起動化 + `GetOrders` proto RPC 新設が必要、別途) |
 | 9 | Instruments Daily Refresh | ⬜ 未着手 |
 | 10 | Polish | ⬜ 未着手 |
 
@@ -250,6 +250,14 @@ R1/R2/simplify 収束後にコミットした Step 6 (`558eabb1`) を改めて 3
 - **Rust UI（`src/ui/relogin_modal.rs` [NEW] + `ReloginPrompt` resource）**: `backend_event_drain_system`（backend_sync.rs）の `VenueLogoutDetected` arm を**ログのみ→`relogin_prompt.active = Some(venue)`** に結線。ReloginModal は UI Node オーバーレイ（GlobalZIndex 260、secret_modal 流儀）で venue 名 + 再ログイン案内 + [閉じる]/Esc を表示。
   - **設計判断（drift note, §3.5）**: 計画書は「再ログイン modal → ログイン完了で購読再開」と書くが、本モーダルは **通知に徹し自身は `VenueLogin` を発射しない**。理由: ① 検知時点で backend `venue_sm` はまだ `CONNECTED`（検知は push で状態遷移ではない）→ 直接 `VenueLogin` は busy slot に衝突。② 環境（demo/verify/prod）選択は Venue メニューが所有 → モーダルから推測発射すると**誤った環境への再接続**になりうる。よって実再ログインは既存 Venue メニュー（Disconnect→Connect）を通し、購読再開もその既存ログインフローが担う。
 - **残課題（Step 8/Demo へ）**: ① Tachibana SS frame の prefix を Demo で確認し TENTATIVE を確定。② kabu polling の `4001007/4001017` バックオフ（Step 6 で実装済み）と watchdog の VenueLogoutDetected を連動させる余地（現状は独立。watchdog 検知で UI 誘導、polling はバックオフ継続）。③ 再ログイン完了後の購読自動再開の E2E（既存ログインフロー依存・Step 8 の auto-restart re-sync と合わせて検証）。
+
+### Step 8 (一部) 完了サマリー (2026-05-21) — §3.7 Idle gRPC Shutdown のみ
+
+> **状態**: 🔶 **§3.7 完了 / §3.8 未着手**。Python `tests/live` + grpc 関連 **215 passed**、`cargo build --lib` 緑。idle_shutdown 新規テスト 7。
+
+- **§3.7 Idle gRPC Shutdown（✅ 完了）**: `live/idle_shutdown.py` [NEW] = `LastRequestClock`(threading.Lock + monotonic) + `RequestActivityInterceptor`(grpc.ServerInterceptor、全 RPC で `touch()`) + `IdleShutdownMonitor`(daemon thread、`check_interval_s` 毎に idle 確認、`idle_timeout_s`=60 超過で `on_idle` を 1 回呼んで終了) + `should_enable_idle_shutdown(environ)`(純粋 gate)。`serve()` に配線: interceptor を `grpc.server(interceptors=[...])` に登録、standalone 時のみ monitor を start し `on_idle = process_lifecycle.start_shutdown(grace=2)`（既存 shutdown 経路が teardown→kabu unregister/all→`server.stop` を担う）。**Bevy supervisor は spawn 時に `BACKEND_SUPERVISED=1` を渡す**（`backend_supervisor.rs::spawn_python_backend` に `.env("BACKEND_SUPERVISED","1")`）→ 配下では monitor を起動しない。
+  - **ドリフト訂正（§3.7）**: 計画書の「asyncio.Lock / background asyncio task」は本番が同期 `grpc.server(ThreadPoolExecutor)` のため **threading ベース**に変更（SecretVault と同根。単一 asyncio loop は存在しない）。
+- **§3.8 Auto-Restart + in-flight re-sync（⬜ 未着手・申し送り）**: backend_supervisor.rs の上位ループは現状 spawn→monitor を **1 回**通って `drain_commands`（Restart は no-op stub）に落ちる構造で、**crash-loop カウンタも auto-restart も未実装**（doc コメントの「crash-loop budget」は未実装）。§3.8 は ① 上位を「Crashed → 60s 窓で 3 回未満なら再 spawn / 以上で `[Restart Backend]` disabled」の外ループに再構成、② in-flight re-sync 用に **`GetOrders` proto RPC を新設**（現 proto に無い。`GetOrderStatus` は単発のみ）+ Rust diff/modal、が必要。proto 追加 + 慎重な supervisor 状態機械の改修のため別セッションで実施する。
 
 ---
 

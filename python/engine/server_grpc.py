@@ -30,6 +30,12 @@ from .live.secret_provider import SecondSecretResolver, SecretTimeoutError
 from .live.order_facade import ManualOrderFacade, OrderFacadeError
 from .live.account_sync import AccountSync
 from .live.health_watchdog import VenueHealthWatchdog
+from .live.idle_shutdown import (
+    IdleShutdownMonitor,
+    LastRequestClock,
+    RequestActivityInterceptor,
+    should_enable_idle_shutdown,
+)
 from .mode_manager import ModeManager
 from .models import PerInstrumentState
 from .proto import engine_pb2, engine_pb2_grpc
@@ -1922,7 +1928,15 @@ def serve(
         build_live_adapter_factory(live_venue) if live_venue is not None else None
     )
 
-    server = grpc.server(futures.ThreadPoolExecutor(max_workers=10))
+    # Phase 9 Step 8 / §3.7: idle gRPC shutdown. The interceptor stamps the last
+    # request time on every RPC; a monitor thread self-shuts-down after 60s idle
+    # when standalone (CLI-launched). Under the Bevy supervisor (BACKEND_SUPERVISED=1)
+    # the monitor is not started — process lifetime is the supervisor's job.
+    idle_clock = LastRequestClock()
+    server = grpc.server(
+        futures.ThreadPoolExecutor(max_workers=10),
+        interceptors=[RequestActivityInterceptor(idle_clock)],
+    )
     servicer = GrpcDataEngineServer(
         token,
         engine,
@@ -1950,5 +1964,17 @@ def serve(
 
     server.start()
     print(f"GRPC_LISTENING port={port}", flush=True)
+
+    # Phase 9 Step 8 / §3.7: arm idle self-shutdown only when standalone. Under the
+    # Bevy supervisor (BACKEND_SUPERVISED=1) the supervisor owns process lifetime.
+    if should_enable_idle_shutdown(os.environ):
+        IdleShutdownMonitor(
+            idle_clock,
+            on_idle=lambda: process_lifecycle.start_shutdown(grace_seconds=2),
+        ).start()
+        logging.info("idle gRPC shutdown armed (standalone, 60s)")
+    else:
+        logging.info("idle gRPC shutdown disabled (BACKEND_SUPERVISED=1)")
+
     server.wait_for_termination()
     return
