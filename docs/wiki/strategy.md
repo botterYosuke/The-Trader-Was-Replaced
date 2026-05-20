@@ -87,14 +87,23 @@ class BuyAndHoldStrategy(Strategy):
 |---|---|---|
 | `schema_version` | 必須 | `1` / `2` / `3` |
 | `instrument` | v1 で必須 | 単一銘柄の文字列（例 `"1301.TSE"`） |
-| `instruments` | v2 / v3 で必須 | 銘柄の文字列リスト（空不可） |
+| `instruments` | v2 / v3 | 銘柄の文字列リスト（空不可） |
+| `instruments_ref` | v3 で `instruments` の代替 | 外部 JSON への参照（`"<path>"` または `"<path>#<json-pointer>"`、サイドカーからの相対パス）。下記参照 |
 | `start` | 必須 | 開始日（`YYYY-MM-DD`） |
 | `end` | 必須 | 終了日（`YYYY-MM-DD`） |
 | `granularity` | 必須 | `"Daily"` または `"Minute"`（大文字小文字を厳密に区別） |
 | `initial_cash` | 必須 | 初期資金（整数） |
-| `strategy_init_kwargs` | 任意（v3） | 戦略 `__init__` に渡す kwargs |
+| `strategy_init_kwargs` | 任意 | 戦略 `__init__` に渡す kwargs |
 
 > `granularity` は `"Daily"` / `"Minute"` 以外（`"daily"`, `" Daily "`, `"DAILY"` 等）を受け付けない。
+
+### `instruments_ref`（schema v3 / 外部ユニバース参照）
+
+v3 では `instruments` を直接書く代わりに、`instruments_ref` で銘柄リストを外部 JSON ファイルから読み込める。
+
+- 形式は `"universe.json"`（ファイル全体）または `"universe.json#/path/to/list"`（JSON ポインタで配列を指定）で、パスはサイドカー JSON からの相対で解決される。
+- **解決は fail-closed**: 参照先ファイルが無い・JSON が壊れている・ポインタが不正・リストが空のいずれかの場合、シナリオは読み込まれず（`ScenarioLoadedFromFile` が発火せず）、Run ボタンは半透明のまま有効化されない。
+- `instruments_ref` を使うサイドカーを開くと、**サイドバーの Instruments は読み取り専用**になる（`+ Add` ボタンが無効化され、銘柄の追加・削除ができない）。サイドバーには `This sidecar uses 'instruments_ref' — read-only` の警告が表示される。手動で銘柄を編集したい場合は `instruments` を直書きする v2 / v3 サイドカーを使う。
 
 ### レガシー: `.py` 内 SCENARIO
 
@@ -102,7 +111,7 @@ class BuyAndHoldStrategy(Strategy):
 
 ## Strategy Editor（GUI）
 
-メニューバー **File → Open (Ctrl+O)** で戦略 `.py` を開くと、フローティングウィンドウの Strategy Editor が開く。
+メニューバー **File → Open (Ctrl+O)** で戦略の **サイドカー JSON（`<strategy>.json`）** を選択すると（ファイルダイアログは `.json` のみを表示する。同名の `<strategy>.py` が自動で読み込まれる）、フローティングウィンドウの Strategy Editor が開く。
 
 ### 編集機能
 
@@ -111,14 +120,25 @@ class BuyAndHoldStrategy(Strategy):
 | Python シンタックスハイライト | 自動 |
 | 行番号ガター | 左端に表示 |
 | スクロールバー | 右端に表示 |
-| 検索・置換 | `Ctrl+F` で Find/Replace パネルを開く（`Esc` で閉じる）。パネル内に検索欄・置換欄と Replace / Replace All ボタンがある |
-| Tab インデント | `Tab` キーでスペースに展開 |
+| 検索・置換 | `Ctrl+F` で `FIND / REPLACE` パネルを開く（`Esc` で閉じる）。詳細は下記 |
+| Tab インデント | `Tab` キーでスペース（4 つ）に展開 |
 | オートインデント | `Enter` で前行のインデントを引き継ぐ |
-| 括弧オートクローズ | 開き括弧を入力すると閉じ括弧を補完 |
+| 括弧オートクローズ | 開き括弧（`(` `[` `{` `"` `'`）を入力すると閉じ括弧を補完（直後が閉じ括弧のときは補完しない） |
 | Undo / Redo | `Ctrl+Z`（Undo）/ `Ctrl+Y` または `Ctrl+Shift+Z`（Redo） |
 | 自動保存 | 編集を止めて約 1 秒後にキャッシュへ自動保存（デバウンス） |
 
-> 検索・置換は `Ctrl+F` で開く 1 つのパネルにまとまっている（置換専用の `Ctrl+H` ショートカットはない）。
+### 検索・置換パネル（`FIND / REPLACE`）
+
+`Ctrl+F` で検索と置換が 1 つのパネルにまとまって開く（置換専用の `Ctrl+H` ショートカットはない）。`Esc` で閉じる。
+
+| 要素 | 内容 |
+|---|---|
+| 検索欄 / 置換欄 | 上段が検索クエリ、下段が置換文字列。検索は**部分一致**（正規表現ではない） |
+| `<` / `>` ボタン | 前のマッチ / 次のマッチへ移動 |
+| `Repl` / `Repl All` ボタン | 現在のマッチを置換 / すべて置換 |
+| マッチ件数表示 | `現在 / 全体` 形式でヒット数を表示 |
+| `F3` / `Shift+F3` | 次 / 前のマッチへ移動（検索欄にフォーカス中は `Enter` ではなく `F3` で移動） |
+| 大文字小文字 | 既定は区別しない（case-insensitive）。トグルで切り替え |
 
 ## 安全装置（max_qty / max_notional_jpy）
 

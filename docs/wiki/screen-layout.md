@@ -33,7 +33,7 @@ File メニューの各項目はレイアウト（および戦略一式）の保
 | Panels | 開けるパネルのボタン群: **Strategy Editor** / **Buying Power** / **Run Result** / **Positions** / **Orders** |
 | Settings | テーマ・バックエンド URL・レイアウト状態の表示（例: `Theme: Dark` / `Backend: localhost:19876`） |
 
-Instruments セクションでは、行をクリックすると選択銘柄が切り替わります。銘柄が未登録のときは `No instruments` と表示されます。Panels ボタンを押すと対応するフローティングウィンドウが開きます。Settings の詳細は [設定](settings.md) を参照してください。
+Instruments セクションでは、行をクリックすると選択銘柄が切り替わります。銘柄が未登録のときは `No instruments` と表示されます。**+ Add** で開く検索付き銘柄ピッカーや、`instruments_ref` 使用時の読み取り専用化は [取引所接続](venues.md#銘柄ピッカー-add) を参照してください。Panels ボタンを押すと対応するフローティングウィンドウが開きます。Settings の詳細は [設定](settings.md) を参照してください。
 
 ## フッター
 

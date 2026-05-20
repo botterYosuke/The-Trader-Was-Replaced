@@ -16,7 +16,7 @@
 | venue ログインに失敗する | 認証情報・環境設定の誤り | Tachibana は `DEV_TACHIBANA_USER_ID` / `DEV_TACHIBANA_PASSWORD`、kabu は `DEV_KABU_API_PASSWORD` と kabuステーション本体の起動を確認 |
 | Prod に接続できない / 送信が遮断される | 本番ガード | Tachibana は `TACHIBANA_ALLOW_PROD=1`、kabu は `KABU_ALLOW_PROD=1` を設定（二重ガード） |
 | ポート 19876 が競合して起動できない | 既存プロセスがポートを占有 | 既存プロセスを停止する（下記参照） |
-| Connect メニュー項目が無効 / 非表示 | venue が接続処理中・接続中、または当該 venue が `--live-venue` で配線されていない | 先に Disconnect する。配線されていない venue は起動時の `--live-venue` を確認 |
+| Connect メニュー項目が無効 / 非表示 | venue が未接続でない（接続処理中・接続中・再接続中・**ERROR** を含む）、または当該 venue が `--live-venue` で配線されていない | 先に Disconnect する（ERROR で固まったときも一度 Disconnect）。配線されていない venue は起動時の `--live-venue` を確認 |
 
 ## ポート 19876 の競合解消（PowerShell）
 

@@ -89,7 +89,7 @@ state: IDLE  grpc: OK
 
 ## 4. 最初の Replay 実行
 
-1. メニューバー左の **File(&F)** から **Open (Ctrl+O)** で戦略一式（サイドカー JSON 付き）を読み込むか、戦略 `.py` を開く
+1. メニューバー左の **File(&F)** から **Open (Ctrl+O)** で戦略の **サイドカー JSON（`<strategy>.json`）** を選択する（ファイルダイアログは `.json` のみを表示する。同じ場所の `<strategy>.py` が自動で読み込まれる）
 2. Strategy Editor ウィンドウが開く
 3. フッター中央の **▶** ボタンをクリックして Run を開始 [A1]
 4. フッターが `state: RUNNING` になり、ボタンが **||**（一時停止／再開）に切り替わる [A2]

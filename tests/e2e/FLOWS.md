@@ -168,6 +168,17 @@
   - Manual / Auto への切替は venue 接続済み（Disconnected / Error 以外）でないとリクエストを送らない
   - Replay への切替は戦略ロード済みでないと送らない
 - メニュー開閉 / Alt+F / レイアウト永続化 / cosmic_edit 入力 → 描画依存。ユニット + 既存の手動 E2E に残す
+- **Startup パネルの入力検証 gating**（wiki: replay.md / strategy.md）→ 空・不正な日付 / granularity 未選択 /
+  initial_cash ≤ 0 / `start > end` のとき Run を抑止し赤字エラーを出すのはクライアント側の純 UI 検証で、
+  backend→ECS seam を通らない。`scenario_startup_panel.rs` の単体テスト向き。
+- **`instruments_ref`（schema v3）の fail-closed**（wiki: strategy.md「instruments_ref」）→ 参照先 JSON が
+  欠落・破損・空のとき `ScenarioLoadedFromFile` を発火させず Run を半透明のままにする挙動。
+  file-watch 駆動（`scenario_parser.rs`）で backend→ECS seam を通らないため、`scenario_parser.rs` の
+  既存単体テスト（`parse_resolves_instruments_ref_to_instruments` 等）でカバー。
+- **銘柄ピッカー（`+ Add`）の挙動**（wiki: venues.md「銘柄ピッカー」）→ 検索絞り込み / 最大 15 行 /
+  プレースホルダ（`Set scenario.end first` / `Venue not connected` / `Loading...` / `Error:` / `No matches`）/
+  100ms デバウンス / `instruments_ref` 時の読み取り専用化は描画依存の純 UI（`instrument_picker.rs`）。
+  ユニットテスト向き。ピッカーが消費する銘柄ユニバース取得自体は [C1]〜[C4] でカバー済み。
 
 ---
 
