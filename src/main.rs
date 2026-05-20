@@ -27,7 +27,8 @@ use engine::{
     EngineKind, EngineStartConfig, ForceStopReplayRequest, GetPortfolioRequest, GetStateRequest,
     ListAllListedSymbolsRequest, ListInstrumentsRequest, LoadReplayDataRequest, PauseReplayRequest,
     ReplayGranularity, ResumeReplayRequest, SetExecutionModeRequest, SetReplaySpeedRequest,
-    StartEngineRequest, StartEngineResponse, StepReplayRequest, SubscribeRequest,
+    StartEngineRequest, StartEngineResponse, StepReplayRequest, SubscribeBackendEventsReq,
+    SubscribeRequest,
     UnsubscribeRequest, VenueLoginRequest, VenueLogoutRequest,
 };
 use tokio::sync::mpsc;
@@ -174,6 +175,7 @@ async fn main() {
             (
                 backend_update_system,
                 status_update_system,
+                backend_event_drain_system,
                 update_replay_startup_window_system,
                 animate_replay_startup_bar_system,
                 auto_hide_replay_startup_window_system.after(status_update_system),
@@ -217,6 +219,50 @@ fn status_update_system(
             &mut tickers,
             &mut last_prices,
         );
+    }
+}
+
+#[derive(Resource)]
+struct BackendEventChannel {
+    rx: mpsc::UnboundedReceiver<backcast::trading::BackendEvent>,
+}
+
+fn backend_event_drain_system(mut channel: ResMut<BackendEventChannel>) {
+    use backcast::trading::BackendEvent;
+    while let Ok(event) = channel.rx.try_recv() {
+        match event {
+            BackendEvent::SecretRequired {
+                request_id,
+                venue,
+                kind,
+                purpose,
+            } => info!(
+                "[backend-event] SecretRequired request_id={request_id} venue={venue} kind={kind} purpose={purpose}"
+            ),
+            BackendEvent::OrderEvent {
+                order_id,
+                venue_order_id,
+                client_order_id,
+                status,
+                filled_qty,
+                avg_price,
+                ts_ms,
+            } => info!(
+                "[backend-event] OrderEvent order_id={order_id} venue_order_id={venue_order_id} client_order_id={client_order_id} status={status} filled_qty={filled_qty} avg_price={avg_price} ts_ms={ts_ms}"
+            ),
+            BackendEvent::AccountEvent {
+                cash,
+                buying_power,
+                positions,
+                ts_ms,
+            } => info!(
+                "[backend-event] AccountEvent cash={cash} buying_power={buying_power} positions={} ts_ms={ts_ms}",
+                positions.len()
+            ),
+            BackendEvent::VenueLogoutDetected { venue } => {
+                info!("[backend-event] VenueLogoutDetected venue={venue}")
+            }
+        }
     }
 }
 
@@ -438,6 +484,9 @@ fn setup_backend_connection(
 
     let (status_tx, status_rx) = mpsc::unbounded_channel();
     commands.insert_resource(StatusUpdateChannel { rx: status_rx });
+
+    let (event_tx, event_rx) = mpsc::unbounded_channel();
+    commands.insert_resource(BackendEventChannel { rx: event_rx });
 
     // Transport command channel: sender lives as a Bevy resource, receiver moves into the tokio task.
     let (transport_tx, mut transport_rx) = mpsc::unbounded_channel::<TransportCommand>();
@@ -1014,6 +1063,123 @@ fn setup_backend_connection(
                         tokio::time::sleep(tokio::time::Duration::from_millis(interval)).await;
                     } => {}
                 }
+            }
+        }
+    });
+
+    // Backend event subscriber: own client + own Ready-driven reconnect loop
+    // (cannot share the status task's client, which is busy in its select! loop).
+    let ev_url = settings.backend_url.clone();
+    let ev_token = settings.token.clone();
+    let mut ev_lifecycle_rx = lifecycle_handle.subscribe();
+    let ev_handle = tokio_handle.0.clone();
+    ev_handle.spawn(async move {
+        loop {
+            if ev_lifecycle_rx
+                .wait_for(|s| matches!(s, BackendLifecycle::Ready))
+                .await
+                .is_err()
+            {
+                return; // supervisor dropped = app exit
+            }
+            let mut client = match DataEngineClient::connect(ev_url.clone()).await {
+                Ok(c) => c,
+                Err(e) => {
+                    error!("[backend-events] connect failed after Ready: {}", e);
+                    if ev_lifecycle_rx.changed().await.is_err() {
+                        return;
+                    }
+                    continue;
+                }
+            };
+            let req = tonic::Request::new(SubscribeBackendEventsReq {
+                token: ev_token.clone(),
+            });
+            let mut stream = match client.subscribe_backend_events(req).await {
+                Ok(resp) => resp.into_inner(),
+                Err(e) => {
+                    error!("[backend-events] subscribe failed: {}", e);
+                    if ev_lifecycle_rx.changed().await.is_err() {
+                        return;
+                    }
+                    continue;
+                }
+            };
+            info!("[backend-events] stream established.");
+            loop {
+                match stream.message().await {
+                    Ok(Some(ev)) => {
+                        let Some(payload) = ev.payload else {
+                            warn!("[backend-events] event with empty payload; skipping");
+                            continue;
+                        };
+                        let mapped = match payload {
+                            engine::backend_event::Payload::SecretRequired(p) => {
+                                backcast::trading::BackendEvent::SecretRequired {
+                                    request_id: p.request_id,
+                                    venue: p.venue,
+                                    kind: p.kind,
+                                    purpose: p.purpose,
+                                }
+                            }
+                            engine::backend_event::Payload::OrderEvent(p) => {
+                                backcast::trading::BackendEvent::OrderEvent {
+                                    order_id: p.order_id,
+                                    venue_order_id: p.venue_order_id,
+                                    client_order_id: p.client_order_id,
+                                    status: p.status,
+                                    filled_qty: p.filled_qty,
+                                    avg_price: p.avg_price,
+                                    ts_ms: p.ts_ms,
+                                }
+                            }
+                            engine::backend_event::Payload::AccountEvent(p) => {
+                                backcast::trading::BackendEvent::AccountEvent {
+                                    cash: p.cash,
+                                    buying_power: p.buying_power,
+                                    positions: p
+                                        .positions
+                                        .into_iter()
+                                        .map(|pos| backcast::trading::AccountPosition {
+                                            symbol: pos.symbol,
+                                            qty: pos.qty,
+                                            avg_price: pos.avg_price,
+                                            unrealized_pnl: pos.unrealized_pnl,
+                                        })
+                                        .collect(),
+                                    ts_ms: p.ts_ms,
+                                }
+                            }
+                            engine::backend_event::Payload::VenueLogoutDetected(p) => {
+                                backcast::trading::BackendEvent::VenueLogoutDetected {
+                                    venue: p.venue,
+                                }
+                            }
+                        };
+                        let _ = event_tx.send(mapped);
+                    }
+                    Ok(None) => {
+                        info!("[backend-events] server closed stream; reconnecting.");
+                        break;
+                    }
+                    Err(e) => {
+                        error!("[backend-events] stream error: {}; reconnecting.", e);
+                        break;
+                    }
+                }
+            }
+            // The stream ended (server closed it or errored) while we may still
+            // be Ready. A streaming RPC can end without any lifecycle change, so
+            // blocking on changed() here would stall forever. Back off briefly,
+            // then loop: wait_for(Ready) passes immediately if still Ready
+            // (reconnect) or blocks until Ready returns.
+            tokio::select! {
+                changed = ev_lifecycle_rx.changed() => {
+                    if changed.is_err() {
+                        return; // supervisor dropped = app exit
+                    }
+                }
+                _ = tokio::time::sleep(tokio::time::Duration::from_millis(500)) => {}
             }
         }
     });

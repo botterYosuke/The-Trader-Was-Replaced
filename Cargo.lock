@@ -512,6 +512,7 @@ dependencies = [
  "syntect",
  "tempfile",
  "tokio",
+ "tokio-stream",
  "tonic",
  "tonic-build",
  "undo",

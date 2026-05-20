@@ -71,6 +71,11 @@ service DataEngine {
   rpc UnsubscribeMarketData (UnsubscribeRequest) returns (SubscribeResponse);
   rpc SetExecutionMode (SetExecutionModeRequest) returns (SetExecutionModeResponse);
 
+  // Phase 9 Step 0: Backend Event Transport (server-streaming).
+  // Reverse-direction control-plane channel: server pushes BackendEvent to the UI.
+  // Must be added before other Phase 9 RPCs (everything depends on this transport).
+  rpc SubscribeBackendEvents (SubscribeBackendEventsReq) returns (stream BackendEvent);
+
   // Lifecycle (Step 2: backend-startup-sync)
   rpc Shutdown (ShutdownRequest) returns (ShutdownResponse);
 }
@@ -312,4 +317,56 @@ message ShutdownRequest {
 message ShutdownResponse {
   bool accepted = 1;
   string error_code = 2;
+}
+
+// === Phase 9 Step 0: Backend Event Transport ===
+
+message SubscribeBackendEventsReq {
+  string token = 1;
+}
+
+// SecretRequired: Tachibana only. Server asks the UI to collect the second
+// password. kabu never emits this (Password not required).
+message SecretRequired {
+  string request_id = 1;
+  string venue = 2;
+  string kind = 3;     // e.g. "second_secret"
+  string purpose = 4;  // e.g. "new_order" / "cancel_order" / "correct_order"
+}
+
+message OrderEvent {
+  string order_id = 1;
+  string venue_order_id = 2;
+  string client_order_id = 3;
+  string status = 4;       // Nautilus OrderStatus name
+  double filled_qty = 5;
+  double avg_price = 6;
+  int64 ts_ms = 7;
+}
+
+message AccountPosition {
+  string symbol = 1;
+  int64 qty = 2;
+  double avg_price = 3;
+  double unrealized_pnl = 4;
+}
+
+message AccountEvent {
+  double cash = 1;
+  double buying_power = 2;
+  repeated AccountPosition positions = 3;
+  int64 ts_ms = 4;
+}
+
+message VenueLogoutDetected {
+  string venue = 1;
+}
+
+message BackendEvent {
+  oneof payload {
+    SecretRequired secret_required = 1;
+    OrderEvent order_event = 2;
+    AccountEvent account_event = 3;
+    VenueLogoutDetected venue_logout_detected = 4;
+  }
 }

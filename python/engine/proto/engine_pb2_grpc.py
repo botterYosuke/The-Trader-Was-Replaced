@@ -206,6 +206,11 @@ class DataEngineStub(object):
                 request_serializer=engine__pb2.SetExecutionModeRequest.SerializeToString,
                 response_deserializer=engine__pb2.SetExecutionModeResponse.FromString,
                 _registered_method=True)
+        self.SubscribeBackendEvents = channel.unary_stream(
+                '/engine.DataEngine/SubscribeBackendEvents',
+                request_serializer=engine__pb2.SubscribeBackendEventsReq.SerializeToString,
+                response_deserializer=engine__pb2.BackendEvent.FromString,
+                _registered_method=True)
         self.Shutdown = channel.unary_unary(
                 '/engine.DataEngine/Shutdown',
                 request_serializer=engine__pb2.ShutdownRequest.SerializeToString,
@@ -341,6 +346,15 @@ class DataEngineServicer(object):
         context.set_details('Method not implemented!')
         raise NotImplementedError('Method not implemented!')
 
+    def SubscribeBackendEvents(self, request, context):
+        """Phase 9 Step 0: Backend Event Transport (server-streaming).
+        Reverse-direction control-plane channel: server pushes BackendEvent to the UI.
+        Must be added before other Phase 9 RPCs (everything depends on this transport).
+        """
+        context.set_code(grpc.StatusCode.UNIMPLEMENTED)
+        context.set_details('Method not implemented!')
+        raise NotImplementedError('Method not implemented!')
+
     def Shutdown(self, request, context):
         """Lifecycle (Step 2: backend-startup-sync)
         """
@@ -450,6 +464,11 @@ def add_DataEngineServicer_to_server(servicer, server):
                     servicer.SetExecutionMode,
                     request_deserializer=engine__pb2.SetExecutionModeRequest.FromString,
                     response_serializer=engine__pb2.SetExecutionModeResponse.SerializeToString,
+            ),
+            'SubscribeBackendEvents': grpc.unary_stream_rpc_method_handler(
+                    servicer.SubscribeBackendEvents,
+                    request_deserializer=engine__pb2.SubscribeBackendEventsReq.FromString,
+                    response_serializer=engine__pb2.BackendEvent.SerializeToString,
             ),
             'Shutdown': grpc.unary_unary_rpc_method_handler(
                     servicer.Shutdown,
@@ -997,6 +1016,33 @@ class DataEngine(object):
             '/engine.DataEngine/SetExecutionMode',
             engine__pb2.SetExecutionModeRequest.SerializeToString,
             engine__pb2.SetExecutionModeResponse.FromString,
+            options,
+            channel_credentials,
+            insecure,
+            call_credentials,
+            compression,
+            wait_for_ready,
+            timeout,
+            metadata,
+            _registered_method=True)
+
+    @staticmethod
+    def SubscribeBackendEvents(request,
+            target,
+            options=(),
+            channel_credentials=None,
+            call_credentials=None,
+            insecure=False,
+            compression=None,
+            wait_for_ready=None,
+            timeout=None,
+            metadata=None):
+        return grpc.experimental.unary_stream(
+            request,
+            target,
+            '/engine.DataEngine/SubscribeBackendEvents',
+            engine__pb2.SubscribeBackendEventsReq.SerializeToString,
+            engine__pb2.BackendEvent.FromString,
             options,
             channel_credentials,
             insecure,

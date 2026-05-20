@@ -24,6 +24,7 @@ from .live.reducer_bridge import LiveReducerBridge
 from .live.last_price_cache import LastPriceCache
 from .live.depth_cache import DepthCache
 from .live.state_machine import VenueStateMachine
+from .live.backend_event_bus import BackendEventBus
 from .mode_manager import ModeManager
 from .models import PerInstrumentState
 from .proto import engine_pb2, engine_pb2_grpc
@@ -202,6 +203,9 @@ class GrpcDataEngineServer(
         self._suppress_live_last_error: bool = False
         # D21: venue id from --live-venue flag, uppercase normalized
         self._live_venue_id: Optional[str] = live_venue_id.upper() if live_venue_id else None
+        # Phase 9 Step 0: backend → frontend event push (threading-based fan-out).
+        # Lifetime = servicer lifetime; per-stream cleanup is in the handler finally.
+        self._backend_event_bus: BackendEventBus = BackendEventBus()
 
     _KNOWN_VENUES = {"TACHIBANA", "KABU", "MOCK"}  # D26: MOCK added
     _KNOWN_CRED_SOURCES = {"prompt", "session_cache", "env", "prompt_result"}
@@ -1467,6 +1471,28 @@ class GrpcDataEngineServer(
         # A0: drop reducer per-id state so the symbol stops surfacing in per_instrument
         self.engine.forget_instrument(request.instrument_id)
         return engine_pb2.SubscribeResponse(success=True, error_code="")
+
+    def publish_backend_event(self, event):
+        """Fan a BackendEvent out to all open SubscribeBackendEvents streams."""
+        self._backend_event_bus.publish(event)
+
+    def SubscribeBackendEvents(self, request, context):
+        if request.token != self.token:
+            context.abort(grpc.StatusCode.UNAUTHENTICATED, "Invalid token")
+
+        sub = self._backend_event_bus.subscribe()
+        # Wake the blocked queue.get() in _Subscription.__next__ when the RPC
+        # terminates (client cancel / deadline / stream teardown). Without this,
+        # the worker thread parks forever in queue.get() and the at-exit
+        # ThreadPoolExecutor join hangs the process. (Phase 9 Step 0 fix.)
+        context.add_callback(sub.close)
+        try:
+            for event in sub:
+                if not context.is_active():
+                    break
+                yield event
+        finally:
+            sub.close()
 
 
 def advance_loop(engine: DataEngine, interval: float = 1.0):
