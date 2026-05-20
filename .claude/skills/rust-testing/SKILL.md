@@ -1,6 +1,6 @@
 ---
 name: rust-testing
-description: Rust testing patterns including unit tests, integration tests, async testing, property-based testing, mocking, and coverage. Follows TDD methodology. Trigger: "cargo test", "Rust テスト", "テストブロック修正", "test fails", "#[test]", "テスト破損", "旧テストを新 API に合わせる", "init_resource が欠落", "Bevy App テスト", "app.add_systems テスト", "serial_test", "env var test", "RAII guard", "EnvGuard", "環境変数テスト", "std::env::set_var", "serial". pair-relay の Navigator が Rust テストを書く前にこのスキルを参照すると、RAII guard パターン・serial_test 直列化・unsafe env var 操作の落とし穴を回避できる。
+description: Rust testing patterns including unit tests, integration tests, async testing, property-based testing, mocking, and coverage. Follows TDD methodology. Trigger: "cargo test", "Rust テスト", "テストブロック修正", "test fails", "#[test]", "テスト破損", "旧テストを新 API に合わせる", "init_resource が欠落", "Bevy App テスト", "app.add_systems テスト", "serial_test", "env var test", "RAII guard", "EnvGuard", "環境変数テスト", "std::env::set_var", "serial", "headless E2E ハーネス", "tests/e2e_replay", "tests/e2e/FLOWS.md", "FLOWS.md の flow 追加", "MinimalPlugins resource 駆動テスト", "backend→ECS seam テスト", "BackendStatusUpdate を注入して resource を assert". 注: ここでの「E2E」は **ヘッドレスな Rust テスト**（`cargo test --test e2e_replay`）であり、GUI 目視検証の `e2e-testing` スキルとは別物。 pair-relay の Navigator が Rust テストを書く前にこのスキルを参照すると、RAII guard パターン・serial_test 直列化・unsafe env var 操作の落とし穴を回避できる。
 origin: ECC
 ---
 
