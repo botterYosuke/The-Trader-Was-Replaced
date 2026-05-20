@@ -161,6 +161,15 @@ transform.translation.y -= drag.event().delta.y * scale; // y は反転
 scale を掛けないとズーム時にウィンドウが指から「逃げる」または「先回りする」。
 `floating_window.rs:96-105` の挙動を踏襲。
 
+⚠️ **`Pointer<Drag>` は全マウスボタンで発火する**（`bevy_picking-0.15.1/src/events.rs` の
+`pointer_events` が `for button in PointerButton::iter()`）。**左ドラッグだけに反応させたい
+world-space ハンドラ（chart pan 等）は冒頭で `if drag.event().button != PointerButton::Primary
+{ return; }` を必ず入れる**。これを忘れると、PanCam の grab_buttons（右/中）でキャンバスを
+パンするつもりの右/中ドラッグが同じ entity の `Pointer<Drag>` observer も発火させ、
+**カメラと panel が同時に動く二重挙動**＋（chart なら）`auto_scale=false` の副作用が黙って起きる
+（`pancam_suppression_over_editor_system` が右/中ドラッグ中は PanCam を強制 enable する設計と衝突する）。
+`chart_interaction.rs::install_chart_drag_observer` が実例。`PointerButton` は `bevy::prelude` 経由で引ける。
+
 ## ECS ミニリファレンス（0.15 ピン）
 
 ```rust
@@ -264,6 +273,17 @@ egui の中で `state.buffer` のような大きい String を編集するとき
 - **"no field `entity` on `Trigger`"**: 0.19 流。0.15 は `trigger.entity()` (method)。
 - **"unresolved import `bevy::ChildOf`"**: 0.19 流。0.15 は `Parent`。
 - **ウィンドウがドラッグでカーソルから逃げる**: 規約 5 の scale 倍を忘れている。
+- **透明 Sprite を hit-target にしたいが picking が効くか不安（`Color::NONE` / alpha≈0）**: 0.15 は
+  **bounds ベース picking で alpha を見ない**（`bevy_sprite-0.15.1/src/picking_backend.rs` 冒頭
+  "Picking is done based on sprite bounds, not visible pixels"）。よって `Color::srgba(_,_,_,0.0)` でも
+  `custom_size` さえあれば pickable。alpha threshold は 0.16+ の話なので 0.15 で alpha を 0.001 等に
+  盛る必要は無い（盛っても害は無いが不要）。`SpritePickingMode` 自体 0.15 に存在しない。
+- **`Visibility` を持たない中間 entity（`Transform` だけで spawn した content_area 等）の子 Sprite が
+  描画 / picking されないのでは？と不安**: 0.15 の `visibility_propagate_system` は親が Visibility
+  コンポーネントを欠く場合 **`true` にフォールバックする**（`bevy_render-0.15.1/.../visibility/mod.rs:404-407`
+  "fall back to true if no parent is found or parent lacks components"）。よって `Transform` のみの
+  content_area の下に `Sprite`（required components で Visibility 自動付与）を吊るしても
+  `InheritedVisibility=true` になり、描画も sprite picking も効く。floating_window の content_area が実例。
 - **テキストが更新されない**: marker component を貼り忘れ、または親子関係の貼り
   忘れ（`add_child` か `set_parent` のどちらかが必要）。
 - **`Changed<T>` 駆動の system が収束せず毎フレーム再発火し続ける**: ある system が
@@ -340,7 +360,13 @@ egui の中で `state.buffer` のような大きい String を編集するとき
   zoom/pan 両方止まる。`bevy_cosmic_edit` 側はエディタ entity の `ScrollEnabled`
   component（`Enabled`/`Disabled`、`TextEdit2d` の required ではないので spawn 時に
   明示付与が必要）で on/off する。`src/camera.rs::pancam_suppression_over_editor_system`
-  が実装例。
+  が実装例。**この system は Phase 7.3 C で chart draw 領域 (`With<ChartViewState>` の Sprite) も
+  対象に拡張済**: cursor が editor **または** chart 上 かつ Ctrl 非押下なら PanCam を無効化する
+  (`pancam.enabled = ctrl || !(over_editor || over_chart) || dragging`)。新しい world-space パネルで
+  ホイール/ズームを自前実装するときは、この 1 system に `Query<(&GlobalTransform,&Sprite), With<新Marker>>`
+  と `over_xxx` を OR で足す (PanCam.enabled を書く system を 2 つに増やすと last-writer-wins で競合する)。
+  パネル側のホイール system は対称に「Ctrl 押下中は `wheel.clear(); return` でカメラズームに譲る」。
+  値変化時のみ `pancam.enabled` を書く (無条件代入は spurious な `Changed<PanCam>` を立てる)。
 - **ズーム時に編集パネルの表示行がズレる / スクロール位置が動く**: まず疑うのは上記の
   入力二重消費（ホイールがズームとスクロールの両方に効く）。render shadow buffer の
   layout を疑う前に、`info!` で `render_scale` と `buffer.scroll().line` を出して
