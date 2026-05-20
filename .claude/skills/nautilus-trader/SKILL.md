@@ -1,5 +1,5 @@
 ---
-name: nautilus_trader
+name: nautilus-trader
 description: |
   Authoritative development helper for the **nautilus_trader** framework — the core engine of
   this project (The-Trader-Was-Replaced). Use this skill whenever the user is working with
@@ -118,9 +118,29 @@ reference (`docs/api_reference/`) only after you know what you're looking for.
 
 These bite people repeatedly. Worth holding in working memory rather than rediscovering:
 
+- **There is NO `StrategyEngine`.** Nautilus has `DataEngine`, `ExecutionEngine`, and
+  `RiskEngine` — but strategies are managed by the **`Trader`** (`nautilus_trader/trading/trader.py`,
+  used by both `BacktestEngine` and live), and the live system host is **`TradingNode`**
+  (`nautilus_trader/live/node.py`, wraps `NautilusKernel` + `Trader` + the Live*Engines).
+  You add a strategy with `engine.add_strategy(...)` / `trader.add_strategy(...)`, not by
+  "enabling a StrategyEngine". Plan/design docs in this repo keep inventing a `StrategyEngine`
+  — flag it on sight and replace with `Trader` / `TradingNode`.
+- **A strategy's `self.clock` / `self.cache` / `self.msgbus` are injected at `register()`,
+  NOT via `StrategyConfig`.** See `common/actor.pyx` (`self.cache = None # Initialized when
+  registered`, set in `register()`). `StrategyConfig` carries instrument/venue/params only.
+  This is *why* the same strategy runs unchanged across backtest/live — the engine supplies
+  the clock/data/exec, the strategy never branches on mode. Don't describe portability as
+  "inject clock/data_engine via config" — that's not how it works.
+- **Bar aggregation lives in `data/aggregation.pyx`** (`BarBuilder`, `BarAggregator`,
+  `TimeBarAggregator` / `TickBarAggregator` with `handle_trade_tick(TradeTick)`). `BarType`'s
+  5th segment (`INTERNAL`/`EXTERNAL`) decides whether the engine aggregates from ticks or
+  trusts an external bar feed. Note: this project *also* has its own `TickBarAggregator` in
+  `python/engine/live/aggregator.py` that emits the project's `KlineUpdate` dataclass for the
+  UI — that one is NOT a Nautilus `BarBuilder` wrapper; don't conflate the two.
 - **Cython types use class-only construction.** You generally can't subclass `Bar`, `TradeTick`,
   `Quote Tick`, `OrderFilled`, etc. and add attributes. If you need extra state, store it in
-  the cache or attach via msgbus topics.
+  the cache or attach via msgbus topics. (To tag the *origin* of an order, use its
+  `StrategyId` or order `tags`, not a bolted-on field.)
 - **`ts_event` vs `ts_init`.** `ts_event` is when the event happened in the market;
   `ts_init` is when nautilus constructed the object. Replay/ordering logic must key on
   `ts_event`. Logging may want `ts_init`.
