@@ -15,7 +15,8 @@ use crate::replay::{ReplayStartupPhase, ReplayStartupProgress};
 use crate::trading::{
     AccountPosition, AvailableInstruments, BackendEvent, BackendStartupStage, BackendStatus,
     BackendStatusUpdate, ExecutionModeRes, LastPrices, LastRunResult, LiveOrder, LiveOrders,
-    OrderFeedback, PortfolioPosition, PortfolioState, RunState, SecretPrompt, SecretPromptRequest,
+    OrderFeedback, PortfolioPosition, PortfolioState, ReloginPrompt, RunState, SecretPrompt,
+    SecretPromptRequest,
     Tickers, TickersStatus, VenueStatusRes, parse_summary_json,
 };
 use bevy::prelude::*;
@@ -74,6 +75,7 @@ pub fn backend_event_drain_system(
     mut secret_prompt: ResMut<SecretPrompt>,
     mut live_orders: ResMut<LiveOrders>,
     mut portfolio: ResMut<PortfolioState>,
+    mut relogin_prompt: ResMut<ReloginPrompt>,
 ) {
     while let Ok(event) = channel.rx.try_recv() {
         match event {
@@ -135,7 +137,11 @@ pub fn backend_event_drain_system(
                 apply_account_event(&mut portfolio, cash, buying_power, positions);
             }
             BackendEvent::VenueLogoutDetected { venue } => {
-                info!("[backend-event] VenueLogoutDetected venue={venue}")
+                // Phase 9 §3.5 / Step 7: open the ReloginModal. kabu 本体早朝ログアウト
+                // (VenueHealthWatchdog) / Tachibana 閉局 (SS frame) のどちらでも届く。
+                // モーダルはユーザーに再ログインを促すのみ (実際の再ログインは Venue メニュー)。
+                info!("[backend-event] VenueLogoutDetected venue={venue}");
+                relogin_prompt.active = Some(venue);
             }
         }
     }
@@ -410,4 +416,36 @@ pub fn apply_available_failed(
 ) {
     available.last_error = Some((end_date, error));
     available.in_flight.remove(&end_date);
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::trading::BackendEvent;
+
+    /// Phase 9 Step 7: VenueLogoutDetected push → ReloginPrompt.active がセットされ
+    /// ReloginModal が開く (§3.5)。headless ハーネスと同じ縫い目で検証する。
+    #[test]
+    fn venue_logout_detected_opens_relogin_prompt() {
+        let (tx, rx) = mpsc::unbounded_channel();
+        let mut app = App::new();
+        app.insert_resource(BackendEventChannel { rx });
+        app.init_resource::<SecretPrompt>();
+        app.init_resource::<LiveOrders>();
+        app.init_resource::<PortfolioState>();
+        app.init_resource::<ReloginPrompt>();
+        app.add_systems(Update, backend_event_drain_system);
+
+        tx.send(BackendEvent::VenueLogoutDetected {
+            venue: "KABU".to_string(),
+        })
+        .unwrap();
+        app.update();
+
+        assert_eq!(
+            app.world().resource::<ReloginPrompt>().active.as_deref(),
+            Some("KABU"),
+            "VenueLogoutDetected must open the relogin prompt with the venue id"
+        );
+    }
 }

@@ -29,6 +29,7 @@ from .live.secret_vault import SecretVault
 from .live.secret_provider import SecondSecretResolver, SecretTimeoutError
 from .live.order_facade import ManualOrderFacade, OrderFacadeError
 from .live.account_sync import AccountSync
+from .live.health_watchdog import VenueHealthWatchdog
 from .mode_manager import ModeManager
 from .models import PerInstrumentState
 from .proto import engine_pb2, engine_pb2_grpc
@@ -222,6 +223,9 @@ class GrpcDataEngineServer(
         self._order_facade: Optional[ManualOrderFacade] = None
         # Phase 9 Step 4: account sync (余力・建玉の定期 push, lifetime = live session).
         self._account_sync: Optional[AccountSync] = None
+        # Phase 9 Step 7: venue health watchdog (kabu 本体ログアウト検知, lifetime = live
+        # session). kabu のみ (poll 型)。Tachibana は EVENT WS の SS 閉局フレームで push 検知。
+        self._health_watchdog: Optional[VenueHealthWatchdog] = None
 
     _KNOWN_VENUES = {"TACHIBANA", "KABU", "MOCK"}  # D26: MOCK added
     _KNOWN_CRED_SOURCES = {"prompt", "session_cache", "env", "prompt_result"}
@@ -320,6 +324,20 @@ class GrpcDataEngineServer(
             adapter.set_execution_hooks(
                 secret_resolver=resolver,
                 on_order_event=self._publish_order_event,
+                # Phase 9 Step 7: Tachibana は EVENT WS の SS=閉局フレームでログアウトを
+                # push 検知し VenueLogoutDetected を出す。kabu は受理して無視 (poll 型の
+                # VenueHealthWatchdog で検知する。secret_resolver と同じく accept-and-ignore)。
+                on_venue_logout=self._publish_venue_logout,
+            )
+        # Phase 9 Step 7: kabu 本体ログアウトの poll 型 watchdog。check_health() を持つ
+        # adapter (kabu) のみ起動する。Tachibana は上の hook で push 検知するため起動不要。
+        # account_sync と同じく login 前に生成するだけで、start はログイン成功後 (§_attempt)。
+        if hasattr(adapter, "check_health"):
+            self._health_watchdog = VenueHealthWatchdog(
+                adapter,
+                venue_id=getattr(adapter, "venue_id", "") or "",
+                on_venue_logout=self._publish_venue_logout,
+                interval_s=30.0,
             )
         # Phase 9 Step 4: account sync pushes AccountEvent on the backend stream.
         # The callback runs on the live-loop thread; BackendEventBus is threadsafe
@@ -353,25 +371,34 @@ class GrpcDataEngineServer(
         )
         future.result(timeout=self._live_timeout_s)
 
-    def _start_account_sync_after_login(self) -> None:
-        """Start the account sync once the adapter is logged in.
+    def _start_bg_component_after_login(self, component, label: str) -> None:
+        """Start a background live component (account sync / health watchdog) after
+        a successful login.
 
-        Deferred out of `_start_live_components_async` (which runs *before*
-        `adapter.login()` in the VenueLogin handler) so the forced initial
-        `fetch_account()` sees a live session and the UI gets balances/positions
-        immediately rather than after the first 30s interval tick. Best-effort:
-        a failure to start the sync task must not fail an already-successful login.
+        These components are *created* in `_start_live_components_async` (which runs
+        *before* `adapter.login()` in the VenueLogin handler) but *started* here so
+        their first call sees a live session — the account sync's forced initial
+        `fetch_account()` returns balances/positions immediately rather than after
+        the first 30s tick, and the watchdog's first `check_health()` pings a
+        logged-in body. Best-effort: a failure to start must not fail an
+        already-successful login. A None component (e.g. no watchdog for
+        Tachibana/mock) is a no-op.
         """
-        acct = self._account_sync
-        if acct is None:
+        if component is None:
             return
         try:
             loop = self._ensure_live_loop()
-            asyncio.run_coroutine_threadsafe(acct.start(), loop).result(
+            asyncio.run_coroutine_threadsafe(component.start(), loop).result(
                 timeout=self._live_timeout_s
             )
         except Exception:  # noqa: BLE001 — best-effort; login already succeeded
-            logging.exception("failed to start account sync after login")
+            logging.exception("failed to start %s after login", label)
+
+    def _start_account_sync_after_login(self) -> None:
+        self._start_bg_component_after_login(self._account_sync, "account sync")
+
+    def _start_health_watchdog_after_login(self) -> None:
+        self._start_bg_component_after_login(self._health_watchdog, "health watchdog")
 
     async def _teardown_live_components_async(self):
         bridge = self._live_bridge
@@ -379,7 +406,13 @@ class GrpcDataEngineServer(
         depth_cache = self._live_depth_cache
         runner = self._live_runner
         account_sync = self._account_sync
-        # Stop the account push first so no AccountEvent is emitted mid-teardown.
+        health_watchdog = self._health_watchdog
+        # Stop the watchdog first so no VenueLogoutDetected is pushed mid-teardown
+        # (the adapter is about to be torn down → check_health would race on a
+        # closing transport).
+        if health_watchdog is not None:
+            await health_watchdog.stop()
+        # Stop the account push next so no AccountEvent is emitted mid-teardown.
         if account_sync is not None:
             await account_sync.stop()
         if bridge is not None:
@@ -410,6 +443,7 @@ class GrpcDataEngineServer(
             self._live_depth_cache = None
             self._order_facade = None
             self._account_sync = None
+            self._health_watchdog = None
             # Arm clear-on-toggle: a prior lifecycle's last_error must not bleed
             # into the next Live session or stay visible after returning to Replay.
             self._suppress_live_last_error = True
@@ -1388,6 +1422,9 @@ class GrpcDataEngineServer(
                 # sync (deferred from _start_live_components_async, which runs before
                 # login) so its forced initial fetch_account() sees a live session.
                 self._start_account_sync_after_login()
+                # Phase 9 Step 7: start the kabu health watchdog now that the
+                # adapter is logged in (no-op for Tachibana/mock, which have none).
+                self._start_health_watchdog_after_login()
                 # Arm clear-on-toggle: suppress stale errors from a prior session.
                 self._suppress_live_last_error = True
                 return True, ""
@@ -1616,6 +1653,18 @@ class GrpcDataEngineServer(
                 secret_required=engine_pb2.SecretRequired(
                     request_id=request_id, venue=venue, kind=kind, purpose=purpose,
                 )
+            )
+        )
+
+    def _publish_venue_logout(self, venue: str) -> None:
+        """Watchdog / Tachibana SS callback: venue 本体ログアウトを UI に push する (§3.5)。
+
+        kabu は VenueHealthWatchdog (poll), Tachibana は EVENT WS の SS=閉局フレームから
+        呼ばれる (どちらも live-loop thread)。UI は VenueLogoutDetected を受けて再ログイン
+        modal を開く。BackendEventBus は threadsafe (Step 0)。"""
+        self.publish_backend_event(
+            engine_pb2.BackendEvent(
+                venue_logout_detected=engine_pb2.VenueLogoutDetected(venue=venue)
             )
         )
 

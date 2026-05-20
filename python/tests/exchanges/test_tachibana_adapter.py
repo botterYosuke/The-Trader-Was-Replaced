@@ -1346,3 +1346,80 @@ async def test_duplicate_ec_frame_is_pushed_once(monkeypatch, httpx_mock: HTTPXM
     )
     assert len(events) == 2
     await adapter.logout()
+
+
+# ---------------------------------------------------------------------------
+# SS=システムステータス 閉局検知 (Phase 9 Step 7, §3.5)
+# ⚠️ TENTATIVE: EVENT フレームでの sSystemStatus/sLoginKyokaKubun の prefix は Demo 未検証。
+# ---------------------------------------------------------------------------
+
+
+def _ss_adapter():
+    """on_venue_logout だけ wire した軽量 adapter (login 不要・SS ハンドラ単体検証)。"""
+    from engine.exchanges.tachibana import TachibanaAdapter
+    adapter = TachibanaAdapter(environment="demo")
+    fired: list[str] = []
+    adapter._on_venue_logout = fired.append
+    return adapter, fired
+
+
+async def test_ss_closed_fires_venue_logout_once():
+    """SS 閉局 (sSystemStatus=0) → on_venue_logout("TACHIBANA") を 1 回通知。"""
+    adapter, fired = _ss_adapter()
+    await adapter._dispatch_event_frame("SS", {"sSystemStatus": "0"}, 1_700_000_000_000)
+    assert fired == ["TACHIBANA"]
+
+
+async def test_ss_open_does_not_fire():
+    """SS 開局 (sSystemStatus=1, ログイン許可=1) → 通知しない。"""
+    adapter, fired = _ss_adapter()
+    await adapter._dispatch_event_frame(
+        "SS", {"sSystemStatus": "1", "sLoginKyokaKubun": "1"}, 1_700_000_000_000,
+    )
+    assert fired == []
+
+
+async def test_ss_closed_resend_is_debounced():
+    """SS は接続毎に初回再送される。閉局の再送では連打しない (open→closed 遷移のみ)。"""
+    adapter, fired = _ss_adapter()
+    # まず開局を観測 (login 直後の初回再送)。
+    await adapter._dispatch_event_frame("SS", {"sSystemStatus": "1"}, 1)
+    await adapter._dispatch_event_frame("SS", {"sSystemStatus": "0"}, 2)  # 閉局遷移
+    await adapter._dispatch_event_frame("SS", {"sSystemStatus": "0"}, 3)  # 再送
+    await adapter._dispatch_event_frame("SS", {"sSystemStatus": "0"}, 4)  # 再送
+    assert fired == ["TACHIBANA"]
+
+
+async def test_ss_recovery_rearms():
+    """閉局→開局→閉局 で再通知される (debounce 解除)。"""
+    adapter, fired = _ss_adapter()
+    await adapter._dispatch_event_frame("SS", {"sSystemStatus": "0"}, 1)
+    await adapter._dispatch_event_frame("SS", {"sSystemStatus": "1"}, 2)  # 復旧
+    await adapter._dispatch_event_frame("SS", {"sSystemStatus": "0"}, 3)  # 再閉局
+    assert fired == ["TACHIBANA", "TACHIBANA"]
+
+
+async def test_ss_login_not_permitted_is_logout():
+    """開局でもログイン不許可 (sLoginKyokaKubun=0) は要再ログインとみなす。"""
+    adapter, fired = _ss_adapter()
+    await adapter._dispatch_event_frame(
+        "SS", {"sSystemStatus": "1", "sLoginKyokaKubun": "0"}, 1,
+    )
+    assert fired == ["TACHIBANA"]
+
+
+async def test_ss_unrecognized_fields_are_ignored():
+    """判別フィールドが無い SS フレームは安全側で無視する (prefix 不一致など)。"""
+    adapter, fired = _ss_adapter()
+    await adapter._dispatch_event_frame("SS", {"p_unknown": "x"}, 1)
+    assert fired == []
+
+
+async def test_ss_does_not_push_order_event():
+    """SS フレームは OrderEvent を push しない。"""
+    adapter, fired = _ss_adapter()
+    events: list = []
+    adapter._on_order_event = events.append
+    await adapter._dispatch_event_frame("SS", {"sSystemStatus": "0"}, 1)
+    assert events == []
+    assert fired == ["TACHIBANA"]

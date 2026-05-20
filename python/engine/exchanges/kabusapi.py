@@ -44,6 +44,12 @@ _INFO_RATE_PER_SEC = 10
 _ORDER_RATE_PER_SEC = 5
 _WALLET_RATE_PER_SEC = 10
 
+# kabuステーション本体がログアウト / 未ログインのときに REST が返す Code (R7、
+# ptal/error.html)。`4001007`=ログイン認証エラー / `4001017`=ログイン認証エラー
+# (本体未ログイン)。Watchdog (Phase 9 §3.5 / Step 7) が check_health() でこれを検出し、
+# 本体早朝強制ログアウト → 再ログイン誘導の起点にする。
+_VENUE_LOGGED_OUT_CODES = frozenset({4001007, 4001017})
+
 # 約定確認 polling 間隔 (§3.3.2: GET /orders を 1 秒間隔)。
 _ORDERS_POLL_INTERVAL_S = 1.0
 # polling が連続失敗 (本体ログアウト / 401 / 接続断) したときの最大バックオフ秒。
@@ -68,6 +74,14 @@ class _KabuOrderRef:
     kabu の訂正は「取消 → 新規発注」変換 (§2.2) で venue OrderId が更新されるため、
     本 ref は **mutable** にして同一 client_order_id に新 OrderId を再マップする。
     再発注に必要な元注文パラメータ (symbol/side/qty/price/...) を保持する。
+
+    ``filled_base`` / ``notional_base`` は **訂正で捨てた旧 venue leg の累計約定**を
+    退避する。in-place remap は旧 OrderId を ``_order_id_to_cid`` から外す (= polling が
+    旧 leg を二度と読まない) ため、これを退避しないと取消確定までに約定していた数量が
+    OrderEvent stream から永久に消えて filled_qty が過少報告される (review HIGH)。
+    polling は ``filled_base + 新 leg の CumQty`` を論理注文の累計として push する。
+    ``qty`` は現在の venue leg の発注数量 (= 残数量) で、論理注文の総目標数量は
+    常に ``filled_base + qty`` で表される。
     """
 
     client_order_id: str
@@ -80,6 +94,9 @@ class _KabuOrderRef:
     order_type: str
     time_in_force: str
     account_type: int
+    # 訂正で捨てた旧 leg の累計約定数量 / 約定代金 (加重平均価格の算出に使う)。
+    filled_base: float = 0.0
+    notional_base: float = 0.0
 
 
 class _TokenBucket:
@@ -459,12 +476,15 @@ class KabuStationAdapter:
         *,
         secret_resolver: object = None,
         on_order_event: OnOrderEvent,
+        on_venue_logout: object = None,
     ) -> None:
         """server_grpc が OrderEvent push を注入する。
 
         Tachibana と同じ呼び出し口だが、kabu は Password 不要 (R3) のため
         ``secret_resolver`` は受理して無視する。約定通知は GET /orders polling 由来
         なので、polling は最初の ``submit_order`` で遅延起動する (idle polling 回避)。
+        ``on_venue_logout`` も受理して無視する: kabu の本体ログアウト検知は push ではなく
+        poll 型の VenueHealthWatchdog (check_health → GET /apisoftlimit) で行う (§3.5)。
         """
         self._on_order_event = on_order_event
 
@@ -587,6 +607,13 @@ class KabuStationAdapter:
         """
         if self._token is None:
             raise RuntimeError("cancel_order requires login; call login() first")
+        if order_id in self._modifying:
+            # 訂正 (取消→新規) 進行中の注文を並行取消すると、modify が remap した新 leg を
+            # 孤児化させうる (cancel↔modify re-entrancy)。modify 完了まで弾く。
+            return OrderResult(
+                status="REJECTED", filled_qty=0.0, avg_price=None,
+                client_order_id=order_id, reject_reason="MODIFY_IN_PROGRESS",
+            )
         ref = self._orders_ref.get(order_id)
         if ref is None:
             return OrderResult(
@@ -625,6 +652,15 @@ class KabuStationAdapter:
         """
         if self._token is None:
             raise RuntimeError("modify_order requires login; call login() first")
+        if order_id in self._modifying:
+            # 同一注文への多重訂正を弾く (cancel_order の MODIFY_IN_PROGRESS と対称)。
+            # 先行 modify が remap 中に二本目が走ると、二本目の finally が _modifying を
+            # 先に畳んで suppression window を壊し、polling が先行 leg の中間状態を
+            # spurious に push / unregister しうる。先行完了まで待たせる。
+            return OrderResult(
+                status="REJECTED", filled_qty=0.0, avg_price=None,
+                client_order_id=order_id, reject_reason="MODIFY_IN_PROGRESS",
+            )
         ref = self._orders_ref.get(order_id)
         if ref is None:
             return OrderResult(
@@ -660,18 +696,26 @@ class KabuStationAdapter:
             # 3. 取消が成立するまでに約定した数量を差し引いた「残数量」だけ再発注する。
             #    取消は約定に勝てないことがあり (部分約定して残りが取消)、原数量をそのまま
             #    再発注すると約定済み分と二重建玉になる (over-fill = 実弾の発注事故、§2.2)。
+            #    旧 leg の約定済み (filled_base 込み) は OrderEvent stream から消えないよう
+            #    補償結果・remap 後の baseline に載せる (review HIGH)。
             already_filled = terminal.filled_qty
-            target_qty = new_qty if new_qty is not None else ref.qty
-            merged_qty = target_qty - already_filled
+            # 論理注文の総目標数量。new_qty 指定時はそれ、無指定時は「これまでの累計約定
+            # (filled_base) + 現 leg の発注数量 (ref.qty)」= 元の総目標を保つ。
+            total_target = new_qty if new_qty is not None else ref.filled_base + ref.qty
+            total_filled = ref.filled_base + already_filled
+            merged_qty = total_target - total_filled
             merged_price = new_price if new_price is not None else ref.price
+            # 旧 leg 込みの累計約定代金 → 加重平均価格 (約定ゼロなら None)。
+            total_notional = ref.notional_base + already_filled * (terminal.avg_price or 0.0)
+            total_avg = total_notional / total_filled if total_filled > 0 else None
             if merged_qty <= 0:
                 # 取消確定までに目標数量を満たして約定済み → 再発注しない。同一
                 # client_order_id を原注文の終端状態 (FILLED / CANCELED) で終端化する。
                 self._unregister_order(order_id)
                 return OrderResult(
                     status=terminal.status,
-                    filled_qty=already_filled,
-                    avg_price=terminal.avg_price if already_filled > 0 else None,
+                    filled_qty=total_filled,
+                    avg_price=total_avg,
                     client_order_id=order_id,
                     reject_reason=(
                         None if terminal.status == "FILLED"
@@ -698,24 +742,33 @@ class KabuStationAdapter:
                         -1, new_ack.reject_text or "kabu sendorder system error"
                     )
                 # 取消成功 + 新規業務リジェクト: 元注文は取消済み。同一 client_order_id を
-                # CANCELED 終端化する。
+                # CANCELED 終端化する。約定済み (total_filled) があれば載せる — 旧 leg を
+                # remap で捨てるため polling が後追いできず、ここで載せないと約定が消える。
                 self._unregister_order(order_id)
                 return OrderResult(
-                    status="CANCELED", filled_qty=0.0, avg_price=None,
+                    status="CANCELED",
+                    filled_qty=total_filled,
+                    avg_price=total_avg,
                     client_order_id=order_id,
                     reject_reason="MODIFY_NEW_FAILED:原注文は取消済みです。再発注してください",
                 )
 
-            # 4. 全成功: 同一 client_order_id に新 OrderId を再マップする。新しい原数量は
-            #    再発注した残数量 (merged_qty)。次回 modify はこの値を基準に差し引く。
+            # 4. 全成功: 同一 client_order_id に新 OrderId を再マップする。約定済み数量は
+            #    filled_base に退避し、新しい原数量は再発注した残数量 (merged_qty)。次回
+            #    modify と polling はこの baseline を基準に累計約定を算出する (約定が消えない)。
             self._order_id_to_cid.pop(ref.order_id, None)
             self._last_pushed.pop(order_id, None)
             ref.order_id = new_ack.order_id
             ref.qty = merged_qty
             ref.price = merged_price
+            ref.filled_base = total_filled
+            ref.notional_base = total_notional
             self._order_id_to_cid[new_ack.order_id] = order_id
             return OrderResult(
-                status="ACCEPTED", filled_qty=0.0, avg_price=None, client_order_id=order_id,
+                status="ACCEPTED",
+                filled_qty=total_filled,
+                avg_price=total_avg,
+                client_order_id=order_id,
             )
         finally:
             self._modifying.discard(order_id)
@@ -774,6 +827,50 @@ class KabuStationAdapter:
         return AccountSnapshot(
             cash=buying_power, buying_power=buying_power, positions=positions
         )
+
+    # ------------------------------------------------------------------
+    # Venue Health Watchdog (Phase 9 §3.5 / Step 7)
+    # ------------------------------------------------------------------
+
+    async def check_health(self) -> bool:
+        """GET /apisoftlimit を軽量 ping して本体ログイン状態を確認する (§3.5)。
+
+        kabuステーション本体は早朝に強制ログアウトされる仕様 (kabusapi skill S1)。
+        ログアウトすると REST は `4001007` / `4001017` (ログイン認証エラー) を返す。
+        VenueHealthWatchdog が 30 秒間隔でこれを呼び、戻り値で再ログイン誘導を判断する。
+
+        - **本体ログイン中** → ``True``。
+        - **本体ログアウト / 未ログイン** (`4001007` / `4001017`) → ``False``
+          (Watchdog が VenueLogoutDetected を push する)。
+        - **transient 障害** (接続断・流量・その他 API エラー) → 例外を伝播する。
+          Watchdog 側は best-effort で握り潰しバックオフするので、一過性の失敗で
+          誤って再ログイン modal を出さない。
+
+        ``GET /apisoftlimit`` を選ぶ理由 (§3.5): info 系 (10 req/sec) の最軽量エンドポイント
+        で副作用が無い。``HEAD`` は `4001014 許可されていないHTTPメソッド` で失敗し、新規
+        ``/token`` 発行は本体に負荷をかけるため使わない。
+        """
+        if self._token is None:
+            # Watchdog は login 後にのみ起動・logout 前に停止されるため通常は到達しない。
+            # teardown との race で token が消えた中間状態を「ログアウト検出」と誤認して
+            # spurious な modal を出さないよう、transient 扱い (例外) にする。
+            raise RuntimeError("check_health requires login; call login() first")
+        await self._info_bucket.acquire()
+        resp = await self._client.get(
+            endpoint("apisoftlimit", env=self._env),
+            headers=auth_headers(self._token),
+            timeout=_ORDER_TIMEOUT,
+        )
+        data = resp.json()
+        # ログアウト Code を check_response より先に判定する (check_response は logout も
+        # 汎用 KabuApiError に丸めるため、ここで bool に変換しないと watchdog が transient と
+        # 区別できない)。本体ログアウトは HTTP 200 + Code、または HTTP 401 + Code で来うる。
+        code = data.get("Code") if isinstance(data, dict) else None
+        if code in _VENUE_LOGGED_OUT_CODES:
+            return False
+        # ログアウト以外のエラー (流量 429・接続断・想定外 Code) は transient として伝播。
+        check_response(data, resp.status_code)
+        return True
 
     # ------------------------------------------------------------------
     # 約定確認 polling (GET /orders を 1 秒間隔、§3.3.2)
@@ -861,7 +958,21 @@ class KabuStationAdapter:
             report = _orders.parse_order_status(order)
             if report is None:
                 continue
-            key = (report.status, report.filled_qty)
+            # 訂正で旧 leg を捨てた注文は filled_base に約定済みを退避している。論理注文の
+            # 累計約定 = filled_base + 現 leg の CumQty。これを push しないと約定済みが消える。
+            ref = self._orders_ref.get(cid)
+            base_qty = ref.filled_base if ref is not None else 0.0
+            base_notional = ref.notional_base if ref is not None else 0.0
+            total_filled = base_qty + report.filled_qty
+            status = report.status
+            if base_qty > 0 and status == "ACCEPTED":
+                # 旧 leg で約定済みがあるのに現 leg が未約定 = 論理的には部分約定状態。
+                status = "PARTIALLY_FILLED"
+            if total_filled > 0:
+                avg_price = (base_notional + report.filled_qty * report.avg_price) / total_filled
+            else:
+                avg_price = report.avg_price
+            key = (status, total_filled)
             if self._last_pushed.get(cid) == key:
                 continue  # 状態・約定量に変化なし
             self._last_pushed[cid] = key
@@ -871,9 +982,9 @@ class KabuStationAdapter:
                     order_id=cid,
                     venue_order_id=report.order_id,
                     client_order_id=cid,
-                    status=report.status,
-                    filled_qty=report.filled_qty,
-                    avg_price=report.avg_price,
+                    status=status,
+                    filled_qty=total_filled,
+                    avg_price=avg_price,
                     ts_ms=ts_ms,
                 )
             )

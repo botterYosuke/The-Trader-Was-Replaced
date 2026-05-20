@@ -24,6 +24,7 @@ pub mod restore;
 pub mod run_result_panel;
 pub mod scenario_parser;
 pub mod scenario_startup_panel;
+pub mod relogin_modal;
 pub mod secret_modal;
 pub mod sidebar;
 pub mod strategy_editor;
@@ -122,6 +123,10 @@ use crate::ui::scenario_startup_panel::{
     spawn_scenario_startup_panel, sync_startup_param_editors_text_system,
     sync_startup_params_from_scenario_system, update_scenario_startup_param_ui_system,
     write_startup_params_to_cache_sidecar_system,
+};
+use crate::ui::relogin_modal::{
+    relogin_modal_button_system, relogin_modal_sync_system, relogin_modal_visibility_system,
+    spawn_relogin_modal,
 };
 use crate::ui::secret_modal::{
     SecretInput, secret_modal_button_system, secret_modal_input_system,
@@ -247,6 +252,8 @@ impl Plugin for UiPlugin {
                 // Phase 9 Step 4: 右クリックコンテキストメニュー + Modify モーダル
                 spawn_order_context_menu,
                 spawn_modify_modal,
+                // Phase 9 Step 7: 再ログイン通知モーダル (venue 本体ログアウト検知)
+                spawn_relogin_modal,
             ),
         )
         .add_systems(
@@ -529,6 +536,15 @@ impl Plugin for UiPlugin {
                     .before(menu_keyboard_system),
                 modify_modal_button_system,
                 modify_modal_sync_system,
+            ),
+        )
+        // ── Phase 9 Step 7: 再ログイン通知モーダル (venue 本体ログアウト検知, §3.5) ──
+        .add_systems(
+            Update,
+            (
+                relogin_modal_visibility_system,
+                relogin_modal_button_system,
+                relogin_modal_sync_system,
             ),
         );
     }

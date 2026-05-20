@@ -268,6 +268,178 @@ async def test_modify_resubmit_system_error_propagates(httpx_mock: HTTPXMock):
     assert "C1" not in a._modifying  # finally で抑止解除済み
 
 
+async def test_modify_carries_filled_baseline_so_remainder_poll_reports_cumulative(
+    httpx_mock: HTTPXMock,
+):
+    """訂正前に 40/100 約定 → 残 60 を O2 で再発注。in-place remap で O1 を捨てるが、
+    約定済み 40 は ref.filled_base に退避し、後続の O2 polling は論理注文の累計約定
+    (40 + O2 の CumQty) を報告する。これがないと約定済み 40 が OrderEvent stream から
+    永久に消えて filled_qty が過少報告される (review HIGH / in-place remap の裏面)。"""
+    events = []
+    a = _logged_in_adapter()
+    a.set_execution_hooks(secret_resolver=None, on_order_event=events.append)
+    a._register_order(_ref(qty=100.0))
+    httpx_mock.add_response(method="PUT", url=_CANCEL, json={"Result": 0, "OrderId": "O1"})
+    httpx_mock.add_response(  # 取消確定時点で 40@2500 約定済み
+        method="GET",
+        json=[{"ID": "O1", "State": 5, "OrderQty": 100, "CumQty": 40, "Price": 2500.0,
+               "Details": [{"RecType": 8, "Qty": 40, "Price": 2500.0, "State": 3},
+                           {"RecType": 6, "State": 3}]}],
+    )
+    httpx_mock.add_response(method="POST", url=_SEND, json={"Result": 0, "OrderId": "O2"})
+    res = await a.modify_order(venue="KABU", order_id="C1", new_price=2600.0)
+    assert res.status == "ACCEPTED"
+    # 約定済み 40 を carry → facade/UI の filled_qty が 0 に巻き戻らない。
+    assert res.filled_qty == 40.0
+    assert res.avg_price == 2500.0
+    ref = a._orders_ref["C1"]
+    assert ref.filled_base == 40.0
+    assert ref.qty == 60.0  # 残数量
+    assert ref.order_id == "O2"
+
+    # O2 が残 60 を 2600 で約定 → poll は累計 100 (40+60)・加重平均 2560 を報告する。
+    httpx_mock.add_response(
+        method="GET",
+        json=[{"ID": "O2", "State": 5, "OrderQty": 60, "CumQty": 60, "Price": 2600.0,
+               "Details": [{"RecType": 8, "Qty": 60, "Price": 2600.0, "State": 3}]}],
+    )
+    await a._poll_orders_once()
+    assert len(events) == 1
+    assert events[0].status == "FILLED"
+    assert events[0].filled_qty == 100.0  # 40 (O1) + 60 (O2) — 約定が消えない
+    assert events[0].avg_price == 2560.0  # (40*2500 + 60*2600)/100
+
+
+async def test_poll_after_modify_reports_partial_when_baseline_but_remainder_unfilled(
+    httpx_mock: HTTPXMock,
+):
+    """remap 後 O2 が未約定 (ACCEPTED) でも、約定済みベースラインがあるなら論理状態は
+    PARTIALLY_FILLED として報告する (ACCEPTED に戻すと UI が「約定ゼロの新規」に見える)。"""
+    events = []
+    a = _logged_in_adapter()
+    a.set_execution_hooks(secret_resolver=None, on_order_event=events.append)
+    a._register_order(_ref(qty=100.0))
+    httpx_mock.add_response(method="PUT", url=_CANCEL, json={"Result": 0, "OrderId": "O1"})
+    httpx_mock.add_response(
+        method="GET",
+        json=[{"ID": "O1", "State": 5, "OrderQty": 100, "CumQty": 40, "Price": 2500.0,
+               "Details": [{"RecType": 8, "Qty": 40, "Price": 2500.0, "State": 3},
+                           {"RecType": 6, "State": 3}]}],
+    )
+    httpx_mock.add_response(method="POST", url=_SEND, json={"Result": 0, "OrderId": "O2"})
+    await a.modify_order(venue="KABU", order_id="C1", new_price=2600.0)
+
+    httpx_mock.add_response(  # O2 は受付済み・未約定
+        method="GET",
+        json=[{"ID": "O2", "State": 3, "OrderQty": 60, "CumQty": 0, "Price": 2600.0,
+               "Details": []}],
+    )
+    await a._poll_orders_once()
+    assert len(events) == 1
+    assert events[0].status == "PARTIALLY_FILLED"
+    assert events[0].filled_qty == 40.0
+
+
+async def test_modify_new_failed_after_partial_reports_filled(httpx_mock: HTTPXMock):
+    """取消成功+新規業務リジェクトでも、取消確定までに約定していた数量を CANCELED
+    OrderResult の filled_qty に載せる (in-place remap で O1 を捨てるため polling は
+    後追いできない → ここで載せないと約定済みが消える)。"""
+    httpx_mock.add_response(method="PUT", url=_CANCEL, json={"Result": 0, "OrderId": "O1"})
+    httpx_mock.add_response(
+        method="GET",
+        json=[{"ID": "O1", "State": 5, "OrderQty": 100, "CumQty": 40, "Price": 2500.0,
+               "Details": [{"RecType": 8, "Qty": 40, "Price": 2500.0, "State": 3},
+                           {"RecType": 6, "State": 3}]}],
+    )
+    httpx_mock.add_response(method="POST", url=_SEND, json={"Result": 21, "Message": "no bp"})
+    a = _logged_in_adapter()
+    a._register_order(_ref(qty=100.0))
+    res = await a.modify_order(venue="KABU", order_id="C1", new_price=2600.0)
+    assert res.status == "CANCELED"
+    assert res.filled_qty == 40.0
+    assert res.avg_price == 2500.0
+    assert "C1" not in a._orders_ref
+
+
+async def test_cancel_order_rejected_while_modifying():
+    """訂正進行中の注文に対する取消は MODIFY_IN_PROGRESS で弾く (cancel↔modify の
+    re-entrancy で remap 後の live 注文を孤児化させない)。"""
+    a = _logged_in_adapter()
+    a._register_order(_ref())
+    a._modifying.add("C1")
+    res = await a.cancel_order(venue="KABU", order_id="C1")
+    assert res.status == "REJECTED"
+    assert res.reject_reason == "MODIFY_IN_PROGRESS"
+
+
+async def test_modify_order_rejected_while_modifying():
+    """訂正進行中の注文への多重訂正は MODIFY_IN_PROGRESS で弾く (二本目の finally が
+    suppression window を先に畳む re-entrancy を防ぐ。cancel ガードと対称)。"""
+    a = _logged_in_adapter()
+    a._register_order(_ref())
+    a._modifying.add("C1")
+    res = await a.modify_order(venue="KABU", order_id="C1", new_price=2600.0)
+    assert res.status == "REJECTED"
+    assert res.reject_reason == "MODIFY_IN_PROGRESS"
+
+
+async def test_double_modify_telescopes_filled_baseline(httpx_mock: HTTPXMock):
+    """連続訂正で filled_base が累積し、論理注文の総目標数量 (filled_base + qty) が
+    保たれることを固定する。100 → 40 約定 → 訂正 → O2 が 20 約定 → 再訂正 →
+    残 40 を O3 で発注 → O3 全約定で累計 100 FILLED。"""
+    a = _logged_in_adapter()
+    events = []
+    a.set_execution_hooks(secret_resolver=None, on_order_event=events.append)
+    a._register_order(_ref(qty=100.0))
+
+    # --- 1 回目の訂正: O1 が 40@2500 約定済みで取消 → 残 60 を O2 で発注 ---
+    httpx_mock.add_response(method="PUT", url=_CANCEL, json={"Result": 0, "OrderId": "O1"})
+    httpx_mock.add_response(
+        method="GET",
+        json=[{"ID": "O1", "State": 5, "OrderQty": 100, "CumQty": 40, "Price": 2500.0,
+               "Details": [{"RecType": 8, "Qty": 40, "Price": 2500.0, "State": 3},
+                           {"RecType": 6, "State": 3}]}],
+    )
+    httpx_mock.add_response(method="POST", url=_SEND, json={"Result": 0, "OrderId": "O2"})
+    res1 = await a.modify_order(venue="KABU", order_id="C1", new_price=2600.0)
+    assert res1.status == "ACCEPTED"
+    ref = a._orders_ref["C1"]
+    assert ref.filled_base == 40.0 and ref.qty == 60.0  # 総目標 = 40 + 60 = 100
+
+    # --- 2 回目の訂正: O2 が 20@2600 約定済みで取消 → 残 40 を O3 で発注 ---
+    httpx_mock.add_response(method="PUT", url=_CANCEL, json={"Result": 0, "OrderId": "O2"})
+    httpx_mock.add_response(
+        method="GET",
+        json=[{"ID": "O2", "State": 5, "OrderQty": 60, "CumQty": 20, "Price": 2600.0,
+               "Details": [{"RecType": 8, "Qty": 20, "Price": 2600.0, "State": 3},
+                           {"RecType": 6, "State": 3}]}],
+    )
+    httpx_mock.add_response(method="POST", url=_SEND, json={"Result": 0, "OrderId": "O3"})
+    res2 = await a.modify_order(venue="KABU", order_id="C1", new_price=2700.0)
+    assert res2.status == "ACCEPTED"
+    assert res2.filled_qty == 60.0  # 累計約定 40 + 20
+    ref = a._orders_ref["C1"]
+    assert ref.filled_base == 60.0 and ref.qty == 40.0  # 総目標 = 60 + 40 = 100 を維持
+    assert ref.order_id == "O3"
+    # 残 40 を再発注 (= 100 - 60 約定済み、二重建玉なし)。
+    last_send = [r for r in httpx_mock.get_requests() if str(r.url).endswith("/sendorder")][-1]
+    assert json.loads(last_send.content)["Qty"] == 40
+
+    # --- O3 が残 40 を 2700 で約定 → poll は累計 100 FILLED を報告 ---
+    events.clear()
+    httpx_mock.add_response(
+        method="GET",
+        json=[{"ID": "O3", "State": 5, "OrderQty": 40, "CumQty": 40, "Price": 2700.0,
+               "Details": [{"RecType": 8, "Qty": 40, "Price": 2700.0, "State": 3}]}],
+    )
+    await a._poll_orders_once()
+    assert len(events) == 1
+    assert events[0].status == "FILLED"
+    assert events[0].filled_qty == 100.0  # 40 (O1) + 20 (O2) + 40 (O3)
+    # 加重平均 = (40*2500 + 20*2600 + 40*2700)/100 = 2600
+    assert events[0].avg_price == 2600.0
+
+
 async def test_cancel_then_poll_reconciles_partial_fill(httpx_mock: HTTPXMock):
     """cancel_order は即時 CANCELED(filled=0) を返すが、約定の真実は polling が後追いで
     反映する (review H2: cancel 応答は fill-blind だが poll が CumQty を補正)。"""
@@ -439,3 +611,70 @@ async def test_poll_loop_self_terminates_when_no_orders():
     a.set_execution_hooks(secret_resolver=None, on_order_event=lambda e: None)
     # 追跡注文ゼロ → 最初の sleep 後に return するはず (hang しないこと)
     await asyncio.wait_for(a._run_orders_poll(), timeout=1.0)
+
+
+# ---------------------------------------------------------------------------
+# check_health (Phase 9 Step 7: Venue Health Watchdog, §3.5)
+# ---------------------------------------------------------------------------
+
+_APISOFTLIMIT = endpoint("apisoftlimit", env="verify")
+
+
+def test_set_execution_hooks_accepts_on_venue_logout_kwarg():
+    """server_grpc は on_venue_logout も注入する。kabu は poll 型 watchdog で検知するため
+    受理して無視する (Tachibana だけが SS push でこの hook を使う)。"""
+    a = KabuStationAdapter()
+    a.set_execution_hooks(
+        secret_resolver=None, on_order_event=lambda e: None, on_venue_logout=lambda v: None
+    )
+    assert a._on_order_event is not None
+
+
+async def test_check_health_logged_in_returns_true(httpx_mock: HTTPXMock):
+    """本体ログイン中: GET /apisoftlimit が Code=0 → True。"""
+    httpx_mock.add_response(
+        method="GET", url=_APISOFTLIMIT,
+        json={"Code": 0, "SoftLimit": {"Stock": 200, "Margin": 200}},
+    )
+    a = _logged_in_adapter()
+    assert await a.check_health() is True
+
+
+async def test_check_health_4001007_returns_false(httpx_mock: HTTPXMock):
+    """本体ログアウト (4001007 ログイン認証エラー) → False (例外にしない)。"""
+    httpx_mock.add_response(
+        method="GET", url=_APISOFTLIMIT,
+        json={"Code": 4001007, "Message": "ログイン認証エラー"},
+    )
+    a = _logged_in_adapter()
+    assert await a.check_health() is False
+
+
+async def test_check_health_4001017_http401_returns_false(httpx_mock: HTTPXMock):
+    """本体未ログイン (4001017) が HTTP 401 で来ても False に正規化する。"""
+    httpx_mock.add_response(
+        method="GET", url=_APISOFTLIMIT, status_code=401,
+        json={"Code": 4001017, "Message": "ログイン認証エラー"},
+    )
+    a = _logged_in_adapter()
+    assert await a.check_health() is False
+
+
+async def test_check_health_transient_error_propagates(httpx_mock: HTTPXMock):
+    """ログアウト以外のエラー (流量 429 等) は transient として伝播する (watchdog が握る)。
+    誤って False を返すと spurious な再ログイン modal が出るため、必ず raise する。"""
+    httpx_mock.add_response(
+        method="GET", url=_APISOFTLIMIT, status_code=429,
+        json={"Code": 4002006, "Message": "スロットリング制限エラー"},
+    )
+    a = _logged_in_adapter()
+    with pytest.raises(KabuApiError):
+        await a.check_health()
+
+
+async def test_check_health_requires_login():
+    """未ログイン (token なし) は RuntimeError (transient 扱い)。teardown race で
+    spurious なログアウト検出をしないため False ではなく raise する。"""
+    a = KabuStationAdapter(environment="verify")
+    with pytest.raises(RuntimeError):
+        await a.check_health()
