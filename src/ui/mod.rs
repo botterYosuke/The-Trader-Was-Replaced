@@ -17,6 +17,9 @@ pub mod scenario_parser;
 pub mod scenario_startup_panel;
 pub mod sidebar;
 pub mod strategy_editor;
+pub mod strategy_editor_highlight;
+pub mod strategy_editor_compose;
+pub mod strategy_editor_find;
 pub mod systems;
 pub mod window;
 
@@ -87,6 +90,15 @@ use crate::ui::strategy_editor::{
     debounced_strategy_autosave_system, sync_editor_to_strategy_buffer_system,
     sync_strategy_buffer_to_editor_system, undo_redo_system, update_strategy_editor_zoom_system,
 };
+use crate::ui::strategy_editor_compose::apply_highlight_layers_system;
+use crate::ui::strategy_editor_find::{
+    FindActionRequested, FindReplaceState, compute_find_match_spans_system, find_keyboard_system,
+    find_navigate_system, find_scroll_to_match_system, manage_find_panel_lifecycle_system,
+    replace_execute_system, sync_find_editors_to_state_system, update_find_count_text_system,
+};
+use crate::ui::strategy_editor_highlight::{
+    compute_bracket_spans_system, compute_syntax_spans_system, init_syntect_highlighter,
+};
 use crate::ui::systems::{update_price_display, update_status_indicator};
 use crate::ui::window::instrument_chart_sync_system;
 use bevy::prelude::*;
@@ -115,6 +127,8 @@ impl Plugin for UiPlugin {
         .init_resource::<AppHistory>()
         .init_resource::<ActiveDrag>()
         .init_resource::<PendingStrategySnapshotRestore>()
+        .init_resource::<FindReplaceState>()
+        .add_event::<FindActionRequested>()
         .init_resource::<OpenMenu>()
         .init_resource::<crate::ui::instrument_picker::InstrumentPickerState>()
         .add_event::<StrategyFileLoadRequested>()
@@ -147,6 +161,8 @@ impl Plugin for UiPlugin {
                 spawn_scenario_startup_input_fields.after(spawn_scenario_startup_panel),
                 // 起動時に固定 cache から復元する（CacheRestoreRequested 発火）
                 restore_last_strategy_system,
+                // highlight pipeline: syntect SyntaxSet/Theme を resource として用意
+                init_syntect_highlighter,
             ),
         )
         .add_systems(
@@ -266,6 +282,44 @@ impl Plugin for UiPlugin {
             (
                 crate::ui::footer::apply_execution_mode_visibility_system,
                 crate::ui::scenario_startup_panel::apply_startup_panel_visibility_system,
+            ),
+        )
+        // ── highlight pipeline (Phase A) ──
+        // span 計算は buffer→editor 同期の後に走らせ、合成 (apply) はその両者の後。
+        .add_systems(
+            Update,
+            (
+                compute_syntax_spans_system
+                    .after(sync_strategy_buffer_to_editor_system)
+                    .before(apply_highlight_layers_system),
+                compute_bracket_spans_system
+                    .after(sync_strategy_buffer_to_editor_system)
+                    .before(apply_highlight_layers_system),
+                apply_highlight_layers_system,
+            ),
+        )
+        // ── Find / Replace パネル (Phase E) ──
+        // マッチ計算は composer の前 (FindMatchSpans を書く)。色付けは composer。
+        .add_systems(
+            Update,
+            (
+                find_keyboard_system.before(manage_find_panel_lifecycle_system),
+                manage_find_panel_lifecycle_system,
+                sync_find_editors_to_state_system.after(sync_strategy_buffer_to_editor_system),
+                compute_find_match_spans_system
+                    .after(sync_find_editors_to_state_system)
+                    .before(apply_highlight_layers_system),
+                find_navigate_system
+                    .after(compute_find_match_spans_system)
+                    .before(apply_highlight_layers_system),
+                find_scroll_to_match_system.after(find_navigate_system),
+                // replace は composer の後。先に走ると set_text 済みの新 buffer に
+                // 旧 fragment/旧 spans 由来の attrs を当ててしまう (色は次フレームに再計算)。
+                replace_execute_system.after(apply_highlight_layers_system),
+                // 件数表示はマッチ確定 (compute) とナビ確定 (navigate) の後に読む。
+                update_find_count_text_system
+                    .after(compute_find_match_spans_system)
+                    .after(find_navigate_system),
             ),
         );
     }
