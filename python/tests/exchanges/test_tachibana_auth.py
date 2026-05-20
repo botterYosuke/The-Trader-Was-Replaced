@@ -514,3 +514,43 @@ async def test_login_http_502_maps_to_transport_error(httpx_mock: HTTPXMock):
     with pytest.raises(LoginError) as exc_info:
         await login("uid", "pwd", is_demo=True, p_no_counter=PNoCounter())
     assert exc_info.value.code == "transport_error"
+
+
+# ---------------------------------------------------------------------------
+# Post-merge review fix MEDIUM-1: _validate_virtual_urls must mask URLs in logs
+# ---------------------------------------------------------------------------
+
+
+async def test_validate_virtual_urls_does_not_leak_url_in_log(httpx_mock, caplog):
+    """R3/R10 — invalid virtual URL must be reported with mask_secrets,
+    not raw %r (which leaks the secret virtual session URL).
+    """
+    leaky_url = "http://evil-leak.example/request/ND=SECRETTOKEN/"
+    payload = {
+        "p_no": "1",
+        "p_sd_date": "2026.04.25-10:00:00.000",
+        "p_errno": "0",
+        "sResultCode": "0",
+        "sKinsyouhouMidokuFlg": "0",
+        "sUrlRequest": leaky_url,  # http:// not https:// → triggers validation error
+        "sUrlMaster": "https://x/m/",
+        "sUrlPrice": "https://x/p/",
+        "sUrlEvent": "https://x/e/",
+        "sUrlEventWebSocket": "wss://x/ws/",
+    }
+    auth_url_re = re.compile(r"^https://demo-kabuka\.e-shiten\.jp/e_api_v4r8/auth/\?")
+    httpx_mock.add_response(
+        url=auth_url_re, method="GET",
+        content=json.dumps(payload, ensure_ascii=False).encode("shift_jis"),
+    )
+    from engine.exchanges.tachibana_auth import login as _login
+
+    with caplog.at_level("ERROR"):
+        with pytest.raises(LoginError):
+            await _login("uid", "pwd", is_demo=True, p_no_counter=PNoCounter())
+
+    # The raw URL (in particular the SECRETTOKEN session segment) must NOT
+    # appear anywhere in the captured log records.
+    joined = "\n".join(r.getMessage() for r in caplog.records)
+    assert "SECRETTOKEN" not in joined
+    assert leaky_url not in joined

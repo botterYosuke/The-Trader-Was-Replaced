@@ -61,6 +61,8 @@ pub struct BackendTradingState {
     pub instruments_loaded: Option<u32>,
     #[serde(default)]
     pub last_prices: HashMap<String, f64>,
+    #[serde(default)]
+    pub configured_venue: Option<String>,
 }
 
 #[derive(Resource, Default)]
@@ -482,6 +484,7 @@ pub struct VenueStatusRes {
     pub state: VenueState,
     pub venue_id: Option<String>,
     pub instruments_loaded: u32,
+    pub configured_venue: Option<String>,
 }
 
 #[derive(Resource, Debug, Clone, Default)]
@@ -534,13 +537,25 @@ pub fn is_venue_live(state: VenueState) -> bool {
     matches!(state, VenueState::Connected | VenueState::Subscribed)
 }
 
-/// Returns `true` when the venue is in any state that occupies the slot
-/// (Authenticating / Connected / Subscribed). Used by menu_bar gating
-/// to disable opposite-venue Connect items.
+/// Returns `true` when the venue is in any state that occupies the slot.
+/// Used by menu_bar gating to disable opposite-venue Connect items and to
+/// suppress duplicate `VenueLogin` while a slot is in use.
+///
+/// Busy states:
+/// - `Authenticating` / `Connected` / `Subscribed`: slot is actively used.
+/// - `Reconnecting`: backend is still holding the slot mid-retry; firing a
+///   new `VenueLogin` here would collide on the adapter side.
+/// - `Error`: the slot is not cleared until the user issues Disconnect, so a
+///   fresh `VenueLogin` would also collide on the backend. The Disconnect
+///   button remains available to clear it (Phase 8 post-merge review).
 pub fn is_venue_busy_for_menu(state: VenueState) -> bool {
     matches!(
         state,
-        VenueState::Authenticating | VenueState::Connected | VenueState::Subscribed,
+        VenueState::Authenticating
+            | VenueState::Connected
+            | VenueState::Subscribed
+            | VenueState::Reconnecting
+            | VenueState::Error,
     )
 }
 
@@ -658,6 +673,9 @@ pub enum BackendStatusUpdate {
     LastPricesUpdated {
         prices: HashMap<String, f64>,
     },
+    ConfiguredVenueDiscovered {
+        venue_id: Option<String>,
+    },
 }
 
 #[cfg(test)]
@@ -754,6 +772,7 @@ mod tests {
             venue_id: None,
             instruments_loaded: None,
             last_prices: HashMap::new(),
+            configured_venue: None,
         };
         tx.send(new_state).unwrap();
 
@@ -805,6 +824,7 @@ mod tests {
             venue_id: None,
             instruments_loaded: None,
             last_prices: HashMap::new(),
+            configured_venue: None,
         };
         tx.send(new_state).unwrap();
 
@@ -856,6 +876,7 @@ mod tests {
             venue_id: None,
             instruments_loaded: None,
             last_prices: HashMap::new(),
+            configured_venue: None,
         };
         tx.send(new_state).unwrap();
 
@@ -1176,6 +1197,37 @@ mod tests {
 
     #[test]
     fn test_is_venue_busy_for_menu_error() {
-        assert!(!is_venue_busy_for_menu(VenueState::Error));
+        // HIGH-2: Error holds the slot until Disconnect — must report busy
+        // so that another VenueLogin does not collide on the backend.
+        assert!(is_venue_busy_for_menu(VenueState::Error));
+    }
+
+    #[test]
+    fn test_is_venue_busy_for_menu_reconnecting() {
+        // HIGH-2: Reconnecting is mid-retry — slot still occupied.
+        assert!(is_venue_busy_for_menu(VenueState::Reconnecting));
+    }
+
+    #[test]
+    fn test_is_venue_busy_for_menu_all_variants() {
+        // HIGH-2: pin the full mapping so future VenueState additions force
+        // an explicit review.
+        let cases = [
+            (VenueState::Disconnected, false),
+            (VenueState::Authenticating, true),
+            (VenueState::Connected, true),
+            (VenueState::Subscribed, true),
+            (VenueState::Reconnecting, true),
+            (VenueState::Error, true),
+        ];
+        for (state, want) in cases {
+            assert_eq!(
+                is_venue_busy_for_menu(state),
+                want,
+                "unexpected busy={} for state={:?}",
+                want,
+                state
+            );
+        }
     }
 }

@@ -11,7 +11,10 @@
 
 - **Volume サブペイン**: backend (engine.proto / nautilus 集約 / `src/trading.rs::OhlcPoint`) まで含めて完全実装
 - **Multi-symbol データ**: `TradingData` (single) を **`TradingSession`** (session-global: replay state / timestamp) **+ `InstrumentTradingDataMap`** (per-instrument: ohlc/history/last) の 2-resource に分割。各 chart パネルは自分の `ChartInstrument.instrument_id` で lookup。
-- **Phase 構成**: **A0 (backend + data refactor preflight) + A〜E (UI phases)** の 6 段階
+- **Phase 構成**: **A0 (backend + data refactor preflight) + A〜E (UI phases) + F (Live モード複合ウィンドウ)** の 7 段階
+
+**Phase 8 §3.7 との連携 — ローソク足＋Ladder 複合ウィンドウ**:
+`ExecutionMode == LiveManual / LiveAuto` のとき、Chart ウィンドウの**右側に Ladder ペイン** (bid/ask × 10 段 + LAST 行) を結合した **ローソク足＋Ladder 複合ウィンドウ** になる。同一 `WindowRoot` 内に chart child entity と ladder child entity が横並びで配置される。`ExecutionMode == Replay` では Ladder ペインは despawn され、Chart のみのコンパクトなウィンドウに戻る (Phase 8 §0.5.1 時間軸ルール: depth は Live 専用データなので Replay 中の Ladder 表示は禁止)。
 
 flowsurface (`.claude/skills/flowsurface/src/src/chart*`) から学ぶ中心は「**ViewState + Caches を分け、`translation`/`scaling`/`cell_width`/`cell_height` で座標変換を一元化し、crosshair-only の状態変化は main geometry を再生成しない**」設計パターン。iced の `canvas::Cache` (retained-mode) は Bevy `ShapePainter` (immediate-mode) に直訳できないため、本プランでは **「Cache を per-layer Bevy system に翻訳し、それぞれが自分の入力 (`Changed<ChartViewState>` / `Changed<CrosshairState>` / `Changed<AxisLabels>`) で early-out する」**形に置き換える (= 同じ責務分割をスケジューラ層で実現)。
 
@@ -162,6 +165,51 @@ app.configure_sets(Update, (
 ⚠️ **observer 系 handler (2a `chart_interaction_drag_handler`, 2c `chart_crosshair_input_handler`) は `ChartSet` に入れない**。Bevy 0.15 の observer は `Update` schedule の外で event-driven に発火し、`configure_sets` で順序制約をかける手段が無い。幸い両者は `base_price_y` を読まない (drag は translation のスクリーン差分、crosshair は autoscale 値に依存しない `y_to_price`/`x_to_time_ms` の純関数読み) ので順序非依存で安全。**もし将来 observer ロジックが autoscale 結果に依存するようになったら、観測した値を Component に書いて次フレーム regular system で消費する設計に切り替える** (observer 内で `Res<ChartViewState>` の最新値を要求しない)。
 
 ⚠️ **既存 `chart_render_system` ([src/ui/mod.rs:151](src/ui/mod.rs)) は Phase A で削除し、3 と 7 に分割する**。Phase A 着手前に `mod.rs` の `add_systems` タプルが何個入っているか実カウントし、20-tuple 上限 (現状 mod.rs の Update タプルは 18-19 個、Phase A〜E で 6+ system 追加するため境界付近に到達)を超えるなら `SystemSet` または別 `app.add_systems(Update, (...))` 呼び出しに分割する (Phase 7.2 と同じ罠)。
+
+### Mode-Dependent Combined Window Layout (Phase F の前提設計)
+
+`ExecutionMode` によって同じ Chart ウィンドウのレイアウトが変わる。
+
+| ExecutionMode | ウィンドウ構成 | WindowRoot 幅 |
+|---|---|---|
+| **Replay** | Chart (ローソク足 + Volume) + Price gutter のみ | `CHART_PANEL_SIZE.x = 360` |
+| **LiveManual / LiveAuto** | Chart + Price gutter **+ Ladder ペイン** が右に結合 | `LIVE_COMBINED_PANEL_SIZE.x = 360 + LADDER_WIDTH` |
+
+```
+┌──────────────────────────────────────────────────────┐  ← WindowRoot (Live)
+│  Title bar                                           │
+├────────────────────────────┬──────┬──────────────────┤
+│                            │Price │                  │
+│       Chart draw area      │Gutter│   Ladder Pane    │
+│   (CHART_DRAW_SIZE: 310×*)  │ 50px │  (LADDER_WIDTH)  │
+│                            │      │  ask 1..10       │
+│  [Volume sub-pane, 20%]    │      │  ─── LAST ───    │
+│                            │      │  bid 1..10       │
+└────────────────────────────┴──────┴──────────────────┘
+```
+
+**設計決定:**
+- Chart draw area と price gutter のサイズは Replay/Live で**変えない** — `CHART_DRAW_SIZE` (310×180) / `PRICE_GUTTER_WIDTH` (50px) はモード非依存。Ladder は純粋に右端に追加される
+- `LadderPane` は chart entity と**兄弟の別 entity** として `WindowRoot` の子になる (chart entity の子にしない)。chart の `ChartViewState` / `Sprite` / `ShapePainter` の描画領域と衝突しない
+- `WindowRoot` の `Sprite.custom_size` をモード切替時に書き換えることでウィンドウ枠サイズを動的変更する。Phase E までの chart パネルは `CHART_PANEL_SIZE` で固定だったが、Phase F から ExecutionMode を監視してリサイズする
+- Ladder ペインのデータ源は `Res<TradingState>` の `depth: Option<DepthSnapshot>` フィールド (Phase 8 §3.7 で追加)。`depth == None` (Replay モードまたは未購読) の場合はプレースホルダ表示
+
+**ExecutionMode 切替時の動作:**
+```
+Replay → Live:
+  1. LadderPane child entity を WindowRoot に spawn
+  2. WindowRoot の Sprite.custom_size.x を LIVE_COMBINED_PANEL_SIZE.x に更新
+  3. WindowRoot の Translation.x は UI_LAYOUT 保存値から live 版を読み込む (§0.5.2 モード別保存先)
+
+Live → Replay:
+  1. LadderPane child entity を despawn
+  2. WindowRoot の Sprite.custom_size.x を CHART_PANEL_SIZE.x に更新
+  3. WindowRoot の Translation.x を replay 版 UI_LAYOUT に復元
+```
+
+⚠️ **`WindowRoot` の Sprite リサイズは `Sprite.custom_size` への代入で行う** — `Transform.scale` を変えると chart 内のローソク足の見た目も拡縮されてしまう。`Sprite.custom_size` はウィンドウ枠の当たり判定を決めるだけで、child entity の `Transform` には影響しない。
+
+⚠️ **Ladder ペインの `Transform.translation.x`** は WindowRoot ローカル座標で `(CHART_PANEL_SIZE.x / 2.0 + LADDER_WIDTH / 2.0)` に配置する — WindowRoot の origin は center なので chart 右端から `LADDER_WIDTH / 2` だけ右にずらす。Phase F 着手時に `spawn_floating_window` が返す WindowRoot の origin 仮定を `src/ui/floating_window.rs` を Read して確認する。
 
 ### Changed フィルタ駆動 (per-entity)
 
@@ -422,9 +470,18 @@ pub const PRICE_GUTTER_WIDTH: f32 = 50.0;                   // Y 軸ラベル領
 pub const TIME_GUTTER_HEIGHT: f32 = 24.0;                   // X 軸ラベル領域 (下、Phase B で使用)
 pub const CHART_DRAW_SIZE: Vec2 = Vec2::new(310.0, 180.0);  // 実描画領域 (Phase A から使用)
 pub const CHART_PANEL_SIZE: Vec2 = Vec2::new(
-    CHART_DRAW_SIZE.x + PRICE_GUTTER_WIDTH,                 // 360 (Phase A の WindowRoot サイズ計算用)
+    CHART_DRAW_SIZE.x + PRICE_GUTTER_WIDTH,                 // 360 (Replay モード / Phase A〜E の WindowRoot サイズ)
     CHART_DRAW_SIZE.y + TIME_GUTTER_HEIGHT,                 // 204
 );
+
+// Phase F で使用 (Live モード複合ウィンドウ):
+pub const LADDER_WIDTH: f32 = 120.0;                        // Ladder ペイン幅 (bid/ask 価格 + 数量を収める最小幅)
+pub const LIVE_COMBINED_PANEL_SIZE: Vec2 = Vec2::new(
+    CHART_PANEL_SIZE.x + LADDER_WIDTH,                      // 480 (Live モード WindowRoot 幅)
+    CHART_PANEL_SIZE.y,                                     // 204 (高さは同じ)
+);
+// Ladder ペインの WindowRoot ローカル X 座標 (center origin 前提):
+pub const LADDER_PANE_LOCAL_X: f32 = CHART_PANEL_SIZE.x / 2.0 + LADDER_WIDTH / 2.0;
 ```
 
 ```rust
@@ -919,15 +976,160 @@ fn volume_render_system(
 - Phase A 移管時に `chart_render.rs` / `chart_viewstate.rs` に分散された旧 chart.rs のテスト群 (旧 chart.rs:261-422 由来) のうち、`HistoryPoint` 直接参照のものを `InstrumentTradingData` 経由に書き換え、dead test を削除
 - **BUY/SELL ボタンの spawn を削除** ([window.rs:60-79](src/ui/window.rs))。`spawn_button` 呼び出し 2 つ + `commands.entity(content_area).add_child(buy_button/sell_button)` を消す。`TradeButton::Buy` / `TradeButton::Sell` の Observer ([button.rs](src/ui/button.rs)) も spawn ポイントが消えれば dead code になるので、参照が他に無いことを `grep TradeButton::` で確認した上で `TradeButton` enum ごと削除。Reason: 売買入力は本フェーズではなく [Phase 9 - Live Account and Order API](docs/plan/Phase%209%20-%20Live%20Account%20and%20Order%20API.md) で**独立した「売買入力ウィンドウ」として新設される**ため、chart panel に同居させない (toy debug の遺物)。Phase 9 着手まで売買 UI が一時的に消える状態になることを Phase E の PR 説明に明記
 
+### Phase F: Live モード複合ウィンドウ (ローソク足＋Ladder 結合)
+
+**前提**: Phase E 完了 + Phase 8 §3.7 の `TradingState.depth: Option<DepthSnapshot>` フィールド追加済み。
+
+**新規 `src/ui/chart_ladder_pane.rs`:**
+
+```rust
+/// Ladder ペインが WindowRoot 子として生きていることを示すマーカー。
+/// このコンポーネントを持つ entity が存在すれば Live 複合レイアウト状態。
+#[derive(Component)]
+pub struct LadderPane {
+    pub chart_root: Entity,  // どの WindowRoot に属するか
+}
+
+#[derive(Component)]
+pub struct LadderRow {
+    pub kind: LadderRowKind,
+    pub index: usize,  // 0 = best, 9 = worst
+}
+
+#[derive(Clone, Copy)]
+pub enum LadderRowKind { Ask, Last, Bid }
+```
+
+**`chart_ladder_mode_sync_system` (新規、ExecutionMode 変化を監視):**
+
+```rust
+fn chart_ladder_mode_sync_system(
+    mut commands: Commands,
+    exec_mode: Res<ExecutionModeRes>,
+    chart_roots: Query<(Entity, &ChartInstrument), With<WindowRoot>>,
+    ladder_panes: Query<(Entity, &LadderPane)>,
+    mut root_sprites: Query<&mut Sprite, With<WindowRoot>>,
+) {
+    if !exec_mode.is_changed() { return; }
+
+    let is_live = matches!(exec_mode.mode, ExecutionMode::LiveManual | ExecutionMode::LiveAuto);
+
+    for (root_entity, _instrument) in &chart_roots {
+        if is_live {
+            // Ladder ペインがまだ無ければ spawn
+            let already_has_ladder = ladder_panes.iter()
+                .any(|(_, lp)| lp.chart_root == root_entity);
+            if !already_has_ladder {
+                commands.spawn((
+                    LadderPane { chart_root: root_entity },
+                    Transform::from_xyz(LADDER_PANE_LOCAL_X, 0.0, 0.2),
+                    Sprite {
+                        custom_size: Some(Vec2::new(LADDER_WIDTH, CHART_PANEL_SIZE.y)),
+                        color: Color::srgba(0.08, 0.08, 0.08, 0.95),
+                        ..default()
+                    },
+                )).set_parent(root_entity);
+            }
+            // WindowRoot のサイズを Live 複合幅に更新
+            if let Ok(mut sprite) = root_sprites.get_mut(root_entity) {
+                sprite.custom_size = Some(LIVE_COMBINED_PANEL_SIZE);
+            }
+        } else {
+            // Replay: Ladder ペインを despawn
+            for (pane_entity, lp) in &ladder_panes {
+                if lp.chart_root == root_entity {
+                    commands.entity(pane_entity).despawn_recursive();
+                }
+            }
+            // WindowRoot のサイズを Replay 幅に戻す
+            if let Ok(mut sprite) = root_sprites.get_mut(root_entity) {
+                sprite.custom_size = Some(CHART_PANEL_SIZE);
+            }
+        }
+    }
+}
+```
+
+**`ladder_render_system` (新規、毎フレーム描画):**
+
+Phase 8 §3.7 で追加される `TradingState.depth: Option<DepthSnapshot>` を読み、`LadderPane` entity に Text2d 子を despawn+respawn するシンプルな retained 更新で実装する。`ShapePainter` ではなく `Text2d` ベース (背景 `Sprite` + `Text2d` オーバーレイ) で十分。
+
+```rust
+/// DepthSnapshot は Phase 8 §3.7 で TradingState に追加される型
+/// ここでは仮シグネチャ:
+/// pub struct DepthLevel { pub price: f64, pub qty: u64 }
+/// pub struct DepthSnapshot { pub asks: Vec<DepthLevel>, pub bids: Vec<DepthLevel> }
+
+fn ladder_render_system(
+    mut commands: Commands,
+    trading_state: Res<TradingState>,
+    ladder_panes: Query<Entity, (With<LadderPane>, Changed<LadderPane>)>,
+    // TradingState 変化または LadderPane spawn 直後に発火
+    state_changed: Res<TradingState>,  // is_changed() で gate
+    existing_rows: Query<Entity, With<LadderRow>>,
+    pane_query: Query<Entity, With<LadderPane>>,
+) {
+    if !state_changed.is_changed() && ladder_panes.is_empty() { return; }
+
+    // 旧 rows を一掃
+    for row_e in &existing_rows { commands.entity(row_e).despawn(); }
+
+    let Some(pane_entity) = pane_query.iter().next() else { return };
+
+    let row_height = CHART_PANEL_SIZE.y / 22.0;  // 10 ask + 1 last + 10 bid + padding
+
+    if let Some(depth) = &trading_state.depth {
+        // Ask rows (上から: worst ask → best ask)
+        for (i, level) in depth.asks.iter().take(10).rev().enumerate() {
+            spawn_ladder_row(&mut commands, pane_entity, LadderRowKind::Ask, i, level, row_height);
+        }
+        // LAST row (middle)
+        spawn_ladder_last_row(&mut commands, pane_entity, trading_state.last_price, row_height);
+        // Bid rows (上から: best bid → worst bid)
+        for (i, level) in depth.bids.iter().take(10).enumerate() {
+            spawn_ladder_row(&mut commands, pane_entity, LadderRowKind::Bid, i, level, row_height);
+        }
+    } else {
+        // depth なし: プレースホルダ
+        spawn_ladder_placeholder(&mut commands, pane_entity);
+    }
+}
+```
+
+⚠️ **`ladder_render_system` は `ShapePainter` を使わない** — ask/bid の各行は単純なテキスト表示で十分。背景色の変化 (ask=赤/bid=緑の薄塗り) は `Sprite.color` で各行の子 entity に付ける。ShapePainter を使うと axis label system との z 衝突が増えるため Text2d + Sprite の retained 方式を取る。
+
+⚠️ **`ladder_render_system` は `TradingState.is_changed()` で gate する** — depth は Live tick 毎に更新されるが、60Hz (GetState 周期) で来るので「変化フレームのみ rows 再生成」で十分。depth が None (Replay) の期間は行の再生成が走らない。
+
+**`chart_ladder_mode_sync_system` の登録:**
+
+```rust
+app.add_systems(Update, (
+    chart_ladder_mode_sync_system
+        .after(crate::trading::backend_update_system),
+    ladder_render_system
+        .after(chart_ladder_mode_sync_system),
+));
+```
+
+**Verification (Phase F):**
+
+1. `ExecutionMode` を Replay → Live に切替えると Chart ウィンドウ右に Ladder ペインが出現し、WindowRoot が広がる
+2. Live モードで `MockVenueAdapter` の `emit_depth_snapshot()` を呼ぶと Ladder の bid/ask 数値が更新される
+3. `ExecutionMode` を Live → Replay に戻すと Ladder が消え、ウィンドウがコンパクトサイズに戻る
+4. `depth == None` (Live 接続前) の状態では「板情報なし」プレースホルダが表示される
+5. Phase E の Volume サブペイン / Phase D の Crosshair が Ladder 追加後も正常動作する (非退行)
+6. Ladder ペインの Drag イベントが WindowRoot の window 移動 observer に bubble しない (`propagate(false)`)
+
 ## 触るファイル一覧
 
-**新規 (6 ファイル):**
-- `src/ui/chart_viewstate.rs` (Phase A) — `ChartViewState` Component + `chart_viewstate_update_system` + 座標変換ヘルパ
+**新規 (7 ファイル):**
+- `src/ui/chart_viewstate.rs` (Phase A) — `ChartViewState` Component + `chart_viewstate_update_system` + 座標変換ヘルパ + **`LADDER_WIDTH` / `LIVE_COMBINED_PANEL_SIZE` / `LADDER_PANE_LOCAL_X` 定数 (Phase F で使用)**
 - `src/ui/chart_render.rs` (Phase A) — `chart_main_render_system` (純 draw)
 - `src/ui/chart_axes.rs` (Phase B) — `calc_optimal_price_ticks` / `calc_optimal_time_step` + 2 system + `PriceLabel`/`TimeLabel` Component + `PriceGutter`/`TimeGutter` マーカー + `PriceGutterRef(Entity)`/`TimeGutterRef(Entity)` (chart entity に埋める gutter 参照)
 - `src/ui/chart_interaction.rs` (Phase C) — pan/zoom observer + system
 - `src/ui/chart_crosshair.rs` (Phase D) — `CrosshairState` + observer + render system + readout badge
 - `src/ui/chart_volume.rs` (Phase E) — volume サブペイン render system
+- `src/ui/chart_ladder_pane.rs` (Phase F) — `LadderPane` / `LadderRow` / `LadderRowKind` Component、`chart_ladder_mode_sync_system` (ExecutionMode 変化で Ladder spawn/despawn + WindowRoot リサイズ)、`ladder_render_system` (depth → Text2d 行生成)
 
 **新規アセット: なし** (flowsurface も追加 asset 無し)
 
@@ -956,7 +1158,7 @@ fn volume_render_system(
 - `src/ui/sidebar.rs` — **A0 で変更不要** (`update_instrument_price_text_system` は既に `LastPrices` のみ)
 - `src/ui/footer.rs` / `src/ui/menu_bar.rs` / `src/ui/replay_startup_window.rs` (Phase A0) — `Res<TradingData>` 経由の session-global フィールド読みを `Res<TradingSession>` に
 - `src/ui/mod.rs` (Phase A 以降):
-  - 6 モジュール宣言追加
+  - 7 モジュール宣言追加 (Phase F で `chart_ladder_pane` を追加)
   - 旧 `chart_render_system` を削除
   - 新規 7 system 登録 (Phase A〜E)、20-tuple 上限 (現状 mod.rs の Update タプルは 18-19 個、Phase A〜E で 6+ system 追加するため境界付近に到達)を超えそうなら `SystemSet` か別 `add_systems` 呼び出しに分割
   - ※ TradeButton 削除に伴う `button_system` の import / `add_systems` 除去は上記「TradeButton 削除と同 PR」の項に含まれる
@@ -1014,6 +1216,11 @@ fn volume_render_system(
 31. **multi-camera 環境で `camera_q.get_single()` は silent-fail** — bevy_pancam の world Camera2d 1 個前提でも UI camera が追加されると `Err(MultipleEntities)`。`With<Camera2d>` filter を必ず付ける (`src/camera.rs` 既存の Camera2d 1 個前提)。複数 2D camera 導入時は `PointerLocation.target` で選び直し
 32. **`Added<T>` は `Changed<T>` を含む** — Bevy invariant。`Or<(Added, Changed)>` は冗長で `Changed` 単独で spawn フレームも拾える
 33. **`CHART_Y_OFFSET` の符号は `spawn_floating_window` を Read で検証してから確定** — WindowRoot origin が panel 中心か上端か、title bar Y、panel size に title bar が含まれるかで符号 / 量が変わる。Phase A の最初の差分にこの確認を入れる
+34. **Phase F: `Sprite.custom_size` でリサイズ、`Transform.scale` は使わない** — WindowRoot の scale を変えると chart 子 entity のローソク足ピクセルサイズも変わる。ウィンドウ枠の拡張は必ず `root_sprite.custom_size = Some(LIVE_COMBINED_PANEL_SIZE)` で行う
+35. **Phase F: LadderPane の Drag bubble を止める** — LadderPane の Sprite に `Pointer<Down>` / `Pointer<Drag>` observer を付けて `propagate(false)` しないと、ladder 上のドラッグで WindowRoot 全体が移動する (chart entity と同じ問題、Caveat 2 と対称)
+36. **Phase F: `chart_ladder_mode_sync_system` は `ExecutionModeRes.is_changed()` で gate する** — mode が変わっていないフレームで全 chart root を走査すると 60Hz × chart 枚数分の無駄クエリになる。`is_changed()` で早期 return
+37. **Phase F: Ladder の Text2d 行数は 10+1+10 = 21 行** — Tachibana は 5 段以下の場合がある。`depth.asks.len() < 10` のとき不足分は `---` プレースホルダ行を埋める。行数が可変だと y 座標計算がずれるので常に 21 行固定で生成する
+38. **Phase F は Phase 8 §3.7 の `TradingState.depth` フィールド追加が前提** — Phase 8 が未完了の場合、`ladder_render_system` は `depth == None` パスしか通らない。Phase F は Phase 8 §3.7 完了後にのみ意味をなす。Phase 8 完了前でも Phase F の UI skeleton (spawn/despawn + プレースホルダ) は先行実装可能
 
 ## Verification (各フェーズ完了時)
 

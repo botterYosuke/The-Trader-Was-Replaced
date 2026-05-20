@@ -14,7 +14,11 @@ from typing import Any
 import pytest
 import websockets.exceptions
 
-from engine.exchanges.kabusapi_auth import KabuConnectionError
+from engine.exchanges.kabusapi_auth import (
+    KabuConnectionError,
+    KabuRateLimitError,
+    KabuTokenExpiredError,
+)
 from engine.exchanges.kabusapi_register import RegisterSet
 
 
@@ -476,3 +480,247 @@ async def test_connect_resets_failures_only_after_first_successful_frame(monkeyp
 
     # >= _MAX_RECONNECT_ATTEMPTS で raise → 計 _MAX connect
     assert record["n"] == kws_mod._MAX_RECONNECT_ATTEMPTS
+
+
+# ===========================================================================
+# Post-merge review fixes (2026-05-20)
+# ===========================================================================
+
+
+async def test_connect_invokes_on_reconnect_before_replaying_register(monkeypatch):
+    """HIGH-3: on the *2nd* connect (i.e. reconnect), the on_reconnect hook
+    must be invoked BEFORE put_register replays symbols, so processors are
+    reset before any new frame is dispatched."""
+    from engine.exchanges import kabusapi_ws as kws_mod
+
+    monkeypatch.setattr(kws_mod, "_RECONNECT_DELAY_S", 0.0)
+
+    rs = RegisterSet()
+    rs.register("7203", 1)
+
+    events_log: list[str] = []
+
+    async def put_register(symbols):
+        events_log.append("put_register")
+        return True
+
+    async def on_reconnect():
+        events_log.append("on_reconnect")
+
+    async def on_message(msg: dict) -> None:
+        raise asyncio.CancelledError
+
+    # First _FakeWs raises ConnectionClosedOK immediately to force reconnect;
+    # second yields one frame and on_message cancels.
+    state = {"call": 0}
+
+    def _make_ws():
+        state["call"] += 1
+        if state["call"] == 1:
+            return _FakeWs(
+                [],
+                close_exc=websockets.exceptions.ConnectionClosedOK(None, None),
+            )
+        return _FakeWs([json.dumps({"x": 1})])
+
+    def _fake_connect(url: str, **kwargs: Any):
+        return _make_ws()
+
+    fake_mod = type(
+        "_M",
+        (),
+        {"connect": staticmethod(_fake_connect), "exceptions": websockets.exceptions},
+    )
+    monkeypatch.setattr(kws_mod, "websockets", fake_mod)
+
+    with pytest.raises(asyncio.CancelledError):
+        await asyncio.wait_for(
+            kws_mod.connect(
+                env="verify",
+                on_message=on_message,
+                register_set=rs,
+                put_register=put_register,
+                on_reconnect=on_reconnect,
+            ),
+            timeout=2.0,
+        )
+
+    # on_reconnect must precede the 2nd put_register
+    assert "on_reconnect" in events_log
+    or_idx = events_log.index("on_reconnect")
+    # put_register on the *reconnect* attempt comes after on_reconnect
+    later_put = [
+        i for i, e in enumerate(events_log) if e == "put_register" and i > or_idx
+    ]
+    assert later_put, f"put_register should follow on_reconnect; got {events_log}"
+
+
+async def test_connect_does_not_increment_failures_on_json_decode_error(monkeypatch):
+    """MEDIUM-4: a JSONDecodeError from a malformed frame must be logged at
+    warning level and NOT incremented into the reconnect failure counter."""
+    from engine.exchanges import kabusapi_ws as kws_mod
+
+    monkeypatch.setattr(kws_mod, "_RECONNECT_DELAY_S", 0.0)
+
+    rs = RegisterSet()
+
+    async def put_register(symbols):
+        return True
+
+    call_count = {"n": 0}
+
+    async def on_message(msg: dict) -> None:
+        call_count["n"] += 1
+        raise asyncio.CancelledError
+
+    # First frame is malformed JSON, second is valid → on_message cancels.
+    fake = _FakeWs(["not-a-json{", json.dumps({"x": 1})])
+    record = {"n": 0}
+
+    def _fake_connect(url: str, **kwargs: Any):
+        record["n"] += 1
+        return fake
+
+    fake_mod = type(
+        "_M",
+        (),
+        {"connect": staticmethod(_fake_connect), "exceptions": websockets.exceptions},
+    )
+    monkeypatch.setattr(kws_mod, "websockets", fake_mod)
+
+    with pytest.raises(asyncio.CancelledError):
+        await asyncio.wait_for(
+            kws_mod.connect(
+                env="verify",
+                on_message=on_message,
+                register_set=rs,
+                put_register=put_register,
+            ),
+            timeout=2.0,
+        )
+
+    # If JSON decode error had incremented failures, the loop would have
+    # disconnected/reconnected. Verify single connect call & on_message
+    # eventually got the valid frame.
+    assert record["n"] == 1, "JSONDecodeError must not trigger reconnect"
+    assert call_count["n"] == 1
+
+
+async def test_connect_propagates_fatal_put_register_error_on_reconnect(monkeypatch):
+    """Round1 HIGH: a non-transient put_register failure during reconnect
+    replay (e.g. KabuTokenExpiredError) must NOT be swallowed. It propagates
+    out of connect() so _run_ws can capture it into adapter.last_error and the
+    dead session becomes observable instead of "connected but silent"."""
+    from engine.exchanges import kabusapi_ws as kws_mod
+
+    monkeypatch.setattr(kws_mod, "_RECONNECT_DELAY_S", 0.0)
+
+    rs = RegisterSet()
+    rs.register("7203", 1)
+
+    put_calls = {"n": 0}
+
+    async def put_register(symbols):
+        put_calls["n"] += 1
+        # First connect: succeed. Reconnect replay: token expired.
+        if put_calls["n"] >= 2:
+            raise KabuTokenExpiredError(4001005, "token expired")
+        return True
+
+    async def on_message(msg: dict) -> None:
+        raise asyncio.CancelledError
+
+    # First ws: closes OK immediately to force a reconnect. Second ws would
+    # yield a frame, but the replay raises before we ever recv().
+    state = {"call": 0}
+
+    def _make_ws():
+        state["call"] += 1
+        if state["call"] == 1:
+            return _FakeWs(
+                [],
+                close_exc=websockets.exceptions.ConnectionClosedOK(None, None),
+            )
+        return _FakeWs([json.dumps({"x": 1})])
+
+    def _fake_connect(url: str, **kwargs: Any):
+        return _make_ws()
+
+    fake_mod = type(
+        "_M",
+        (),
+        {"connect": staticmethod(_fake_connect), "exceptions": websockets.exceptions},
+    )
+    monkeypatch.setattr(kws_mod, "websockets", fake_mod)
+
+    with pytest.raises(KabuTokenExpiredError):
+        await asyncio.wait_for(
+            kws_mod.connect(
+                env="verify",
+                on_message=on_message,
+                register_set=rs,
+                put_register=put_register,
+            ),
+            timeout=2.0,
+        )
+
+
+async def test_connect_swallows_rate_limit_put_register_error_on_reconnect(monkeypatch):
+    """Round1 HIGH (transient branch): a KabuRateLimitError during reconnect
+    replay is transient — warn and keep the reconnect loop alive rather than
+    tearing the session down. The session proceeds to recv() the next frame."""
+    from engine.exchanges import kabusapi_ws as kws_mod
+
+    monkeypatch.setattr(kws_mod, "_RECONNECT_DELAY_S", 0.0)
+
+    rs = RegisterSet()
+    rs.register("7203", 1)
+
+    put_calls = {"n": 0}
+
+    async def put_register(symbols):
+        put_calls["n"] += 1
+        if put_calls["n"] >= 2:
+            raise KabuRateLimitError(4002006, "rate limited")
+        return True
+
+    received: list[dict] = []
+
+    async def on_message(msg: dict) -> None:
+        received.append(msg)
+        raise asyncio.CancelledError
+
+    state = {"call": 0}
+
+    def _make_ws():
+        state["call"] += 1
+        if state["call"] == 1:
+            return _FakeWs(
+                [],
+                close_exc=websockets.exceptions.ConnectionClosedOK(None, None),
+            )
+        return _FakeWs([json.dumps({"x": 1})])
+
+    def _fake_connect(url: str, **kwargs: Any):
+        return _make_ws()
+
+    fake_mod = type(
+        "_M",
+        (),
+        {"connect": staticmethod(_fake_connect), "exceptions": websockets.exceptions},
+    )
+    monkeypatch.setattr(kws_mod, "websockets", fake_mod)
+
+    # Rate limit is swallowed → recv() proceeds → on_message cancels.
+    with pytest.raises(asyncio.CancelledError):
+        await asyncio.wait_for(
+            kws_mod.connect(
+                env="verify",
+                on_message=on_message,
+                register_set=rs,
+                put_register=put_register,
+            ),
+            timeout=2.0,
+        )
+
+    assert received == [{"x": 1}], "rate-limit replay must not abort the session"

@@ -396,6 +396,31 @@ pub fn gate_venue_menu_items_system(
     }
 }
 
+pub fn hide_unconfigured_venue_items_system(
+    status: Res<VenueStatusRes>,
+    mut btn_q: Query<(&MenuItem, &mut Node), With<Button>>,
+) {
+    if !status.is_changed() {
+        return;
+    }
+    let configured = status.configured_venue.as_deref().map(|s| s.to_ascii_uppercase());
+    for (item, mut node) in &mut btn_q {
+        let is_tachibana = venue_connect_is_tachibana(item);
+        let is_kabu = venue_connect_is_kabu(item);
+        if !is_tachibana && !is_kabu {
+            continue;
+        }
+        let target_display = match &configured {
+            Some(v) if v == "TACHIBANA" && is_kabu => Display::None,
+            Some(v) if v == "KABU" && is_tachibana => Display::None,
+            _ => Display::Flex,
+        };
+        if node.display != target_display {
+            node.display = target_display;
+        }
+    }
+}
+
 pub fn menu_item_system(
     mut query: Query<
         (&Interaction, &mut BackgroundColor, &MenuItem),
@@ -1196,6 +1221,7 @@ mod tests {
             state,
             venue_id: venue_id.map(|s| s.to_string()),
             instruments_loaded: 0,
+            configured_venue: None,
         });
         app.add_systems(Update, gate_venue_menu_items_system);
 
@@ -1282,6 +1308,7 @@ mod tests {
             state,
             venue_id: Some("tachibana".to_string()),
             instruments_loaded: 0,
+            configured_venue: None,
         });
         app.insert_resource(ExecutionModeRes::default());
         app.add_event::<LayoutSaveRequested>();
@@ -1331,5 +1358,54 @@ mod tests {
             rx.try_recv().is_err(),
             "VenueConnect on same venue must NOT send VenueLogin while AUTHENTICATING"
         );
+    }
+
+    fn build_app_for_hide(configured: Option<&str>) -> (App, Entity, Entity) {
+        let mut app = App::new();
+        app.insert_resource(VenueStatusRes {
+            configured_venue: configured.map(|s| s.to_string()),
+            ..Default::default()
+        });
+        app.add_systems(Update, hide_unconfigured_venue_items_system);
+        let btn_t = app
+            .world_mut()
+            .spawn((Button, Node::default(), MenuItem::VenueConnectTachibanaDemo))
+            .id();
+        let btn_k = app
+            .world_mut()
+            .spawn((Button, Node::default(), MenuItem::VenueConnectKabuVerify))
+            .id();
+        app.update();
+        (app, btn_t, btn_k)
+    }
+
+    #[test]
+    fn test_hide_unconfigured_none_shows_both() {
+        let (app, btn_t, btn_k) = build_app_for_hide(None);
+        assert_eq!(app.world().get::<Node>(btn_t).unwrap().display, Display::Flex);
+        assert_eq!(app.world().get::<Node>(btn_k).unwrap().display, Display::Flex);
+    }
+
+    #[test]
+    fn test_hide_unconfigured_tachibana_hides_kabu() {
+        let (app, btn_t, btn_k) = build_app_for_hide(Some("TACHIBANA"));
+        assert_eq!(app.world().get::<Node>(btn_t).unwrap().display, Display::Flex);
+        assert_eq!(app.world().get::<Node>(btn_k).unwrap().display, Display::None);
+    }
+
+    #[test]
+    fn test_hide_unconfigured_kabu_hides_tachibana() {
+        let (app, btn_t, btn_k) = build_app_for_hide(Some("KABU"));
+        assert_eq!(app.world().get::<Node>(btn_k).unwrap().display, Display::Flex);
+        assert_eq!(app.world().get::<Node>(btn_t).unwrap().display, Display::None);
+    }
+
+    #[test]
+    fn test_hide_unconfigured_restores_when_cleared() {
+        let (mut app, _btn_t, btn_k) = build_app_for_hide(Some("TACHIBANA"));
+        assert_eq!(app.world().get::<Node>(btn_k).unwrap().display, Display::None);
+        app.world_mut().resource_mut::<VenueStatusRes>().configured_venue = None;
+        app.update();
+        assert_eq!(app.world().get::<Node>(btn_k).unwrap().display, Display::Flex);
     }
 }

@@ -111,6 +111,8 @@ class LiveRunner:
             return
 
     async def stop(self) -> None:
+        # Does NOT close the bus — stop() is reversible; start() can re-arm on
+        # the same bus. Use aclose() when discarding the runner entirely.
         if self._task is not None:
             self._task.cancel()
             try:
@@ -118,6 +120,11 @@ class LiveRunner:
             except asyncio.CancelledError:
                 pass
             self._task = None
+
+    async def aclose(self) -> None:
+        """Explicit shutdown: stop background task and close the bus.
+        Use this when the runner is truly being discarded (not re-armed)."""
+        await self.stop()
         await self.bus.close()
 
     @property
@@ -136,7 +143,7 @@ class LiveRunner:
 
         NOTE: field name is `self.bus` (public), NOT `self._bus`.
         """
-        return getattr(self._adapter, "is_logged_in", True) and self.bus is not None
+        return getattr(self._adapter, "is_logged_in", False) and self.bus is not None
 
     def fetch_instruments_blocking(self, timeout: float = 5.0):
         """D10: Fetch instruments from adapter synchronously (from gRPC thread).

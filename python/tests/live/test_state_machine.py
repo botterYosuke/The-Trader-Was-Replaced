@@ -39,16 +39,25 @@ def test_reconnecting_to_error():
     assert sm.current == "ERROR"
 
 
-def test_error_only_resets_to_disconnected_via_reset():
+def test_error_resets_to_disconnected_via_reset():
     sm = VenueStateMachine()
     sm.transition_to("AUTHENTICATING")
     sm.transition_to("CONNECTED")
     sm.transition_to("SUBSCRIBED")
     sm.transition_to("RECONNECTING")
     sm.transition_to("ERROR")
-    with pytest.raises(InvalidVenueTransition):
-        sm.transition_to("DISCONNECTED")
     sm.reset()
+    assert sm.current == "DISCONNECTED"
+
+
+def test_error_to_disconnected_via_transition_to_is_allowed():
+    """Post-merge fix: ERROR → DISCONNECTED via transition_to is allowed
+    so recovery paths (e.g. _fail()) can explicitly drop the venue without
+    going through reset()."""
+    sm = VenueStateMachine()
+    sm.transition_to("AUTHENTICATING")
+    sm.transition_to("ERROR")
+    sm.transition_to("DISCONNECTED")
     assert sm.current == "DISCONNECTED"
 
 

@@ -275,7 +275,10 @@ class MasterStreamParser:
         # IncrementalDecoder safely holds partial multibyte sequences across
         # chunk boundaries — fixes data corruption when a 2-byte SJIS char is
         # split between two chunks (would otherwise become U+FFFD).
-        self._decoder = codecs.getincrementaldecoder("shift_jis")(errors="replace")
+        # R7 (tachibana skill): production master fetch must use errors="strict".
+        # 'replace' silently substitutes U+FFFD and lets corrupted issue names
+        # flow downstream; only log/debug paths may relax this.
+        self._decoder = codecs.getincrementaldecoder("shift_jis")(errors="strict")
         self._buf: str = ""
         self._records: list[dict[str, Any]] = []
         self._complete: bool = False

@@ -321,6 +321,9 @@ fn apply_status_update(
         BackendStatusUpdate::ExecutionModeChanged { mode } => {
             exec_mode.mode = mode;
         }
+        BackendStatusUpdate::ConfiguredVenueDiscovered { venue_id } => {
+            venue_status.configured_venue = venue_id;
+        }
         BackendStatusUpdate::InstrumentsListStarted { source } => {
             tickers.source = source;
             tickers.status = TickersStatus::InFlight;
@@ -505,6 +508,9 @@ fn setup_backend_connection(
 
             // (4) Ready 前 / Restart 中に溜まった古い transport command を破棄する。
             while transport_rx.try_recv().is_ok() {}
+            // Phase 8 §3.5 subtask 5: configured_venue の dedupe 用 (prev_venue /
+            // prev_mode は上で宣言済み)。inner loop ごとに reset。
+            let mut prev_configured_venue: Option<Option<String>> = None;
 
             // (5) inner main loop: transport drain + GetState polling + lifecycle 監視。
             loop {
@@ -757,28 +763,36 @@ fn setup_backend_connection(
                         });
                     }
                     TransportCommand::SetExecutionMode { mode } => {
-                        let req = tonic::Request::new(SetExecutionModeRequest {
-                            mode: mode.as_wire_str().to_string(),
-                            token: token.clone(),
-                        });
-                        match client.set_execution_mode(req).await {
-                            Ok(r) => {
-                                let inner = r.into_inner();
-                                if inner.success {
-                                    info!(
-                                        "SetExecutionMode ok, backend execution_mode={}",
-                                        inner.execution_mode
-                                    );
-                                } else {
-                                    error!(
-                                        "SetExecutionMode rejected: error_code={:?} target={}",
-                                        inner.error_code,
-                                        mode.as_wire_str()
-                                    );
+                        // Spawn so the pump loop is not blocked while the
+                        // backend processes the mode switch (sibling commands
+                        // like FetchAvailableInstruments / StartEngine follow
+                        // the same pattern).
+                        let mut sem_client = client.clone();
+                        let sem_token = token.clone();
+                        tokio::spawn(async move {
+                            let req = tonic::Request::new(SetExecutionModeRequest {
+                                mode: mode.as_wire_str().to_string(),
+                                token: sem_token,
+                            });
+                            match sem_client.set_execution_mode(req).await {
+                                Ok(r) => {
+                                    let inner = r.into_inner();
+                                    if inner.success {
+                                        info!(
+                                            "SetExecutionMode ok, backend execution_mode={}",
+                                            inner.execution_mode
+                                        );
+                                    } else {
+                                        error!(
+                                            "SetExecutionMode rejected: error_code={:?} target={}",
+                                            inner.error_code,
+                                            mode.as_wire_str()
+                                        );
+                                    }
                                 }
+                                Err(e) => error!("SetExecutionMode failed: {}", e),
                             }
-                            Err(e) => error!("SetExecutionMode failed: {}", e),
-                        }
+                        });
                     }
                     TransportCommand::FetchAvailableInstruments { end_date } => {
                         let mut fetch_client = client.clone();
@@ -963,6 +977,12 @@ fn setup_backend_connection(
                                     }
                                 }
                                 prev_mode = state.execution_mode.clone();
+                            }
+                            if prev_configured_venue.as_ref() != Some(&state.configured_venue) {
+                                let _ = status_tx.send(BackendStatusUpdate::ConfiguredVenueDiscovered {
+                                    venue_id: state.configured_venue.clone(),
+                                });
+                                prev_configured_venue = Some(state.configured_venue.clone());
                             }
                             // Phase 8 §3.5: push last_prices map as a typed
                             // status update. Overwrite semantics — Replay 切替

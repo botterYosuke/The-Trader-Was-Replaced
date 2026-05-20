@@ -339,3 +339,31 @@ def test_decode_clm_yobine_record_applies_sDecimal_scaling():
     assert decoded.bands[0].yobine_tanka == Decimal("0.5")
     # decimals field 自体は生情報として残す (debug 用途)
     assert decoded.bands[0].decimals == 1
+
+
+# ---------------------------------------------------------------------------
+# Post-merge review fix HIGH-2: incremental SJIS decoder uses strict (R7)
+# ---------------------------------------------------------------------------
+
+
+def test_master_parser_strict_decode_rejects_invalid_sjis():
+    """Production master fetch must raise on invalid Shift-JIS bytes (R7).
+
+    errors='replace' would silently turn bytes into U+FFFD and ship garbage
+    issue names downstream. errors='strict' is the only safe default for the
+    production path. (Hand-decode log paths can stay 'replace'.)
+    """
+    parser = MasterStreamParser()
+    # 0xFF is invalid as a Shift-JIS lead byte.
+    with pytest.raises(UnicodeDecodeError):
+        parser.feed(b"\xff\xff\xff")
+
+
+def test_master_parser_strict_decode_accepts_valid_sjis():
+    """Valid Shift-JIS still decodes cleanly under errors='strict'."""
+    parser = MasterStreamParser()
+    body = json.dumps({"sCLMID": "CLMEventDownloadComplete"}, ensure_ascii=False).encode(
+        "shift_jis"
+    )
+    parser.feed(body)
+    assert parser.is_complete is True

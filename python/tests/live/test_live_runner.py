@@ -627,3 +627,70 @@ def test_live_runner_drops_direct_kline_for_unsubscribed_instrument() -> None:
     bar = asyncio.run(scenario())
     assert bar.instrument_id == "7203.TSE"
     assert bar == own
+
+
+# --- Post-merge fix tests ----------------------------------------------------
+
+def test_is_logged_in_defaults_to_false_when_adapter_lacks_attribute() -> None:
+    """MEDIUM-2: adapter that does not expose `is_logged_in` must be treated
+    as NOT logged in (deny-by-default)."""
+    class _NoAttrAdapter:
+        venue_id = "MOCK"
+        async def login(self, creds): pass
+        async def logout(self): pass
+        async def fetch_instruments(self): return []
+        async def subscribe(self, instrument_id, channels): pass
+        async def unsubscribe(self, instrument_id): pass
+        async def events(self):
+            if False:
+                yield  # pragma: no cover
+
+    adapter = _NoAttrAdapter()
+    runner = LiveRunner(adapter=adapter, interval_ns=INTERVAL_NS)
+    assert runner.is_logged_in() is False
+
+
+def test_is_logged_in_true_when_adapter_exposes_true() -> None:
+    """Sanity: when adapter sets is_logged_in=True, runner reports True."""
+    adapter = MockVenueAdapter()
+    adapter.is_logged_in = True
+    runner = LiveRunner(adapter=adapter, interval_ns=INTERVAL_NS)
+    assert runner.is_logged_in() is True
+
+
+def test_live_runner_restart_after_stop_still_publishes_events() -> None:
+    """MEDIUM-4: LiveRunner.stop() must NOT close the bus.
+    start → stop → start must work and events must keep flowing on the same bus."""
+    base_ns = 28333333 * INTERVAL_NS
+
+    async def scenario() -> KlineUpdate:
+        adapter = MockVenueAdapter()
+        runner = LiveRunner(adapter=adapter, interval_ns=INTERVAL_NS)
+        await adapter.login(VenueCredentials(
+            credentials_source="env", environment_hint="demo",
+        ))
+        await runner.subscribe("7203.TSE")
+
+        await runner.start()
+        await runner.stop()
+
+        # After stop(), the bus must still be usable and a new start() must
+        # resume background consumption.
+        assert runner.bus._closed is False, "stop() must NOT close the bus"
+
+        consumer = runner.bus.subscribe()
+        await runner.start()
+        adapter.inject_tick(_tick(base_ns + 0,           price=100.0, size=1.0))
+        adapter.inject_tick(_tick(base_ns + INTERVAL_NS, price=110.0, size=1.0))
+
+        try:
+            it = consumer.__aiter__()
+            evt = await _next_kline(it, timeout=1.0)
+        finally:
+            await runner.aclose()
+        return evt
+
+    bar = asyncio.run(scenario())
+    assert bar.open == 100.0
+    assert bar.close == 100.0
+    assert bar.volume == 1.0
