@@ -21,3 +21,23 @@ class OrderResult(BaseModel):
     reject_reason: str | None = None
 
     model_config = {"frozen": True}
+
+
+class OrderEventData(BaseModel):
+    """ManualOrderFacade が返す正規化済み注文イベント（proto `OrderEvent` と field 一致）。
+
+    facade は transport 非依存（proto を import しない）ため、gRPC handler 側で
+    この dataclass を `engine_pb2.OrderEvent` に詰め替える。`order_id` は UI が
+    扱う安定ハンドルで、mock では `client_order_id` と同値（venue 採番が無いため
+    `venue_order_id` は空文字）。
+    """
+
+    order_id: str
+    venue_order_id: str
+    client_order_id: str
+    status: str
+    filled_qty: float
+    avg_price: float
+    ts_ms: int
+
+    model_config = {"frozen": True}

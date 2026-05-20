@@ -8,6 +8,8 @@ use backcast::trading::engine::{
     ListInstrumentsRequest, ListInstrumentsResponse, LoadReplayDataRequest, PauseReplayRequest,
     ReplayControlResponse, ResumeReplayRequest, SetExecutionModeRequest, SetExecutionModeResponse,
     SubmitSecretReq, SubmitSecretRes,
+    PlaceOrderReq, PlaceOrderRes, CancelOrderReq, CancelOrderRes,
+    GetOrderStatusReq, GetOrderStatusRes,
     SetReplaySpeedRequest, ShutdownRequest, ShutdownResponse, StartEngineRequest,
     StartEngineResponse, StartResponse, StepReplayRequest, StopEngineRequest, StopReplayRequest,
     StopRequest, StopResponse, SubscribeRequest, SubscribeResponse, UnsubscribeRequest,
@@ -405,6 +407,51 @@ impl DataEngine for MyDataEngine {
         _request: Request<SubscribeBackendEventsReq>,
     ) -> Result<Response<Self::SubscribeBackendEventsStream>, Status> {
         Ok(Response::new(tokio_stream::empty()))
+    }
+
+    async fn place_order(
+        &self,
+        request: Request<PlaceOrderReq>,
+    ) -> Result<Response<PlaceOrderRes>, Status> {
+        let req = request.into_inner();
+        if req.token != self.token {
+            return Err(Status::unauthenticated("Invalid token"));
+        }
+        Ok(Response::new(PlaceOrderRes {
+            success: true,
+            error_code: "".to_string(),
+            order_event: None,
+        }))
+    }
+
+    async fn cancel_order(
+        &self,
+        request: Request<CancelOrderReq>,
+    ) -> Result<Response<CancelOrderRes>, Status> {
+        let req = request.into_inner();
+        if req.token != self.token {
+            return Err(Status::unauthenticated("Invalid token"));
+        }
+        Ok(Response::new(CancelOrderRes {
+            success: true,
+            error_code: "".to_string(),
+            order_event: None,
+        }))
+    }
+
+    async fn get_order_status(
+        &self,
+        request: Request<GetOrderStatusReq>,
+    ) -> Result<Response<GetOrderStatusRes>, Status> {
+        let req = request.into_inner();
+        if req.token != self.token {
+            return Err(Status::unauthenticated("Invalid token"));
+        }
+        Ok(Response::new(GetOrderStatusRes {
+            success: false,
+            error_code: "UNKNOWN_ORDER_ID".to_string(),
+            order_event: None,
+        }))
     }
 }
 

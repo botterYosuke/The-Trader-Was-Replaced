@@ -332,3 +332,47 @@ def test_mock_adapter_submit_order_partially_filled_outcome() -> None:
     assert result.filled_qty < 100.0
     assert result.avg_price is not None
     assert result.reject_reason is None
+
+
+def test_mock_adapter_cancel_order_default_is_canceled() -> None:
+    """Phase 9 Step 2: 仕込み無しの cancel_order は CANCELED を返す。
+
+    client_order_id（= order_id 引数）がそのまま結果に反映される。
+    """
+    adapter = MockVenueAdapter()
+
+    async def scenario() -> OrderResult:
+        creds = VenueCredentials(credentials_source="env", environment_hint="demo")
+        await adapter.login(creds)
+        return await adapter.cancel_order(venue="MOCK", order_id="coid-123")
+
+    result = asyncio.run(scenario())
+    assert isinstance(result, OrderResult)
+    assert result.status == "CANCELED"
+    assert result.client_order_id == "coid-123"
+    assert result.filled_qty == 0.0
+    assert result.reject_reason is None
+
+
+def test_mock_adapter_cancel_order_rejected_outcome() -> None:
+    """Phase 9 Step 2: set_next_cancel_outcome(REJECTED) で取消拒否 + reject_reason。"""
+    adapter = MockVenueAdapter()
+
+    async def scenario() -> OrderResult:
+        creds = VenueCredentials(credentials_source="env", environment_hint="demo")
+        await adapter.login(creds)
+        adapter.set_next_cancel_outcome(status="REJECTED", reject_reason="already filled")
+        return await adapter.cancel_order(venue="MOCK", order_id="coid-123")
+
+    result = asyncio.run(scenario())
+    assert result.status == "REJECTED"
+    assert result.reject_reason == "already filled"
+
+
+def test_mock_adapter_cancel_order_without_login_raises() -> None:
+    """未ログインで cancel_order を呼ぶと RuntimeError（submit_order と同じ保護網）。"""
+    import pytest
+
+    adapter = MockVenueAdapter()
+    with pytest.raises(RuntimeError, match="not logged in"):
+        asyncio.run(adapter.cancel_order(venue="MOCK", order_id="coid-123"))

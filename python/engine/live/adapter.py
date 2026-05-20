@@ -9,9 +9,20 @@ union（kind discriminator）。
 
 from __future__ import annotations
 
-from typing import Annotated, AsyncIterator, Literal, Protocol, Union, runtime_checkable
+from typing import (
+    TYPE_CHECKING,
+    Annotated,
+    AsyncIterator,
+    Literal,
+    Protocol,
+    Union,
+    runtime_checkable,
+)
 
 from pydantic import BaseModel, Field, model_validator
+
+if TYPE_CHECKING:
+    from engine.live.order_types import OrderResult
 
 # --- 基本型エイリアス ---
 
@@ -149,3 +160,36 @@ class LiveVenueAdapter(Protocol):
     ) -> None: ...
     async def unsubscribe(self, instrument_id: InstrumentId) -> None: ...
     def events(self) -> AsyncIterator[LiveEvent]: ...
+
+
+@runtime_checkable
+class OrderingVenueAdapter(LiveVenueAdapter, Protocol):
+    """発注可能な venue adapter（Phase 9）。LiveVenueAdapter に手動発注経路を足す。
+
+    Phase 9 Step 2 の ManualOrderFacade はこの契約に依存する。MockVenueAdapter は
+    既にこれを満たし、Tachibana / kabu の具体実装は Step 5/6 でこの契約を満たすこと
+    （発注は本来 ExecutionClient の責務だが、Step 2 では adapter に薄く委譲する。
+    真正 Nautilus ExecEngine wiring は Phase 10 / LiveAuto、ADR §7 参照）。
+    submit_order / cancel_order は OrderResult を返す（engine.live.order_types）。
+    """
+
+    async def submit_order(
+        self,
+        *,
+        venue: str,
+        instrument_id: InstrumentId,
+        side: str,
+        qty: float,
+        price: float | None,
+        order_type: str,
+        time_in_force: str,
+        **extra: object,
+    ) -> "OrderResult": ...
+
+    async def cancel_order(
+        self,
+        *,
+        venue: str,
+        order_id: str,
+        **extra: object,
+    ) -> "OrderResult": ...

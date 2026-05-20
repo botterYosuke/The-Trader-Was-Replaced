@@ -26,6 +26,7 @@ from .live.depth_cache import DepthCache
 from .live.state_machine import VenueStateMachine
 from .live.backend_event_bus import BackendEventBus
 from .live.secret_vault import SecretVault
+from .live.order_facade import ManualOrderFacade, OrderFacadeError
 from .mode_manager import ModeManager
 from .models import PerInstrumentState
 from .proto import engine_pb2, engine_pb2_grpc
@@ -209,6 +210,8 @@ class GrpcDataEngineServer(
         self._backend_event_bus: BackendEventBus = BackendEventBus()
         # Phase 9 Step 1: secret relay vault (Tachibana second-password).
         self._secret_vault: SecretVault = SecretVault()
+        # Phase 9 Step 2: manual order execution facade (lifetime = live session).
+        self._order_facade: Optional[ManualOrderFacade] = None
 
     _KNOWN_VENUES = {"TACHIBANA", "KABU", "MOCK"}  # D26: MOCK added
     _KNOWN_CRED_SOURCES = {"prompt", "session_cache", "env", "prompt_result"}
@@ -292,6 +295,8 @@ class GrpcDataEngineServer(
         self._live_bridge = bridge
         self._live_price_cache = cache
         self._live_depth_cache = depth_cache
+        # Phase 9 Step 2: manual order facade wraps this session's adapter.
+        self._order_facade = ManualOrderFacade(adapter)
 
     def _start_live_components(self, environment_hint: Optional[str] = None):
         if self._live_runner is not None and self._live_bridge is not None:
@@ -339,6 +344,7 @@ class GrpcDataEngineServer(
             self._live_bridge = None
             self._live_price_cache = None
             self._live_depth_cache = None
+            self._order_facade = None
             # Arm clear-on-toggle: a prior lifecycle's last_error must not bleed
             # into the next Live session or stay visible after returning to Replay.
             self._suppress_live_last_error = True
@@ -1489,6 +1495,125 @@ class GrpcDataEngineServer(
                 success=False, error_code="UNKNOWN_REQUEST_ID"
             )
         return engine_pb2.SubmitSecretRes(success=True, error_code="")
+
+    # === Phase 9 Step 2: manual order execution facade ===
+
+    @staticmethod
+    def _order_event_to_proto(ev) -> "engine_pb2.OrderEvent":
+        """Convert a transport-agnostic OrderEventData → proto OrderEvent."""
+        return engine_pb2.OrderEvent(
+            order_id=ev.order_id,
+            venue_order_id=ev.venue_order_id,
+            client_order_id=ev.client_order_id,
+            status=ev.status,
+            filled_qty=ev.filled_qty,
+            avg_price=ev.avg_price,
+            ts_ms=ev.ts_ms,
+        )
+
+    def _is_live_ordering_mode(self) -> bool:
+        """Write order RPCs are allowed only in Live modes (Replay is rejected)."""
+        mode = self.mode_manager.current_mode if self.mode_manager else "Replay"
+        return mode in ("LiveManual", "LiveAuto")
+
+    def PlaceOrder(self, request, context):
+        if request.token != self.token:
+            context.abort(grpc.StatusCode.UNAUTHENTICATED, "Invalid token")
+        # Replay (or no mode_manager) is structurally rejected — never reaches venue.
+        if not self._is_live_ordering_mode():
+            return engine_pb2.PlaceOrderRes(
+                success=False, error_code="EXECUTION_MODE_PRECONDITION"
+            )
+        if self._order_facade is None:
+            return engine_pb2.PlaceOrderRes(
+                success=False, error_code="VENUE_LOGIN_REQUIRED"
+            )
+
+        # second_secret は facade に渡すが Step 2 では無視される（Step 5 で結線）。
+        # ここでログに出さない（平文 secret の漏洩面を最小化）。
+        second_secret = request.second_secret if request.HasField("second_secret") else None
+        price = request.price if request.HasField("price") else None
+
+        loop = self._ensure_live_loop()
+        try:
+            future = asyncio.run_coroutine_threadsafe(
+                self._order_facade.place(
+                    venue=request.venue,
+                    instrument_id=request.instrument_id,
+                    side=request.side,
+                    qty=request.qty,
+                    order_type=request.order_type,
+                    time_in_force=request.time_in_force,
+                    price=price,
+                    second_secret=second_secret,
+                ),
+                loop,
+            )
+            event = future.result(timeout=self._live_timeout_s)
+        except OrderFacadeError as exc:
+            return engine_pb2.PlaceOrderRes(success=False, error_code=exc.error_code)
+        except Exception as exc:
+            logging.exception("PlaceOrder failed: %s", exc)
+            return engine_pb2.PlaceOrderRes(success=False, error_code="PLACE_FAILED")
+
+        proto_ev = self._order_event_to_proto(event)
+        # Push on the backend-event stream AND echo inline in the unary response.
+        self.publish_backend_event(engine_pb2.BackendEvent(order_event=proto_ev))
+        return engine_pb2.PlaceOrderRes(success=True, error_code="", order_event=proto_ev)
+
+    def CancelOrder(self, request, context):
+        if request.token != self.token:
+            context.abort(grpc.StatusCode.UNAUTHENTICATED, "Invalid token")
+        if not self._is_live_ordering_mode():
+            return engine_pb2.CancelOrderRes(
+                success=False, error_code="EXECUTION_MODE_PRECONDITION"
+            )
+        if self._order_facade is None:
+            return engine_pb2.CancelOrderRes(
+                success=False, error_code="VENUE_LOGIN_REQUIRED"
+            )
+
+        second_secret = request.second_secret if request.HasField("second_secret") else None
+
+        loop = self._ensure_live_loop()
+        try:
+            future = asyncio.run_coroutine_threadsafe(
+                self._order_facade.cancel(
+                    venue=request.venue,
+                    order_id=request.order_id,
+                    second_secret=second_secret,
+                ),
+                loop,
+            )
+            event = future.result(timeout=self._live_timeout_s)
+        except OrderFacadeError as exc:
+            return engine_pb2.CancelOrderRes(success=False, error_code=exc.error_code)
+        except Exception as exc:
+            logging.exception("CancelOrder failed: %s", exc)
+            return engine_pb2.CancelOrderRes(success=False, error_code="CANCEL_FAILED")
+
+        proto_ev = self._order_event_to_proto(event)
+        self.publish_backend_event(engine_pb2.BackendEvent(order_event=proto_ev))
+        return engine_pb2.CancelOrderRes(success=True, error_code="", order_event=proto_ev)
+
+    def GetOrderStatus(self, request, context):
+        # 読み取り系: Replay でも reject しない（§3.2）。live session が無ければ空応答。
+        if request.token != self.token:
+            context.abort(grpc.StatusCode.UNAUTHENTICATED, "Invalid token")
+        if self._order_facade is None:
+            return engine_pb2.GetOrderStatusRes(
+                success=False, error_code="NO_LIVE_SESSION"
+            )
+        event = self._order_facade.get_status(request.order_id)
+        if event is None:
+            return engine_pb2.GetOrderStatusRes(
+                success=False, error_code="UNKNOWN_ORDER_ID"
+            )
+        return engine_pb2.GetOrderStatusRes(
+            success=True,
+            error_code="",
+            order_event=self._order_event_to_proto(event),
+        )
 
     def publish_backend_event(self, event):
         """Fan a BackendEvent out to all open SubscribeBackendEvents streams."""

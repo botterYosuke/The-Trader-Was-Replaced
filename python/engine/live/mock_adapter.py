@@ -37,6 +37,7 @@ class MockVenueAdapter:
         self._subscribed: dict[InstrumentId, set[Channel]] = {}
         self._queue: asyncio.Queue[LiveEvent] = asyncio.Queue()
         self._next_order_outcome: dict | None = None
+        self._next_cancel_outcome: dict | None = None
 
     async def login(self, creds: VenueCredentials) -> None:
         self.is_logged_in = True
@@ -190,4 +191,55 @@ class MockVenueAdapter:
             avg_price=avg_price,
             client_order_id=client_order_id,
             reject_reason=outcome["reject_reason"],
+        )
+
+    def set_next_cancel_outcome(
+        self,
+        *,
+        status: str,
+        reject_reason: str | None = None,
+    ) -> None:
+        """テスト専用: 次の cancel_order の結果を仕込む（one-shot）。
+
+        仕込み無しなら cancel_order は既定 CANCELED。status="REJECTED" 時は
+        reject_reason を載せる。consume 後は None に戻る。
+        """
+        self._next_cancel_outcome = {
+            "status": status,
+            "reject_reason": reject_reason,
+        }
+
+    async def cancel_order(
+        self,
+        *,
+        venue: str,
+        order_id: str,
+        **extra: object,
+    ) -> OrderResult:
+        """MockVenueAdapter 固有の取消（Protocol 外、submit_order と対）。
+
+        set_next_cancel_outcome の仕込みがあれば one-shot 消費し、無ければ既定
+        CANCELED。`order_id` は client_order_id を想定し、結果の client_order_id に
+        そのまま反映する。filled_qty/avg_price は venue 側の最終状態の責務であり、
+        mock は 0 / None を返す（facade 側が track 済みの約定量とマージする）。
+        """
+        self._require_login()
+
+        outcome = self._next_cancel_outcome
+        self._next_cancel_outcome = None
+
+        if outcome is not None and outcome["status"] == "REJECTED":
+            return OrderResult(
+                status="REJECTED",
+                filled_qty=0.0,
+                avg_price=None,
+                client_order_id=order_id,
+                reject_reason=outcome["reject_reason"],
+            )
+        return OrderResult(
+            status="CANCELED",
+            filled_qty=0.0,
+            avg_price=None,
+            client_order_id=order_id,
+            reject_reason=None,
         )
