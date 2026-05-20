@@ -6,6 +6,36 @@
 
 ---
 
+## 進捗 (Status)
+
+> 最終更新: 2026-05-20
+
+| Step | 内容 | 状態 |
+| --- | --- | --- |
+| 0 | Backend Event Transport (`SubscribeBackendEvents`) | ✅ 完了 — `96c7370c` + レビュー修正 `e221399e` |
+| 1 | MockVenueAdapter 発注経路 + SecretVault | ⬜ 未着手 |
+| 2 | ExecEngine 有効化 + OrderEvent stream | ⬜ 未着手 |
+| 3 | OrderPanel UI + SecretModal UI | ⬜ 未着手 |
+| 4 | Account 同期 + Panel Live 対応 | ⬜ 未着手 |
+| 5 | TachibanaExecutionClient | ⬜ 未着手 |
+| 6 | KabusapiExecutionClient | ⬜ 未着手 |
+| 7 | Venue Health Watchdog | ⬜ 未着手 |
+| 8 | Backend Auto-Restart + Idle Shutdown | ⬜ 未着手 |
+| 9 | Instruments Daily Refresh | ⬜ 未着手 |
+| 10 | Polish | ⬜ 未着手 |
+
+### Step 0 完了サマリー (2026-05-20)
+
+- **proto**: `SubscribeBackendEvents` server-streaming rpc + `BackendEvent` oneof（`secret_required` / `order_event` / `account_event` / `venue_logout_detected`、nested `AccountPosition`）
+- **Python**: `live/backend_event_bus.py` 新設 — threadsafe `BackendEventBus`（`queue.Queue` fan-out）。`servicer.publish_backend_event()` + streaming handler（token 認証、`context.add_callback(sub.close)` で RPC teardown 時に `queue.get()` を解放し ThreadPool join ハングを防止）
+- **Rust**: `trading::BackendEvent` ミラー enum + `AccountPosition` + `BackendEventChannel` resource + `backend_event_drain_system`（**現状ログ出力のみ**）。`setup_backend_connection` に再接続 subscriber タスク（独自 client・Ready-gated・connect/subscribe/stream-end の全失敗パスを 500ms backoff で self-heal）
+- **テスト**: BackendEventBus unit 6 + gRPC streaming 2（token 認証 / push 配信 / cancel 後の subscription 除去）= Python 8 passed、`backcast` bin 22 passed（レビュー修正後に再確認）。初回コミット時に Python 全体 907 passed / 11 skipped を確認済み
+- **レビュー修正** (`e221399e`): events 再接続の connect/subscribe 失敗も 500ms backoff で self-heal（永久 stall 回避）/ streaming テストの無限ハング回避（subscription 登録待ち + 5s deadline + cancel 後除去 assert）/ `BackendEventBus.subscriber_count()` 追加
+- **⚠️ 計画書ドリフト訂正**: §3.12 / §4 / §5 を実装に合わせて訂正（① `asyncio.Queue`/`LiveEventBus` → threadsafe `BackendEventBus`、② `src/backend_client.rs` → `src/main.rs`、③ Step 0 はログのみで `on_account_event`/`on_order_event` 結線は Step 4）
+- **次**: Step 1（MockVenueAdapter 発注経路 + SecretVault）
+
+---
+
 ## Goals
 
 - Live venue (Tachibana / kabuステーション) の **口座残高・保有ポジション・約定履歴** を同期し、既存 `TradingState` reducer 経由で UI に反映する
@@ -188,7 +218,7 @@ Tachibana の場合は警告不要（`CLMKabuCorrectOrder` で atomic）。
 service DataEngine {
   // 既存 RPC (Phase 8 まで)...
 
-  // Phase 9 Step 0: Backend Event Transport（発注 RPC より先に実装する）
+  // Phase 9 Step 0: Backend Event Transport（発注 RPC より先に実装する） ✅ 実装済み (96c7370c)
   // 現行 proto に streaming RPC は存在しない。この RPC を新設してから他の Phase 9 RPC を実装する
   rpc SubscribeBackendEvents(SubscribeBackendEventsReq) returns (stream BackendEvent);
   //   BackendEvent.oneof payload:
@@ -302,7 +332,7 @@ service DataEngine {
 
 - **初期ロード / 手動リフレッシュ**: `GetAccount` RPC（新設）を呼んで口座スナップショットを取得し、`PortfolioLoaded` と同じ Snapshot Reducer に流す。既存パネル描画ロジックの変更は不要
 - **差分 push**: `SubscribeBackendEvents` gRPC server-streaming を Rust 受信タスク (`tokio::task`) で購読し、`AccountEvent` / `OrderEvent` を受けるたびに既存 Snapshot Reducer の `on_account_event` / `on_order_event` ハンドラに渡す
-  - Rust 受信タスクは Step 0（新設）で `SubscribeBackendEvents` 実装と同時に追加する
+  - Rust 受信タスクは **Step 0 で実装済み**（`src/main.rs` の `setup_backend_connection` 内 → `BackendEventChannel` mpsc → `backend_event_drain_system`）。**Step 0 時点では各イベントをログ出力するのみ**で、`on_account_event` / `on_order_event` の Snapshot Reducer 結線は本ステップ (Step 4) で追加する
 - 追加実装: OrdersPanel に **右クリック → [取消] / [訂正]** コンテキストメニュー（コンテキストメニュー自体は新規実装、`bevy_egui` で簡易実装）
 
 ---
@@ -313,6 +343,7 @@ service DataEngine {
 python/engine/
 ├── live_runner.py                  # ExecEngine + RiskEngine 有効化
 ├── live/
+│   ├── backend_event_bus.py [DONE] # Step 0: SubscribeBackendEvents 用 threadsafe fan-out (queue.Queue)
 │   ├── secret_vault.py     [NEW]   # メモリのみ secret 保管、60s TTL
 │   ├── order_facade.py     [NEW]   # OrderFactory wrapper、手動発注 entry point
 │   ├── account_sync.py     [NEW]   # 30s 間隔の余力・ポジション同期
@@ -326,6 +357,8 @@ python/engine/
 └── server_grpc.py                  # PlaceOrder / CancelOrder / ModifyOrder / SubmitSecret / 口座 RPC を追加
 
 src/
+├── main.rs                         # [DONE] Step 0: backend-event subscriber tokio task (setup_backend_connection) + BackendEventChannel + backend_event_drain_system
+├── trading.rs                      # [DONE] Step 0: trading::BackendEvent ミラー enum + AccountPosition
 ├── backend_supervisor.rs           # auto-restart ロジック有効化（crash loop カウンタは Phase 8 既存）
 └── ui/
     ├── order_panel.rs      [NEW]   # LiveManual 専用、手動発注 UI（Phase 8 から繰り越し）
@@ -339,10 +372,13 @@ src/
 
 各ステップ完了時点で `cargo run` できる状態を維持する。Phase 8 と同じく、本番 venue に接続しなくても **MockVenueAdapter の発注経路** で UI → backend の往復をテストできるよう Step 1 で mock を先に拡張する。
 
-0. **Step 0 — Backend Event Transport 新設（`SubscribeBackendEvents`）**
-   - `engine.proto` に `rpc SubscribeBackendEvents` と `BackendEvent` oneof message を追加
-   - Python 側: `server_grpc.py` に server-streaming handler を追加。`LiveEventBus` から `asyncio.Queue` 経由で `BackendEvent` を yield するジェネレータで実装
-   - Rust 側: `src/backend_client.rs` に gRPC server-streaming 受信タスク (`tokio::task`) を追加。受信した `BackendEvent` を Bevy `EventWriter` に変換して既存 Snapshot Reducer に流す
+0. **Step 0 — Backend Event Transport 新設（`SubscribeBackendEvents`）** ✅ **完了** (`96c7370c` + レビュー修正 `e221399e`、2026-05-20)
+   - `engine.proto` に `rpc SubscribeBackendEvents` と `BackendEvent` oneof message を追加 ✅
+   - Python 側: `server_grpc.py` に server-streaming handler を追加 ✅
+     - **【ドリフト訂正 — 当初案: `LiveEventBus` から `asyncio.Queue` 経由】** 実装は **新設 `live/backend_event_bus.py` の `BackendEventBus`（`queue.Queue` + `threading.Lock` の threadsafe fan-out）**。gRPC servicer は sync ThreadPool（handler は `def`）で、streaming handler は worker thread でブロックし publish は別 thread から呼ばれるため、asyncio ではなく threadsafe queue が正しい（市場データ用 `LiveEventBus` とは別物）。`servicer.publish_backend_event()` + `context.add_callback(sub.close)` で RPC teardown 時に blocked な `queue.get()` を解放
+   - Rust 側: gRPC server-streaming 受信タスク (`tokio::task`) を追加 ✅
+     - **【ドリフト訂正 — 当初案: `src/backend_client.rs`（存在しない）】** 実装は **`src/main.rs` の `setup_backend_connection`** 内。独自 client + Ready-gated 再接続ループ（connect/subscribe/stream-end の全失敗パスを `events_reconnect_backoff()` で 500ms backoff self-heal）
+     - **【スコープ注記】** Step 0 では受信イベントを `BackendEventChannel`（`mpsc`）経由で `backend_event_drain_system` に渡し**ログ出力のみ**。`EventWriter` → Snapshot Reducer の結線（`on_account_event` / `on_order_event`）は **Step 3/4 に延期**（§3.12）
    - この Step が完了してから Step 1 以降に進む（`SubscribeBackendEvents` stream 前提の機能がすべてここに依存する）
 1. **Step 1 — MockVenueAdapter の発注経路 + SecretVault**
    - `MockVenueAdapter.submit_order()` を追加（成功・失敗・部分約定の各パターンを返せる）
