@@ -20,6 +20,7 @@ pub mod sidebar;
 pub mod strategy_editor;
 pub mod strategy_editor_highlight;
 pub mod strategy_editor_compose;
+pub mod strategy_editor_find;
 pub mod systems;
 pub mod window;
 
@@ -91,6 +92,11 @@ use crate::ui::strategy_editor::{
     sync_strategy_buffer_to_editor_system, undo_redo_system, update_strategy_editor_zoom_system,
 };
 use crate::ui::strategy_editor_compose::apply_highlight_layers_system;
+use crate::ui::strategy_editor_find::{
+    FindActionRequested, FindReplaceState, compute_find_match_spans_system, find_keyboard_system,
+    find_navigate_system, find_scroll_to_match_system, manage_find_panel_lifecycle_system,
+    replace_execute_system, sync_find_editors_to_state_system, update_find_count_text_system,
+};
 use crate::ui::strategy_editor_highlight::{
     compute_bracket_spans_system, compute_syntax_spans_system, init_syntect_highlighter,
 };
@@ -122,6 +128,8 @@ impl Plugin for UiPlugin {
         .init_resource::<AppHistory>()
         .init_resource::<ActiveDrag>()
         .init_resource::<PendingStrategySnapshotRestore>()
+        .init_resource::<FindReplaceState>()
+        .add_event::<FindActionRequested>()
         .init_resource::<OpenMenu>()
         .init_resource::<crate::ui::instrument_picker::InstrumentPickerState>()
         .add_event::<StrategyFileLoadRequested>()
@@ -290,6 +298,25 @@ impl Plugin for UiPlugin {
                     .after(sync_strategy_buffer_to_editor_system)
                     .before(apply_highlight_layers_system),
                 apply_highlight_layers_system,
+            ),
+        )
+        // ── Find / Replace パネル (Phase E) ──
+        // マッチ計算は composer の前 (FindMatchSpans を書く)。色付けは composer。
+        .add_systems(
+            Update,
+            (
+                find_keyboard_system.before(manage_find_panel_lifecycle_system),
+                manage_find_panel_lifecycle_system,
+                sync_find_editors_to_state_system.after(sync_strategy_buffer_to_editor_system),
+                compute_find_match_spans_system
+                    .after(sync_find_editors_to_state_system)
+                    .before(apply_highlight_layers_system),
+                find_navigate_system
+                    .after(compute_find_match_spans_system)
+                    .before(apply_highlight_layers_system),
+                find_scroll_to_match_system.after(find_navigate_system),
+                replace_execute_system,
+                update_find_count_text_system,
             ),
         );
     }

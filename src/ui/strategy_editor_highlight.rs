@@ -43,6 +43,9 @@ pub struct SpanStyle {
 }
 
 /// Find マッチ 1 件 (行 + 行内 byte range)。
+/// Clone は `FindReplaceState.matches` (ナビ用) と `FindMatchSpans.matches` (描画用) の
+/// 両方へ同じマッチ列を書き込むために必要 (compute_find_match_spans_system)。
+#[derive(Clone, Debug, PartialEq)]
 pub struct MatchSpan {
     pub line: usize,
     pub byte_range: std::ops::Range<usize>,
@@ -58,6 +61,9 @@ pub struct SyntaxSpans {
 #[derive(Component, Default)]
 pub struct FindMatchSpans {
     pub matches: Vec<MatchSpan>,
+    /// 現在マッチの index。`FindReplaceState.current` の **描画側ミラー** で、
+    /// composer はこの entity だけ見れば現在マッチを別色にできる (Resource を読まずに済む)。
+    /// nav 側 (`FindReplaceState.current`) と更新は常に lockstep。
     pub current_idx: Option<usize>,
     pub prev_match_lines: Vec<usize>,
 }
