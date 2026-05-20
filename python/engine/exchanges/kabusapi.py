@@ -6,12 +6,15 @@ import asyncio
 import logging
 import os
 import time as _time_module
+import uuid
+from dataclasses import dataclass
 from typing import AsyncIterator, Awaitable, Callable, Literal, Optional
 
 import httpx
 
+from engine.exchanges import kabusapi_orders as _orders
 from engine.exchanges import kabusapi_ws  # patch 対象を module 経由で参照
-from engine.exchanges.kabusapi_auth import check_response
+from engine.exchanges.kabusapi_auth import KabuApiError, auth_headers, check_response
 from engine.exchanges.kabusapi_register import RegisterSet
 from engine.exchanges.kabusapi_url import endpoint
 from engine.exchanges.kabusapi_ws_codec import KabuPushFrameProcessor
@@ -25,6 +28,12 @@ from engine.live.adapter import (
     TradesUpdate,
     VenueCredentials,
 )
+from engine.live.order_types import (
+    AccountPositionData,
+    AccountSnapshot,
+    OrderEventData,
+    OrderResult,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -34,6 +43,43 @@ _ENV_API_PASSWORD = "DEV_KABU_API_PASSWORD"
 _INFO_RATE_PER_SEC = 10
 _ORDER_RATE_PER_SEC = 5
 _WALLET_RATE_PER_SEC = 10
+
+# 約定確認 polling 間隔 (§3.3.2: GET /orders を 1 秒間隔)。
+_ORDERS_POLL_INTERVAL_S = 1.0
+# polling が連続失敗 (本体ログアウト / 401 / 接続断) したときの最大バックオフ秒。
+# 1Hz hot-loop と R5 流量浪費を避けるため、失敗ごとに指数的に延ばす上限。
+_POLL_MAX_BACKOFF_S = 30.0
+# 訂正 (取消→新規) で取消確定を待つ最大ポーリング回数 (×_ORDERS_POLL_INTERVAL_S)。
+_MODIFY_CANCEL_WAIT_POLLS = 10
+# 発注/取消/口座系 REST のタイムアウト (localhost なので短くて十分)。
+_ORDER_TIMEOUT = httpx.Timeout(connect=10.0, read=30.0, write=10.0, pool=5.0)
+
+
+# on_order_event(OrderEventData) -> None : GET /orders polling で検出した注文状態変化を
+# proto 化して push する transport コールバック (server_grpc が publish_backend_event に
+# 束ねて注入)。kabu は約定 PUSH を持たないため polling 由来 (§3.3.2)。
+OnOrderEvent = Callable[[OrderEventData], None]
+
+
+@dataclass
+class _KabuOrderRef:
+    """発注済み注文の追跡情報 (取消/訂正/polling・訂正の再発注で使う)。
+
+    kabu の訂正は「取消 → 新規発注」変換 (§2.2) で venue OrderId が更新されるため、
+    本 ref は **mutable** にして同一 client_order_id に新 OrderId を再マップする。
+    再発注に必要な元注文パラメータ (symbol/side/qty/price/...) を保持する。
+    """
+
+    client_order_id: str
+    order_id: str  # venue 採番の OrderId (訂正で更新される)
+    symbol: str
+    exchange: int
+    side: str
+    qty: float
+    price: float | None
+    order_type: str
+    time_in_force: str
+    account_type: int
 
 
 class _TokenBucket:
@@ -107,6 +153,27 @@ class KabuStationAdapter:
             time_source=self._time_source,
             sleep=lambda d: self._rate_limit_sleep(d),
         )
+        self._order_bucket = _TokenBucket(
+            _ORDER_RATE_PER_SEC,
+            time_source=self._time_source,
+            sleep=lambda d: self._rate_limit_sleep(d),
+        )
+        self._wallet_bucket = _TokenBucket(
+            _WALLET_RATE_PER_SEC,
+            time_source=self._time_source,
+            sleep=lambda d: self._rate_limit_sleep(d),
+        )
+        # Phase 9 Step 6: 発注経路 (set_execution_hooks で注入)。kabu は Password 不要
+        # (R3) のため secret_resolver は使わない。約定通知は GET /orders polling (§3.3.2)。
+        self._on_order_event: OnOrderEvent | None = None
+        self._orders_ref: dict[str, _KabuOrderRef] = {}  # client_order_id -> ref
+        self._order_id_to_cid: dict[str, str] = {}  # venue OrderId -> client_order_id
+        # client_order_id -> 直近 push 済み (status, filled_qty)。polling の重複 push 抑止。
+        self._last_pushed: dict[str, tuple[str, float]] = {}
+        # 訂正 (取消→新規) 進行中の client_order_id。polling が中間状態 (取消確定) を
+        # spurious な CANCELED として push / unregister するのを抑止する。
+        self._modifying: set[str] = set()
+        self._orders_poll_task: asyncio.Task | None = None
 
     @property
     def is_logged_in(self) -> bool:
@@ -122,6 +189,14 @@ class KabuStationAdapter:
         # the prior error state instead of seeing a false "healthy" snapshot.
         if self._client.is_closed:
             self._client = httpx.AsyncClient()
+        # Re-login without an intervening logout(): tear down the prior orders
+        # poll loop and order registry so stale notifications / id mappings don't
+        # bleed across sessions (Tachibana adapter と同方針)。
+        await self._stop_orders_poll()
+        self._orders_ref.clear()
+        self._order_id_to_cid.clear()
+        self._last_pushed.clear()
+        self._modifying.clear()
         source = creds.credentials_source
         if source == "session_cache":
             raise ValueError("UNSUPPORTED_FOR_VENUE: kabu does not support session_cache")
@@ -185,8 +260,15 @@ class KabuStationAdapter:
                 await self._ws_task
             except asyncio.CancelledError:
                 pass
-            except BaseException:
-                pass
+            except Exception as exc:
+                # 想定は CancelledError のみ。WS task のシャットダウン時バグは握り潰さず
+                # ログに残す (silent failure 回避)。
+                logger.warning("kabu WS task errored during logout: %s", exc)
+        await self._stop_orders_poll()
+        self._orders_ref.clear()
+        self._order_id_to_cid.clear()
+        self._last_pushed.clear()
+        self._modifying.clear()
         self._processors.clear()
         self._register_set.unregister_all()
         self._exchange_ambiguity_warned.clear()
@@ -366,3 +448,467 @@ class KabuStationAdapter:
                 if not get_task.done():
                     get_task.cancel()
                 raise
+
+    # ------------------------------------------------------------------
+    # Phase 9 Step 6: OrderingVenueAdapter — 発注 / 取消 / 訂正 / 口座
+    # kabu は Password 不要 (R3)・約定 PUSH 無し → GET /orders polling で約定通知 (§3.3.2)。
+    # ------------------------------------------------------------------
+
+    def set_execution_hooks(
+        self,
+        *,
+        secret_resolver: object = None,
+        on_order_event: OnOrderEvent,
+    ) -> None:
+        """server_grpc が OrderEvent push を注入する。
+
+        Tachibana と同じ呼び出し口だが、kabu は Password 不要 (R3) のため
+        ``secret_resolver`` は受理して無視する。約定通知は GET /orders polling 由来
+        なので、polling は最初の ``submit_order`` で遅延起動する (idle polling 回避)。
+        """
+        self._on_order_event = on_order_event
+
+    @staticmethod
+    def _rejected_result(
+        client_order_id: str, ack: "_orders.SendOrderAck"
+    ) -> OrderResult:
+        """発注エラー (Result != 0) を REJECTED な OrderResult に正規化する。"""
+        return OrderResult(
+            status="REJECTED",
+            filled_qty=0.0,
+            avg_price=None,
+            client_order_id=client_order_id,
+            reject_reason=f"{ack.reject_code}:{ack.reject_text}",
+        )
+
+    def _register_order(self, ref: _KabuOrderRef) -> None:
+        self._orders_ref[ref.client_order_id] = ref
+        self._order_id_to_cid[ref.order_id] = ref.client_order_id
+
+    def _unregister_order(self, client_order_id: str) -> None:
+        ref = self._orders_ref.pop(client_order_id, None)
+        if ref is not None:
+            self._order_id_to_cid.pop(ref.order_id, None)
+        self._last_pushed.pop(client_order_id, None)
+
+    async def _send_order(self, payload: dict[str, object]) -> "_orders.SendOrderAck":
+        """POST /sendorder を流量抑制付きで叩き、HTTP/Code + Result を判定して ack を返す。
+
+        ``_cancel_venue_order`` と対称 (どちらも SendOrderAck を返す)。
+        """
+        await self._order_bucket.acquire()
+        resp = await self._client.post(
+            endpoint("sendorder", env=self._env),
+            headers=auth_headers(self._token or ""),
+            json=payload,
+            timeout=_ORDER_TIMEOUT,
+        )
+        data = resp.json()
+        check_response(data, resp.status_code)
+        return _orders.parse_send_order_response(data)
+
+    async def _cancel_venue_order(self, order_id: str) -> "_orders.SendOrderAck":
+        """PUT /cancelorder を流量抑制付きで叩く (OrderID のみ・Password 不要、R3)。"""
+        await self._order_bucket.acquire()
+        resp = await self._client.put(
+            endpoint("cancelorder", env=self._env),
+            headers=auth_headers(self._token or ""),
+            json=_orders.build_cancel_order_payload(order_id=order_id),
+            timeout=_ORDER_TIMEOUT,
+        )
+        data = resp.json()
+        check_response(data, resp.status_code)
+        return _orders.parse_send_order_response(data)
+
+    async def submit_order(
+        self,
+        *,
+        venue: str,
+        instrument_id: InstrumentId,
+        side: str,
+        qty: float,
+        price: float | None,
+        order_type: str,
+        time_in_force: str,
+        **extra: object,
+    ) -> OrderResult:
+        """POST /sendorder で現物新規発注する (Password 不要)。
+
+        受付成立で ACCEPTED を返す。約定 (FILLED/PARTIALLY_FILLED) は GET /orders polling
+        で後追いし OrderEvent として push する。発注エラー Result != 0 は REJECTED に正規化
+        (ただし Result == -1 の異常終了は KabuApiError を上層へ伝播、§2.2)。
+        """
+        if self._token is None:
+            raise RuntimeError("submit_order requires login; call login() first")
+        symbol, exchange = self._parse_instrument_id(instrument_id)
+        payload = _orders.build_send_order_payload(
+            symbol=symbol,
+            exchange=exchange,
+            side=side,
+            qty=qty,
+            price=price,
+            order_type=order_type,
+            time_in_force=time_in_force,
+        )
+        ack = await self._send_order(payload)
+        client_order_id = uuid.uuid4().hex
+        if ack.rejected:
+            if ack.reject_code == "-1":
+                # 異常終了コード (システムエラー): トーストで明示するため上層へ伝播 (§2.2)。
+                raise KabuApiError(-1, ack.reject_text or "kabu sendorder system error")
+            return self._rejected_result(client_order_id, ack)
+        self._register_order(
+            _KabuOrderRef(
+                client_order_id=client_order_id,
+                order_id=ack.order_id,
+                symbol=symbol,
+                exchange=exchange,
+                side=side.upper(),
+                qty=qty,
+                price=price,
+                order_type=order_type.upper(),
+                time_in_force=time_in_force,
+                account_type=_orders.DEFAULT_ACCOUNT_TYPE,
+            )
+        )
+        self._ensure_orders_poll()
+        return OrderResult(
+            status="ACCEPTED", filled_qty=0.0, avg_price=None,
+            client_order_id=client_order_id,
+        )
+
+    async def cancel_order(
+        self, *, venue: str, order_id: str, **extra: object
+    ) -> OrderResult:
+        """PUT /cancelorder で取消する (OrderID のみ・Password 不要)。
+
+        取消受付成立で CANCELED を返す (確定状態は polling が後追い)。Result != 0 の
+        取消拒否は REJECTED (facade が CANCEL_REJECTED に変換し元注文は live のまま)。
+        """
+        if self._token is None:
+            raise RuntimeError("cancel_order requires login; call login() first")
+        ref = self._orders_ref.get(order_id)
+        if ref is None:
+            return OrderResult(
+                status="REJECTED", filled_qty=0.0, avg_price=None,
+                client_order_id=order_id, reject_reason="UNKNOWN_VENUE_ORDER",
+            )
+        ack = await self._cancel_venue_order(ref.order_id)
+        if ack.rejected:
+            return self._rejected_result(order_id, ack)
+        return OrderResult(
+            status="CANCELED", filled_qty=0.0, avg_price=None, client_order_id=order_id,
+        )
+
+    async def modify_order(
+        self,
+        *,
+        venue: str,
+        order_id: str,
+        new_price: float | None = None,
+        new_qty: float | None = None,
+        **extra: object,
+    ) -> OrderResult:
+        """訂正を「取消 → 新規発注」変換で実現する (kabu に訂正 API は無い、§2.2)。
+
+        atomicity は保証されない。補償結果を facade 契約に合わせて OrderResult.status で
+        表現する (proto 非変更の Step 5 方針を踏襲):
+
+        - 取消失敗 → ``REJECTED`` (facade が MODIFY_REJECTED。**元注文は live のまま**)。
+        - 取消成功 + 新規失敗 → ``CANCELED`` (facade が同一注文を CANCELED 終端化。
+          **元注文は取消済み**で新規は出ていない → UI は取消済みとして正しく表示。
+          ユーザーは再発注すればよい)。
+        - 取消確定待ちタイムアウト → ``REJECTED`` (新規は見送り。元注文の確定状態は
+          polling が後追いで反映する)。
+        - 全成功 → ``ACCEPTED`` (同一 client_order_id に新 OrderId を再マップ。polling は
+          新 OrderId を同じ注文として追跡する)。
+        """
+        if self._token is None:
+            raise RuntimeError("modify_order requires login; call login() first")
+        ref = self._orders_ref.get(order_id)
+        if ref is None:
+            return OrderResult(
+                status="REJECTED", filled_qty=0.0, avg_price=None,
+                client_order_id=order_id, reject_reason="UNKNOWN_VENUE_ORDER",
+            )
+
+        # 取消→新規の途中で background polling が「取消確定」を spurious な CANCELED
+        # として push / unregister しないよう、この注文の polling を一時抑止する。
+        self._modifying.add(order_id)
+        try:
+            # 1. 元注文を取消す。
+            cancel_ack = await self._cancel_venue_order(ref.order_id)
+            if cancel_ack.rejected:
+                return OrderResult(
+                    status="REJECTED", filled_qty=0.0, avg_price=None,
+                    client_order_id=order_id,
+                    reject_reason="MODIFY_CANCEL_FAILED:原注文は残っています",
+                )
+
+            # 2. 取消確定 (State==5) を待ち、確定時点の OrderStatusReport を得る。確認でき
+            #    なければ新規は見送る (二重発注回避)。
+            terminal = await self._await_order_terminal(
+                ref.order_id, max_polls=_MODIFY_CANCEL_WAIT_POLLS
+            )
+            if terminal is None:
+                return OrderResult(
+                    status="REJECTED", filled_qty=0.0, avg_price=None,
+                    client_order_id=order_id,
+                    reject_reason="MODIFY_CANCEL_TIMEOUT:取消の確定を確認できませんでした",
+                )
+
+            # 3. 取消が成立するまでに約定した数量を差し引いた「残数量」だけ再発注する。
+            #    取消は約定に勝てないことがあり (部分約定して残りが取消)、原数量をそのまま
+            #    再発注すると約定済み分と二重建玉になる (over-fill = 実弾の発注事故、§2.2)。
+            already_filled = terminal.filled_qty
+            target_qty = new_qty if new_qty is not None else ref.qty
+            merged_qty = target_qty - already_filled
+            merged_price = new_price if new_price is not None else ref.price
+            if merged_qty <= 0:
+                # 取消確定までに目標数量を満たして約定済み → 再発注しない。同一
+                # client_order_id を原注文の終端状態 (FILLED / CANCELED) で終端化する。
+                self._unregister_order(order_id)
+                return OrderResult(
+                    status=terminal.status,
+                    filled_qty=already_filled,
+                    avg_price=terminal.avg_price if already_filled > 0 else None,
+                    client_order_id=order_id,
+                    reject_reason=(
+                        None if terminal.status == "FILLED"
+                        else "MODIFY_ALREADY_FILLED:原注文が目標数量まで約定済みのため再発注しません"
+                    ),
+                )
+            new_payload = _orders.build_send_order_payload(
+                symbol=ref.symbol,
+                exchange=ref.exchange,
+                side=ref.side,
+                qty=merged_qty,
+                price=merged_price,
+                order_type=ref.order_type,
+                time_in_force=ref.time_in_force,
+                account_type=ref.account_type,
+            )
+            new_ack = await self._send_order(new_payload)
+            if new_ack.rejected:
+                if new_ack.reject_code == "-1":
+                    # 再発注の異常終了 (システムエラー、§2.2): 新規注文の状態が不定なので
+                    # KabuApiError を上層へ伝播しトーストで明示する。原注文は取消済みだが
+                    # unregister せず、polling が CANCELED として後追い反映する。
+                    raise KabuApiError(
+                        -1, new_ack.reject_text or "kabu sendorder system error"
+                    )
+                # 取消成功 + 新規業務リジェクト: 元注文は取消済み。同一 client_order_id を
+                # CANCELED 終端化する。
+                self._unregister_order(order_id)
+                return OrderResult(
+                    status="CANCELED", filled_qty=0.0, avg_price=None,
+                    client_order_id=order_id,
+                    reject_reason="MODIFY_NEW_FAILED:原注文は取消済みです。再発注してください",
+                )
+
+            # 4. 全成功: 同一 client_order_id に新 OrderId を再マップする。新しい原数量は
+            #    再発注した残数量 (merged_qty)。次回 modify はこの値を基準に差し引く。
+            self._order_id_to_cid.pop(ref.order_id, None)
+            self._last_pushed.pop(order_id, None)
+            ref.order_id = new_ack.order_id
+            ref.qty = merged_qty
+            ref.price = merged_price
+            self._order_id_to_cid[new_ack.order_id] = order_id
+            return OrderResult(
+                status="ACCEPTED", filled_qty=0.0, avg_price=None, client_order_id=order_id,
+            )
+        finally:
+            self._modifying.discard(order_id)
+
+    async def _fetch_wallet_cash(self) -> dict:
+        await self._wallet_bucket.acquire()
+        resp = await self._client.get(
+            endpoint("wallet/cash", env=self._env),
+            headers=auth_headers(self._token or ""),
+            timeout=_ORDER_TIMEOUT,
+        )
+        data = resp.json()
+        check_response(data, resp.status_code)
+        return data
+
+    async def _fetch_positions(self) -> list:
+        await self._info_bucket.acquire()
+        resp = await self._client.get(
+            endpoint("positions", env=self._env),
+            headers=auth_headers(self._token or ""),
+            params={"product": 1, "addinfo": "true"},  # 現物のみ + 評価損益を含める
+            timeout=_ORDER_TIMEOUT,
+        )
+        data = resp.json()
+        check_response(data, resp.status_code)
+        return data
+
+    async def fetch_account(self) -> AccountSnapshot:
+        """GET /wallet/cash (現物買付余力) + GET /positions (現物保有) で口座同期。
+
+        2 本は独立で別 bucket (wallet 10/s・info 10/s) を引くため並行取得する
+        (同期リフレッシュのレイテンシを半減。httpx.AsyncClient は並行安全)。
+        """
+        if self._token is None:
+            raise RuntimeError("fetch_account requires login; call login() first")
+        cash_data, pos_data = await asyncio.gather(
+            self._fetch_wallet_cash(), self._fetch_positions()
+        )
+        # 現物口座は買付可能額 ≈ 利用可能現金。預り金専用 API は本 Step では使わない
+        # (Tachibana fetch_account と同方針)。
+        buying_power = _orders.parse_float(
+            cash_data.get("StockAccountWallet") if isinstance(cash_data, dict) else 0
+        )
+        rows = pos_data if isinstance(pos_data, list) else []
+        positions = tuple(
+            AccountPositionData(
+                symbol=str(p.get("Symbol", "")),
+                qty=int(_orders.parse_float(p.get("LeavesQty"))),
+                avg_price=_orders.parse_float(p.get("Price")),
+                unrealized_pnl=_orders.parse_float(p.get("ProfitLoss")),
+            )
+            for p in rows
+            if isinstance(p, dict)
+            and _orders.parse_float(p.get("LeavesQty")) > 0  # 保有数量ゼロは除外
+        )
+        return AccountSnapshot(
+            cash=buying_power, buying_power=buying_power, positions=positions
+        )
+
+    # ------------------------------------------------------------------
+    # 約定確認 polling (GET /orders を 1 秒間隔、§3.3.2)
+    # ------------------------------------------------------------------
+
+    def _ensure_orders_poll(self) -> None:
+        """OrderEvent push が設定済みなら polling task を 1 本起動する (idempotent)。"""
+        if self._on_order_event is None:
+            return
+        if self._orders_poll_task is not None and not self._orders_poll_task.done():
+            return
+        self._orders_poll_task = asyncio.create_task(self._run_orders_poll())
+
+    async def _stop_orders_poll(self) -> None:
+        task = self._orders_poll_task
+        if task is not None and not task.done():
+            task.cancel()
+            try:
+                await task
+            except asyncio.CancelledError:
+                pass
+            except Exception as exc:
+                # 想定は CancelledError のみ。それ以外は polling task のシャットダウン時
+                # バグなので握り潰さずログに残す (silent failure 回避)。
+                logger.warning(
+                    "kabu orders poll task errored during stop: %s", exc
+                )
+        self._orders_poll_task = None
+
+    async def _run_orders_poll(self) -> None:
+        """1 秒間隔で GET /orders を叩き、状態変化を OrderEvent に変換して push する。
+
+        全注文が終端化して追跡対象がなくなったら自己終了する (idle な 1 秒ループを
+        畳む)。次の ``submit_order`` が ``_ensure_orders_poll`` で再起動する。
+
+        連続失敗時 (本体ログアウト / 401 / 接続断) は指数バックオフで間隔を延ばし、
+        1Hz hot-loop と R5 流量浪費を避ける。成功で間隔は通常の 1 秒へ戻す。
+        """
+        backoff_s = 0.0
+        while True:
+            # 全注文終端で追跡対象が空 → idle ループを畳む。sleep の前に判定するので
+            # backoff が伸びている最中に空になっても即終了する (task lingering 回避)。
+            if not self._orders_ref:
+                return
+            try:
+                await self._rate_limit_sleep(backoff_s or _ORDERS_POLL_INTERVAL_S)
+            except asyncio.CancelledError:
+                return
+            try:
+                await self._poll_orders_once()
+                backoff_s = 0.0
+            except asyncio.CancelledError:
+                raise
+            except BaseException as exc:  # noqa: BLE001 — best-effort: 1 回失敗で停止させない
+                self._last_error = exc
+                backoff_s = min(
+                    (backoff_s or _ORDERS_POLL_INTERVAL_S) * 2, _POLL_MAX_BACKOFF_S
+                )
+                logger.warning(
+                    "kabu orders poll failed, backing off %.0fs: %s", backoff_s, exc
+                )
+
+    async def _poll_orders_once(self) -> None:
+        """GET /orders を 1 回叩き、追跡中注文の状態変化のみ push する。"""
+        if self._token is None or self._on_order_event is None or not self._orders_ref:
+            return
+        await self._info_bucket.acquire()
+        resp = await self._client.get(
+            endpoint("orders", env=self._env),
+            headers=auth_headers(self._token or ""),
+            params={"product": 1},  # 現物のみ
+            timeout=_ORDER_TIMEOUT,
+        )
+        data = resp.json()
+        check_response(data, resp.status_code)
+        for order in data if isinstance(data, list) else []:
+            if not isinstance(order, dict):
+                continue
+            # 安価な ID 照合を先に行い、未追跡注文・訂正進行中の注文を parse 前に弾く。
+            # GET /orders は口座の全注文を返すので、自分が出した注文だけ高コストな
+            # parse_order_status (Details 走査・約定平均・時刻変換) を通す。
+            cid = self._order_id_to_cid.get(str(order.get("ID", "")))
+            if cid is None or cid in self._modifying:
+                continue
+            report = _orders.parse_order_status(order)
+            if report is None:
+                continue
+            key = (report.status, report.filled_qty)
+            if self._last_pushed.get(cid) == key:
+                continue  # 状態・約定量に変化なし
+            self._last_pushed[cid] = key
+            ts_ms = report.ts_ms or int(_time_module.time() * 1000)
+            self._on_order_event(
+                OrderEventData(
+                    order_id=cid,
+                    venue_order_id=report.order_id,
+                    client_order_id=cid,
+                    status=report.status,
+                    filled_qty=report.filled_qty,
+                    avg_price=report.avg_price,
+                    ts_ms=ts_ms,
+                )
+            )
+            # 終端注文は以降ポーリング不要 — レジストリから外して poll を軽量に保つ
+            # (全注文が終端化すれば _poll_orders_once は HTTP を叩かず即 return)。
+            if report.terminal:
+                self._unregister_order(cid)
+
+    async def _await_order_terminal(
+        self, order_id: str, *, max_polls: int
+    ) -> "_orders.OrderStatusReport | None":
+        """GET /orders?id=... を polling し、対象注文が終端 (State==5) になったら、その
+        確定時点の ``OrderStatusReport`` を返す。確認できなければ ``None``。
+
+        返り値の ``filled_qty`` を訂正 (取消→新規) の残数量算出に使うため bool ではなく
+        report を返す (full-qty 再発注による over-fill 回避、§2.2)。
+        """
+        for i in range(max_polls):
+            await self._info_bucket.acquire()
+            resp = await self._client.get(
+                endpoint("orders", env=self._env),
+                headers=auth_headers(self._token or ""),
+                params={"product": 1, "id": order_id},
+                timeout=_ORDER_TIMEOUT,
+            )
+            data = resp.json()
+            check_response(data, resp.status_code)
+            # /orders は配列が正だが、単一 dict 応答も防御的に受ける (空応答は [] 扱い)。
+            rows = data if isinstance(data, list) else [data] if isinstance(data, dict) else []
+            for order in rows:
+                if not isinstance(order, dict):
+                    continue
+                report = _orders.parse_order_status(order)
+                if report is not None and report.order_id == order_id and report.terminal:
+                    return report
+            if i < max_polls - 1:
+                await self._rate_limit_sleep(_ORDERS_POLL_INTERVAL_S)
+        return None

@@ -311,7 +311,8 @@ class GrpcDataEngineServer(
         # adapter に注入する。SecondSecretResolver が SecretVault と SecretRequired
         # push (transport) を束ね、adapter.submit/cancel/modify_order の内側で
         # `await resolve()` する (facade は second_secret を終端し続ける = 単一経路)。
-        # set_execution_hooks を持たない adapter (mock / kabu) では何もしない。
+        # kabu は Password 不要なので secret_resolver を受理して無視する (約定通知は
+        # GET /orders polling 由来)。hooks 未実装の adapter (mock) では何もしない。
         if hasattr(adapter, "set_execution_hooks"):
             resolver = SecondSecretResolver(
                 self._secret_vault, self._publish_secret_required

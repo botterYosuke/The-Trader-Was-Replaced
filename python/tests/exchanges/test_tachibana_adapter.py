@@ -895,8 +895,10 @@ async def test_subscribe_builds_event_ws_url_with_expected_params(
     assert "p_issue_code=7203" in url
     assert "p_mkt_code=00" in url
     assert "p_eno=0" in url
-    # "," is percent-encoded as %2C by build_event_url
-    assert "p_evt_cmd=ST%2CKP%2CFD" in url
+    # Commas stay RAW: the live server does not percent-decode EVENT params, so
+    # %2C silently drops the FD subscription (e-station bug-postmortem 2026-05-01).
+    assert "p_evt_cmd=ST,KP,FD" in url
+    assert "%2C" not in url
 
 
 # ---------------------------------------------------------------------------

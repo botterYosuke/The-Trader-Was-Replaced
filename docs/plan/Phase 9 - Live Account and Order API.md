@@ -18,7 +18,7 @@
 | 3 | OrderPanel UI + SecretModal UI | ✅ 完了 (2026-05-20、未コミット) |
 | 4 | Account 同期 + Panel Live 対応 | ✅ 完了 (2026-05-21、未コミット) — account_sync + AccountEvent push + ModifyOrder(配線まで) + OrdersPanel 右クリックメニュー |
 | 5 | TachibanaExecutionClient | ✅ 完了 (2026-05-21、未コミット) — CLMKabuNewOrder/Correct/Cancel + 第二暗証番号都度収集 + EC→OrderEvent。**EC 情報コードは e-station 参照実装で確定**。残課題: 口座レベル EC 購読 URL 構成 + `build_event_url` の comma %2C 問題（要 Demo 検証） |
-| 6 | KabusapiExecutionClient | ⬜ 未着手 |
+| 6 | KabusapiExecutionClient | ✅ 完了 (2026-05-21、未コミット) — POST /sendorder + PUT /cancelorder + 訂正=取消→新規変換(補償) + GET /orders 1s polling→OrderEvent + fetch_account。**proto / Rust 変更ゼロ**。残課題: 実 verify 環境 smoke (§5.1 layer-3) + AccountType の config 化 |
 | 7 | Venue Health Watchdog | ⬜ 未着手 |
 | 8 | Backend Auto-Restart + Idle Shutdown | ⬜ 未着手 |
 | 9 | Instruments Daily Refresh | ⬜ 未着手 |
@@ -163,6 +163,52 @@
 - **残る未確定（2 点、要 Demo 検証 = §5.1 layer-3）**: ① **口座レベル EC 購読 URL の構成** — EC は口座スコープだが、e-station は EC を per-ticker FD 接続に相乗りさせる設計（本実装は専用の issue 非依存接続）。issue/行番号パラメータ無しの接続が有効かは未検証。② **`build_event_url` の comma エンコード問題** — 本実装の `build_event_url` は `,`→`%2C` するが、e-station `build_ws_url` は「サーバが `%2C` を認識しない」として **raw comma** を送る（docstring 明記）。これは EC URL だけでなく **Phase 8 の FD 購読 URL（`p_evt_cmd=ST%2CKP%2CFD`）にも影響しうる潜在バグ**。Demo で実フレーム受信を確認する際に両方を検証する。送信側（CLMKabu*）と secret 経路は確定。
 - **§5.1 layer-3（実 Demo smoke）は未実施**: credential 未供給・実発注を伴うため。CI/mock の layer-1/2（決定論・人間 0）で網羅。EC 受信の URL 構成のみ Demo 確認が残る。
 - **self-review (simplify)**: 3 並行レビューで検出した correctness 2 件（再 login での EC/レジストリ leak、EC 全件再送の重複 push）を修正。REJECTED OrderResult の 3 重コピペを `_rejected_result` に集約、`_to_float`/`parse_float` の重複を `tachibana_orders.parse_float` に統合。per-call httpx client（fetch_instruments と同型）・dict eviction（facade の no-evict 既決と整合）・専用 thread pool（1 注文ずつの手動 UX 前提）は据え置き判断。
+
+### Step 6 完了サマリー (2026-05-21)
+
+> **状態**: ✅ **完了**（Python のみ・**proto / Rust 変更ゼロ**、2026-05-21、未コミット）。Python `-m "not slow"` **1094 passed / 11 skipped / 4 failed**（4 失敗はすべて pre-existing Windows pipe FD baseline = `test_grpc_shutdown`×3 / `test_grpc_startup_sentinel`×1。本 Step 由来の新規失敗 0）。新規テスト 51（kabusapi_orders 純粋関数 31 + kabusapi_exec adapter 20）。
+
+- **アーキ判断（proto / Rust 変更ゼロ）**: Step 5（Tachibana）と同じく additive proto 変更は不要と判断。理由: ① kabu の取消/訂正は venue 採番 `OrderId` のみで成立し、`client_order_id → _KabuOrderRef`（venue OrderId + 元注文パラメータ）を **adapter 内部レジストリ**で保持して facade 契約（client_order_id のみ）のまま動く。② 約定通知は GET /orders polling 由来で `OrderEvent`（既存）に詰める。③ kabu は Password 不要（R3）なので SecretVault / SecretRequired 経路を一切使わない。`set_execution_hooks(secret_resolver=..., on_order_event=...)` は Tachibana と同じ呼び出し口を維持し（server_grpc 無改修）、kabu 実装は `secret_resolver` を受理して無視する。
+- **`exchanges/kabusapi_orders.py` [NEW]**: 純粋関数。`build_send_order_payload`（現物 CashMargin=1・買=DelivType2/FundType"AA"・売=DelivType0/FundType"  "・MARKET→Price=0・**Password フィールド無し**）/ `build_cancel_order_payload`（`{"OrderID":...}` のみ）/ `front_order_type`（order_type×TIF→FrontOrderType: 成行10/指値20/寄成13/寄指21/引成16/引指24。OPENING=前場寄・CLOSING=後場引の MVP 解釈）/ `parse_send_order_response`（**Result フィールド = 発注エラーの二段目判定**。HTTP/Code は呼び出し側 check_response 担当、§2.2 / R7）/ `parse_order_status`（GET /orders の State+CumQty+Details RecType から Nautilus OrderStatus 導出。約定明細から数量加重平均価格を算出）。
+- **`exchanges/kabusapi.py` `KabuStationAdapter`**: `OrderingVenueAdapter` 化。`submit_order`（POST /sendorder→ACCEPTED、Result≠0 は REJECTED、**Result=-1 異常終了は KabuApiError 伝播**、§2.2）/ `cancel_order`（PUT /cancelorder、OrderID のみ）/ `modify_order`（**取消→確定待ち→新規発注**の補償シーケンス。kabu に訂正 API 無し §2.2）/ `fetch_account`（GET /wallet/cash の `StockAccountWallet`=buying_power[cash も proxy]・GET /positions?product=1&addinfo=true の `LeavesQty`/`Price`/`ProfitLoss`→positions）。`set_execution_hooks` で OrderEvent push を結線、**最初の submit で GET /orders 1s polling task を遅延起動**（idle polling 回避）。流量は R5 token-bucket（発注5/余力10/情報10）。
+- **訂正（取消→新規変換）の補償を facade 契約で表現**（proto 非変更の制約下、Step 5 方針踏襲）: 取消失敗→`REJECTED`（元注文 live のまま）/ 取消成功+新規失敗→`CANCELED`（同一 client_order_id を CANCELED 終端化＝UI に「原注文取消済・要再発注」を正しく反映）/ 取消確定待ちタイムアウト→`REJECTED`（新規見送り・polling が後追い）/ 全成功→`ACCEPTED`（**同一 client_order_id に新 OrderId を再マップ**＝Tachibana atomic と同じ in-place モデル）。kabu 警告バナー＋同意ゲートは Step 4 `modify_modal` で実装済み（`venue_capabilities` の `supports_order_correction==false`）。
+- **self-review (simplify) で検出・修正した correctness 1 件**: 訂正の取消→新規の隙間（asyncio await 点）で **background polling が「取消確定」を spurious な CANCELED として push / unregister する race**。`_modifying` set で当該 client_order_id の polling を一時抑止して解消（回帰テスト `test_poll_suppressed_while_modifying`）。併せて終端注文を push 後に registry から外す最適化（`test_poll_unregisters_terminal_order`、全注文終端化で polling が HTTP を叩かなくなる）を追加。REJECTED 正規化は `_rejected_result` に集約（Tachibana と同型）。
+- **残課題 / forward-compat**: ① **AccountType（一般2/特定4/法人12）は MVP 既定 = 特定(4) 定数**。kabu は login 応答に口座種別を載せない（Tachibana の sZyoutoekiKazeiC のような流用元が無い）ため。一般/法人運用が要るときは venue_params 経路で上書き（Step 4/5 handoff「venue 固有発注パラメータ」）。② **§5.1 layer-3（実 verify 環境 smoke）は未実施**（kabuステーション本体 = Windows GUI 必須・CI 不可、R1/S1）。CI/mock の httpx-mock 層（決定論・人間 0）で発注/取消/訂正/口座/polling の不変条件を網羅。③ 逆指値・信用・先物 OP・OCO は Phase 9 非対象。
+
+#### レビュー反映 (2026-05-21, ラウンド 1) — 3 並行レビュー (kabu spec+silent-failure / tachibana+asyncio / type-design+plan) の Medium 以上を全消化
+
+並行レビューで検出した HIGH 1 + MEDIUM 8 を修正（全テスト緑、exchanges+live 671 passed / 2 skipped、新規回帰テスト +15）:
+
+- **[HIGH] 訂正 (取消→新規) が部分約定後に full qty を再発注して over-fill**（`kabusapi.py` modify_order）— 取消は約定に勝てないことがあり（40/100 約定して残り 60 が取消）、原数量 100 をそのまま再発注すると約定済み 40 と二重建玉になり**最大 140 株の実弾発注事故**になっていた。`_await_order_terminal` を `bool`→`OrderStatusReport | None` に変更し、確定時点の `filled_qty` を取得。`merged_qty = (new_qty or ref.qty) - already_filled` で残数量のみ再発注、`merged_qty<=0`（目標数量まで約定済み）は再発注せず終端状態（FILLED/CANCELED）を返す。新原数量 `ref.qty=merged_qty`。回帰: `test_modify_after_partial_fill_resubmits_only_remainder` / `test_modify_when_already_filled_to_target_skips_resubmit`。
+- **[MEDIUM] 再発注の `Result=-1`（システムエラー）が握り潰され CANCELED に丸められていた** — `submit_order` は `-1` を `KabuApiError` 伝播するのに modify 内の再発注脚だけ素通りだった（§2.2 不整合）。再発注 `new_ack.reject_code=="-1"` で `KabuApiError` 伝播（原注文は取消済みなので unregister せず polling に CANCELED 後追いさせる）。回帰: `test_modify_resubmit_system_error_propagates`。
+- **[MEDIUM] 部分約定→失効の終端が CANCELED に誤分類**（`kabusapi_orders.order_status`）— `cum_qty>0 && State==5` を無条件 CANCELED にし Details を見ていなかった。`_terminal_remainder_status(details)` を新設（残りが失効/期限切れ RecType 3/7→EXPIRED、取消 6 を含むその他→CANCELED、取消優先）。`_confirmed_rectypes` を共通化。回帰: `test_order_status_partial_then_expired_is_expired` / `..._canceled_via_details`。
+- **[MEDIUM] `parse_order_status` の欠損/範囲外 State が 0→ACCEPTED に化け masking**（終端検知漏れ→レジストリ leak＋無限 polling）— `state not in {1..5}` は行をスキップ（debug ログ）。回帰: `test_parse_order_status_invalid_state_returns_none` / `..._missing_state_returns_none`。
+- **[MEDIUM] orders polling が認証断で 1Hz hot-loop**（`_run_orders_poll`）— 連続失敗を指数バックオフ（初回 1s→2/4/…上限 `_POLL_MAX_BACKOFF_S=30s`）、成功で 1s に復帰。`last_error` 記録は維持。回帰: `test_poll_loop_backs_off_on_repeated_failure`。**注**: `4001007/4001017` の `VenueLogoutDetected` 連動は Step 7 (Watchdog) の責務（本 Step はバックオフのみ）。
+- **[MEDIUM] `logout` / `_stop_orders_poll` が task 例外を `BaseException: pass` で全握り潰し** — `CancelledError` のみ pass、それ以外は `logger.warning`（shutdown 時バグの可視化）。
+- **[MEDIUM] `build_event_url` の値 allowlist `[A-Za-z0-9,]*` が空/退化値を黙認**（`tachibana_url.py`）— `""`/`","`/`"ST,,KP"` は「何も購読しない」silent failure になり、raw-comma 境界の趣旨に反する。`[A-Za-z0-9]+(?:,[A-Za-z0-9]+)*`（非空トークンのカンマ連結）に厳格化。回帰: `test_build_event_url_rejects_degenerate_evt_cmd` / `..._accepts_valid_token_lists`。
+- **[MEDIUM] `server_grpc.py` のコメントが「kabu は set_execution_hooks 無し」と誤記**（実際は実装あり・OrderEvent push が稼働）— 保守者を誤誘導するため訂正（mock のみ hooks 無し）。
+- **[MEDIUM/plan] §1.2 と Step 6 の in-place remap の不整合を解消（下記）。** review H2（cancel 応答は fill-blind だが polling が CumQty を補正）は設計どおりで、回帰 `test_cancel_then_poll_reconciles_partial_fill` で「cancel→poll が真の約定量を後追い反映」を固定。
+- **LOW（対応不要・記録のみ）**: `int(qty)` 切り捨て（OrderPanel が呼値・売買単位の倍数を検証済み）/ `front_order_type` の OPENING/CLOSING MVP 解釈（DAY 以外の実運用前に OpenAPI 再確認）/ diagnostic の private `_env` reach-in（コンストラクタで `environment="demo"` をハードコードしておりフェイルクローズ）。
+
+**§1.2 / Step 4 申し送りとの整合（plan-fidelity 訂正）**: §1.2 は「kabu 訂正は元注文 CANCELED 終端＋**別** client_order_id で新規」を規定し、Step 4 申し送りは「in-place remap は Tachibana atomic 専用」と書いていた。Step 6 は **proto 非変更の制約下で同一 client_order_id の in-place remap を意図的に採用**（`new_client_order_id` proto field 追加を回避）。当初この in-place モデルは「部分約定分の帰属が壊れる」懸念があったが、上記 HIGH 修正（残数量のみ再発注）により **新 OrderId が運ぶのは未約定の残数量だけ**になり over-fill が解消、約定済み分は polling が元 client_order_id の OrderEvent として別途反映する。よって §1.2 の「別 client_order_id」要件は **Step 6 では in-place remap ＋残数量再発注で代替する**ことをここで明記し、ドリフトを解消する（proto に `new_client_order_id` を足す案は将来 Phase 10 で algo 発注を入れる際に再検討）。
+
+#### レビュー反映 (2026-05-21, ラウンド 2) — fix 由来の silent failure 再走（silent-failure-hunter）
+
+ラウンド 1 fix が新たな握り潰し/不整合を生んでいないか再レビュー。CRITICAL/HIGH 0、検出 MEDIUM 2（いずれも edge / コメント精度、happy-path・回帰テストには非該当）を消化。コア fix（残数量再発注 / `-1` 伝播 / `finally` での `_modifying` 解除 / backoff の cap・reset / except 限定 / regex 厳格化）は clean と確認:
+
+- **[MEDIUM] `parse_order_status` の None ガードのコメントが過剰主張** — 「レジストリ leak + 無限 polling を防ぐ」と書いたが、None を返しても *恒久的に* 解釈不能な行は unregister されず leak は残る（ただし kabu State は OpenAPI 上 1-5 のみなので実発生しない）。コメントを実態に合わせて訂正（誤 ACCEPTED 回避が目的・一時異常は次回 poll で解消、と明記）。挙動変更なし。
+- **[MEDIUM] `_run_orders_poll` の自己終了判定が sleep の後** — backoff が伸びた状態（最大 30s）で全注文終端になると、空判定まで最大 1 backoff 分 task が居残る。`if not self._orders_ref: return` を**ループ先頭（sleep 前）へ移動**して即終了化（`_poll_orders_once` 自体も空ガードを持つので余計な HTTP は出ない）。回帰テスト（`test_poll_loop_self_terminates_when_no_orders` / `test_poll_loop_backs_off_on_repeated_failure`）は緑のまま。
+- **収束**: exchanges+live **671 passed / 2 skipped**、全体 `-m "not slow"` **1111 passed / 11 skipped / 4 failed**（4 失敗は既知 baseline = Windows pipe FD `test_grpc_shutdown`×3 / `test_grpc_startup_sentinel`×1、本作業と無関係）。MEDIUM 以上ゼロで収束。
+
+#### simplify パス (2026-05-21) — reuse / quality / efficiency 3 並行レビューの polish
+
+MEDIUM 以上収束後の品質パス。検出のうち効果のあるもののみ反映（exchanges+live+secret **675 passed / 2 skipped**）:
+
+- **[efficiency] `_poll_orders_once` が口座の全注文を毎 tick parse** → 安価な `ID` 照合を先に行い未追跡注文を `parse_order_status`（Details 走査・約定平均・時刻変換）の前に弾く。per-tick コストを O(口座注文数)→O(追跡注文数) に。
+- **[quality] leaky: adapter が private `_orders._DEFAULT_ACCOUNT_TYPE` を跨いで参照** → public `DEFAULT_ACCOUNT_TYPE` に改名。
+- **[efficiency] `_modifying` が login/logout で未クリア**（他レジストリは clear 済み）→ 対称性・防御のため両所に `clear()` 追加。
+- **[quality] `server_grpc.py` の hooks コメントが venue roster を列挙して腐りやすい** → load-bearing な WHY（kabu は secret 不要で resolver を無視・mock は hooks 無し）のみ残して整理。
+- **据え置き判断**: ① 6 箇所の GET/POST/PUT boilerplate を `_api` ヘルパーに集約する案は、quality reviewer が「verb/bucket/payload が異なり parameter sprawl・GET/PUT 意図が埋もれる」と判断（reuse reviewer と意見相違）、収束後の 6 メソッド改修リスクに見合わないため見送り。② `parse_float` / JST 時刻変換の kabu↔Tachibana 重複は sentinel 仕様差による意図的並行で非共有。③ `fetch_account` は既に `asyncio.gather`（wallet/info 別 bucket）で並行取得済み・`_last_pushed` dedup キー `(status, filled_qty)` は約定が動けば filled_qty も動くため avg_price 無視で正。
 
 ---
 
