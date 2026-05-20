@@ -2,6 +2,7 @@ pub mod buying_power;
 pub mod chart_axes;
 pub mod chart_crosshair;
 pub mod chart_interaction;
+pub mod chart_ladder_pane;
 pub mod chart_render;
 pub mod chart_viewstate;
 pub mod chart_volume;
@@ -42,7 +43,11 @@ use crate::ui::chart_crosshair::{
     chart_crosshair_derive_system, chart_crosshair_render_system, crosshair_badge_system,
     install_chart_crosshair_observer,
 };
-use crate::ui::chart_interaction::{chart_scroll_zoom_system, install_chart_drag_observer};
+use crate::ui::chart_interaction::{
+    ChartClickState, chart_click_state_cleanup_system, chart_scroll_zoom_system,
+    install_chart_autoscale_reset_observer, install_chart_drag_observer,
+};
+use crate::ui::chart_ladder_pane::{chart_ladder_mode_sync_system, ladder_render_system};
 use crate::ui::chart_render::chart_main_render_system;
 use crate::ui::chart_volume::volume_render_system;
 use crate::ui::chart_viewstate::{
@@ -156,6 +161,8 @@ impl Plugin for UiPlugin {
         // ⚠️ 必須: chart_data_tick_system が EventWriter<RequestAutoscale> を取るので
         //    Events リソースが要る。未登録だと初回取得で panic する。
         .add_event::<RequestAutoscale>()
+        // Phase E: double-click reset observer が per-chart クリック状態を持つ。
+        .init_resource::<ChartClickState>()
         .configure_sets(
             Update,
             (
@@ -237,6 +244,11 @@ impl Plugin for UiPlugin {
                 // Phase C: pan/zoom。observer 設置は schedule 外発火なので set 無し。
                 // scroll zoom は cursor 補正で最新 base_price_y を読むので Interaction (after Autoscale)。
                 install_chart_drag_observer,
+                // Phase E: double-click で pan/zoom リセット + autoscale 再有効化。observer 設置は
+                // schedule 外発火なので set 無し。
+                install_chart_autoscale_reset_observer,
+                // despawn された chart の ChartClickState エントリを掃除 (entity key leak 防止)。
+                chart_click_state_cleanup_system,
                 chart_scroll_zoom_system.in_set(ChartSet::Interaction),
                 chart_main_render_system.in_set(ChartSet::Render),
                 // Phase E: volume サブペイン。immediate-mode 純 draw (Changed gate しない)。
@@ -263,6 +275,20 @@ impl Plugin for UiPlugin {
                     .in_set(ChartSet::Render)
                     .after(chart_crosshair_derive_system)
                     .after(instrument_chart_sync_system),
+            ),
+        )
+        // ── Chart (Phase 7.3 F): Live モード複合ウィンドウ (ローソク足＋Ladder) ──
+        .add_systems(
+            Update,
+            (
+                // ExecutionMode 変化 / Added<WindowRoot> で Ladder spawn/despawn + 枠リサイズ + chart 左シフト。
+                // ⚠️ instrument_chart_sync_system の後: prune→sync で despawn される frame に
+                //    despawn 済 content_area へ set_parent すると panic する (Caveat #26 と同根)。
+                chart_ladder_mode_sync_system
+                    .after(crate::trading::backend_update_system)
+                    .after(instrument_chart_sync_system),
+                // per-instrument depth → 行生成。mode_sync の後 (新規 pane が flush 済みになってから読む)。
+                ladder_render_system.after(chart_ladder_mode_sync_system),
             ),
         )
         .add_systems(

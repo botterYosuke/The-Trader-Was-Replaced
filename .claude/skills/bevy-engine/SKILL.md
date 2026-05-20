@@ -170,6 +170,17 @@ world-space ハンドラ（chart pan 等）は冒頭で `if drag.event().button 
 （`pancam_suppression_over_editor_system` が右/中ドラッグ中は PanCam を強制 enable する設計と衝突する）。
 `chart_interaction.rs::install_chart_drag_observer` が実例。`PointerButton` は `bevy::prelude` 経由で引ける。
 
+⚠️ **`Pointer<Click>` は drag 完了 (pointer up) 後にも発火する**（`bevy_picking-0.15.1` の
+`pointer_events`：down→up が同 entity なら drag の有無に関わらず Click を送る）。**ドラッグ可能な
+entity に double-click 検出（ダブルクリックで reset 等）を載せると、pan ドラッグ 2 連発が
+double-click と誤検出される**。対策: drag observer 側で「この press はドラッグ」フラグ
+（`Resource` の `HashSet<Entity>` か Component）を立て、Click observer はそのフラグが立った
+click を「genuine click ではない」として double-click 列から除外する（フラグを消して early-return、
+直前の last_click も捨てる）。フラグの掃除は `RemovedComponents<Marker>` 駆動の cleanup system で
+despawn 時に entity key を除く（entity key leak 防止）。`chart_interaction.rs::ChartClickState` +
+`install_chart_autoscale_reset_observer` + `chart_click_state_cleanup_system` が実例。flowsurface は
+この罠を避けるため double-click を chart 本体ではなく**軸 gutter**（drag が起きない領域）に置いている。
+
 ## ECS ミニリファレンス（0.15 ピン）
 
 ```rust

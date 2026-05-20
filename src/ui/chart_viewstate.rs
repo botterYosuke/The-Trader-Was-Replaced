@@ -51,10 +51,15 @@ pub const LIVE_COMBINED_PANEL_SIZE: Vec2 = Vec2::new(
 );
 /// Ladder ペインの WindowRoot ローカル X (center origin 前提: 幅 480 の右端 +240 に幅 120 を flush)。
 pub const LADDER_PANE_LOCAL_X: f32 = LIVE_COMBINED_PANEL_SIZE.x / 2.0 - LADDER_WIDTH / 2.0; // 180
-/// Live 時に chart+gutter ブロックを左へ寄せる量。
-/// ⚠️ Phase B で Replay の chart x が 0 → `CHART_CHILD_LOCAL_X_REPLAY` (-25) に変わったため、
-/// Phase F 着手時はこの値を新レイアウトで再導出すること (chart+gutter 360 を枠左端 -240 に flush)。
-pub const CHART_CHILD_LOCAL_X_LIVE: f32 = -LADDER_WIDTH / 2.0; // -60
+/// Live 時の chart child x オフセット (content_area-local)。
+/// chart+gutter ブロック (360) を Live 枠 (480, center origin → [-240,240]) の左端へ flush する。
+/// Replay の chart 中心 -25 から、枠が左へ `LADDER_WIDTH/2` (60) 広がった分だけ追従させて -85。
+/// 結果: chart draw [-240,70] / price gutter [70,120] / Ladder [120,240] と枠 [-240,240] に収まる。
+/// (旧値 -60 は Replay の -25 ベースを勘定せず、gutter が ladder と重なるバグだった)
+pub const CHART_CHILD_LOCAL_X_LIVE: f32 = CHART_CHILD_LOCAL_X_REPLAY - LADDER_WIDTH / 2.0; // -85
+
+/// 既定の 1 candle 幅 (px)。spawn 時と double-click reset (Phase E) の戻り先。
+pub const DEFAULT_CELL_WIDTH: f32 = 6.0;
 
 /// volume サブペインが draw 領域下部に占める割合 (Phase E で描画、Phase A では領域だけ予約)。
 const VOLUME_AREA_RATIO: f32 = 0.2;
@@ -114,7 +119,7 @@ impl Default for ChartViewState {
             bounds: CHART_DRAW_SIZE,
             translation: Vec2::ZERO,
             scaling: 1.0,
-            cell_width: 6.0,
+            cell_width: DEFAULT_CELL_WIDTH,
             cell_height: 1.0, // autoscale が初回 frame で上書き
             basis: Basis::Time(60_000),
             latest_x: 0,
@@ -166,6 +171,20 @@ impl ChartViewState {
     /// 1 candle の body 半幅 (px)。最低 0.5px (細すぎて消えないように)。
     pub fn body_half_width(&self) -> f32 {
         (self.cell_width * self.scaling * 0.4).max(0.5)
+    }
+
+    /// pan/zoom をリセットして autoscale を再有効化する (double-click reset、Phase E)。
+    ///
+    /// `auto_scale = true` にすると次フレームの `chart_interaction_tick_system`
+    /// (`Changed<ChartViewState>` reader) が `RequestAutoscale` を投げ、`base_price_y` /
+    /// `cell_height` が再 fit される。translation / scaling / cell_width (時間軸ズーム) は
+    /// autoscale が触らないのでここで既定へ戻す。`base_price_y` / `cell_height` は次フレームの
+    /// autoscale が上書きするのでここでは触らない。
+    pub fn reset_view(&mut self) {
+        self.translation = Vec2::ZERO;
+        self.scaling = 1.0;
+        self.cell_width = DEFAULT_CELL_WIDTH;
+        self.auto_scale = true;
     }
 
     // ── 座標変換 (flowsurface ViewState の翻訳。translation/scaling を畳み込み済み) ──

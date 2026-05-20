@@ -23,6 +23,29 @@ use bevy::input::mouse::{MouseScrollUnit, MouseWheel};
 use bevy::picking::focus::HoverMap;
 use bevy::picking::pointer::{PointerId, PointerLocation};
 use bevy::prelude::*;
+use std::collections::{HashMap, HashSet};
+
+/// double-click とみなす連続クリックの最大間隔 (秒)。OS 標準の ~0.5s に合わせる。
+const DOUBLE_CLICK_SECS: f32 = 0.4;
+
+/// double-click reset (Phase E) 用の per-chart クリック状態。
+///
+/// ⚠️ Bevy 0.15 picking は drag 後の pointer up でも `Pointer<Click>` を発火する
+/// (`bevy_picking` `pointer_events`)。pan ドラッグ 2 連発を double-click と誤検出しないよう、
+/// drag observer が `dragged` に印を付け、click observer はその印があるクリックを「genuine click
+/// ではない」として double-click 列から除外する。
+#[derive(Resource, Default)]
+pub struct ChartClickState {
+    /// entity → 直近の genuine click の時刻 (秒)。
+    last_click: HashMap<Entity, f32>,
+    /// press 以降に drag が発生した chart。click 時に印があれば click 列をリセットして無視する。
+    dragged: HashSet<Entity>,
+}
+
+/// `last` (直近 genuine click 時刻) からの経過が閾値以内なら double-click。`last == None` は単発。
+fn is_double_click(last: Option<f32>, now: f32) -> bool {
+    matches!(last, Some(t) if now - t <= DOUBLE_CLICK_SECS)
+}
 
 /// ホイール 1 ノッチあたりのズーム強度。値が大きいほど 1 ノッチの倍率変化が小さい。
 const ZOOM_SENSITIVITY: f32 = 30.0;
@@ -56,6 +79,7 @@ pub fn install_chart_drag_observer(
         commands.entity(entity).observe(
             |mut drag: Trigger<Pointer<Drag>>,
              mut chart_q: Query<&mut ChartViewState>,
+             mut click_state: ResMut<ChartClickState>,
              // camera scale 補正 (規約 5 / floating_window.rs:117): bevy_pancam のズーム状態でも
              // world-space の pan 量が screen-space の drag 距離と一致するように scale を掛ける。
              camera_q: Query<&OrthographicProjection, With<Camera2d>>| {
@@ -67,7 +91,8 @@ pub fn install_chart_drag_observer(
                     return;
                 }
                 // Bevy 0.15: trigger.entity() (0.16+ で target() に rename — Caveat #3)。
-                let Ok(mut state) = chart_q.get_mut(drag.entity()) else {
+                let entity = drag.entity();
+                let Ok(mut state) = chart_q.get_mut(entity) else {
                     return;
                 };
                 // Trigger は inner event を Deref しないので .event() 経由 (Caveat #23)。
@@ -76,9 +101,65 @@ pub fn install_chart_drag_observer(
                 state.translation.x += delta.x * scale;
                 state.translation.y -= delta.y * scale; // Bevy Y は上が正、Pointer delta は下が正
                 state.auto_scale = false; // pan 開始で autoscale off
+                // この press はドラッグ。直後の Pointer<Click> を double-click 列から除外する印。
+                click_state.dragged.insert(entity);
                 drag.propagate(false); // title bar drag (window 移動) に bubble させない (Caveat #2)
             },
         );
+    }
+}
+
+/// 新しく spawn された chart entity に double-click reset 用の `Pointer<Click>` observer を貼る。
+///
+/// flowsurface (`chart.rs::Message::DoubleClick`) の「軸ダブルクリックで autoscale 再 fit」に相当
+/// (本実装は軸 gutter ではなく chart 本体のダブルクリックで pan/zoom を一括リセットする)。
+/// pan/zoom で一度 `auto_scale=false` になると再有効化する手段が無い問題を解消する。
+pub fn install_chart_autoscale_reset_observer(
+    mut commands: Commands,
+    new_charts: Query<Entity, (Added<ChartViewState>, With<Sprite>)>,
+) {
+    for entity in &new_charts {
+        commands.entity(entity).observe(
+            |mut click: Trigger<Pointer<Click>>,
+             time: Res<Time>,
+             mut click_state: ResMut<ChartClickState>,
+             mut chart_q: Query<&mut ChartViewState>| {
+                if click.event().button != PointerButton::Primary {
+                    return;
+                }
+                let entity = click.entity();
+                click.propagate(false); // window 移動/他パネルに bubble させない (Caveat #2)
+                // drag 由来の click は genuine click ではない (Bevy 0.15 は drag 後も Click 発火)。
+                // 印を消し、double-click 列もリセットして「pan 2 連発 = reset」の誤検出を断つ。
+                if click_state.dragged.remove(&entity) {
+                    click_state.last_click.remove(&entity);
+                    return;
+                }
+                let now = time.elapsed_secs();
+                if is_double_click(click_state.last_click.get(&entity).copied(), now) {
+                    click_state.last_click.remove(&entity);
+                    if let Ok(mut state) = chart_q.get_mut(entity) {
+                        state.reset_view();
+                    }
+                } else {
+                    click_state.last_click.insert(entity, now);
+                }
+            },
+        );
+    }
+}
+
+/// despawn された chart の `ChartClickState` エントリを掃除する (entity key leak 防止)。
+/// chart は instrument の入退場 (replay/live 切替) で spawn/despawn を繰り返すため、
+/// `RemovedComponents<ChartViewState>` で消えた chart の last_click / dragged を除去する
+/// (`instrument_chart_sync_system` が `InstrumentTradingDataMap` を掃除するのと同じ衛生)。
+pub fn chart_click_state_cleanup_system(
+    mut removed: RemovedComponents<ChartViewState>,
+    mut click_state: ResMut<ChartClickState>,
+) {
+    for entity in removed.read() {
+        click_state.last_click.remove(&entity);
+        click_state.dragged.remove(&entity);
     }
 }
 
@@ -257,6 +338,62 @@ mod tests {
             "cell_height must scale continuously, got {}",
             s.cell_height
         );
+    }
+
+    #[test]
+    fn is_double_click_window() {
+        // 直近 click 無し → 単発。
+        assert!(!is_double_click(None, 1.0));
+        // 閾値内 → double。
+        assert!(is_double_click(Some(1.0), 1.0 + DOUBLE_CLICK_SECS - 0.01));
+        // 閾値ちょうど → double (<=)。
+        assert!(is_double_click(Some(1.0), 1.0 + DOUBLE_CLICK_SECS));
+        // 閾値超過 → 単発扱い。
+        assert!(!is_double_click(Some(1.0), 1.0 + DOUBLE_CLICK_SECS + 0.01));
+    }
+
+    /// despawn された chart の click 状態が cleanup system で除去される (entity key leak 防止)。
+    #[test]
+    fn cleanup_removes_despawned_chart_click_state() {
+        let mut app = App::new();
+        app.init_resource::<ChartClickState>();
+        app.add_systems(Update, chart_click_state_cleanup_system);
+
+        let chart = app
+            .world_mut()
+            .spawn(ChartViewState::default())
+            .id();
+        {
+            let mut cs = app.world_mut().resource_mut::<ChartClickState>();
+            cs.last_click.insert(chart, 1.0);
+            cs.dragged.insert(chart);
+        }
+        app.update(); // RemovedComponents は空、エントリ保持。
+        assert!(app.world().resource::<ChartClickState>().last_click.contains_key(&chart));
+
+        app.world_mut().entity_mut(chart).despawn();
+        app.update(); // despawn を検出して掃除。
+
+        let cs = app.world().resource::<ChartClickState>();
+        assert!(!cs.last_click.contains_key(&chart), "last_click entry must be cleaned up");
+        assert!(!cs.dragged.contains(&chart), "dragged entry must be cleaned up");
+    }
+
+    /// double-click reset は pan/zoom を既定へ戻し autoscale を再有効化する。
+    #[test]
+    fn reset_view_restores_autoscale_and_defaults() {
+        use crate::ui::chart_viewstate::DEFAULT_CELL_WIDTH;
+        let mut s = state_for_zoom();
+        // pan/zoom 済みの状態を作る。
+        s.translation = Vec2::new(40.0, -25.0);
+        s.scaling = 2.5;
+        s.cell_width = 22.0;
+        s.auto_scale = false;
+        s.reset_view();
+        assert_eq!(s.translation, Vec2::ZERO);
+        assert_eq!(s.scaling, 1.0);
+        assert_eq!(s.cell_width, DEFAULT_CELL_WIDTH);
+        assert!(s.auto_scale, "reset must re-enable autoscale");
     }
 
     /// y=0 のホイールイベント相当 (factor==1) は cell 寸法を変えず、translation も実質動かさない。
