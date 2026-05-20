@@ -43,6 +43,19 @@ const EDITOR_LINE_HEIGHT: f32 = 18.0;
 pub fn editor_metrics() -> Metrics {
     Metrics::new(EDITOR_FONT_SIZE, EDITOR_LINE_HEIGHT)
 }
+
+/// focused なら CosmicEditor 内部 buffer、unfocused なら CosmicEditBuffer を読む (Caveat #2)。
+/// scroll / 行数を読む gutter・scrollbar 系がこの分岐を共有する。
+pub fn read_active_buffer<T>(
+    editor: Option<&CosmicEditor>,
+    buffer: &CosmicEditBuffer,
+    f: impl FnOnce(&bevy_cosmic_edit::cosmic_text::Buffer) -> T,
+) -> T {
+    match editor {
+        Some(editor) => editor.with_buffer(f),
+        None => f(&buffer.0),
+    }
+}
 const EDITOR_MAX_SUPERSAMPLE: f32 = 4.0;
 const ACCENT: Color = Color::srgba(0.63, 0.44, 1.0, 0.4); // SVG #a070ff (purple)
 const EDITOR_BG: Color = Color::srgba(0.02, 0.02, 0.04, 1.0);

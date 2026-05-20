@@ -13,10 +13,10 @@
 
 use crate::ui::components::{StrategyEditorId, StrategyFragment, WindowRoot};
 use crate::ui::strategy_editor::{
-    EDITOR_TEXT_SIZE, GUTTER_WIDTH, StrategyEditorContent, editor_metrics,
+    EDITOR_TEXT_SIZE, GUTTER_WIDTH, StrategyEditorContent, editor_metrics, read_active_buffer,
 };
 use bevy::prelude::*;
-use bevy_cosmic_edit::cosmic_text::{Attrs, AttrsOwned, Color as CosmicColor, Edit};
+use bevy_cosmic_edit::cosmic_text::{Attrs, AttrsOwned, Color as CosmicColor};
 use bevy_cosmic_edit::prelude::*;
 use bevy_cosmic_edit::{
     CosmicBackgroundColor, CosmicEditor, CosmicTextAlign, CosmicWrap, ReadOnly, ScrollEnabled,
@@ -120,10 +120,7 @@ pub fn sync_gutter_scroll_system(
         else {
             continue;
         };
-        let scroll = match editor_opt {
-            Some(editor) => editor.with_buffer(|b| b.scroll()),
-            None => edit_buffer.0.scroll(),
-        };
+        let scroll = read_active_buffer(editor_opt, edit_buffer, |b| b.scroll());
         if gutter_buffer.0.scroll() != scroll {
             gutter_buffer.0.set_scroll(scroll);
             gutter_buffer.0.set_redraw(true);
