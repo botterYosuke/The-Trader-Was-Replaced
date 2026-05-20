@@ -8,22 +8,54 @@ use crate::ui::editor_history::{
 };
 use crate::ui::floating_window::{FloatingWindowSpec, spawn_floating_window};
 use crate::ui::layout_persistence::{AutoSaveState, PendingLayoutApply};
+use crate::ui::strategy_editor_gutter::spawn_line_number_gutter;
+use crate::ui::strategy_editor_highlight::{BracketSpans, FindMatchSpans, SyntaxSpans};
+use crate::ui::strategy_editor_scrollbar::spawn_editor_scrollbar;
 use bevy::prelude::*;
 use bevy_cosmic_edit::cosmic_text::{Attrs, AttrsOwned, Edit, Metrics, Shaping};
 use bevy_cosmic_edit::{
-    CosmicBackgroundColor, CosmicFontSystem, CosmicRenderScale, CosmicTextAlign, CursorColor,
-    ScrollEnabled,
+    CosmicBackgroundColor, CosmicFontSystem, CosmicRenderScale, CosmicTextAlign, CosmicWrap,
+    CursorColor, ScrollEnabled,
 };
-use crate::ui::strategy_editor_highlight::{BracketSpans, FindMatchSpans, SyntaxSpans};
 use bevy_cosmic_edit::{CosmicTextChanged, prelude::*};
 
 // ── Bevy native 版 Strategy Editor ─────────────
 
 const PANEL_SIZE: Vec2 = Vec2::new(500.0, 400.0);
 const PANEL_POSITION: Vec2 = Vec2::new(-300.0, 50.0);
-const EDITOR_SIZE: Vec2 = Vec2::new(440.0, 320.0);
+/// content_area 内でエディタ周辺 (gutter + text + scrollbar) が占める領域。
+/// 旧 `EDITOR_SIZE` のリネーム (Caveat #14)。
+pub const EDITOR_PANEL_SIZE: Vec2 = Vec2::new(440.0, 320.0);
+/// 行番号 gutter の幅。
+pub const GUTTER_WIDTH: f32 = 36.0;
+/// scrollbar の幅。
+pub const SCROLLBAR_WIDTH: f32 = 8.0;
+/// テキスト編集領域 (Sprite custom_size) の実サイズ。gutter / scrollbar を除いた分。
+pub const EDITOR_TEXT_SIZE: Vec2 = Vec2::new(
+    EDITOR_PANEL_SIZE.x - GUTTER_WIDTH - SCROLLBAR_WIDTH,
+    EDITOR_PANEL_SIZE.y,
+);
 const EDITOR_FONT_SIZE: f32 = 14.0;
 const EDITOR_LINE_HEIGHT: f32 = 18.0;
+
+/// gutter / editor 共通の cosmic_text Metrics。行高をぴったり一致させて
+/// gutter の行番号がエディタの行とズレないようにする (Caveat #4)。
+pub fn editor_metrics() -> Metrics {
+    Metrics::new(EDITOR_FONT_SIZE, EDITOR_LINE_HEIGHT)
+}
+
+/// focused なら CosmicEditor 内部 buffer、unfocused なら CosmicEditBuffer を読む (Caveat #2)。
+/// scroll / 行数を読む gutter・scrollbar 系がこの分岐を共有する。
+pub fn read_active_buffer<T>(
+    editor: Option<&CosmicEditor>,
+    buffer: &CosmicEditBuffer,
+    f: impl FnOnce(&bevy_cosmic_edit::cosmic_text::Buffer) -> T,
+) -> T {
+    match editor {
+        Some(editor) => editor.with_buffer(f),
+        None => f(&buffer.0),
+    }
+}
 const EDITOR_MAX_SUPERSAMPLE: f32 = 4.0;
 const ACCENT: Color = Color::srgba(0.63, 0.44, 1.0, 0.4); // SVG #a070ff (purple)
 const EDITOR_BG: Color = Color::srgba(0.02, 0.02, 0.04, 1.0);
@@ -148,15 +180,11 @@ pub fn spawn_strategy_editor_panel(
         .spawn((
             TextEdit2d,
             Sprite {
-                custom_size: Some(EDITOR_SIZE),
+                custom_size: Some(EDITOR_TEXT_SIZE),
                 color: Color::WHITE,
                 ..default()
             },
-            CosmicEditBuffer::new(
-                font_system,
-                Metrics::new(EDITOR_FONT_SIZE, EDITOR_LINE_HEIGHT),
-            )
-            .with_text(
+            CosmicEditBuffer::new(font_system, editor_metrics()).with_text(
                 font_system,
                 &seed,
                 Attrs::new().color(CosmicColor::rgb(220, 220, 220)),
@@ -166,14 +194,16 @@ pub fn spawn_strategy_editor_panel(
             )),
             CursorColor(Color::WHITE),
             CosmicBackgroundColor(EDITOR_BG),
-            Transform::from_xyz(0.0, 0.0, 0.1),
+            Transform::from_xyz(EDITOR_CONTENT_X, 0.0, 0.1),
             StrategyEditorContent,
-            // highlight pipeline 用 span コンポーネント (Phase A)。
-            // 3 個をネストして 1 Bundle 要素に畳む (tuple Bundle の 15 要素上限回避)。
+            // highlight pipeline 用 span コンポーネント (Phase A) + wrap 無効化 (Phase B)。
+            // ネストして 1 Bundle 要素に畳む (tuple Bundle の 15 要素上限回避)。
+            // CosmicWrap::InfiniteLine: source 行 == layout 行にして gutter 行番号と一致させる。
             (
                 SyntaxSpans::default(),
                 FindMatchSpans::default(),
                 BracketSpans::default(),
+                CosmicWrap::InfiniteLine,
             ),
             // editor child にも StrategyEditorId を貼ることで、CosmicTextChanged から
             // region_key を即引きできる (root への親辿りが不要)。
@@ -193,9 +223,27 @@ pub fn spawn_strategy_editor_panel(
     commands.entity(content_area).add_child(editor);
     commands.insert_resource(FocusedWidget(Some(editor)));
 
+    // ── Phase B: gutter (左) + scrollbar (右) を editor と横並びに配置 ──
+    // content_area 内で [gutter | editor | scrollbar] の幅 EDITOR_PANEL_SIZE.x を中央寄せ。
+    let gutter = spawn_line_number_gutter(commands, font_system, region_key.clone(), GUTTER_X);
+    commands.entity(content_area).add_child(gutter);
+
+    let scrollbar = spawn_editor_scrollbar(commands, editor, SCROLLBAR_X);
+    commands.entity(content_area).add_child(scrollbar);
+
     let _ = title_bar;
     let _ = spec.layout_source;
 }
+
+/// content_area 内 (中央 x=0) における [gutter | editor | scrollbar] 群の左端 x。
+const GROUP_LEFT_X: f32 = -EDITOR_PANEL_SIZE.x / 2.0;
+/// gutter Sprite の中心 x。
+pub const GUTTER_X: f32 = GROUP_LEFT_X + GUTTER_WIDTH / 2.0;
+/// editor Sprite の中心 x (gutter のぶん右にずらす)。
+pub const EDITOR_CONTENT_X: f32 = GROUP_LEFT_X + GUTTER_WIDTH + EDITOR_TEXT_SIZE.x / 2.0;
+/// scrollbar Sprite の中心 x。
+pub const SCROLLBAR_X: f32 =
+    GROUP_LEFT_X + GUTTER_WIDTH + EDITOR_TEXT_SIZE.x + SCROLLBAR_WIDTH / 2.0;
 
 pub fn update_strategy_editor_zoom_system(
     camera_q: Query<&OrthographicProjection, With<Camera2d>>,

@@ -21,6 +21,9 @@ pub mod strategy_editor;
 pub mod strategy_editor_highlight;
 pub mod strategy_editor_compose;
 pub mod strategy_editor_find;
+pub mod strategy_editor_gutter;
+pub mod strategy_editor_input;
+pub mod strategy_editor_scrollbar;
 pub mod systems;
 pub mod window;
 
@@ -101,9 +104,14 @@ use crate::ui::strategy_editor_find::{
     find_navigate_system, find_scroll_to_match_system, manage_find_panel_lifecycle_system,
     replace_execute_system, sync_find_editors_to_state_system, update_find_count_text_system,
 };
+use crate::ui::strategy_editor_gutter::{sync_gutter_scroll_system, update_gutter_text_system};
 use crate::ui::strategy_editor_highlight::{
     compute_bracket_spans_system, compute_syntax_spans_system, init_syntect_highlighter,
 };
+use crate::ui::strategy_editor_input::{
+    bracket_autoclose_system, enter_autoindent_system, tab_input_system,
+};
+use crate::ui::strategy_editor_scrollbar::update_scrollbar_thumb_system;
 use crate::ui::systems::{update_price_display, update_status_indicator};
 use crate::ui::window::instrument_chart_sync_system;
 use bevy::prelude::*;
@@ -325,6 +333,28 @@ impl Plugin for UiPlugin {
                     .after(sync_strategy_buffer_to_editor_system)
                     .before(apply_highlight_layers_system),
                 apply_highlight_layers_system,
+            ),
+        )
+        // ── gutter + scrollbar (Phase B) ──
+        // gutter テキストは Changed<StrategyFragment> 駆動。scroll 追従とサムは
+        // エディタの scroll を読むだけなので毎フレーム回す (1 フレーム遅延は不可視)。
+        .add_systems(
+            Update,
+            (
+                update_gutter_text_system,
+                sync_gutter_scroll_system,
+                update_scrollbar_thumb_system,
+            ),
+        )
+        // ── Tab / Enter / bracket autoclose (Phase C) ──
+        // Tab/Enter は cosmic より先に走って reset で抑止 (.before)。
+        // bracket closer は cosmic が opener を入れた直後 (.after)。
+        .add_systems(
+            Update,
+            (
+                tab_input_system.before(bevy_cosmic_edit::InputSet),
+                enter_autoindent_system.before(bevy_cosmic_edit::InputSet),
+                bracket_autoclose_system.after(bevy_cosmic_edit::InputSet),
             ),
         )
         // ── Find / Replace パネル (Phase E) ──

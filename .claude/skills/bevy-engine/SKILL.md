@@ -278,6 +278,23 @@ egui の中で `state.buffer` のような大きい String を編集するとき
   `.chain()` で挟み frame 3 以降のカウントが 0 であることを assert する
   （`add_event::<RequestX>()` をテスト側 App にも入れる。無いと `EventWriter` 取得で panic）。
   src/ui/chart_viewstate.rs の autoscale 3 段 (data_tick / interaction_tick / autoscale_apply) が実例。
+- **`CosmicEditBuffer` を spawn したのに文字が全く描画されない (背景すら出ない)**:
+  このフォークの `render_texture` は `CosmicWidgetSize::scan()` で `Has<TextEdit2d>` または
+  `Has<TextEdit>` を要求する。**`TextEdit2d` を付けないと `logical_size()` が `Err` を返し描画が
+  skip される**。read-only ラベル/gutter でも `TextEdit2d` は必須。入力を受けたくないなら
+  `TextEdit2d` を外すのではなく **`ReadOnly`** を付ける（`kb_input_text` は readonly で早期 return、
+  かつ `change_active_editor_sprite` は `Without<ReadOnly>` フィルタなので focus-on-click 対象外になる）。
+- **cosmic_edit で折り返しを切りたい / 行を折り返したい**: このフォークに `Buffer::set_wrap` 経路は
+  実質無く、**`CosmicWrap` Component** で制御する。`CosmicWrap::InfiniteLine` = 折返し無し
+  (source 行 == layout 行)、`CosmicWrap::Wrap` (default) = 折返しあり。spawn tuple に入れるだけ。
+- **cosmic_edit の `InputSet` を `.before/.after` したい**: パスは **`bevy_cosmic_edit::InputSet`**
+  (crate root)。`bevy_cosmic_edit::input::InputSet` は `input` module が private なので不可。
+  keyboard 系 (`kb_input_text`/`kb_move_cursor`/`kb_clipboard`) は **`Update`** の InputSet で走る
+  (`input_mouse` だけ `PreUpdate`) ので、自前の Update system から `.before/.after(InputSet)` が効く。
+  Tab/Enter を奪うのは `.before(InputSet)` + `ResMut<ButtonInput<KeyCode>>::reset(key)`。
+  カスタム編集後は `CosmicTextChanged` を手動 send しないと下流 (sync/undo/autosave) が空振りする
+  (cosmic は内部 `is_edit` のときだけ発火)。全文取得の `BufferExtras::get_text` は `pub(crate)` で
+  src/ から呼べない → `b.lines.iter().map(|l| l.text()).collect::<Vec<_>>().join("\n")` で代替。
 - **bevy_cosmic_edit の unfocused field (TextEdit / TextEdit2d) が黒い箱で文字が見えない**:
   通常 2 つの独立した罠が同時に起きる。背景を一時的に `CosmicBackgroundColor(rgb(1,0,0))`
   にして切り分けると速い：赤背景が出れば render は走っており文字色 or layout の問題、
