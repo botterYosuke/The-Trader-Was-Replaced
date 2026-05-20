@@ -278,6 +278,12 @@ egui の中で `state.buffer` のような大きい String を編集するとき
   "Picking is done based on sprite bounds, not visible pixels"）。よって `Color::srgba(_,_,_,0.0)` でも
   `custom_size` さえあれば pickable。alpha threshold は 0.16+ の話なので 0.15 で alpha を 0.001 等に
   盛る必要は無い（盛っても害は無いが不要）。`SpritePickingMode` 自体 0.15 に存在しない。
+- **`Pointer<Move>`/`<Down>` observer で `trigger.event().hit.position` を読むとき**: `HitData.position`
+  は **`Option<Vec3>`**。`unwrap_or(Vec3::ZERO)` で握り潰すと、None のとき「world 原点 - entity 位置」
+  という garbage 座標になり crosshair / drag が画面外へ飛ぶ。**`let Some(p) = trigger.event().hit.position
+  else { return };` で skip する**（sprite picking backend では実際は常に Some だが、別 backend 併用や
+  将来の変更に対する安全側）。world→entity-local は `p - gt.translation()`（chart 等 scale=1 前提）。
+  `chart_crosshair.rs::install_chart_crosshair_observer` が実例。
 - **`Visibility` を持たない中間 entity（`Transform` だけで spawn した content_area 等）の子 Sprite が
   描画 / picking されないのでは？と不安**: 0.15 の `visibility_propagate_system` は親が Visibility
   コンポーネントを欠く場合 **`true` にフォールバックする**（`bevy_render-0.15.1/.../visibility/mod.rs:404-407`
