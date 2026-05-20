@@ -1,13 +1,22 @@
-use crate::trading::{BackendStatus, TradingData, TradingSettings};
+use crate::trading::{BackendStatus, LastPrices, SelectedSymbol, TradingSettings};
 use crate::ui::components::{PriceDisplay, StatusIndicator};
 use bevy::prelude::*;
 
 pub fn update_price_display(
-    data: Res<TradingData>,
+    last_prices: Res<LastPrices>,
+    selected_symbol: Res<SelectedSymbol>,
     mut query: Query<&mut Text2d, With<PriceDisplay>>,
 ) {
+    let price = selected_symbol
+        .id
+        .as_ref()
+        .and_then(|id| last_prices.map.get(id));
+    let label = match price {
+        Some(p) => format!("${:.2}", p),
+        None => "$--".to_string(),
+    };
     for mut text in query.iter_mut() {
-        text.0 = format!("${:.2}", data.price);
+        text.0 = label.clone();
     }
 }
 
@@ -35,38 +44,5 @@ pub fn update_status_indicator(
 
     for mut sprite in query.iter_mut() {
         sprite.color = color;
-    }
-}
-
-#[allow(clippy::type_complexity)]
-pub fn button_system(
-    mut interaction_query: Query<
-        (
-            &Interaction,
-            &mut Sprite,
-            &crate::ui::components::TradeButton,
-        ),
-        (Changed<Interaction>, With<Button>),
-    >,
-) {
-    for (interaction, mut sprite, button_type) in interaction_query.iter_mut() {
-        match *interaction {
-            Interaction::Pressed => {
-                sprite.color = Color::srgb(1.0, 1.0, 1.0);
-                match button_type {
-                    crate::ui::components::TradeButton::Buy => info!("BUY pressed!"),
-                    crate::ui::components::TradeButton::Sell => info!("SELL pressed!"),
-                }
-            }
-            Interaction::Hovered => {
-                sprite.color = Color::srgb(0.5, 0.5, 0.5);
-            }
-            Interaction::None => {
-                sprite.color = match button_type {
-                    crate::ui::components::TradeButton::Buy => Color::srgb(0.0, 0.8, 0.4),
-                    crate::ui::components::TradeButton::Sell => Color::srgb(0.8, 0.2, 0.2),
-                };
-            }
-        }
     }
 }

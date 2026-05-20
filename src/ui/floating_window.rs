@@ -224,6 +224,7 @@ pub fn spawn_floating_window(
              mut history: ResMut<AppHistory>,
              mut auto_save: ResMut<crate::ui::layout_persistence::AutoSaveState>,
              mut registry: ResMut<InstrumentRegistry>,
+             mut map: ResMut<crate::trading::InstrumentTradingDataMap>,
              mut commands: Commands| {
                 let Ok(parent) = parent_query.get(trigger.entity()) else {
                     return;
@@ -242,6 +243,7 @@ pub fn spawn_floating_window(
                         return;
                     }
                     registry.remove(&ci.instrument_id);
+                    map.map.remove(&ci.instrument_id);
                     commands.entity(root_entity).despawn_recursive();
                     return;
                 }

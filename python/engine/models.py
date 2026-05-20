@@ -28,12 +28,27 @@ class OhlcPoint(_BoundaryModel):
     high: float = Field(..., gt=0, description="高値")
     low: float = Field(..., gt=0, description="安値")
     close: float = Field(..., gt=0, description="終値")
+    volume: Optional[float] = Field(None, ge=0, description="バー出来高。None=未提供 (zero-volume と区別)")
 
     @field_validator("open", "high", "low", "close")
     @classmethod
     def check_finite(cls, v: float) -> float:
         if not math.isfinite(v): raise ValueError("Price must be finite")
         return v
+
+class DepthLevel(_BoundaryModel):
+    price: float = Field(..., gt=0, description="板の価格")
+    size: float = Field(..., ge=0, description="その価格の数量")
+
+class DepthSnapshot(_BoundaryModel):
+    bids: List[DepthLevel] = Field(default_factory=list, description="買い板 (price 降順想定)")
+    asks: List[DepthLevel] = Field(default_factory=list, description="売り板 (price 昇順想定)")
+    timestamp_ms: Optional[int] = Field(None, description="板 snapshot 時刻 (ms)")
+
+class PerInstrumentState(_BoundaryModel):
+    price: Optional[float] = Field(None, gt=0, description="その銘柄の最新価格")
+    ohlc_points: List[OhlcPoint] = Field(default_factory=list, description="その銘柄の OHLC バー履歴")
+    depth: Optional[DepthSnapshot] = Field(None, description="その銘柄の最新板 (Live のみ; Replay では None)")
 
 class TradingState(_BoundaryModel):
     price: float = Field(..., description="現在の市場価格", gt=0)
@@ -65,6 +80,7 @@ class TradingState(_BoundaryModel):
     instruments_loaded: int = Field(0, ge=0, description="ListInstruments で読み込んだ銘柄件数 (Rust BackendStatusUpdate::VenueChanged.instruments_loaded 配線元)")
 
     last_prices: dict[str, float] = Field(default_factory=dict, description="Live モードの最新価格 snapshot (quote_mid 優先 / last_trade fallback)。Replay モードでは常に空 dict。")
+    per_instrument: dict[str, PerInstrumentState] = Field(default_factory=dict, description="銘柄シンボル → その銘柄ごとの状態 (price/ohlc/depth)")
     # §9.14 ADR: live_last_error は必ず TradingState の最後の field に置く
     # (UI / Rust 側 deserializer が末尾追加を許容する optional field として扱うため)。
     live_last_error: Optional[str] = Field(None, description="Live runner/bridge の最終エラー (type名: message)")

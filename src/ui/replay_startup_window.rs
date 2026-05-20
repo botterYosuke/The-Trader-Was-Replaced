@@ -195,10 +195,10 @@ pub fn replay_startup_close_button_system(
     }
 }
 
-/// 経路 B: TradingData の replay_state が RUNNING になる、もしくは timestamp が動いたら hide。
+/// 経路 B: TradingSession の replay_state が RUNNING になる、もしくは timestamp が動いたら hide。
 pub fn auto_hide_replay_startup_window_system(
     mut progress: ResMut<ReplayStartupProgress>,
-    trading: Res<crate::trading::TradingData>,
+    trading: Res<crate::trading::TradingSession>,
 ) {
     if !progress.visible || progress.error.is_some() || !progress.start_engine_accepted {
         return;
@@ -279,7 +279,7 @@ mod tests {
         let mut app = App::new();
         app.add_plugins(MinimalPlugins);
         app.init_resource::<ReplayStartupProgress>();
-        app.init_resource::<crate::trading::TradingData>();
+        app.init_resource::<crate::trading::TradingSession>();
         app.add_systems(Update, auto_hide_replay_startup_window_system);
 
         {
@@ -290,7 +290,7 @@ mod tests {
             progress.phase = ReplayStartupPhase::WaitingForFirstTick;
         }
         {
-            let mut trading = app.world_mut().resource_mut::<crate::trading::TradingData>();
+            let mut trading = app.world_mut().resource_mut::<crate::trading::TradingSession>();
             trading.replay_state = Some("RUNNING".to_string());
         }
 
@@ -306,7 +306,7 @@ mod tests {
         let mut app = App::new();
         app.add_plugins(MinimalPlugins);
         app.init_resource::<ReplayStartupProgress>();
-        app.init_resource::<crate::trading::TradingData>();
+        app.init_resource::<crate::trading::TradingSession>();
         app.add_systems(Update, auto_hide_replay_startup_window_system);
 
         {
@@ -317,7 +317,7 @@ mod tests {
             progress.phase = ReplayStartupPhase::WaitingForFirstTick;
         }
         {
-            let mut trading = app.world_mut().resource_mut::<crate::trading::TradingData>();
+            let mut trading = app.world_mut().resource_mut::<crate::trading::TradingSession>();
             trading.replay_state = Some("RUNNING".to_string());
         }
 
@@ -332,7 +332,7 @@ mod tests {
         let mut app = App::new();
         app.add_plugins(MinimalPlugins);
         app.init_resource::<ReplayStartupProgress>();
-        app.init_resource::<crate::trading::TradingData>();
+        app.init_resource::<crate::trading::TradingSession>();
         app.add_systems(Update, auto_hide_replay_startup_window_system);
 
         {
@@ -344,7 +344,7 @@ mod tests {
             progress.phase = ReplayStartupPhase::WaitingForFirstTick;
         }
         {
-            let mut trading = app.world_mut().resource_mut::<crate::trading::TradingData>();
+            let mut trading = app.world_mut().resource_mut::<crate::trading::TradingSession>();
             trading.replay_state = None;
             trading.timestamp_ms = 2000;
         }
@@ -360,7 +360,7 @@ mod tests {
         let mut app = App::new();
         app.add_plugins(MinimalPlugins);
         app.init_resource::<ReplayStartupProgress>();
-        app.init_resource::<crate::trading::TradingData>();
+        app.init_resource::<crate::trading::TradingSession>();
         app.add_systems(Update, auto_hide_replay_startup_window_system);
 
         {
@@ -372,7 +372,7 @@ mod tests {
             progress.phase = ReplayStartupPhase::WaitingForFirstTick;
         }
         {
-            let mut trading = app.world_mut().resource_mut::<crate::trading::TradingData>();
+            let mut trading = app.world_mut().resource_mut::<crate::trading::TradingSession>();
             trading.replay_state = None;
             trading.timestamp_ms = 1_000_000_000;
         }

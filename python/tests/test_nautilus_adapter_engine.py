@@ -24,11 +24,12 @@ class _Price:
 
 
 class _FakeBar:
-    def __init__(self, open, high, low, close, ts_event_ns: int):
+    def __init__(self, open, high, low, close, ts_event_ns: int, volume: float = 0.0):
         self.open = _Price(open)
         self.high = _Price(high)
         self.low = _Price(low)
         self.close = _Price(close)
+        self.volume = _Price(volume)
         self.ts_event = ts_event_ns
         self.ts_init = 0
 

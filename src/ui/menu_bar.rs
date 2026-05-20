@@ -1,5 +1,5 @@
 use crate::trading::{
-    ExecutionMode, ExecutionModeRes, LastRunResult, RunState, StrategyRunConfig, TradingData,
+    ExecutionMode, ExecutionModeRes, LastRunResult, RunState, StrategyRunConfig, TradingSession,
     TransportCommand, TransportCommandSender, VenueStatusRes, is_venue_busy_for_menu,
 };
 use crate::ui::components::ScenarioMetadata;
@@ -834,7 +834,7 @@ pub fn handle_strategy_run_system(
     registry: Res<InstrumentRegistry>,
     paths: Res<ScenarioWritebackPaths>,
     mut progress: ResMut<ReplayStartupProgress>,
-    trading_data: Res<TradingData>,
+    trading_data: Res<TradingSession>,
     real_time: Res<Time<Real>>,
     mut last_run: ResMut<LastRunResult>,
     startup_params: Res<ScenarioStartupParams>,
@@ -1103,7 +1103,7 @@ mod tests {
         app.insert_resource(ScenarioWritebackPaths::default());
         app.init_resource::<ReplayStartupProgress>();
         app.init_resource::<ScenarioStartupParams>();
-        app.insert_resource(TradingData::default());
+        app.insert_resource(TradingSession::default());
         app.insert_resource(LastRunResult::default());
         app.add_event::<StrategyRunRequested>();
         app.add_systems(Update, handle_strategy_run_system);

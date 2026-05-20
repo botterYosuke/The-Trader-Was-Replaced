@@ -192,6 +192,8 @@ format / restore の判断も Navigator に任せます。
 
 この運用で 4-5 ターン回しても context 整合は保てる。同個体継続より 1 ターンあたり 5-10k token 増えるので、1 session あたりの subtask 上限は 2-3 のままで変わらない。
 
+**ただし「1 つの大タスクを小ステップに割って 15-20+ ターン回す」のは別物で、可能**（実績: Phase 7.3 A0 の per-instrument data refactor を proto→python→rust の十数ステップで完走）。鍵は **司令塔が cross-turn state を保持すること**: 毎回の新 Navigator prompt に「**安定した step シーケンス全体 + ユーザ確定の binding decisions + 直近の baseline 数字**」のコンパクトな block を貼り続ける（Navigator 個体は記憶を持たないが、この block が "外部記憶" になる）。各ステップを「1 ファイル / 1 関数 / 1 論理修正」まで小さく保てば、Navigator 1 個体の context は毎回ほぼ空から始まり破綻しない。subtask 上限 2-3 は「Navigator が跨いで判断を積む必要がある独立タスク」の話で、「司令塔が直列に運ぶ小ステップ」には適用されない。
+
 ## 合言葉
 
 運ぶ。混ぜない。削らない。急がせない。  

@@ -1,6 +1,6 @@
 use crate::trading::{
     BackendStatus, ExecutionMode, ExecutionModeRes, LastRunResult, ReplaySpeed, RunState,
-    TradingData, TradingSettings, TransportCommand, TransportCommandSender, VenueState,
+    TradingSession, TradingSettings, TransportCommand, TransportCommandSender, VenueState,
     VenueStatusRes,
 };
 use crate::ui::components::{
@@ -253,7 +253,7 @@ pub fn spawn_footer(mut commands: Commands, asset_server: Res<AssetServer>) {
 #[allow(clippy::type_complexity)]
 #[allow(clippy::too_many_arguments)]
 pub fn update_footer_system(
-    data: Res<TradingData>,
+    data: Res<TradingSession>,
     status: Res<BackendStatus>,
     settings: Res<TradingSettings>,
     buffer: Res<StrategyBuffer>,
@@ -465,7 +465,7 @@ pub fn transport_button_system(
             Without<PauseResumeButton>,
         ),
     >,
-    data: Res<TradingData>,
+    data: Res<TradingSession>,
     sender: Res<TransportCommandSender>,
     exec_mode: Res<ExecutionModeRes>,
 ) {
@@ -576,7 +576,7 @@ pub fn footer_pause_resume_system(
         (&Interaction, &mut BackgroundColor),
         (Changed<Interaction>, With<PauseResumeButton>, With<Button>),
     >,
-    data: Res<TradingData>,
+    data: Res<TradingSession>,
     sender: Res<TransportCommandSender>,
     mut buffer: ResMut<StrategyBuffer>,
     last_run: Res<LastRunResult>,
@@ -735,7 +735,7 @@ pub fn apply_execution_mode_visibility_system(
 mod tests {
     use super::*;
     use crate::trading::{
-        ExecutionMode, ExecutionModeRes, LastRunResult, ReplaySpeed, TradingData, TransportCommand,
+        ExecutionMode, ExecutionModeRes, LastRunResult, ReplaySpeed, TradingSession, TransportCommand,
         TransportCommandSender,
     };
     use crate::ui::components::{
@@ -749,7 +749,7 @@ mod tests {
         let (tx, rx) = mpsc::unbounded_channel::<TransportCommand>();
         app.insert_resource(TransportCommandSender { tx })
             .init_resource::<ExecutionModeRes>()
-            .init_resource::<TradingData>()
+            .init_resource::<TradingSession>()
             .init_resource::<ReplaySpeed>()
             .init_resource::<StrategyBuffer>()
             .init_resource::<LastRunResult>()
@@ -798,7 +798,7 @@ mod tests {
     fn transport_command_not_sent_in_manual() {
         let (mut app, mut rx) = make_input_app();
         set_mode(&mut app, ExecutionMode::LiveManual);
-        app.world_mut().resource_mut::<TradingData>().replay_state = Some("RUNNING".into());
+        app.world_mut().resource_mut::<TradingSession>().replay_state = Some("RUNNING".into());
         let _ = spawn_pressed_transport(&mut app, TransportButton::JumpToStart);
         app.update();
         assert!(
@@ -811,7 +811,7 @@ mod tests {
     fn transport_command_not_sent_in_auto() {
         let (mut app, mut rx) = make_input_app();
         set_mode(&mut app, ExecutionMode::LiveAuto);
-        app.world_mut().resource_mut::<TradingData>().replay_state = Some("RUNNING".into());
+        app.world_mut().resource_mut::<TradingSession>().replay_state = Some("RUNNING".into());
         let _ = spawn_pressed_transport(&mut app, TransportButton::JumpToStart);
         app.update();
         assert!(
@@ -824,7 +824,7 @@ mod tests {
     fn pause_resume_does_not_emit_run_event_in_manual() {
         let (mut app, _rx) = make_input_app();
         set_mode(&mut app, ExecutionMode::LiveManual);
-        app.world_mut().resource_mut::<TradingData>().replay_state = Some("IDLE".into());
+        app.world_mut().resource_mut::<TradingSession>().replay_state = Some("IDLE".into());
         let tmp = tempfile::tempdir().expect("tempdir");
         let cache_path = tmp.path().join("strategy_cache.py");
         app.world_mut().resource_mut::<StrategyBuffer>().cache_path = Some(cache_path);
@@ -843,7 +843,7 @@ mod tests {
     fn pause_resume_does_not_emit_run_event_in_auto() {
         let (mut app, _rx) = make_input_app();
         set_mode(&mut app, ExecutionMode::LiveAuto);
-        app.world_mut().resource_mut::<TradingData>().replay_state = Some("IDLE".into());
+        app.world_mut().resource_mut::<TradingSession>().replay_state = Some("IDLE".into());
         let tmp = tempfile::tempdir().expect("tempdir");
         let cache_path = tmp.path().join("strategy_cache.py");
         app.world_mut().resource_mut::<StrategyBuffer>().cache_path = Some(cache_path);
@@ -883,7 +883,7 @@ mod tests {
     fn transport_command_sent_in_replay_smoke() {
         let (mut app, mut rx) = make_input_app();
         set_mode(&mut app, ExecutionMode::Replay);
-        app.world_mut().resource_mut::<TradingData>().replay_state = Some("RUNNING".into());
+        app.world_mut().resource_mut::<TradingSession>().replay_state = Some("RUNNING".into());
         let _ = spawn_pressed_transport(&mut app, TransportButton::JumpToStart);
         app.update();
         match rx.try_recv() {

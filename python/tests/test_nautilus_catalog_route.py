@@ -31,6 +31,7 @@ class _FakeBar:
         self.high = _Price(close)
         self.low = _Price(close)
         self.close = _Price(close)
+        self.volume = _Price(0.0)
         self.ts_event = ts_event_ns
         self.ts_init = ts_event_ns
 

@@ -1,4 +1,5 @@
-use crate::trading::TradingData;
+use crate::trading::InstrumentTradingDataMap;
+use crate::ui::components::ChartInstrument;
 use bevy::prelude::*;
 use bevy_vector_shapes::prelude::*;
 
@@ -82,17 +83,21 @@ fn draw_candle(
 
 pub fn chart_render_system(
     mut painter: ShapePainter,
-    trading_data: Res<TradingData>,
-    mut query: Query<(&mut ChartViewState, &GlobalTransform)>,
+    trading_data: Res<InstrumentTradingDataMap>,
+    mut query: Query<(&mut ChartViewState, &GlobalTransform, &ChartInstrument)>,
 ) {
-    for (mut state, transform) in query.iter_mut() {
-        let history = &trading_data.history_points;
+    for (mut state, transform, ci) in query.iter_mut() {
+        let Some(data) = trading_data.map.get(&ci.instrument_id) else {
+            continue;
+        };
 
-        if history.is_empty() {
+        let ohlc_pts = &data.ohlc_points;
+
+        if ohlc_pts.is_empty() {
             continue;
         }
 
-        if let Some(last) = history.last() {
+        if let Some(last) = ohlc_pts.last() {
             state.latest_timestamp_ms = last.timestamp_ms;
         }
 
@@ -102,7 +107,6 @@ pub fn chart_render_system(
 
         // Determine visible OHLC candles (last MAX_VISIBLE bars)
         const MAX_VISIBLE_CANDLES: usize = 50;
-        let ohlc_pts = &trading_data.ohlc_points;
         let candle_start_idx = if ohlc_pts.len() > MAX_VISIBLE_CANDLES {
             ohlc_pts.len() - MAX_VISIBLE_CANDLES
         } else {
@@ -114,37 +118,14 @@ pub fn chart_render_system(
             let mut min = f32::MAX;
             let mut max = f32::MIN;
             let mut has_visible_data = false;
-            let start_ts = state.latest_timestamp_ms - state.time_window_ms;
 
-            for p in history {
-                if p.timestamp_ms >= start_ts {
-                    if p.price < min {
-                        min = p.price;
-                    }
-                    if p.price > max {
-                        max = p.price;
-                    }
-                    has_visible_data = true;
+            // Scan all visible candle high/low for autoscale range
+            for pt in visible_candles {
+                if pt.high > max {
+                    max = pt.high;
                 }
-            }
-            // Extend range to cover visible OHLC candles
-            if visible_candles.len() >= 2 {
-                for pt in visible_candles {
-                    if pt.high > max {
-                        max = pt.high;
-                    }
-                    if pt.low < min {
-                        min = pt.low;
-                    }
-                    has_visible_data = true;
-                }
-            } else if let (Some(high), Some(low)) = (trading_data.high, trading_data.low) {
-                // Fallback: extend for latest single candle
-                if high > max {
-                    max = high;
-                }
-                if low < min {
-                    min = low;
+                if pt.low < min {
+                    min = pt.low;
                 }
                 has_visible_data = true;
             }
@@ -173,21 +154,22 @@ pub fn chart_render_system(
         painter.color = Color::srgb(0.3, 0.3, 0.3);
         painter.rect(Vec2::new(state.width, state.height));
 
-        // --- Line chart (existing, keep) ---
+        // --- Line chart: derive from ohlc closes (keep draw math identical) ---
         painter.color = Color::srgb(0.0, 1.0, 0.5);
         painter.thickness = 2.0;
 
         let start_ts = state.latest_timestamp_ms - state.time_window_ms;
         let mut prev_pos: Option<Vec3> = None;
 
-        for p in history {
-            if p.timestamp_ms < start_ts {
+        for pt in ohlc_pts {
+            if pt.timestamp_ms < start_ts {
                 continue;
             }
-            let time_offset = p.timestamp_ms - state.latest_timestamp_ms;
+            let time_offset = pt.timestamp_ms - state.latest_timestamp_ms;
             let x = (time_offset as f32 / state.time_window_ms as f32) * state.width
                 + (state.width / 2.0);
-            let y = -state.height / 2.0 + (p.price - state.min_price) / price_range * state.height;
+            let y =
+                -state.height / 2.0 + (pt.close - state.min_price) / price_range * state.height;
             let current_pos = Vec3::new(x - state.width / 2.0, y, 0.1);
 
             if let Some(prev) = prev_pos {
@@ -222,38 +204,6 @@ pub fn chart_render_system(
                 );
                 painter.set_translation(start_pos);
             }
-        } else {
-            // --- Fallback: latest single candlestick (Step 1) ---
-            if let (Some(open), Some(high), Some(low), Some(close)) = (
-                trading_data.open,
-                trading_data.high,
-                trading_data.low,
-                trading_data.close,
-            ) {
-                let candle_ts = trading_data
-                    .open_time_ms
-                    .unwrap_or(state.latest_timestamp_ms);
-                let x_rel = (candle_ts - state.latest_timestamp_ms) as f32
-                    / state.time_window_ms as f32
-                    * state.width;
-                let body_half_width = state.width / 40.0;
-
-                draw_candle(
-                    &mut painter,
-                    start_pos,
-                    x_rel,
-                    open,
-                    high,
-                    low,
-                    close,
-                    body_half_width,
-                    state.min_price,
-                    price_range,
-                    state.height,
-                );
-
-                painter.set_translation(start_pos);
-            }
         }
     }
 }
@@ -261,26 +211,46 @@ pub fn chart_render_system(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::trading::HistoryPoint;
+    use crate::trading::{InstrumentTradingData, OhlcPoint};
 
     #[test]
     fn test_chart_view_state_update() {
         let mut world = World::new();
-        let mut trading_data = TradingData::default();
-        trading_data.history_points = vec![
-            HistoryPoint {
-                timestamp_ms: 1000,
-                price: 10.0,
-            },
-            HistoryPoint {
-                timestamp_ms: 2000,
-                price: 20.0,
-            },
-        ];
-        world.insert_resource(trading_data);
+        let mut tdmap = InstrumentTradingDataMap::default();
+        let data = InstrumentTradingData {
+            ohlc_points: vec![
+                OhlcPoint {
+                    timestamp_ms: 1000,
+                    open_time_ms: 1000,
+                    open: 10.0,
+                    high: 12.0,
+                    low: 9.0,
+                    close: 11.0,
+                    volume: None,
+                },
+                OhlcPoint {
+                    timestamp_ms: 2000,
+                    open_time_ms: 2000,
+                    open: 11.0,
+                    high: 22.0,
+                    low: 10.0,
+                    close: 20.0,
+                    volume: None,
+                },
+            ],
+            ..Default::default()
+        };
+        tdmap.map.insert("TEST".to_string(), data);
+        world.insert_resource(tdmap);
 
         let _entity = world
-            .spawn((ChartViewState::default(), GlobalTransform::default()))
+            .spawn((
+                ChartViewState::default(),
+                GlobalTransform::default(),
+                ChartInstrument {
+                    instrument_id: "TEST".to_string(),
+                },
+            ))
             .id();
 
         let _schedule = Schedule::default();
@@ -293,19 +263,10 @@ mod tests {
         state.time_window_ms = 1000;
         state.latest_timestamp_ms = 2000;
 
-        let history = vec![
-            HistoryPoint {
-                timestamp_ms: 500,
-                price: 100.0,
-            }, // out of window
-            HistoryPoint {
-                timestamp_ms: 1500,
-                price: 10.0,
-            }, // in window
-            HistoryPoint {
-                timestamp_ms: 2000,
-                price: 20.0,
-            }, // in window
+        let history: Vec<(i64, f32)> = vec![
+            (500, 100.0),  // out of window
+            (1500, 10.0),  // in window
+            (2000, 20.0),  // in window
         ];
 
         let mut min = f32::MAX;
@@ -314,12 +275,12 @@ mod tests {
         let start_ts = state.latest_timestamp_ms - state.time_window_ms;
 
         for p in &history {
-            if p.timestamp_ms >= start_ts {
-                if p.price < min {
-                    min = p.price;
+            if p.0 >= start_ts {
+                if p.1 < min {
+                    min = p.1;
                 }
-                if p.price > max {
-                    max = p.price;
+                if p.1 > max {
+                    max = p.1;
                 }
                 has_visible_data = true;
             }

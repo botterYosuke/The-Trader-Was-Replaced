@@ -55,6 +55,7 @@ class NautilusBarsReplayProvider(BaseReplayProvider):
                 bar.high.as_double(),
                 bar.low.as_double(),
                 bar.close.as_double(),
+                bar.volume.as_double(),
             )
             for bar in bars
         ]

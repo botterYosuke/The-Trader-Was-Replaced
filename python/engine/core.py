@@ -5,7 +5,7 @@ import time
 from typing import Literal, Optional
 
 from .jquants_to_catalog import ensure_jquants_catalog
-from .models import EngineSnapshot, HistoryPoint, OhlcPoint, TradingState
+from .models import EngineSnapshot, HistoryPoint, OhlcPoint, PerInstrumentState, TradingState
 from .reducer import KlineUpdate, ReducerState, ReplayEvent, ReplayTimeUpdated, apply_event
 from .replay import BaseReplayProvider, NautilusBarsReplayProvider
 
@@ -110,7 +110,7 @@ class DataEngine:
             raise ValueError("Replay provider returned no data for priming")
         self._replay_provider = provider
         self._mode = "replay"
-        ts, o, h, l, c = tick
+        ts, o, h, l, c, *_rest = tick
         ts_ms = int(ts * 1000)
         self._rs = ReducerState(
             timestamp_ms=ts_ms,
@@ -205,6 +205,10 @@ class DataEngine:
                 # D9/D24: store multi-provider dict
                 self._replay_providers = providers
                 self._replay_primary_id = primary_iid
+                # A0: priming は primary の初バーを global ohlc_points だけに積むので per-id にも複製
+                if self._rs.ohlc_points:
+                    self._rs.per_id_ohlc_points[primary_iid] = list(self._rs.ohlc_points)
+                    self._rs.per_id_close.setdefault(primary_iid, self._rs.price)
                 self._last_replay_catalog_path = effective_catalog_path
                 self._replay_state = "LOADED"
                 return True, None
@@ -348,20 +352,31 @@ class DataEngine:
                 popped = p.pop_next_tick()
                 if popped is None:
                     continue
-                _, o, h, l, c = popped
+                _, o, h, l, c, *_rest = popped
+                volume = _rest[0] if _rest else 0.0
+                if iid == self._replay_primary_id:
+                    # Primary: emit with "" id so reducer appends OhlcPoint (volume) / history.
+                    # Mirrors server_grpc.py D16 double-emit convention.
+                    self._apply_event_locked(KlineUpdate(
+                        timestamp_ms=ts_ms, close=c, open=o, high=h, low=l,
+                        open_time_ms=ts_ms, instrument_id="",
+                        volume=volume,
+                    ))
                 self._apply_event_locked(KlineUpdate(
                     timestamp_ms=ts_ms, close=c, open=o, high=h, low=l,
                     open_time_ms=ts_ms, instrument_id=iid,
+                    volume=volume,
                 ))
             self._is_exhausted = all(p.is_exhausted() for p in self._replay_providers.values())
         elif self._replay_provider:
             # Legacy single-provider path (backward compat)
             tick = self._replay_provider.get_next_tick()
             if tick:
-                ts, o, h, l, c = tick
+                ts, o, h, l, c, *_rest = tick
+                volume = _rest[0] if _rest else 0.0
                 ts_ms = int(ts * 1000)
                 self._apply_event_locked(ReplayTimeUpdated(timestamp_ms=ts_ms))
-                self._apply_event_locked(KlineUpdate(timestamp_ms=ts_ms, close=c, open=o, high=h, low=l, open_time_ms=ts_ms))
+                self._apply_event_locked(KlineUpdate(timestamp_ms=ts_ms, close=c, open=o, high=h, low=l, open_time_ms=ts_ms, volume=volume))
                 self._is_exhausted = self._replay_provider.is_exhausted()
             else:
                 self._is_exhausted = True
@@ -391,6 +406,14 @@ class DataEngine:
         """Return the current trading state as a read-only snapshot."""
         with self._lock:
             rs = self._rs
+            primary_id = self._replay_primary_id  # "" for legacy single-provider
+            per_instrument: dict[str, PerInstrumentState] = {}
+            for iid, close_px in rs.per_id_close.items():
+                per_instrument[iid] = PerInstrumentState(
+                    price=close_px if close_px > 0 else None,
+                    ohlc_points=list(rs.per_id_ohlc_points.get(iid, [])),
+                    depth=None,  # Live depth は GetState 側で per-instrument に注入される
+                )
             return TradingState(
                 price=rs.price,
                 history=list(rs.history),
@@ -409,6 +432,7 @@ class DataEngine:
                 venue_id=self.venue_id,
                 subscribed_instruments=list(self._subscribed_instruments),
                 instruments_loaded=len(self._subscribed_instruments),
+                per_instrument=per_instrument,
             )
 
     def take_snapshot(self) -> EngineSnapshot:

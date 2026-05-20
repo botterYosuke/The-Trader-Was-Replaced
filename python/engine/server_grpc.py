@@ -22,8 +22,10 @@ from .live.live_adapter_factory import build_live_adapter_factory
 from .live.live_runner import LiveRunner
 from .live.reducer_bridge import LiveReducerBridge
 from .live.last_price_cache import LastPriceCache
+from .live.depth_cache import DepthCache
 from .live.state_machine import VenueStateMachine
 from .mode_manager import ModeManager
+from .models import PerInstrumentState
 from .proto import engine_pb2, engine_pb2_grpc
 from .replay import BaseReplayProvider
 from .jquants_loader import JQuantsLoader
@@ -192,6 +194,7 @@ class GrpcDataEngineServer(
         self._live_loop = None
         self._live_thread = None
         self._live_price_cache: Optional[LastPriceCache] = None
+        self._live_depth_cache: Optional[DepthCache] = None
         self._live_timeout_s = 5.0
         # When True, suppress live_last_error on the next GetState. Armed on
         # Live re-enter / VenueLogin success / Replay toggle, cleared lazily by
@@ -273,12 +276,15 @@ class GrpcDataEngineServer(
         runner._loop = self._live_loop
         bridge = LiveReducerBridge(bus=runner.bus, data_engine=self.engine)
         cache = LastPriceCache(bus=runner.bus)
+        depth_cache = DepthCache(bus=runner.bus)
         await bridge.start()
         await cache.start()
+        await depth_cache.start()
         await runner.start()
         self._live_runner = runner
         self._live_bridge = bridge
         self._live_price_cache = cache
+        self._live_depth_cache = depth_cache
 
     def _start_live_components(self, environment_hint: Optional[str] = None):
         if self._live_runner is not None and self._live_bridge is not None:
@@ -298,11 +304,14 @@ class GrpcDataEngineServer(
     async def _teardown_live_components_async(self):
         bridge = self._live_bridge
         cache = self._live_price_cache
+        depth_cache = self._live_depth_cache
         runner = self._live_runner
         if bridge is not None:
             await bridge.stop()
         if cache is not None:
             await cache.stop()
+        if depth_cache is not None:
+            await depth_cache.stop()
         if runner is not None:
             await runner.aclose()
 
@@ -322,6 +331,7 @@ class GrpcDataEngineServer(
             self._live_runner = None
             self._live_bridge = None
             self._live_price_cache = None
+            self._live_depth_cache = None
             # Arm clear-on-toggle: a prior lifecycle's last_error must not bleed
             # into the next Live session or stay visible after returning to Replay.
             self._suppress_live_last_error = True
@@ -382,6 +392,8 @@ class GrpcDataEngineServer(
 
         # D8: mode-aware last_prices dispatch
         mode = self.mode_manager.current_mode if self.mode_manager else "Replay"
+        state = self.engine.get_current_state()
+        merged_pi = state.per_instrument
         if mode in ("LiveManual", "LiveAuto"):
             raw = (
                 self._live_price_cache.snapshot()
@@ -398,15 +410,29 @@ class GrpcDataEngineServer(
                     last_prices = raw  # subscribed_ids broken → fall back
             else:
                 last_prices = raw
+            depth_by_id = (
+                self._live_depth_cache.snapshot()
+                if self._live_depth_cache is not None
+                else {}
+            )
+            base_pi = state.per_instrument
+            merged_pi = {
+                k: (v.model_copy(update={"depth": d}) if (d := depth_by_id.get(k)) else v)
+                for k, v in base_pi.items()
+            }
+            # depth はあるが kline 未着の銘柄 (base_pi に居ない) を補完
+            for k, d in depth_by_id.items():
+                if k not in merged_pi:
+                    merged_pi[k] = PerInstrumentState(depth=d)
         else:  # Replay
             last_prices = self.engine.get_replay_last_prices()
 
-        state = self.engine.get_current_state()
         state = state.model_copy(
             update={
                 "live_last_error": live_last_error,
                 "last_prices": last_prices,
                 "configured_venue": self._live_venue_id,
+                "per_instrument": merged_pi,
             }
         )
         return engine_pb2.GetStateResponse(json_data=state.model_dump_json())
@@ -1433,9 +1459,11 @@ class GrpcDataEngineServer(
                 success=False,
                 error_code="UNSUBSCRIBE_FAILED",
             )
-        # D20: remove from price cache to prevent stale prices on re-add
+        # D20: remove from price + depth caches to prevent stale data on re-add
         if self._live_price_cache is not None:
             self._live_price_cache.remove(request.instrument_id)
+        if self._live_depth_cache is not None:
+            self._live_depth_cache.remove(request.instrument_id)
         return engine_pb2.SubscribeResponse(success=True, error_code="")
 
 

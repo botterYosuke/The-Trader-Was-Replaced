@@ -15,7 +15,7 @@ pub struct ReplayStartupProgress {
     pub error: Option<String>,
     /// `Time<Real>::elapsed()` 基準の起動時刻。
     pub started_at_elapsed: Option<std::time::Duration>,
-    /// Run 押下時点で観測されていた `TradingData.timestamp_ms`。
+    /// Run 押下時点で観測されていた `TradingSession.timestamp_ms`。
     pub baseline_timestamp_ms: Option<i64>,
     /// UI が Run ごとに採番する startup id。
     pub startup_id: u64,
