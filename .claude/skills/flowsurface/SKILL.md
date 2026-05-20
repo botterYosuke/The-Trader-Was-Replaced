@@ -45,7 +45,7 @@ iced と Bevy はパラダイムが違う (iced = Elm 風 retained-mode + `Appli
 - **bevy_vector_shapes** `ShapePainter` — ローソク / ライン / 矩形の**即時描画** (`src/ui/chart.rs` が既に採用)
 - **bevy_cosmic_edit** — テキスト入力 (search box, settings)
 - **bevy_tasks** `AsyncComputeTaskPool` / `IoTaskPool` — 非同期データ取得
-- **共通既存ピース** — `src/ui/chart.rs` (ShapePainter candlestick), `sidebar.rs` (virtual scroll + tickers), `floating_window.rs`, `layout_persistence.rs`, `components.rs` (色トークン + Component 型), `instrument_picker.rs`
+- **共通既存ピース** — `src/ui/chart_{viewstate,render,axes}.rs` (Phase 7.3 で `chart.rs` から分割、ShapePainter candlestick + ViewState + axis labels), `sidebar.rs` (virtual scroll + tickers), `floating_window.rs`, `layout_persistence.rs`, `components.rs` (色トークン + Component 型), `instrument_picker.rs`
 - バックエンドは **gRPC + nautilus_trader / 立花 / kabuステーション**。flowsurface のように **UI が直接 WebSocket → 取引所** ではない (UI は gRPC ストリーム受信のみ)
 
 並用前提: `bevy-engine` スキルで `add_systems` タプル 20 上限・observer・required components・Anchor の罠を先に押さえること。
@@ -238,7 +238,11 @@ flowsurface の iced パターンを写しただけでは出てこない、Bevy 
 
 ## このスキルの対象になっている src/ui/* (現状スナップショット)
 
-- `chart.rs` — `ShapePainter` で candlestick 描画、`ChartViewState` Component。flowsurface `kline.rs` / `data/src/aggr/time.rs` を参考に footprint / heatmap / 指標を増やせる
+- **chart は Phase 7.3 で `chart.rs` を 3 ファイルに分割済 (旧 `src/ui/chart.rs` は削除)**:
+  - `chart_viewstate.rs` — `ChartViewState` Component (translation/scaling/cell_width/cell_height/base_price_y、座標ヘルパ `price_to_y`/`y_to_price`/`interval_to_x`/`x_to_time_ms`、`visible_*_range`)、autoscale 3 system (`chart_data_tick`/`interaction_tick`/`autoscale_apply`、`RequestAutoscale` event 駆動で self-Changed ループ回避)、`ChartSet` enum、レイアウト定数。flowsurface `chart.rs::ViewState` / `scale/linear.rs` autoscale 経路の翻訳
+  - `chart_render.rs` — 毎フレーム純 draw (`chart_main_render_system`、ShapePainter で背景+candle+close ライン、`Changed` で gate しない)。flowsurface `kline.rs::draw`
+  - `chart_axes.rs` — **価格軸/時間軸ラベル (Phase B)**。`calc_optimal_price_ticks` / `calc_optimal_time_step` (flowsurface `scale/linear.rs` / `scale/timeseries.rs` の翻訳済純関数、再利用可)、`price/time_axis_labels_system` (`Changed<ChartViewState>` 駆動で gutter 子 Text2d を despawn+respawn)、`PriceGutter`/`TimeGutter`/`*GutterRef`/`*Label` Component
+  - 未実装: Phase C (pan/zoom `chart_interaction.rs`)、Phase D (crosshair `chart_crosshair.rs`)、Phase E (volume `chart_volume.rs`)、Phase F (Live Ladder)
 - `sidebar.rs` — virtual scroll + tickers リスト + 検索。flowsurface `tickers_table.rs` の filter/sort/fav パターンが参考になる
 - `orders.rs` / `positions.rs` / `buying_power.rs` — trading panel。flowsurface には**ない** (flowsurface は注文機能を持たない) ので、表 / レイアウト部分のみ参考、注文関連ロジックは `nautilus_trader` / `tachibana` / `kabusapi` スキルへ
 - `floating_window.rs` / `layout_persistence.rs` — pane / persistence。flowsurface `pane.rs` / `data/src/layout/` / `src/layout.rs` を参考

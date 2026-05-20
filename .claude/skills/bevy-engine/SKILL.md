@@ -278,6 +278,20 @@ egui の中で `state.buffer` のような大きい String を編集するとき
   `.chain()` で挟み frame 3 以降のカウントが 0 であることを assert する
   （`add_event::<RequestX>()` をテスト側 App にも入れる。無いと `EventWriter` 取得で panic）。
   src/ui/chart_viewstate.rs の autoscale 3 段 (data_tick / interaction_tick / autoscale_apply) が実例。
+- **`Changed<T>` 駆動 system が `commands.spawn(...).set_parent(stored_entity)` で
+  `The entity with ID ...v.. does not exist` panic (`bevy_hierarchy child_builder.rs:173`)**:
+  `set_parent`/`add_child` は親が despawn 済だと apply 時に panic する（`world.entity_mut(parent)`）。
+  典型は「ある entity の `Changed<T>` を読み、その entity が保持する子 entity (gutter/badge 等) の
+  Entity id へ動的に子を spawn+parent する」system で、**同じ frame に別 system がその親 entity を
+  `despawn_recursive` する**ケース。query は実行時点で生きている entity を返すが、despawn の
+  command が自分の `set_parent` より先に flush されると親が消えて panic する（本プロジェクトでは
+  chart panel が prune→`instrument_chart_sync_system` で spawn 直後に despawn される startup churn で発生）。
+  **対策 2 段**: ① 親 (gutter) の生存を `Query<(), With<GutterMarker>>` で受け
+  `if !q.contains(stored_id) { continue; }` で skip（despawn 済なら描かない）。
+  ② 動的 spawn system を **despawn する側の system の `.after(...)` に置く**（sync point で despawn が
+  先に flush され、`Changed` query に死んだ親が出なくなる）。①だけだと「同一 flush batch で despawn が
+  先順位」のレースが残るので ②と併用が確実。回帰テスト: 親を spawn→即 despawn→ref だけ残した entity で
+  system を回し panic しないこと + 子が 0 件を assert。src/ui/chart_axes.rs の axis label system が実例。
 - **`CosmicEditBuffer` を spawn したのに文字が全く描画されない (背景すら出ない)**:
   このフォークの `render_texture` は `CosmicWidgetSize::scan()` で `Has<TextEdit2d>` または
   `Has<TextEdit>` を要求する。**`TextEdit2d` を付けないと `logical_size()` が `Err` を返し描画が
