@@ -1,4 +1,5 @@
 use crate::ui::chart_axes::{PriceGutter, PriceGutterRef, TimeGutter, TimeGutterRef};
+use crate::ui::chart_crosshair::CrosshairState;
 use crate::ui::chart_viewstate::{
     CHART_CHILD_LOCAL_X_REPLAY, CHART_CHILD_LOCAL_Y, CHART_DRAW_SIZE, CHART_PANEL_SIZE,
     ChartViewState, PRICE_GUTTER_WIDTH, TIME_GUTTER_HEIGHT,
@@ -71,6 +72,9 @@ pub fn spawn_chart_panel(commands: &mut Commands, instrument_id: &str) {
             ChartInstrument {
                 instrument_id: instrument_id.to_string(),
             },
+            // Phase D: crosshair 状態。observer (Pointer<Move>/<Out>) が cursor_world を書き、
+            // derive system が hovered_price/time を埋める。
+            CrosshairState::default(),
         ))
         .id();
 

@@ -321,7 +321,8 @@ pub fn time_axis_labels_system(
 }
 
 /// ms (UTC) を "HH:MM" にフォーマットする。日付跨ぎは Phase E polish の余地 (今は時刻のみ)。
-fn format_time_label(ms: i64) -> Option<String> {
+/// Phase D crosshair の time badge も同じフォーマットを使うため `pub(crate)`。
+pub(crate) fn format_time_label(ms: i64) -> Option<String> {
     chrono::DateTime::from_timestamp_millis(ms).map(|dt| dt.format("%H:%M").to_string())
 }
 

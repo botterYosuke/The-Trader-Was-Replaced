@@ -1,5 +1,6 @@
 pub mod buying_power;
 pub mod chart_axes;
+pub mod chart_crosshair;
 pub mod chart_interaction;
 pub mod chart_render;
 pub mod chart_viewstate;
@@ -36,6 +37,10 @@ pub use components::{
 
 use crate::ui::buying_power::buying_power_panel_system;
 use crate::ui::chart_axes::{price_axis_labels_system, time_axis_labels_system};
+use crate::ui::chart_crosshair::{
+    chart_crosshair_derive_system, chart_crosshair_render_system, crosshair_badge_system,
+    install_chart_crosshair_observer,
+};
 use crate::ui::chart_interaction::{chart_scroll_zoom_system, install_chart_drag_observer};
 use crate::ui::chart_render::chart_main_render_system;
 use crate::ui::chart_viewstate::{
@@ -242,6 +247,17 @@ impl Plugin for UiPlugin {
                     .after(instrument_chart_sync_system),
                 time_axis_labels_system
                     .in_set(ChartSet::Render)
+                    .after(instrument_chart_sync_system),
+                // Phase D: crosshair。observer 設置は schedule 外発火なので set 無し。
+                install_chart_crosshair_observer,
+                // derive は autoscale 確定後の base_price_y/cell_height で readout を計算 (Render)。
+                chart_crosshair_derive_system.in_set(ChartSet::Render),
+                // cross line は毎フレーム純 draw (immediate-mode、Changed gate しない)。
+                chart_crosshair_render_system.in_set(ChartSet::Render),
+                // badge は derive 後 (hovered_price/time を読む) かつ sync 後 (gutter set_parent panic 回避)。
+                crosshair_badge_system
+                    .in_set(ChartSet::Render)
+                    .after(chart_crosshair_derive_system)
                     .after(instrument_chart_sync_system),
             ),
         )
