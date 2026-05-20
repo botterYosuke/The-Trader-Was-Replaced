@@ -10,7 +10,8 @@ use backcast::trading::engine::{
     SetReplaySpeedRequest, ShutdownRequest, ShutdownResponse, StartEngineRequest,
     StartEngineResponse, StartResponse, StepReplayRequest, StopEngineRequest, StopReplayRequest,
     StopRequest, StopResponse, SubscribeRequest, SubscribeResponse, UnsubscribeRequest,
-    VenueControlResponse, VenueLoginRequest, VenueLoginResponse, VenueLogoutRequest,
+    BackendEvent, SubscribeBackendEventsReq, VenueControlResponse, VenueLoginRequest,
+    VenueLoginResponse, VenueLogoutRequest,
 };
 use backcast::trading::engine::{
     health_check_response::ServingStatus,
@@ -377,6 +378,16 @@ impl DataEngine for MyDataEngine {
             error_code: "".to_string(),
             execution_mode: req.mode,
         }))
+    }
+
+    type SubscribeBackendEventsStream =
+        tokio_stream::Empty<Result<BackendEvent, Status>>;
+
+    async fn subscribe_backend_events(
+        &self,
+        _request: Request<SubscribeBackendEventsReq>,
+    ) -> Result<Response<Self::SubscribeBackendEventsStream>, Status> {
+        Ok(Response::new(tokio_stream::empty()))
     }
 }
 

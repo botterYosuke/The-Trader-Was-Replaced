@@ -624,6 +624,45 @@ pub enum BackendStatusUpdate {
     },
 }
 
+/// Bevy 側に流す backend event。proto の `backend_event::Payload` (oneof) を
+/// owned 型でミラーしたもの（gRPC 受信タスクから ECS へ渡すための Send + 'static 型）。
+#[derive(Debug, Clone)]
+pub enum BackendEvent {
+    SecretRequired {
+        request_id: String,
+        venue: String,
+        kind: String,
+        purpose: String,
+    },
+    OrderEvent {
+        order_id: String,
+        venue_order_id: String,
+        client_order_id: String,
+        status: String,
+        filled_qty: f64,
+        avg_price: f64,
+        ts_ms: i64,
+    },
+    AccountEvent {
+        cash: f64,
+        buying_power: f64,
+        positions: Vec<AccountPosition>,
+        ts_ms: i64,
+    },
+    VenueLogoutDetected {
+        venue: String,
+    },
+}
+
+/// AccountEvent.positions の 1 要素。proto AccountPosition のミラー。
+#[derive(Debug, Clone)]
+pub struct AccountPosition {
+    pub symbol: String,
+    pub qty: i64,
+    pub avg_price: f64,
+    pub unrealized_pnl: f64,
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

@@ -409,17 +409,39 @@ uv run pytest --cov=engine --cov-report=html
 
 1. Proto を再コンパイル（Rust 側は `cargo build` で `build.rs` が自動実行）
 2. Python 側も生成コードを更新（再生成すると `engine_pb2_grpc.py` の絶対 import が復活するので、`from . import engine_pb2 as engine__pb2` に**再パッチ**する）
-3. **新しい `rpc` を追加したら、その trait を実装している mock も全部追従させる** — `tests/backend_integration.rs` の `MyDataEngine` (DataEngine trait の mock) は、proto に `rpc Shutdown` を足すと `E0046: missing shutdown` でコンパイル不能になる。proto の rpc 追加時は同 PR で mock に stub メソッド（`Ok(Response::new(XxxResponse{...}))`）を足すこと。`cargo test --no-run` で E0046 を早期検知できる。
+3. **新しい `rpc` を追加したら、その trait を実装している mock も全部追従させる** — `tests/backend_integration.rs` の `MyDataEngine` (DataEngine trait の mock) は、proto に `rpc Shutdown` を足すと `E0046: missing shutdown` でコンパイル不能になる。proto の rpc 追加時は同 PR で mock に stub メソッド（`Ok(Response::new(XxxResponse{...}))`）を足すこと。`cargo test --no-run` で E0046 を早期検知できる。**server-streaming rpc (`returns (stream X)`)** を足した場合は mock に `type XxxStream = tokio_stream::Empty<Result<X, Status>>;` (assoc type) と空ストリーム返しの handler を足す。`tokio-stream` は `[dev-dependencies]` でよい（本番 `cargo run` には不要）。
 4. 両サイドのテストが通ることを確認してから merge
 
 ```bash
-# Python proto 再生成（プロジェクトルートで）
+# Python proto 再生成（生成物は python/engine/proto/ に置く。--python_out=. は誤り）
 cd python
-uv run python -m grpc_tools.protoc -I proto --python_out=. --grpc_python_out=. proto/engine.proto
+uv run python -m grpc_tools.protoc -I proto --python_out=engine/proto --grpc_python_out=engine/proto proto/engine.proto
+# 再パッチ: engine_pb2_grpc.py の `import engine_pb2 as engine__pb2` を
+#          `from . import engine_pb2 as engine__pb2` に直す（rg で確認）
 
 # Rust は cargo build で自動
 cargo build
 ```
+
+### server-streaming handler の at-exit ハング罠（sync ThreadPool servicer）
+
+`server_grpc.py` の servicer は `grpc.server(ThreadPoolExecutor)` の **同期** handler。新しく
+`def Xxx(self, request, context): ... yield ...` 形式の server-streaming handler を足すとき、
+handler が `queue.Queue.get()` など **ブロッキング待ち** をするなら、クライアントが
+stream を cancel した瞬間に worker thread が `get()` で **永久停止** する（cancel は
+`get()` を起こさない）。`server.stop(0)` でもこのスレッドは死なず、**インタプリタ終了時に
+`ThreadPoolExecutor` の atexit join がそのスレッドを待ち続け、pytest プロセス全体が
+exit でハングする**。
+
+- **症状が紛らわしい**: テストは「N passed」と表示されるのに **プロンプトが返らない**
+  （テスト失敗ではなく "プロセスが終わらない"）。`uv run pytest -m "not slow"` が
+  普段 ~25s なのに 10 分以上終わらない → これを疑う。
+- **検知**: 単体ファイルを `timeout 60 ... pytest` で回し、`EXIT=124` かつ "N passed" 既出なら
+  at-exit ハング確定（macOS は `timeout` 不在なので `gtimeout` か python subprocess watchdog で）。
+- **修正**: handler 内で subscription 取得直後に `context.add_callback(sub.close)` を登録する。
+  RPC 終了 (cancel / deadline / teardown) で `sub.close()` が走り、sentinel を流して
+  `get()` を起こす → handler が抜け、worker が解放される。`try/finally: sub.close()` も
+  冪等なら併用可。
 
 ---
 
