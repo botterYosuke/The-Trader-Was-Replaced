@@ -668,6 +668,19 @@ mod tests {
     }
 
     #[test]
+    fn kabu_gate_works_with_backend_uppercase_venue_id() {
+        // The venue string actually reaching ModifyForm is VenueStatusRes.venue_id,
+        // which the backend reports UPPERCASE ("KABU"). Regression: the gate used to
+        // be dead because for_venue only matched lowercase.
+        let mut f = open_form("KABU");
+        f.new_qty_buf = "200".to_string();
+        assert!(f.requires_kabu_ack(), "uppercase KABU must require ack");
+        assert!(!f.can_confirm(), "KABU without ack must be blocked");
+        f.ack_kabu = true;
+        assert!(f.can_confirm());
+    }
+
+    #[test]
     fn tachibana_does_not_require_ack() {
         let mut f = open_form("tachibana");
         f.new_qty_buf = "300".to_string();

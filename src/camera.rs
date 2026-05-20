@@ -5,6 +5,7 @@ use bevy_cosmic_edit::prelude::CosmicPrimaryCamera;
 use bevy_pancam::{DirectionKeys, PanCam};
 
 use crate::ui::chart_viewstate::ChartViewState;
+use crate::ui::order_context_menu::OrderContextMenu;
 use crate::ui::strategy_editor::StrategyEditorContent;
 
 pub fn setup_camera(mut commands: Commands) {
@@ -45,6 +46,7 @@ pub fn pancam_suppression_over_editor_system(
     editor_q: Query<(&GlobalTransform, &Sprite), With<StrategyEditorContent>>,
     chart_q: Query<(&GlobalTransform, &Sprite), With<ChartViewState>>,
     mut scroll_q: Query<&mut ScrollEnabled, With<StrategyEditorContent>>,
+    context_menu: Option<Res<OrderContextMenu>>,
 ) {
     let ctrl = keys.any_pressed([KeyCode::ControlLeft, KeyCode::ControlRight]);
 
@@ -91,8 +93,13 @@ pub fn pancam_suppression_over_editor_system(
 
     // 右/中ボタンドラッグ中はエディタ/chart 上でも強制的にパンを有効にする。
     let dragging = mouse.pressed(MouseButton::Right) || mouse.pressed(MouseButton::Middle);
+    // OrdersPanel 右クリックコンテキストメニューが開いている間は PanCam を止める。
+    // PanCam は Right ボタンを掴む (grab_buttons) ため、メニューを開く右クリック自体が
+    // pan を誘発し、screen-space のメニューと world-space の OrdersPanel がずれる。
+    // メニュー表示中は `dragging` を上書きして強制的に無効化する。
+    let context_menu_open = context_menu.map(|m| m.open).unwrap_or(false);
     // 値が変わるときだけ書く: 毎フレームの無条件代入は spurious な Changed<PanCam> を立てる。
-    let should_enable = ctrl || !(over_editor || over_chart) || dragging;
+    let should_enable = !context_menu_open && (ctrl || !(over_editor || over_chart) || dragging);
     if pancam.enabled != should_enable {
         pancam.enabled = should_enable;
     }

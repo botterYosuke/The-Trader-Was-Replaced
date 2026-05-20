@@ -28,20 +28,31 @@ pub struct VenueCapabilities {
 ///
 /// Phase 9 TODO: replace body with lookup into `Ready.capabilities`.
 pub fn for_venue(venue_id: &str) -> Option<VenueCapabilities> {
-    match venue_id {
-        "tachibana" => Some(VenueCapabilities {
+    // Venue ids reach this fn in mixed case: the UI login command sends
+    // lowercase ("tachibana"/"kabu", menu_bar.rs), but the backend reports
+    // `VenueStatusRes.venue_id` back in UPPERCASE ("TACHIBANA"/"KABU", verified by
+    // menu_bar's own gating `v == "TACHIBANA"`). Match case-insensitively so the
+    // capability lookup works regardless of which casing the caller holds —
+    // otherwise modify_modal's kabu correction-warning gate (keyed on the
+    // backend-reported uppercase id) would silently never fire (§2.3 safety bypass).
+    // `eq_ignore_ascii_case` avoids a per-call heap alloc: modify_modal_sync_system
+    // calls this every frame while the modal is open.
+    if venue_id.eq_ignore_ascii_case("tachibana") {
+        Some(VenueCapabilities {
             supports_order_correction: true,
             max_subscribed_instruments: u32::MAX,
             requires_second_password: true,
             token_persists_across_restart: true,
-        }),
-        "kabu" => Some(VenueCapabilities {
+        })
+    } else if venue_id.eq_ignore_ascii_case("kabu") {
+        Some(VenueCapabilities {
             supports_order_correction: false,
             max_subscribed_instruments: 50,
             requires_second_password: false,
             token_persists_across_restart: false,
-        }),
-        _ => None,
+        })
+    } else {
+        None
     }
 }
 
@@ -87,6 +98,20 @@ mod tests {
     fn unknown_venue_returns_none() {
         assert!(for_venue("bitmex").is_none());
         assert!(for_venue("").is_none());
+    }
+
+    #[test]
+    fn for_venue_is_case_insensitive() {
+        // The backend reports venue_id in UPPERCASE; the kabu correction-warning
+        // gate (modify_modal) must resolve it. Regression for the dead-gate bug.
+        assert_eq!(for_venue("KABU"), for_venue("kabu"));
+        assert_eq!(for_venue("TACHIBANA"), for_venue("tachibana"));
+        assert_eq!(for_venue("Kabu"), for_venue("kabu"));
+        let kabu = for_venue("KABU").expect("uppercase KABU must resolve");
+        assert!(
+            !kabu.supports_order_correction,
+            "KABU must require the cancel→resend correction warning"
+        );
     }
 
     #[test]

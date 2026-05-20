@@ -81,13 +81,17 @@ class AccountSync:
         if not force_emit and snapshot == self._last_emitted:
             return  # 不変なら emit しない（差分 push）
 
-        self._last_emitted = snapshot
         try:
             self._on_account_event(snapshot)
         except asyncio.CancelledError:
             raise
         except BaseException as exc:  # noqa: BLE001 — callback の失敗でループを止めない
+            # `_last_emitted` は **成功時のみ** 更新する。ここで先に更新してしまうと、
+            # 配信に失敗した snapshot を「emit 済み」と誤記録し、値が変わるまで二度と
+            # 再送されない（特に force_emit=True の初回ロードが永久に欠落しうる）。
             _LOG.warning("AccountSync: on_account_event callback failed", exc_info=exc)
+            return
+        self._last_emitted = snapshot
 
     async def stop(self) -> None:
         if self._task is None:

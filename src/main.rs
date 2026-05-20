@@ -1366,6 +1366,55 @@ mod tests {
         );
     }
 
+    #[test]
+    fn mode_change_resets_portfolio_to_prevent_live_replay_bleed() {
+        use backcast::trading::ExecutionMode;
+        let mut status = BackendStatus::default();
+        let mut last_run = LastRunResult::default();
+        // Seed a "Live" portfolio snapshot (as apply_account_event would leave it).
+        let mut portfolio = PortfolioState {
+            cash: 100_000.0,
+            buying_power: 250_000.0,
+            equity: 749_000.0,
+            loaded: true,
+            ..Default::default()
+        };
+        let mut available = AvailableInstruments::default();
+        let mut progress = ReplayStartupProgress::default();
+        let mut venue_status = VenueStatusRes::default();
+        // Currently in LiveManual; the backend reports a switch to Replay.
+        let mut exec_mode = ExecutionModeRes {
+            mode: ExecutionMode::LiveManual,
+        };
+        let mut tickers = Tickers::default();
+        let mut last_prices = LastPrices::default();
+        let mut live_orders = LiveOrders::default();
+        let mut order_feedback = OrderFeedback::default();
+        apply_status_update(
+            BackendStatusUpdate::ExecutionModeChanged {
+                mode: ExecutionMode::Replay,
+            },
+            &mut status,
+            &mut last_run,
+            &mut portfolio,
+            &mut available,
+            &mut progress,
+            &mut venue_status,
+            &mut exec_mode,
+            &mut tickers,
+            &mut last_prices,
+            &mut live_orders,
+            &mut order_feedback,
+        );
+        assert!(
+            !portfolio.loaded,
+            "stale Live account snapshot must not bleed into the Replay view"
+        );
+        assert_eq!(portfolio.cash, 0.0);
+        assert_eq!(portfolio.equity, 0.0);
+        assert_eq!(portfolio.buying_power, 0.0);
+    }
+
     /// Variant of `apply` that returns the `Tickers` resource after the update,
     /// for verifying `InstrumentsListed` overwrite semantics.
     fn apply_with_tickers(

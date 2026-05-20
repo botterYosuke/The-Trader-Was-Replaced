@@ -280,10 +280,21 @@ pub fn apply_status_update(
             venue_status.instruments_loaded = instruments_loaded;
         }
         BackendStatusUpdate::ExecutionModeChanged { mode } => {
+            let mode_actually_changed = exec_mode.mode != mode;
             exec_mode.mode = mode;
             // Drop any stale order notice when the execution mode changes so a
             // reject from a prior venue/mode doesn't reappear out of context.
             order_feedback.message = None;
+            // The account snapshot in PortfolioState is mode-specific: Live writes
+            // it from `AccountEvent` (apply_account_event), Replay from a run's
+            // `PortfolioLoaded`. BuyingPower/Positions panels read it unconditionally
+            // (gated only on `loaded`), so without a reset the Live 余力/建玉 would
+            // bleed into a Replay view (and vice versa) until the new mode happens
+            // to repopulate it. Reset on a real change so panels fall back to the
+            // "—"/"No run yet" state; the new mode then refills it.
+            if mode_actually_changed {
+                *portfolio = PortfolioState::default();
+            }
         }
         BackendStatusUpdate::ConfiguredVenueDiscovered { venue_id } => {
             venue_status.configured_venue = venue_id;

@@ -26,6 +26,7 @@ from .live.depth_cache import DepthCache
 from .live.state_machine import VenueStateMachine
 from .live.backend_event_bus import BackendEventBus
 from .live.secret_vault import SecretVault
+from .live.secret_provider import SecondSecretResolver, SecretTimeoutError
 from .live.order_facade import ManualOrderFacade, OrderFacadeError
 from .live.account_sync import AccountSync
 from .mode_manager import ModeManager
@@ -200,6 +201,12 @@ class GrpcDataEngineServer(
         self._live_price_cache: Optional[LastPriceCache] = None
         self._live_depth_cache: Optional[DepthCache] = None
         self._live_timeout_s = 5.0
+        # Phase 9 Step 5: 注文 write RPC (Place/Cancel/Modify) は Tachibana の
+        # 第二暗証番号を「発注呼び出しの内側」で都度収集する (SecondSecretResolver
+        # の wait_for=30s)。5s だと secret 入力中に PLACE_TIMEOUT を返してしまい
+        # orphan order を生むため、secret 待ち (30s) + venue 往復に十分な余裕を持つ
+        # 専用 timeout を使う。mock/kabu は secret を待たず即応答するため無影響。
+        self._order_timeout_s = 40.0
         # When True, suppress live_last_error on the next GetState. Armed on
         # Live re-enter / VenueLogin success / Replay toggle, cleared lazily by
         # the next observed error from runner/bridge.
@@ -300,6 +307,19 @@ class GrpcDataEngineServer(
         self._live_depth_cache = depth_cache
         # Phase 9 Step 2: manual order facade wraps this session's adapter.
         self._order_facade = ManualOrderFacade(adapter)
+        # Phase 9 Step 5: Tachibana 第二暗証番号の都度収集 + EC 約定通知 push を
+        # adapter に注入する。SecondSecretResolver が SecretVault と SecretRequired
+        # push (transport) を束ね、adapter.submit/cancel/modify_order の内側で
+        # `await resolve()` する (facade は second_secret を終端し続ける = 単一経路)。
+        # set_execution_hooks を持たない adapter (mock / kabu) では何もしない。
+        if hasattr(adapter, "set_execution_hooks"):
+            resolver = SecondSecretResolver(
+                self._secret_vault, self._publish_secret_required
+            )
+            adapter.set_execution_hooks(
+                secret_resolver=resolver,
+                on_order_event=self._publish_order_event,
+            )
         # Phase 9 Step 4: account sync pushes AccountEvent on the backend stream.
         # The callback runs on the live-loop thread; BackendEventBus is threadsafe
         # (Step 0), so publishing directly from here is safe. AccountSync is
@@ -309,8 +329,13 @@ class GrpcDataEngineServer(
             on_account_event=self._publish_account_snapshot,
             interval_s=30.0,
         )
-        await account_sync.start()
         self._account_sync = account_sync
+        # NOTE: do NOT start the sync here. _start_live_components runs *before*
+        # adapter.login() in the VenueLogin handler, so the forced initial
+        # fetch_account() would hit a not-logged-in adapter — the guaranteed first
+        # emit would be swallowed and the UI would show no balance/positions until
+        # the first 30s interval tick. Started right after a successful login
+        # instead (see VenueLogin `_attempt` → `_start_account_sync_after_login`).
 
     def _start_live_components(self, environment_hint: Optional[str] = None):
         if self._live_runner is not None and self._live_bridge is not None:
@@ -326,6 +351,26 @@ class GrpcDataEngineServer(
             self._start_live_components_async(adapter), loop
         )
         future.result(timeout=self._live_timeout_s)
+
+    def _start_account_sync_after_login(self) -> None:
+        """Start the account sync once the adapter is logged in.
+
+        Deferred out of `_start_live_components_async` (which runs *before*
+        `adapter.login()` in the VenueLogin handler) so the forced initial
+        `fetch_account()` sees a live session and the UI gets balances/positions
+        immediately rather than after the first 30s interval tick. Best-effort:
+        a failure to start the sync task must not fail an already-successful login.
+        """
+        acct = self._account_sync
+        if acct is None:
+            return
+        try:
+            loop = self._ensure_live_loop()
+            asyncio.run_coroutine_threadsafe(acct.start(), loop).result(
+                timeout=self._live_timeout_s
+            )
+        except Exception:  # noqa: BLE001 — best-effort; login already succeeded
+            logging.exception("failed to start account sync after login")
 
     async def _teardown_live_components_async(self):
         bridge = self._live_bridge
@@ -1338,6 +1383,10 @@ class GrpcDataEngineServer(
                     self.venue_sm.transition_to("AUTHENTICATING")
                 if self.venue_sm is not None and self.venue_sm.current == "AUTHENTICATING":
                     self.venue_sm.transition_to("CONNECTED")
+                # Phase 9 Step 4: the adapter is now logged in — start the account
+                # sync (deferred from _start_live_components_async, which runs before
+                # login) so its forced initial fetch_account() sees a live session.
+                self._start_account_sync_after_login()
                 # Arm clear-on-toggle: suppress stale errors from a prior session.
                 self._suppress_live_last_error = True
                 return True, ""
@@ -1556,6 +1605,27 @@ class GrpcDataEngineServer(
         )
         self.publish_backend_event(engine_pb2.BackendEvent(account_event=proto))
 
+    def _publish_secret_required(self, request_id, venue, kind, purpose) -> None:
+        """SecondSecretResolver callback: SecretRequired を UI に push する。
+
+        adapter の発注呼び出し (live-loop thread) から呼ばれる。BackendEventBus は
+        threadsafe (Step 0)。secret 値そのものは載せない (request_id のみ)。"""
+        self.publish_backend_event(
+            engine_pb2.BackendEvent(
+                secret_required=engine_pb2.SecretRequired(
+                    request_id=request_id, venue=venue, kind=kind, purpose=purpose,
+                )
+            )
+        )
+
+    def _publish_order_event(self, ev) -> None:
+        """adapter on_order_event callback: EC 由来 OrderEventData を push する。
+
+        EC WS タスク (live-loop thread) から呼ばれる。proto 変換は既存ヘルパを再利用。"""
+        self.publish_backend_event(
+            engine_pb2.BackendEvent(order_event=self._order_event_to_proto(ev))
+        )
+
     def PlaceOrder(self, request, context):
         if request.token != self.token:
             context.abort(grpc.StatusCode.UNAUTHENTICATED, "Invalid token")
@@ -1593,12 +1663,15 @@ class GrpcDataEngineServer(
                 ),
                 loop,
             )
-            event = future.result(timeout=self._live_timeout_s)
+            event = future.result(timeout=self._order_timeout_s)
         except OrderFacadeError as exc:
+            return engine_pb2.PlaceOrderRes(success=False, error_code=exc.error_code)
+        except SecretTimeoutError as exc:
+            # 第二暗証番号の入力が来なかった (Tachibana)。注文は未送信。
             return engine_pb2.PlaceOrderRes(success=False, error_code=exc.error_code)
         except futures.TimeoutError:
             # 注文は venue 側で成立している可能性がある（reconcile は Step 8）。
-            logging.warning("PlaceOrder timed out after %ss", self._live_timeout_s)
+            logging.warning("PlaceOrder timed out after %ss", self._order_timeout_s)
             return engine_pb2.PlaceOrderRes(success=False, error_code="PLACE_TIMEOUT")
         except Exception as exc:
             logging.exception("PlaceOrder failed: %s", exc)
@@ -1635,11 +1708,13 @@ class GrpcDataEngineServer(
                 ),
                 loop,
             )
-            event = future.result(timeout=self._live_timeout_s)
+            event = future.result(timeout=self._order_timeout_s)
         except OrderFacadeError as exc:
             return engine_pb2.CancelOrderRes(success=False, error_code=exc.error_code)
+        except SecretTimeoutError as exc:
+            return engine_pb2.CancelOrderRes(success=False, error_code=exc.error_code)
         except futures.TimeoutError:
-            logging.warning("CancelOrder timed out after %ss", self._live_timeout_s)
+            logging.warning("CancelOrder timed out after %ss", self._order_timeout_s)
             return engine_pb2.CancelOrderRes(success=False, error_code="CANCEL_TIMEOUT")
         except Exception as exc:
             logging.exception("CancelOrder failed: %s", exc)
@@ -1685,11 +1760,13 @@ class GrpcDataEngineServer(
                 ),
                 loop,
             )
-            event = future.result(timeout=self._live_timeout_s)
+            event = future.result(timeout=self._order_timeout_s)
         except OrderFacadeError as exc:
             return engine_pb2.ModifyOrderRes(success=False, error_code=exc.error_code)
+        except SecretTimeoutError as exc:
+            return engine_pb2.ModifyOrderRes(success=False, error_code=exc.error_code)
         except futures.TimeoutError:
-            logging.warning("ModifyOrder timed out after %ss", self._live_timeout_s)
+            logging.warning("ModifyOrder timed out after %ss", self._order_timeout_s)
             return engine_pb2.ModifyOrderRes(success=False, error_code="MODIFY_TIMEOUT")
         except Exception as exc:
             logging.exception("ModifyOrder failed: %s", exc)
