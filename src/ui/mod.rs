@@ -315,8 +315,13 @@ impl Plugin for UiPlugin {
                     .after(compute_find_match_spans_system)
                     .before(apply_highlight_layers_system),
                 find_scroll_to_match_system.after(find_navigate_system),
-                replace_execute_system,
-                update_find_count_text_system,
+                // replace は composer の後。先に走ると set_text 済みの新 buffer に
+                // 旧 fragment/旧 spans 由来の attrs を当ててしまう (色は次フレームに再計算)。
+                replace_execute_system.after(apply_highlight_layers_system),
+                // 件数表示はマッチ確定 (compute) とナビ確定 (navigate) の後に読む。
+                update_find_count_text_system
+                    .after(compute_find_match_spans_system)
+                    .after(find_navigate_system),
             ),
         );
     }

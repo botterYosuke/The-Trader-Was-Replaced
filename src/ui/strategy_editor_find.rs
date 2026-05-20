@@ -217,9 +217,16 @@ pub fn find_keyboard_system(
             // focus 中が Strategy editor ならそれを対象に。そうでなければ None
             // (パネルは開くが、対象が無ければマッチ計算は no-op)。
             state.target_editor = focused.0.filter(|e| editor_q.contains(*e));
-        } else if let Some(qe) = state.query_editor {
-            // 既に開いている → query 欄に再フォーカス。
-            focused.0 = Some(qe);
+        } else {
+            // 既に開いている: 別の Strategy editor に focus 中ならそれへ retarget
+            // (旧 target のハイライトは compute_find_match_spans_system が target 切替検知で clear)。
+            // query 欄に focus 中 (= 通常) は filter→None で retarget せず、query 欄へ戻すだけ。
+            if let Some(new_target) = focused.0.filter(|e| editor_q.contains(*e)) {
+                state.target_editor = Some(new_target);
+            }
+            if let Some(qe) = state.query_editor {
+                focused.0 = Some(qe);
+            }
         }
         *cooldown = 0.5;
     }
@@ -381,27 +388,58 @@ pub fn sync_find_editors_to_state_system(
 /// `FindReplaceState` または対象 fragment の変化でマッチを再計算し、
 /// `state.matches` (ナビ用) と target editor の `FindMatchSpans` (描画用) を同時更新する。
 /// `set_attrs_list` は呼ばない — 色付けは composer の責務 (Caveat #8)。
+///
+/// `last` Local は前回 compute 時の入力 `(query, case_sensitive, is_open, target)`。
+/// (名前付き struct にすると pub システムの signature に private 型が露出するためタプルで持つ。)
 pub fn compute_find_match_spans_system(
     mut state: ResMut<FindReplaceState>,
     changed_frags: Query<(), (With<WindowRoot>, Changed<StrategyFragment>)>,
     fragments_q: Query<(&StrategyEditorId, &StrategyFragment), With<WindowRoot>>,
     mut editor_q: Query<(&StrategyEditorId, &mut FindMatchSpans), With<StrategyEditorContent>>,
+    mut last: Local<(String, bool, bool, Option<Entity>)>,
 ) {
-    // ⚠️ is_changed() は state を mutate する前に必ず捕捉する (DerefMut 後は常に true)。
-    let state_changed = state.is_changed();
-    let source_changed = !changed_frags.is_empty();
-
-    // 孤児チェック: target_editor が despawn 済みなら state リセット。
+    // 孤児チェック: target_editor が despawn 済みなら state + last をリセット。
     if let Some(target) = state.target_editor
         && editor_q.get(target).is_err()
     {
         *state = FindReplaceState::default();
+        *last = Default::default();
         return;
     }
 
-    if !state_changed && !source_changed {
+    // ⚠️ 再計算トリガは「マッチを左右する入力 (query / case / open / target / source)」の変化だけで
+    // 判定する。`state.is_changed()` で代用すると find_navigate_system の `current` 変更でも発火し、
+    // 翌フレームに current=0 へ戻してナビゲーションが死ぬ (ResMut の DerefMut は値に関係なく
+    // Resource 全体を changed にするため)。さらに compute 自身が毎フレーム state.matches を書くので
+    // is_changed() は open 中ずっと true のままになり、settle しない。
+    let (last_query, last_case, last_open, last_target) = &*last;
+    let query_changed = *last_query != state.query || *last_case != state.case_sensitive;
+    let open_changed = *last_open != state.is_open;
+    let target_changed = *last_target != state.target_editor;
+    let source_changed = !changed_frags.is_empty();
+    if !query_changed && !open_changed && !target_changed && !source_changed {
         return;
     }
+
+    let prev_target = last.3;
+    *last = (
+        state.query.clone(),
+        state.case_sensitive,
+        state.is_open,
+        state.target_editor,
+    );
+
+    // target 切替時は旧 target のハイライトを消す (multi-spawn で残らないように)。
+    if target_changed
+        && let Some(old) = prev_target
+        && Some(old) != state.target_editor
+        && let Ok((_, mut old_spans)) = editor_q.get_mut(old)
+    {
+        old_spans.prev_match_lines = old_spans.matches.iter().map(|m| m.line).collect();
+        old_spans.matches = Vec::new();
+        old_spans.current_idx = None;
+    }
+
     let Some(target) = state.target_editor else {
         return;
     };
@@ -433,9 +471,9 @@ pub fn compute_find_match_spans_system(
     let new_matches = find_matches(&source, &state.query, state.case_sensitive);
     let n = new_matches.len();
 
-    // query/replacement が変わった (state_changed) → 先頭マッチへ。
-    // source だけ変化 → current 保持。いずれもマッチ数で範囲内にクランプ。
-    if state_changed {
+    // query/case が変わった or target が切り替わった → 先頭マッチへ。
+    // source だけ変化 → current 保持 (編集中もナビ位置を維持)。いずれもマッチ数でクランプ。
+    if query_changed || target_changed {
         state.current = 0;
     }
     state.current = if n == 0 { 0 } else { state.current.min(n - 1) };
@@ -960,5 +998,121 @@ mod tests {
         assert_eq!(spans.current_idx, None);
         // 旧マッチ行が prev_match_lines に退避され、composer が base 色へ戻せる。
         assert_eq!(spans.prev_match_lines, vec![0]);
+    }
+
+    #[test]
+    fn navigation_is_not_reset_by_next_frame_recompute() {
+        // Regression: find_navigate mutates state.current (→ FindReplaceState changed),
+        // and compute must NOT treat that as a search-input change and snap current back to 0.
+        let mut app = App::new();
+        app.init_resource::<FindReplaceState>();
+        app.init_resource::<ButtonInput<KeyCode>>();
+        app.insert_resource(FocusedWidget(None));
+        app.add_event::<FindActionRequested>();
+        app.add_systems(
+            Update,
+            (compute_find_match_spans_system, find_navigate_system).chain(),
+        );
+
+        let region = "region_001".to_string();
+        app.world_mut().spawn((
+            WindowRoot,
+            StrategyEditorId {
+                region_key: region.clone(),
+            },
+            StrategyFragment {
+                source: "x x x".to_string(), // 3 single-char matches at bytes 0,2,4
+                dirty: false,
+            },
+        ));
+        let editor = app
+            .world_mut()
+            .spawn((
+                StrategyEditorContent,
+                StrategyEditorId {
+                    region_key: region.clone(),
+                },
+                FindMatchSpans::default(),
+            ))
+            .id();
+
+        {
+            let mut state = app.world_mut().resource_mut::<FindReplaceState>();
+            state.is_open = true;
+            state.query = "x".to_string();
+            state.target_editor = Some(editor);
+        }
+
+        // Frame 1: compute finds 3 matches (current=0), then Next advances current → 1.
+        app.world_mut()
+            .send_event(FindActionRequested(FindButtonKind::Next));
+        app.update();
+        assert_eq!(app.world().resource::<FindReplaceState>().matches.len(), 3);
+        assert_eq!(
+            app.world().resource::<FindReplaceState>().current,
+            1,
+            "Next should advance to match index 1"
+        );
+
+        // Frame 2: no new input, no source change → compute must leave current at 1.
+        app.update();
+        assert_eq!(
+            app.world().resource::<FindReplaceState>().current,
+            1,
+            "navigation must survive the next-frame recompute"
+        );
+    }
+
+    #[test]
+    fn retarget_clears_old_editor_spans() {
+        // Switching target_editor must clear the previous target's highlight (multi-spawn).
+        let mut app = App::new();
+        app.init_resource::<FindReplaceState>();
+        app.add_systems(Update, compute_find_match_spans_system);
+
+        let spawn_pair = |app: &mut App, region: &str| -> Entity {
+            app.world_mut().spawn((
+                WindowRoot,
+                StrategyEditorId {
+                    region_key: region.to_string(),
+                },
+                StrategyFragment {
+                    source: "x x".to_string(),
+                    dirty: false,
+                },
+            ));
+            app.world_mut()
+                .spawn((
+                    StrategyEditorContent,
+                    StrategyEditorId {
+                        region_key: region.to_string(),
+                    },
+                    FindMatchSpans::default(),
+                ))
+                .id()
+        };
+        let editor_a = spawn_pair(&mut app, "region_001");
+        let editor_b = spawn_pair(&mut app, "region_002");
+
+        // Target A, find matches.
+        {
+            let mut state = app.world_mut().resource_mut::<FindReplaceState>();
+            state.is_open = true;
+            state.query = "x".to_string();
+            state.target_editor = Some(editor_a);
+        }
+        app.update();
+        assert_eq!(app.world().get::<FindMatchSpans>(editor_a).unwrap().matches.len(), 2);
+
+        // Retarget to B → A's spans must be cleared, B's populated.
+        app.world_mut()
+            .resource_mut::<FindReplaceState>()
+            .target_editor = Some(editor_b);
+        app.update();
+        assert!(
+            app.world().get::<FindMatchSpans>(editor_a).unwrap().matches.is_empty(),
+            "old target spans cleared on retarget"
+        );
+        assert_eq!(app.world().get::<FindMatchSpans>(editor_b).unwrap().matches.len(), 2);
     }
 }
