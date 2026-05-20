@@ -483,6 +483,17 @@ fn cooldown_expires_after_duration() {
 
 The Python engine has its own pytest suite under `python/tests/`. Rust-side tests cover the Bevy GUI layer; integration between them is covered by E2E tests (see `e2e-testing` skill).
 
+### Testing a Tokio gRPC state machine against a live mock server
+
+When the code under test is a Tokio task that drives a `tonic` client through a state machine (e.g. `backend_supervisor::run_supervisor`), stand up a real `tonic` server in the test and assert on the lifecycle it publishes via a `watch::Receiver`. This is the pattern in `tests/backend_integration.rs`:
+
+- **Real server, not a client mock.** `Server::builder().add_service(HealthServer::new(mock)).add_service(DataEngineServer::new(mock)).serve_with_shutdown(addr, async { rx_close.await.ok() })` on a `tokio::spawn`, with a unique port per test (50061, 50071, …) to avoid collisions. Sleep ~100ms after spawn so the listener is bound before the SUT connects.
+- **Atomic-backed switchable mock** to flip responses mid-test. A servicer holding `Arc<AtomicI32>` (status) / `Arc<AtomicBool>` (unavailable) lets one test reach `Ready`, then `.store(...)` to drive the SUT into `ShuttingDown` / `Crashed` / recovery. Clone the `Arc` into the test body to mutate it while the server holds the other clone.
+- **Await terminal states with a watch + timeout:** `tokio::time::timeout(Duration::from_secs(5), rx.wait_for(|s| matches!(s, Terminal::Ready | Terminal::StartupFailed(_)))).await`. Always wrap `wait_for` in `timeout` so a hung SUT fails the test instead of hanging CI.
+- **Keep the command-channel sender alive.** If the SUT `select!`s over a `cmd_rx`, dropping the sender (`drop(ct)`) makes `recv()` resolve to `None` immediately and the task may exit before transitioning. Bind it `let (_ct, cr) = ...` so it lives to the end of the test (mirrors production, where the sender is a long-lived Bevy resource).
+- **`tokio::time::pause()` does NOT work against a real `tonic` server** — paused time stalls the server's real TCP/HTTP-2 I/O and the test deadlocks. Use wall-clock sleeps for live-server tests; reserve `start_paused = true` for pure tick-loop unit tests that don't do real I/O.
+- **Prefer extracting pure predicates** (`classify_child_exit`, `should_send_graceful_shutdown`, `parse_sentinel_line`) and golden-testing those, rather than adding `#[cfg(test)] pub fn new_for_test` constructors to production resources just to build them in a Bevy App test. Don't pollute production APIs for test wiring.
+
 ### What NOT to test in unit tests
 
 - Bevy rendering systems — these require a GPU context

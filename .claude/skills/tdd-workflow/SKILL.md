@@ -394,8 +394,9 @@ uv run pytest --cov=engine --cov-report=html
 `python/proto/engine.proto` を変更したら必ず：
 
 1. Proto を再コンパイル（Rust 側は `cargo build` で `build.rs` が自動実行）
-2. Python 側も生成コードを更新
-3. 両サイドのテストが通ることを確認してから merge
+2. Python 側も生成コードを更新（再生成すると `engine_pb2_grpc.py` の絶対 import が復活するので、`from . import engine_pb2 as engine__pb2` に**再パッチ**する）
+3. **新しい `rpc` を追加したら、その trait を実装している mock も全部追従させる** — `tests/backend_integration.rs` の `MyDataEngine` (DataEngine trait の mock) は、proto に `rpc Shutdown` を足すと `E0046: missing shutdown` でコンパイル不能になる。proto の rpc 追加時は同 PR で mock に stub メソッド（`Ok(Response::new(XxxResponse{...}))`）を足すこと。`cargo test --no-run` で E0046 を早期検知できる。
+4. 両サイドのテストが通ることを確認してから merge
 
 ```bash
 # Python proto 再生成（プロジェクトルートで）
@@ -405,6 +406,14 @@ uv run python -m grpc_tools.protoc -I proto --python_out=. --grpc_python_out=. p
 # Rust は cargo build で自動
 cargo build
 ```
+
+---
+
+## プロジェクト固有の Rust テスト落とし穴
+
+- **edition は 2024**。`rustfmt` を `cargo fmt` 経由でなく単体実行するときは `rustfmt --edition 2024 <file>` と明示すること。`--edition 2021` や素の `rustfmt` は let chains を 2015 と誤認して `async fn` パースエラーを撒く。**`cargo fmt` の全体実行はリポジトリ全ファイルを巻き込む**ので、対象ファイルだけ整形したいときは `rustfmt --edition 2024 src/foo.rs` で限定する。
+- **`src/main.rs` の `#[cfg(test)] mod tests` は bin target**。`cargo test --lib` には現れない。main.rs に足したテストは `cargo test --bin backcast`（または全 target の `cargo test`）で確認する。`--lib` の件数が増えないのは正常。
+- ライブラリ側（`src/backend_supervisor.rs` 等、`src/lib.rs` 経由）のユニットテストは `cargo test --lib <module>` で見える。
 
 ---
 
