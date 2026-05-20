@@ -11,6 +11,16 @@
 - 追加・削除・並べ替え自由。優先度やバックエンドを変えたいときは行を直接編集する。
 - 各 flow はいずれ `tests/e2e/flows/<id>.json` の宣言ファイルになる（このカタログはその索引）。
 
+### wiki ↔ E2E 同期ルール（必須）
+
+- このカタログは `docs/wiki/`（実アプリの操作説明書）と**対**になっている。
+  wiki に書かれたユーザー可視の挙動は、原則ここに対応する flow を持つ。
+- **`docs/wiki/` の操作挙動を変更・追加したら、必ずこのカタログを見直す**:
+  新しい挙動 → flow 行を追加（実装可能なら `- [ ]`、観測不能なら「保留」注記）。
+  挙動の削除・変更 → 対応 flow を削除・修正。
+- backend→ECS seam を通らない挙動（クライアント側 gating / 純 UI / 描画依存 / backend 内部ガード）は
+  flow にせず、末尾の「**E2E に*しない*もの**」節に理由付きで記録する。これも wiki との対応の一部。
+
 ### 凡例
 
 - **seam** … 入力する縫い目（`TransportCommand` 列挙子 / `BackendEvent` / resource 更新）
@@ -42,7 +52,7 @@
 - [x] **A4 replay_force_stop** ★★ be:`mock`
   - seam: Running 中に `ForceStop`
   - 観測: `RunState` が `Running` を抜ける
-- [ ] **A5 replay_set_speed** ★ be:`mock`（保留: `BackendStatusUpdate` に speed ack variant が無く、backend→ECS seam で観測できない。transport task の lib 抽出=Phase A-full 待ち）
+- [ ] **A5 replay_set_speed** ★ be:`mock`（保留: `BackendStatusUpdate` に speed ack variant が無く、backend→ECS seam で観測できない。transport task の lib 抽出=Phase A-full 待ち）（wiki: フッター速度ボタン 1x〜50x に対応）
   - seam: `SetSpeed(N)`
   - 観測: `ReplaySpeed.current == N`（backend ack）
 - [x] **A6 replay_failed_strategy** ★★★ be:`mock`  ← v1
@@ -54,6 +64,9 @@
 - [x] **A8 stale_startup_id_ignored** ★★ be:`mock`（回帰しやすい）
   - seam: 旧 `startup_id` の status update を後追い注入
   - 観測: 古い update が新しい startup window を閉じない（相関 ID ロジック）
+- [ ] **A9 replay_startup_timeout** ★ be:`mock`（保留: 60s ソフトタイムアウト→error+`Close` を観測したいが、`ReplayStartupProgress` にタイムアウト状態の seam が無く timer 駆動。要 timer 注入 / progress resource 拡張）（wiki: replay.md「Replay Startup 進捗ウィンドウ」のタイムアウト）
+  - seam: startup 開始後、first tick が来ないまま 60s 経過
+  - 観測: `ReplayStartupProgress` がタイムアウトエラー表示へ遷移し、`Close` で閉じられる
 
 ## B. ポートフォリオ / 実行結果
 
@@ -105,6 +118,9 @@
 - [x] **D7 live_universe_overwrite** ★★ be:`mock`
   - seam: Connected で `ListInstruments(LiveVenue)`
   - 観測: Live universe が Replay fallback を**上書き**（prune しない不変条件）
+- [ ] **D8 prod_guard_blocks_login** ★ be:`real`（保留: 二重ガードは backend 側 = `TACHIBANA_ALLOW_PROD` / `KABU_ALLOW_PROD` 未設定で Prod 接続を遮断する挙動。backend→ECS には login 失敗として現れるが、env ガードの忠実度は backend 単体テスト向き）（wiki: venues.md「二重ガード」）
+  - seam: env 未設定で Prod venue へ `VenueLogin`
+  - 観測: 接続が拒否され `VenueState::Error`（または login が送られない）
 
 ## E. 実行モード
 
@@ -147,6 +163,10 @@
 ## E2E に**しない**もの（ユニットテスト / 既存の手動 e2e-testing 担当）
 
 - `LiveAuto` が Phase 8 で選択不可（メニュー gating）→ UI ロジックの単体テスト
+- **モード切替の前提条件 gating**（wiki: modes.md）→ クライアント側で切替リクエストを抑止する純 UI ロジックで
+  backend→ECS seam を通らない。単体テスト向き:
+  - Manual / Auto への切替は venue 接続済み（Disconnected / Error 以外）でないとリクエストを送らない
+  - Replay への切替は戦略ロード済みでないと送らない
 - メニュー開閉 / Alt+F / レイアウト永続化 / cosmic_edit 入力 → 描画依存。ユニット + 既存の手動 E2E に残す
 
 ---

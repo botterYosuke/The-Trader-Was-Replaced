@@ -85,13 +85,15 @@ state: IDLE  grpc: OK
 
 `grpc: DISABLED` が続く場合は `BACKEND_ENABLED=true` が渡っていません。
 
+> backend 接続状態（`grpc: OK`）は [G1]、切断後の自己修復（再接続で復帰）は [G2]、`BACKEND_ENABLED=false` 時の `grpc: DISABLED` は [G3]（保留中）で保証されます。flow 一覧は [`tests/e2e/FLOWS.md`](../../tests/e2e/FLOWS.md) を参照。
+
 ## 4. 最初の Replay 実行
 
 1. メニューバー左の **File(&F)** から **Open (Ctrl+O)** で戦略一式（サイドカー JSON 付き）を読み込むか、戦略 `.py` を開く
 2. Strategy Editor ウィンドウが開く
-3. フッター中央の **▶** ボタンをクリックして Run を開始
-4. フッターが `state: RUNNING` になり、ボタンが **||**（一時停止／再開）に切り替わる
-5. 完了すると `state: IDLE` に戻り、Run Result パネルが `Completed` になり fills / pnl が表示される
+3. フッター中央の **▶** ボタンをクリックして Run を開始 [A1]
+4. フッターが `state: RUNNING` になり、ボタンが **||**（一時停止／再開）に切り替わる [A2]
+5. 完了すると `state: IDLE` に戻り、Run Result パネルが `Completed` になり fills / pnl が表示される [A1]/[B1]
 6. チャートエリアに最新バーのローソク足（赤／緑）が描画される
 
 詳細な手順は [Replay 実行](replay.md) を参照してください。
