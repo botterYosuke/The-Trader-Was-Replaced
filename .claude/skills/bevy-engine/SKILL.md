@@ -266,6 +266,18 @@ egui の中で `state.buffer` のような大きい String を編集するとき
 - **ウィンドウがドラッグでカーソルから逃げる**: 規約 5 の scale 倍を忘れている。
 - **テキストが更新されない**: marker component を貼り忘れ、または親子関係の貼り
   忘れ（`add_child` か `set_parent` のどちらかが必要）。
+- **`Changed<T>` 駆動の system が収束せず毎フレーム再発火し続ける**: ある system が
+  `Changed<T>` を読んで反応し、別の（または同じ）system が `T` を毎フレーム書き戻すと
+  無限に再発火する。典型は autoscale 等の派生値を `&mut T` で毎フレーム代入するケース。
+  `DerefMut` は**同じ値を代入しても** change tick を立てる（規約 2 の差分書き込みと同根。
+  Resource/Component どちらにも効く）ので、`if (old - new).abs() > f32::EPSILON { old = new; }`
+  で実変化時のみ書く。self-`Changed` ループを断ちたいときは **writer と reader を別 system に
+  分け、reader は read-only にして再計算要求を `Event` で渡す**（writer が `Changed<T>` を
+  読まなくなり依存が一方向化する）。検証は収束テスト: 対象を spawn → `app.update()` を 5 回 →
+  末尾に `|q: Query<(), Changed<T>>, mut log: ResMut<_>| log.push(q.iter().count())` を
+  `.chain()` で挟み frame 3 以降のカウントが 0 であることを assert する
+  （`add_event::<RequestX>()` をテスト側 App にも入れる。無いと `EventWriter` 取得で panic）。
+  src/ui/chart_viewstate.rs の autoscale 3 段 (data_tick / interaction_tick / autoscale_apply) が実例。
 - **bevy_cosmic_edit の unfocused field (TextEdit / TextEdit2d) が黒い箱で文字が見えない**:
   通常 2 つの独立した罠が同時に起きる。背景を一時的に `CosmicBackgroundColor(rgb(1,0,0))`
   にして切り分けると速い：赤背景が出れば render は走っており文字色 or layout の問題、
