@@ -1,4 +1,4 @@
-import threading
+import time
 
 import grpc
 import pytest
@@ -36,35 +36,48 @@ def _stub(port):
     return engine_pb2_grpc.DataEngineStub(channel)
 
 
+def _wait_until(predicate, timeout=5.0, interval=0.01):
+    """Poll `predicate` until true or `timeout` elapses; returns its last value."""
+    deadline = time.monotonic() + timeout
+    while time.monotonic() < deadline:
+        if predicate():
+            return True
+        time.sleep(interval)
+    return bool(predicate())
+
+
 def test_subscribe_backend_events_yields_pushed_event(backend_events_server):
     """A BackendEvent pushed to the servicer is delivered on the open stream."""
     port, token, servicer = backend_events_server
     stub = _stub(port)
 
+    # 5s deadline so a lost-event race fails fast instead of hanging the suite.
     stream = stub.SubscribeBackendEvents(
-        engine_pb2.SubscribeBackendEventsReq(token=token)
+        engine_pb2.SubscribeBackendEventsReq(token=token), timeout=5.0
     )
 
     pushed = engine_pb2.BackendEvent(
         venue_logout_detected=engine_pb2.VenueLogoutDetected(venue="KABU")
     )
 
-    def _push():
-        # Give the server-side handler a moment to register its consumer
-        # before the first event is published.
-        import time
-        time.sleep(0.1)
-        servicer.publish_backend_event(pushed)
-
-    pusher = threading.Thread(target=_push, daemon=True)
-    pusher.start()
+    # The bus does not replay past events, so publishing before the server-side
+    # handler has registered its subscription would silently drop the event.
+    # Wait for the subscription to appear (deterministic) rather than sleeping
+    # and hoping the handler won the race.
+    bus = servicer._backend_event_bus
+    assert _wait_until(lambda: bus.subscriber_count() >= 1), "stream never registered"
+    servicer.publish_backend_event(pushed)
 
     received = next(iter(stream))
-    stream.cancel()
-    pusher.join(timeout=2.0)
-
     assert received.WhichOneof("payload") == "venue_logout_detected"
     assert received.venue_logout_detected.venue == "KABU"
+
+    # Cancelling the RPC must remove the subscription from the bus — this is the
+    # context.add_callback(sub.close) leak/hang guard. Verify it actually fires.
+    stream.cancel()
+    assert _wait_until(
+        lambda: bus.subscriber_count() == 0
+    ), "subscription leaked after cancel"
 
 
 def test_subscribe_backend_events_rejects_bad_token(backend_events_server):

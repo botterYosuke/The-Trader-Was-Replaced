@@ -440,6 +440,21 @@ fn should_send_graceful_shutdown(lifecycle: BackendLifecycle) -> bool {
     )
 }
 
+/// Backend-events reconnect backoff: wait for either a lifecycle change or a
+/// 500ms timer before retrying the stream. A streaming RPC can end (or a
+/// connect/subscribe can transiently fail) without the lifecycle moving, so
+/// blocking on `changed()` alone would stall the transport indefinitely; the
+/// timer bounds the wait so the loop self-heals. Returns `false` when the
+/// supervisor's watch sender was dropped (app exit) — the caller should return.
+async fn events_reconnect_backoff(
+    rx: &mut tokio::sync::watch::Receiver<BackendLifecycle>,
+) -> bool {
+    tokio::select! {
+        changed = rx.changed() => changed.is_ok(),
+        _ = tokio::time::sleep(tokio::time::Duration::from_millis(500)) => true,
+    }
+}
+
 fn app_exit_shutdown_system(
     mut app_exit: EventReader<AppExit>,
     cmd_sender: Res<SupervisorCommandSender>,
@@ -1086,8 +1101,8 @@ fn setup_backend_connection(
                 Ok(c) => c,
                 Err(e) => {
                     error!("[backend-events] connect failed after Ready: {}", e);
-                    if ev_lifecycle_rx.changed().await.is_err() {
-                        return;
+                    if !events_reconnect_backoff(&mut ev_lifecycle_rx).await {
+                        return; // supervisor dropped = app exit
                     }
                     continue;
                 }
@@ -1099,8 +1114,8 @@ fn setup_backend_connection(
                 Ok(resp) => resp.into_inner(),
                 Err(e) => {
                     error!("[backend-events] subscribe failed: {}", e);
-                    if ev_lifecycle_rx.changed().await.is_err() {
-                        return;
+                    if !events_reconnect_backoff(&mut ev_lifecycle_rx).await {
+                        return; // supervisor dropped = app exit
                     }
                     continue;
                 }
@@ -1169,17 +1184,9 @@ fn setup_backend_connection(
                 }
             }
             // The stream ended (server closed it or errored) while we may still
-            // be Ready. A streaming RPC can end without any lifecycle change, so
-            // blocking on changed() here would stall forever. Back off briefly,
-            // then loop: wait_for(Ready) passes immediately if still Ready
-            // (reconnect) or blocks until Ready returns.
-            tokio::select! {
-                changed = ev_lifecycle_rx.changed() => {
-                    if changed.is_err() {
-                        return; // supervisor dropped = app exit
-                    }
-                }
-                _ = tokio::time::sleep(tokio::time::Duration::from_millis(500)) => {}
+            // be Ready; back off, then loop to wait_for(Ready) and reconnect.
+            if !events_reconnect_backoff(&mut ev_lifecycle_rx).await {
+                return; // supervisor dropped = app exit
             }
         }
     });

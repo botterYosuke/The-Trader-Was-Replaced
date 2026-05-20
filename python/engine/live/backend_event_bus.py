@@ -59,6 +59,11 @@ class BackendEventBus(Generic[T]):
         self._closed = False
         self._lock = threading.Lock()
 
+    def subscriber_count(self) -> int:
+        """Number of active subscribers (read-only; for diagnostics / tests)."""
+        with self._lock:
+            return len(self._subscribers)
+
     def subscribe(self) -> _Subscription[T]:
         sub: _Subscription[T] = _Subscription(self)
         with self._lock:
