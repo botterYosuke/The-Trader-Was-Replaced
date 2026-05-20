@@ -1,4 +1,4 @@
-use crate::ui::chart::ChartViewState;
+use crate::ui::chart_viewstate::{CHART_DRAW_SIZE, CHART_PANEL_SIZE, ChartViewState};
 use crate::ui::components::{
     ChartInstrument, InstrumentRegistry, LayoutExcluded, PanelKind, PriceDisplay, WindowRoot,
 };
@@ -6,7 +6,6 @@ use crate::ui::floating_window::{FloatingWindowSpec, spawn_floating_window};
 use bevy::prelude::*;
 use std::collections::{HashMap, HashSet};
 
-const PANEL_SIZE: Vec2 = Vec2::new(400.0, 500.0);
 const PANEL_POSITION: Vec2 = Vec2::new(200.0, 0.0);
 const ACCENT: Color = Color::srgba(0.0, 0.8, 1.0, 0.4);
 
@@ -16,7 +15,7 @@ pub fn spawn_chart_panel(commands: &mut Commands, instrument_id: &str) {
         commands,
         FloatingWindowSpec {
             title: format!("CHART — {}", instrument_id),
-            size: PANEL_SIZE,
+            size: CHART_PANEL_SIZE,
             position: PANEL_POSITION,
             accent: ACCENT,
         },
@@ -29,27 +28,40 @@ pub fn spawn_chart_panel(commands: &mut Commands, instrument_id: &str) {
 
     // ─── ここから下は中身（content_area の子として配置） ───
 
-    // Price Display
+    // Price Display（コンパクト window 用に縮小し draw 領域上端へ）
     let price_text = commands
         .spawn((
             Text2d::new("$100.00"),
             TextFont {
-                font_size: 60.0,
+                font_size: 22.0,
                 ..default()
             },
             TextColor(Color::srgb(0.0, 1.0, 0.5)),
-            Transform::from_xyz(0.0, 140.0, 0.1),
+            Transform::from_xyz(0.0, 72.0, 0.3),
             PriceDisplay,
         ))
         .id();
 
-    // Chart
+    // Chart entity。
+    // ⚠️ content_area は spawn_floating_window で既に root-local (0, -title_bar_half) に
+    //    オフセット済 (floating_window.rs:191) なので、draw 領域を title bar 下の領域中央へ
+    //    置くには content_area-local y=0 で足りる (Caveat #33: プラン skeleton の
+    //    CHART_Y_OFFSET=-TITLE_BAR_HEIGHT/2 は「chart を root 直下に置く」前提の値で、
+    //    content_area 子なら 0 が同じ world 位置になる)。
+    const CHART_Y_OFFSET: f32 = 0.0;
     let chart = commands
         .spawn((
-            Transform::from_xyz(0.0, 10.0, 0.1),
+            // ⚠️ Phase C の Pointer<Drag> を成立させる hit-target (Caveat #1)。
+            //    Color::NONE (alpha=0) は sprite picking の AlphaThreshold mode で除外され
+            //    うるため alpha 0.001 の実質透明 sprite にする。
+            Sprite {
+                custom_size: Some(CHART_DRAW_SIZE),
+                color: Color::srgba(0.0, 0.0, 0.0, 0.001),
+                ..default()
+            },
+            Transform::from_xyz(0.0, CHART_Y_OFFSET, 0.1),
             ChartViewState {
-                width: 360.0,
-                height: 180.0,
+                bounds: CHART_DRAW_SIZE,
                 ..default()
             },
             ChartInstrument {

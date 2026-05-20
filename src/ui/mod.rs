@@ -1,5 +1,6 @@
 pub mod buying_power;
-pub mod chart;
+pub mod chart_render;
+pub mod chart_viewstate;
 pub mod components;
 pub mod editor_history;
 pub mod floating_window;
@@ -29,7 +30,11 @@ pub use components::{
 };
 
 use crate::ui::buying_power::buying_power_panel_system;
-use crate::ui::chart::chart_render_system;
+use crate::ui::chart_render::chart_main_render_system;
+use crate::ui::chart_viewstate::{
+    ChartSet, RequestAutoscale, chart_autoscale_apply_system, chart_data_tick_system,
+    chart_interaction_tick_system,
+};
 use crate::ui::components::{
     OpenMenu, PanelSpawnRequested, PendingStrategyFragments, RedoMenuRequested, RegionKeyAllocator,
     ScenarioMetadata, StrategyBuffer, StrategyFileLoadRequested, StrategyRunRequested,
@@ -129,6 +134,20 @@ impl Plugin for UiPlugin {
         .init_resource::<PendingStrategySnapshotRestore>()
         .init_resource::<FindReplaceState>()
         .add_event::<FindActionRequested>()
+        // ⚠️ 必須: chart_data_tick_system が EventWriter<RequestAutoscale> を取るので
+        //    Events リソースが要る。未登録だと初回取得で panic する。
+        .add_event::<RequestAutoscale>()
+        .configure_sets(
+            Update,
+            (
+                ChartSet::DataTick.after(crate::trading::backend_update_system),
+                ChartSet::Autoscale.after(ChartSet::DataTick),
+                ChartSet::Interaction.after(ChartSet::Autoscale),
+                ChartSet::Render
+                    .after(ChartSet::Autoscale)
+                    .after(ChartSet::Interaction),
+            ),
+        )
         .init_resource::<OpenMenu>()
         .init_resource::<crate::ui::instrument_picker::InstrumentPickerState>()
         .add_event::<StrategyFileLoadRequested>()
@@ -170,7 +189,6 @@ impl Plugin for UiPlugin {
             (
                 update_price_display,
                 update_status_indicator,
-                chart_render_system,
                 update_footer_system,
                 transport_button_system,
                 footer_pause_resume_system.before(handle_strategy_run_system),
@@ -187,6 +205,17 @@ impl Plugin for UiPlugin {
                     .after(write_startup_params_to_cache_sidecar_system),
                 panel_button_system,
                 panel_spawn_dispatcher_system,
+            ),
+        )
+        // ── Chart (Phase 7.3 A): ViewState 更新 / autoscale / 描画 ──
+        // observer 系 (Pointer<Drag>/<Move>) は schedule 外なので ChartSet に含めない (Caveat #28)。
+        .add_systems(
+            Update,
+            (
+                chart_data_tick_system.in_set(ChartSet::DataTick),
+                chart_interaction_tick_system.in_set(ChartSet::DataTick),
+                chart_autoscale_apply_system.in_set(ChartSet::Autoscale),
+                chart_main_render_system.in_set(ChartSet::Render),
             ),
         )
         .add_systems(
