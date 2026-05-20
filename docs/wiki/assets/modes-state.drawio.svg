@@ -1,0 +1,44 @@
+﻿<svg host="app.diagrams.net" xmlns="http://www.w3.org/2000/svg" xmlns:xlink="http://www.w3.org/1999/xlink" version="1.1" width="760" height="410" viewBox="0 0 760 410" content="&lt;mxGraphModel adaptiveColors=&quot;auto&quot;&gt;
+  &lt;root&gt;
+    &lt;mxCell id=&quot;0&quot;/&gt;
+    &lt;mxCell id=&quot;1&quot; parent=&quot;0&quot;/&gt;
+    &lt;mxCell id=&quot;m_t&quot; value=&quot;実行モード&quot; style=&quot;text;html=1;fontStyle=1;align=left;&quot; vertex=&quot;1&quot; parent=&quot;1&quot;&gt;&lt;mxGeometry x=&quot;40&quot; y=&quot;30&quot; width=&quot;200&quot; height=&quot;20&quot; as=&quot;geometry&quot;/&gt;&lt;/mxCell&gt;
+    &lt;mxCell id=&quot;m1&quot; value=&quot;Replay (既定)&quot; style=&quot;rounded=1;whiteSpace=wrap;html=1;fillColor=#d5e8d4;strokeColor=#82b366;&quot; vertex=&quot;1&quot; parent=&quot;1&quot;&gt;&lt;mxGeometry x=&quot;40&quot; y=&quot;60&quot; width=&quot;160&quot; height=&quot;60&quot; as=&quot;geometry&quot;/&gt;&lt;/mxCell&gt;
+    &lt;mxCell id=&quot;m2&quot; value=&quot;Manual (LiveManual)&quot; style=&quot;rounded=1;whiteSpace=wrap;html=1;fillColor=#dae8fc;strokeColor=#6c8ebf;&quot; vertex=&quot;1&quot; parent=&quot;1&quot;&gt;&lt;mxGeometry x=&quot;40&quot; y=&quot;150&quot; width=&quot;160&quot; height=&quot;60&quot; as=&quot;geometry&quot;/&gt;&lt;/mxCell&gt;
+    &lt;mxCell id=&quot;m3&quot; value=&quot;Auto (LiveAuto)&quot; style=&quot;rounded=1;whiteSpace=wrap;html=1;fillColor=#dae8fc;strokeColor=#6c8ebf;&quot; vertex=&quot;1&quot; parent=&quot;1&quot;&gt;&lt;mxGeometry x=&quot;40&quot; y=&quot;240&quot; width=&quot;160&quot; height=&quot;60&quot; as=&quot;geometry&quot;/&gt;&lt;/mxCell&gt;
+    &lt;mxCell id=&quot;me1&quot; value=&quot;&quot; style=&quot;edgeStyle=orthogonalEdgeStyle;rounded=1;html=1;startArrow=classic;startFill=1;&quot; edge=&quot;1&quot; source=&quot;m1&quot; target=&quot;m2&quot; parent=&quot;1&quot;&gt;&lt;mxGeometry relative=&quot;1&quot; as=&quot;geometry&quot;/&gt;&lt;/mxCell&gt;
+    &lt;mxCell id=&quot;me2&quot; value=&quot;&quot; style=&quot;edgeStyle=orthogonalEdgeStyle;rounded=1;html=1;startArrow=classic;startFill=1;&quot; edge=&quot;1&quot; source=&quot;m2&quot; target=&quot;m3&quot; parent=&quot;1&quot;&gt;&lt;mxGeometry relative=&quot;1&quot; as=&quot;geometry&quot;/&gt;&lt;/mxCell&gt;
+    &lt;mxCell id=&quot;v_t&quot; value=&quot;venue 状態遷移&quot; style=&quot;text;html=1;fontStyle=1;align=left;&quot; vertex=&quot;1&quot; parent=&quot;1&quot;&gt;&lt;mxGeometry x=&quot;320&quot; y=&quot;30&quot; width=&quot;200&quot; height=&quot;20&quot; as=&quot;geometry&quot;/&gt;&lt;/mxCell&gt;
+    &lt;mxCell id=&quot;v1&quot; value=&quot;DISCONNECTED&quot; style=&quot;rounded=1;whiteSpace=wrap;html=1;fillColor=#f5f5f5;strokeColor=#666666;&quot; vertex=&quot;1&quot; parent=&quot;1&quot;&gt;&lt;mxGeometry x=&quot;320&quot; y=&quot;60&quot; width=&quot;160&quot; height=&quot;50&quot; as=&quot;geometry&quot;/&gt;&lt;/mxCell&gt;
+    &lt;mxCell id=&quot;v2&quot; value=&quot;AUTHENTICATING&quot; style=&quot;rounded=1;whiteSpace=wrap;html=1;fillColor=#fff2cc;strokeColor=#d6b656;&quot; vertex=&quot;1&quot; parent=&quot;1&quot;&gt;&lt;mxGeometry x=&quot;320&quot; y=&quot;150&quot; width=&quot;160&quot; height=&quot;50&quot; as=&quot;geometry&quot;/&gt;&lt;/mxCell&gt;
+    &lt;mxCell id=&quot;v3&quot; value=&quot;CONNECTED&quot; style=&quot;rounded=1;whiteSpace=wrap;html=1;fillColor=#dae8fc;strokeColor=#6c8ebf;&quot; vertex=&quot;1&quot; parent=&quot;1&quot;&gt;&lt;mxGeometry x=&quot;320&quot; y=&quot;240&quot; width=&quot;160&quot; height=&quot;50&quot; as=&quot;geometry&quot;/&gt;&lt;/mxCell&gt;
+    &lt;mxCell id=&quot;v4&quot; value=&quot;SUBSCRIBED&quot; style=&quot;rounded=1;whiteSpace=wrap;html=1;fillColor=#d5e8d4;strokeColor=#82b366;&quot; vertex=&quot;1&quot; parent=&quot;1&quot;&gt;&lt;mxGeometry x=&quot;320&quot; y=&quot;330&quot; width=&quot;160&quot; height=&quot;50&quot; as=&quot;geometry&quot;/&gt;&lt;/mxCell&gt;
+    &lt;mxCell id=&quot;v5&quot; value=&quot;RECONNECTING&quot; style=&quot;rounded=1;whiteSpace=wrap;html=1;fillColor=#fff2cc;strokeColor=#d6b656;dashed=1;&quot; vertex=&quot;1&quot; parent=&quot;1&quot;&gt;&lt;mxGeometry x=&quot;560&quot; y=&quot;240&quot; width=&quot;160&quot; height=&quot;50&quot; as=&quot;geometry&quot;/&gt;&lt;/mxCell&gt;
+    &lt;mxCell id=&quot;ve1&quot; value=&quot;&quot; style=&quot;edgeStyle=orthogonalEdgeStyle;rounded=1;html=1;&quot; edge=&quot;1&quot; source=&quot;v1&quot; target=&quot;v2&quot; parent=&quot;1&quot;&gt;&lt;mxGeometry relative=&quot;1&quot; as=&quot;geometry&quot;/&gt;&lt;/mxCell&gt;
+    &lt;mxCell id=&quot;ve2&quot; value=&quot;&quot; style=&quot;edgeStyle=orthogonalEdgeStyle;rounded=1;html=1;&quot; edge=&quot;1&quot; source=&quot;v2&quot; target=&quot;v3&quot; parent=&quot;1&quot;&gt;&lt;mxGeometry relative=&quot;1&quot; as=&quot;geometry&quot;/&gt;&lt;/mxCell&gt;
+    &lt;mxCell id=&quot;ve3&quot; value=&quot;&quot; style=&quot;edgeStyle=orthogonalEdgeStyle;rounded=1;html=1;&quot; edge=&quot;1&quot; source=&quot;v3&quot; target=&quot;v4&quot; parent=&quot;1&quot;&gt;&lt;mxGeometry relative=&quot;1&quot; as=&quot;geometry&quot;/&gt;&lt;/mxCell&gt;
+    &lt;mxCell id=&quot;ve4&quot; value=&quot;切断&quot; style=&quot;edgeStyle=orthogonalEdgeStyle;rounded=1;html=1;dashed=1;&quot; edge=&quot;1&quot; source=&quot;v4&quot; target=&quot;v5&quot; parent=&quot;1&quot;&gt;&lt;mxGeometry relative=&quot;1&quot; as=&quot;geometry&quot;/&gt;&lt;/mxCell&gt;
+    &lt;mxCell id=&quot;ve5&quot; value=&quot;再接続&quot; style=&quot;edgeStyle=orthogonalEdgeStyle;rounded=1;html=1;dashed=1;&quot; edge=&quot;1&quot; source=&quot;v5&quot; target=&quot;v2&quot; parent=&quot;1&quot;&gt;&lt;mxGeometry relative=&quot;1&quot; as=&quot;geometry&quot;/&gt;&lt;/mxCell&gt;
+  &lt;/root&gt;
+&lt;/mxGraphModel&gt;">
+  <defs><marker id="arr" markerWidth="10" markerHeight="10" refX="8" refY="3" orient="auto"><path d="M0,0 L8,3 L0,6 Z" fill="#333"/></marker></defs>
+  <text x="40" y="46" font-size="13" font-family="sans-serif" fill="#333" font-weight="bold">実行モード</text>
+  <rect x="40" y="60" width="160" height="60" fill="#d5e8d4" stroke="#82b366" rx="6"/><text x="120" y="94" text-anchor="middle" font-size="12" font-family="sans-serif" fill="#333">Replay (既定)</text>
+  <rect x="40" y="150" width="160" height="60" fill="#dae8fc" stroke="#6c8ebf" rx="6"/><text x="120" y="184" text-anchor="middle" font-size="12" font-family="sans-serif" fill="#333">Manual (LiveManual)</text>
+  <rect x="40" y="240" width="160" height="60" fill="#dae8fc" stroke="#6c8ebf" rx="6"/><text x="120" y="274" text-anchor="middle" font-size="12" font-family="sans-serif" fill="#333">Auto (LiveAuto)</text>
+  <line x1="120" y1="120" x2="120" y2="150" stroke="#333" marker-end="url(#arr)" marker-start="url(#arr)"/>
+  <line x1="120" y1="210" x2="120" y2="240" stroke="#333" marker-end="url(#arr)" marker-start="url(#arr)"/>
+  <text x="320" y="46" font-size="13" font-family="sans-serif" fill="#333" font-weight="bold">venue 状態遷移</text>
+  <rect x="320" y="60" width="160" height="50" fill="#f5f5f5" stroke="#666666" rx="6"/><text x="400" y="89" text-anchor="middle" font-size="12" font-family="sans-serif" fill="#333">DISCONNECTED</text>
+  <rect x="320" y="150" width="160" height="50" fill="#fff2cc" stroke="#d6b656" rx="6"/><text x="400" y="179" text-anchor="middle" font-size="12" font-family="sans-serif" fill="#333">AUTHENTICATING</text>
+  <rect x="320" y="240" width="160" height="50" fill="#dae8fc" stroke="#6c8ebf" rx="6"/><text x="400" y="269" text-anchor="middle" font-size="12" font-family="sans-serif" fill="#333">CONNECTED</text>
+  <rect x="320" y="330" width="160" height="50" fill="#d5e8d4" stroke="#82b366" rx="6"/><text x="400" y="359" text-anchor="middle" font-size="12" font-family="sans-serif" fill="#333">SUBSCRIBED</text>
+  <rect x="560" y="240" width="160" height="50" fill="#fff2cc" stroke="#d6b656" stroke-dasharray="5,5" rx="6"/><text x="640" y="269" text-anchor="middle" font-size="12" font-family="sans-serif" fill="#333">RECONNECTING</text>
+  <line x1="400" y1="110" x2="400" y2="150" stroke="#333" marker-end="url(#arr)"/>
+  <line x1="400" y1="200" x2="400" y2="240" stroke="#333" marker-end="url(#arr)"/>
+  <line x1="400" y1="290" x2="400" y2="330" stroke="#333" marker-end="url(#arr)"/>
+  <line x1="480" y1="350" x2="640" y2="290" stroke="#333" stroke-dasharray="5,5" marker-end="url(#arr)"/>
+  <text x="600" y="330" font-size="10" font-family="sans-serif" fill="#333">切断</text>
+  <line x1="640" y1="240" x2="480" y2="180" stroke="#333" stroke-dasharray="5,5" marker-end="url(#arr)"/>
+  <text x="540" y="205" font-size="10" font-family="sans-serif" fill="#333">再接続</text>
+</svg>

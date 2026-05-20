@@ -1,0 +1,45 @@
+﻿<svg host="app.diagrams.net" xmlns="http://www.w3.org/2000/svg" xmlns:xlink="http://www.w3.org/1999/xlink" version="1.1" width="1000" height="440" viewBox="0 0 1000 440" content="&lt;mxGraphModel adaptiveColors=&quot;auto&quot;&gt;
+  &lt;root&gt;
+    &lt;mxCell id=&quot;0&quot;/&gt;
+    &lt;mxCell id=&quot;1&quot; parent=&quot;0&quot;/&gt;
+    &lt;mxCell id=&quot;a2&quot; value=&quot;Bevy GUI (Rust)&amp;#xa;backcast.exe&amp;#xa;フローティングウィンドウ&quot; style=&quot;rounded=1;whiteSpace=wrap;html=1;fillColor=#dae8fc;strokeColor=#6c8ebf;&quot; vertex=&quot;1&quot; parent=&quot;1&quot;&gt;&lt;mxGeometry x=&quot;40&quot; y=&quot;180&quot; width=&quot;200&quot; height=&quot;100&quot; as=&quot;geometry&quot;/&gt;&lt;/mxCell&gt;
+    &lt;mxCell id=&quot;a3&quot; value=&quot;Python エンジン&amp;#xa;(NautilusTrader ベース)&quot; style=&quot;rounded=1;whiteSpace=wrap;html=1;fillColor=#d5e8d4;strokeColor=#82b366;&quot; vertex=&quot;1&quot; parent=&quot;1&quot;&gt;&lt;mxGeometry x=&quot;440&quot; y=&quot;180&quot; width=&quot;220&quot; height=&quot;100&quot; as=&quot;geometry&quot;/&gt;&lt;/mxCell&gt;
+    &lt;mxCell id=&quot;a4&quot; value=&quot;Nautilus Replay&amp;#xa;(BacktestEngine)&quot; style=&quot;rounded=1;whiteSpace=wrap;html=1;fillColor=#d5e8d4;strokeColor=#82b366;&quot; vertex=&quot;1&quot; parent=&quot;1&quot;&gt;&lt;mxGeometry x=&quot;740&quot; y=&quot;60&quot; width=&quot;220&quot; height=&quot;70&quot; as=&quot;geometry&quot;/&gt;&lt;/mxCell&gt;
+    &lt;mxCell id=&quot;a5&quot; value=&quot;Live venue adapters&amp;#xa;Tachibana / kabuStation&quot; style=&quot;rounded=1;whiteSpace=wrap;html=1;fillColor=#d5e8d4;strokeColor=#82b366;&quot; vertex=&quot;1&quot; parent=&quot;1&quot;&gt;&lt;mxGeometry x=&quot;740&quot; y=&quot;195&quot; width=&quot;220&quot; height=&quot;70&quot; as=&quot;geometry&quot;/&gt;&lt;/mxCell&gt;
+    &lt;mxCell id=&quot;a6&quot; value=&quot;J-Quants&amp;#xa;ParquetDataCatalog&quot; style=&quot;rounded=1;whiteSpace=wrap;html=1;fillColor=#d5e8d4;strokeColor=#82b366;&quot; vertex=&quot;1&quot; parent=&quot;1&quot;&gt;&lt;mxGeometry x=&quot;740&quot; y=&quot;330&quot; width=&quot;220&quot; height=&quot;70&quot; as=&quot;geometry&quot;/&gt;&lt;/mxCell&gt;
+    &lt;mxCell id=&quot;a7&quot; value=&quot;J-Quants CSV&amp;#xa;→ catalog 自動変換&quot; style=&quot;rounded=1;whiteSpace=wrap;html=1;fillColor=#fff2cc;strokeColor=#d6b656;&quot; vertex=&quot;1&quot; parent=&quot;1&quot;&gt;&lt;mxGeometry x=&quot;440&quot; y=&quot;345&quot; width=&quot;200&quot; height=&quot;70&quot; as=&quot;geometry&quot;/&gt;&lt;/mxCell&gt;
+    &lt;mxCell id=&quot;ae1&quot; value=&quot;gRPC :19876&amp;#xa;token認証&amp;#xa;server-streaming&quot; style=&quot;edgeStyle=orthogonalEdgeStyle;rounded=1;html=1;&quot; edge=&quot;1&quot; source=&quot;a2&quot; target=&quot;a3&quot; parent=&quot;1&quot;&gt;&lt;mxGeometry relative=&quot;1&quot; as=&quot;geometry&quot;/&gt;&lt;/mxCell&gt;
+    &lt;mxCell id=&quot;ae2&quot; value=&quot;&quot; style=&quot;edgeStyle=orthogonalEdgeStyle;rounded=1;html=1;&quot; edge=&quot;1&quot; source=&quot;a3&quot; target=&quot;a4&quot; parent=&quot;1&quot;&gt;&lt;mxGeometry relative=&quot;1&quot; as=&quot;geometry&quot;/&gt;&lt;/mxCell&gt;
+    &lt;mxCell id=&quot;ae3&quot; value=&quot;&quot; style=&quot;edgeStyle=orthogonalEdgeStyle;rounded=1;html=1;&quot; edge=&quot;1&quot; source=&quot;a3&quot; target=&quot;a5&quot; parent=&quot;1&quot;&gt;&lt;mxGeometry relative=&quot;1&quot; as=&quot;geometry&quot;/&gt;&lt;/mxCell&gt;
+    &lt;mxCell id=&quot;ae4&quot; value=&quot;&quot; style=&quot;edgeStyle=orthogonalEdgeStyle;rounded=1;html=1;&quot; edge=&quot;1&quot; source=&quot;a3&quot; target=&quot;a6&quot; parent=&quot;1&quot;&gt;&lt;mxGeometry relative=&quot;1&quot; as=&quot;geometry&quot;/&gt;&lt;/mxCell&gt;
+    &lt;mxCell id=&quot;ae5&quot; value=&quot;&quot; style=&quot;edgeStyle=orthogonalEdgeStyle;rounded=1;html=1;&quot; edge=&quot;1&quot; source=&quot;a7&quot; target=&quot;a6&quot; parent=&quot;1&quot;&gt;&lt;mxGeometry relative=&quot;1&quot; as=&quot;geometry&quot;/&gt;&lt;/mxCell&gt;
+  &lt;/root&gt;
+&lt;/mxGraphModel&gt;">
+  <defs/>
+  <rect x="40" y="180" width="200" height="100" fill="#dae8fc" stroke="#6c8ebf" rx="6"/>
+  <text x="140" y="222" text-anchor="middle" font-size="13" font-family="sans-serif" fill="#333">Bevy GUI (Rust)</text>
+  <text x="140" y="240" text-anchor="middle" font-size="11" font-family="sans-serif" fill="#333">backcast.exe</text>
+  <text x="140" y="256" text-anchor="middle" font-size="11" font-family="sans-serif" fill="#333">フローティングウィンドウ</text>
+  <rect x="440" y="180" width="220" height="100" fill="#d5e8d4" stroke="#82b366" rx="6"/>
+  <text x="550" y="224" text-anchor="middle" font-size="13" font-family="sans-serif" fill="#333">Python エンジン</text>
+  <text x="550" y="242" text-anchor="middle" font-size="11" font-family="sans-serif" fill="#333">(NautilusTrader ベース)</text>
+  <rect x="740" y="60" width="220" height="70" fill="#d5e8d4" stroke="#82b366" rx="6"/>
+  <text x="850" y="90" text-anchor="middle" font-size="12" font-family="sans-serif" fill="#333">Nautilus Replay</text>
+  <text x="850" y="108" text-anchor="middle" font-size="11" font-family="sans-serif" fill="#333">(BacktestEngine)</text>
+  <rect x="740" y="195" width="220" height="70" fill="#d5e8d4" stroke="#82b366" rx="6"/>
+  <text x="850" y="225" text-anchor="middle" font-size="12" font-family="sans-serif" fill="#333">Live venue adapters</text>
+  <text x="850" y="243" text-anchor="middle" font-size="11" font-family="sans-serif" fill="#333">Tachibana / kabuStation</text>
+  <rect x="740" y="330" width="220" height="70" fill="#d5e8d4" stroke="#82b366" rx="6"/>
+  <text x="850" y="360" text-anchor="middle" font-size="12" font-family="sans-serif" fill="#333">J-Quants</text>
+  <text x="850" y="378" text-anchor="middle" font-size="11" font-family="sans-serif" fill="#333">ParquetDataCatalog</text>
+  <rect x="440" y="345" width="200" height="70" fill="#fff2cc" stroke="#d6b656" rx="6"/>
+  <text x="540" y="375" text-anchor="middle" font-size="12" font-family="sans-serif" fill="#333">J-Quants CSV</text>
+  <text x="540" y="393" text-anchor="middle" font-size="11" font-family="sans-serif" fill="#333">→ catalog 自動変換</text>
+  <line x1="240" y1="230" x2="440" y2="230" stroke="#6c8ebf" stroke-width="1.5"/>
+  <text x="340" y="216" text-anchor="middle" font-size="10" font-family="sans-serif" fill="#333">gRPC :19876 / token認証</text>
+  <text x="340" y="248" text-anchor="middle" font-size="10" font-family="sans-serif" fill="#333">server-streaming</text>
+  <line x1="660" y1="210" x2="740" y2="95" stroke="#82b366" stroke-width="1.5"/>
+  <line x1="660" y1="230" x2="740" y2="230" stroke="#82b366" stroke-width="1.5"/>
+  <line x1="660" y1="250" x2="740" y2="365" stroke="#82b366" stroke-width="1.5"/>
+  <line x1="540" y1="345" x2="740" y2="365" stroke="#d6b656" stroke-width="1.5"/>
+</svg>
