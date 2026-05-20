@@ -115,15 +115,14 @@ def test_jquants_csv_converted_then_replayed_via_grpc(grpc_server_empty_engine, 
     # Prime → first bar's open is the known 3284.0.
     assert engine.get_current_state().price == 3284.0
 
-    assert stub.StartEngine(
-        engine_pb2.StartEngineRequest(request_id="r2", token=token)
-    ).current_state == engine_pb2.RUNNING
-    assert stub.PauseReplay(
-        engine_pb2.PauseReplayRequest(request_id="r3", token=token)
-    ).current_state == engine_pb2.PAUSED
+    # Manual stepping is an engine-level capability (the gRPC StartEngine RPC now
+    # requires a strategy_file and runs to completion). Drive start/pause/step via
+    # the engine object directly, mirroring test_ensure_jquants_catalog_replayed_via_engine.
+    engine.start_engine()
+    engine.pause_replay()
 
     # Step once → second bar (close value matches the existing jquants integration test: 3333.0)
-    stub.StepReplay(engine_pb2.StepReplayRequest(request_id="r4", token=token))
+    engine.step_replay()
     assert engine.get_current_state().price == 3333.0
 
 
@@ -182,15 +181,14 @@ def test_jquants_minute_csv_converted_then_replayed_via_grpc(
     # Prime → first bar's close is 3308.0
     assert engine.get_current_state().price == 3308.0
 
-    assert stub.StartEngine(
-        engine_pb2.StartEngineRequest(request_id="r2", token=token)
-    ).current_state == engine_pb2.RUNNING
-    assert stub.PauseReplay(
-        engine_pb2.PauseReplayRequest(request_id="r3", token=token)
-    ).current_state == engine_pb2.PAUSED
+    # Manual stepping is an engine-level capability (the gRPC StartEngine RPC now
+    # requires a strategy_file and runs to completion). Drive start/pause/step via
+    # the engine object directly, mirroring test_ensure_jquants_catalog_replayed_via_engine.
+    engine.start_engine()
+    engine.pause_replay()
 
     # Step once → second bar closes at 3301.0
-    stub.StepReplay(engine_pb2.StepReplayRequest(request_id="r4", token=token))
+    engine.step_replay()
     assert engine.get_current_state().price == 3301.0
 
 
