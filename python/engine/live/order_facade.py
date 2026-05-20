@@ -22,25 +22,42 @@ dispatch に留める。
   の `_targets`/`_ttl_armed` と同じ据え置き判断）。問題化したら TTL/max-size を後続で追加。
 - 第二暗証番号 (`second_secret`) は Step 2 では受理して無視する（SecretVault 結線は
   Step 5 で Tachibana に追加。mock / kabu は不要）。adapter kwargs にも転送しない
-  （平文 secret を adapter ログ・**extra に漏らさないため）。
+  （平文 secret を adapter ログ・**extra に漏らさないため）。**この param は facade で
+  意図的に終端する**（adapter には届かない）。実際の Tachibana secret 経路は SecretVault
+  （`SecretRequired` push → `SubmitSecret` RPC、§1.3）であり、`PlaceOrderReq.second_secret`
+  と二重チャネルになる懸念は Step 5 で一本化する（Phase 9 plan の Step 5/6 handoff 参照）。
+- **timeout 注意（Step 5/6 向け）**: gRPC handler は `future.result(timeout)` で待つ。実
+  venue adapter が timeout を超えて応答した場合、RPC は失敗を返すが **注文は venue 側で
+  成立している可能性がある**（mock は即時応答のため Step 2 では発生しない）。handler は
+  この場合 `PLACE_TIMEOUT` / `CANCEL_TIMEOUT` を返し、UI に「結果不明・venue で要確認」を
+  促す。reconciliation（GetOrders 突合）は Step 8 で実装する。
 
 RPC 成功セマンティクス（handler が踏襲）:
 - place: 発注往復が完了すれば常に OrderEventData を返す（venue REJECTED も status に
   反映、RPC success=True）。検証エラーは OrderFacadeError を raise。
 - cancel: CANCELED 成立で OrderEventData（RPC success=True）。venue が取消を拒否したら
   OrderFacadeError("CANCEL_REJECTED")（RPC success=False、元注文は store 上で不変）。
+  既に終端状態（FILLED 等）の注文は OrderFacadeError("ORDER_NOT_CANCELABLE")（venue 未到達）。
 - 未知 order_id / 不正パラメータ: OrderFacadeError（RPC success=False、event 無し）。
 """
 from __future__ import annotations
 
+import math
 import threading
 import time
 
 from engine.live.adapter import InstrumentId, OrderingVenueAdapter
-from engine.live.order_types import OrderEventData, OrderResult
+from engine.live.order_types import VALID_ORDER_STATUSES, OrderEventData, OrderResult
 
 _VALID_SIDES = {"BUY", "SELL"}
 _VALID_ORDER_TYPES = {"MARKET", "LIMIT"}
+# 取消できない終端状態（Nautilus OrderStatus の部分集合）。これらの注文の cancel は
+# venue に送らず ORDER_NOT_CANCELABLE で弾き、終端注文を CANCELED へ上書きする矛盾
+# イベント（FILLED 注文が filled_qty 全量のまま "CANCELED" 化）の publish を防ぐ
+# （plan §1.2 OrderStateMachine 準拠）。
+_TERMINAL_STATUSES = {"FILLED", "CANCELED", "REJECTED", "EXPIRED", "DENIED"}
+# 二重定義のドリフト防止: 終端集合は必ず正規の OrderStatus 名の部分集合であること。
+assert _TERMINAL_STATUSES <= VALID_ORDER_STATUSES
 
 
 class OrderFacadeError(Exception):
@@ -77,13 +94,19 @@ class ManualOrderFacade:
     ) -> OrderEventData:
         side_n = side.upper()
         type_n = order_type.upper()
+        if not venue:
+            raise OrderFacadeError("INVALID_VENUE")
+        if not instrument_id:
+            raise OrderFacadeError("INVALID_INSTRUMENT")
         if side_n not in _VALID_SIDES:
             raise OrderFacadeError("INVALID_SIDE")
         if type_n not in _VALID_ORDER_TYPES:
             raise OrderFacadeError("INVALID_ORDER_TYPE")
-        if qty <= 0:
+        # NaN/Inf は proto double で wire 通過する。`<= 0` は NaN を弾けない
+        # （NaN との比較は常に False）ため isfinite を明示。
+        if not math.isfinite(qty) or qty <= 0:
             raise OrderFacadeError("INVALID_QTY")
-        if type_n == "LIMIT" and (price is None or price <= 0):
+        if type_n == "LIMIT" and (price is None or not math.isfinite(price) or price <= 0):
             raise OrderFacadeError("INVALID_PRICE")
 
         # MARKET は price を venue に渡さない（指値解釈の取り違えを防ぐ）。
@@ -123,6 +146,8 @@ class ManualOrderFacade:
             prior = self._orders.get(order_id)
         if prior is None:
             raise OrderFacadeError("UNKNOWN_ORDER_ID")
+        if prior.status in _TERMINAL_STATUSES:
+            raise OrderFacadeError("ORDER_NOT_CANCELABLE")
 
         res: OrderResult = await self._adapter.cancel_order(
             venue=venue,

@@ -13,7 +13,7 @@ import pytest
 from engine.live.adapter import VenueCredentials
 from engine.live.mock_adapter import MockVenueAdapter
 from engine.live.order_facade import ManualOrderFacade, OrderFacadeError
-from engine.live.order_types import OrderEventData
+from engine.live.order_types import OrderEventData, OrderResult
 
 
 async def _logged_in_adapter() -> MockVenueAdapter:
@@ -167,6 +167,9 @@ def test_cancel_rejected_raises_and_leaves_order_intact() -> None:
     async def scenario() -> tuple[OrderEventData, ManualOrderFacade]:
         adapter = await _logged_in_adapter()
         facade = ManualOrderFacade(adapter)
+        # working (ACCEPTED) order — cancelable, so the cancel reaches the venue
+        # which then rejects it (a FILLED order would short-circuit earlier).
+        adapter.set_next_order_outcome(status="ACCEPTED", filled_qty=0.0)
         placed = await facade.place(
             venue="MOCK",
             instrument_id="7203.TSE",
@@ -183,7 +186,86 @@ def test_cancel_rejected_raises_and_leaves_order_intact() -> None:
 
     placed, facade = asyncio.run(scenario())
     # 取消拒否後も store 上の状態は元のまま（CANCELED に遷移していない）
-    assert facade.get_status(placed.order_id).status == placed.status
+    assert facade.get_status(placed.order_id).status == placed.status == "ACCEPTED"
+
+
+def test_cancel_terminal_order_raises_not_cancelable() -> None:
+    """終端状態（FILLED 等）の注文は venue に送らず ORDER_NOT_CANCELABLE。"""
+
+    async def scenario() -> tuple[OrderEventData, ManualOrderFacade]:
+        adapter = await _logged_in_adapter()
+        facade = ManualOrderFacade(adapter)
+        placed = await facade.place(  # default outcome = FILLED (terminal)
+            venue="MOCK",
+            instrument_id="7203.TSE",
+            side="BUY",
+            qty=100.0,
+            order_type="MARKET",
+            time_in_force="DAY",
+        )
+        with pytest.raises(OrderFacadeError) as exc:
+            await facade.cancel(venue="MOCK", order_id=placed.order_id)
+        assert exc.value.error_code == "ORDER_NOT_CANCELABLE"
+        return placed, facade
+
+    placed, facade = asyncio.run(scenario())
+    # 元の終端状態は不変（CANCELED へ書き換わっていない）
+    assert facade.get_status(placed.order_id).status == "FILLED"
+
+
+@pytest.mark.parametrize("bad_qty", [float("nan"), float("inf"), float("-inf")])
+def test_place_rejects_non_finite_qty(bad_qty) -> None:
+    """NaN/Inf qty は `<= 0` を素通りするので isfinite で弾く（INVALID_QTY）。"""
+
+    async def scenario() -> None:
+        adapter = await _logged_in_adapter()
+        facade = ManualOrderFacade(adapter)
+        await facade.place(
+            venue="MOCK",
+            instrument_id="7203.TSE",
+            side="BUY",
+            qty=bad_qty,
+            order_type="MARKET",
+            time_in_force="DAY",
+        )
+
+    with pytest.raises(OrderFacadeError) as exc:
+        asyncio.run(scenario())
+    assert exc.value.error_code == "INVALID_QTY"
+
+
+def test_place_rejects_empty_instrument() -> None:
+    """空の instrument_id は adapter 未到達で INVALID_INSTRUMENT。"""
+
+    async def scenario() -> None:
+        adapter = await _logged_in_adapter()
+        facade = ManualOrderFacade(adapter)
+        await facade.place(
+            venue="MOCK",
+            instrument_id="",
+            side="BUY",
+            qty=100.0,
+            order_type="MARKET",
+            time_in_force="DAY",
+        )
+
+    with pytest.raises(OrderFacadeError) as exc:
+        asyncio.run(scenario())
+    assert exc.value.error_code == "INVALID_INSTRUMENT"
+
+
+def test_order_result_rejects_non_nautilus_status() -> None:
+    """OrderResult.status は Nautilus OrderStatus 名に限定（"CANCELLED" 等の typo を弾く）。"""
+    import pydantic
+
+    OrderResult(status="FILLED", filled_qty=1.0, avg_price=1.0, client_order_id="x")
+    with pytest.raises(pydantic.ValidationError):
+        OrderResult(
+            status="CANCELLED",  # two L's — common Nautilus typo
+            filled_qty=0.0,
+            avg_price=None,
+            client_order_id="x",
+        )
 
 
 def test_get_status_unknown_returns_none() -> None:

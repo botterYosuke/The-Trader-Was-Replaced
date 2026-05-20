@@ -1524,7 +1524,11 @@ class GrpcDataEngineServer(
             return engine_pb2.PlaceOrderRes(
                 success=False, error_code="EXECUTION_MODE_PRECONDITION"
             )
-        if self._order_facade is None:
+        # Snapshot once: a concurrent SetExecutionMode→Replay teardown nulls
+        # self._order_facade, so re-reading the attribute below would race
+        # (TOCTOU → AttributeError). Bind the live reference here.
+        facade = self._order_facade
+        if facade is None:
             return engine_pb2.PlaceOrderRes(
                 success=False, error_code="VENUE_LOGIN_REQUIRED"
             )
@@ -1537,7 +1541,7 @@ class GrpcDataEngineServer(
         loop = self._ensure_live_loop()
         try:
             future = asyncio.run_coroutine_threadsafe(
-                self._order_facade.place(
+                facade.place(
                     venue=request.venue,
                     instrument_id=request.instrument_id,
                     side=request.side,
@@ -1552,6 +1556,10 @@ class GrpcDataEngineServer(
             event = future.result(timeout=self._live_timeout_s)
         except OrderFacadeError as exc:
             return engine_pb2.PlaceOrderRes(success=False, error_code=exc.error_code)
+        except futures.TimeoutError:
+            # 注文は venue 側で成立している可能性がある（reconcile は Step 8）。
+            logging.warning("PlaceOrder timed out after %ss", self._live_timeout_s)
+            return engine_pb2.PlaceOrderRes(success=False, error_code="PLACE_TIMEOUT")
         except Exception as exc:
             logging.exception("PlaceOrder failed: %s", exc)
             return engine_pb2.PlaceOrderRes(success=False, error_code="PLACE_FAILED")
@@ -1568,7 +1576,9 @@ class GrpcDataEngineServer(
             return engine_pb2.CancelOrderRes(
                 success=False, error_code="EXECUTION_MODE_PRECONDITION"
             )
-        if self._order_facade is None:
+        # Snapshot once (see PlaceOrder): guard against concurrent teardown race.
+        facade = self._order_facade
+        if facade is None:
             return engine_pb2.CancelOrderRes(
                 success=False, error_code="VENUE_LOGIN_REQUIRED"
             )
@@ -1578,7 +1588,7 @@ class GrpcDataEngineServer(
         loop = self._ensure_live_loop()
         try:
             future = asyncio.run_coroutine_threadsafe(
-                self._order_facade.cancel(
+                facade.cancel(
                     venue=request.venue,
                     order_id=request.order_id,
                     second_secret=second_secret,
@@ -1588,6 +1598,9 @@ class GrpcDataEngineServer(
             event = future.result(timeout=self._live_timeout_s)
         except OrderFacadeError as exc:
             return engine_pb2.CancelOrderRes(success=False, error_code=exc.error_code)
+        except futures.TimeoutError:
+            logging.warning("CancelOrder timed out after %ss", self._live_timeout_s)
+            return engine_pb2.CancelOrderRes(success=False, error_code="CANCEL_TIMEOUT")
         except Exception as exc:
             logging.exception("CancelOrder failed: %s", exc)
             return engine_pb2.CancelOrderRes(success=False, error_code="CANCEL_FAILED")
@@ -1600,11 +1613,16 @@ class GrpcDataEngineServer(
         # 読み取り系: Replay でも reject しない（§3.2）。live session が無ければ空応答。
         if request.token != self.token:
             context.abort(grpc.StatusCode.UNAUTHENTICATED, "Invalid token")
-        if self._order_facade is None:
+        # Snapshot once (see PlaceOrder): a concurrent teardown nulling
+        # self._order_facade between this check and get_status() would otherwise
+        # raise an uncaught AttributeError (surfaces as gRPC INTERNAL, not a
+        # clean NO_LIVE_SESSION — this read handler has no try/except).
+        facade = self._order_facade
+        if facade is None:
             return engine_pb2.GetOrderStatusRes(
                 success=False, error_code="NO_LIVE_SESSION"
             )
-        event = self._order_facade.get_status(request.order_id)
+        event = facade.get_status(request.order_id)
         if event is None:
             return engine_pb2.GetOrderStatusRes(
                 success=False, error_code="UNKNOWN_ORDER_ID"

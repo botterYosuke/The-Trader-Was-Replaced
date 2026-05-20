@@ -169,9 +169,12 @@ def test_place_order_invalid_params_returns_error_code(order_server):
 
 def test_cancel_order_success(order_server):
     port, token, servicer = order_server
-    _arm_live(servicer)
+    adapter = _arm_live(servicer)
     stub = _stub(port)
 
+    # Place a *working* order (ACCEPTED, no fills) — only non-terminal orders are
+    # cancelable. A FILLED order would now be rejected with ORDER_NOT_CANCELABLE.
+    adapter.set_next_order_outcome(status="ACCEPTED", filled_qty=0.0)
     placed = stub.PlaceOrder(_place_req(token))
     assert placed.success is True
     coid = placed.order_event.client_order_id
@@ -182,6 +185,23 @@ def test_cancel_order_success(order_server):
     assert res.success is True
     assert res.order_event.status == "CANCELED"
     assert res.order_event.client_order_id == coid
+
+
+def test_cancel_order_terminal_is_rejected(order_server):
+    """A FILLED (terminal) order cannot be canceled — ORDER_NOT_CANCELABLE."""
+    port, token, servicer = order_server
+    _arm_live(servicer)  # mock default place outcome is FILLED
+    stub = _stub(port)
+
+    placed = stub.PlaceOrder(_place_req(token))
+    assert placed.order_event.status == "FILLED"
+    coid = placed.order_event.client_order_id
+
+    res = stub.CancelOrder(
+        engine_pb2.CancelOrderReq(token=token, venue="MOCK", order_id=coid)
+    )
+    assert res.success is False
+    assert res.error_code == "ORDER_NOT_CANCELABLE"
 
 
 def test_cancel_order_unknown_id(order_server):

@@ -8,7 +8,29 @@ reject_reason のみ OrderResult 固有（REJECTED 時の理由文字列）。
 
 from __future__ import annotations
 
-from pydantic import BaseModel
+from pydantic import BaseModel, field_validator
+
+# Canonical Nautilus OrderStatus member names (core/rust/model.pxd:352 / model/enums.py).
+# venue adapter が返す status を契約として固定する。typo（"CANCELLED" 等）や
+# 自由文字列が UI まで素通りするのを境界で止める（Step 5/6 の実 adapter ドリフト対策）。
+VALID_ORDER_STATUSES: frozenset[str] = frozenset(
+    {
+        "INITIALIZED",
+        "DENIED",
+        "EMULATED",
+        "RELEASED",
+        "SUBMITTED",
+        "ACCEPTED",
+        "REJECTED",
+        "CANCELED",
+        "EXPIRED",
+        "TRIGGERED",
+        "PENDING_UPDATE",
+        "PENDING_CANCEL",
+        "PARTIALLY_FILLED",
+        "FILLED",
+    }
+)
 
 
 class OrderResult(BaseModel):
@@ -21,6 +43,16 @@ class OrderResult(BaseModel):
     reject_reason: str | None = None
 
     model_config = {"frozen": True}
+
+    @field_validator("status")
+    @classmethod
+    def _status_must_be_nautilus_name(cls, v: str) -> str:
+        if v not in VALID_ORDER_STATUSES:
+            raise ValueError(
+                f"invalid OrderStatus name: {v!r} "
+                f"(must be one of the Nautilus OrderStatus members)"
+            )
+        return v
 
 
 class OrderEventData(BaseModel):
