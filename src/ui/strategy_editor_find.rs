@@ -398,11 +398,21 @@ pub fn compute_find_match_spans_system(
     mut editor_q: Query<(&StrategyEditorId, &mut FindMatchSpans), With<StrategyEditorContent>>,
     mut last: Local<(String, bool, bool, Option<Entity>)>,
 ) {
-    // 孤児チェック: target_editor が despawn 済みなら state + last をリセット。
+    // 孤児チェック: target_editor が despawn 済み (× で閉じられた等) なら state をリセット。
+    // ⚠️ `*state = default()` だけだと panel_root の Entity 参照が失われ、Find パネル本体
+    // (別 entity) が despawn されずに画面へ残留する (リーク)。state は default に戻しつつ
+    // パネル系ハンドルだけ残し、is_open=false → manage_find_panel_lifecycle_system の
+    // close 遷移に despawn を委ねる。
     if let Some(target) = state.target_editor
         && editor_q.get(target).is_err()
     {
+        let panel_root = state.panel_root;
+        let query_editor = state.query_editor;
+        let replacement_editor = state.replacement_editor;
         *state = FindReplaceState::default();
+        state.panel_root = panel_root;
+        state.query_editor = query_editor;
+        state.replacement_editor = replacement_editor;
         *last = Default::default();
         return;
     }
@@ -500,9 +510,14 @@ pub fn find_navigate_system(
     let f3 = keys.just_pressed(KeyCode::F3);
     let enter = keys.just_pressed(KeyCode::Enter);
     let query_focused = state.query_editor.is_some_and(|qe| focused.0 == Some(qe));
+    // ⚠️ 対象エディタに focus 中の Enter は enter_autoindent_system が改行として処理する。
+    // ここでも navigation に使うと「改行 + 次マッチ移動」の二重発火になる (両 system 間に
+    // 順序指定が無く非決定的)。target editor に focus 中は Enter-nav を無効化し、F3 のみで移動する。
+    let target_focused = state.target_editor.is_some_and(|t| focused.0 == Some(t));
+    let enter_nav = enter && !query_focused && !target_focused;
 
-    let mut forward = (f3 && !shift) || (!query_focused && enter && !shift);
-    let mut backward = (f3 && shift) || (!query_focused && enter && shift);
+    let mut forward = (f3 && !shift) || (enter_nav && !shift);
+    let mut backward = (f3 && shift) || (enter_nav && shift);
     for a in actions.read() {
         match a.0 {
             FindButtonKind::Next => forward = true,
@@ -1061,6 +1076,66 @@ mod tests {
             1,
             "navigation must survive the next-frame recompute"
         );
+    }
+
+    #[test]
+    fn orphaned_target_keeps_panel_handle_for_despawn() {
+        // Regression: closing the target Strategy Editor while Find is open must NOT
+        // drop panel_root (otherwise the Find panel entity leaks — never despawned and
+        // unclosable). State resets to default but panel handles survive so the lifecycle
+        // system's close branch (!is_open && panel_root.is_some()) despawns the panel.
+        let mut app = App::new();
+        app.init_resource::<FindReplaceState>();
+        app.add_systems(Update, compute_find_match_spans_system);
+
+        let region = "region_001".to_string();
+        app.world_mut().spawn((
+            WindowRoot,
+            StrategyEditorId {
+                region_key: region.clone(),
+            },
+            StrategyFragment {
+                source: "x x".to_string(),
+                dirty: false,
+            },
+        ));
+        let editor = app
+            .world_mut()
+            .spawn((
+                StrategyEditorContent,
+                StrategyEditorId {
+                    region_key: region.clone(),
+                },
+                FindMatchSpans::default(),
+            ))
+            .id();
+        // Stand-in panel entities (their identity is what must survive the reset).
+        let panel = app.world_mut().spawn_empty().id();
+        let query_e = app.world_mut().spawn_empty().id();
+        let repl_e = app.world_mut().spawn_empty().id();
+
+        {
+            let mut state = app.world_mut().resource_mut::<FindReplaceState>();
+            state.is_open = true;
+            state.query = "x".to_string();
+            state.target_editor = Some(editor);
+            state.panel_root = Some(panel);
+            state.query_editor = Some(query_e);
+            state.replacement_editor = Some(repl_e);
+        }
+        app.update(); // populates matches for the live target
+
+        // Target editor is closed (×) → despawn it, then recompute.
+        app.world_mut().entity_mut(editor).despawn();
+        app.update();
+
+        let state = app.world().resource::<FindReplaceState>();
+        assert!(!state.is_open, "closing target requests Find close");
+        assert_eq!(state.target_editor, None);
+        // Panel handles preserved so manage_find_panel_lifecycle_system can despawn the panel.
+        assert_eq!(state.panel_root, Some(panel), "panel_root must not leak");
+        assert_eq!(state.query_editor, Some(query_e));
+        assert_eq!(state.replacement_editor, Some(repl_e));
     }
 
     #[test]
