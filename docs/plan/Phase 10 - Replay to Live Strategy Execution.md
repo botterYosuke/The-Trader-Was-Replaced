@@ -6,6 +6,17 @@
 
 ---
 
+## 0′. グラウンドトゥルース訂正（レビュー反映、2026-05-20）
+
+> Phase 9 Step 0 と同種の「計画書ドリフト」を着手前に潰すための注記。Nautilus ソースミラー (`.claude/skills/nautilus_trader/src/`) と実際の `python/engine/` ツリーで確認した事実に計画全体を合わせた。
+
+1. **Nautilus に `StrategyEngine` は存在しない。** 戦略を管理するのは `Trader`（`nautilus_trader/trading/trader.py`、backtest/live 共通）であり、Live のホストは `TradingNode`（`nautilus_trader/live/node.py`、内部に `NautilusKernel` + `Trader` + `LiveDataEngine` + `LiveExecutionEngine` + `LiveRiskEngine` を持つ）。戦略は `add_strategy()` で attach する（実際 `strategy_runtime/engine_runner.py:150` が backtest でこれをやっている）。本計画の「StrategyEngine を有効化」はすべて「**`Trader` に Strategy を attach する**」と読み替える。
+2. **環境依存の注入は `register()` 時にエンジンが行う。** `self.clock` / `self.cache` / `self.msgbus` は Strategy を `Trader` に登録した瞬間にエンジンが注入する（`common/actor.pyx:762-763`、登録前は `None`）。`StrategyConfig` が運ぶのは **venue / instrument_id / params** のみで、clock や data engine は config 経由では渡らない。Replay と Live で戦略が無分岐になるのは「Backtest エンジンか Live エンジンか」をエンジン側が決め、戦略は常に `self.clock` / `self.subscribe_bars()` を使うため——これは Nautilus の標準設計そのもの。
+3. **Replay は既に本物の Nautilus `Bar` を流している。** Replay は `BacktestEngine` を streaming で回し、`on_bar` には catalog 由来の Nautilus `Bar` が届く（`engine_runner.py`）。一方 `live/aggregator.py` は **プロジェクト独自の `TickBarAggregator`**（`KlineUpdate` dataclass を生成して UI 用 `LiveEventBus` に流す）であって **Nautilus `BarBuilder` のラッパではない**し、エンジンには繋がっていない。したがって Phase 10 の本質的な課題は「Replay を BarBuilder 経由に変える」ことではなく、**Live 側に Nautilus エンジン（`Trader` + `LiveDataEngine` + Nautilus aggregation）を立て、live tick を Nautilus `Bar` に集約して Strategy の `on_bar` に届ける**ことである（§0.5 / §1.1 / §2.3 で具体化）。
+4. **ファイルパス実体（§3 と一致させる）**: `strategy_runtime/strategy_loader.py`（`strategy_loader.py` 直下ではない）/ `strategy_runtime/engine_runner.py`（`replay_runner.py` は存在しない）/ `live/live_runner.py`（Phase 8 の adapter パイプライン `LiveRunner` クラス。Phase 9/10 の「ExecEngine を持つ live ホスト」とは別物・名前衝突に注意）。`live/risk_engine.py` は未存在（Phase 9 は標準 Nautilus RiskEngine を config で構成）。サンプル戦略は `mean_reversion_01` / `FakeBuyAndHold`（`ma_cross.py` は存在しない）。
+
+---
+
 ## Goals
 
 - **Strategy Portability**: Replay と Live Auto で **同一の `Strategy` サブクラス** を共有。環境依存の注入 (時刻ソース / データソース / Venue ID) は外部から行い、戦略本体は環境非依存に保つ
@@ -27,8 +38,9 @@
 ### 0.1 Strategy Loading
 
 - `LoadStrategy(file_path, mode)` (Phase 7 既存) を拡張: `mode` パラメータに `"replay"` / `"live_auto"` を許可
-- `live_auto` モードでは `LiveStrategyHost` (新設) が Nautilus `StrategyEngine` を有効化して Strategy を attach
-- 同じ `.py` モジュールが `replay_runner.py` / `live_runner.py` の両方からロード可能であることを保証
+  - 実体は `strategy_runtime/strategy_loader.load(path)`（`(module, scenario, strategy_cls)` を返す）。インスタンス化はランナー層の責務
+- `live_auto` モードでは `LiveStrategyHost` (新設) が Live 用 Nautilus エンジン（`Trader` + `LiveDataEngine` + `LiveExecutionEngine` + `LiveRiskEngine`、`TradingNode` 相当）に `add_strategy()` で Strategy を attach する（Nautilus に `StrategyEngine` は無い、§0′-1）
+- 同じ `.py` モジュールが Replay ランナー（`strategy_runtime/engine_runner.py`、`BacktestEngine`）と Live ホスト（`LiveStrategyHost`、§2.2）の両方から `strategy_loader.load()` でロード可能であることを保証
 
 ### 0.2 Promote to Live フロー
 
@@ -50,24 +62,26 @@
 
 ### 0.4 Strategy Portability Layer
 
-- `python/engine/strategy_loader.py` を Replay / Live 両対応に拡張
-- 環境依存の注入ポイント:
-  - `Clock` — Replay は `TestClock`、Live は `LiveClock`
-  - `DataEngine` instance — Replay は `BacktestDataEngine`、Live は `LiveDataEngine`
-  - `Venue` — Replay は `SIM`、Live は `TACHIBANA` / `KABUCOM`
-  - `Instrument` registry — Replay は J-Quants 既製品、Live は venue から取得した最新
-- Strategy 本体は `self.config` から `clock`, `data_engine`, `venue` を取得するため、コード変更なしで両モードで動作
+- `python/engine/strategy_runtime/strategy_loader.py` は既に Replay 用のロード（`load() -> (module, scenario, strategy_cls)`）を持つ。Phase 10 では **ローダ自体は環境非依存のまま**にし、環境依存はランナー/ホスト層（`engine_runner.py` / `LiveStrategyHost`）が選んだエンジンに委ねる
+- 環境依存の注入ポイント（**いずれもエンジンが提供し、Strategy は無分岐**）:
+  - `Clock` — Replay は `TestClock`、Live は `LiveClock`（`common/component.pyx`）。Strategy には `register()` 時に注入され、戦略コードは常に `self.clock.utc_now()` を使う
+  - データ供給 — Replay は `BacktestEngine` 内蔵の `DataEngine`（`BacktestDataEngine` というクラスは存在しない）、Live は `LiveDataEngine`。Strategy は常に `self.subscribe_bars(...)` / `on_bar(Bar)` を使う
+  - `Venue` — Replay は scenario 由来（例 `TSE`）、Live は `TACHIBANA` / `KABU`。Strategy は config の `InstrumentId` から取得
+  - `Instrument` registry — Replay は J-Quants 既製品 / catalog、Live は venue から取得した最新を `cache.add_instrument()`
+- **環境非依存の根拠（§0′-2 を参照）**: `self.clock` / `self.cache` / `self.msgbus` は `Trader` への登録時にエンジンが注入する（`common/actor.pyx:762-763`）。`StrategyConfig` が運ぶのは venue / instrument_id / params のみ。よって「Backtest エンジンか Live エンジンか」をホスト層が選ぶだけで、戦略コードは 1 行も変えずに両モードで動く（これは Nautilus 標準の backtest↔live 可搬性そのもの）
 
 ### 0.5 Data Source 非対称性の吸収
 
-Phase 8 ADR で定義された制約:
-- Replay: J-Quants OHLCV バー (分足含む) が既製品で存在、板情報なし
-- Live Auto: tick / board depth のみ、分足は `aggregator.py` が tick から集約
+Phase 8 ADR で定義された制約（venue 別に実体が異なる点を明記）:
+- Replay: J-Quants OHLCV バー (分足含む) が既製品で存在、板情報なし。**Replay は `BacktestEngine` を回すため `on_bar` には既に本物の Nautilus `Bar` が届いている**（§0′-3）
+- Live Auto (Tachibana): EVENT WebSocket の約定 (`EC`) / 板 (`FD` 系) が流れる → 約定列から tick 相当を構成できる
+- Live Auto (kabu): **PUSH WebSocket は板情報のみで約定 tick の push は無い**（約定は `GET /orders` 1 秒 polling、Phase 9 §0.1）。よって kabu の分足/現在足は「板 push の `CurrentPrice` 更新」または「polling した約定」から構成するしかなく、Tachibana のような連続 tick 列は得られない。**aggregator の入力ソースは venue 別に明示する**（M2）
 
-Phase 10 で必要な追加実装:
-- **Bar Builder の精度向上** — Phase 8 の `live/aggregator.py` (Nautilus `BarBuilder` ラッパ) を強化
-  - Partial bar push (バー完成前の現在足を 1 秒間隔で push) を有効化
-  - Replay 側も J-Quants バーをそのまま流すのではなく `BarBuilder` を経由させ、Live と同じイベント形状にする
+**Phase 10 で必要な追加実装の要点（C3 / §0′-3 の構造を解決する）**:
+- **Live 側に Nautilus エンジンを立てるのが本丸**。Strategy が `on_bar(Bar)` を受けるには、live tick/板を **Nautilus `Bar` に集約して `LiveDataEngine` 経由で Strategy に届ける**必要がある。選択肢:
+  - (推奨) live 受信を Nautilus の `TradeTick` / `QuoteTick` に変換し、Nautilus 標準 aggregation（`data/aggregation.pyx` の `TimeBarAggregator` / `TickBarAggregator`、`handle_trade_tick()`）を `LiveDataEngine` の internal aggregation で回す。これで Replay（catalog の `Bar`）と Live（aggregation 由来の `Bar`）が同じ `BarType` / 同じ `Bar` 型で `on_bar` に届く
+  - 既存 `live/aggregator.py` の独自 `TickBarAggregator`（`KlineUpdate` を吐く）は **UI 描画用 `LiveEventBus` 経路として継続**。Strategy への bar 供給とは別系統（混同しない。クラス名が Nautilus の `TickBarAggregator` と衝突している点に注意）
+- **Partial bar push**: 既存 `live/aggregator.py` には既に `build_now()`（進行中バーのスナップショット）がある。UI 用の partial push はこれを 1 秒間隔で叩けばよい。**ただし Strategy への partial bar は Nautilus 標準では `on_bar` に未確定バーを流さない**ため、必要なら別 API（`self.cache` への書き込み or カスタムデータ）で渡す設計を §2.3 で確定する
 - **戦略の depth 参照可否を declare**:
   - Strategy クラスに `REQUIRES_DEPTH: ClassVar[bool] = False` を定義
   - `True` の戦略は Replay モードでロード時に warning `STRATEGY_REQUIRES_DEPTH_REPLAY_UNAVAILABLE` を表示 (動作はするが depth は空)
@@ -75,19 +89,25 @@ Phase 10 で必要な追加実装:
 
 ### 0.6 Safety Rails
 
-戦略起動前に Python `RiskEngine` に登録される制約:
-- `max_position_size_jpy` — 1 銘柄あたりの最大ポジション金額 (default: 100 万円)
-- `max_order_value_jpy` — 1 注文あたりの最大金額 (default: 50 万円)
-- `max_daily_loss_jpy` — 1 日あたりの最大損失額 (超過で戦略を自動停止、default: 10 万円)
-- `max_orders_per_minute` — 流量制限 (default: 5)
-- `allowed_instruments` — 取引可能銘柄のホワイトリスト (default: 戦略起動時に指定した instrument_id のみ)
+戦略起動前に登録される制約。**Phase 9 が採用した「標準 Nautilus `RiskEngine` を config で構成（自前実装ではない）」方針（Phase 9 §1.1 / ADR）と整合させ、ネイティブで賄える項目と独自ロジックが要る項目を分ける**（M1）:
 
-これらは `StartLiveStrategy` RPC の `safety_limits` パラメータで指定。Default 値は Bevy 側で設定 UI を提供。
+| Safety Rail | default | 実装手段 |
+| --- | --- | --- |
+| `max_order_value_jpy` | 50 万円 | Nautilus `RiskEngineConfig` の **per-instrument `max_notional_per_order`**（`risk/engine.pyx`）にマップ。pre-trade ネイティブ |
+| `max_orders_per_minute` | 5 | Nautilus `RiskEngineConfig.max_order_submit_rate`（例 `"5/00:01:00"`）にマップ。ネイティブ |
+| `max_position_size_jpy` | 100 万円 | Nautilus には「JPY 建てポジション金額上限」の直接 config が無い → **`RiskEngine` サブクラス or pre-trade フック**で `cache.position()` + 新規注文金額を評価する独自チェック |
+| `max_daily_loss_jpy` | 10 万円 | **post-trade 独自チェック**（標準 RiskEngine は pre-trade のみ）。§2.4 / Open Risk 2 参照。超過で `LiveStrategyStateMachine.error(...)` |
+| `allowed_instruments` | 起動時指定の instrument_id のみ | pre-trade 独自チェック（ホワイトリスト照合） |
+
+- ネイティブにマップできる項目（`max_order_value` / `max_orders_per_minute`）は `RiskEngineConfig` で構成し、独自コードを増やさない
+- 独自ロジックが要る項目（`max_position_size_jpy` / `max_daily_loss_jpy` / `allowed_instruments`）は §2.4 の薄い独自層で実装する
+- これらは `StartLiveStrategy` RPC の `safety_limits` パラメータで指定。Default 値は Bevy 側で設定 UI を提供。**構造的 bypass 不可（backend が責任、ADR §6）**
 
 ### 0.7 Run 管理
 
 - `RunRegistry` (Python in-memory) で run_id (UUID) ベースに Live run を管理
 - 1 戦略あたりの同時 Live インスタンスは **1 つに制限** (重複 `StartLiveStrategy` は `STRATEGY_ALREADY_RUNNING` で reject)
+  - **重複判定キー (M4)**: Phase 10 では **`(strategy_id, instrument_id)` の組** を一意キーとする（`strategy_id` は LoadStrategy 検証済みハンドル、§2.5 / M9）。同じ戦略を別銘柄で起動するのは許可、同一戦略 × 同一銘柄の二重起動のみ reject。各 Live run には一意な Nautilus **`StrategyId`**（例 `LIVE-{run_id 短縮}`）を採番し、`Trader` への attach と発注主体の識別（§2.9 / M6）に使う
 - Replay run と Live run は別 namespace で管理 (Replay は session_id、Live は run_id)
 
 ---
@@ -96,17 +116,21 @@ Phase 10 で必要な追加実装:
 
 ### 1.1 Process Layout (Phase 9 からの差分)
 
+Phase 9 で発注経路を持つ Live エンジン（`TradingNode` 相当 = `NautilusKernel` + `Trader` + 各 Live エンジン）に、Phase 10 で **`Trader.add_strategy()` による Strategy attach** を加える（Nautilus に `StrategyEngine` は無い、§0′-1）:
+
 ```
-live_runner.py (Phase 9 で発注経路を持つ)
-├── DataEngine        (Phase 8)
-├── ExecEngine        (Phase 9)
-├── RiskEngine        (Phase 9 軽量 → Phase 10 で Safety Rails 強化)
-└── StrategyEngine    (Phase 10 [NEW]) ← Strategy インスタンスを attach
-    └── LiveStrategyHost  (Phase 10 [NEW])
-        ├── Strategy   (ユーザー定義、Replay と共有)
-        ├── Clock      (LiveClock)
-        └── Cache      (Live venue 由来の Order / Position / Account)
+Live Nautilus エンジン（TradingNode 相当）
+├── LiveDataEngine    (Phase 8 → Phase 10 で Nautilus aggregation を有効化し Bar を Strategy へ)
+├── LiveExecutionEngine (Phase 9)
+├── LiveRiskEngine    (Phase 9 標準構成 → Phase 10 で Safety Rails: native config + 独自 pre/post hook §2.4)
+└── Trader            (Phase 8 から存在。Phase 9 までは Strategy 未 attach)
+    └── add_strategy(Strategy)   ← Phase 10 [NEW]
+        （Strategy は register() 時に self.clock=LiveClock / self.cache を注入される、§0′-2）
+
+LiveStrategyHost (Phase 10 [NEW]、上記エンジンを起動/停止し state machine と RunRegistry を管理する薄いラッパ)
 ```
+
+> ⚠️ **名前衝突注意**: 既存 `python/engine/live/live_runner.py` は Phase 8 の adapter→aggregator→`LiveEventBus`（UI 用）パイプライン `LiveRunner` クラスであって、上図の Nautilus エンジンホストではない。Phase 10 のホストは `LiveStrategyHost`（§2.2）として新設し、両者を取り違えない。
 
 ### 1.2 State Machine
 
@@ -117,8 +141,10 @@ LiveStrategyStateMachine (Phase 10 [NEW])
 ```
 
 - `READY` 状態: Strategy がロード済み、Safety Rails 設定済み、まだ market data を流していない
-- `RUNNING` → `PAUSED`: `on_bar` / `on_tick` 呼び出しを停止 (既存注文の管理は継続)
-- `ERROR` 遷移時: `StopLiveStrategy` を内部発射 → 全 in-flight order を cancel → run を STOPPED に
+- `RUNNING` → `PAUSED`: **Nautilus に「データ配信だけ止めて注文管理は継続」する組込み機能は無い** (M5)。`LiveStrategyHost` 側でゲートする:
+  - 実装方針: ホストが Strategy への `on_bar` / `on_tick` フォワードをゲートするフラグを持つ（subscription 自体は維持し、Strategy には渡さない）。既存注文の OrderEvent はそのまま Strategy / Cache に届ける
+  - 代替案として `strategy.stop()` での data unsubscribe もあり得るが、再開時の re-subscribe / warmup コストが大きいため Phase 10 はホストゲート方式を採用
+- `ERROR` 遷移時: `StopLiveStrategy` を内部発射 → **当該 `StrategyId` の** in-flight order のみ cancel（手動 / 他戦略の注文を巻き込まない、§2.9 / M6） → run を STOPPED に
 
 ### 1.3 Promote to Live フロー (高レベル)
 
@@ -136,15 +162,15 @@ LiveStrategyStateMachine (Phase 10 [NEW])
    ↓
 [gRPC: StartLiveStrategy(strategy_id, instrument_id, venue, params, safety_limits)]
    ↓
-[Python: live_runner.py]
-   │ (a) strategy_loader.py で .py を Live コンテキストでロード
-   │ (b) StrategyEngine に attach
-   │ (c) RiskEngine に safety_limits を登録
-   │ (d) DataEngine から該当 instrument_id の subscription を有効化
-   │ (e) run_id 採番 → RunRegistry に登録
+[Python: LiveStrategyHost (live/strategy_host.py)]
+   │ (a) strategy_runtime/strategy_loader.load() で .py をロード（strategy_id 検証済み）
+   │ (b) Live Nautilus エンジンを起動し Trader.add_strategy(Strategy)（StrategyEngine ではない）
+   │ (c) LiveRiskEngine config + safety_rails に safety_limits を登録
+   │ (d) LiveDataEngine から該当 instrument_id の subscription + Bar aggregation を有効化
+   │ (e) run_id 採番 + StrategyId 採番 → RunRegistry に登録
    │ (f) state: READY → RUNNING
    ↓
-[EventStream: LiveStrategyEvent{run_id, status, ts_ms}]
+[SubscribeBackendEvents: BackendEvent.LiveStrategyEvent{run_id, strategy_id, status, ts_ms}]
    ↓
 [Bevy UI: Footer に Run Badge 表示]
 ```
@@ -155,39 +181,44 @@ LiveStrategyStateMachine (Phase 10 [NEW])
 
 ### 2.1 Backend: Strategy Portability Layer
 
-- `python/engine/strategy_loader.py` を拡張
-  - 既存 Replay 経路 (Phase 6) を維持しつつ `mode="live_auto"` を追加
-  - 環境依存の注入を `StrategyConfig` dataclass にまとめ、Strategy `__init__` に渡す
-  - Strategy 本体が `self.clock.utc_now()` / `self.data.subscribe_bars(...)` のように依存を経由するパターンを推奨
-- 既存の Phase 7 サンプル戦略 (`scenarios/ma_cross.py` 等) を Portability Layer 経由でロードできるよう refactor (互換性破壊は許容、Phase 7 段階では未稼働の想定)
+- `python/engine/strategy_runtime/strategy_loader.py` は既存 (`load()` 実装済み)。Phase 10 では **ローダは無改変が原則**で、Live ホスト (`LiveStrategyHost`) が同じ `load()` を呼ぶ
+  - 環境依存 (clock / data engine / exec) は **Strategy を attach するエンジンが供給**する（`StrategyConfig` には入れない、§0′-2）。`StrategyConfig` には venue / instrument_id / params のみ
+  - Strategy 本体は `self.clock.utc_now()` / `self.subscribe_bars(...)` / `on_bar(Bar)` を使う（`register()` 後にエンジンが注入）。`self.data.subscribe_bars` ではなく `Strategy` 継承の `self.subscribe_bars` が正（`common/actor.pyx`）
+- 既存サンプル戦略（**`mean_reversion_01` / `FakeBuyAndHold` 等、`ma_cross.py` は存在しない**）が Replay モード（`engine_runner.py` の `BacktestEngine`）で従来通り動くことを回帰確認した上で、同じ `strategy_cls` が Live ホストにも attach できることを確認
 
 ### 2.2 Backend: LiveStrategyHost
 
 - `python/engine/live/strategy_host.py` を新設
-- `StrategyEngine` のインスタンス化、`Strategy` の attach / detach、state machine の管理
-- 戦略 lifecycle hook の橋渡し:
-  - `on_start()` — `READY → RUNNING` 遷移時
-  - `on_stop()` — `STOPPING → STOPPED` 遷移時
-  - `on_bar()` / `on_tick()` — DataEngine からのイベント
-  - `on_order_filled()` / `on_order_canceled()` — ExecEngine からのイベント
+- **Live 用 Nautilus エンジン（`TradingNode` 相当）の起動/停止**、`Trader.add_strategy()` / `remove_strategy()` による Strategy の attach / detach、state machine の管理（Nautilus に `StrategyEngine` は無い、§0′-1）
+- 戦略 lifecycle hook は Nautilus が呼ぶ（ホストが直接呼ぶのではない）。ホストの責務は state machine 遷移と RunRegistry 連携:
+  - `on_start()` — Strategy 内。`READY → RUNNING` 遷移後に Nautilus が呼ぶ
+  - `on_stop()` — Strategy 内。`STOPPING → STOPPED` 遷移時に Nautilus が呼ぶ
+  - `on_bar()` / `on_quote_tick()` / `on_trade_tick()` — `LiveDataEngine` 由来。PAUSE 中はホストがフォワードをゲート（§1.2 / M5）
+  - `on_order_filled()` / `on_order_canceled()` — `LiveExecutionEngine` 由来
 
 ### 2.3 Backend: Bar Builder 強化
 
-- `python/engine/live/aggregator.py` (Phase 8) に partial bar push を追加
-- Replay 側も `BarBuilder` 経由に統一: `python/engine/replay_runner.py` に J-Quants OHLCV を `BarBuilder.handle_trade_tick()` 相当に変換するアダプタを追加
-- これにより Replay / Live で `Strategy.on_bar()` に渡るイベント形状が完全に一致する
+**目的: Strategy の `on_bar` に Replay / Live で同じ Nautilus `Bar` 型が届くようにする**（§0′-3 / C3）。「Replay を BarBuilder に変える」のではなく「**Live に Nautilus aggregation を入れて Bar を作る**」のが本筋。
 
-### 2.4 Backend: RiskEngine 強化 (Safety Rails)
+- **Live (Strategy 供給経路) [本丸]**: live の約定/板を Nautilus `TradeTick` / `QuoteTick` に変換し、`LiveDataEngine` の internal bar aggregation（`data/aggregation.pyx` の `TimeBarAggregator.handle_trade_tick()` / `TickBarAggregator`、`BarType` の 5 番目を `INTERNAL` 指定）で `Bar` を生成して Strategy の `on_bar` に届ける。これで Replay の catalog `Bar`（`EXTERNAL`）と同じ `Bar` 型・同じ `BarSpec` に揃う
+  - **venue 別の入力 (M2)**: Tachibana は `EC`（約定）を `TradeTick` 化。kabu は **約定 tick が無い**ため、板 push の `CurrentPrice` か `GET /orders` polling から `TradeTick` 相当を構成する（精度限界を §8 Open Risk に明記）
+- **Live (UI 描画経路) [既存維持]**: `python/engine/live/aggregator.py` の独自 `TickBarAggregator`（`KlineUpdate` を `LiveEventBus` に流す）はそのまま。partial bar push は既存 `build_now()` を 1 秒間隔で叩く形で実装（メソッドは実装済み、追加は push のスケジューリングのみ）
+- **Replay 側は無改変**: 既に `BacktestEngine` が本物の `Bar` を `on_bar` に流している。J-Quants OHLCV → `Bar` 変換は catalog ローダ (`nautilus_catalog_loader.py` 等) が担当済み
+- ⚠️ Strategy への **未確定（partial）bar** は Nautilus 標準では `on_bar` に流れない。必要なら別経路（カスタムデータ or cache）で渡す設計を本ステップで確定する
 
-- `python/engine/live/risk_engine.py` (Phase 9 軽量実装) を拡張
-- 事前チェック (pre-trade):
-  - `max_position_size_jpy`: 既存ポジション + 新規注文後の合計金額が上限以内か
-  - `max_order_value_jpy`: 1 注文の金額が上限以内か
-  - `max_orders_per_minute`: token bucket で流量制限
+### 2.4 Backend: Safety Rails (LiveRiskEngine の構成 + 独自 hook)
+
+> `python/engine/live/risk_engine.py` は **未存在**（Phase 9 は標準 Nautilus `RiskEngine` を config で構成する方針、§0′-4 / M1）。Phase 10 では「ネイティブ config + 独自薄層」で実装する。
+
+- **ネイティブ `RiskEngineConfig` で構成（独自コードを増やさない）**:
+  - `max_order_value_jpy` → per-instrument `max_notional_per_order`
+  - `max_orders_per_minute` → `max_order_submit_rate`（例 `"5/00:01:00"`）
+- **独自薄層（`live/safety_rails.py` 新設）で pre-trade フック**:
+  - `max_position_size_jpy`: `cache.position()` の既存ポジション + 新規注文後の合計金額が上限以内か
   - `allowed_instruments`: instrument_id がホワイトリスト内か
-- 事後チェック (post-trade):
-  - `max_daily_loss_jpy`: 当日の realized + unrealized P&L が上限を下回ったら `LiveStrategyStateMachine.error("MAX_DAILY_LOSS_EXCEEDED")` を発射
-- 違反は `OrderRejected` イベントで戦略に通知、UI には `EventStream: SafetyRailViolation{run_id, kind, detail}` を push
+- **独自薄層で post-trade チェック**（標準 RiskEngine は pre-trade のみ）:
+  - `max_daily_loss_jpy`: 当日の realized + unrealized P&L が上限を下回ったら `LiveStrategyStateMachine.error("MAX_DAILY_LOSS_EXCEEDED")` を発射（mark-to-market の評価タイミングは保守的に、§8 Open Risk 2）
+- pre-trade 違反は Nautilus が `OrderDenied`（`RiskEngine` reject）として戦略に通知。UI には `SubscribeBackendEvents` の `BackendEvent.oneof` 経由で `SafetyRailViolation{run_id, kind, detail, ts_ms}` を push（§2.5 / M8）
 
 ### 2.5 Backend: gRPC RPC 追加
 
@@ -195,33 +226,41 @@ LiveStrategyStateMachine (Phase 10 [NEW])
 service DataEngine {
   // 既存 RPC...
 
-  // Phase 10
+  // Phase 10（すべて unary。Phase 9 ADR の通り汎用 streaming transport は
+  // SubscribeBackendEvents の 1 本のみで、それ以外に stream RPC は増やさない、M7）
   rpc StartLiveStrategy(StartLiveStrategyReq) returns (StartLiveStrategyRes);
   rpc StopLiveStrategy(StopLiveStrategyReq) returns (StopLiveStrategyRes);
   rpc PauseLiveStrategy(PauseLiveStrategyReq) returns (PauseLiveStrategyRes);
   rpc ResumeLiveStrategy(ResumeLiveStrategyReq) returns (ResumeLiveStrategyRes);
   rpc GetLiveStrategyStatus(GetLiveStrategyStatusReq) returns (LiveStrategyStatus);
-  rpc ListLiveStrategies(google.protobuf.Empty) returns (stream LiveStrategyStatus);
+  rpc ListLiveStrategies(ListLiveStrategiesReq) returns (ListLiveStrategiesRes); // unary repeated（streaming にしない、M7）
 }
 
 message StartLiveStrategyReq {
-  string strategy_file = 1;
+  // 任意ホストパスを backend に exec させない（live 自動発注経路の RCE / FS 共有前提を避ける、M9）。
+  // Phase 7 LoadStrategy が検証済みの strategy_id（許可ディレクトリ配下に限定）を渡す。
+  string strategy_id = 1;     // LoadStrategy で検証済みのハンドル（生パスではない）
   string instrument_id = 2;
   string venue = 3;
   map<string, string> params = 4;
   SafetyLimits safety_limits = 5;
 }
 
-message SafetyLimits {
-  int64 max_position_size_jpy = 1;
-  int64 max_order_value_jpy = 2;
-  int64 max_daily_loss_jpy = 3;
-  int32 max_orders_per_minute = 4;
-  repeated string allowed_instruments = 5;
+message ListLiveStrategiesRes {
+  repeated LiveStrategyStatus strategies = 1;
 }
 
-// EventStream に追加されるイベント:
-//   - LiveStrategyEvent{run_id, status, ts_ms}
+message SafetyLimits {
+  int64 max_position_size_jpy = 1;   // 独自 pre-trade（M1）
+  int64 max_order_value_jpy = 2;     // → RiskEngineConfig.max_notional_per_order（ネイティブ）
+  int64 max_daily_loss_jpy = 3;      // 独自 post-trade
+  int32 max_orders_per_minute = 4;   // → RiskEngineConfig.max_order_submit_rate（ネイティブ）
+  repeated string allowed_instruments = 5;  // 独自 pre-trade
+}
+
+// 新規イベントは Phase 9 Step 0 の SubscribeBackendEvents の BackendEvent.oneof に
+// 追加する（別 stream を作らない＝Phase 9 ADR「single channel」維持、M8）:
+//   - LiveStrategyEvent{run_id, strategy_id, status, ts_ms}
 //   - SafetyRailViolation{run_id, kind, detail, ts_ms}
 //   - StrategyLogMessage{run_id, level, message, ts_ms}  // Strategy 内 self.log.info() の中継
 ```
@@ -229,7 +268,8 @@ message SafetyLimits {
 ### 2.6 Backend: RunRegistry
 
 - `python/engine/live/run_registry.py` を新設
-- `register(run_id, strategy_file, ...)` / `unregister(run_id)` / `get(run_id)` / `list_active()`
+- `register(run_id, strategy_id, instrument_id, nautilus_strategy_id, ...)` / `unregister(run_id)` / `get(run_id)` / `list_active()`
+- 重複起動防止のため `(strategy_id, instrument_id)` → run_id の索引を持つ（§0.7 / M4）。各 run は一意な Nautilus `StrategyId` を保持し、発注主体識別（§2.9 / M6）に使う
 - 永続化なし (in-memory)。プロセス再起動時は全 run が消える (戦略本体は venue 側に注文が残る可能性あり、要 UI 警告)
 
 ### 2.7 UI: Strategy Editor `[Promote to Live]` ボタン
@@ -249,8 +289,8 @@ message SafetyLimits {
 ### 2.9 UI: 既存 PositionsPanel / OrdersPanel の run_id フィルタ
 
 - Phase 9 では「Live で発生した全 Order / Position」を表示するだけだったが、Phase 10 では複数の発注主体 (手動 / Strategy A / Strategy B) が並ぶ可能性がある
-- 各 Order / Position に `source_run_id` メタデータを付与 (手動発注は `null`)
-- PositionsPanel / OrdersPanel に「絞り込み: All / Manual / Strategy: XXX」ドロップダウンを追加
+- **発注主体の識別は Nautilus `StrategyId` で行う（M6）**: Cython の `Order` / `OrderFilled` は immutable で任意フィールドを後付けできないため、`source_run_id` という新フィールドは持たせない。代わりに各 Live run に一意な `StrategyId`（`LIVE-{run_id 短縮}`、手動発注は Phase 9 §3.1 の `MANUAL-001`）を割り当て、`OrderEvent` proto に既存の `strategy_id` を載せて区別する。RunRegistry が `StrategyId ↔ run_id` を対応付ける
+- PositionsPanel / OrdersPanel に「絞り込み: All / Manual / Strategy: XXX」ドロップダウンを追加（フィルタは `strategy_id` で行う）
 
 ### 2.10 UI: SafetyRailViolation トースト
 
@@ -263,21 +303,23 @@ message SafetyLimits {
 
 ```
 python/engine/
-├── live_runner.py                  # StrategyEngine 有効化
-├── strategy_loader.py              # mode="live_auto" 対応に拡張
-├── replay_runner.py                # BarBuilder 経由に統一
+├── strategy_runtime/
+│   ├── strategy_loader.py          # 既存。原則無改変（load() を Live ホストも呼ぶ）
+│   └── engine_runner.py            # 既存 Replay (BacktestEngine)。原則無改変
 ├── live/
-│   ├── strategy_host.py    [NEW]   # LiveStrategyHost (state machine + attach/detach)
-│   ├── run_registry.py     [NEW]   # in-memory run 管理
-│   ├── risk_engine.py              # Phase 9 拡張 (Safety Rails 強化)
-│   └── aggregator.py               # partial bar push 追加
+│   ├── live_runner.py              # 既存 Phase 8 adapter パイプライン（UI 用、別物・改変なし）
+│   ├── strategy_host.py    [NEW]   # LiveStrategyHost: Live Nautilus エンジン起動 + Trader.add_strategy + state machine
+│   ├── run_registry.py     [NEW]   # in-memory run 管理 + (strategy_id,instrument_id) 索引 + StrategyId 対応
+│   ├── safety_rails.py     [NEW]   # 独自 pre/post-trade hook（max_position / max_daily_loss / allowed_instruments）
+│   └── aggregator.py               # 既存（UI 用 build_now() partial push のスケジューリングのみ追加）
+│   # Strategy 供給用の Nautilus aggregation は LiveDataEngine の internal aggregation で構成（新ファイル不要）
 
 src/ui/
 ├── strategy_editor.rs              # [Promote to Live] ボタン追加
 ├── safety_rails_modal.rs   [NEW]   # Safety Rails 設定 + Replay KPI 表示
 ├── live_run_panel.rs       [NEW]   # アクティブ run 一覧 + 制御
-├── positions_panel.rs              # source_run_id フィルタ追加
-└── orders_panel.rs                 # source_run_id フィルタ追加
+├── positions_panel.rs              # strategy_id フィルタ追加（M6）
+└── orders_panel.rs                 # strategy_id フィルタ追加（M6）
 ```
 
 ---
@@ -286,38 +328,40 @@ src/ui/
 
 各 Step 完了時点で `cargo run` 可能を維持。Mock 経由で発注テストできるよう、Step 1 で MockVenueAdapter にも戦略 attach の経路を通す。
 
-1. **Step 1 — Strategy Portability Layer + BarBuilder 統一**
-   - `strategy_loader.py` の `mode="live_auto"` 対応
-   - Replay 側を `BarBuilder` 経由に refactor
-   - 既存 Phase 6 サンプル戦略が Replay モードで従来通り動作することを回帰確認
+1. **Step 1 — Strategy Portability 確認 + Live Bar 供給の設計確定**
+   - `strategy_runtime/strategy_loader.load()` が Replay/Live 両方から呼べることを確認（ローダ改変は最小）
+   - Live 側に Nautilus aggregation（`LiveDataEngine` internal aggregation で `Bar` 生成）を入れる経路を設計・PoC（§2.3 / C3）
+   - 既存サンプル戦略（`mean_reversion_01` 等）が Replay モードで従来通り動作することを回帰確認
 2. **Step 2 — LiveStrategyHost + RunRegistry**
    - `live/strategy_host.py` 実装、state machine 単体テスト
    - `live/run_registry.py` 実装
-3. **Step 3 — gRPC RPC + EventStream イベント追加**
-   - `StartLiveStrategy` / `StopLiveStrategy` / `Pause` / `Resume` / `GetStatus` 実装
+3. **Step 3 — gRPC RPC + `BackendEvent` oneof 拡張（M8）**
+   - `StartLiveStrategy` / `StopLiveStrategy` / `Pause` / `Resume` / `GetStatus` / `ListLiveStrategies`（全 unary）実装
+   - 新イベント（`LiveStrategyEvent` / `SafetyRailViolation` / `StrategyLogMessage`）を既存 `SubscribeBackendEvents` の `BackendEvent.oneof` に追加
    - MockVenueAdapter で疎通テスト
-4. **Step 4 — Safety Rails (RiskEngine 強化)**
-   - max_position / max_order / max_orders_per_minute (pre-trade) 実装
-   - max_daily_loss (post-trade) 実装
-   - 違反イベントを EventStream に push
+4. **Step 4 — Safety Rails (ネイティブ config + 独自 hook)**
+   - `max_order_value` / `max_orders_per_minute` を `RiskEngineConfig` で構成（ネイティブ）
+   - `max_position_size_jpy` / `allowed_instruments` (pre-trade) / `max_daily_loss` (post-trade) を `live/safety_rails.py` で実装
+   - 違反を `SubscribeBackendEvents` の `BackendEvent.oneof`（`SafetyRailViolation`）に push
 5. **Step 5 — Bevy UI: Safety Rails Modal + Promote to Live ボタン**
    - `safety_rails_modal.rs` 新設、Replay KPI サマリー表示
    - Strategy Editor から `[Promote to Live]` 経路の E2E (Mock)
 6. **Step 6 — Bevy UI: Live Run Panel**
    - `live_run_panel.rs` 新設
    - Pause / Resume / Stop ボタンの動作確認
-7. **Step 7 — PositionsPanel / OrdersPanel の source_run_id フィルタ**
-   - Order / Position メタデータ拡張
-   - ドロップダウン UI 追加
-8. **Step 8 — Partial Bar Push**
-   - `aggregator.py` 拡張、Strategy が現在進行中バーを参照可能に
-   - Replay / Live で同じイベント形状の確認テスト
+7. **Step 7 — PositionsPanel / OrdersPanel の strategy_id フィルタ**
+   - `OrderEvent` proto の `strategy_id` を UI で活用（Order/Position に新フィールドは足さない、M6）
+   - ドロップダウン UI 追加（All / Manual / Strategy: XXX）
+8. **Step 8 — Partial Bar Push（UI 経路）+ Live Bar 供給の検証**
+   - `aggregator.py` の `build_now()` を 1 秒間隔で `LiveEventBus` に push（UI 用）
+   - Strategy 供給経路は Nautilus aggregation 由来の `Bar` が `on_bar` に届くことを確認
+   - Replay (catalog `Bar`) / Live (aggregation `Bar`) で同じ `BarType`・同じ OHLCV になる回帰テスト
 9. **Step 9 — Live E2E (Demo / Verify)**
-   - Tachibana Demo + 簡単な戦略 (MA cross) を 1 営業日 Live 稼働
-   - kabu Verify でも同様に E2E
+   - Tachibana Demo + 簡単な戦略 (`mean_reversion_01` 等) を 1 営業日 Live 稼働
+   - kabu Verify でも同様に E2E（kabu は約定 tick 無し前提の精度限界を確認、§8 Open Risk 5）
 10. **Step 10 — Polish**
     - drawio アーキ図 `phase10-architecture.drawio.svg`
-    - Strategy 開発者向けドキュメント (Portability Layer の使い方、Safety Rails の指針)
+    - Strategy 開発者向けドキュメント (Portability の使い方、Safety Rails の指針)
     - Phase 11 への引き継ぎ事項を docs にまとめる
 
 ---
@@ -326,68 +370,68 @@ src/ui/
 
 ### Strategy Portability
 
-- Phase 6 の Replay 用サンプル戦略 (`ma_cross.py` 等) が **コード変更ゼロ** で Live Auto モードで起動できる
+- 既存 Replay 用サンプル戦略 (`mean_reversion_01` / `FakeBuyAndHold` 等、`ma_cross.py` は存在しない) が **コード変更ゼロ** で Live Auto モードで起動できる
 - Strategy 内に `if mode == "replay":` のような分岐が存在しない (grep で確認)
-- `Strategy.on_bar()` に渡るイベントが Replay と Live で同じ型・同じフィールドであることを type test で確認
+- `Strategy.on_bar()` に渡るのが Replay (catalog `Bar`) / Live (Nautilus aggregation `Bar`) のいずれでも同じ `Bar` 型・同じ `BarType` であることを type test で確認
 
 ### Promote to Live
 
 - Strategy Editor で `.py` を編集 → `[Promote to Live]` → Safety Rails モーダル → Live 起動、までが手動 E2E で通る
 - Venue 未ログイン / unsaved changes / safety limits 未設定 のいずれかが NG なら `[Promote to Live]` ボタンが disabled になる
-- 2 段階確認モーダルで Replay KPI (累積リターン / 最大 DD / Sharpe / 約定回数) が表示される
+- 2 段階確認モーダルで Replay KPI が表示される。**現行 `summary.py` が算出するのは `total_pnl` / `max_drawdown` / `trade_count` / `win_rate` / `fee_total`**。`Sharpe` / 累積リターン% は未算出（M3）→ Phase 10 で算出を追加するか、モーダル表示項目から外すかを Step 5 着手時に決める（既存項目のみで進めるのが既定）
 
 ### Safety Rails
 
-- `max_position_size_jpy` 超過 → `OrderRejected` で戦略に通知、UI トースト表示 (unit test + Mock E2E)
-- `max_order_value_jpy` 超過 → 同上
-- `max_orders_per_minute` 超過 → token bucket で発注遅延 (unit test)
-- `max_daily_loss_jpy` 超過 → 戦略が自動 STOPPED 状態に、in-flight order が全 cancel (unit test + Mock E2E)
-- `allowed_instruments` 外への発注 → `OrderRejected`
+- `max_position_size_jpy` 超過 → 独自 pre-trade hook が `OrderDenied`、UI トースト表示 (unit test + Mock E2E)
+- `max_order_value_jpy` 超過 → ネイティブ `RiskEngineConfig.max_notional_per_order` が `OrderDenied`
+- `max_orders_per_minute` 超過 → ネイティブ `max_order_submit_rate` で抑制 (unit test)
+- `max_daily_loss_jpy` 超過 → 戦略が自動 STOPPED 状態に、**当該 `StrategyId` の** in-flight order が cancel (unit test + Mock E2E)
+- `allowed_instruments` 外への発注 → 独自 pre-trade hook が `OrderDenied`
 
 ### Live Run Telemetry
 
 - Live 稼働中の fills / position / PnL が PositionsPanel / OrdersPanel に Replay と同等の粒度で表示される
-- 複数 run (手動 + Strategy) が同居しても source_run_id フィルタで分離表示できる
+- 複数 run (手動 + Strategy) が同居しても `strategy_id` フィルタで分離表示できる
 - `SafetyRailViolation` トーストが Footer 右下に出る
 
 ### 構造的安全性
 
 - `ExecutionMode != LiveAuto` で `StartLiveStrategy` を呼ぶと `EXECUTION_MODE_PRECONDITION` で reject (unit test)
-- 同一戦略の二重 `StartLiveStrategy` が `STRATEGY_ALREADY_RUNNING` で reject (unit test)
+- 同一 `(strategy_id, instrument_id)` の二重 `StartLiveStrategy` が `STRATEGY_ALREADY_RUNNING` で reject (unit test、M4)
 - Replay run と Live run が同時に走っているとき、UI の Run Badge で両方が独立に表示される
 
-### Bar Builder 精度
+### Bar 供給の一致
 
-- Replay / Live で同じ tick データを `BarBuilder` に流すと、生成される `Bar` の OHLCV が一致する (unit test)
-- Partial bar push が 1 秒間隔で発火し、Strategy が `self.bar.close` で現在進行中バーの最新値を取得できる
+- Replay (catalog `Bar`) と Live (Nautilus aggregation 由来 `Bar`) で、同じ tick 列から生成される `Bar` の OHLCV が一致する (unit test)
+- UI 用 partial bar push が 1 秒間隔で `LiveEventBus` に発火する。**Strategy への未確定バー供給は別経路（§2.3、Nautilus 標準の `on_bar` は確定バーのみ）であることを明記**
 
 ---
 
 ## 6. ADRs
 
-### ADR: Strategy Portability Layer は環境依存を `StrategyConfig` 経由で注入する
+### ADR: 環境依存はエンジンが供給し、Strategy は無分岐（`StrategyConfig` には clock/data を入れない）
 
 選択肢:
 - **A. Strategy 内で `if self.mode == "replay"` のような分岐** — コード重複、保守性低下
-- **B. 環境依存を `StrategyConfig` 経由で注入、Strategy 本体は環境非依存** ← **採用**
+- **B. Backtest エンジンか Live エンジンかをホスト層が選び、Strategy はエンジンが注入する `self.clock` / `self.cache` / `self.subscribe_bars` を使う（無分岐）** ← **採用**
 
-採用理由: Nautilus 標準の Strategy パターン (`config` 経由の依存注入) に従う。テスタビリティと将来の Promote to Live の構造的整合性が高い。
+採用理由: これは Nautilus 標準の backtest↔live 可搬性そのもの。`self.clock` / `self.cache` は `Trader` への `register()` 時にエンジンが注入する（`common/actor.pyx:762-763`）。**`StrategyConfig` が運ぶのは venue / instrument_id / params のみで、clock や data engine は config 経由では渡らない**（§0′-2）。当初案の「環境依存を `StrategyConfig` 経由で注入」は Nautilus の実際の仕組みと異なるため訂正。
 
-### ADR: Replay 側も BarBuilder を経由する
+### ADR: Live 側に Nautilus aggregation を入れて `Bar` を作る（Replay は無改変）
 
 選択肢:
-- **A. Replay は J-Quants OHLCV をそのまま `on_bar` に渡す** — Live と Strategy 側コードが分岐する可能性
-- **B. Replay 側も `BarBuilder` を経由させ、Live と同じイベント形状にする** ← **採用**
+- **A. Live の独自 `KlineUpdate` を Strategy にも流す** — Replay (Nautilus `Bar`) と型が違い Strategy が分岐する
+- **B. Live tick を Nautilus `TradeTick` 化し `LiveDataEngine` の internal aggregation で `Bar` を生成、Strategy の `on_bar(Bar)` に届ける** ← **採用**
 
-採用理由: Strategy 本体が完全に環境非依存になる。Replay → Live のプロモートで挙動差分が出るリスクを構造的に排除。
+採用理由: Replay は既に `BacktestEngine` 経由で本物の `Bar` を `on_bar` に流している（§0′-3）。当初案「Replay 側も BarBuilder を経由する」は前提が逆で、改修すべきは Live 側。Live を Nautilus aggregation に揃えれば Replay/Live で同じ `Bar` 型・`BarType` になり、プロモート時の挙動差分を構造的に排除できる。既存 `live/aggregator.py`（独自 `TickBarAggregator` → `KlineUpdate`）は UI 描画専用として残す。
 
-### ADR: Safety Rails は Python `RiskEngine` 層で実装する
+### ADR: Safety Rails は backend で実装（ネイティブ `RiskEngineConfig` + 独自薄層）
 
 選択肢:
 - **A. UI 側 (Rust) で Safety Rails チェック** — bypass されるリスク (RPC を直接叩けば回避可能)
-- **B. Python `RiskEngine` 層で実装** ← **採用**
+- **B. backend で実装。ネイティブで賄える項目は `RiskEngineConfig`、不足分のみ独自薄層** ← **採用**
 
-採用理由: Safety Rails は **構造的に bypass 不可能** であるべき。UI は単に値を入力させる layer に留め、検証は backend が責任を持つ。
+採用理由: Safety Rails は **構造的に bypass 不可能** であるべき。`max_order_value`→`max_notional_per_order`、`max_orders_per_minute`→`max_order_submit_rate` はネイティブ config で構成し（Phase 9 の標準 RiskEngine 方針と整合、§0′-4 / M1）、`max_position_size_jpy` / `max_daily_loss_jpy` / `allowed_instruments` のみ `live/safety_rails.py` の独自 pre/post-trade hook で実装する。UI は値入力 layer に留める。
 
 ### ADR: 1 戦略 1 Live インスタンス制約
 
@@ -405,20 +449,20 @@ src/ui/
 
 採用理由: 誤発注リスクと UI 状態の整合性。Phase 11 以降で「safe reload」(現在の position をそのまま引き継いで新戦略インスタンスに移行) を別途設計する。
 
-### ADR: Live Strategy の Order / Position に source_run_id を付与
+### ADR: 発注主体は Nautilus `StrategyId` で識別する（Order に新フィールドを足さない）
 
 選択肢:
-- **A. メタデータなし (手動と Strategy 発注を区別しない)** — 戦略停止時の clean-up が困難
-- **B. source_run_id を付与し、UI でフィルタ可能に** ← **採用**
+- **A. `Order` / `OrderFilled` に `source_run_id` フィールドを追加** — Cython の immutable 型は後付けフィールド不可（`OrderFilled` をサブクラスできない）
+- **B. 各 Live run に一意な `StrategyId` を割り当て、`OrderEvent` proto の `strategy_id` で識別** ← **採用**
 
-採用理由: 戦略停止時に「この戦略由来の in-flight order だけ cancel する」操作が安全にできる。手動ポジションを誤って巻き込まない。
+採用理由: Cython 型の制約上 A は実現不可（§0′ / M6）。各 run = 一意 `StrategyId`（手動は `MANUAL-001`、Phase 9 §3.1）で `cache.orders(strategy_id=...)` 等のネイティブ API がそのまま使え、戦略停止時に「その `StrategyId` の in-flight order だけ cancel」が安全にできる。RunRegistry が `StrategyId ↔ run_id` を対応付ける。
 
-### ADR: ExecEngine は Phase 9 で初有効化、StrategyEngine は Phase 10 で初有効化
+### ADR: Nautilus エンジン群を Phase 8 → 9 → 10 で段階有効化（Phase 10 は Strategy を attach）
 
-Phase 8 → 9 → 10 で段階的に Nautilus エンジン群を有効化する設計:
-- Phase 8: DataEngine のみ (read-only)
-- Phase 9: DataEngine + ExecEngine (手動発注のみ)
-- Phase 10: DataEngine + ExecEngine + StrategyEngine (戦略自動発注)
+Phase 8 → 9 → 10 で段階的に発注能力を解禁する設計（Nautilus に `StrategyEngine` は無く、戦略は `Trader.add_strategy()` で attach する、§0′-1）:
+- Phase 8: `DataEngine` のみ (read-only)
+- Phase 9: `DataEngine` + `ExecutionEngine` + `RiskEngine`(標準構成)。`Trader` は存在するが Strategy は未 attach（手動発注のみ）
+- Phase 10: 同上 + **`Trader.add_strategy(Strategy)`**（戦略が `submit_order()` を呼ぶ）+ Safety Rails 強化
 
 これにより各 Phase で発生し得る障害範囲が明確に区切られる。
 
@@ -449,14 +493,14 @@ Strategy 内 `self.log.info(...)` の出力先:
 | **Live Strategy の永続化と自動復旧** | 再起動時は停止状態 | app_state 経由の復元 |
 | **専用ログビューアパネル** | Live Run Panel の最終 100 行のみ | フィルタ機能付きログビューア |
 | **戦略のバージョン管理** | 非対象 | git 連携 / strategy_id にハッシュ付与 |
-| **複数 Venue 同時接続** (Phase 8 Open Question) | 非対象 | venue 別 StrategyEngine |
+| **複数 Venue 同時接続** (Phase 8 Open Question) | 非対象 | venue 別 `Trader` / `TradingNode` |
 
 ---
 
 ## 8. Open Risks
 
-1. **Replay と Live で BarBuilder 出力の微差** — partial bar push のタイミング、tick の集約方式によって OHLCV が ±1 tick ずれる可能性。Step 8 で徹底的に regression test
-2. **Safety Rails の loophole** — `max_daily_loss` の計算における unrealized P&L 評価タイミング (mark-to-market) のずれで判定が遅延する可能性。実装時に保守的に評価
-3. **Strategy 内で例外発生時の挙動** — Nautilus 標準では `on_bar` の例外で戦略が落ちる。Phase 10 では `LiveStrategyStateMachine.error("STRATEGY_EXCEPTION")` に遷移させ、`SafetyRailViolation` イベントで UI に通知 + 全 in-flight order cancel
-4. **Promote to Live の Replay KPI 信頼性** — 直近 Replay 結果を `Cache` から取得するが、戦略パラメータ変更後に Replay 未実行のまま `[Promote to Live]` を押されるとサマリーが古い。前提条件チェックに「直近 Replay 結果のパラメータが現在と一致しているか」を含める
-5. **kabu の polling 遅延と戦略の意思決定タイミング** — kabu は約定通知が 1 秒 polling のため、戦略が「直近約定を見て次の判断」をする場合に遅延発生。Phase 11 で WebSocket 経由の push 化を venue にリクエストするか、戦略側で polling 前提の設計指針を出す
+1. **Replay と Live で `Bar` 出力の微差** — Replay は catalog の確定 `Bar`、Live は Nautilus aggregation 由来の `Bar`。tick の集約方式・タイムスタンプ境界で OHLCV が ±1 tick ずれる可能性。Step 8 で徹底的に regression test
+2. **Safety Rails の loophole** — `max_daily_loss` の計算における unrealized P&L 評価タイミング (mark-to-market) のずれで判定が遅延する可能性。標準 RiskEngine は pre-trade のみのため post-trade は独自層、実装時に保守的に評価
+3. **Strategy 内で例外発生時の挙動** — Nautilus 標準では `on_bar` の例外で戦略が落ちる。Phase 10 では `LiveStrategyStateMachine.error("STRATEGY_EXCEPTION")` に遷移させ、`SafetyRailViolation` イベントで UI に通知 + 当該 `StrategyId` の in-flight order を cancel
+4. **Promote to Live の Replay KPI 信頼性** — 直近 Replay 結果を取得するが、戦略パラメータ変更後に Replay 未実行のまま `[Promote to Live]` を押されるとサマリーが古い。前提条件チェックに「直近 Replay 結果のパラメータが現在と一致しているか（params のハッシュ突合）」を含める
+5. **kabu は約定 tick feed が無い** — kabu の PUSH は板情報のみ、約定は 1 秒 polling（Phase 9 §0.1）。よって ① 戦略への `Bar` 供給は板 `CurrentPrice` か polling 約定からの構成となり Tachibana より精度が落ちる、② 「直近約定を見て次の判断」をする戦略は最大 1〜2 秒遅延する。Phase 11 で push 化を venue にリクエストするか、kabu 戦略に polling 前提の設計指針を出す
