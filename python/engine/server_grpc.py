@@ -25,6 +25,7 @@ from .live.last_price_cache import LastPriceCache
 from .live.depth_cache import DepthCache
 from .live.state_machine import VenueStateMachine
 from .live.backend_event_bus import BackendEventBus
+from .live.secret_vault import SecretVault
 from .mode_manager import ModeManager
 from .models import PerInstrumentState
 from .proto import engine_pb2, engine_pb2_grpc
@@ -206,6 +207,8 @@ class GrpcDataEngineServer(
         # Phase 9 Step 0: backend → frontend event push (threading-based fan-out).
         # Lifetime = servicer lifetime; per-stream cleanup is in the handler finally.
         self._backend_event_bus: BackendEventBus = BackendEventBus()
+        # Phase 9 Step 1: secret relay vault (Tachibana second-password).
+        self._secret_vault: SecretVault = SecretVault()
 
     _KNOWN_VENUES = {"TACHIBANA", "KABU", "MOCK"}  # D26: MOCK added
     _KNOWN_CRED_SOURCES = {"prompt", "session_cache", "env", "prompt_result"}
@@ -1471,6 +1474,21 @@ class GrpcDataEngineServer(
         # A0: drop reducer per-id state so the symbol stops surfacing in per_instrument
         self.engine.forget_instrument(request.instrument_id)
         return engine_pb2.SubscribeResponse(success=True, error_code="")
+
+    def SubmitSecret(self, request, context):
+        if request.token != self.token:
+            context.abort(grpc.StatusCode.UNAUTHENTICATED, "Invalid token")
+        # secret は Res にもログにも残さない。
+        try:
+            self._secret_vault.submit(request.request_id, request.secret)
+        except KeyError:
+            logging.warning(
+                "SubmitSecret: unknown request_id=%s", request.request_id
+            )
+            return engine_pb2.SubmitSecretRes(
+                success=False, error_code="UNKNOWN_REQUEST_ID"
+            )
+        return engine_pb2.SubmitSecretRes(success=True, error_code="")
 
     def publish_backend_event(self, event):
         """Fan a BackendEvent out to all open SubscribeBackendEvents streams."""

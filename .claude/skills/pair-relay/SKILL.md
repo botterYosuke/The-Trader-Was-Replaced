@@ -164,7 +164,7 @@ format / restore の判断も Navigator に任せます。
 - 自分で実装する（Edit / Write）
 - 自分で設計判断する（「たぶん」「想定通り」「進めて OK」）
 - 自分でコードレビューする
-- 自分で `cargo check` / `cargo test` / `rg` / `Read` を走らせる
+- 自分で `cargo check` / `cargo test` / `rg` / `Read` を走らせる（**例外**: Navigator/Driver に Bash が付与されない harness では検証コマンドは司令塔が走らせ、**raw 出力をそのまま Navigator に渡して解釈させる**。下記「Navigator/Driver に Bash が無い harness の運用」参照）
 - Navigator の指示を要約・改変・順番入れ替え
 - Driver の警告・確認質問・review-block を省略・丸めて Navigator に渡す
 - respawn 時に引き継ぎを書き換える・追加する・要約する
@@ -193,6 +193,17 @@ format / restore の判断も Navigator に任せます。
 この運用で 4-5 ターン回しても context 整合は保てる。同個体継続より 1 ターンあたり 5-10k token 増えるので、1 session あたりの subtask 上限は 2-3 のままで変わらない。
 
 **ただし「1 つの大タスクを小ステップに割って 15-20+ ターン回す」のは別物で、可能**（実績: Phase 7.3 A0 の per-instrument data refactor を proto→python→rust の十数ステップで完走）。鍵は **司令塔が cross-turn state を保持すること**: 毎回の新 Navigator prompt に「**安定した step シーケンス全体 + ユーザ確定の binding decisions + 直近の baseline 数字**」のコンパクトな block を貼り続ける（Navigator 個体は記憶を持たないが、この block が "外部記憶" になる）。各ステップを「1 ファイル / 1 関数 / 1 論理修正」まで小さく保てば、Navigator 1 個体の context は毎回ほぼ空から始まり破綻しない。subtask 上限 2-3 は「Navigator が跨いで判断を積む必要がある独立タスク」の話で、「司令塔が直列に運ぶ小ステップ」には適用されない。
+
+## Navigator/Driver に Bash が無い harness の運用
+
+harness によっては subagent (Navigator / Driver) に **Bash が付与されない**ことがある（Navigator は Read/Grep/Glob のみ、Driver は Read/Edit/Write のみ。agent 定義に `Bash` が書いてあっても実行時に剥がされる）。この場合 `pytest` / `cargo` / `rg` などの**検証を誰も走らせられない**ので、**司令塔が代行する**（上記禁止事項の例外）。要点:
+
+1. **Navigator は検証コマンドを「起草」する**（実行はしない）。「司令塔が cwd=X で `<cmd>` を回してください、期待は Y」の形で次手に添える。
+2. **Driver は Edit/Write のみ**。Navigator が依頼した Bash も実行できないので、編集だけさせる（Bash 込みの 1 手を渡すと Driver が `[review-block]` で返す → Bash 部分を司令塔に巻き取って Edit のみ再依頼）。
+3. **司令塔が検証コマンドを実行し、raw 出力（要点）を次の Navigator に verbatim で渡す**。司令塔は合否を**自分で判定しない**（「3 passed」「`WinError 10038` で 4 failed」等の事実だけ運ぶ。緑/赤の意味づけ・次手は Navigator）。コマンド実行は機械作業、解釈は Navigator —「司令塔は判断しない」原則と矛盾しない。
+4. RED→GREEN は「司令塔が RED 確認 → Driver が実装 Write → 司令塔が GREEN 確認 → 次 Navigator が解釈」で回す。
+5. proto/codegen の生成物 fixup（例: `engine_pb2_grpc.py` の import 再パッチ）も Edit なので Driver に渡す（司令塔が直接 Edit しない）。codegen コマンド自体は司令塔が走らせる。
+6. この harness では Navigator/Driver が**最初の 1-2 ターンで「Bash を持っていない」と返して判明する**。判明したら即この運用に切り替える。
 
 ## 合言葉
 

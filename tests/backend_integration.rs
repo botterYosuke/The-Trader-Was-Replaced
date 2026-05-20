@@ -7,6 +7,7 @@ use backcast::trading::engine::{
     GetStateRequest, GetStateResponse, ListAllListedSymbolsRequest, ListAllListedSymbolsResponse,
     ListInstrumentsRequest, ListInstrumentsResponse, LoadReplayDataRequest, PauseReplayRequest,
     ReplayControlResponse, ResumeReplayRequest, SetExecutionModeRequest, SetExecutionModeResponse,
+    SubmitSecretReq, SubmitSecretRes,
     SetReplaySpeedRequest, ShutdownRequest, ShutdownResponse, StartEngineRequest,
     StartEngineResponse, StartResponse, StepReplayRequest, StopEngineRequest, StopReplayRequest,
     StopRequest, StopResponse, SubscribeRequest, SubscribeResponse, UnsubscribeRequest,
@@ -377,6 +378,22 @@ impl DataEngine for MyDataEngine {
             success: true,
             error_code: "".to_string(),
             execution_mode: req.mode,
+        }))
+    }
+
+    async fn submit_secret(
+        &self,
+        request: Request<SubmitSecretReq>,
+    ) -> Result<Response<SubmitSecretRes>, Status> {
+        let req = request.into_inner();
+        if req.token != self.token {
+            return Err(Status::unauthenticated("Invalid token"));
+        }
+        let _ = req.request_id;
+        let _ = req.secret;
+        Ok(Response::new(SubmitSecretRes {
+            success: true,
+            error_code: "".to_string(),
         }))
     }
 
