@@ -1,5 +1,6 @@
 pub mod buying_power;
 pub mod chart_axes;
+pub mod chart_interaction;
 pub mod chart_render;
 pub mod chart_viewstate;
 pub mod components;
@@ -35,6 +36,7 @@ pub use components::{
 
 use crate::ui::buying_power::buying_power_panel_system;
 use crate::ui::chart_axes::{price_axis_labels_system, time_axis_labels_system};
+use crate::ui::chart_interaction::{chart_scroll_zoom_system, install_chart_drag_observer};
 use crate::ui::chart_render::chart_main_render_system;
 use crate::ui::chart_viewstate::{
     ChartSet, RequestAutoscale, chart_autoscale_apply_system, chart_data_tick_system,
@@ -225,6 +227,10 @@ impl Plugin for UiPlugin {
                 chart_data_tick_system.in_set(ChartSet::DataTick),
                 chart_interaction_tick_system.in_set(ChartSet::DataTick),
                 chart_autoscale_apply_system.in_set(ChartSet::Autoscale),
+                // Phase C: pan/zoom。observer 設置は schedule 外発火なので set 無し。
+                // scroll zoom は cursor 補正で最新 base_price_y を読むので Interaction (after Autoscale)。
+                install_chart_drag_observer,
+                chart_scroll_zoom_system.in_set(ChartSet::Interaction),
                 chart_main_render_system.in_set(ChartSet::Render),
                 // Phase B: axis label は Changed<ChartViewState> 駆動の retained Text2d なので
                 // Render set (autoscale 確定後) に置く。
