@@ -226,6 +226,11 @@ class DataEngineStub(object):
                 request_serializer=engine__pb2.CancelOrderReq.SerializeToString,
                 response_deserializer=engine__pb2.CancelOrderRes.FromString,
                 _registered_method=True)
+        self.ModifyOrder = channel.unary_unary(
+                '/engine.DataEngine/ModifyOrder',
+                request_serializer=engine__pb2.ModifyOrderReq.SerializeToString,
+                response_deserializer=engine__pb2.ModifyOrderRes.FromString,
+                _registered_method=True)
         self.GetOrderStatus = channel.unary_unary(
                 '/engine.DataEngine/GetOrderStatus',
                 request_serializer=engine__pb2.GetOrderStatusReq.SerializeToString,
@@ -398,6 +403,15 @@ class DataEngineServicer(object):
         context.set_details('Method not implemented!')
         raise NotImplementedError('Method not implemented!')
 
+    def ModifyOrder(self, request, context):
+        """Phase 9 Step 4: modify (price/qty). Tachibana = CLMKabuCorrectOrder (atomic);
+        kabu = cancel→new conversion in the adapter (Step 6, non-atomic; UI warns).
+        Step 4 wires the full path through the mock adapter's modify_order.
+        """
+        context.set_code(grpc.StatusCode.UNIMPLEMENTED)
+        context.set_details('Method not implemented!')
+        raise NotImplementedError('Method not implemented!')
+
     def GetOrderStatus(self, request, context):
         """Missing associated documentation comment in .proto file."""
         context.set_code(grpc.StatusCode.UNIMPLEMENTED)
@@ -533,6 +547,11 @@ def add_DataEngineServicer_to_server(servicer, server):
                     servicer.CancelOrder,
                     request_deserializer=engine__pb2.CancelOrderReq.FromString,
                     response_serializer=engine__pb2.CancelOrderRes.SerializeToString,
+            ),
+            'ModifyOrder': grpc.unary_unary_rpc_method_handler(
+                    servicer.ModifyOrder,
+                    request_deserializer=engine__pb2.ModifyOrderReq.FromString,
+                    response_serializer=engine__pb2.ModifyOrderRes.SerializeToString,
             ),
             'GetOrderStatus': grpc.unary_unary_rpc_method_handler(
                     servicer.GetOrderStatus,
@@ -1193,6 +1212,33 @@ class DataEngine(object):
             '/engine.DataEngine/CancelOrder',
             engine__pb2.CancelOrderReq.SerializeToString,
             engine__pb2.CancelOrderRes.FromString,
+            options,
+            channel_credentials,
+            insecure,
+            call_credentials,
+            compression,
+            wait_for_ready,
+            timeout,
+            metadata,
+            _registered_method=True)
+
+    @staticmethod
+    def ModifyOrder(request,
+            target,
+            options=(),
+            channel_credentials=None,
+            call_credentials=None,
+            insecure=False,
+            compression=None,
+            wait_for_ready=None,
+            timeout=None,
+            metadata=None):
+        return grpc.experimental.unary_unary(
+            request,
+            target,
+            '/engine.DataEngine/ModifyOrder',
+            engine__pb2.ModifyOrderReq.SerializeToString,
+            engine__pb2.ModifyOrderRes.FromString,
             options,
             channel_credentials,
             insecure,

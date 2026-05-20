@@ -73,3 +73,37 @@ class OrderEventData(BaseModel):
     ts_ms: int
 
     model_config = {"frozen": True}
+
+
+class AccountPositionData(BaseModel):
+    """口座の 1 保有銘柄（proto `AccountPosition` と field 一致）。
+
+    transport 非依存（account_sync / mock が用いる正規化モデル）。gRPC handler 側で
+    `engine_pb2.AccountPosition` に詰め替える。
+    """
+
+    symbol: str
+    qty: int
+    avg_price: float
+    unrealized_pnl: float
+
+    model_config = {"frozen": True}
+
+
+class AccountSnapshot(BaseModel):
+    """口座スナップショット（余力 + 建玉一覧）。proto `AccountEvent` の値部分と対応。
+
+    **ts_ms は持たない**: 等価判定（差分 emit）から時刻を排除するため。push 時に
+    gRPC handler が `int(time.time()*1000)` を採番して `engine_pb2.AccountEvent.ts_ms`
+    に詰める。AccountSync は同一 snapshot の連続 emit を `==`（pydantic frozen の
+    field 比較）で抑止するので、時刻がここに混じると常に「変化あり」と誤判定する。
+
+    NaN/Inf validator は付けない（mock では発生しない。OrderResult と同方針で、
+    実 venue 値の境界 sanitize は Step 5/6 adapter の責務）。
+    """
+
+    cash: float
+    buying_power: float
+    positions: tuple[AccountPositionData, ...]
+
+    model_config = {"frozen": True}

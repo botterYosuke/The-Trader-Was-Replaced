@@ -173,6 +173,66 @@ class ManualOrderFacade:
             self._orders[order_id] = event
         return event
 
+    async def modify(
+        self,
+        *,
+        venue: str,
+        order_id: str,
+        new_price: float | None = None,
+        new_qty: float | None = None,
+        second_secret: str | None = None,  # Step 4 では受理して無視（Step 5 で結線）
+    ) -> OrderEventData:
+        """既存注文の訂正（価格 / 数量）。adapter.modify_order に委譲する。
+
+        **OrderEvent に qty/price が載らない設計の帰結**: `OrderEventData` は ids +
+        status + fill（filled_qty / avg_price）のみで、注文の数量・価格・銘柄・売買区分を
+        持たない。よって facade が返す event は status（adapter 応答、例 ACCEPTED）/
+        filled_qty / avg_price / venue_order_id を更新するに留まり、訂正後の
+        **新数量 / 新価格は載らない**。UI への qty/price 反映は Rust 側が ModifyOrder
+        コマンドの new_qty / new_price から行う（OrderEvent に当該 field が無いため）。
+        """
+        with self._lock:
+            prior = self._orders.get(order_id)
+        if prior is None:
+            raise OrderFacadeError("UNKNOWN_ORDER_ID")
+        if prior.status in _TERMINAL_STATUSES:
+            raise OrderFacadeError("ORDER_NOT_MODIFIABLE")
+        if new_price is None and new_qty is None:
+            raise OrderFacadeError("NOTHING_TO_MODIFY")
+        # 指定された値のみ検証（None は「変更しない」を意味する）。NaN/Inf は proto
+        # double で wire 通過するため isfinite を明示（place の流儀踏襲）。
+        if new_price is not None and (not math.isfinite(new_price) or new_price <= 0):
+            raise OrderFacadeError("INVALID_PRICE")
+        if new_qty is not None and (not math.isfinite(new_qty) or new_qty <= 0):
+            raise OrderFacadeError("INVALID_QTY")
+
+        res: OrderResult = await self._adapter.modify_order(
+            venue=venue,
+            order_id=order_id,
+            new_price=new_price,
+            new_qty=new_qty,
+        )
+
+        if res.status == "REJECTED":
+            # 訂正拒否: 元注文は live のまま。store は変更しない。
+            raise OrderFacadeError("MODIFY_REJECTED")
+
+        # 訂正受理: adapter 応答 status を反映。fill 量は adapter が 0/None を返す場合
+        # 既存の約定量 / 平均価格を維持する（訂正は約定済み数量を巻き戻さない。
+        # cancel の fill 保全と同方針）。
+        event = OrderEventData(
+            order_id=order_id,
+            venue_order_id=prior.venue_order_id,
+            client_order_id=order_id,
+            status=res.status,
+            filled_qty=res.filled_qty if res.filled_qty else prior.filled_qty,
+            avg_price=res.avg_price if res.avg_price is not None else prior.avg_price,
+            ts_ms=_now_ms(),
+        )
+        with self._lock:
+            self._orders[order_id] = event
+        return event
+
     def get_status(self, order_id: str) -> OrderEventData | None:
         """同期参照（gRPC worker thread から呼ばれる）。"""
         with self._lock:

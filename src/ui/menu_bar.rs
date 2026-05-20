@@ -1,3 +1,4 @@
+use crate::replay::{ReplayStartupPhase, ReplayStartupProgress};
 use crate::trading::{
     ExecutionMode, ExecutionModeRes, LastRunResult, RunState, StrategyRunConfig, TradingSession,
     TransportCommand, TransportCommandSender, VenueStatusRes, is_venue_busy_for_menu,
@@ -13,10 +14,8 @@ use crate::ui::components::{
 };
 use crate::ui::layout_persistence::{
     CacheRestoreRequested, LayoutLoadDialogRequested, LayoutLoadMode, LayoutLoadRequested,
-    LayoutSaveAsRequested,
-    LayoutSaveRequested, SidecarLayout,
+    LayoutSaveAsRequested, LayoutSaveRequested, SidecarLayout,
 };
-use crate::replay::{ReplayStartupPhase, ReplayStartupProgress};
 use crate::ui::strategy_editor::split_py_into_fragments;
 use bevy::input::keyboard::KeyboardInput;
 use bevy::prelude::*;
@@ -197,10 +196,26 @@ pub fn spawn_menu_bar(mut commands: Commands) {
                     MenuPopup(MenuTopLevel::Venue),
                 ))
                 .with_children(|p| {
-                    spawn_menu_item(p, "Connect Tachibana (Demo)", MenuItem::VenueConnectTachibanaDemo);
-                    spawn_menu_item(p, "Connect Tachibana (Prod)", MenuItem::VenueConnectTachibanaProd);
-                    spawn_menu_item(p, "Connect kabuStation (Verify)", MenuItem::VenueConnectKabuVerify);
-                    spawn_menu_item(p, "Connect kabuStation (Prod)", MenuItem::VenueConnectKabuProd);
+                    spawn_menu_item(
+                        p,
+                        "Connect Tachibana (Demo)",
+                        MenuItem::VenueConnectTachibanaDemo,
+                    );
+                    spawn_menu_item(
+                        p,
+                        "Connect Tachibana (Prod)",
+                        MenuItem::VenueConnectTachibanaProd,
+                    );
+                    spawn_menu_item(
+                        p,
+                        "Connect kabuStation (Verify)",
+                        MenuItem::VenueConnectKabuVerify,
+                    );
+                    spawn_menu_item(
+                        p,
+                        "Connect kabuStation (Prod)",
+                        MenuItem::VenueConnectKabuProd,
+                    );
                     spawn_menu_item(p, "Disconnect", MenuItem::VenueDisconnect);
                 });
             });
@@ -403,7 +418,10 @@ pub fn hide_unconfigured_venue_items_system(
     if !status.is_changed() {
         return;
     }
-    let configured = status.configured_venue.as_deref().map(|s| s.to_ascii_uppercase());
+    let configured = status
+        .configured_venue
+        .as_deref()
+        .map(|s| s.to_ascii_uppercase());
     for (item, mut node) in &mut btn_q {
         let is_tachibana = venue_connect_is_tachibana(item);
         let is_kabu = venue_connect_is_kabu(item);
@@ -465,13 +483,19 @@ pub fn menu_item_system(
                                 info!("menu: File→Open in Live mode → SetExecutionMode(LiveAuto)");
                                 if sender
                                     .tx
-                                    .send(TransportCommand::SetExecutionMode { mode: ExecutionMode::LiveAuto })
+                                    .send(TransportCommand::SetExecutionMode {
+                                        mode: ExecutionMode::LiveAuto,
+                                    })
                                     .is_err()
                                 {
-                                    error!("menu: SetExecutionMode(LiveAuto) send failed (transport channel closed)");
+                                    error!(
+                                        "menu: SetExecutionMode(LiveAuto) send failed (transport channel closed)"
+                                    );
                                 }
                             } else {
-                                warn!("menu: File→Open in Live mode but TransportCommandSender unavailable; skipping SetExecutionMode");
+                                warn!(
+                                    "menu: File→Open in Live mode but TransportCommandSender unavailable; skipping SetExecutionMode"
+                                );
                             }
                         }
                         info!("menu: load layout requested");
@@ -505,10 +529,14 @@ pub fn menu_item_system(
                         info!("menu: File→New requested (SetExecutionMode(LiveManual))");
                         if sender
                             .tx
-                            .send(TransportCommand::SetExecutionMode { mode: ExecutionMode::LiveManual })
+                            .send(TransportCommand::SetExecutionMode {
+                                mode: ExecutionMode::LiveManual,
+                            })
                             .is_err()
                         {
-                            error!("menu: SetExecutionMode(LiveManual) send failed (transport channel closed)");
+                            error!(
+                                "menu: SetExecutionMode(LiveManual) send failed (transport channel closed)"
+                            );
                         }
                     }
                     MenuItem::VenueConnectTachibanaDemo
@@ -516,7 +544,10 @@ pub fn menu_item_system(
                     | MenuItem::VenueConnectKabuVerify
                     | MenuItem::VenueConnectKabuProd => {
                         if is_venue_busy_for_menu(venue_status.state) {
-                            warn!("menu: VenueConnect blocked (venue busy, state={:?})", venue_status.state);
+                            warn!(
+                                "menu: VenueConnect blocked (venue busy, state={:?})",
+                                venue_status.state
+                            );
                             continue;
                         }
                         let (venue, env) = match item {
@@ -529,7 +560,9 @@ pub fn menu_item_system(
                     }
                     MenuItem::VenueDisconnect => {
                         let Some(sender) = sender.as_ref() else {
-                            warn!("menu: Venue→Disconnect dropped (TransportCommandSender unavailable)");
+                            warn!(
+                                "menu: Venue→Disconnect dropped (TransportCommandSender unavailable)"
+                            );
                             continue;
                         };
                         info!("menu: Venue→Disconnect requested");
@@ -692,7 +725,7 @@ pub fn handle_strategy_file_load_system(
     mut spawn_ev: EventWriter<PanelSpawnRequested>,
     mut layout_ev: EventWriter<LayoutLoadRequested>,
     existing_roots: Query<(Entity, &PanelKind), With<WindowRoot>>,
-    mut scenario_target: ResMut<ScenarioReadTarget>,  // ← ADD
+    mut scenario_target: ResMut<ScenarioReadTarget>, // ← ADD
 ) {
     for event in events.read() {
         let source = match std::fs::read_to_string(&event.path) {
@@ -758,8 +791,7 @@ pub fn handle_strategy_file_load_system(
 
         // sidecar が「scenario-only」(windows キー不在) の場合、layout だけに委ねると
         // どのパネルも spawn されない。peek して windows が無ければ fragments を直接 spawn。
-        let sidecar_has_windows =
-            crate::ui::layout_persistence::sidecar_has_windows(&sidecar_path);
+        let sidecar_has_windows = crate::ui::layout_persistence::sidecar_has_windows(&sidecar_path);
 
         match (event.mode, sidecar_exists, sidecar_has_windows) {
             (StrategyLoadMode::LayoutRestore, _, _) => {}
@@ -1095,7 +1127,10 @@ mod tests {
     fn build_app_for_run(
         scenario: ScenarioMetadata,
         with_sender: bool,
-    ) -> (App, Option<tokio::sync::mpsc::UnboundedReceiver<TransportCommand>>) {
+    ) -> (
+        App,
+        Option<tokio::sync::mpsc::UnboundedReceiver<TransportCommand>>,
+    ) {
         let mut app = App::new();
         app.init_resource::<Time<Real>>();
         app.insert_resource(scenario);
@@ -1121,10 +1156,9 @@ mod tests {
     #[test]
     fn test_handle_strategy_run_writes_progress_on_send_success() {
         let (mut app, mut rx) = build_app_for_run(make_valid_scenario(), true);
-        app.world_mut()
-            .send_event(StrategyRunRequested {
-                cache_path: std::path::PathBuf::from("/tmp/foo.py"),
-            });
+        app.world_mut().send_event(StrategyRunRequested {
+            cache_path: std::path::PathBuf::from("/tmp/foo.py"),
+        });
         app.update();
 
         let progress = app.world().resource::<ReplayStartupProgress>();
@@ -1151,10 +1185,9 @@ mod tests {
     #[test]
     fn test_handle_strategy_run_no_sender_keeps_progress_idle() {
         let (mut app, _rx) = build_app_for_run(make_valid_scenario(), false);
-        app.world_mut()
-            .send_event(StrategyRunRequested {
-                cache_path: std::path::PathBuf::from("/tmp/foo.py"),
-            });
+        app.world_mut().send_event(StrategyRunRequested {
+            cache_path: std::path::PathBuf::from("/tmp/foo.py"),
+        });
         app.update();
 
         let progress = app.world().resource::<ReplayStartupProgress>();
@@ -1168,10 +1201,9 @@ mod tests {
     #[test]
     fn test_handle_strategy_run_invalid_scenario_keeps_progress_idle() {
         let (mut app, _rx) = build_app_for_run(ScenarioMetadata::default(), true);
-        app.world_mut()
-            .send_event(StrategyRunRequested {
-                cache_path: std::path::PathBuf::from("/tmp/foo.py"),
-            });
+        app.world_mut().send_event(StrategyRunRequested {
+            cache_path: std::path::PathBuf::from("/tmp/foo.py"),
+        });
         app.update();
 
         let progress = app.world().resource::<ReplayStartupProgress>();
@@ -1183,15 +1215,15 @@ mod tests {
     fn handle_strategy_run_system_blocks_when_startup_params_have_errors() {
         let (mut app, mut rx) = build_app_for_run(make_valid_scenario(), true);
         // errors を設定して Run を block させる
-        app.world_mut().resource_mut::<ScenarioStartupParams>().errors =
-            ScenarioStartupParamsErrors {
-                granularity: Some("unknown granularity".to_string()),
-                ..Default::default()
-            };
         app.world_mut()
-            .send_event(StrategyRunRequested {
-                cache_path: std::path::PathBuf::from("/tmp/foo.py"),
-            });
+            .resource_mut::<ScenarioStartupParams>()
+            .errors = ScenarioStartupParamsErrors {
+            granularity: Some("unknown granularity".to_string()),
+            ..Default::default()
+        };
+        app.world_mut().send_event(StrategyRunRequested {
+            cache_path: std::path::PathBuf::from("/tmp/foo.py"),
+        });
         app.update();
 
         let progress = app.world().resource::<ReplayStartupProgress>();
@@ -1214,7 +1246,10 @@ mod tests {
 
     use crate::trading::{VenueState, VenueStatusRes};
 
-    fn build_app_for_menu_gating(state: VenueState, venue_id: Option<&str>) -> (App, Entity, Entity) {
+    fn build_app_for_menu_gating(
+        state: VenueState,
+        venue_id: Option<&str>,
+    ) -> (App, Entity, Entity) {
         let mut app = App::new();
         app.init_resource::<OpenMenu>();
         app.insert_resource(VenueStatusRes {
@@ -1227,7 +1262,10 @@ mod tests {
 
         let text_t = app
             .world_mut()
-            .spawn((Text::new("Connect Tachibana (Demo)"), TextColor(TEXT_NORMAL)))
+            .spawn((
+                Text::new("Connect Tachibana (Demo)"),
+                TextColor(TEXT_NORMAL),
+            ))
             .id();
         let btn_t = app
             .world_mut()
@@ -1242,7 +1280,10 @@ mod tests {
 
         let text_k = app
             .world_mut()
-            .spawn((Text::new("Connect kabuStation (Verify)"), TextColor(TEXT_NORMAL)))
+            .spawn((
+                Text::new("Connect kabuStation (Verify)"),
+                TextColor(TEXT_NORMAL),
+            ))
             .id();
         let btn_k = app
             .world_mut()
@@ -1261,32 +1302,35 @@ mod tests {
 
     #[test]
     fn test_gate_venue_menu_disables_kabu_when_tachibana_authenticating() {
-        let (app, _btn_t, btn_k) = build_app_for_menu_gating(
-            VenueState::Authenticating,
-            Some("tachibana"),
-        );
+        let (app, _btn_t, btn_k) =
+            build_app_for_menu_gating(VenueState::Authenticating, Some("tachibana"));
         let bg = app.world().get::<BackgroundColor>(btn_k).unwrap();
-        assert_eq!(bg.0, BTN_DISABLED, "kabu Connect should be disabled while tachibana is AUTHENTICATING");
+        assert_eq!(
+            bg.0, BTN_DISABLED,
+            "kabu Connect should be disabled while tachibana is AUTHENTICATING"
+        );
     }
 
     #[test]
     fn test_gate_venue_menu_disables_kabu_when_tachibana_connected() {
-        let (app, _btn_t, btn_k) = build_app_for_menu_gating(
-            VenueState::Connected,
-            Some("tachibana"),
-        );
+        let (app, _btn_t, btn_k) =
+            build_app_for_menu_gating(VenueState::Connected, Some("tachibana"));
         let bg = app.world().get::<BackgroundColor>(btn_k).unwrap();
-        assert_eq!(bg.0, BTN_DISABLED, "kabu Connect should be disabled while tachibana is CONNECTED");
+        assert_eq!(
+            bg.0, BTN_DISABLED,
+            "kabu Connect should be disabled while tachibana is CONNECTED"
+        );
     }
 
     #[test]
     fn test_gate_venue_menu_disables_same_venue_when_authenticating() {
-        let (app, btn_t, _btn_k) = build_app_for_menu_gating(
-            VenueState::Authenticating,
-            Some("tachibana"),
-        );
+        let (app, btn_t, _btn_k) =
+            build_app_for_menu_gating(VenueState::Authenticating, Some("tachibana"));
         let bg = app.world().get::<BackgroundColor>(btn_t).unwrap();
-        assert_eq!(bg.0, BTN_DISABLED, "same-venue Connect (tachibana) must also be disabled while AUTHENTICATING");
+        assert_eq!(
+            bg.0, BTN_DISABLED,
+            "same-venue Connect (tachibana) must also be disabled while AUTHENTICATING"
+        );
     }
 
     #[test]
@@ -1294,14 +1338,24 @@ mod tests {
         let (app, btn_t, btn_k) = build_app_for_menu_gating(VenueState::Disconnected, None);
         let bg_t = app.world().get::<BackgroundColor>(btn_t).unwrap();
         let bg_k = app.world().get::<BackgroundColor>(btn_k).unwrap();
-        assert_eq!(bg_t.0, BTN_NORMAL, "tachibana Connect should be normal when DISCONNECTED");
-        assert_eq!(bg_k.0, BTN_NORMAL, "kabu Connect should be normal when DISCONNECTED");
+        assert_eq!(
+            bg_t.0, BTN_NORMAL,
+            "tachibana Connect should be normal when DISCONNECTED"
+        );
+        assert_eq!(
+            bg_k.0, BTN_NORMAL,
+            "kabu Connect should be normal when DISCONNECTED"
+        );
     }
 
     fn build_app_for_menu_press(
         state: VenueState,
         item: MenuItem,
-    ) -> (App, Entity, tokio::sync::mpsc::UnboundedReceiver<TransportCommand>) {
+    ) -> (
+        App,
+        Entity,
+        tokio::sync::mpsc::UnboundedReceiver<TransportCommand>,
+    ) {
         let mut app = App::new();
         app.init_resource::<OpenMenu>();
         app.insert_resource(VenueStatusRes {
@@ -1338,10 +1392,8 @@ mod tests {
 
     #[test]
     fn test_venue_connect_pressed_during_other_venue_busy_is_ignored() {
-        let (_app, _btn, mut rx) = build_app_for_menu_press(
-            VenueState::Connected,
-            MenuItem::VenueConnectKabuVerify,
-        );
+        let (_app, _btn, mut rx) =
+            build_app_for_menu_press(VenueState::Connected, MenuItem::VenueConnectKabuVerify);
         assert!(
             rx.try_recv().is_err(),
             "VenueConnect on opposite venue must NOT send VenueLogin when slot is busy"
@@ -1382,30 +1434,56 @@ mod tests {
     #[test]
     fn test_hide_unconfigured_none_shows_both() {
         let (app, btn_t, btn_k) = build_app_for_hide(None);
-        assert_eq!(app.world().get::<Node>(btn_t).unwrap().display, Display::Flex);
-        assert_eq!(app.world().get::<Node>(btn_k).unwrap().display, Display::Flex);
+        assert_eq!(
+            app.world().get::<Node>(btn_t).unwrap().display,
+            Display::Flex
+        );
+        assert_eq!(
+            app.world().get::<Node>(btn_k).unwrap().display,
+            Display::Flex
+        );
     }
 
     #[test]
     fn test_hide_unconfigured_tachibana_hides_kabu() {
         let (app, btn_t, btn_k) = build_app_for_hide(Some("TACHIBANA"));
-        assert_eq!(app.world().get::<Node>(btn_t).unwrap().display, Display::Flex);
-        assert_eq!(app.world().get::<Node>(btn_k).unwrap().display, Display::None);
+        assert_eq!(
+            app.world().get::<Node>(btn_t).unwrap().display,
+            Display::Flex
+        );
+        assert_eq!(
+            app.world().get::<Node>(btn_k).unwrap().display,
+            Display::None
+        );
     }
 
     #[test]
     fn test_hide_unconfigured_kabu_hides_tachibana() {
         let (app, btn_t, btn_k) = build_app_for_hide(Some("KABU"));
-        assert_eq!(app.world().get::<Node>(btn_k).unwrap().display, Display::Flex);
-        assert_eq!(app.world().get::<Node>(btn_t).unwrap().display, Display::None);
+        assert_eq!(
+            app.world().get::<Node>(btn_k).unwrap().display,
+            Display::Flex
+        );
+        assert_eq!(
+            app.world().get::<Node>(btn_t).unwrap().display,
+            Display::None
+        );
     }
 
     #[test]
     fn test_hide_unconfigured_restores_when_cleared() {
         let (mut app, _btn_t, btn_k) = build_app_for_hide(Some("TACHIBANA"));
-        assert_eq!(app.world().get::<Node>(btn_k).unwrap().display, Display::None);
-        app.world_mut().resource_mut::<VenueStatusRes>().configured_venue = None;
+        assert_eq!(
+            app.world().get::<Node>(btn_k).unwrap().display,
+            Display::None
+        );
+        app.world_mut()
+            .resource_mut::<VenueStatusRes>()
+            .configured_venue = None;
         app.update();
-        assert_eq!(app.world().get::<Node>(btn_k).unwrap().display, Display::Flex);
+        assert_eq!(
+            app.world().get::<Node>(btn_k).unwrap().display,
+            Display::Flex
+        );
     }
 }

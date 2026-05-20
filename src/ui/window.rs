@@ -83,11 +83,7 @@ pub fn spawn_chart_panel(commands: &mut Commands, instrument_id: &str) {
     let price_gutter = commands
         .spawn((
             PriceGutter,
-            Transform::from_xyz(
-                CHART_DRAW_SIZE.x / 2.0 + PRICE_GUTTER_WIDTH / 2.0,
-                0.0,
-                0.1,
-            ),
+            Transform::from_xyz(CHART_DRAW_SIZE.x / 2.0 + PRICE_GUTTER_WIDTH / 2.0, 0.0, 0.1),
             Visibility::default(),
         ))
         .id();
@@ -104,10 +100,9 @@ pub fn spawn_chart_panel(commands: &mut Commands, instrument_id: &str) {
         .id();
     commands.entity(chart).add_child(price_gutter);
     commands.entity(chart).add_child(time_gutter);
-    commands.entity(chart).insert((
-        PriceGutterRef(price_gutter),
-        TimeGutterRef(time_gutter),
-    ));
+    commands
+        .entity(chart)
+        .insert((PriceGutterRef(price_gutter), TimeGutterRef(time_gutter)));
 
     commands.entity(content_area).add_child(price_text);
     commands.entity(content_area).add_child(chart);
@@ -295,11 +290,11 @@ mod tests {
             reg.replace_all(&["A.T".to_string(), "B.T".to_string()]);
         }
         {
-            let mut map = app
-                .world_mut()
-                .resource_mut::<InstrumentTradingDataMap>();
-            map.map.insert("A.T".to_string(), InstrumentTradingData::default());
-            map.map.insert("B.T".to_string(), InstrumentTradingData::default());
+            let mut map = app.world_mut().resource_mut::<InstrumentTradingDataMap>();
+            map.map
+                .insert("A.T".to_string(), InstrumentTradingData::default());
+            map.map
+                .insert("B.T".to_string(), InstrumentTradingData::default());
         }
         app.update();
 

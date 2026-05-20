@@ -270,6 +270,19 @@ pub enum TransportCommand {
         order_id: String,
         second_secret: Option<RedactedSecret>,
     },
+    /// Phase 9 §3.2 (Step 4): modify (訂正) an order by its `client_order_id`.
+    /// `token` is injected by the transport task. `new_qty`/`new_price` are
+    /// `None` when unchanged (proto `optional`). `second_secret` is Tachibana-only
+    /// (Step 5; Step 4 always sends `None`). `OrderEvent` carries no qty/price, so
+    /// the transport task merges these command-side values back into the
+    /// `OrderModified` status update.
+    ModifyOrder {
+        venue: String,
+        client_order_id: String,
+        new_qty: Option<f64>,
+        new_price: Option<f64>,
+        second_secret: Option<RedactedSecret>,
+    },
     /// Phase 9 §0.3: UI response to a `SecretRequired` event. `token` is injected
     /// by the transport task. The secret is forwarded to the backend and dropped;
     /// it is never stored in a resource or echoed to logs (§1.3 ADR).
@@ -284,8 +297,13 @@ pub enum TransportCommand {
 /// plaintext must never reach logs, files, or a long-lived state resource.
 /// `TransportCommand` derives `Debug`, so a bare `String` here would risk the
 /// secret appearing in any `{:?}` of a command — this newtype closes that hole.
+///
+/// The inner field is **private** on purpose: `expose()` is the single audited
+/// read path (grep-able exfiltration point). A `pub` field would let any caller
+/// re-derive the plaintext (`secret.0.clone()`, `format!("{}", secret.0)`),
+/// defeating both the `Debug` redaction and the zero-on-drop guarantee.
 #[derive(Clone)]
-pub struct RedactedSecret(pub zeroize::Zeroizing<String>);
+pub struct RedactedSecret(zeroize::Zeroizing<String>);
 
 impl RedactedSecret {
     pub fn new(s: String) -> Self {
@@ -704,6 +722,30 @@ pub enum BackendStatusUpdate {
         avg_price: f64,
         ts_ms: i64,
     },
+    /// Phase 9 §3.2 (Step 4): a `ModifyOrder` RPC succeeded. The response's
+    /// `OrderEvent` carries ids + status + fills but **not** the new qty/price,
+    /// so the transport task merges in the originating command's `new_qty`/
+    /// `new_price` (Some => overwrite the tracked value, None => keep). Applied to
+    /// the existing `LiveOrders` record by `client_order_id` (unknown id is a
+    /// no-op — modify always targets a known order).
+    OrderModified {
+        client_order_id: String,
+        venue_order_id: String,
+        new_qty: Option<f64>,
+        new_price: Option<f64>,
+        status: String,
+        filled_qty: f64,
+        avg_price: f64,
+        ts_ms: i64,
+    },
+    /// Phase 9 §2.2 / §3.9: a `PlaceOrder` / `CancelOrder` RPC was rejected
+    /// (structured `success=false`, e.g. `EXECUTION_MODE_PRECONDITION` /
+    /// `VENUE_LOGIN_REQUIRED` / venue error code). Surfaced to the user via
+    /// `OrderFeedback` (OrderPanel error line) instead of being warn-only.
+    OrderRejected {
+        action: String,
+        error_code: String,
+    },
 }
 
 /// Bevy 側に流す backend event。proto の `backend_event::Payload` (oneof) を
@@ -748,9 +790,10 @@ pub struct AccountPosition {
 /// A single Live-mode order tracked by the UI. Phase 9 §3.2: proto `OrderEvent`
 /// carries only ids + status + fills, **not** symbol/side/qty/price. Those
 /// static attributes are known only from the originating `PlaceOrder` request,
-/// so the UI seeds them from `BackendStatusUpdate::OrderUpserted` (the unary
+/// so the UI seeds them from `BackendStatusUpdate::OrderSeeded` (the unary
 /// `PlaceOrder` response correlated with the command) and then merges
-/// status/fill updates from `BackendEvent::OrderEvent` by `client_order_id`.
+/// status/fill updates from `BackendEvent::OrderEvent` / `OrderStatusUpdated`
+/// by `client_order_id`.
 #[derive(Debug, Clone, Default)]
 pub struct LiveOrder {
     pub client_order_id: String,
@@ -837,6 +880,46 @@ impl LiveOrders {
             self.orders.truncate(MAX_LIVE_ORDERS);
         }
     }
+
+    /// Merge a `ModifyOrder` (訂正) result into the existing record. `symbol`/
+    /// `side` are preserved; `new_qty`/`new_price` overwrite `qty`/`price` only
+    /// when `Some` (None => unchanged, matching the proto `optional` semantics);
+    /// status/filled_qty/avg_price/venue_order_id/ts_ms are refreshed from the
+    /// event. An unknown `client_order_id` is a **no-op** — a modify is only ever
+    /// issued against a known order (Phase 9 §3.2 / §3.12).
+    #[allow(clippy::too_many_arguments)]
+    pub fn apply_modify(
+        &mut self,
+        client_order_id: &str,
+        venue_order_id: &str,
+        new_qty: Option<f64>,
+        new_price: Option<f64>,
+        status: &str,
+        filled_qty: f64,
+        avg_price: f64,
+        ts_ms: i64,
+    ) {
+        if let Some(existing) = self
+            .orders
+            .iter_mut()
+            .find(|o| o.client_order_id == client_order_id)
+        {
+            if !venue_order_id.is_empty() {
+                existing.venue_order_id = venue_order_id.to_string();
+            }
+            if let Some(q) = new_qty {
+                existing.qty = q;
+            }
+            if let Some(p) = new_price {
+                existing.price = Some(p);
+            }
+            existing.status = status.to_string();
+            existing.filled_qty = filled_qty;
+            existing.avg_price = avg_price;
+            existing.ts_ms = ts_ms;
+        }
+        // Unknown id: no-op (modify always targets a known order).
+    }
 }
 
 /// Active `SecretRequired` prompt driving the SecretModal. Phase 9 §3.10:
@@ -854,6 +937,18 @@ pub struct SecretPromptRequest {
     pub venue: String,
     pub kind: String,
     pub purpose: String,
+}
+
+/// Latest user-facing notice for the manual-order flow (§3.10 / §2.2). Phase 9
+/// has no toast/ModalLayer infrastructure yet (Phase 8 left venue-RPC rejects
+/// warn-only), so order/secret failures that the user must see — RPC rejects
+/// (`EXECUTION_MODE_PRECONDITION`, `VENUE_LOGIN_REQUIRED`, venue error codes)
+/// and `SECRET_INPUT_CANCELED` on secret timeout — are surfaced in the
+/// OrderPanel's existing error line via this resource until a proper toast
+/// system lands (tracked for a later step).
+#[derive(Resource, Default, Debug, Clone)]
+pub struct OrderFeedback {
+    pub message: Option<String>,
 }
 
 #[cfg(test)]
@@ -937,7 +1032,64 @@ mod tests {
         let o = &lo.orders[0];
         assert_eq!(o.client_order_id, "ghost");
         assert_eq!(o.status, "ACCEPTED");
-        assert!(o.symbol.is_empty(), "unknown order has no static fields yet");
+        assert!(
+            o.symbol.is_empty(),
+            "unknown order has no static fields yet"
+        );
+    }
+
+    #[test]
+    fn live_orders_apply_modify_updates_qty_price_and_preserves_symbol_side() {
+        let mut lo = LiveOrders::default();
+        lo.upsert_full(make_live_order("c1"));
+        lo.apply_modify(
+            "c1",
+            "V77",
+            Some(300.0),
+            Some(2600.0),
+            "ACCEPTED",
+            0.0,
+            0.0,
+            99,
+        );
+        let o = &lo.orders[0];
+        assert_eq!(o.qty, 300.0, "new_qty overwrites");
+        assert_eq!(o.price, Some(2600.0), "new_price overwrites");
+        assert_eq!(o.status, "ACCEPTED");
+        assert_eq!(o.venue_order_id, "V77");
+        assert_eq!(o.ts_ms, 99);
+        assert_eq!(o.symbol, "7203.T");
+        assert_eq!(o.side, "BUY");
+    }
+
+    #[test]
+    fn live_orders_apply_modify_keeps_unchanged_fields_when_none() {
+        let mut lo = LiveOrders::default();
+        lo.upsert_full(make_live_order("c1")); // qty=100, price=Some(2500)
+        lo.apply_modify("c1", "", None, Some(2700.0), "ACCEPTED", 0.0, 0.0, 5);
+        let o = &lo.orders[0];
+        assert_eq!(o.qty, 100.0, "None new_qty keeps the original qty");
+        assert_eq!(o.price, Some(2700.0));
+        assert_eq!(o.venue_order_id, "", "empty venue_order_id must not clear");
+    }
+
+    #[test]
+    fn live_orders_apply_modify_unknown_id_is_noop() {
+        let mut lo = LiveOrders::default();
+        lo.upsert_full(make_live_order("c1"));
+        lo.apply_modify(
+            "ghost",
+            "V9",
+            Some(900.0),
+            Some(1.0),
+            "ACCEPTED",
+            0.0,
+            0.0,
+            1,
+        );
+        assert_eq!(lo.orders.len(), 1, "unknown id must not insert");
+        assert_eq!(lo.orders[0].client_order_id, "c1");
+        assert_eq!(lo.orders[0].qty, 100.0, "existing order is untouched");
     }
 
     #[test]
@@ -952,7 +1104,10 @@ mod tests {
             "retention must be capped to bound memory / per-frame work"
         );
         // 最新 (最後に入れた) が先頭に残り、最古が落ちる。
-        assert_eq!(lo.orders[0].client_order_id, format!("c{}", MAX_LIVE_ORDERS + 19));
+        assert_eq!(
+            lo.orders[0].client_order_id,
+            format!("c{}", MAX_LIVE_ORDERS + 19)
+        );
     }
 
     #[test]
@@ -979,7 +1134,10 @@ mod tests {
             secret: s,
         };
         let dbg = format!("{cmd:?}");
-        assert!(!dbg.contains("hunter2"), "secret must never appear in Debug: {dbg}");
+        assert!(
+            !dbg.contains("hunter2"),
+            "secret must never appear in Debug: {dbg}"
+        );
     }
 
     #[test]
@@ -1223,7 +1381,11 @@ mod tests {
     #[test]
     fn tickers_list_started_sets_inflight_keeps_list() {
         let mut t = Tickers {
-            list: vec![Ticker { id: "7203.TSE".into(), name: "Toyota".into(), market: "TSE".into() }],
+            list: vec![Ticker {
+                id: "7203.TSE".into(),
+                name: "Toyota".into(),
+                market: "TSE".into(),
+            }],
             source: TickersSource::Unknown,
             status: TickersStatus::NotFetched,
         };
@@ -1240,13 +1402,25 @@ mod tests {
     #[test]
     fn tickers_listed_overwrites_list_and_source_and_status_loaded() {
         let mut t = Tickers {
-            list: vec![Ticker { id: "OLD.TSE".into(), name: "Old".into(), market: "TSE".into() }],
+            list: vec![Ticker {
+                id: "OLD.TSE".into(),
+                name: "Old".into(),
+                market: "TSE".into(),
+            }],
             source: TickersSource::Unknown,
             status: TickersStatus::InFlight,
         };
         let new_instruments = vec![
-            Ticker { id: "1301.TSE".into(), name: "Kyokuyo".into(), market: "TSE".into() },
-            Ticker { id: "7203.TSE".into(), name: "Toyota".into(), market: "TSE".into() },
+            Ticker {
+                id: "1301.TSE".into(),
+                name: "Kyokuyo".into(),
+                market: "TSE".into(),
+            },
+            Ticker {
+                id: "7203.TSE".into(),
+                name: "Toyota".into(),
+                market: "TSE".into(),
+            },
         ];
         // Simulate InstrumentsListed reducer
         t.source = TickersSource::LiveVenue;
@@ -1261,9 +1435,11 @@ mod tests {
 
     #[test]
     fn tickers_list_failed_keeps_list_sets_status_failed() {
-        let stale = vec![
-            Ticker { id: "7203.TSE".into(), name: "Toyota".into(), market: "TSE".into() },
-        ];
+        let stale = vec![Ticker {
+            id: "7203.TSE".into(),
+            name: "Toyota".into(),
+            market: "TSE".into(),
+        }];
         let mut t = Tickers {
             list: stale.clone(),
             source: TickersSource::ReplayCatalogFallback,
@@ -1281,9 +1457,18 @@ mod tests {
     #[test]
     fn tickers_source_to_wire_maps_all_variants() {
         assert_eq!(tickers_source_to_wire(TickersSource::Unknown), None);
-        assert_eq!(tickers_source_to_wire(TickersSource::ReplayCatalogFallback), Some("local".to_string()));
-        assert_eq!(tickers_source_to_wire(TickersSource::LocalVenueSnapshot), Some("local".to_string()));
-        assert_eq!(tickers_source_to_wire(TickersSource::LiveVenue), Some("live".to_string()));
+        assert_eq!(
+            tickers_source_to_wire(TickersSource::ReplayCatalogFallback),
+            Some("local".to_string())
+        );
+        assert_eq!(
+            tickers_source_to_wire(TickersSource::LocalVenueSnapshot),
+            Some("local".to_string())
+        );
+        assert_eq!(
+            tickers_source_to_wire(TickersSource::LiveVenue),
+            Some("live".to_string())
+        );
     }
 
     #[test]

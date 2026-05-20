@@ -263,3 +263,122 @@ def test_get_order_status_no_live_session(order_server):
     )
     assert res.success is False
     assert res.error_code == "NO_LIVE_SESSION"
+
+
+# --- modify ----------------------------------------------------------------
+
+
+def test_modify_order_rejected_in_replay_mode(order_server):
+    """Default Replay mode structurally rejects ModifyOrder."""
+    port, token, _servicer = order_server
+    stub = _stub(port)
+    res = stub.ModifyOrder(
+        engine_pb2.ModifyOrderReq(token=token, venue="MOCK", order_id="x", new_price=10.0)
+    )
+    assert res.success is False
+    assert res.error_code == "EXECUTION_MODE_PRECONDITION"
+
+
+def test_modify_order_requires_live_session(order_server):
+    """LiveManual but no facade → VENUE_LOGIN_REQUIRED."""
+    port, token, servicer = order_server
+    servicer.mode_manager.current_mode = "LiveManual"  # facade still None
+    stub = _stub(port)
+    res = stub.ModifyOrder(
+        engine_pb2.ModifyOrderReq(token=token, venue="MOCK", order_id="x", new_price=10.0)
+    )
+    assert res.success is False
+    assert res.error_code == "VENUE_LOGIN_REQUIRED"
+
+
+def test_modify_order_rejects_bad_token(order_server):
+    port, _token, _servicer = order_server
+    stub = _stub(port)
+    with pytest.raises(grpc.RpcError) as exc:
+        stub.ModifyOrder(
+            engine_pb2.ModifyOrderReq(token="wrong", venue="MOCK", order_id="x", new_price=1.0)
+        )
+    assert exc.value.code() == grpc.StatusCode.UNAUTHENTICATED
+
+
+def test_modify_order_unknown_id(order_server):
+    """Facade UNKNOWN_ORDER_ID surfaces as success=False + error_code (no abort)."""
+    port, token, servicer = order_server
+    _arm_live(servicer)
+    stub = _stub(port)
+    res = stub.ModifyOrder(
+        engine_pb2.ModifyOrderReq(token=token, venue="MOCK", order_id="nope", new_price=10.0)
+    )
+    assert res.success is False
+    assert res.error_code == "UNKNOWN_ORDER_ID"
+
+
+def test_modify_order_nothing_to_modify(order_server):
+    """Neither new_price nor new_qty set → NOTHING_TO_MODIFY."""
+    port, token, servicer = order_server
+    adapter = _arm_live(servicer)
+    stub = _stub(port)
+    adapter.set_next_order_outcome(status="ACCEPTED", filled_qty=0.0)
+    placed = stub.PlaceOrder(_place_req(token))
+    coid = placed.order_event.client_order_id
+    res = stub.ModifyOrder(
+        engine_pb2.ModifyOrderReq(token=token, venue="MOCK", order_id=coid)
+    )
+    assert res.success is False
+    assert res.error_code == "NOTHING_TO_MODIFY"
+
+
+def test_modify_order_success_returns_and_pushes_event(order_server):
+    """LiveManual: ModifyOrder on a working order returns ACCEPTED inline AND pushes."""
+    port, token, servicer = order_server
+    adapter = _arm_live(servicer)
+    stub = _stub(port)
+
+    stream = stub.SubscribeBackendEvents(
+        engine_pb2.SubscribeBackendEventsReq(token=token), timeout=5.0
+    )
+    bus = servicer._backend_event_bus
+    assert _wait_until(lambda: bus.subscriber_count() >= 1), "stream never registered"
+
+    # working (non-terminal) order
+    adapter.set_next_order_outcome(status="ACCEPTED", filled_qty=0.0)
+    placed = stub.PlaceOrder(_place_req(token))
+    coid = placed.order_event.client_order_id
+
+    res = stub.ModifyOrder(
+        engine_pb2.ModifyOrderReq(token=token, venue="MOCK", order_id=coid, new_price=2600.0)
+    )
+    assert res.success is True
+    assert res.error_code == ""
+    assert res.order_event.status == "ACCEPTED"
+    assert res.order_event.client_order_id == coid
+
+    # Both place and modify push to the stream. Drain the two events and assert
+    # the modify ACCEPTED for our coid is among them (order_event payload).
+    stream_it = iter(stream)
+    seen = [next(stream_it), next(stream_it)]
+    assert any(
+        ev.WhichOneof("payload") == "order_event"
+        and ev.order_event.client_order_id == coid
+        and ev.order_event.status == "ACCEPTED"
+        for ev in seen
+    )
+    stream.cancel()
+
+
+def test_modify_order_rejected_outcome_is_error_code(order_server):
+    """A venue REJECTED modify is RPC success=False with MODIFY_REJECTED."""
+    port, token, servicer = order_server
+    adapter = _arm_live(servicer)
+    stub = _stub(port)
+
+    adapter.set_next_order_outcome(status="ACCEPTED", filled_qty=0.0)
+    placed = stub.PlaceOrder(_place_req(token))
+    coid = placed.order_event.client_order_id
+
+    adapter.set_next_modify_outcome(status="REJECTED", reject_reason="too late")
+    res = stub.ModifyOrder(
+        engine_pb2.ModifyOrderReq(token=token, venue="MOCK", order_id=coid, new_qty=50.0)
+    )
+    assert res.success is False
+    assert res.error_code == "MODIFY_REJECTED"

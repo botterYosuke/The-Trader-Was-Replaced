@@ -22,7 +22,7 @@ from typing import (
 from pydantic import BaseModel, Field, model_validator
 
 if TYPE_CHECKING:
-    from engine.live.order_types import OrderResult
+    from engine.live.order_types import AccountSnapshot, OrderResult
 
 # --- 基本型エイリアス ---
 
@@ -193,3 +193,23 @@ class OrderingVenueAdapter(LiveVenueAdapter, Protocol):
         order_id: str,
         **extra: object,
     ) -> "OrderResult": ...
+
+    async def modify_order(
+        self,
+        *,
+        venue: str,
+        order_id: str,
+        new_price: float | None = None,
+        new_qty: float | None = None,
+        **extra: object,
+    ) -> "OrderResult":
+        """既存注文の訂正（価格 / 数量）。OrderResult を返す。
+
+        venue 別の実体（Step 5/6 の adapter 実装の責務、Step 4 は mock のみ）:
+        - **Tachibana**: `CLMKabuCorrectOrder`（venue 側 atomic な訂正 API）に直接マップ。
+        - **kabu**: 訂正 API が無いため adapter 内部で「取消 → 新規発注」に変換する
+          （atomicity は保証されない。UI に警告バナーを出すのは §3.11 / Step 6）。
+        """
+        ...
+
+    async def fetch_account(self) -> "AccountSnapshot": ...

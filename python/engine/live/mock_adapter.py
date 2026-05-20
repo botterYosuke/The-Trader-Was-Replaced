@@ -20,7 +20,11 @@ from engine.live.adapter import (
     LiveEvent,
     VenueCredentials,
 )
-from engine.live.order_types import OrderResult
+from engine.live.order_types import (
+    AccountPositionData,
+    AccountSnapshot,
+    OrderResult,
+)
 
 
 class MockVenueAdapter:
@@ -38,6 +42,11 @@ class MockVenueAdapter:
         self._queue: asyncio.Queue[LiveEvent] = asyncio.Queue()
         self._next_order_outcome: dict | None = None
         self._next_cancel_outcome: dict | None = None
+        self._next_modify_outcome: dict | None = None
+        # 既定の口座スナップショット（set_account_snapshot 未呼び出し時）。
+        self._account_snapshot: AccountSnapshot = AccountSnapshot(
+            cash=0.0, buying_power=0.0, positions=()
+        )
 
     async def login(self, creds: VenueCredentials) -> None:
         self.is_logged_in = True
@@ -243,3 +252,85 @@ class MockVenueAdapter:
             client_order_id=order_id,
             reject_reason=None,
         )
+
+    def set_next_modify_outcome(
+        self,
+        *,
+        status: str,
+        reject_reason: str | None = None,
+    ) -> None:
+        """テスト専用: 次の modify_order の結果を仕込む（one-shot, set_next_*_outcome 流）。
+
+        仕込み無しなら modify_order は既定 ACCEPTED。status="REJECTED" 時は
+        reject_reason を載せる。consume 後は None に戻る。
+        """
+        self._next_modify_outcome = {
+            "status": status,
+            "reject_reason": reject_reason,
+        }
+
+    async def modify_order(
+        self,
+        *,
+        venue: str,
+        order_id: str,
+        new_price: float | None = None,
+        new_qty: float | None = None,
+        **extra: object,
+    ) -> OrderResult:
+        """MockVenueAdapter 固有の訂正（submit_order / cancel_order と対）。
+
+        set_next_modify_outcome の仕込みがあれば one-shot 消費し、無ければ既定
+        ACCEPTED（filled_qty=0.0, avg_price=None, client_order_id=order_id）。REJECTED
+        仕込み時は reject_reason を載せる。`order_id` は client_order_id を想定し、
+        結果の client_order_id にそのまま反映する。new_price/new_qty は mock では
+        参照しない（venue 側で訂正が成立する想定。実 adapter は Step 5/6）。
+        """
+        self._require_login()
+
+        outcome = self._next_modify_outcome
+        self._next_modify_outcome = None
+
+        if outcome is not None and outcome["status"] == "REJECTED":
+            return OrderResult(
+                status="REJECTED",
+                filled_qty=0.0,
+                avg_price=None,
+                client_order_id=order_id,
+                reject_reason=outcome["reject_reason"],
+            )
+        status = outcome["status"] if outcome is not None else "ACCEPTED"
+        return OrderResult(
+            status=status,
+            filled_qty=0.0,
+            avg_price=None,
+            client_order_id=order_id,
+            reject_reason=None,
+        )
+
+    def set_account_snapshot(
+        self,
+        *,
+        cash: float,
+        buying_power: float,
+        positions: list[AccountPositionData] | tuple[AccountPositionData, ...] = (),
+    ) -> None:
+        """テスト専用: fetch_account が返す口座スナップショットを仕込む。
+
+        複数回呼べる（差分テスト用に状態を更新できる）。positions は
+        AccountPositionData の list/tuple。
+        """
+        self._account_snapshot = AccountSnapshot(
+            cash=cash,
+            buying_power=buying_power,
+            positions=tuple(positions),
+        )
+
+    async def fetch_account(self) -> AccountSnapshot:
+        """MockVenueAdapter 固有の口座取得（読み系だが既存流儀で require_login）。
+
+        set_account_snapshot で仕込んだ AccountSnapshot を返す。未設定時は既定
+        （cash=0.0, buying_power=0.0, positions=()）。
+        """
+        self._require_login()
+        return self._account_snapshot

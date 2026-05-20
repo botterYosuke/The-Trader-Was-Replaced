@@ -217,8 +217,8 @@ pub fn parse_scenario_system(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::ui::components::StrategyBuffer;
     use crate::ui::components::ScenarioLoadedFromFile;
+    use crate::ui::components::StrategyBuffer;
 
     #[test]
     fn test_parse_v1_from_json() {
@@ -513,7 +513,11 @@ mod tests {
         let events = app.world().resource::<Events<ScenarioLoadedFromFile>>();
         let mut reader = events.get_cursor();
         let collected: Vec<_> = reader.read(events).cloned().collect();
-        assert_eq!(collected.len(), 1, "instruments_ref resolve must emit ScenarioLoadedFromFile");
+        assert_eq!(
+            collected.len(),
+            1,
+            "instruments_ref resolve must emit ScenarioLoadedFromFile"
+        );
         assert_eq!(
             collected[0].instruments,
             vec!["1301.TSE".to_string(), "7203.TSE".to_string()],
@@ -675,7 +679,8 @@ mod tests {
         app.world_mut()
             .resource_mut::<StrategyBuffer>()
             .original_path = Some(py_b.clone());
-        app.world_mut().insert_resource(ScenarioReadTarget(Some(json_b.clone())));
+        app.world_mut()
+            .insert_resource(ScenarioReadTarget(Some(json_b.clone())));
 
         // tick 2: parse_scenario_system は scenario キー不在で event を出さない
         //         → sync system が呼ばれず editable=false が残存 (= 現状のバグ)

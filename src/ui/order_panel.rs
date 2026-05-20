@@ -15,7 +15,7 @@
 use bevy::prelude::*;
 
 use crate::trading::{
-    ExecutionMode, ExecutionModeRes, LastPrices, SelectedSymbol, TransportCommand,
+    ExecutionMode, ExecutionModeRes, LastPrices, OrderFeedback, SelectedSymbol, TransportCommand,
     TransportCommandSender, VenueStatusRes,
 };
 
@@ -194,14 +194,16 @@ pub fn validate_order(
     if symbol.map(|s| s.is_empty()).unwrap_or(true) {
         return Err(OrderValidationError::SymbolNotSelected);
     }
-    if form.qty <= 0.0 {
+    // Reject non-finite explicitly (NaN slips past `<= 0.0`); mirrors the
+    // backend's `math.isfinite` guard (plan Step 2 review) so client/server agree.
+    if !form.qty.is_finite() || form.qty <= 0.0 {
         return Err(OrderValidationError::QtyNotPositive);
     }
     if !is_multiple_of(form.qty, lot_size) {
         return Err(OrderValidationError::QtyNotLotMultiple);
     }
     if form.order_type == OrderType::Limit {
-        if form.price <= 0.0 {
+        if !form.price.is_finite() || form.price <= 0.0 {
             return Err(OrderValidationError::PriceRequiredForLimit);
         }
         if !is_multiple_of(form.price, tick_size) {
@@ -703,6 +705,7 @@ pub fn confirm_modal_visibility_system(
 pub fn confirm_modal_button_system(
     interactions: Query<(&Interaction, &ConfirmButton), (Changed<Interaction>, With<Button>)>,
     mut confirm: ResMut<OrderConfirm>,
+    mut feedback: ResMut<OrderFeedback>,
     sender: Option<Res<TransportCommandSender>>,
 ) {
     for (interaction, button) in &interactions {
@@ -717,6 +720,8 @@ pub fn confirm_modal_button_system(
                 let Some(draft) = confirm.pending.take() else {
                     continue;
                 };
+                // Fresh attempt: clear any stale reject/timeout notice.
+                feedback.message = None;
                 if let Some(tx) = sender.as_ref() {
                     let _ = tx.tx.send(TransportCommand::PlaceOrder {
                         venue: draft.venue,
@@ -742,6 +747,7 @@ pub fn order_panel_sync_system(
     form: Res<OrderForm>,
     selected: Res<SelectedSymbol>,
     confirm: Res<OrderConfirm>,
+    feedback: Res<OrderFeedback>,
     mut fields: Query<(&OrderField, &mut Text)>,
     mut buttons: Query<(&OrderButton, &mut BackgroundColor), With<Button>>,
 ) {
@@ -754,7 +760,12 @@ pub fn order_panel_sync_system(
                 OrderType::Market => "MKT".to_string(),
                 OrderType::Limit => format!("{:.0}", form.price),
             },
-            OrderField::Error => confirm.last_error.clone().unwrap_or_default(),
+            // 検証エラーを優先、無ければ RPC reject / secret timeout の通知を出す。
+            OrderField::Error => confirm
+                .last_error
+                .clone()
+                .or_else(|| feedback.message.clone())
+                .unwrap_or_default(),
         };
         if text.0 != new {
             text.0 = new;
@@ -895,6 +906,32 @@ mod tests {
     }
 
     #[test]
+    fn validate_rejects_non_finite_qty_and_price() {
+        let nan_qty = form(OrderType::Market, f64::NAN, 0.0);
+        assert_eq!(
+            validate_order(&nan_qty, Some("7203.T"), 100.0, 1.0),
+            Err(OrderValidationError::QtyNotPositive)
+        );
+        let inf_qty = form(OrderType::Market, f64::INFINITY, 0.0);
+        assert_eq!(
+            validate_order(&inf_qty, Some("7203.T"), 100.0, 1.0),
+            Err(OrderValidationError::QtyNotPositive)
+        );
+        let nan_price = form(OrderType::Limit, 100.0, f64::NAN);
+        assert_eq!(
+            validate_order(&nan_price, Some("7203.T"), 100.0, 1.0),
+            Err(OrderValidationError::PriceRequiredForLimit)
+        );
+        // Inf price is caught by the is_finite guard with the right message
+        // (not the tick-multiple fallthrough).
+        let inf_price = form(OrderType::Limit, 100.0, f64::INFINITY);
+        assert_eq!(
+            validate_order(&inf_price, Some("7203.T"), 100.0, 1.0),
+            Err(OrderValidationError::PriceRequiredForLimit)
+        );
+    }
+
+    #[test]
     fn build_draft_drops_price_for_market() {
         let f = form(OrderType::Market, 100.0, 2500.0);
         let d = build_draft(&f, "7203.T", "MOCK");
@@ -923,13 +960,18 @@ mod tests {
         let f = form(OrderType::Market, 100.0, 0.0);
         let d = build_draft(&f, "7203.T", "MOCK");
         assert_eq!(estimated_notional(&d, Some(2400.0)), Some(240000.0));
-        assert_eq!(estimated_notional(&d, None), None, "価格不明の成行は概算不可");
+        assert_eq!(
+            estimated_notional(&d, None),
+            None,
+            "価格不明の成行は概算不可"
+        );
     }
 
     fn make_app() -> App {
         let mut app = App::new();
         app.init_resource::<OrderForm>();
         app.init_resource::<OrderConfirm>();
+        app.init_resource::<OrderFeedback>();
         app.insert_resource(SelectedSymbol {
             id: Some("7203.T".to_string()),
         });
@@ -974,8 +1016,14 @@ mod tests {
             .spawn((Button, Interaction::Pressed, OrderButton::Submit));
         app.update();
         let confirm = app.world().resource::<OrderConfirm>();
-        assert!(confirm.pending.is_none(), "invalid submit must not open modal");
-        assert!(confirm.last_error.is_some(), "invalid submit must set an error");
+        assert!(
+            confirm.pending.is_none(),
+            "invalid submit must not open modal"
+        );
+        assert!(
+            confirm.last_error.is_some(),
+            "invalid submit must set an error"
+        );
     }
 
     #[test]
@@ -1002,7 +1050,9 @@ mod tests {
             app.world().resource::<OrderConfirm>().pending.is_none(),
             "Confirm must clear pending"
         );
-        let cmd = rx.try_recv().expect("Confirm must fire a PlaceOrder command");
+        let cmd = rx
+            .try_recv()
+            .expect("Confirm must fire a PlaceOrder command");
         match cmd {
             TransportCommand::PlaceOrder {
                 venue,
@@ -1020,7 +1070,10 @@ mod tests {
                 assert_eq!(qty, 100.0);
                 assert_eq!(price, None);
                 assert_eq!(order_type, "MARKET");
-                assert!(second_secret.is_none(), "OrderPanel never carries the secret");
+                assert!(
+                    second_secret.is_none(),
+                    "OrderPanel never carries the secret"
+                );
             }
             other => panic!("expected PlaceOrder, got {other:?}"),
         }

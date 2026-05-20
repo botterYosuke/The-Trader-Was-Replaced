@@ -16,7 +16,7 @@
 | 1 | MockVenueAdapter 発注経路 + SecretVault + SubmitSecret RPC | ✅ 完了 (2026-05-20、未コミット) |
 | 2 | 手動発注 facade + Order RPC + OrderEvent stream | ✅ 完了 (2026-05-20、未コミット) |
 | 3 | OrderPanel UI + SecretModal UI | ✅ 完了 (2026-05-20、未コミット) |
-| 4 | Account 同期 + Panel Live 対応 | ⬜ 未着手 |
+| 4 | Account 同期 + Panel Live 対応 | ✅ 完了 (2026-05-21、未コミット) — account_sync + AccountEvent push + ModifyOrder(配線まで) + OrdersPanel 右クリックメニュー |
 | 5 | TachibanaExecutionClient | ⬜ 未着手 |
 | 6 | KabusapiExecutionClient | ⬜ 未着手 |
 | 7 | Venue Health Watchdog | ⬜ 未着手 |
@@ -81,6 +81,52 @@
 - **計画書ドリフト訂正**: ① OrderPanel/モーダルは UI Node 流派（PanelKind/dispatcher 不使用、Startup spawn + Display）。② SecretModal は cosmic_edit でなく keyboard-drain + `Zeroizing`。③ `OrderEvent`→OrdersPanel の**最小 reducer を Step 3 で実装**（Step 2 申し送り②「ログのみ／reducer は Step 4」を entry 側だけ前倒し。Account/Position reducer は Step 4 のまま）。
 - **Step 4 への申し送り**: ① `AccountEvent`→`PortfolioState`（cash/buying_power/positions）reducer 結線（drain は現状 AccountEvent をログのみ）。② OrdersPanel 右クリック→[取消]/[訂正] コンテキストメニュー（`CancelOrder` コマンドは配線済み、UI トリガ未）。③ 実 instrument metadata（売買単位/呼値）を Rust state に流して order_panel の定数 100/1.0 を置換。④ 銘柄手動 override（現状 `SelectedSymbol` 連動のみ）。⑤ 概算手数料テーブル（現状 notional のみ・「手数料概算は未対応」表示）。⑥ secret_modal_input の keyboard 消費が menu/picker と競合し得る順序（モーダル稀・Tachibana 専用のため未調整、`.before(InputSet)` のみ）。⑦ **E2E（mock LiveManual で 発注→約定→OrdersPanel 表示）は未実施**（unit/system test でロジックは網羅。GUI+backend E2E は e2e-testing で別途）。⑧ kabu 訂正警告バナー（§2.3 / §3.11）は Step 6。
 - **次**: Step 4（Account 同期 + PositionsPanel/OrdersPanel Live 対応）
+
+### Step 4 完了サマリー (2026-05-21)
+
+> **状態**: ✅ **完了**（Python バックエンド + Rust フロントエンドの両半 + proto `ModifyOrder` 追加が統合され全テスト緑、2026-05-21、未コミット）。Rust **506 passed / 0 failed**（lib 469 + bin 27 + backend_integration 10）、Python **1024 passed / 35 skipped / 7 failed**（7 失敗はすべて pre-existing baseline = Windows pipe FD `test_grpc_shutdown`×3 / `test_grpc_startup_sentinel`×1、`strategy_file` 必須化未追従 `test_grpc_catalog_route`×1 / `test_jquants_to_catalog`×2。本 Step 由来の新規失敗 0、Step 2 比 +38 passed）。`cargo check --all-targets` 緑。
+
+- **A. AccountEvent → PortfolioState reducer 結線** (`src/main.rs`): ✅
+  - `backend_event_drain_system` に `mut portfolio: ResMut<PortfolioState>` を追加し、`BackendEvent::AccountEvent` をログのみ→pure fn `apply_account_event(&mut portfolio, cash, buying_power, positions)` に結線。`cash`/`buying_power` をセット、`AccountPosition`→`PortfolioPosition` map、`loaded=true`。
+  - **equity 計算式**: `AccountEvent` に `equity` field が無いため、`equity = cash + Σ(qty as f64 * avg_price + unrealized_pnl)` で導出（建玉時価 ≈ 取得簿価 `qty*avg_price` + 評価損益 `unrealized_pnl`。venue の `unrealized_pnl` が同じ `avg_price` 基準で計算されていれば真の時価と一致する近似）。pure fn 化して unit test 2 件（複数建玉の equity 検算 / 建玉ゼロ時 equity==cash）。
+  - **Res 追加の波及**: 本番 `main.rs` の `insert_resource(PortfolioState::default())` は既存。`backend_event_drain_system` を踏む既存テストは無く、追従漏れ panic は発生しなかった（`status_update_system` 経由は別 system）。
+- **B. ModifyOrder コマンド経路** (`src/trading.rs` + `src/main.rs`): ✅
+  - `src/trading.rs`: `TransportCommand::ModifyOrder { venue, client_order_id, new_qty: Option<f64>, new_price: Option<f64>, second_secret: Option<RedactedSecret> }`（Step 3 の derive・secret 伏字流儀踏襲）。`BackendStatusUpdate::OrderModified { client_order_id, venue_order_id, new_qty, new_price, status, filled_qty, avg_price, ts_ms }`。`LiveOrders::apply_modify(...)`（既存レコード検索 → symbol/side 保持、`new_qty`/`new_price` が Some なら上書き、status/fill/venue_order_id/ts_ms 更新、空 venue_order_id は維持、**未知 id は no-op**）。unit test 3 件。
+  - `src/main.rs`: `TransportCommand::ModifyOrder` dispatch arm（`engine::ModifyOrderReq` を組み `new_price`/`new_qty` を Option→proto optional、`client.modify_order(req)`、成功時 `OrderEvent`（ids+status+fill）とコマンドの `new_qty`/`new_price` をマージして `OrderModified` を `status_tx` 送出、失敗時 `OrderRejected{action:"訂正"}`）。`apply_status_update` に `OrderModified` arm → `live_orders.apply_modify(...)`。
+  - **設計判断（qty/price マージ）**: `OrderEvent` は qty/price を運ばないため、Modify の qty/price は **`ModifyOrder` コマンド由来の値を transport task でマージ**して `OrderModified` に載せる（Step 3 の Place/Cancel と同じ「コマンド静的 field をマージ」方針）。
+- **C. OrdersPanel 右クリック → コンテキストメニュー [取消]/[訂正]** (`src/ui/orders.rs` + `src/ui/order_context_menu.rs` [NEW]): ✅
+  - **設計判断（実装方式）**: OrdersPanel は world-space Sprite/Text2d パネル。各データ行に**透明 Sprite のヒット領域**（`OrdersRowHit{row}`、`Color::srgba(_,_,_,0.0)` + `custom_size`、0.15 は bounds picking で alpha 無関係＝pickable）を `content_area` 子として spawn し、`.observe(Pointer<Down>)` で **Secondary ボタンのみ**反応（`down.event().button != PointerButton::Secondary { return }`）。Live モード時のみ・対象行に注文があるときのみ `OrderContextMenu`（`open`/`client_order_id`/`venue`/`screen_pos`）resource にセット。
+  - メニュー本体は **Bevy UI Node オーバーレイ**（`order_context_menu.rs`、`GlobalZIndex(220)`、`Display::Flex/None`、`screen_pos`=`Pointer<Down>.pointer_location.position` でカーソル付近に配置）。[取消] / [訂正] は Button + Interaction。backdrop クリック / Esc で閉じる。
+  - [取消] → `TransportCommand::CancelOrder { venue, order_id: client_order_id, second_secret: None }`（Step 3 で配線済み、venue は `VenueStatusRes.venue_id` から解決）。[訂正] → Modify モーダルを `client_order_id`/`venue` 付きで open。system test 4 件。
+- **D. Modify モーダル** (`src/ui/modify_modal.rs` [NEW]): ✅
+  - Bevy UI Node 中央オーバーレイ（`GlobalZIndex(250)`、order_panel/secret_modal 流儀）。新数量/新価格は **keyboard drain**（数字 `.` のみ受理、Tab でフォーカス切替、Enter=Confirm、Esc=破棄）。空欄は「変更しない（None）」扱い、`parse_buf` は空白/非有限/<=0 を None に。
+  - **kabu 警告バナー**（§2.3 / §3.11）: `venue_capabilities::for_venue(venue).supports_order_correction == false`（=kabu）のとき上部に警告バナー（「kabuステーションには訂正 API がありません。取消→新規発注の 2 段階で訂正します。途中失敗で元注文のみ取消になることがあります。」）と同意チェックを表示し、**`ack_kabu` が ON になるまで Confirm を弾く**（`can_confirm()` = 変更あり ∧ (kabu でない ∨ ack 済み)）。Tachibana/MOCK は警告不要・チェック不要（`for_venue` で判定、文字列直書き回避）。
+  - new_qty/new_price 両方空の場合は Confirm を弾きトースト相当（`OrderFeedback`）。`[Confirm]` → `TransportCommand::ModifyOrder { ..., second_secret: None }`（Step 4 は常に None、Tachibana secret 結線は Step 5）→ close。`[Cancel]`/Esc → 破棄。状態は `ModifyForm` resource。unit/system test 9 件。
+  - keyboard drain は secret_modal と同じく `.before(InputSet)` / `.before(picker_searchbox_input_system)` / `.before(menu_keyboard_system)`。
+- **E. mod.rs wiring + tests/backend_integration.rs**: ✅
+  - `src/ui/mod.rs`: 新 module（`modify_modal` / `order_context_menu`）の Startup spawn（`spawn_order_context_menu` / `spawn_modify_modal`）+ Update systems を**新規 `add_systems` ブロック**に登録（既存 Phase 9 ブロックが 13 system で、追加 9 を足すと 20 tuple 上限超過のため分割）。`OrderContextMenu` / `ModifyForm` を `init_resource`。
+  - `tests/backend_integration.rs`: mock `DataEngine` に `modify_order` スタブ追加（place/cancel と同形、`ModifyOrderRes{success:true,...}`）。
+- **テスト (Rust)**: `cargo test --lib` 469 + `--bins` 27 + `--test backend_integration` 10 = **506 passed / 0 failed**（新規 16: trading apply_modify 3 + modify_modal 9 + order_context_menu 4 ＋ main の AccountEvent reducer 2）。`cargo check --all-targets` 緑。clippy の本 Step 由来 type_complexity 4 件（modify_modal ×2 / order_context_menu ×2）は order_panel/secret_modal と同型の multi-filter Query で house-style baseline（対象外）。
+- **self-review (simplify)**: `context_menu_item_system` の `handled` フラグ + `break` を loop 内 early-return に簡素化。kabu 判定は文字列直書きでなく `venue_capabilities::for_venue` を再利用。redundant state なし。`apply_account_event` は引数 4 で閾値内・pure fn。
+
+#### Python バックエンド (account_sync + AccountEvent push + ModifyOrder)
+
+- **A. 口座データ型** (`python/engine/live/order_types.py`): `AccountPositionData`（symbol/qty/avg_price/unrealized_pnl）+ `AccountSnapshot`（cash/buying_power/positions、**ts_ms は持たない** — snapshot 等価判定から時刻を排除し push 時に handler が採番）。両方 frozen pydantic。
+- **B. Adapter Protocol 拡張** (`adapter.py` `OrderingVenueAdapter`): `async def fetch_account() -> AccountSnapshot` + `async def modify_order(*, venue, order_id, new_price=None, new_qty=None, **extra) -> OrderResult`。Tachibana=CLMKabuCorrectOrder（atomic）/ kabu=取消→新規変換は Step 6 adapter の責務、Step 4 は mock のみ。
+- **C. MockVenueAdapter** (`mock_adapter.py`): `fetch_account`（`set_account_snapshot` 注入、既定 cash=0/bp=0/positions=()）/ `modify_order`（`set_next_modify_outcome` 注入、既定 `ACCEPTED`）。
+- **D. `live/account_sync.py` [NEW]**: `AccountSync(adapter, on_account_event, interval_s=30.0)`。transport 非依存（proto 非 import、reducer_bridge 思想）。**起動直後に 1 回必ず emit**（初期ロード = §3.12「初期ロード/手動リフレッシュ」を push で満たす ⇒ **新規 `GetAccount` RPC は追加せずドリフト訂正**）。以降は `interval_s` 毎 fetch し前回 emit snapshot と異なるときだけ emit（frozen pydantic `==`）。**fetch_account / callback 例外は warning ログ + `last_error` 記録してループ継続**（口座同期は best-effort、1 回失敗で永久停止させない）。`CancelledError` のみ正常終了。
+- **E. `order_facade.py` `modify`**: 検証（UNKNOWN_ORDER_ID / 終端 `ORDER_NOT_MODIFIABLE` / 両方 None `NOTHING_TO_MODIFY` / NaN・Inf・<=0 の `INVALID_PRICE`/`INVALID_QTY`）→ `adapter.modify_order` → REJECTED は `MODIFY_REJECTED`（store 不変）→ 成功は status/fill/venue_order_id を更新した `OrderEventData` で store 更新。**`OrderEvent` は qty/price を持たない設計のため facade は qty/price を載せない**（UI 反映は Rust 側が `ModifyOrder` コマンド由来でマージ、上記 B 設計判断と対）。`second_secret` は受理して無視（Step 5 で結線）。
+- **F. `server_grpc.py` 結線**: `_start_live_components_async` で facade 生成直後に `AccountSync(interval_s=30.0)` を生成・start。コールバック `_publish_account_snapshot` が `AccountSnapshot`→`engine_pb2.AccountEvent`（positions 詰め替え + `ts_ms=int(time.time()*1000)`）→ `publish_backend_event`（`BackendEventBus` は threadsafe queue ⇒ live loop thread から直接 publish して安全）。`_teardown_live_components_async` で `account_sync.stop()` を await、`_teardown_live_components` finally で `self._account_sync=None`、`__init__` で初期化。`ModifyOrder` handler を `CancelOrder` 雛形で実装（Replay→`EXECUTION_MODE_PRECONDITION`、facade None→`VENUE_LOGIN_REQUIRED`、`OrderFacadeError`→error_code、timeout→`MODIFY_TIMEOUT`、その他→`MODIFY_FAILED`、成功→publish + inline）。
+- **テスト (Python)**: `test_account_sync.py` 5（初回 forced emit / 差分 emit / stop / fetch 例外継続 + last_error）+ facade modify 拡張 + mock fetch_account/modify_order + grpc ModifyOrder handler。本 Step 由来の新規失敗 0。
+
+#### proto: `ModifyOrder` RPC 追加（オーケストレーター実施）
+
+- `python/proto/engine.proto` に `rpc ModifyOrder (ModifyOrderReq) returns (ModifyOrderRes)` + `ModifyOrderReq{token=1,venue=2,order_id=3,new_price=4 opt double,new_qty=5 opt double,second_secret=6 opt string}` / `ModifyOrderRes{success=1,error_code=2,OrderEvent order_event=3}` を追加。Python pb2 を `grpc_tools.protoc` で regen し相対 import に手修正（`from . import engine_pb2`）、Rust は build.rs(tonic) で自動再生。`AccountEvent`/`AccountPosition` は Step 0 で既に proto 凍結済みのため追加不要。
+
+#### ⚠️ プロセス上の教訓（並行エージェントの非分離 working dir 競合）
+
+- **事象**: Step 4 を Python / Rust の 2 サブエージェントで**同一 working dir（worktree 分離なし）に並行起動**したところ、両エージェントが「自分の編集が revert された」「proto が消えた」「QUARANTINE stash に退避された」と報告して中断した。**実際には**: ① git hook は標準の Git LFS のみで quarantine/revert 機構は存在しない、② `git stash list` に QUARANTINE stash は存在しない（古い phase8 stash のみ）、③ 最終ツリーは proto + Python + Rust + whole-tree `cargo fmt` ノイズを含めて**正しく再収束し全テスト緑**だった。原因は **2 エージェントが同一ディレクトリで相互の書き込み・`cargo fmt`・git 操作を踏み合った干渉**（parallel-agent-dev 失敗パターン #7「feature ブランチで worktree／非分離並行」）。エージェントの「revert/quarantine」報告は競合中の中間状態の誤読だった。
+- **教訓**: feature ブランチで複数エージェントを並行させるときは **ファイル単位の厳密分離だけでは不十分**で、`cargo fmt` の全ツリー実行・git 操作・lib 非コンパイル中間状態が相互干渉する。**proto のような共有 artifact 変更はオーケストレーターが直列で凍結・コミットしてから**サブエージェントを起動するか、各エージェント完了の都度オーケストレーターが直列で統合検証する運用が安全（本 Step は後者で復旧）。
 
 ---
 

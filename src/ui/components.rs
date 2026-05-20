@@ -2985,10 +2985,7 @@ mod writeback_scenario_instruments_tests {
         app.update();
         {
             let wb = app.world().resource::<ScenarioInstrumentsWritebackState>();
-            assert_ne!(
-                wb.revision, wb.flushed_revision,
-                "Live 中は flush されない"
-            );
+            assert_ne!(wb.revision, wb.flushed_revision, "Live 中は flush されない");
         }
 
         // Replay に切り替え

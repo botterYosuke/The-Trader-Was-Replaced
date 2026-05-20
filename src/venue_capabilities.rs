@@ -52,9 +52,18 @@ mod tests {
     #[test]
     fn tachibana_capabilities_match_plan() {
         let c = for_venue("tachibana").expect("tachibana must be known");
-        assert!(c.supports_order_correction, "Tachibana supports PATCH /order");
-        assert!(c.requires_second_password, "Tachibana requires 2nd password");
-        assert!(c.token_persists_across_restart, "Tachibana token survives restart");
+        assert!(
+            c.supports_order_correction,
+            "Tachibana supports PATCH /order"
+        );
+        assert!(
+            c.requires_second_password,
+            "Tachibana requires 2nd password"
+        );
+        assert!(
+            c.token_persists_across_restart,
+            "Tachibana token survives restart"
+        );
         // max_subscribed_instruments: plan says "unspecified"; we encode as u32::MAX.
         assert_eq!(c.max_subscribed_instruments, u32::MAX);
     }
@@ -62,9 +71,15 @@ mod tests {
     #[test]
     fn kabu_capabilities_match_plan() {
         let c = for_venue("kabu").expect("kabu must be known");
-        assert!(!c.supports_order_correction, "kabu has no PATCH; cancel+resend only (R7)");
+        assert!(
+            !c.supports_order_correction,
+            "kabu has no PATCH; cancel+resend only (R7)"
+        );
         assert!(!c.requires_second_password);
-        assert!(!c.token_persists_across_restart, "kabu must re-login per ADR S4");
+        assert!(
+            !c.token_persists_across_restart,
+            "kabu must re-login per ADR S4"
+        );
         assert_eq!(c.max_subscribed_instruments, 50, "kabu REGIST cap");
     }
 

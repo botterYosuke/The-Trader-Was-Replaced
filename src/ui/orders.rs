@@ -1,6 +1,7 @@
 use crate::trading::{ExecutionModeRes, LiveOrders, PortfolioState, is_live_mode};
 use crate::ui::components::PanelKind;
 use crate::ui::floating_window::{FloatingWindowSpec, spawn_floating_window};
+use crate::ui::order_context_menu::OrderContextMenu;
 use bevy::prelude::*;
 
 // ── レイアウト & 配色 ─────────────────────────────────────────
@@ -49,6 +50,17 @@ pub struct OrdersCell {
 
 #[derive(Component)]
 pub struct OrdersStatus;
+
+/// Phase 9 §3.12: per-row transparent hit area for right-click → context menu.
+/// `row` is the index into the displayed order list. 0.15 sprite picking is
+/// bounds-based (alpha-agnostic), so a fully transparent sprite with a
+/// `custom_size` is still pickable.
+#[derive(Component, Clone, Copy)]
+pub struct OrdersRowHit {
+    pub row: usize,
+}
+
+const ROW_HIT_WIDTH: f32 = 320.0;
 
 // ── Spawn ────────────────────────────────────────────────────
 pub fn spawn_orders_panel(commands: &mut Commands) {
@@ -109,6 +121,52 @@ pub fn spawn_orders_panel(commands: &mut Commands) {
                 .id();
             commands.entity(content_area).add_child(cell);
         }
+    }
+
+    // 各行の透明ヒット領域（右クリック → コンテキストメニュー）。Secondary ボタンのみ反応。
+    // セルより僅かに背面 (z=0.05) に置き、行全幅をカバーする。
+    for row in 0..MAX_ROWS {
+        let y = ROW_0_Y - (row as f32) * ROW_SPACING;
+        let hit = commands
+            .spawn((
+                Sprite {
+                    color: Color::srgba(0.0, 0.0, 0.0, 0.0),
+                    custom_size: Some(Vec2::new(ROW_HIT_WIDTH, ROW_SPACING)),
+                    ..default()
+                },
+                Transform::from_xyz(0.0, y, 0.05),
+                OrdersRowHit { row },
+            ))
+            .observe(
+                |down: Trigger<Pointer<Down>>,
+                 hit_q: Query<&OrdersRowHit>,
+                 live_orders: Res<LiveOrders>,
+                 exec_mode: Res<ExecutionModeRes>,
+                 venue: Res<crate::trading::VenueStatusRes>,
+                 mut menu: ResMut<OrderContextMenu>| {
+                    // Pointer<Down> は全ボタンで発火する → Secondary (右) のみ反応 (規約)。
+                    if down.event().button != PointerButton::Secondary {
+                        return;
+                    }
+                    // Live モードのみ。Replay 注文には取消/訂正を出さない。
+                    if !is_live_mode(exec_mode.mode) {
+                        return;
+                    }
+                    let Ok(hit) = hit_q.get(down.entity()) else {
+                        return;
+                    };
+                    // その行に注文があるときだけ開く。
+                    let Some(order) = live_orders.orders.get(hit.row) else {
+                        return;
+                    };
+                    menu.open = true;
+                    menu.client_order_id = Some(order.client_order_id.clone());
+                    menu.venue = venue.venue_id.clone().unwrap_or_default();
+                    menu.screen_pos = down.event().pointer_location.position;
+                },
+            )
+            .id();
+        commands.entity(content_area).add_child(hit);
     }
 
     // ステータスメッセージ

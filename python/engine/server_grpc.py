@@ -27,6 +27,7 @@ from .live.state_machine import VenueStateMachine
 from .live.backend_event_bus import BackendEventBus
 from .live.secret_vault import SecretVault
 from .live.order_facade import ManualOrderFacade, OrderFacadeError
+from .live.account_sync import AccountSync
 from .mode_manager import ModeManager
 from .models import PerInstrumentState
 from .proto import engine_pb2, engine_pb2_grpc
@@ -212,6 +213,8 @@ class GrpcDataEngineServer(
         self._secret_vault: SecretVault = SecretVault()
         # Phase 9 Step 2: manual order execution facade (lifetime = live session).
         self._order_facade: Optional[ManualOrderFacade] = None
+        # Phase 9 Step 4: account sync (余力・建玉の定期 push, lifetime = live session).
+        self._account_sync: Optional[AccountSync] = None
 
     _KNOWN_VENUES = {"TACHIBANA", "KABU", "MOCK"}  # D26: MOCK added
     _KNOWN_CRED_SOURCES = {"prompt", "session_cache", "env", "prompt_result"}
@@ -297,6 +300,17 @@ class GrpcDataEngineServer(
         self._live_depth_cache = depth_cache
         # Phase 9 Step 2: manual order facade wraps this session's adapter.
         self._order_facade = ManualOrderFacade(adapter)
+        # Phase 9 Step 4: account sync pushes AccountEvent on the backend stream.
+        # The callback runs on the live-loop thread; BackendEventBus is threadsafe
+        # (Step 0), so publishing directly from here is safe. AccountSync is
+        # transport-agnostic — proto conversion + ts_ms stamping happens here.
+        account_sync = AccountSync(
+            adapter,
+            on_account_event=self._publish_account_snapshot,
+            interval_s=30.0,
+        )
+        await account_sync.start()
+        self._account_sync = account_sync
 
     def _start_live_components(self, environment_hint: Optional[str] = None):
         if self._live_runner is not None and self._live_bridge is not None:
@@ -318,6 +332,10 @@ class GrpcDataEngineServer(
         cache = self._live_price_cache
         depth_cache = self._live_depth_cache
         runner = self._live_runner
+        account_sync = self._account_sync
+        # Stop the account push first so no AccountEvent is emitted mid-teardown.
+        if account_sync is not None:
+            await account_sync.stop()
         if bridge is not None:
             await bridge.stop()
         if cache is not None:
@@ -345,6 +363,7 @@ class GrpcDataEngineServer(
             self._live_price_cache = None
             self._live_depth_cache = None
             self._order_facade = None
+            self._account_sync = None
             # Arm clear-on-toggle: a prior lifecycle's last_error must not bleed
             # into the next Live session or stay visible after returning to Replay.
             self._suppress_live_last_error = True
@@ -1516,6 +1535,27 @@ class GrpcDataEngineServer(
         mode = self.mode_manager.current_mode if self.mode_manager else "Replay"
         return mode in ("LiveManual", "LiveAuto")
 
+    def _publish_account_snapshot(self, snapshot) -> None:
+        """AccountSync callback: AccountSnapshot → proto AccountEvent → backend stream.
+
+        Runs on the live-loop thread. The transport-agnostic snapshot has no ts_ms;
+        stamp it here (push time). BackendEventBus is threadsafe (Step 0)."""
+        proto = engine_pb2.AccountEvent(
+            cash=snapshot.cash,
+            buying_power=snapshot.buying_power,
+            positions=[
+                engine_pb2.AccountPosition(
+                    symbol=p.symbol,
+                    qty=p.qty,
+                    avg_price=p.avg_price,
+                    unrealized_pnl=p.unrealized_pnl,
+                )
+                for p in snapshot.positions
+            ],
+            ts_ms=int(time.time() * 1000),
+        )
+        self.publish_backend_event(engine_pb2.BackendEvent(account_event=proto))
+
     def PlaceOrder(self, request, context):
         if request.token != self.token:
             context.abort(grpc.StatusCode.UNAUTHENTICATED, "Invalid token")
@@ -1608,6 +1648,56 @@ class GrpcDataEngineServer(
         proto_ev = self._order_event_to_proto(event)
         self.publish_backend_event(engine_pb2.BackendEvent(order_event=proto_ev))
         return engine_pb2.CancelOrderRes(success=True, error_code="", order_event=proto_ev)
+
+    def ModifyOrder(self, request, context):
+        if request.token != self.token:
+            context.abort(grpc.StatusCode.UNAUTHENTICATED, "Invalid token")
+        if not self._is_live_ordering_mode():
+            return engine_pb2.ModifyOrderRes(
+                success=False, error_code="EXECUTION_MODE_PRECONDITION"
+            )
+        # Snapshot once (see PlaceOrder): guard against concurrent teardown race.
+        facade = self._order_facade
+        if facade is None:
+            return engine_pb2.ModifyOrderRes(
+                success=False, error_code="VENUE_LOGIN_REQUIRED"
+            )
+
+        # Optional fields: HasField resolves "unset" vs "explicit value". A modify
+        # with neither price nor qty is rejected by the facade (NOTHING_TO_MODIFY).
+        new_price = request.new_price if request.HasField("new_price") else None
+        new_qty = request.new_qty if request.HasField("new_qty") else None
+        # second_secret は facade に渡すが Step 4 では無視される（Step 5 で結線）。
+        # ここでログに出さない（平文 secret の漏洩面を最小化）。
+        second_secret = (
+            request.second_secret if request.HasField("second_secret") else None
+        )
+
+        loop = self._ensure_live_loop()
+        try:
+            future = asyncio.run_coroutine_threadsafe(
+                facade.modify(
+                    venue=request.venue,
+                    order_id=request.order_id,
+                    new_price=new_price,
+                    new_qty=new_qty,
+                    second_secret=second_secret,
+                ),
+                loop,
+            )
+            event = future.result(timeout=self._live_timeout_s)
+        except OrderFacadeError as exc:
+            return engine_pb2.ModifyOrderRes(success=False, error_code=exc.error_code)
+        except futures.TimeoutError:
+            logging.warning("ModifyOrder timed out after %ss", self._live_timeout_s)
+            return engine_pb2.ModifyOrderRes(success=False, error_code="MODIFY_TIMEOUT")
+        except Exception as exc:
+            logging.exception("ModifyOrder failed: %s", exc)
+            return engine_pb2.ModifyOrderRes(success=False, error_code="MODIFY_FAILED")
+
+        proto_ev = self._order_event_to_proto(event)
+        self.publish_backend_event(engine_pb2.BackendEvent(order_event=proto_ev))
+        return engine_pb2.ModifyOrderRes(success=True, error_code="", order_event=proto_ev)
 
     def GetOrderStatus(self, request, context):
         # 読み取り系: Replay でも reject しない（§3.2）。live session が無ければ空応答。

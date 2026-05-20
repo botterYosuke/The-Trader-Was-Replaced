@@ -14,21 +14,23 @@ pub mod instrument_picker;
 pub mod instruments_universe_prune;
 pub mod layout_persistence;
 pub mod menu_bar;
+pub mod modify_modal;
+pub mod order_context_menu;
 pub mod order_panel;
 pub mod orders;
 pub mod positions;
-pub mod secret_modal;
 pub mod replay_startup_window;
 pub mod restore;
 pub mod run_result_panel;
 pub mod scenario_parser;
 pub mod scenario_startup_panel;
+pub mod secret_modal;
 pub mod sidebar;
 pub mod strategy_editor;
-pub mod strategy_editor_highlight;
 pub mod strategy_editor_compose;
 pub mod strategy_editor_find;
 pub mod strategy_editor_gutter;
+pub mod strategy_editor_highlight;
 pub mod strategy_editor_input;
 pub mod strategy_editor_scrollbar;
 pub mod systems;
@@ -51,11 +53,11 @@ use crate::ui::chart_interaction::{
 };
 use crate::ui::chart_ladder_pane::{chart_ladder_mode_sync_system, ladder_render_system};
 use crate::ui::chart_render::chart_main_render_system;
-use crate::ui::chart_volume::volume_render_system;
 use crate::ui::chart_viewstate::{
     ChartSet, RequestAutoscale, chart_autoscale_apply_system, chart_data_tick_system,
     chart_interaction_tick_system,
 };
+use crate::ui::chart_volume::volume_render_system;
 use crate::ui::components::{
     OpenMenu, PanelSpawnRequested, PendingStrategyFragments, RedoMenuRequested, RegionKeyAllocator,
     ScenarioMetadata, StrategyBuffer, StrategyFileLoadRequested, StrategyRunRequested,
@@ -65,6 +67,9 @@ use crate::ui::components::{
     ScenarioClearedFromFile, mark_registry_dirty_system,
     sync_registry_from_scenario_cleared_system, sync_registry_from_scenario_loaded_system,
     sync_scenario_metadata_from_registry_system, writeback_scenario_instruments_system,
+};
+use crate::ui::components::{
+    ScenarioStartupParams, SidebarTickersScrollOffset, SidebarTickersSearchState,
 };
 use crate::ui::editor_history::{
     ActiveDrag, AppHistory, PendingStrategySnapshotRestore, UndoRedoApplied,
@@ -84,13 +89,20 @@ use crate::ui::instruments_universe_prune::{
     invalidate_tickers_on_venue_disconnect_system, prune_instruments_outside_universe_system,
     unsubscribe_removed_instruments_system,
 };
-use crate::ui::restore::restore_fixed_registry_on_replay_entry_system;
 use crate::ui::menu_bar::{
-    gate_venue_menu_items_system, hide_unconfigured_venue_items_system,
-    handle_strategy_file_load_system, handle_strategy_run_system,
-    log_strategy_file_load_requested_system, log_strategy_run_requested_system, menu_item_system,
-    menu_keyboard_system, menu_top_level_system, restore_last_strategy_system, spawn_menu_bar,
+    gate_venue_menu_items_system, handle_strategy_file_load_system, handle_strategy_run_system,
+    hide_unconfigured_venue_items_system, log_strategy_file_load_requested_system,
+    log_strategy_run_requested_system, menu_item_system, menu_keyboard_system,
+    menu_top_level_system, restore_last_strategy_system, spawn_menu_bar,
     sync_menu_popup_visibility_system, update_strategy_status_label_system,
+};
+use crate::ui::modify_modal::{
+    ModifyForm, modify_modal_button_system, modify_modal_input_system, modify_modal_sync_system,
+    modify_modal_visibility_system, spawn_modify_modal,
+};
+use crate::ui::order_context_menu::{
+    OrderContextMenu, context_menu_hover_system, context_menu_item_system,
+    context_menu_keyboard_system, context_menu_visibility_system, spawn_order_context_menu,
 };
 use crate::ui::order_panel::{
     OrderConfirm, OrderForm, confirm_modal_button_system, confirm_modal_sync_system,
@@ -100,11 +112,7 @@ use crate::ui::order_panel::{
 };
 use crate::ui::orders::orders_panel_system;
 use crate::ui::positions::positions_panel_system;
-use crate::ui::secret_modal::{
-    SecretInput, secret_modal_button_system, secret_modal_input_system,
-    secret_modal_lifecycle_system, secret_modal_sync_system, secret_modal_timeout_system,
-    secret_modal_visibility_system, spawn_secret_modal,
-};
+use crate::ui::restore::restore_fixed_registry_on_replay_entry_system;
 use crate::ui::run_result_panel::run_result_panel_system;
 use crate::ui::scenario_parser::parse_scenario_system;
 use crate::ui::scenario_startup_panel::{
@@ -115,8 +123,10 @@ use crate::ui::scenario_startup_panel::{
     sync_startup_params_from_scenario_system, update_scenario_startup_param_ui_system,
     write_startup_params_to_cache_sidecar_system,
 };
-use crate::ui::components::{
-    ScenarioStartupParams, SidebarTickersScrollOffset, SidebarTickersSearchState,
+use crate::ui::secret_modal::{
+    SecretInput, secret_modal_button_system, secret_modal_input_system,
+    secret_modal_lifecycle_system, secret_modal_sync_system, secret_modal_timeout_system,
+    secret_modal_visibility_system, spawn_secret_modal,
 };
 use crate::ui::sidebar::{
     instrument_remove_button_system, instrument_row_click_system, panel_button_system,
@@ -215,6 +225,9 @@ impl Plugin for UiPlugin {
         .init_resource::<OrderForm>()
         .init_resource::<OrderConfirm>()
         .init_resource::<SecretInput>()
+        // Phase 9 §3.11 / §3.12 (Step 4): right-click context menu + Modify modal.
+        .init_resource::<OrderContextMenu>()
+        .init_resource::<ModifyForm>()
         .add_systems(
             Startup,
             (
@@ -231,6 +244,9 @@ impl Plugin for UiPlugin {
                 spawn_order_panel,
                 spawn_confirm_modal,
                 spawn_secret_modal,
+                // Phase 9 Step 4: 右クリックコンテキストメニュー + Modify モーダル
+                spawn_order_context_menu,
+                spawn_modify_modal,
             ),
         )
         .add_systems(
@@ -395,10 +411,7 @@ impl Plugin for UiPlugin {
         )
         .add_systems(
             Update,
-            (
-                change_active_editor_sprite,
-                change_active_editor_ui,
-            )
+            (change_active_editor_sprite, change_active_editor_ui)
                 .after(menu_keyboard_system)
                 .after(picker_searchbox_input_system),
         )
@@ -493,6 +506,29 @@ impl Plugin for UiPlugin {
                 secret_modal_button_system,
                 secret_modal_timeout_system,
                 secret_modal_sync_system,
+            ),
+        )
+        // ── Phase 9 Step 4: OrdersPanel 右クリックメニュー + Modify モーダル ──
+        .add_systems(
+            Update,
+            (
+                // Context menu (右クリック → [取消]/[訂正])
+                context_menu_visibility_system,
+                context_menu_keyboard_system,
+                context_menu_item_system,
+                context_menu_hover_system,
+                // Modify modal — input は cosmic / picker / menu より先に keystroke を消費する
+                // (secret_modal と同じ drain パターン)。secret modal (最前面・最優先) が同フレームに
+                // 開いている稀ケースでは secret 側が先に drain するよう `.after(secret_modal_input_system)`
+                // を付け、決定的にする (両者が同じ keyboard event を奪い合うのを防ぐ)。
+                modify_modal_visibility_system,
+                modify_modal_input_system
+                    .after(secret_modal_input_system)
+                    .before(bevy_cosmic_edit::InputSet)
+                    .before(picker_searchbox_input_system)
+                    .before(menu_keyboard_system),
+                modify_modal_button_system,
+                modify_modal_sync_system,
             ),
         );
     }

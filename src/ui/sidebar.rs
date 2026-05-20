@@ -228,22 +228,25 @@ pub fn update_sidebar_system(
                             ));
                         });
                         // §4.2: Price column (fixed 70px)
-                        row.spawn((
-                            Node {
-                                width: Val::Px(70.0),
-                                justify_content: JustifyContent::FlexEnd,
-                                align_items: AlignItems::Center,
-                                ..default()
-                            },
-                        ))
-                        .with_children(|p| {
-                            p.spawn((
-                                Text::new(""),
-                                TextFont { font_size: 11.0, ..default() },
-                                TextColor(TICKER_PRICE_TEXT),
-                                SidebarInstrumentPriceText { instrument_id: id.clone() },
-                            ));
-                        });
+                        row.spawn((Node {
+                            width: Val::Px(70.0),
+                            justify_content: JustifyContent::FlexEnd,
+                            align_items: AlignItems::Center,
+                            ..default()
+                        },))
+                            .with_children(|p| {
+                                p.spawn((
+                                    Text::new(""),
+                                    TextFont {
+                                        font_size: 11.0,
+                                        ..default()
+                                    },
+                                    TextColor(TICKER_PRICE_TEXT),
+                                    SidebarInstrumentPriceText {
+                                        instrument_id: id.clone(),
+                                    },
+                                ));
+                            });
                         // × button
                         row.spawn((
                             Button,
@@ -477,7 +480,11 @@ mod tests {
     use std::collections::HashMap;
 
     fn t(id: &str) -> Ticker {
-        Ticker { id: id.into(), name: id.into(), market: String::new() }
+        Ticker {
+            id: id.into(),
+            name: id.into(),
+            market: String::new(),
+        }
     }
 
     // ── §4.1 regression: Tickers section is gone ─────────────────────────────
@@ -520,7 +527,10 @@ mod tests {
             .query::<&SidebarInstrumentPriceText>()
             .iter(app.world())
             .count();
-        assert!(count >= 1, "each instrument row should have a SidebarInstrumentPriceText child");
+        assert!(
+            count >= 1,
+            "each instrument row should have a SidebarInstrumentPriceText child"
+        );
 
         let marker = app
             .world_mut()
@@ -539,10 +549,15 @@ mod tests {
         app.insert_resource(LastPrices { map });
 
         // Spawn a SidebarInstrumentPriceText entity
-        let price_entity = app.world_mut().spawn((
-            Text::new(""),
-            SidebarInstrumentPriceText { instrument_id: "1301.TSE".to_string() },
-        )).id();
+        let price_entity = app
+            .world_mut()
+            .spawn((
+                Text::new(""),
+                SidebarInstrumentPriceText {
+                    instrument_id: "1301.TSE".to_string(),
+                },
+            ))
+            .id();
 
         app.add_systems(Update, update_instrument_price_text_system);
         app.update();
@@ -557,12 +572,16 @@ mod tests {
     fn instrument_row_click_sets_selected_symbol() {
         let mut app = App::new();
         app.insert_resource(SelectedSymbol { id: None });
-        app.insert_resource(ExecutionModeRes { mode: ExecutionMode::Replay });
+        app.insert_resource(ExecutionModeRes {
+            mode: ExecutionMode::Replay,
+        });
 
         app.world_mut().spawn((
             Button,
             Interaction::Pressed,
-            SidebarInstrumentRowClick { instrument_id: "7203.TSE".to_string() },
+            SidebarInstrumentRowClick {
+                instrument_id: "7203.TSE".to_string(),
+            },
         ));
 
         app.add_systems(Update, instrument_row_click_system);
@@ -577,7 +596,9 @@ mod tests {
         use tokio::sync::mpsc;
         let mut app = App::new();
         app.insert_resource(SelectedSymbol { id: None });
-        app.insert_resource(ExecutionModeRes { mode: ExecutionMode::LiveManual });
+        app.insert_resource(ExecutionModeRes {
+            mode: ExecutionMode::LiveManual,
+        });
 
         let (tx, mut rx) = mpsc::unbounded_channel::<TransportCommand>();
         app.insert_resource(TransportCommandSender { tx });
@@ -585,7 +606,9 @@ mod tests {
         app.world_mut().spawn((
             Button,
             Interaction::Pressed,
-            SidebarInstrumentRowClick { instrument_id: "7203.TSE".to_string() },
+            SidebarInstrumentRowClick {
+                instrument_id: "7203.TSE".to_string(),
+            },
         ));
 
         app.add_systems(Update, instrument_row_click_system);
@@ -594,7 +617,8 @@ mod tests {
         let cmd = rx.try_recv().expect("should have received a command");
         assert!(
             matches!(cmd, TransportCommand::SubscribeMarketData { ref instrument_id } if instrument_id == "7203.TSE"),
-            "expected SubscribeMarketData for 7203.TSE, got {:?}", cmd
+            "expected SubscribeMarketData for 7203.TSE, got {:?}",
+            cmd
         );
     }
 
@@ -605,7 +629,9 @@ mod tests {
         use tokio::sync::mpsc;
         let mut app = App::new();
         app.insert_resource(SelectedSymbol { id: None });
-        app.insert_resource(ExecutionModeRes { mode: ExecutionMode::LiveManual });
+        app.insert_resource(ExecutionModeRes {
+            mode: ExecutionMode::LiveManual,
+        });
 
         let (tx, mut rx) = mpsc::unbounded_channel::<TransportCommand>();
         app.insert_resource(TransportCommandSender { tx });
@@ -614,15 +640,23 @@ mod tests {
         app.world_mut().spawn((
             Button,
             Interaction::Pressed,
-            SidebarInstrumentRemoveButton { instrument_id: "7203.TSE".to_string() },
+            SidebarInstrumentRemoveButton {
+                instrument_id: "7203.TSE".to_string(),
+            },
         ));
 
         app.add_systems(Update, instrument_row_click_system);
         app.update();
 
-        assert!(rx.try_recv().is_err(), "remove button must not trigger subscribe");
+        assert!(
+            rx.try_recv().is_err(),
+            "remove button must not trigger subscribe"
+        );
         let sel = app.world().resource::<SelectedSymbol>();
-        assert!(sel.id.is_none(), "remove button must not set selected symbol");
+        assert!(
+            sel.id.is_none(),
+            "remove button must not set selected symbol"
+        );
     }
 
     // ── Utility tests (kept) ──────────────────────────────────────────────────

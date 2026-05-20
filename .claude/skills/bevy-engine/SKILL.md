@@ -293,6 +293,10 @@ egui の中で `state.buffer` のような大きい String を編集するとき
 
 ## トラブルシュート
 
+- **新規 module / 大きな編集が「いつの間にか revert されている」（ファイルが消える / 編集が巻き戻る）**:
+  この workspace は外部の linter/watcher が走っており、**`cargo build --lib` がコンパイル不可な間は未コミットの編集（新規ファイル含む）を巻き戻すことがある**（Phase 9 Step 4 で `trading.rs`/`ui/mod.rs`/新規 `modify_modal.rs`/`order_context_menu.rs` が連鎖的に消えた）。複数ファイルにまたがる UI 追加（新 module + `mod.rs` の `pub mod` + use + add_systems + 新 Resource の `init_resource`）は **lib が緑になる単位でまとめて入れ、各バッチ直後に `cargo build --lib` を叩いて緑を確認**すること（緑なら revert されない）。`bins`/`tests` の都合（例: proto 未追加で `engine::Xxx` が無い）でツリー全体が割れていても、**`src/lib.rs` 側だけは自己完結で緑にできる**ので、UI ロジックは lib に閉じた形（proto 依存は `main.rs` の dispatch arm に隔離）で先に確定させると巻き戻されない。System note「file was modified ... intentional」が出たら**自分の編集が消えた可能性を疑い、grep で生存確認**する。
+- **計画書 brief が「proto は regen 済み・`engine::Xxx` 利用可能」と言うのにコンパイルで `not found in engine`**:
+  proto の追加が別担当 (Python) 所有で**まだ tree に入っていない**可能性。`python/proto/engine.proto` を grep して当該 message/rpc の有無を確認し、`target/debug/build/backcast-*/out/engine.rs` の生成物（複数 hash があり最新とは限らない）と突き合わせる。Rust 担当が proto を触れない制約なら、**proto 依存部分（`engine::Xxx` を使う dispatch arm / mock servicer stub）は briefed shape どおり書いて lib を緑に保ち、blocker を STOP+REPORT**（推測で proto を書き換えない）。
 - **"could not access system parameter Res<'_, T>" で test が panic**:
   既存 system のシグネチャに `Res<T>` / `ResMut<T>` を追加した直後、その system を `app.update()` で踏む既存テスト全てが panic する典型。本番側 (`main.rs` / `UiPlugin::build`) は `init_resource` 済みでも、test 側の `App` builder は手動 init していないので追従漏れする。同 system を踏むテスト全部に `app.init_resource::<T>();` を追加すること。**最初の panic ログには 1 つの Res 名しか出ないが、その Res を init した後にも別の Res で同じ panic が出る**（Phase 7.6 では `ReplayStartupProgress` → `TradingData` → `LastRunResult` → `Time<Real>` → `ScenarioStartupParams` と 5 段階で追従漏れが連続発覚）。signature 拡張時は本番側で App build に並んでいる全 Res を確認してから 1 ターンでまとめて init するのが安全。
 - **"the trait `Bundle` is not implemented for `(Sprite, Transform, ...)`"**:

@@ -354,13 +354,22 @@ mod tests {
         for (hi, lo, fit) in cases {
             let (step, max) = calc_optimal_price_ticks(hi, lo, fit);
             assert!(step > 0.0, "step must be positive (hi={hi}, lo={lo})");
-            assert!(max >= hi - step * 0.5, "rounded max {max} should cover {hi}");
+            assert!(
+                max >= hi - step * 0.5,
+                "rounded max {max} should cover {hi}"
+            );
             // step で割り切れる位置に max が乗る。
             let k = (max / step).round();
-            assert!((k * step - max).abs() < step * 1e-3, "max {max} not on step {step}");
+            assert!(
+                (k * step - max).abs() < step * 1e-3,
+                "max {max} not on step {step}"
+            );
             // labels_can_fit を極端に超えない (range/step <= fit*~10 程度)。
             let n = ((hi - lo).abs() / step).ceil();
-            assert!(n <= (fit as f32) * 10.0 + 2.0, "too many ticks: {n} for fit={fit}");
+            assert!(
+                n <= (fit as f32) * 10.0 + 2.0,
+                "too many ticks: {n} for fit={fit}"
+            );
         }
     }
 
@@ -380,7 +389,10 @@ mod tests {
         let earliest = 0;
         let latest = 24 * 60 * 60_000;
         let (step, _rounded) = calc_optimal_time_step(earliest, latest, 6, 60_000);
-        assert!(step >= 60 * 60_000, "wide window should pick >= 1h step, got {step}ms");
+        assert!(
+            step >= 60 * 60_000,
+            "wide window should pick >= 1h step, got {step}ms"
+        );
     }
 
     #[test]
@@ -401,7 +413,11 @@ mod tests {
         let earliest = 0;
         let latest = 48 * 60 * 60_000;
         let (step, _r) = calc_optimal_time_step(earliest, latest, 6, 2 * 60_000);
-        assert_eq!(step, 8 * 60 * 60_000, "2min timeframe must fall back to HOURLY table");
+        assert_eq!(
+            step,
+            8 * 60 * 60_000,
+            "2min timeframe must fall back to HOURLY table"
+        );
     }
 
     #[test]
@@ -422,8 +438,8 @@ mod tests {
     fn axis_systems_spawn_labels_as_gutter_children() {
         use crate::trading::{InstrumentTradingData, InstrumentTradingDataMap, OhlcPoint};
         use crate::ui::chart_viewstate::{
-            ChartViewState, RequestAutoscale, chart_autoscale_apply_system,
-            chart_data_tick_system, chart_interaction_tick_system,
+            ChartViewState, RequestAutoscale, chart_autoscale_apply_system, chart_data_tick_system,
+            chart_interaction_tick_system,
         };
 
         let mut app = App::new();
@@ -448,8 +464,14 @@ mod tests {
             .map
             .insert("T".to_string(), data);
 
-        let price_gutter = app.world_mut().spawn((PriceGutter, Transform::default())).id();
-        let time_gutter = app.world_mut().spawn((TimeGutter, Transform::default())).id();
+        let price_gutter = app
+            .world_mut()
+            .spawn((PriceGutter, Transform::default()))
+            .id();
+        let time_gutter = app
+            .world_mut()
+            .spawn((TimeGutter, Transform::default()))
+            .id();
         let chart = app
             .world_mut()
             .spawn((
@@ -483,7 +505,11 @@ mod tests {
         assert!(!price_labels.is_empty(), "price labels should be generated");
         for (label, parent) in &price_labels {
             assert_eq!(label.target_chart, chart);
-            assert_eq!(parent.get(), price_gutter, "price label must child of price gutter");
+            assert_eq!(
+                parent.get(),
+                price_gutter,
+                "price label must child of price gutter"
+            );
         }
 
         let mut tq = world.query::<(&TimeLabel, &Parent, &Transform)>();
@@ -491,7 +517,11 @@ mod tests {
         assert!(!time_labels.is_empty(), "time labels should be generated");
         for (label, parent, _) in &time_labels {
             assert_eq!(label.target_chart, chart);
-            assert_eq!(parent.get(), time_gutter, "time label must child of time gutter");
+            assert_eq!(
+                parent.get(),
+                time_gutter,
+                "time label must child of time gutter"
+            );
         }
         // 間引きにより隣接ラベルは MIN_TIME_LABEL_SPACING 以上離れている (重なり防止)。
         time_labels.sort_by(|a, b| a.2.translation.x.total_cmp(&b.2.translation.x));
@@ -512,8 +542,14 @@ mod tests {
 
         let mut app = App::new();
 
-        let price_gutter = app.world_mut().spawn((PriceGutter, Transform::default())).id();
-        let time_gutter = app.world_mut().spawn((TimeGutter, Transform::default())).id();
+        let price_gutter = app
+            .world_mut()
+            .spawn((PriceGutter, Transform::default()))
+            .id();
+        let time_gutter = app
+            .world_mut()
+            .spawn((TimeGutter, Transform::default()))
+            .id();
         // autoscale 相当の実値を直接固定し、毎フレーム Changed を立てる。
         let mut state = ChartViewState::default();
         state.auto_scale = false;
@@ -589,8 +625,14 @@ mod tests {
             .map
             .insert("T".to_string(), data);
 
-        let price_gutter = app.world_mut().spawn((PriceGutter, Transform::default())).id();
-        let time_gutter = app.world_mut().spawn((TimeGutter, Transform::default())).id();
+        let price_gutter = app
+            .world_mut()
+            .spawn((PriceGutter, Transform::default()))
+            .id();
+        let time_gutter = app
+            .world_mut()
+            .spawn((TimeGutter, Transform::default()))
+            .id();
         // base_price_y / cell_height を実値で固定し、autoscale を切って毎フレーム Changed を作る。
         let mut state = ChartViewState::default();
         state.auto_scale = false;
@@ -674,8 +716,14 @@ mod tests {
             .insert("T".to_string(), data);
 
         // gutter を spawn してから即 despawn し、ref だけ chart に残す (teardown レース再現)。
-        let price_gutter = app.world_mut().spawn((PriceGutter, Transform::default())).id();
-        let time_gutter = app.world_mut().spawn((TimeGutter, Transform::default())).id();
+        let price_gutter = app
+            .world_mut()
+            .spawn((PriceGutter, Transform::default()))
+            .id();
+        let time_gutter = app
+            .world_mut()
+            .spawn((TimeGutter, Transform::default()))
+            .id();
         app.world_mut().entity_mut(price_gutter).despawn();
         app.world_mut().entity_mut(time_gutter).despawn();
 

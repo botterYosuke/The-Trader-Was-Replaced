@@ -2,8 +2,7 @@ use bevy::prelude::*;
 use bevy_cosmic_edit::cosmic_text::{Attrs, AttrsOwned, Metrics};
 use bevy_cosmic_edit::prelude::*;
 use bevy_cosmic_edit::{
-    CosmicBackgroundColor, CosmicRenderScale, CosmicTextAlign, CursorColor, ReadOnly,
-    ScrollEnabled,
+    CosmicBackgroundColor, CosmicRenderScale, CosmicTextAlign, CursorColor, ReadOnly, ScrollEnabled,
 };
 use chrono::NaiveDate;
 
@@ -25,12 +24,11 @@ fn buffer_text(buffer: &CosmicEditBuffer) -> String {
 }
 
 use crate::ui::components::{
-    GranularityChoice, ScenarioMetadata, ScenarioStartupCashFieldHost,
-    ScenarioStartupEndFieldHost, ScenarioStartupErrorLabel, ScenarioStartupField,
-    ScenarioStartupFieldEditor, ScenarioStartupGranularityDailyButton,
-    ScenarioStartupGranularityMinuteButton, ScenarioStartupPanelRoot, ScenarioStartupParams,
-    ScenarioStartupStartFieldHost, ScenarioWritebackPaths, SidebarRoot,
-    atomic_mutate_scenario_object,
+    GranularityChoice, ScenarioMetadata, ScenarioStartupCashFieldHost, ScenarioStartupEndFieldHost,
+    ScenarioStartupErrorLabel, ScenarioStartupField, ScenarioStartupFieldEditor,
+    ScenarioStartupGranularityDailyButton, ScenarioStartupGranularityMinuteButton,
+    ScenarioStartupPanelRoot, ScenarioStartupParams, ScenarioStartupStartFieldHost,
+    ScenarioWritebackPaths, SidebarRoot, atomic_mutate_scenario_object,
 };
 
 const DATE_FMT: &str = "%Y-%m-%d";
@@ -148,7 +146,12 @@ fn spawn_text_field_row(
     ));
 }
 
-fn spawn_granularity_button(row: &mut ChildBuilder, label: &str, marker: impl Bundle, gap_right: bool) {
+fn spawn_granularity_button(
+    row: &mut ChildBuilder,
+    label: &str,
+    marker: impl Bundle,
+    gap_right: bool,
+) {
     let margin = if gap_right {
         UiRect::right(Val::Px(2.0))
     } else {
@@ -308,9 +311,27 @@ pub fn spawn_scenario_startup_panel(
 pub fn spawn_scenario_startup_input_fields(
     mut commands: Commands,
     mut font_system: ResMut<bevy_cosmic_edit::prelude::CosmicFontSystem>,
-    start_host_q: Query<Entity, (With<ScenarioStartupStartFieldHost>, Without<ScenarioStartupFieldEditor>)>,
-    end_host_q: Query<Entity, (With<ScenarioStartupEndFieldHost>, Without<ScenarioStartupFieldEditor>)>,
-    cash_host_q: Query<Entity, (With<ScenarioStartupCashFieldHost>, Without<ScenarioStartupFieldEditor>)>,
+    start_host_q: Query<
+        Entity,
+        (
+            With<ScenarioStartupStartFieldHost>,
+            Without<ScenarioStartupFieldEditor>,
+        ),
+    >,
+    end_host_q: Query<
+        Entity,
+        (
+            With<ScenarioStartupEndFieldHost>,
+            Without<ScenarioStartupFieldEditor>,
+        ),
+    >,
+    cash_host_q: Query<
+        Entity,
+        (
+            With<ScenarioStartupCashFieldHost>,
+            Without<ScenarioStartupFieldEditor>,
+        ),
+    >,
 ) {
     fn spawn_field(
         commands: &mut Commands,
@@ -322,8 +343,11 @@ pub fn spawn_scenario_startup_input_fields(
         let entity = commands
             .spawn((
                 TextEdit,
-                CosmicEditBuffer::new(font_system, Metrics::new(5.5, 7.0))
-                    .with_text(font_system, "", text_attrs),
+                CosmicEditBuffer::new(font_system, Metrics::new(5.5, 7.0)).with_text(
+                    font_system,
+                    "",
+                    text_attrs,
+                ),
                 // render_texture reads font_color from DefaultAttrs (not from
                 // the Attrs passed to set_text). Without this, font_color
                 // falls back to rgb(0,0,0) and the text becomes invisible on
@@ -346,13 +370,28 @@ pub fn spawn_scenario_startup_input_fields(
     }
 
     if let Ok(host) = start_host_q.get_single() {
-        spawn_field(&mut commands, &mut font_system, host, ScenarioStartupField::Start);
+        spawn_field(
+            &mut commands,
+            &mut font_system,
+            host,
+            ScenarioStartupField::Start,
+        );
     }
     if let Ok(host) = end_host_q.get_single() {
-        spawn_field(&mut commands, &mut font_system, host, ScenarioStartupField::End);
+        spawn_field(
+            &mut commands,
+            &mut font_system,
+            host,
+            ScenarioStartupField::End,
+        );
     }
     if let Ok(host) = cash_host_q.get_single() {
-        spawn_field(&mut commands, &mut font_system, host, ScenarioStartupField::InitialCash);
+        spawn_field(
+            &mut commands,
+            &mut font_system,
+            host,
+            ScenarioStartupField::InitialCash,
+        );
     }
 }
 
@@ -393,8 +432,7 @@ pub fn sync_startup_params_from_scenario_system(
         },
         None => {
             params.granularity = GranularityChoice::default();
-            params.errors.granularity =
-                Some("Please select a granularity to enable Run".into());
+            params.errors.granularity = Some("Please select a granularity to enable Run".into());
         }
     }
 
@@ -455,8 +493,7 @@ pub fn commit_startup_params_to_scenario_system(
                     params.errors.initial_cash = Some("invalid integer".into());
                 }
                 Ok(n) if n <= 0 => {
-                    params.errors.initial_cash =
-                        Some("initial cash must be positive".into());
+                    params.errors.initial_cash = Some("initial cash must be positive".into());
                 }
                 Ok(n) => {
                     params.initial_cash = s.clone();
@@ -472,14 +509,11 @@ pub fn commit_startup_params_to_scenario_system(
         // Cross-field check only makes sense when both individual fields are
         // currently valid — otherwise the per-field error already conveys the
         // problem and a lingering "start must be on or before end" is misleading.
-        let both_fields_valid =
-            params.errors.start.is_none() && params.errors.end.is_none();
+        let both_fields_valid = params.errors.start.is_none() && params.errors.end.is_none();
         let start_parsed = NaiveDate::parse_from_str(&params.start, DATE_FMT).ok();
         let end_parsed = NaiveDate::parse_from_str(&params.end, DATE_FMT).ok();
         params.errors.cross_field = match (both_fields_valid, start_parsed, end_parsed) {
-            (true, Some(sd), Some(ed)) if sd > ed => {
-                Some("start must be on or before end".into())
-            }
+            (true, Some(sd), Some(ed)) if sd > ed => Some("start must be on or before end".into()),
             _ => None,
         };
     }
@@ -643,14 +677,17 @@ pub fn enforce_scenario_startup_panel_readonly_system(
     mut commands: Commands,
     progress: Res<ReplayStartupProgress>,
     paths: Res<ScenarioWritebackPaths>,
-    mut q: Query<(
-        Entity,
-        Option<&ReadOnly>,
-        &mut CosmicBackgroundColor,
-    ), With<ScenarioStartupFieldEditor>>,
+    mut q: Query<
+        (Entity, Option<&ReadOnly>, &mut CosmicBackgroundColor),
+        With<ScenarioStartupFieldEditor>,
+    >,
 ) {
     let disabled = is_panel_disabled(&progress, &paths);
-    let target_bg = if disabled { FIELD_BG_DISABLED } else { FIELD_BG_ACTIVE };
+    let target_bg = if disabled {
+        FIELD_BG_DISABLED
+    } else {
+        FIELD_BG_ACTIVE
+    };
     for (entity, ro, mut bg) in q.iter_mut() {
         match (disabled, ro.is_some()) {
             (true, false) => {
@@ -850,7 +887,9 @@ mod tests {
     fn enforce_readonly_when_cache_unavailable() {
         let mut app = App::new();
         app.init_resource::<ReplayStartupProgress>()
-            .insert_resource(ScenarioWritebackPaths { cache_sidecar: None })
+            .insert_resource(ScenarioWritebackPaths {
+                cache_sidecar: None,
+            })
             .add_systems(Update, enforce_scenario_startup_panel_readonly_system);
 
         let e = app
@@ -989,7 +1028,11 @@ mod tests {
         let params = app.world().resource::<ScenarioStartupParams>();
         assert_eq!(params.granularity, GranularityChoice::default());
         let msg = params.errors.granularity.as_deref().unwrap_or("");
-        assert!(msg.contains("Tick"), "error msg should mention 'Tick': {}", msg);
+        assert!(
+            msg.contains("Tick"),
+            "error msg should mention 'Tick': {}",
+            msg
+        );
         assert!(msg.contains("Daily") && msg.contains("Minute"));
     }
 
@@ -1147,7 +1190,9 @@ mod tests {
         app.world_mut()
             .send_event(ScenarioStartupParamCommit::Start("2024-01-01".into()));
         app.world_mut()
-            .send_event(ScenarioStartupParamCommit::InitialCash("not-a-number".into()));
+            .send_event(ScenarioStartupParamCommit::InitialCash(
+                "not-a-number".into(),
+            ));
         app.update();
         let params = app.world().resource::<ScenarioStartupParams>();
         assert!(params.errors.initial_cash.is_some());
@@ -1176,7 +1221,10 @@ mod tests {
         let meta = app.world().resource::<ScenarioMetadata>();
         assert!(meta.start.is_none(), "metadata must not mutate");
         assert!(!params.dirty, "dirty must stay false");
-        assert!(!params.writeback_pending, "writeback_pending must stay false");
+        assert!(
+            !params.writeback_pending,
+            "writeback_pending must stay false"
+        );
         assert!(params.errors.start.is_none(), "errors must stay untouched");
     }
 
@@ -1196,12 +1244,13 @@ mod tests {
         app.world_mut()
             .send_event(ScenarioStartupParamCommit::End("2024-01-01".into()));
         app.update();
-        assert!(app
-            .world()
-            .resource::<ScenarioStartupParams>()
-            .errors
-            .cross_field
-            .is_some());
+        assert!(
+            app.world()
+                .resource::<ScenarioStartupParams>()
+                .errors
+                .cross_field
+                .is_some()
+        );
 
         // Now invalidate end; cross_field should no longer claim ordering.
         app.world_mut()
@@ -1286,7 +1335,10 @@ mod tests {
             Some("keep me")
         );
         assert_eq!(scenario.get("schema_version").unwrap().as_u64(), Some(2));
-        assert_eq!(v.get("layout").unwrap().get("foo").unwrap().as_str(), Some("bar"));
+        assert_eq!(
+            v.get("layout").unwrap().get("foo").unwrap().as_str(),
+            Some("bar")
+        );
     }
 
     #[test]

@@ -85,6 +85,10 @@ service DataEngine {
   // return the resulting OrderEvent inline AND push it on SubscribeBackendEvents.
   rpc PlaceOrder (PlaceOrderReq) returns (PlaceOrderRes);
   rpc CancelOrder (CancelOrderReq) returns (CancelOrderRes);
+  // Phase 9 Step 4: modify (price/qty). Tachibana = CLMKabuCorrectOrder (atomic);
+  // kabu = cancel→new conversion in the adapter (Step 6, non-atomic; UI warns).
+  // Step 4 wires the full path through the mock adapter's modify_order.
+  rpc ModifyOrder (ModifyOrderReq) returns (ModifyOrderRes);
   rpc GetOrderStatus (GetOrderStatusReq) returns (GetOrderStatusRes);
 
   // Lifecycle (Step 2: backend-startup-sync)
@@ -423,6 +427,21 @@ message CancelOrderReq {
 }
 
 message CancelOrderRes {
+  bool success = 1;
+  string error_code = 2;
+  OrderEvent order_event = 3;
+}
+
+message ModifyOrderReq {
+  string token = 1;
+  string venue = 2;
+  string order_id = 3;                 // client_order_id (UI optimistic tracking key)
+  optional double new_price = 4;       // absent => price unchanged
+  optional double new_qty = 5;         // absent => qty unchanged
+  optional string second_secret = 6;   // Tachibana only (Step 5)
+}
+
+message ModifyOrderRes {
   bool success = 1;
   string error_code = 2;
   OrderEvent order_event = 3;

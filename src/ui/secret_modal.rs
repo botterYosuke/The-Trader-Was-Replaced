@@ -22,7 +22,9 @@ use bevy::input::keyboard::{Key, KeyboardInput};
 use bevy::prelude::*;
 use zeroize::Zeroizing;
 
-use crate::trading::{RedactedSecret, SecretPrompt, TransportCommand, TransportCommandSender};
+use crate::trading::{
+    OrderFeedback, RedactedSecret, SecretPrompt, TransportCommand, TransportCommandSender,
+};
 
 /// バックエンドの 30s タイムアウトより少し短く設定し、先に UI を畳む (§3.10)。
 const SECRET_INPUT_TIMEOUT: Duration = Duration::from_secs(25);
@@ -47,6 +49,10 @@ const COLOR_FIELD_BG: Color = Color::srgba(0.04, 0.04, 0.08, 1.0);
 pub struct SecretInput {
     buffer: Zeroizing<String>,
     opened_at: Option<Instant>,
+    /// The `request_id` the current buffer belongs to. Lets the lifecycle system
+    /// detect a supersede (a new `SecretRequired` with a different id replacing an
+    /// in-flight prompt) and zeroize the carried-over plaintext (Round 1 bevy M1).
+    request_id: Option<String>,
 }
 
 impl SecretInput {
@@ -68,10 +74,11 @@ impl SecretInput {
         self.buffer.pop();
     }
 
-    /// バッファと開始時刻を破棄する。古い `Zeroizing` は置換ドロップで 0 埋めされる。
+    /// バッファ・開始時刻・request_id を破棄する。古い `Zeroizing` は置換ドロップで 0 埋め。
     fn clear(&mut self) {
         self.buffer = Zeroizing::new(String::new());
         self.opened_at = None;
+        self.request_id = None;
     }
 }
 
@@ -106,6 +113,11 @@ fn do_submit(
     prompt: &mut SecretPrompt,
     sender: Option<&TransportCommandSender>,
 ) {
+    // 空送信は無視し prompt を開いたままにする。空 secret を送ると一回限りの
+    // request_id を浪費し、Tachibana の失敗回数制限を空打ちで削る (§9 Open Risk 1)。
+    if input.is_empty() {
+        return;
+    }
     let Some(req) = prompt.active.take() else {
         return;
     };
@@ -275,20 +287,27 @@ pub fn spawn_secret_modal(mut commands: Commands) {
 // Systems
 // ===========================================================================
 
-/// prompt の open/close に追従してバッファ開始時刻を管理する。
-/// 開いた瞬間に古い入力を zeroize し、`opened_at` を打つ (timeout 起点)。
+/// prompt の open/close/supersede に追従してバッファを管理する。
+/// 開いた瞬間、または **別 request_id の SecretRequired が現在の prompt を置き換えた**瞬間に
+/// 古い入力を zeroize し `opened_at` を打ち直す (timeout 起点)。同一 request_id の間は
+/// バッファ・計時を保持する (ユーザーが入力中)。`(true,true)` で request_id が変わった場合に
+/// 旧 request の平文が新 prompt へ持ち越されるのを防ぐ (Round 1 bevy M1、§6 平文を残さない)。
 pub fn secret_modal_lifecycle_system(prompt: Res<SecretPrompt>, mut input: ResMut<SecretInput>) {
-    match (prompt.active.is_some(), input.opened_at.is_some()) {
-        (true, false) => {
-            // 開いた: 念のため残バッファを 0 埋めしてから計時開始。
-            input.clear();
-            input.opened_at = Some(Instant::now());
+    match prompt.active.as_ref() {
+        Some(req) => {
+            let same_request = input.request_id.as_deref() == Some(req.request_id.as_str());
+            if !same_request {
+                input.clear(); // open または supersede: 旧バッファを 0 埋め
+                input.request_id = Some(req.request_id.clone());
+                input.opened_at = Some(Instant::now());
+            }
         }
-        (false, true) => {
-            // 外部 (submit/cancel) で閉じられた残骸を掃除。
-            input.clear();
+        None => {
+            // 外部 (submit/cancel/timeout) で閉じられた残骸を掃除。
+            if input.opened_at.is_some() || input.request_id.is_some() {
+                input.clear();
+            }
         }
-        _ => {}
     }
 }
 
@@ -369,8 +388,13 @@ pub fn secret_modal_button_system(
     }
 }
 
-/// 25s でモーダルを auto-close する (§3.10)。
-pub fn secret_modal_timeout_system(mut prompt: ResMut<SecretPrompt>, mut input: ResMut<SecretInput>) {
+/// 25s でモーダルを auto-close する (§3.10)。タイムアウト時はユーザーに
+/// `SECRET_INPUT_CANCELED` を OrderPanel エラー行で通知する (toast 基盤が無いため)。
+pub fn secret_modal_timeout_system(
+    mut prompt: ResMut<SecretPrompt>,
+    mut input: ResMut<SecretInput>,
+    mut feedback: ResMut<OrderFeedback>,
+) {
     if prompt.active.is_none() {
         return;
     }
@@ -379,6 +403,8 @@ pub fn secret_modal_timeout_system(mut prompt: ResMut<SecretPrompt>, mut input: 
     };
     if opened.elapsed() >= SECRET_INPUT_TIMEOUT {
         do_cancel(&mut input, &mut prompt, "SECRET_INPUT_CANCELED (timeout)");
+        feedback.message =
+            Some("第二暗証番号の入力がタイムアウトしました (SECRET_INPUT_CANCELED)".to_string());
     }
 }
 
@@ -415,6 +441,7 @@ mod tests {
         let mut app = App::new();
         app.init_resource::<SecretInput>();
         app.init_resource::<SecretPrompt>();
+        app.init_resource::<OrderFeedback>();
         app
     }
 
@@ -520,6 +547,53 @@ mod tests {
             "expired prompt must auto-close"
         );
         assert!(app.world().resource::<SecretInput>().is_empty());
+        assert!(
+            app.world()
+                .resource::<OrderFeedback>()
+                .message
+                .as_deref()
+                .is_some_and(|m| m.contains("SECRET_INPUT_CANCELED")),
+            "timeout must surface SECRET_INPUT_CANCELED to the user"
+        );
+    }
+
+    #[test]
+    fn lifecycle_zeroizes_on_supersede_with_different_request_id() {
+        let mut app = make_app();
+        app.add_systems(Update, secret_modal_lifecycle_system);
+        // 1st request opens and the user types a partial PIN.
+        activate(&mut app, "rA");
+        app.update();
+        app.world_mut().resource_mut::<SecretInput>().push_char('9');
+        // A different SecretRequired supersedes before submit.
+        activate(&mut app, "rB");
+        app.update();
+        let input = app.world().resource::<SecretInput>();
+        assert!(
+            input.is_empty(),
+            "supersede by a different request_id must zeroize the carried-over PIN"
+        );
+    }
+
+    #[test]
+    fn empty_submit_is_noop_and_keeps_prompt_open() {
+        let mut app = make_app();
+        let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel();
+        app.insert_resource(TransportCommandSender { tx });
+        activate(&mut app, "r1");
+        // no chars typed
+        app.add_systems(Update, secret_modal_button_system);
+        app.world_mut()
+            .spawn((Button, Interaction::Pressed, SecretButton::Submit));
+        app.update();
+        assert!(
+            rx.try_recv().is_err(),
+            "empty buffer must not fire SubmitSecret (would waste the one-shot request_id)"
+        );
+        assert!(
+            app.world().resource::<SecretPrompt>().active.is_some(),
+            "prompt stays open so the user can still type"
+        );
     }
 
     #[test]

@@ -272,3 +272,131 @@ def test_get_status_unknown_returns_none() -> None:
     adapter = MockVenueAdapter()
     facade = ManualOrderFacade(adapter)
     assert facade.get_status("missing") is None
+
+
+# --- modify ----------------------------------------------------------------
+
+
+async def _placed_working_order(facade: ManualOrderFacade, adapter: MockVenueAdapter) -> OrderEventData:
+    """訂正可能（非終端）な working order を 1 件発注して返す。"""
+    adapter.set_next_order_outcome(status="ACCEPTED", filled_qty=0.0)
+    return await facade.place(
+        venue="MOCK",
+        instrument_id="7203.TSE",
+        side="BUY",
+        qty=100.0,
+        order_type="LIMIT",
+        time_in_force="DAY",
+        price=2500.0,
+    )
+
+
+def test_modify_known_working_order_updates_store() -> None:
+    """track 済み working order の modify は ACCEPTED event を返し store を更新する。"""
+
+    async def scenario() -> tuple[OrderEventData, OrderEventData, ManualOrderFacade]:
+        adapter = await _logged_in_adapter()
+        facade = ManualOrderFacade(adapter)
+        placed = await _placed_working_order(facade, adapter)
+        modified = await facade.modify(
+            venue="MOCK", order_id=placed.order_id, new_price=2600.0
+        )
+        return placed, modified, facade
+
+    placed, modified, facade = asyncio.run(scenario())
+    assert modified.status == "ACCEPTED"
+    assert modified.order_id == placed.order_id
+    assert modified.client_order_id == placed.order_id
+    # 約定量は維持（mock modify は filled を巻き戻さない）
+    assert modified.filled_qty == placed.filled_qty
+    assert facade.get_status(placed.order_id).status == "ACCEPTED"
+
+
+def test_modify_unknown_order_raises() -> None:
+    async def scenario() -> None:
+        adapter = await _logged_in_adapter()
+        facade = ManualOrderFacade(adapter)
+        await facade.modify(venue="MOCK", order_id="nope", new_price=10.0)
+
+    with pytest.raises(OrderFacadeError) as exc:
+        asyncio.run(scenario())
+    assert exc.value.error_code == "UNKNOWN_ORDER_ID"
+
+
+def test_modify_terminal_order_raises_not_modifiable() -> None:
+    """終端状態（FILLED 等）の注文は venue に送らず ORDER_NOT_MODIFIABLE。"""
+
+    async def scenario() -> None:
+        adapter = await _logged_in_adapter()
+        facade = ManualOrderFacade(adapter)
+        placed = await facade.place(  # default outcome = FILLED (terminal)
+            venue="MOCK",
+            instrument_id="7203.TSE",
+            side="BUY",
+            qty=100.0,
+            order_type="MARKET",
+            time_in_force="DAY",
+        )
+        await facade.modify(venue="MOCK", order_id=placed.order_id, new_qty=50.0)
+
+    with pytest.raises(OrderFacadeError) as exc:
+        asyncio.run(scenario())
+    assert exc.value.error_code == "ORDER_NOT_MODIFIABLE"
+
+
+def test_modify_nothing_to_modify_raises() -> None:
+    """new_price も new_qty も None なら NOTHING_TO_MODIFY。"""
+
+    async def scenario() -> None:
+        adapter = await _logged_in_adapter()
+        facade = ManualOrderFacade(adapter)
+        placed = await _placed_working_order(facade, adapter)
+        await facade.modify(venue="MOCK", order_id=placed.order_id)
+
+    with pytest.raises(OrderFacadeError) as exc:
+        asyncio.run(scenario())
+    assert exc.value.error_code == "NOTHING_TO_MODIFY"
+
+
+@pytest.mark.parametrize("bad_price", [0.0, -1.0, float("nan"), float("inf")])
+def test_modify_invalid_price_raises(bad_price) -> None:
+    async def scenario() -> None:
+        adapter = await _logged_in_adapter()
+        facade = ManualOrderFacade(adapter)
+        placed = await _placed_working_order(facade, adapter)
+        await facade.modify(venue="MOCK", order_id=placed.order_id, new_price=bad_price)
+
+    with pytest.raises(OrderFacadeError) as exc:
+        asyncio.run(scenario())
+    assert exc.value.error_code == "INVALID_PRICE"
+
+
+@pytest.mark.parametrize("bad_qty", [0.0, -5.0, float("nan"), float("inf")])
+def test_modify_invalid_qty_raises(bad_qty) -> None:
+    async def scenario() -> None:
+        adapter = await _logged_in_adapter()
+        facade = ManualOrderFacade(adapter)
+        placed = await _placed_working_order(facade, adapter)
+        await facade.modify(venue="MOCK", order_id=placed.order_id, new_qty=bad_qty)
+
+    with pytest.raises(OrderFacadeError) as exc:
+        asyncio.run(scenario())
+    assert exc.value.error_code == "INVALID_QTY"
+
+
+def test_modify_rejected_raises_and_leaves_order_intact() -> None:
+    """venue が訂正拒否したら MODIFY_REJECTED を raise し、元注文 state は不変。"""
+
+    async def scenario() -> tuple[OrderEventData, ManualOrderFacade]:
+        adapter = await _logged_in_adapter()
+        facade = ManualOrderFacade(adapter)
+        placed = await _placed_working_order(facade, adapter)
+        adapter.set_next_modify_outcome(status="REJECTED", reject_reason="too late")
+        with pytest.raises(OrderFacadeError) as exc:
+            await facade.modify(venue="MOCK", order_id=placed.order_id, new_price=2600.0)
+        assert exc.value.error_code == "MODIFY_REJECTED"
+        return placed, facade
+
+    placed, facade = asyncio.run(scenario())
+    # 訂正拒否後も store 上の状態は元のまま（ACCEPTED を維持）
+    assert facade.get_status(placed.order_id).status == placed.status == "ACCEPTED"

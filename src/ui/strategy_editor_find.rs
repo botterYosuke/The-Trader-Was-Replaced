@@ -1177,7 +1177,14 @@ mod tests {
             state.target_editor = Some(editor_a);
         }
         app.update();
-        assert_eq!(app.world().get::<FindMatchSpans>(editor_a).unwrap().matches.len(), 2);
+        assert_eq!(
+            app.world()
+                .get::<FindMatchSpans>(editor_a)
+                .unwrap()
+                .matches
+                .len(),
+            2
+        );
 
         // Retarget to B → A's spans must be cleared, B's populated.
         app.world_mut()
@@ -1185,9 +1192,20 @@ mod tests {
             .target_editor = Some(editor_b);
         app.update();
         assert!(
-            app.world().get::<FindMatchSpans>(editor_a).unwrap().matches.is_empty(),
+            app.world()
+                .get::<FindMatchSpans>(editor_a)
+                .unwrap()
+                .matches
+                .is_empty(),
             "old target spans cleared on retarget"
         );
-        assert_eq!(app.world().get::<FindMatchSpans>(editor_b).unwrap().matches.len(), 2);
+        assert_eq!(
+            app.world()
+                .get::<FindMatchSpans>(editor_b)
+                .unwrap()
+                .matches
+                .len(),
+            2
+        );
     }
 }
