@@ -1,4 +1,4 @@
-use crate::trading::PortfolioState;
+use crate::trading::{ExecutionModeRes, LiveOrders, PortfolioState, is_live_mode};
 use crate::ui::components::PanelKind;
 use crate::ui::floating_window::{FloatingWindowSpec, spawn_floating_window};
 use bevy::prelude::*;
@@ -127,17 +127,42 @@ pub fn spawn_orders_panel(commands: &mut Commands) {
     commands.entity(content_area).add_child(status);
 }
 
-/// PortfolioState.orders を 6 行のテーブルに反映する。
-/// 行数超過分は捨てる（MVP）。空・未ロード時は status テキストにメッセージ表示。
+/// 1 セル分の (テキスト, 色)。side だけ色分けし、他は既定色。
+fn side_color(side: &str) -> Color {
+    match side {
+        "BUY" => COLOR_BUY,
+        "SELL" => COLOR_SELL,
+        _ => COLOR_OTHER,
+    }
+}
+
+/// 注文テーブルを 6 行に反映する。行数超過分は捨てる（MVP）。
+///
+/// Phase 9 §3.12: `ExecutionMode` が Live のときは UI が握る `LiveOrders`（発注 RPC 応答 +
+/// `OrderEvent` push でマージされる）を、Replay のときは従来どおり `PortfolioState.orders` を
+/// 表示する。Account/Position 同期は Step 4。
+///
+/// パネルは動的に再 spawn され得る（サイドバー toggle）ので毎フレーム回し、
+/// 各セルは差分書き込み（規約 2）で no-op 時の change 発火を避ける。Vec 中間生成はせず、
+/// 表示対象の ≤6 行だけソースから直接引く。
 pub fn orders_panel_system(
     state: Res<PortfolioState>,
+    live_orders: Res<LiveOrders>,
+    exec_mode: Res<ExecutionModeRes>,
     mut cells: Query<(&OrdersCell, &mut Text2d, &mut TextColor)>,
     mut status_q: Query<&mut Text2d, (With<OrdersStatus>, Without<OrdersCell>)>,
 ) {
+    let live = is_live_mode(exec_mode.mode);
+    let count = if live {
+        live_orders.orders.len()
+    } else {
+        state.orders.len()
+    };
+
     // status text
-    let status_text = if !state.loaded {
+    let status_text = if !live && !state.loaded {
         "No run yet"
-    } else if state.orders.is_empty() {
+    } else if count == 0 {
         "No orders"
     } else {
         ""
@@ -148,22 +173,27 @@ pub fn orders_panel_system(
         t.0 = status_text.to_string();
     }
 
-    // cells
+    // cells — 表示行のみソースから直接引く（中間 Vec を作らない）。
     for (cell, mut text, mut color) in &mut cells {
-        let (new_text, new_color) = if !state.loaded || cell.row >= state.orders.len() {
+        let (new_text, new_color) = if cell.row >= count {
             (String::new(), COLOR_DEFAULT)
+        } else if live {
+            let o = &live_orders.orders[cell.row];
+            match cell.col {
+                OrdersColumn::Symbol => (o.symbol.clone(), COLOR_DEFAULT),
+                OrdersColumn::Side => (o.side.clone(), side_color(&o.side)),
+                OrdersColumn::Qty => (format!("{:.0}", o.qty), COLOR_DEFAULT),
+                OrdersColumn::Price => match o.price {
+                    Some(p) => (format!("{p:.0}"), COLOR_DEFAULT),
+                    None => ("MKT".to_string(), COLOR_OTHER),
+                },
+                OrdersColumn::Status => (o.status.clone(), COLOR_DEFAULT),
+            }
         } else {
             let o = &state.orders[cell.row];
             match cell.col {
                 OrdersColumn::Symbol => (o.symbol.clone(), COLOR_DEFAULT),
-                OrdersColumn::Side => {
-                    let c = match o.side.as_str() {
-                        "BUY" => COLOR_BUY,
-                        "SELL" => COLOR_SELL,
-                        _ => COLOR_OTHER,
-                    };
-                    (o.side.clone(), c)
-                }
+                OrdersColumn::Side => (o.side.clone(), side_color(&o.side)),
                 OrdersColumn::Qty => (format!("{:.0}", o.qty), COLOR_DEFAULT),
                 OrdersColumn::Price => (format!("{:.0}", o.price), COLOR_DEFAULT),
                 OrdersColumn::Status => (o.status.clone(), COLOR_DEFAULT),

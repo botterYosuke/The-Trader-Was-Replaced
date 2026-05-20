@@ -14,8 +14,10 @@ pub mod instrument_picker;
 pub mod instruments_universe_prune;
 pub mod layout_persistence;
 pub mod menu_bar;
+pub mod order_panel;
 pub mod orders;
 pub mod positions;
+pub mod secret_modal;
 pub mod replay_startup_window;
 pub mod restore;
 pub mod run_result_panel;
@@ -90,8 +92,19 @@ use crate::ui::menu_bar::{
     menu_keyboard_system, menu_top_level_system, restore_last_strategy_system, spawn_menu_bar,
     sync_menu_popup_visibility_system, update_strategy_status_label_system,
 };
+use crate::ui::order_panel::{
+    OrderConfirm, OrderForm, confirm_modal_button_system, confirm_modal_sync_system,
+    confirm_modal_visibility_system, order_form_button_system, order_panel_sync_system,
+    order_panel_visibility_system, order_submit_button_system, spawn_confirm_modal,
+    spawn_order_panel,
+};
 use crate::ui::orders::orders_panel_system;
 use crate::ui::positions::positions_panel_system;
+use crate::ui::secret_modal::{
+    SecretInput, secret_modal_button_system, secret_modal_input_system,
+    secret_modal_lifecycle_system, secret_modal_sync_system, secret_modal_timeout_system,
+    secret_modal_visibility_system, spawn_secret_modal,
+};
 use crate::ui::run_result_panel::run_result_panel_system;
 use crate::ui::scenario_parser::parse_scenario_system;
 use crate::ui::scenario_startup_panel::{
@@ -196,6 +209,12 @@ impl Plugin for UiPlugin {
         })
         .add_event::<ScenarioLoadedFromFile>()
         .add_event::<ScenarioClearedFromFile>()
+        // Phase 9 §3.9 / §3.10: OrderPanel form state + 2-stage confirm + Secret input.
+        // `SecretPrompt` / `LiveOrders` are inserted in the binary (main.rs) since the
+        // transport-facing systems own them.
+        .init_resource::<OrderForm>()
+        .init_resource::<OrderConfirm>()
+        .init_resource::<SecretInput>()
         .add_systems(
             Startup,
             (
@@ -208,6 +227,10 @@ impl Plugin for UiPlugin {
                 restore_last_strategy_system,
                 // highlight pipeline: syntect SyntaxSet/Theme を resource として用意
                 init_syntect_highlighter,
+                // Phase 9: LiveManual 発注 UI (UI Node 流派、Display で出し入れ)
+                spawn_order_panel,
+                spawn_confirm_modal,
+                spawn_secret_modal,
             ),
         )
         .add_systems(
@@ -444,6 +467,32 @@ impl Plugin for UiPlugin {
                 update_find_count_text_system
                     .after(compute_find_match_spans_system)
                     .after(find_navigate_system),
+            ),
+        )
+        // ── Phase 9: OrderPanel (LiveManual 手動発注) + 2 段階確認 + SecretModal ──
+        .add_systems(
+            Update,
+            (
+                // OrderPanel
+                order_panel_visibility_system,
+                order_form_button_system,
+                order_submit_button_system,
+                order_panel_sync_system,
+                confirm_modal_visibility_system,
+                confirm_modal_button_system,
+                confirm_modal_sync_system,
+                // SecretModal — input は cosmic より先に走って keystroke を消費する
+                // (picker_searchbox と同じ drain パターン)。最前面オーバーレイ (z=300) なので
+                // picker / menu の drain より先に走らせ、同フレーム共存時もモーダルが入力を得る。
+                secret_modal_lifecycle_system,
+                secret_modal_visibility_system,
+                secret_modal_input_system
+                    .before(bevy_cosmic_edit::InputSet)
+                    .before(picker_searchbox_input_system)
+                    .before(menu_keyboard_system),
+                secret_modal_button_system,
+                secret_modal_timeout_system,
+                secret_modal_sync_system,
             ),
         );
     }

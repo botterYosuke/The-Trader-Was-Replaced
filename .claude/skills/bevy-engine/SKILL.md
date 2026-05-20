@@ -3,7 +3,8 @@ name: bevy-engine
 description: |
   The-Trader-Was-Replaced プロジェクトで Bevy（ゲーム/UI フレームワーク）を使う際の必読スキル。
   特に `src/camera.rs` と `src/ui/**` の floating-window 系（buying_power / positions / orders /
-  run_result / strategy_editor / chart / sidebar / footer / menu_bar）、bevy_egui との併用、
+  run_result / strategy_editor / chart / sidebar / footer / menu_bar / order_panel / secret_modal）、
+  操作系 UI（Bevy UI Node + Interaction/Button、bevy_egui は撤去済み）、
   bevy_pancam / bevy_cosmic_edit / bevy_vector_shapes 連携、Pointer 観測子（observe）による
   ドラッグ＆Z オーダー、Sprite + Transform による world-space ウィンドウ、Text2d 三分割
   （Text2d/TextFont/TextColor）を扱う。
@@ -18,7 +19,10 @@ description: |
   ④ "Bundle is deprecated", "set_parent", "Parent", "ChildOf", "get_single", "single",
     "Trigger::entity", "Trigger::target", "required components" など破壊的変更語彙が出たとき
   ⑤ 新しいパネル（floating window）を増やす／既存パネルを書き換える作業
-  ⑥ bevy_egui::Window と Bevy world-space ウィンドウ（Sprite ベース）の選択で迷ったとき
+  ⑥ 操作系 UI（Bevy UI Node + Interaction/Button）と 表示専用パネル（world-space Sprite）の
+    どちらで作るか迷ったとき、または「発注フォーム」「モーダル」「ボタン」「ラジオ」「入力欄」
+    「order_panel」「secret_modal」「UI Node」「Interaction」「Button」を扱うとき
+    （bevy_egui は撤去済みなので egui は選択肢にない）
   ⑦ `pair-relay` / `pair-nav` で `src/ui/**` を触る作業に入るとき（**Orchestrator 自身が
     このスキルを invoke して内容を把握してから** Navigator を spawn すること。
     読まずに進めると Bevy 0.15 固有の罠
@@ -80,15 +84,25 @@ description: |
   GridPlugin            — src/grid.rs: 背景グリッド
 ```
 
-**重要な意思決定**: UI は **2 流派** が共存している。
-- **bevy_egui (immediate-mode)**: メニューバー、ストラテジエディタ。フレーム毎に再構築。
-  状態はリソースに置く。フォーカスや入力ハンドリングが楽。
-- **Bevy world-space sprite window (retained-mode)**: floating panels (buying_power /
-  positions / orders / run_result)。Sprite + Transform + observe(Pointer<Drag>) で自前実装。
-  カメラのパン/ズームに追随する。Z オーダーを `WindowManager::max_z` で管理。
+**重要な意思決定**: UI は **2 流派** が共存している。**bevy_egui は 2026-05-15 Phase 7
+Sub-step 1.8d で完全撤去済み**（`Cargo.toml` に egui 依存なし／`src/**` に egui import ゼロ。
+2026-05-20 Phase 9 確認）。下の「bevy_egui クイックリファレンス」節は**歴史的記録**で、新規実装に
+使ってはならない。現存の 2 流派は:
+- **world-space Sprite/Text2d (retained-mode)** — **表示専用**の floating panels（buying_power /
+  positions / orders / run_result / chart）。`spawn_floating_window` + Sprite + Transform +
+  observe(Pointer<Drag>) で自前実装。カメラのパン/ズームに追随。Z オーダーは `WindowManager::max_z`。
+- **Bevy UI Node + `Interaction`/`Button` (flexbox UI layer)** — **操作系**のすべて（sidebar /
+  menu_bar / footer / instrument_picker、Phase 9 の order_panel / secret_modal）。`Node` +
+  `BackgroundColor` + `Button` + `Interaction` + `Text`/`TextFont`/`TextColor`、`Changed<Interaction>`
+  駆動の system でクリック処理。表示/非表示は `Node.display = Flex/None`（`Visibility` ではなく
+  Display）。`GlobalZIndex` で前面化。**テキスト入力は keyboard event の `Events<KeyboardInput>::drain()`**
+  （`instrument_picker.rs::picker_searchbox_input_system` / `secret_modal.rs` が手本。cosmic_edit は
+  ストラテジエディタ専用で、UI-node の小入力欄には使わない）。
 
-どちらを使うかは [references/egui-vs-worldspace.md](references/egui-vs-worldspace.md) を読んで判断する。
-**迷ったら既存パネルと同じ流派を踏襲する**（混在の見た目を増やさない）。
+**判断ルール**: 値を出すだけ → world-space Sprite panel（既存 buying_power 等を踏襲）。
+ボタン・ラジオ・入力欄・モーダルなど**操作が要る** → **Bevy UI Node**（instrument_picker /
+menu_bar が手本）。**「egui を使うか」で迷う必要はない（もう無い）**。
+**迷ったら既存の同種パネルと同じ流派を踏襲する**（混在の見た目を増やさない）。
 
 ## 5 つの規約 — これだけは守る
 
@@ -249,7 +263,11 @@ commands.entity(parent).add_child(child);
 が無い」と言われたら、ほぼ確実に 0.15/0.19 差。0.15 の書き方を `references/0.15-vs-0.19.md`
 で確認するか、既存の `src/ui/*.rs` を grep して同じパターンを探す。
 
-## bevy_egui のクイックリファレンス
+## bevy_egui のクイックリファレンス（⚠️ 歴史的記録 — 現在は使用不可）
+
+> **bevy_egui は 2026-05-15 に完全撤去済み**（`Cargo.toml` に依存なし）。以下は撤去前の参考。
+> **新規実装で egui を使ってはならない**。操作系 UI は「Bevy UI Node + Interaction」流派
+> （上の「重要な意思決定」節、instrument_picker.rs / menu_bar.rs / order_panel.rs が手本）を使う。
 
 ```rust
 use bevy_egui::{EguiContexts, egui};
