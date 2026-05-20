@@ -34,6 +34,17 @@ pub struct Harness {
 
 impl Harness {
     pub fn new() -> Self {
+        Self::with_backend_enabled(true)
+    }
+
+    /// Build a harness with `backend_enabled = false` (simulation mode). The
+    /// footer renders `grpc: DISABLED` and `backend_update_system` early-returns,
+    /// so backend replay-clock pushes are no-ops. See G3 in `tests/e2e/FLOWS.md`.
+    pub fn new_backend_disabled() -> Self {
+        Self::with_backend_enabled(false)
+    }
+
+    fn with_backend_enabled(backend_enabled: bool) -> Self {
         let (status_tx, status_rx) = mpsc::unbounded_channel();
         let (backend_tx, backend_rx) = mpsc::unbounded_channel();
         let (event_tx, event_rx) = mpsc::unbounded_channel();
@@ -41,10 +52,10 @@ impl Harness {
         let mut app = App::new();
         app.add_plugins(MinimalPlugins);
 
-        // ⚠️ backend_enabled must be true or backend_update_system early-returns.
         // Build explicitly instead of from_env() so the harness is env-independent.
+        // backend_update_system early-returns when this is false (G3).
         app.insert_resource(TradingSettings {
-            backend_enabled: true,
+            backend_enabled,
             backend_url: "http://127.0.0.1:0".to_string(),
             token: "test-token".to_string(),
             poll_interval_ms: 500,
@@ -164,6 +175,11 @@ impl Harness {
 
     pub fn backend_running(&self) -> bool {
         self.app.world().resource::<BackendStatus>().running
+    }
+
+    /// Footer renders `grpc: DISABLED` iff this is false (see footer.rs).
+    pub fn backend_enabled(&self) -> bool {
+        self.app.world().resource::<TradingSettings>().backend_enabled
     }
 
     pub fn backend_last_error(&self) -> Option<String> {

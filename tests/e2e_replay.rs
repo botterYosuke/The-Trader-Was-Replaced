@@ -523,3 +523,17 @@ fn g2_backend_reconnect_selfheal() {
     h.send_status(BackendStatusUpdate::Connected(true));
     assert!(h.backend_connected(), "connection must self-heal, not latch off");
 }
+
+/// G3 backend_disabled_sim: with `backend_enabled = false` the footer renders
+/// `grpc: DISABLED` and `backend_update_system` early-returns, so a pushed
+/// replay-clock state is a no-op (the session clock never advances).
+#[test]
+fn g3_backend_disabled_sim() {
+    let mut h = Harness::new_backend_disabled();
+    assert!(!h.backend_enabled(), "footer would render grpc: DISABLED");
+    assert_eq!(h.timestamp_ms(), 0);
+
+    // backend_update_system early-returns: the pushed clock must be ignored.
+    h.push_state(5000);
+    assert_eq!(h.timestamp_ms(), 0, "disabled backend must not advance the clock");
+}

@@ -85,7 +85,7 @@ state: IDLE  grpc: OK
 
 `grpc: DISABLED` が続く場合は `BACKEND_ENABLED=true` が渡っていません。
 
-> backend 接続状態（`grpc: OK`）は [G1]、切断後の自己修復（再接続で復帰）は [G2]、`BACKEND_ENABLED=false` 時の `grpc: DISABLED` は [G3]（保留中）で保証されます。flow 一覧は [`tests/e2e/FLOWS.md`](../../tests/e2e/FLOWS.md) を参照。
+> backend 接続状態（`grpc: OK`）は [G1]、切断後の自己修復（再接続で復帰）は [G2]、`BACKEND_ENABLED=false` 時の `grpc: DISABLED`（と replay clock 非反映）は [G3] で保証されます。flow 一覧は [`tests/e2e/FLOWS.md`](../../tests/e2e/FLOWS.md) を参照。
 
 ## 4. 最初の Replay 実行
 

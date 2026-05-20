@@ -154,9 +154,9 @@
 - [x] **G2 backend_reconnect_selfheal** ★★ be:`mock`
   - seam: `Error` で接続断 → `Connected(true)` で復帰
   - 観測: `Error` で `connected=false`+`last_error` 記録 → 再 `Connected(true)` で `connected` 復旧（self-heal commit の回帰防止）
-- [ ] **G3 backend_disabled_sim** ★ be:`none`
-  - seam: `backend_enabled = false`
-  - 観測: `grpc: DISABLED`、send は no-op
+- [x] **G3 backend_disabled_sim** ★ be:`none`
+  - seam: `backend_enabled = false`（`Harness::new_backend_disabled()`）
+  - 観測: `backend_enabled == false`（footer `grpc: DISABLED`）、`backend_update_system` が early-return し replay clock push が no-op（`timestamp_ms` 不変）
 
 ---
 
@@ -216,15 +216,19 @@
 - ✅ **G2 backend_reconnect_selfheal 追加（24 passed）**: `Error` で `connected=false`+`last_error`
   記録 → 再 `Connected(true)` で `connected` が復帰することを観測（連続断・復旧が status seam だけで
   決定論的に書けるため、supervisor task に依存せず実装できた）。`backend_last_error()` アクセサを追加。
+- ✅ **G3 backend_disabled_sim 追加（25 passed）**: `Harness::with_backend_enabled(bool)` に切り出し、
+  `new_backend_disabled()` で `backend_enabled=false` のハーネスを構築。`backend_enabled()` アクセサで
+  footer `grpc: DISABLED` 条件を、`push_state` 後の `timestamp_ms` 不変で `backend_update_system` の
+  early-return（send no-op）を観測。
 - ⬜ **保留（同ハーネスでは観測不能）**:
   - **A5 set_speed**: `BackendStatusUpdate` に speed ack variant が無い（Phase A-full 待ち）。
+  - **A9 replay_startup_timeout**: `ReplayStartupProgress` にタイムアウト状態 seam が無く timer 駆動。
   - **C5 select_instrument**: `SelectedSymbol` は UI 駆動のみで backend→ECS seam を通らない。
+  - **D8 prod_guard**: env 二重ガードは backend 側ロジック（be:`real` / backend 単体テスト向き）。
   - **D5/F3/F4/F5（event seam）**: `backend_event_drain_system` が `info!` するだけで resource を
     変えないため assert 不可。実装には `src/backend_sync.rs` の event drain に
     `PortfolioState`/`VenueStatusRes`/pending-secret resource 反映を足し、本番 `main.rs` の挙動と
     一致させる必要がある（スコープ拡大 = 依頼者確認待ち）。
-  - **G3 backend_disabled**: `backend_enabled=false` が前提だが `Harness` は `true` 固定で構築する。
-    観測には disabled 版ハーネス（または builder 引数）の追加が必要。
 - 📌 **設計メモ**: 本 v1 は backend→ECS の片側（`BackendStatusUpdate` 注入）を駆動する。
   反対側（`TransportCommand`→gRPC→`BackendStatusUpdate`）は既に `tests/backend_integration.rs`
   が mock tonic サーバでカバー済み。**両者で end-to-end をカバー**する構図。完全な単一プロセス
