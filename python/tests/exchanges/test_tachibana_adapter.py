@@ -895,8 +895,10 @@ async def test_subscribe_builds_event_ws_url_with_expected_params(
     assert "p_issue_code=7203" in url
     assert "p_mkt_code=00" in url
     assert "p_eno=0" in url
-    # "," is percent-encoded as %2C by build_event_url
-    assert "p_evt_cmd=ST%2CKP%2CFD" in url
+    # Commas stay RAW: the live server does not percent-decode EVENT params, so
+    # %2C silently drops the FD subscription (e-station bug-postmortem 2026-05-01).
+    assert "p_evt_cmd=ST,KP,FD" in url
+    assert "%2C" not in url
 
 
 # ---------------------------------------------------------------------------
@@ -1016,3 +1018,331 @@ async def test_subscribe_passes_processor_reset_as_on_connect(
     assert cb is not None
     assert cb.__self__ is processor
     assert cb.__func__ is type(processor).reset
+
+
+# ---------------------------------------------------------------------------
+# Phase 9 Step 5: OrderingVenueAdapter — 発注 / 取消 / 訂正 / 口座 / EC
+# ---------------------------------------------------------------------------
+
+from engine.live.order_types import AccountSnapshot, OrderResult  # noqa: E402
+
+_REQUEST_URL_RE = re.compile(rf"^{re.escape(_DEMO_BASE)}request/")
+_ZANKAI_RE = re.compile(rf"^{re.escape(_DEMO_BASE)}request/.*CLMZanKaiKanougaku")
+_GENBUTU_RE = re.compile(rf"^{re.escape(_DEMO_BASE)}request/.*CLMGenbutuKabuList")
+
+
+class _StubSecretResolver:
+    """secret 解決のテストダブル。resolve 呼び出しを (venue, purpose) で記録する。"""
+
+    def __init__(self, secret: str = "pswd") -> None:
+        self.calls: list[tuple[str, str]] = []
+        self._secret = secret
+
+    async def resolve(self, venue: str, purpose: str) -> str:
+        self.calls.append((venue, purpose))
+        return self._secret
+
+
+class _FakeEcWs:
+    """口座レベル EC WS のテストダブル。run() は stop までパークする。"""
+
+    last: "_FakeEcWs | None" = None
+
+    def __init__(self, url, stop_event, *, ticker, **kwargs):
+        self.url = url
+        self._stop = stop_event
+        self.ticker = ticker
+        self.callback = None
+        _FakeEcWs.last = self
+
+    async def run(self, callback, *, on_connect=None):
+        self.callback = callback
+        await self._stop.wait()
+
+
+def _order_ok_bytes(*, clmid="CLMKabuNewOrder", order_number="9000015",
+                    eigyou_day="20260521") -> bytes:
+    return json.dumps({
+        "sCLMID": clmid, "p_errno": "0", "sResultCode": "0", "sResultText": "",
+        "sOrderNumber": order_number, "sEigyouDay": eigyou_day,
+        "sOrderDate": "20260521134803",
+    }, ensure_ascii=False).encode("shift_jis")
+
+
+def _order_rejected_bytes(*, code="21", text="可能額不足") -> bytes:
+    return json.dumps(
+        {"p_errno": "0", "sResultCode": code, "sResultText": text},
+        ensure_ascii=False,
+    ).encode("shift_jis")
+
+
+async def _login_with_hooks(monkeypatch, httpx_mock: HTTPXMock, *, secret="pswd"):
+    """env login + 実行 hooks 注入 + EC WS をフェイク化したアダプタを返す。"""
+    _FakeEcWs.last = None
+    from engine.exchanges import tachibana as _tach_mod
+    monkeypatch.setattr(_tach_mod, "TachibanaEventWs", _FakeEcWs)
+    monkeypatch.setenv("DEV_TACHIBANA_USER_ID", "uid")
+    monkeypatch.setenv("DEV_TACHIBANA_PASSWORD", "pwd")
+    _add_login_response(httpx_mock, _ok_login_payload())
+
+    adapter = TachibanaAdapter(environment="demo")
+    resolver = _StubSecretResolver(secret)
+    events: list = []
+    adapter.set_execution_hooks(secret_resolver=resolver, on_order_event=events.append)
+    await adapter.login(VenueCredentials(credentials_source="env"))
+    return adapter, resolver, events
+
+
+async def test_submit_order_accepts_and_registers_ref(monkeypatch, httpx_mock: HTTPXMock):
+    adapter, resolver, _ = await _login_with_hooks(monkeypatch, httpx_mock)
+    httpx_mock.add_response(url=_REQUEST_URL_RE, method="GET", content=_order_ok_bytes())
+
+    res = await adapter.submit_order(
+        venue="TACHIBANA", instrument_id="7203.TSE", side="BUY",
+        qty=100.0, price=None, order_type="MARKET", time_in_force="DAY",
+    )
+
+    assert isinstance(res, OrderResult)
+    assert res.status == "ACCEPTED"
+    assert res.client_order_id
+    assert ("TACHIBANA", "new_order") in resolver.calls
+    ref = adapter._orders_ref[res.client_order_id]
+    assert ref.order_number == "9000015"
+    assert ref.eigyou_day == "20260521"
+    # CLMKabuNewOrder が sUrlRequest に送られていること。
+    order_reqs = [r for r in httpx_mock.get_requests() if "/request/" in str(r.url)]
+    assert len(order_reqs) == 1
+    assert "CLMKabuNewOrder" in str(order_reqs[0].url)
+    await adapter.logout()
+
+
+async def test_submit_order_requires_session():
+    adapter = TachibanaAdapter(environment="demo")
+    with pytest.raises(RuntimeError, match="login"):
+        await adapter.submit_order(
+            venue="TACHIBANA", instrument_id="7203.TSE", side="BUY",
+            qty=100.0, price=None, order_type="MARKET", time_in_force="DAY",
+        )
+
+
+async def test_submit_order_business_rejection_maps_to_rejected(
+    monkeypatch, httpx_mock: HTTPXMock,
+):
+    adapter, _, _ = await _login_with_hooks(monkeypatch, httpx_mock)
+    httpx_mock.add_response(url=_REQUEST_URL_RE, method="GET", content=_order_rejected_bytes())
+
+    res = await adapter.submit_order(
+        venue="TACHIBANA", instrument_id="7203.TSE", side="BUY",
+        qty=100.0, price=None, order_type="MARKET", time_in_force="DAY",
+    )
+    assert res.status == "REJECTED"
+    assert "21" in (res.reject_reason or "")
+    # リジェクトは ref を登録しない。
+    assert adapter._orders_ref == {}
+    await adapter.logout()
+
+
+async def test_cancel_order_resolves_two_identifiers_from_registry(
+    monkeypatch, httpx_mock: HTTPXMock,
+):
+    adapter, resolver, _ = await _login_with_hooks(monkeypatch, httpx_mock)
+    httpx_mock.add_response(url=_REQUEST_URL_RE, method="GET", content=_order_ok_bytes())
+    httpx_mock.add_response(
+        url=_REQUEST_URL_RE, method="GET",
+        content=_order_ok_bytes(clmid="CLMKabuCancelOrder"),
+    )
+
+    placed = await adapter.submit_order(
+        venue="TACHIBANA", instrument_id="7203.TSE", side="BUY",
+        qty=100.0, price=None, order_type="MARKET", time_in_force="DAY",
+    )
+    res = await adapter.cancel_order(venue="TACHIBANA", order_id=placed.client_order_id)
+
+    assert res.status == "CANCELED"
+    assert ("TACHIBANA", "cancel_order") in resolver.calls
+    cancel_req = [r for r in httpx_mock.get_requests() if "CLMKabuCancelOrder" in str(r.url)]
+    assert len(cancel_req) == 1
+    # 2 識別子が再供給されていること (URL は letters/digits を素通しするため可視)。
+    assert "9000015" in str(cancel_req[0].url)  # sOrderNumber
+    assert "20260521" in str(cancel_req[0].url)  # sEigyouDay
+    await adapter.logout()
+
+
+async def test_cancel_unknown_order_is_rejected_without_request(
+    monkeypatch, httpx_mock: HTTPXMock,
+):
+    adapter, resolver, _ = await _login_with_hooks(monkeypatch, httpx_mock)
+    res = await adapter.cancel_order(venue="TACHIBANA", order_id="does-not-exist")
+    assert res.status == "REJECTED"
+    assert res.reject_reason == "UNKNOWN_VENUE_ORDER"
+    assert resolver.calls == []  # secret も venue 通信も発生しない
+    await adapter.logout()
+
+
+async def test_modify_order_uses_correct_order(monkeypatch, httpx_mock: HTTPXMock):
+    adapter, resolver, _ = await _login_with_hooks(monkeypatch, httpx_mock)
+    httpx_mock.add_response(url=_REQUEST_URL_RE, method="GET", content=_order_ok_bytes())
+    httpx_mock.add_response(
+        url=_REQUEST_URL_RE, method="GET",
+        content=_order_ok_bytes(clmid="CLMKabuCorrectOrder"),
+    )
+
+    placed = await adapter.submit_order(
+        venue="TACHIBANA", instrument_id="7203.TSE", side="BUY",
+        qty=100.0, price=2400.0, order_type="LIMIT", time_in_force="DAY",
+    )
+    res = await adapter.modify_order(
+        venue="TACHIBANA", order_id=placed.client_order_id, new_price=2500.0,
+    )
+    assert res.status == "ACCEPTED"
+    assert ("TACHIBANA", "correct_order") in resolver.calls
+    correct_req = [r for r in httpx_mock.get_requests() if "CLMKabuCorrectOrder" in str(r.url)]
+    assert len(correct_req) == 1
+    await adapter.logout()
+
+
+async def test_fetch_account_parses_buying_power_and_positions(
+    monkeypatch, httpx_mock: HTTPXMock,
+):
+    adapter, _, _ = await _login_with_hooks(monkeypatch, httpx_mock)
+    httpx_mock.add_response(
+        url=_ZANKAI_RE, method="GET",
+        content=json.dumps(
+            {"p_errno": "0", "sResultCode": "0", "sSummaryGenkabuKaituke": "1000000"},
+            ensure_ascii=False,
+        ).encode("shift_jis"),
+    )
+    httpx_mock.add_response(
+        url=_GENBUTU_RE, method="GET",
+        content=json.dumps({
+            "p_errno": "0", "sResultCode": "0",
+            "aGenbutuKabuList": [{
+                "sUriOrderIssueCode": "7203",
+                "sUriOrderZanKabuSuryou": "100",
+                "sUriOrderGaisanBokaTanka": "2400.0000",
+                "sUriOrderGaisanHyoukaSoneki": "3000",
+            }],
+        }, ensure_ascii=False).encode("shift_jis"),
+    )
+
+    snap = await adapter.fetch_account()
+    assert isinstance(snap, AccountSnapshot)
+    assert snap.buying_power == 1000000.0
+    assert len(snap.positions) == 1
+    pos = snap.positions[0]
+    assert pos.symbol == "7203"
+    assert pos.qty == 100
+    assert pos.avg_price == 2400.0
+    assert pos.unrealized_pnl == 3000.0
+    await adapter.logout()
+
+
+async def test_fetch_account_handles_empty_positions(monkeypatch, httpx_mock: HTTPXMock):
+    adapter, _, _ = await _login_with_hooks(monkeypatch, httpx_mock)
+    httpx_mock.add_response(
+        url=_ZANKAI_RE, method="GET",
+        content=json.dumps(
+            {"p_errno": "0", "sResultCode": "0", "sSummaryGenkabuKaituke": "0"},
+            ensure_ascii=False,
+        ).encode("shift_jis"),
+    )
+    # R8: 保有ゼロは aGenbutuKabuList が "" で返る。
+    httpx_mock.add_response(
+        url=_GENBUTU_RE, method="GET",
+        content=json.dumps(
+            {"p_errno": "0", "sResultCode": "0", "aGenbutuKabuList": ""},
+            ensure_ascii=False,
+        ).encode("shift_jis"),
+    )
+    snap = await adapter.fetch_account()
+    assert snap.positions == ()
+    await adapter.logout()
+
+
+async def test_login_starts_ec_stream_with_hooks(monkeypatch, httpx_mock: HTTPXMock):
+    adapter, _, _ = await _login_with_hooks(monkeypatch, httpx_mock)
+    assert _FakeEcWs.last is not None
+    # 口座レベル: p_evt_cmd に EC を含む (FD は含まない)。
+    assert "EC" in _FakeEcWs.last.url
+    assert adapter._ec_task is not None and not adapter._ec_task.done()
+    await adapter.logout()
+    assert adapter._ec_task is None
+
+
+def _ec_frame(**overrides):
+    from engine.exchanges import tachibana_orders as to
+    base = {
+        to._EC_ORDER_NUMBER: "9000015", to._EC_TRADE_ID: "1",
+        to._EC_NOTIFY_TYPE: "2", to._EC_LAST_PRICE: "2430",
+        to._EC_LAST_QTY: "100", to._EC_LEAVES_QTY: "0",
+        to._EC_EXEC_DATETIME: "20260521134803",
+    }
+    base.update(overrides)
+    return base
+
+
+async def test_ec_frame_pushes_order_event_for_known_order(
+    monkeypatch, httpx_mock: HTTPXMock,
+):
+    adapter, _, events = await _login_with_hooks(monkeypatch, httpx_mock)
+    httpx_mock.add_response(url=_REQUEST_URL_RE, method="GET", content=_order_ok_bytes())
+    placed = await adapter.submit_order(
+        venue="TACHIBANA", instrument_id="7203.TSE", side="BUY",
+        qty=100.0, price=None, order_type="MARKET", time_in_force="DAY",
+    )
+    await adapter._dispatch_event_frame("EC", _ec_frame(), 1_700_000_000_000)
+
+    assert len(events) == 1
+    ev = events[0]
+    assert ev.venue_order_id == "9000015"
+    assert ev.client_order_id == placed.client_order_id
+    assert ev.status == "FILLED"
+    assert ev.filled_qty == 100.0  # 発注 100 - 残 0
+    assert ev.avg_price == 2430.0
+    # ts は p_OD (約定日時) 由来 (recv_ts ではない)。
+    from datetime import datetime, timezone, timedelta
+    assert ev.ts_ms == int(datetime(2026, 5, 21, 13, 48, 3,
+                           tzinfo=timezone(timedelta(hours=9))).timestamp() * 1000)
+    await adapter.logout()
+
+
+async def test_ec_partial_fill_uses_leaves_qty(monkeypatch, httpx_mock: HTTPXMock):
+    """部分約定: 累計約定数量 = 発注数量 - 残数量。status は PARTIALLY_FILLED。"""
+    adapter, _, events = await _login_with_hooks(monkeypatch, httpx_mock)
+    httpx_mock.add_response(url=_REQUEST_URL_RE, method="GET", content=_order_ok_bytes())
+    await adapter.submit_order(
+        venue="TACHIBANA", instrument_id="7203.TSE", side="BUY",
+        qty=100.0, price=None, order_type="MARKET", time_in_force="DAY",
+    )
+    # 30 株約定・残 70。
+    await adapter._dispatch_event_frame(
+        "EC", _ec_frame(**{"p_DSU": "30", "p_ZSU": "70"}), 1_700_000_000_000,
+    )
+    assert len(events) == 1
+    assert events[0].status == "PARTIALLY_FILLED"
+    assert events[0].filled_qty == 30.0  # 100 - 70
+    await adapter.logout()
+
+
+async def test_non_ec_frame_does_not_push(monkeypatch, httpx_mock: HTTPXMock):
+    adapter, _, events = await _login_with_hooks(monkeypatch, httpx_mock)
+    await adapter._dispatch_event_frame("KP", {}, 1_700_000_000_000)
+    await adapter._dispatch_event_frame("FD", {"p_1_DPP": "3000"}, 1_700_000_000_000)
+    assert events == []
+    await adapter.logout()
+
+
+async def test_duplicate_ec_frame_is_pushed_once(monkeypatch, httpx_mock: HTTPXMock):
+    """EC は接続毎に全件再送される。同一 (vid,trade_id,nt) の再送は push しない。"""
+    adapter, _, events = await _login_with_hooks(monkeypatch, httpx_mock)
+    ec = _ec_frame()
+    await adapter._dispatch_event_frame("EC", ec, 1_700_000_000_000)
+    await adapter._dispatch_event_frame("EC", dict(ec), 1_700_000_001_000)  # 再送
+    assert len(events) == 1
+    # 別の約定枝番 (trade_id) は新規イベント → push される。
+    await adapter._dispatch_event_frame(
+        "EC", _ec_frame(**{"p_EDA": "2", "p_DSU": "50", "p_ZSU": "50"}),
+        1_700_000_002_000,
+    )
+    assert len(events) == 2
+    await adapter.logout()

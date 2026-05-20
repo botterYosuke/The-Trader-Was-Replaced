@@ -10,10 +10,10 @@ use backcast::grid::GridPlugin;
 use backcast::replay::ReplayStartupProgress;
 use backcast::trading::{
     AvailableInstruments, BackendChannel, BackendStartupStage, BackendStatus, BackendStatusUpdate,
-    ExecutionMode, ExecutionModeRes, LastPrices, LastRunResult, PortfolioOrder, PortfolioPosition,
-    PortfolioState, ReplaySpeed, SelectedSymbol, Ticker, Tickers, TickersSource, TradingSettings,
-    TransportCommand, TransportCommandSender, VenueState, VenueStatusRes, backend_update_system,
-    engine, tickers_source_to_wire,
+    ExecutionMode, ExecutionModeRes, LastPrices, LastRunResult, LiveOrders, OrderFeedback,
+    PortfolioOrder, PortfolioPosition, PortfolioState, ReplaySpeed, SecretPrompt, SelectedSymbol,
+    Ticker, Tickers, TickersSource, TradingSettings, TransportCommand, TransportCommandSender,
+    VenueState, VenueStatusRes, backend_update_system, engine, tickers_source_to_wire,
 };
 use backcast::ui::UiPlugin;
 use backcast::ui::replay_startup_window::{
@@ -29,8 +29,7 @@ use engine::{
     ListAllListedSymbolsRequest, ListInstrumentsRequest, LoadReplayDataRequest, PauseReplayRequest,
     ReplayGranularity, ResumeReplayRequest, SetExecutionModeRequest, SetReplaySpeedRequest,
     StartEngineRequest, StartEngineResponse, StepReplayRequest, SubscribeBackendEventsReq,
-    SubscribeRequest,
-    UnsubscribeRequest, VenueLoginRequest, VenueLogoutRequest,
+    SubscribeRequest, VenueLoginRequest, VenueLogoutRequest,
 };
 use tokio::sync::mpsc;
 
@@ -161,6 +160,13 @@ async fn main() {
         .insert_resource(Tickers::default())
         .insert_resource(LastPrices::default())
         .insert_resource(SelectedSymbol::default())
+        // Phase 9 §3.2 / §3.10: Live order book + active SecretRequired prompt.
+        // Initialized here (not in UiPlugin) because the transport-facing
+        // `status_update_system` / `backend_event_drain_system` that mutate them
+        // live in this binary.
+        .insert_resource(LiveOrders::default())
+        .insert_resource(SecretPrompt::default())
+        .insert_resource(OrderFeedback::default())
         .insert_resource(tokio_handle)
         .add_systems(
             Startup,
@@ -176,7 +182,12 @@ async fn main() {
             (
                 backend_update_system,
                 status_update_system,
-                backend_event_drain_system,
+                // Run the event drain (which sets SecretPrompt.active on
+                // SecretRequired) before the secret modal's keyboard-drain, so on
+                // the frame the prompt opens the modal — not the picker/menu —
+                // consumes that frame's keystrokes (Round 1 bevy-ecs H1).
+                backend_event_drain_system
+                    .before(backcast::ui::secret_modal::secret_modal_input_system),
                 update_replay_startup_window_system,
                 animate_replay_startup_bar_system,
                 auto_hide_replay_startup_window_system.after(status_update_system),
@@ -224,9 +235,7 @@ fn should_send_graceful_shutdown(lifecycle: BackendLifecycle) -> bool {
 /// blocking on `changed()` alone would stall the transport indefinitely; the
 /// timer bounds the wait so the loop self-heals. Returns `false` when the
 /// supervisor's watch sender was dropped (app exit) — the caller should return.
-async fn events_reconnect_backoff(
-    rx: &mut tokio::sync::watch::Receiver<BackendLifecycle>,
-) -> bool {
+async fn events_reconnect_backoff(rx: &mut tokio::sync::watch::Receiver<BackendLifecycle>) -> bool {
     tokio::select! {
         changed = rx.changed() => changed.is_ok(),
         _ = tokio::time::sleep(tokio::time::Duration::from_millis(500)) => true,
@@ -774,6 +783,206 @@ fn setup_backend_connection(
                             Err(e) => error!("VenueLogout failed: {}", e),
                         }
                     }
+                    TransportCommand::PlaceOrder {
+                        venue,
+                        instrument_id,
+                        side,
+                        qty,
+                        price,
+                        order_type,
+                        time_in_force,
+                        second_secret,
+                    } => {
+                        let req = tonic::Request::new(engine::PlaceOrderReq {
+                            token: token.clone(),
+                            venue: venue.clone(),
+                            instrument_id: instrument_id.clone(),
+                            side: side.clone(),
+                            qty,
+                            price,
+                            order_type: order_type.clone(),
+                            time_in_force: time_in_force.clone(),
+                            // Plaintext leaves Rust only here, copied straight into the
+                            // gRPC request; `second_secret` (RedactedSecret) is dropped
+                            // with the command at the end of this arm (Phase 9 §1.3).
+                            second_secret: second_secret.as_ref().map(|s| s.expose().to_string()),
+                        });
+                        match client.place_order(req).await {
+                            Ok(r) => {
+                                let inner = r.into_inner();
+                                if inner.success {
+                                    if let Some(ev) = inner.order_event {
+                                        info!(
+                                            "PlaceOrder ok: {} {} {} qty={} status={} client_order_id={}",
+                                            venue, side, instrument_id, qty, ev.status, ev.client_order_id
+                                        );
+                                        // Merge the command's static fields (symbol/side/qty/
+                                        // price — absent from OrderEvent) with the response ids
+                                        // + status, then upsert into LiveOrders for the panel.
+                                        let _ = status_tx.send(BackendStatusUpdate::OrderSeeded {
+                                            client_order_id: ev.client_order_id,
+                                            venue_order_id: ev.venue_order_id,
+                                            symbol: instrument_id.clone(),
+                                            side: side.clone(),
+                                            qty,
+                                            price,
+                                            status: ev.status,
+                                            filled_qty: ev.filled_qty,
+                                            avg_price: ev.avg_price,
+                                            ts_ms: ev.ts_ms,
+                                        });
+                                    } else {
+                                        warn!("PlaceOrder ok but no order_event returned: {}", instrument_id);
+                                    }
+                                } else {
+                                    // Replay → EXECUTION_MODE_PRECONDITION, runner not up →
+                                    // VENUE_LOGIN_REQUIRED (structured errors, not gRPC abort).
+                                    warn!(
+                                        "PlaceOrder rejected: {} error_code={}",
+                                        instrument_id, inner.error_code
+                                    );
+                                    let _ = status_tx.send(BackendStatusUpdate::OrderRejected {
+                                        action: "発注".to_string(),
+                                        error_code: inner.error_code,
+                                    });
+                                }
+                            }
+                            Err(e) => error!("PlaceOrder failed: {} err={}", instrument_id, e),
+                        }
+                    }
+                    TransportCommand::CancelOrder {
+                        venue,
+                        order_id,
+                        second_secret,
+                    } => {
+                        let req = tonic::Request::new(engine::CancelOrderReq {
+                            token: token.clone(),
+                            venue: venue.clone(),
+                            order_id: order_id.clone(),
+                            second_secret: second_secret.as_ref().map(|s| s.expose().to_string()),
+                        });
+                        match client.cancel_order(req).await {
+                            Ok(r) => {
+                                let inner = r.into_inner();
+                                if inner.success {
+                                    if let Some(ev) = inner.order_event {
+                                        info!(
+                                            "CancelOrder ok: order_id={} status={}",
+                                            order_id, ev.status
+                                        );
+                                        // Cancel response carries no symbol/side/qty/price;
+                                        // OrderStatusUpdated merges status into the existing record.
+                                        let _ = status_tx.send(
+                                            BackendStatusUpdate::OrderStatusUpdated {
+                                                client_order_id: ev.client_order_id,
+                                                venue_order_id: ev.venue_order_id,
+                                                status: ev.status,
+                                                filled_qty: ev.filled_qty,
+                                                avg_price: ev.avg_price,
+                                                ts_ms: ev.ts_ms,
+                                            },
+                                        );
+                                    }
+                                } else {
+                                    warn!(
+                                        "CancelOrder rejected: order_id={} error_code={}",
+                                        order_id, inner.error_code
+                                    );
+                                    let _ = status_tx.send(BackendStatusUpdate::OrderRejected {
+                                        action: "取消".to_string(),
+                                        error_code: inner.error_code,
+                                    });
+                                }
+                            }
+                            Err(e) => error!("CancelOrder failed: order_id={} err={}", order_id, e),
+                        }
+                    }
+                    TransportCommand::ModifyOrder {
+                        venue,
+                        client_order_id,
+                        new_qty,
+                        new_price,
+                        second_secret,
+                    } => {
+                        let req = tonic::Request::new(engine::ModifyOrderReq {
+                            token: token.clone(),
+                            venue: venue.clone(),
+                            order_id: client_order_id.clone(),
+                            new_price,
+                            new_qty,
+                            second_secret: second_secret.as_ref().map(|s| s.expose().to_string()),
+                        });
+                        match client.modify_order(req).await {
+                            Ok(r) => {
+                                let inner = r.into_inner();
+                                if inner.success {
+                                    if let Some(ev) = inner.order_event {
+                                        info!(
+                                            "ModifyOrder ok: client_order_id={} status={}",
+                                            client_order_id, ev.status
+                                        );
+                                        // OrderEvent carries ids + status + fills but no
+                                        // qty/price, so merge the command's new_qty/new_price.
+                                        let _ = status_tx.send(BackendStatusUpdate::OrderModified {
+                                            client_order_id: ev.client_order_id,
+                                            venue_order_id: ev.venue_order_id,
+                                            new_qty,
+                                            new_price,
+                                            status: ev.status,
+                                            filled_qty: ev.filled_qty,
+                                            avg_price: ev.avg_price,
+                                            ts_ms: ev.ts_ms,
+                                        });
+                                    } else {
+                                        warn!(
+                                            "ModifyOrder ok but no order_event returned: {}",
+                                            client_order_id
+                                        );
+                                    }
+                                } else {
+                                    warn!(
+                                        "ModifyOrder rejected: client_order_id={} error_code={}",
+                                        client_order_id, inner.error_code
+                                    );
+                                    let _ = status_tx.send(BackendStatusUpdate::OrderRejected {
+                                        action: "訂正".to_string(),
+                                        error_code: inner.error_code,
+                                    });
+                                }
+                            }
+                            Err(e) => error!(
+                                "ModifyOrder failed: client_order_id={} err={}",
+                                client_order_id, e
+                            ),
+                        }
+                    }
+                    TransportCommand::SubmitSecret { request_id, secret } => {
+                        let req = tonic::Request::new(engine::SubmitSecretReq {
+                            token: token.clone(),
+                            request_id: request_id.clone(),
+                            // Plaintext is copied into the request and the command (with its
+                            // RedactedSecret) is dropped at the end of this arm.
+                            secret: secret.expose().to_string(),
+                        });
+                        match client.submit_secret(req).await {
+                            Ok(r) => {
+                                let inner = r.into_inner();
+                                if inner.success {
+                                    info!("SubmitSecret ok: request_id={}", request_id);
+                                } else {
+                                    warn!(
+                                        "SubmitSecret rejected: request_id={} error_code={}",
+                                        request_id, inner.error_code
+                                    );
+                                    let _ = status_tx.send(BackendStatusUpdate::OrderRejected {
+                                        action: "第二暗証番号".to_string(),
+                                        error_code: inner.error_code,
+                                    });
+                                }
+                            }
+                            Err(e) => error!("SubmitSecret failed: request_id={} err={}", request_id, e),
+                        }
+                    }
                 }
             }
 
@@ -977,15 +1186,60 @@ mod tests {
         should_send_graceful_shutdown,
     };
     use backcast::backend_sync::{
-        apply_available_failed, apply_available_loaded, apply_status_update,
+        apply_account_event, apply_available_failed, apply_available_loaded, apply_status_update,
     };
     use backcast::replay::ReplayStartupPhase;
     use backcast::trading::{
-        AvailableInstruments, BackendStartupStage, BackendStatus, BackendStatusUpdate,
-        ExecutionModeRes, LastPrices, LastRunResult, PortfolioState, RunState, Ticker, Tickers,
-        VenueStatusRes,
+        AccountPosition, AvailableInstruments, BackendStartupStage, BackendStatus,
+        BackendStatusUpdate, ExecutionModeRes, LastPrices, LastRunResult, LiveOrders,
+        OrderFeedback, PortfolioState, RunState, Ticker, Tickers, VenueStatusRes,
     };
     use chrono::NaiveDate;
+
+    #[test]
+    fn account_event_reduces_into_portfolio_with_derived_equity() {
+        let mut portfolio = PortfolioState::default();
+        apply_account_event(
+            &mut portfolio,
+            100_000.0, // cash
+            250_000.0, // buying_power
+            vec![
+                AccountPosition {
+                    symbol: "7203.T".to_string(),
+                    qty: 100,
+                    avg_price: 2500.0,
+                    unrealized_pnl: 1000.0,
+                },
+                AccountPosition {
+                    symbol: "9984.T".to_string(),
+                    qty: 50,
+                    avg_price: 8000.0,
+                    unrealized_pnl: -2000.0,
+                },
+            ],
+        );
+        assert_eq!(portfolio.cash, 100_000.0);
+        assert_eq!(portfolio.buying_power, 250_000.0);
+        assert_eq!(portfolio.positions.len(), 2);
+        assert!(portfolio.loaded, "AccountEvent marks the portfolio loaded");
+        // equity = cash + Σ(qty*avg_price + unrealized_pnl)
+        //        = 100_000 + (100*2500 + 1000) + (50*8000 - 2000)
+        //        = 100_000 + 251_000 + 398_000 = 749_000
+        assert_eq!(portfolio.equity, 749_000.0);
+        // position fields map through faithfully.
+        assert_eq!(portfolio.positions[0].symbol, "7203.T");
+        assert_eq!(portfolio.positions[0].qty, 100);
+        assert_eq!(portfolio.positions[1].unrealized_pnl, -2000.0);
+    }
+
+    #[test]
+    fn account_event_with_no_positions_sets_equity_to_cash() {
+        let mut portfolio = PortfolioState::default();
+        apply_account_event(&mut portfolio, 500_000.0, 1_000_000.0, vec![]);
+        assert_eq!(portfolio.equity, 500_000.0);
+        assert!(portfolio.positions.is_empty());
+        assert!(portfolio.loaded);
+    }
 
     fn d(s: &str) -> NaiveDate {
         NaiveDate::parse_from_str(s, "%Y-%m-%d").unwrap()
@@ -1008,6 +1262,8 @@ mod tests {
         let mut exec_mode = ExecutionModeRes::default();
         let mut tickers = Tickers::default();
         let mut last_prices = LastPrices::default();
+        let mut live_orders = LiveOrders::default();
+        let mut order_feedback = OrderFeedback::default();
         apply_status_update(
             update,
             &mut status,
@@ -1019,8 +1275,144 @@ mod tests {
             &mut exec_mode,
             &mut tickers,
             &mut last_prices,
+            &mut live_orders,
+            &mut order_feedback,
         );
         last_run
+    }
+
+    /// Variant of `apply` that seeds an initial `OrderFeedback` and returns it,
+    /// for verifying the order-notice set/clear behavior (Round 2 M-A/M-B).
+    fn apply_feedback(update: BackendStatusUpdate, initial: Option<&str>) -> OrderFeedback {
+        let mut status = BackendStatus::default();
+        let mut last_run = LastRunResult::default();
+        let mut portfolio = PortfolioState::default();
+        let mut available = AvailableInstruments::default();
+        let mut progress = ReplayStartupProgress::default();
+        let mut venue_status = VenueStatusRes::default();
+        let mut exec_mode = ExecutionModeRes::default();
+        let mut tickers = Tickers::default();
+        let mut last_prices = LastPrices::default();
+        let mut live_orders = LiveOrders::default();
+        let mut order_feedback = OrderFeedback {
+            message: initial.map(str::to_string),
+        };
+        apply_status_update(
+            update,
+            &mut status,
+            &mut last_run,
+            &mut portfolio,
+            &mut available,
+            &mut progress,
+            &mut venue_status,
+            &mut exec_mode,
+            &mut tickers,
+            &mut last_prices,
+            &mut live_orders,
+            &mut order_feedback,
+        );
+        order_feedback
+    }
+
+    #[test]
+    fn order_rejected_sets_feedback_message() {
+        let fb = apply_feedback(
+            BackendStatusUpdate::OrderRejected {
+                action: "発注".to_string(),
+                error_code: "EXECUTION_MODE_PRECONDITION".to_string(),
+            },
+            None,
+        );
+        assert_eq!(
+            fb.message.as_deref(),
+            Some("発注が拒否されました (EXECUTION_MODE_PRECONDITION)")
+        );
+    }
+
+    #[test]
+    fn order_seeded_clears_stale_feedback() {
+        let fb = apply_feedback(
+            BackendStatusUpdate::OrderSeeded {
+                client_order_id: "c1".to_string(),
+                venue_order_id: "v1".to_string(),
+                symbol: "7203.T".to_string(),
+                side: "BUY".to_string(),
+                qty: 100.0,
+                price: None,
+                status: "ACCEPTED".to_string(),
+                filled_qty: 0.0,
+                avg_price: 0.0,
+                ts_ms: 1,
+            },
+            Some("発注が拒否されました (X)"),
+        );
+        assert!(
+            fb.message.is_none(),
+            "a successful place must clear the stale reject notice"
+        );
+    }
+
+    #[test]
+    fn mode_change_clears_stale_feedback() {
+        let fb = apply_feedback(
+            BackendStatusUpdate::ExecutionModeChanged {
+                mode: backcast::trading::ExecutionMode::Replay,
+            },
+            Some("発注が拒否されました (X)"),
+        );
+        assert!(
+            fb.message.is_none(),
+            "switching execution mode must drop the prior-context notice"
+        );
+    }
+
+    #[test]
+    fn mode_change_resets_portfolio_to_prevent_live_replay_bleed() {
+        use backcast::trading::ExecutionMode;
+        let mut status = BackendStatus::default();
+        let mut last_run = LastRunResult::default();
+        // Seed a "Live" portfolio snapshot (as apply_account_event would leave it).
+        let mut portfolio = PortfolioState {
+            cash: 100_000.0,
+            buying_power: 250_000.0,
+            equity: 749_000.0,
+            loaded: true,
+            ..Default::default()
+        };
+        let mut available = AvailableInstruments::default();
+        let mut progress = ReplayStartupProgress::default();
+        let mut venue_status = VenueStatusRes::default();
+        // Currently in LiveManual; the backend reports a switch to Replay.
+        let mut exec_mode = ExecutionModeRes {
+            mode: ExecutionMode::LiveManual,
+        };
+        let mut tickers = Tickers::default();
+        let mut last_prices = LastPrices::default();
+        let mut live_orders = LiveOrders::default();
+        let mut order_feedback = OrderFeedback::default();
+        apply_status_update(
+            BackendStatusUpdate::ExecutionModeChanged {
+                mode: ExecutionMode::Replay,
+            },
+            &mut status,
+            &mut last_run,
+            &mut portfolio,
+            &mut available,
+            &mut progress,
+            &mut venue_status,
+            &mut exec_mode,
+            &mut tickers,
+            &mut last_prices,
+            &mut live_orders,
+            &mut order_feedback,
+        );
+        assert!(
+            !portfolio.loaded,
+            "stale Live account snapshot must not bleed into the Replay view"
+        );
+        assert_eq!(portfolio.cash, 0.0);
+        assert_eq!(portfolio.equity, 0.0);
+        assert_eq!(portfolio.buying_power, 0.0);
     }
 
     /// Variant of `apply` that returns the `Tickers` resource after the update,
@@ -1037,6 +1429,8 @@ mod tests {
         let mut venue_status = VenueStatusRes::default();
         let mut exec_mode = ExecutionModeRes::default();
         let mut last_prices = LastPrices::default();
+        let mut live_orders = LiveOrders::default();
+        let mut order_feedback = OrderFeedback::default();
         apply_status_update(
             update,
             &mut status,
@@ -1048,6 +1442,8 @@ mod tests {
             &mut exec_mode,
             tickers,
             &mut last_prices,
+            &mut live_orders,
+            &mut order_feedback,
         );
     }
 
@@ -1058,16 +1454,20 @@ mod tests {
         assert!(!should_send_graceful_shutdown(BackendLifecycle::Disabled));
         assert!(!should_send_graceful_shutdown(BackendLifecycle::Stopped));
         assert!(!should_send_graceful_shutdown(BackendLifecycle::Crashed));
-        assert!(!should_send_graceful_shutdown(BackendLifecycle::StartupFailed(
-            "BACKEND_NOT_REACHABLE"
-        )));
+        assert!(!should_send_graceful_shutdown(
+            BackendLifecycle::StartupFailed("BACKEND_NOT_REACHABLE")
+        ));
 
         // 起動中 / 稼働中 / shutdown 進行中は ack を待つ価値があるので送る。
         assert!(should_send_graceful_shutdown(BackendLifecycle::NotStarted));
-        assert!(should_send_graceful_shutdown(BackendLifecycle::ProbingExisting));
+        assert!(should_send_graceful_shutdown(
+            BackendLifecycle::ProbingExisting
+        ));
         assert!(should_send_graceful_shutdown(BackendLifecycle::Spawning));
         assert!(should_send_graceful_shutdown(BackendLifecycle::Ready));
-        assert!(should_send_graceful_shutdown(BackendLifecycle::ShuttingDown));
+        assert!(should_send_graceful_shutdown(
+            BackendLifecycle::ShuttingDown
+        ));
     }
 
     #[test]
@@ -1412,6 +1812,8 @@ mod tests {
         let mut venue_status = VenueStatusRes::default();
         let mut exec_mode = ExecutionModeRes::default();
         let mut tickers = Tickers::default();
+        let mut live_orders = LiveOrders::default();
+        let mut order_feedback = OrderFeedback::default();
         apply_status_update(
             update,
             &mut status,
@@ -1423,6 +1825,8 @@ mod tests {
             &mut exec_mode,
             &mut tickers,
             last_prices,
+            &mut live_orders,
+            &mut order_feedback,
         );
     }
 

@@ -22,6 +22,7 @@ chrono = "0.4"
 url = "2"
 regex = "1"
 wait-timeout = "0.2"
+zeroize = "1"
 
 [dev-dependencies]
 serial_test = "3.1"

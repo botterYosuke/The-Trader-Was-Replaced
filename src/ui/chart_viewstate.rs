@@ -32,7 +32,7 @@ pub const CHART_DRAW_SIZE: Vec2 = Vec2::new(310.0, 180.0);
 /// 幅は draw(310) + price gutter(50) = 360。chart child を左 `CHART_CHILD_LOCAL_X_REPLAY`・
 /// 上 `CHART_CHILD_LOCAL_Y` だけ寄せて chart+gutter が枠内にちょうど収まる (window.rs spawn 参照)。
 pub const CHART_PANEL_SIZE: Vec2 = Vec2::new(
-    CHART_DRAW_SIZE.x + PRICE_GUTTER_WIDTH,                    // 360
+    CHART_DRAW_SIZE.x + PRICE_GUTTER_WIDTH, // 360
     CHART_DRAW_SIZE.y + TIME_GUTTER_HEIGHT + TITLE_BAR_HEIGHT, // 244
 );
 
@@ -47,7 +47,7 @@ pub const LADDER_WIDTH: f32 = 120.0;
 /// Live モード WindowRoot サイズ。
 pub const LIVE_COMBINED_PANEL_SIZE: Vec2 = Vec2::new(
     CHART_PANEL_SIZE.x + LADDER_WIDTH, // 480
-    CHART_PANEL_SIZE.y,               // 244
+    CHART_PANEL_SIZE.y,                // 244
 );
 /// Ladder ペインの WindowRoot ローカル X (center origin 前提: 幅 480 の右端 +240 に幅 120 を flush)。
 pub const LADDER_PANE_LOCAL_X: f32 = LIVE_COMBINED_PANEL_SIZE.x / 2.0 - LADDER_WIDTH / 2.0; // 180
@@ -438,13 +438,7 @@ mod tests {
         // 60s 足を 10 本、close は 100 付近で振動。
         for i in 0..10i64 {
             let base = 100.0 + (i as f32);
-            pts.push(ohlc(
-                i * 60_000,
-                base,
-                base + 2.0,
-                base - 2.0,
-                base + 1.0,
-            ));
+            pts.push(ohlc(i * 60_000, base, base + 2.0, base - 2.0, base + 1.0));
         }
         InstrumentTradingData {
             ohlc_points: pts,
@@ -483,7 +477,11 @@ mod tests {
         for &t in &[0i64, 60_000, 540_000, 600_000, 300_000] {
             let x = state.interval_to_x(t);
             let back = state.x_to_time_ms(x);
-            assert_eq!(back, t, "time round-trip failed: {} -> {} -> {}", t, x, back);
+            assert_eq!(
+                back, t,
+                "time round-trip failed: {} -> {} -> {}",
+                t, x, back
+            );
         }
     }
 
@@ -552,7 +550,13 @@ mod tests {
         // frame 3 以降 (0-based index 2..) は変化が収束している。
         for (i, &c) in log.iter().enumerate() {
             if i >= 2 {
-                assert_eq!(c, 0, "frame {} still mutating ChartViewState (log={:?})", i + 1, log);
+                assert_eq!(
+                    c,
+                    0,
+                    "frame {} still mutating ChartViewState (log={:?})",
+                    i + 1,
+                    log
+                );
             }
         }
     }

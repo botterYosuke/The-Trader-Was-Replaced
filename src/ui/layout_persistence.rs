@@ -345,7 +345,9 @@ fn load_layout_from(path: &PathBuf) -> std::io::Result<SidecarLayout> {
 /// `PanelKind::StrategyEditor` エントリが存在するかを判定する。
 /// 存在すれば既存の windows ループが spawn を担当するため fallback は不要。
 fn cache_restore_has_strategy_editor_window(windows: Option<&Vec<WindowLayout>>) -> bool {
-    let Some(list) = windows else { return false; };
+    let Some(list) = windows else {
+        return false;
+    };
     list.iter()
         .any(|w| w.kind == PanelKind::StrategyEditor && !is_legacy_chart_entry(w))
 }
@@ -388,7 +390,7 @@ fn apply_cache_restore_system(
     >,
     mut pending: ResMut<PendingLayoutApply>,
     mut spawn_ev: EventWriter<PanelSpawnRequested>,
-    mut scenario_target: ResMut<ScenarioReadTarget>,  // ← ADD
+    mut scenario_target: ResMut<ScenarioReadTarget>, // ← ADD
 ) {
     for event in events.read() {
         let Some((cache_json, cache_py)) = cache_state_paths() else {
@@ -1357,9 +1359,15 @@ mod tests {
         let out = compute_cache_restore_fallback_spawns(Some(&windows), &fragments, &dedupe);
         assert_eq!(out.len(), 1);
         assert_eq!(out[0].kind, PanelKind::StrategyEditor);
-        let spec = out[0].strategy_spec.as_ref().expect("strategy_spec must be Some");
+        let spec = out[0]
+            .strategy_spec
+            .as_ref()
+            .expect("strategy_spec must be Some");
         assert_eq!(spec.region_key.as_deref(), Some("region_1"));
-        assert!(spec.source.is_none(), "source=None で dispatcher drain に委ねる");
+        assert!(
+            spec.source.is_none(),
+            "source=None で dispatcher drain に委ねる"
+        );
     }
 
     #[test]
@@ -1375,7 +1383,10 @@ mod tests {
         let fragments = vec![("region_1".to_string(), "pass".to_string())];
         let dedupe = std::collections::HashSet::new();
         let out = compute_cache_restore_fallback_spawns(Some(&windows), &fragments, &dedupe);
-        assert!(out.is_empty(), "既存 StrategyEditor window があれば fallback は走らない");
+        assert!(
+            out.is_empty(),
+            "既存 StrategyEditor window があれば fallback は走らない"
+        );
     }
 
     #[test]
@@ -2472,9 +2483,7 @@ mod tests {
     /// JSON の strategy_path を必ず再読込する（StrategyFileLoadRequested を発火する）。
     #[test]
     fn test_user_json_open_reloads_strategy_path_even_if_already_loaded() {
-        use crate::ui::components::{
-            PendingStrategyFragments, RegionKeyAllocator, StrategyBuffer,
-        };
+        use crate::ui::components::{PendingStrategyFragments, RegionKeyAllocator, StrategyBuffer};
         use bevy::prelude::*;
 
         let mut app = App::new();
@@ -2542,9 +2551,7 @@ mod tests {
     /// 後続の UserJsonOpen が deferred path に入るときに必ず破棄する。
     #[test]
     fn user_json_open_clears_stale_pending_fragments() {
-        use crate::ui::components::{
-            PendingStrategyFragments, RegionKeyAllocator, StrategyBuffer,
-        };
+        use crate::ui::components::{PendingStrategyFragments, RegionKeyAllocator, StrategyBuffer};
         use bevy::prelude::*;
 
         let mut app = App::new();
@@ -2605,9 +2612,7 @@ mod tests {
     /// sidecar の strategy_path が別ファイルを指していても読み替えない。
     #[test]
     fn apply_sidecar_for_py_ignores_mismatched_strategy_path() {
-        use crate::ui::components::{
-            PendingStrategyFragments, RegionKeyAllocator, StrategyBuffer,
-        };
+        use crate::ui::components::{PendingStrategyFragments, RegionKeyAllocator, StrategyBuffer};
         use bevy::prelude::*;
 
         let mut app = App::new();
@@ -2631,8 +2636,11 @@ mod tests {
         let user_py_path = dir.path().join("user_selected.py");
         let sidecar_py_path = dir.path().join("sidecar_points_elsewhere.py");
         let json_path = dir.path().join("user_selected.json");
-        std::fs::write(&user_py_path, "# region region_001\nuser\n# endregion region_001\n")
-            .unwrap();
+        std::fs::write(
+            &user_py_path,
+            "# region region_001\nuser\n# endregion region_001\n",
+        )
+        .unwrap();
         std::fs::write(
             &sidecar_py_path,
             "# region region_001\nsidecar\n# endregion region_001\n",
@@ -2673,6 +2681,9 @@ mod tests {
 
         let pf = app.world().resource::<PendingStrategyFragments>();
         assert_eq!(pf.loaded_for_path.as_deref(), Some(user_py_path.as_path()));
-        assert_eq!(pf.by_region_key.get("region_001").map(String::as_str), Some("user"));
+        assert_eq!(
+            pf.by_region_key.get("region_001").map(String::as_str),
+            Some("user")
+        );
     }
 }

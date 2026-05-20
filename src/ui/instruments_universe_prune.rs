@@ -4,8 +4,8 @@ use bevy::prelude::*;
 
 use crate::trading::{
     AvailableInstruments, ExecutionMode, ExecutionModeRes, Tickers, TickersSource, TickersStatus,
-    TransportCommand, TransportCommandSender, VenueState, VenueStatusRes,
-    is_live_mode, is_venue_live,
+    TransportCommand, TransportCommandSender, VenueState, VenueStatusRes, is_live_mode,
+    is_venue_live,
 };
 use crate::ui::components::{InstrumentRegistry, ScenarioMetadata};
 use crate::ui::instrument_picker::parse_scenario_end;
@@ -729,17 +729,16 @@ mod tests {
             reg.ids = vec!["7203.TSE".to_string()];
         }
         {
-            let mut wb = app.world_mut().resource_mut::<ScenarioInstrumentsWritebackState>();
+            let mut wb = app
+                .world_mut()
+                .resource_mut::<ScenarioInstrumentsWritebackState>();
             wb.revision = 5;
             wb.flushed_revision = 0;
         }
         // Live mode
         app.world_mut().resource_mut::<ExecutionModeRes>().mode = ExecutionMode::LiveManual;
 
-        app.add_systems(
-            bevy::prelude::Update,
-            writeback_scenario_instruments_system,
-        );
+        app.add_systems(bevy::prelude::Update, writeback_scenario_instruments_system);
         app.update();
 
         // flushed_revision must NOT have changed (writeback skipped in Live)

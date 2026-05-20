@@ -20,6 +20,15 @@ flowsurface kabu venue 統合は **Python 側 `python/engine/exchanges/kabusapi*
 
 > **以降、本ファイル本文中で「実装」と書かれた Python ヘルパーへの言及は、特記がない限り**「将来実装予定（Phase 1〜3 で Python 側に新設）」**と読み替えること**。
 
+> **実装状況の更新（2026-05-21・Phase 9 Step 6 時点）**: 以下は **既に実装済み**で「将来予定」ではない。新規作成せず既存を読んで踏襲すること:
+> - 接続/認証/PUSH: `kabusapi_url.py`（`base_url`/`endpoint`/`symbol_key`/`ws_url`）・`kabusapi_auth.py`（`fetch_token`/`check_response`/`auth_headers` + `KabuApiError` 階層）・`kabusapi_ws.py` + `kabusapi_ws_codec.py`・`kabusapi_register.py`（`RegisterSet`、50 銘柄上限）・`kabusapi.py` の `KabuStationAdapter`（login/logout/subscribe/events、`_TokenBucket` で R5 流量抑制）。
+> - **発注経路（Phase 9 Step 6）**: `kabusapi_orders.py`（純粋関数: `build_send_order_payload`/`build_cancel_order_payload`/`front_order_type`/`parse_send_order_response`/`parse_order_status`）+ `KabuStationAdapter` の `submit_order`/`cancel_order`/`modify_order`/`fetch_account`。`OrderingVenueAdapter` を満たす。
+>   - **約定通知は GET /orders を 1 秒間隔 polling**（kabu に約定 PUSH は無い、R8 は板のみ）。`set_execution_hooks(on_order_event=...)` で push 結線、最初の `submit_order` で polling task を遅延起動・全注文終端で自己終了。
+>   - **訂正は「取消→新規発注」変換**（kabu に訂正 API 無し）。補償結果は facade の `OrderResult.status` で表現する（取消失敗=REJECTED / 取消成功+新規失敗=CANCELED / 全成功=ACCEPTED で同一 client_order_id に新 OrderId を再マップ）。取消→新規の隙間で polling が中間状態を push しないよう `_modifying` ガードで抑止する。
+>   - **発注に Password フィールドは無い**（R3）。Tachibana の第二暗証番号 (SecretVault/SecretRequired) 経路は kabu では一切使わない。`set_execution_hooks` は Tachibana と同じ呼び出し口を保つため `secret_resolver` を受理して無視する。
+>   - **AccountType は MVP 既定 = 特定(4) 定数**（kabu は login 応答に口座種別を載せない）。一般/法人は将来 venue_params で上書き。
+> - **未実装（残課題）**: kabu 早朝ログアウト自動回復 Watchdog（`health_watchdog.py`、Phase 9 Step 7）・`kabusapi_login_flow` の prompt フロー本体・instruments 日次更新。
+
 ## 参照リソース
 
 - **公式マニュアル（必読の一次資料）**

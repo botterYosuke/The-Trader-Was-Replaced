@@ -23,6 +23,7 @@ will land in a later step alongside the auth flow.
 from __future__ import annotations
 
 import json
+import re
 from dataclasses import dataclass
 from typing import Mapping
 
@@ -88,6 +89,17 @@ PRICE_CLMIDS: frozenset[str] = frozenset({
 _ALLOWED_OFMT = frozenset({"4", "5"})
 
 _FORBIDDEN_CONTROL_CHARS = frozenset(chr(c) for c in range(0x20))
+
+# EVENT URL params are appended RAW (NOT percent-encoded) — see build_event_url.
+# Param names are ASCII identifiers; values are one-or-more non-empty alnum tokens
+# joined by the comma list-separator used by p_evt_cmd (e.g. "ST,KP,FD"). Requiring
+# non-empty tokens (no leading/trailing/double comma, no empty value) makes a
+# degenerate p_evt_cmd like "" / "," / "ST,,KP" — which would silently subscribe to
+# nothing, the exact failure this raw-comma boundary exists to prevent — fail loud.
+# Everything else (URL-structure chars &?=#%, spaces, control chars, multibyte) is
+# rejected so a raw value can never break the query string or smuggle extra params.
+_EVENT_KEY_RE = re.compile(r"\A[A-Za-z0-9_]+\Z")
+_EVENT_VALUE_RE = re.compile(r"\A[A-Za-z0-9]+(?:,[A-Za-z0-9]+)*\Z")
 
 
 _REPLACE_TABLE: dict[str, str] = {
@@ -216,16 +228,39 @@ def build_auth_url(
 
 
 def build_event_url(base: EventUrl, params: Mapping[str, str]) -> str:
-    """Build an EVENT URL: ``{base}?key=value&key=value``."""
+    """Build an EVENT URL: ``{base}?key=value&key=value`` with RAW (un-encoded) values.
+
+    EVENT params must NOT be run through ``func_replace_urlecnode``. The Tachibana
+    server does not percent-decode EVENT query params: encoding the commas in
+    ``p_evt_cmd=ST,KP,FD`` to ``%2C`` makes the server silently ignore the
+    subscription, so no FD/EC frames arrive (confirmed against the live server —
+    e-station bug-postmortem 2026-05-01; the official sample
+    ``e_api_websocket_receive_tel.py`` appends raw strings, SKILL.md R2 EVENT 例外).
+
+    Safety is provided by a positive charset allowlist instead of escaping: keys
+    must be ASCII identifiers and values ``[A-Za-z0-9,]`` (alnum + the comma
+    list-separator), so a raw value can never inject ``&``/``=``/``?`` extra
+    params, percent-escapes, spaces, control chars or multibyte bytes.
+    """
     if not isinstance(base, EventUrl):
         raise TypeError(
             f"build_event_url expects EventUrl, got {type(base).__name__}"
         )
 
-    keys = [str(k) for k in params.keys()]
-    values = [str(v) for v in params.values()]
-    _check_no_control_chars(keys + values)
-
-    parts = [f"{func_replace_urlecnode(k)}={func_replace_urlecnode(v)}"
-             for k, v in zip(keys, values)]
+    parts: list[str] = []
+    for raw_key, raw_value in params.items():
+        key, value = str(raw_key), str(raw_value)
+        if not _EVENT_KEY_RE.match(key):
+            raise ValueError(
+                f"build_event_url: param name {key!r} must match [A-Za-z0-9_]+ "
+                "(EVENT params are sent raw, F-M6b)"
+            )
+        if not _EVENT_VALUE_RE.match(value):
+            raise ValueError(
+                f"build_event_url: value {value!r} for {key!r} must be non-empty "
+                "comma-separated alnum tokens [A-Za-z0-9]+(,[A-Za-z0-9]+)* — EVENT "
+                "values are sent raw (no percent-encoding); empty/'',','/'ST,,KP', "
+                "'&', '=', '?', '%', spaces, control chars are forbidden (R2 / F-M6b)"
+            )
+        parts.append(f"{key}={value}")
     return f"{base.value}?{'&'.join(parts)}"

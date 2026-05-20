@@ -382,7 +382,10 @@ mod tests {
 
         let cs = app.world().entity(chart).get::<CrosshairState>().unwrap();
         let hp = cs.hovered_price.expect("price in main area");
-        assert!((hp - expected_price).abs() < 1e-2, "price {hp} vs {expected_price}");
+        assert!(
+            (hp - expected_price).abs() < 1e-2,
+            "price {hp} vs {expected_price}"
+        );
         assert_eq!(cs.hovered_time_ms, Some(expected_time));
     }
 
@@ -448,7 +451,10 @@ mod tests {
             map.map.insert(
                 "T".to_string(),
                 InstrumentTradingData {
-                    ohlc_points: vec![ohlc_vol(540_000, Some(100.0)), ohlc_vol(600_000, Some(250.0))],
+                    ohlc_points: vec![
+                        ohlc_vol(540_000, Some(100.0)),
+                        ohlc_vol(600_000, Some(250.0)),
+                    ],
                     ..Default::default()
                 },
             );
@@ -563,7 +569,13 @@ mod tests {
         assert_eq!(log.len(), 5);
         for (i, &c) in log.iter().enumerate() {
             if i >= 2 {
-                assert_eq!(c, 0, "frame {} still mutating CrosshairState (log={:?})", i + 1, log);
+                assert_eq!(
+                    c,
+                    0,
+                    "frame {} still mutating CrosshairState (log={:?})",
+                    i + 1,
+                    log
+                );
             }
         }
     }
@@ -721,7 +733,11 @@ mod tests {
         let world = app.world_mut();
         let mut bq = world.query::<(&CrosshairBadge, &Parent)>();
         let badges: Vec<_> = bq.iter(world).collect();
-        assert_eq!(badges.len(), 2, "expected volume + time badge (no price badge)");
+        assert_eq!(
+            badges.len(),
+            2,
+            "expected volume + time badge (no price badge)"
+        );
         for (badge, parent) in &badges {
             assert_eq!(badge.target_chart, chart);
             let p = parent.get();

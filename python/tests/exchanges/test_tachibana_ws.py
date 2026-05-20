@@ -279,6 +279,38 @@ async def test_event_ws_dispatches_kp_and_fd_frames(monkeypatch):
     assert rec["calls"][0]["kwargs"].get("ping_interval") is None
 
 
+async def test_event_ws_dispatches_ec_frame(monkeypatch):
+    """Phase 9 Step 5: EC (注文約定通知) フレームも callback に届く。
+
+    旧実装は EC を 'other' に落として捨てていた。約定 push に必須なので
+    EC を明示 dispatch する。
+    """
+    stop = asyncio.Event()
+    received: list[tuple[str, dict[str, str]]] = []
+
+    async def cb(frame_type: str, fields: dict[str, str], recv_ts_ms: int) -> None:
+        received.append((frame_type, fields))
+        if frame_type == "EC":
+            stop.set()
+
+    frames = [
+        _encode_frame_sjis([
+            ("p_cmd", "EC"),
+            ("p_ON", "9000015"),
+            ("p_ST", "3"),
+        ]),
+    ]
+    fake = _FakeWs(frames, auto_close=False, idle_event=stop)
+    _install_fake_ws(monkeypatch, fake)
+
+    ws = TachibanaEventWs("wss://example/ws", stop, ticker="EVENT")
+    await asyncio.wait_for(ws.run(cb), timeout=2.0)
+
+    ec = [(t, f) for t, f in received if t == "EC"]
+    assert len(ec) == 1
+    assert ec[0][1]["p_ON"] == "9000015"
+
+
 async def test_event_ws_ping_interval_none_passed(monkeypatch):
     stop = asyncio.Event()
 

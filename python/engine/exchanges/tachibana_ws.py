@@ -396,6 +396,12 @@ class TachibanaEventWs:
                             self._ticker, p_errno, _frame_counts["ST"],
                         )
                         await callback("ST", fields, recv_ts_ms)
+                    elif evt_cmd in ("EC", "SS", "US"):
+                        # Phase 9 Step 5: EC=注文約定通知 (約定 push に必須)、
+                        # SS=システムステータス / US=運用ステータス (閉局検出は §3.5
+                        # Watchdog で利用)。旧実装は 'other' に落として捨てていた。
+                        _frame_counts[evt_cmd] += 1
+                        await callback(evt_cmd, fields, recv_ts_ms)
                     else:
                         _frame_counts["other"] += 1
                         log.debug(

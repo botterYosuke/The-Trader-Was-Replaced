@@ -1,8 +1,8 @@
-use bevy::prelude::*;
 use crate::trading::{ExecutionMode, ExecutionModeRes};
 use crate::ui::components::{
     InstrumentRegistry, ScenarioReadTarget, StrategyFileLoadRequested, StrategyLoadMode,
 };
+use bevy::prelude::*;
 
 /// Replay 再入時に `editable=false` の registry を fixed scenario から再 resolve する。
 ///
@@ -67,7 +67,10 @@ mod tests {
         app.update();
         // StrategyFileLoadRequested が送出されていることを確認
         let events = app.world().resource::<Events<StrategyFileLoadRequested>>();
-        assert!(!events.is_empty(), "Replay reentry with editable=false should fire StrategyFileLoadRequested");
+        assert!(
+            !events.is_empty(),
+            "Replay reentry with editable=false should fire StrategyFileLoadRequested"
+        );
     }
 
     #[test]
@@ -84,7 +87,10 @@ mod tests {
         });
         app.update();
         let events = app.world().resource::<Events<StrategyFileLoadRequested>>();
-        assert!(events.is_empty(), "Replay reentry with editable=true should NOT fire StrategyFileLoadRequested");
+        assert!(
+            events.is_empty(),
+            "Replay reentry with editable=true should NOT fire StrategyFileLoadRequested"
+        );
     }
 
     #[test]
@@ -96,10 +102,15 @@ mod tests {
         });
         app.update(); // prev_mode: None→Replay、was=None なので entered_replay=true
         // イベントをリセットして2回目のフレームを確認
-        app.world_mut().resource_mut::<Events<StrategyFileLoadRequested>>().clear();
+        app.world_mut()
+            .resource_mut::<Events<StrategyFileLoadRequested>>()
+            .clear();
         app.update(); // prev_mode: Replay→Replay、entered_replay=false
         let events = app.world().resource::<Events<StrategyFileLoadRequested>>();
-        assert!(events.is_empty(), "Second Replay frame should NOT fire again");
+        assert!(
+            events.is_empty(),
+            "Second Replay frame should NOT fire again"
+        );
     }
 
     #[test]
@@ -113,6 +124,9 @@ mod tests {
         });
         app.update();
         let events = app.world().resource::<Events<StrategyFileLoadRequested>>();
-        assert!(events.is_empty(), "No scenario path → should NOT fire StrategyFileLoadRequested");
+        assert!(
+            events.is_empty(),
+            "No scenario path → should NOT fire StrategyFileLoadRequested"
+        );
     }
 }
