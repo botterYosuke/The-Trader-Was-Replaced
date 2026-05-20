@@ -231,7 +231,7 @@ Zed のパターンを写しただけでは出てこない、Bevy/cosmic_edit/sy
 
 ## このスキルの対象になっている src/ui/* (現状スナップショット)
 
-- `strategy_editor.rs` — Phase 7.2 進行中。**Phase A 完了**: syntax highlight (syntect 全文再トークナイズ) + bracket match + Layer Composer (`strategy_editor_highlight.rs` / `strategy_editor_compose.rs`、span source を固定順で合成し `apply_highlight_layers_system` だけが `set_attrs_list` を呼ぶ)。**未実装 (Phase B/C/E)**: 行番号 gutter・scrollbar・Tab→spaces/auto-indent・find&replace。新パネルや span source を足すときは composer の固定順序 (default→syntax→find→current_find→bracket) を踏襲する
+- `strategy_editor.rs` — Phase 7.2 進行中。**Phase A 完了**: syntax highlight (syntect 全文再トークナイズ) + bracket match + Layer Composer (`strategy_editor_highlight.rs` / `strategy_editor_compose.rs`、span source を固定順で合成し `apply_highlight_layers_system` だけが `set_attrs_list` を呼ぶ)。**Phase E 完了**: find/replace (`strategy_editor_find.rs`)。Find マッチは composer 経由で塗り (`FindMatchSpans` を書くだけ・`set_attrs_list` は呼ばない)、replace は純粋関数 `apply_replacement` で新ソースを計算し `editor.set_text` + `CosmicTextChanged` で既存パイプライン (fragment→undo→autosave→再ハイライト) に丸投げ。Find パネルは `spawn_floating_window` 再利用 + 専用マーカー `FindQueryEditor`/`FindReplacementEditor` (`StrategyEditorContent` は付けない) + `panel_root: Option<Entity>` lifecycle。**未実装 (Phase B/C)**: 行番号 gutter・scrollbar・Tab→spaces/auto-indent。新パネルや span source を足すときは composer の固定順序 (default→syntax→find→current_find→bracket) を踏襲する。⚠️ 世界空間の小型 cosmic 入力欄 (find query/replacement 等) は Sprite 高さを line_height の DPI 2x ダブリング(18→36)より大きく (44px 等) しないと retina で glyph が出ない (bevy-engine DPI トラップ)
 - `instrument_picker.rs` — picker パターンの既存実装
 - `sidebar.rs` — virtual scroll + tickers リストの既存実装
 - `floating_window.rs` / `layout_persistence.rs` — workspace / persistence パターン
