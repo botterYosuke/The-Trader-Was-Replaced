@@ -15,6 +15,10 @@ use crate::ui::strategy_editor::spawn_strategy_editor_panel;
 use bevy::prelude::*;
 use bevy_cosmic_edit::prelude::CosmicFontSystem;
 
+/// floating window の title bar 高さ。chart レイアウト定数 (`chart_viewstate.rs`) もこれを参照する
+/// (Caveat #33: 二重定義すると chart の draw 領域が枠を ~8px はみ出す)。
+pub const TITLE_BAR_HEIGHT: f32 = 40.0;
+
 /// floating window を生成するときに渡す設定。
 #[derive(Clone)]
 pub struct FloatingWindowSpec {
@@ -36,7 +40,6 @@ pub fn spawn_floating_window(
     commands: &mut Commands,
     spec: FloatingWindowSpec,
 ) -> (Entity, Entity, Entity) {
-    const TITLE_BAR_HEIGHT: f32 = 40.0;
     const TITLE_PADDING_LEFT: f32 = 16.0;
     let title_bar_half = TITLE_BAR_HEIGHT / 2.0;
 

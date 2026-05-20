@@ -1,4 +1,8 @@
-use crate::ui::chart_viewstate::{CHART_DRAW_SIZE, CHART_PANEL_SIZE, ChartViewState};
+use crate::ui::chart_axes::{PriceGutter, PriceGutterRef, TimeGutter, TimeGutterRef};
+use crate::ui::chart_viewstate::{
+    CHART_CHILD_LOCAL_X_REPLAY, CHART_CHILD_LOCAL_Y, CHART_DRAW_SIZE, CHART_PANEL_SIZE,
+    ChartViewState, PRICE_GUTTER_WIDTH, TIME_GUTTER_HEIGHT,
+};
 use crate::ui::components::{
     ChartInstrument, InstrumentRegistry, LayoutExcluded, PanelKind, PriceDisplay, WindowRoot,
 };
@@ -28,7 +32,8 @@ pub fn spawn_chart_panel(commands: &mut Commands, instrument_id: &str) {
 
     // ─── ここから下は中身（content_area の子として配置） ───
 
-    // Price Display（コンパクト window 用に縮小し draw 領域上端へ）
+    // Price Display（コンパクト window 用に縮小し draw 領域上端へ）。
+    // draw 領域の中心 x に合わせて chart child と同じ量だけ左へ寄せる。
     let price_text = commands
         .spawn((
             Text2d::new("$100.00"),
@@ -37,18 +42,17 @@ pub fn spawn_chart_panel(commands: &mut Commands, instrument_id: &str) {
                 ..default()
             },
             TextColor(Color::srgb(0.0, 1.0, 0.5)),
-            Transform::from_xyz(0.0, 72.0, 0.3),
+            Transform::from_xyz(CHART_CHILD_LOCAL_X_REPLAY, 72.0, 0.3),
             PriceDisplay,
         ))
         .id();
 
     // Chart entity。
-    // ⚠️ content_area は spawn_floating_window で既に root-local (0, -title_bar_half) に
-    //    オフセット済 (floating_window.rs:191) なので、draw 領域を title bar 下の領域中央へ
-    //    置くには content_area-local y=0 で足りる (Caveat #33: プラン skeleton の
-    //    CHART_Y_OFFSET=-TITLE_BAR_HEIGHT/2 は「chart を root 直下に置く」前提の値で、
-    //    content_area 子なら 0 が同じ world 位置になる)。
-    const CHART_Y_OFFSET: f32 = 0.0;
+    // ⚠️ content_area は spawn_floating_window で root-local (0, -title_bar_half) にオフセット済。
+    //    window 高さが draw + time gutter + title bar を勘定するようになった (CHART_PANEL_SIZE.y=244)
+    //    ので、content 領域 (204px) に chart(180,上) + time gutter(24,下) を縦に積む。
+    //    chart は左 PRICE_GUTTER_WIDTH/2・上 TIME_GUTTER_HEIGHT/2 寄せ、右 50px を price gutter、
+    //    下 24px を time gutter に空ける (Phase B forward gotcha の確定修正)。
     let chart = commands
         .spawn((
             // ⚠️ Phase C の Pointer<Drag> を成立させる hit-target (Caveat #1)。
@@ -59,7 +63,7 @@ pub fn spawn_chart_panel(commands: &mut Commands, instrument_id: &str) {
                 color: Color::srgba(0.0, 0.0, 0.0, 0.001),
                 ..default()
             },
-            Transform::from_xyz(0.0, CHART_Y_OFFSET, 0.1),
+            Transform::from_xyz(CHART_CHILD_LOCAL_X_REPLAY, CHART_CHILD_LOCAL_Y, 0.1),
             ChartViewState {
                 bounds: CHART_DRAW_SIZE,
                 ..default()
@@ -69,6 +73,37 @@ pub fn spawn_chart_panel(commands: &mut Commands, instrument_id: &str) {
             },
         ))
         .id();
+
+    // Phase B: axis label gutter (chart entity の子、Transform は chart-local)。
+    // ラベルは price/time axis system が gutter の子 Text2d として despawn+respawn する。
+    let price_gutter = commands
+        .spawn((
+            PriceGutter,
+            Transform::from_xyz(
+                CHART_DRAW_SIZE.x / 2.0 + PRICE_GUTTER_WIDTH / 2.0,
+                0.0,
+                0.1,
+            ),
+            Visibility::default(),
+        ))
+        .id();
+    let time_gutter = commands
+        .spawn((
+            TimeGutter,
+            Transform::from_xyz(
+                0.0,
+                -CHART_DRAW_SIZE.y / 2.0 - TIME_GUTTER_HEIGHT / 2.0,
+                0.1,
+            ),
+            Visibility::default(),
+        ))
+        .id();
+    commands.entity(chart).add_child(price_gutter);
+    commands.entity(chart).add_child(time_gutter);
+    commands.entity(chart).insert((
+        PriceGutterRef(price_gutter),
+        TimeGutterRef(time_gutter),
+    ));
 
     commands.entity(content_area).add_child(price_text);
     commands.entity(content_area).add_child(chart);

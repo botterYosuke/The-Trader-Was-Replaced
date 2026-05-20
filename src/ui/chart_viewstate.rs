@@ -13,6 +13,8 @@
 
 use crate::trading::{InstrumentTradingData, InstrumentTradingDataMap, OhlcPoint};
 use crate::ui::components::ChartInstrument;
+// title bar 高さの single source (二重定義回避 — Caveat #33)。
+use crate::ui::floating_window::TITLE_BAR_HEIGHT;
 use bevy::prelude::*;
 
 // ─── レイアウト定数 (Phase A で一括導入。Phase B の gutter / Phase F の Ladder が依存) ───
@@ -24,21 +26,34 @@ pub const TIME_GUTTER_HEIGHT: f32 = 24.0;
 /// 実描画領域 (Phase A から使用)。gutter 領域は含まない。
 pub const CHART_DRAW_SIZE: Vec2 = Vec2::new(310.0, 180.0);
 /// Replay モード (Phase A〜E) の WindowRoot サイズ。
+///
+/// ⚠️ 高さは draw(180) + time gutter(24) + title bar(40) = 244。Phase A の旧値 204 は
+/// title bar を勘定しておらず、content 領域が 164px しか無く time gutter が窓外へ落ちた。
+/// 幅は draw(310) + price gutter(50) = 360。chart child を左 `CHART_CHILD_LOCAL_X_REPLAY`・
+/// 上 `CHART_CHILD_LOCAL_Y` だけ寄せて chart+gutter が枠内にちょうど収まる (window.rs spawn 参照)。
 pub const CHART_PANEL_SIZE: Vec2 = Vec2::new(
-    CHART_DRAW_SIZE.x + PRICE_GUTTER_WIDTH, // 360
-    CHART_DRAW_SIZE.y + TIME_GUTTER_HEIGHT, // 204
+    CHART_DRAW_SIZE.x + PRICE_GUTTER_WIDTH,                    // 360
+    CHART_DRAW_SIZE.y + TIME_GUTTER_HEIGHT + TITLE_BAR_HEIGHT, // 244
 );
+
+/// Replay モードの chart child x オフセット (content_area-local)。
+/// chart(310) を枠左端に flush し、右 50px を price gutter に空ける。
+pub const CHART_CHILD_LOCAL_X_REPLAY: f32 = -PRICE_GUTTER_WIDTH / 2.0; // -25
+/// chart child の y オフセット (content_area-local)。下 24px を time gutter に空けるため上へ寄せる。
+pub const CHART_CHILD_LOCAL_Y: f32 = TIME_GUTTER_HEIGHT / 2.0; // +12
 
 /// Ladder ペイン幅 (Phase F、Live モード複合ウィンドウ)。
 pub const LADDER_WIDTH: f32 = 120.0;
 /// Live モード WindowRoot サイズ。
 pub const LIVE_COMBINED_PANEL_SIZE: Vec2 = Vec2::new(
     CHART_PANEL_SIZE.x + LADDER_WIDTH, // 480
-    CHART_PANEL_SIZE.y,               // 204
+    CHART_PANEL_SIZE.y,               // 244
 );
 /// Ladder ペインの WindowRoot ローカル X (center origin 前提: 幅 480 の右端 +240 に幅 120 を flush)。
 pub const LADDER_PANE_LOCAL_X: f32 = LIVE_COMBINED_PANEL_SIZE.x / 2.0 - LADDER_WIDTH / 2.0; // 180
-/// Live 時に chart+gutter ブロックを左へ寄せる量 (Replay は 0)。
+/// Live 時に chart+gutter ブロックを左へ寄せる量。
+/// ⚠️ Phase B で Replay の chart x が 0 → `CHART_CHILD_LOCAL_X_REPLAY` (-25) に変わったため、
+/// Phase F 着手時はこの値を新レイアウトで再導出すること (chart+gutter 360 を枠左端 -240 に flush)。
 pub const CHART_CHILD_LOCAL_X_LIVE: f32 = -LADDER_WIDTH / 2.0; // -60
 
 /// volume サブペインが draw 領域下部に占める割合 (Phase E で描画、Phase A では領域だけ予約)。
@@ -113,6 +128,13 @@ impl Default for ChartViewState {
 }
 
 impl ChartViewState {
+    /// 集約 timeframe (ミリ秒)。time axis label の step テーブル選択に使う。
+    pub fn timeframe_ms(&self) -> u64 {
+        match self.basis {
+            Basis::Time(ms) => ms,
+        }
+    }
+
     // ── レイアウト分割 (Phase A 先取り。Phase D crosshair gate / Phase E volume が依存) ──
 
     /// volume サブペインの高さ (draw 領域下部)。

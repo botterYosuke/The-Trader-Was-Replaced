@@ -1,4 +1,5 @@
 pub mod buying_power;
+pub mod chart_axes;
 pub mod chart_render;
 pub mod chart_viewstate;
 pub mod components;
@@ -33,6 +34,7 @@ pub use components::{
 };
 
 use crate::ui::buying_power::buying_power_panel_system;
+use crate::ui::chart_axes::{price_axis_labels_system, time_axis_labels_system};
 use crate::ui::chart_render::chart_main_render_system;
 use crate::ui::chart_viewstate::{
     ChartSet, RequestAutoscale, chart_autoscale_apply_system, chart_data_tick_system,
@@ -224,6 +226,17 @@ impl Plugin for UiPlugin {
                 chart_interaction_tick_system.in_set(ChartSet::DataTick),
                 chart_autoscale_apply_system.in_set(ChartSet::Autoscale),
                 chart_main_render_system.in_set(ChartSet::Render),
+                // Phase B: axis label は Changed<ChartViewState> 駆動の retained Text2d なので
+                // Render set (autoscale 確定後) に置く。
+                // ⚠️ instrument_chart_sync_system の後に置く: chart panel が prune→sync で despawn
+                //    される frame に、gutter spawn が flush される前に set_parent すると panic する。
+                //    sync の後なら despawn 済 chart は Changed query に出ず gutter も生存が保証される。
+                price_axis_labels_system
+                    .in_set(ChartSet::Render)
+                    .after(instrument_chart_sync_system),
+                time_axis_labels_system
+                    .in_set(ChartSet::Render)
+                    .after(instrument_chart_sync_system),
             ),
         )
         .add_systems(
