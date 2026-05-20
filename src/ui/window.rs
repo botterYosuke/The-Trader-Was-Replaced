@@ -1,8 +1,6 @@
-use crate::ui::button::spawn_button;
 use crate::ui::chart::ChartViewState;
 use crate::ui::components::{
-    ChartInstrument, InstrumentRegistry, LayoutExcluded, PanelKind, PriceDisplay, TradeButton,
-    WindowRoot,
+    ChartInstrument, InstrumentRegistry, LayoutExcluded, PanelKind, PriceDisplay, WindowRoot,
 };
 use crate::ui::floating_window::{FloatingWindowSpec, spawn_floating_window};
 use bevy::prelude::*;
@@ -54,29 +52,14 @@ pub fn spawn_chart_panel(commands: &mut Commands, instrument_id: &str) {
                 height: 180.0,
                 ..default()
             },
+            ChartInstrument {
+                instrument_id: instrument_id.to_string(),
+            },
         ))
         .id();
 
-    // Buttons
-    let buy_button = spawn_button(
-        commands,
-        "BUY",
-        Color::srgb(0.0, 0.8, 0.4),
-        Vec2::new(-80.0, -160.0),
-        TradeButton::Buy,
-    );
-    let sell_button = spawn_button(
-        commands,
-        "SELL",
-        Color::srgb(0.8, 0.2, 0.2),
-        Vec2::new(80.0, -160.0),
-        TradeButton::Sell,
-    );
-
     commands.entity(content_area).add_child(price_text);
     commands.entity(content_area).add_child(chart);
-    commands.entity(content_area).add_child(buy_button);
-    commands.entity(content_area).add_child(sell_button);
 }
 
 /// `InstrumentRegistry` と Chart `WindowRoot` を同期する。
@@ -84,6 +67,7 @@ pub fn instrument_chart_sync_system(
     registry: Res<InstrumentRegistry>,
     chart_q: Query<(Entity, &ChartInstrument), With<WindowRoot>>,
     mut commands: Commands,
+    mut map: ResMut<crate::trading::InstrumentTradingDataMap>,
 ) {
     if !registry.is_changed() {
         return;
@@ -102,6 +86,7 @@ pub fn instrument_chart_sync_system(
     for (id, e) in &spawned {
         if !desired.contains(id) {
             commands.entity(*e).despawn_recursive();
+            map.map.remove(*id);
         }
     }
 }
@@ -137,6 +122,7 @@ mod tests {
 
         let mut app = App::new();
         app.init_resource::<InstrumentRegistry>();
+        app.init_resource::<crate::trading::InstrumentTradingDataMap>();
         app.add_systems(Update, instrument_chart_sync_system);
 
         {
@@ -162,6 +148,7 @@ mod tests {
 
         let mut app = App::new();
         app.init_resource::<InstrumentRegistry>();
+        app.init_resource::<crate::trading::InstrumentTradingDataMap>();
         app.add_systems(Update, instrument_chart_sync_system);
 
         {
@@ -190,6 +177,7 @@ mod tests {
 
         let mut app = App::new();
         app.init_resource::<InstrumentRegistry>();
+        app.init_resource::<crate::trading::InstrumentTradingDataMap>();
         app.add_systems(Update, instrument_chart_sync_system);
 
         {
@@ -218,6 +206,7 @@ mod tests {
 
         let mut app = App::new();
         app.init_resource::<InstrumentRegistry>();
+        app.init_resource::<crate::trading::InstrumentTradingDataMap>();
         app.add_systems(Update, instrument_chart_sync_system);
 
         {
@@ -238,5 +227,52 @@ mod tests {
         assert!(ids.contains(&"A.T"));
         assert!(ids.contains(&"C.T"));
         assert!(!ids.contains(&"B.T"));
+    }
+
+    #[test]
+    fn sync_system_removes_map_entry_for_dropped_id() {
+        use crate::trading::{InstrumentTradingData, InstrumentTradingDataMap};
+        use crate::ui::components::InstrumentRegistry;
+
+        let mut app = App::new();
+        app.init_resource::<InstrumentRegistry>();
+        app.init_resource::<InstrumentTradingDataMap>();
+        app.add_systems(Update, instrument_chart_sync_system);
+
+        {
+            let mut reg = app.world_mut().resource_mut::<InstrumentRegistry>();
+            reg.replace_all(&["A.T".to_string(), "B.T".to_string()]);
+        }
+        {
+            let mut map = app
+                .world_mut()
+                .resource_mut::<InstrumentTradingDataMap>();
+            map.map.insert("A.T".to_string(), InstrumentTradingData::default());
+            map.map.insert("B.T".to_string(), InstrumentTradingData::default());
+        }
+        app.update();
+
+        {
+            let mut reg = app.world_mut().resource_mut::<InstrumentRegistry>();
+            reg.replace_all(&["A.T".to_string()]);
+        }
+        app.update();
+
+        let world = app.world_mut();
+        let map = world.resource::<InstrumentTradingDataMap>();
+        assert!(
+            !map.map.contains_key("B.T"),
+            "drop された id の map エントリは削除される"
+        );
+        assert!(
+            map.map.contains_key("A.T"),
+            "残っている id の map エントリは保持される"
+        );
+
+        let desired_len = world.resource::<InstrumentRegistry>().ids.len();
+        assert!(
+            map.map.len() <= desired_len,
+            "map のエントリ数は desired 集合のサイズ以下"
+        );
     }
 }

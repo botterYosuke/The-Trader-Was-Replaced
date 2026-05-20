@@ -8,8 +8,8 @@
 - DepthUpdate / TradesUpdate は reducer の関心外なので無視する。
 
 設計判断:
-- volume は reducer の KlineUpdate に格納欄が無いため捨てる（Phase 8 では UI/戦略
-  ともに OHLC のみ参照）。volume を残す必要が出たら reducer 側を拡張する。
+- instrument_id / volume を reducer KlineUpdate に引き渡し、per-instrument 経路
+  （per_id_close / per_id_ohlc_points）に乗せる。global の OHLC 集約には積まれない。
 - bridge は data_engine の Protocol を持たず duck typing。テスト用 stub を許容。
 - 起動順序: bus.subscribe() を bridge.start() の中で同期的に行ってから task spawn。
   外部 publish より先に subscribe が必ず完了している（§7 ADR）。
@@ -41,6 +41,8 @@ def live_kline_to_reducer_kline(live: LiveKlineUpdate) -> ReducerKlineUpdate:
         high=live.high,
         low=live.low,
         close=live.close,
+        instrument_id=live.instrument_id,
+        volume=live.volume,
     )
 
 

@@ -18,6 +18,7 @@ class KlineUpdate:
     low: float = 0.0
     open_time_ms: int = 0
     instrument_id: str = ""  # D9: multi-instrument support (existing calls use "" default)
+    volume: float = 0.0
 
 
 @dataclass(frozen=True)
@@ -43,6 +44,7 @@ class ReducerState:
     ohlc_points: list = field(default_factory=list)
     max_history_len: int = 1000
     per_id_close: dict = field(default_factory=dict)  # D9: {instrument_id -> last close}
+    per_id_ohlc_points: dict = field(default_factory=dict)  # A0: {instrument_id -> list[OhlcPoint]}
 
 
 def apply_event(state: ReducerState, event: ReplayEvent) -> None:
@@ -90,9 +92,24 @@ def apply_event(state: ReducerState, event: ReplayEvent) -> None:
                     high=event.high if event.high > 0 else price,
                     low=event.low if event.low > 0 else price,
                     close=price,
+                    volume=event.volume,
                 ))
                 if len(state.ohlc_points) > state.max_history_len:
                     state.ohlc_points.pop(0)
+            # A0: per-id OHLC accumulation (fires on every real-id KlineUpdate; primary double-emits its real id too)
+            if iid:
+                pts = state.per_id_ohlc_points.setdefault(iid, [])
+                pts.append(OhlcPoint(
+                    timestamp_ms=ts,
+                    open_time_ms=ohlc_open_time,
+                    open=event.open if event.open > 0 else price,
+                    high=event.high if event.high > 0 else price,
+                    low=event.low if event.low > 0 else price,
+                    close=price,
+                    volume=event.volume,
+                ))
+                if len(pts) > state.max_history_len:
+                    pts.pop(0)
         if is_primary:
             state.history.append(price)
             state.history_points.append(HistoryPoint(timestamp_ms=ts, price=price))

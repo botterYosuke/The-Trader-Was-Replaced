@@ -1,4 +1,3 @@
-pub mod button;
 pub mod buying_power;
 pub mod chart;
 pub mod components;
@@ -88,7 +87,7 @@ use crate::ui::strategy_editor::{
     debounced_strategy_autosave_system, sync_editor_to_strategy_buffer_system,
     sync_strategy_buffer_to_editor_system, undo_redo_system, update_strategy_editor_zoom_system,
 };
-use crate::ui::systems::{button_system, update_price_display, update_status_indicator};
+use crate::ui::systems::{update_price_display, update_status_indicator};
 use crate::ui::window::instrument_chart_sync_system;
 use bevy::prelude::*;
 use bevy_cosmic_edit::{
@@ -154,7 +153,6 @@ impl Plugin for UiPlugin {
             Update,
             (
                 update_price_display,
-                button_system,
                 update_status_indicator,
                 chart_render_system,
                 update_footer_system,

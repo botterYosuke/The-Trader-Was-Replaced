@@ -20,12 +20,6 @@ pub struct PriceDisplay;
 #[derive(Component)]
 pub struct StatusIndicator;
 
-#[derive(Component, Clone, Copy)]
-pub enum TradeButton {
-    Buy,
-    Sell,
-}
-
 #[derive(Component)]
 pub struct FooterRoot;
 
@@ -983,7 +977,8 @@ mod writeback_scenario_instruments_tests {
     fn init_strategy_run_resources(app: &mut App) {
         app.init_resource::<ScenarioStartupParams>();
         app.init_resource::<ReplayStartupProgress>();
-        app.init_resource::<crate::trading::TradingData>();
+        app.init_resource::<crate::trading::TradingSession>();
+        app.init_resource::<crate::trading::InstrumentTradingDataMap>();
         app.init_resource::<crate::trading::LastRunResult>();
         app.init_resource::<bevy::time::Time<bevy::time::Real>>();
     }
@@ -1798,6 +1793,7 @@ mod writeback_scenario_instruments_tests {
             last_merged_source: None,
         });
         app.init_resource::<InstrumentRegistry>();
+        app.init_resource::<crate::trading::InstrumentTradingDataMap>();
         app.init_resource::<ScenarioMetadata>();
         app.init_resource::<ScenarioFileWatchState>();
         app.init_resource::<ScenarioReadTarget>();
@@ -1897,6 +1893,7 @@ mod writeback_scenario_instruments_tests {
             mode: crate::trading::ExecutionMode::Replay,
         });
         app.init_resource::<InstrumentRegistry>();
+        app.init_resource::<crate::trading::InstrumentTradingDataMap>();
         app.init_resource::<ScenarioMetadata>();
         app.init_resource::<ScenarioFileWatchState>();
         app.init_resource::<ScenarioReadTarget>();
@@ -2111,6 +2108,7 @@ mod writeback_scenario_instruments_tests {
             mode: crate::trading::ExecutionMode::Replay,
         });
         app.init_resource::<InstrumentRegistry>();
+        app.init_resource::<crate::trading::InstrumentTradingDataMap>();
         app.init_resource::<ScenarioMetadata>();
         app.init_resource::<ScenarioFileWatchState>();
         app.init_resource::<ScenarioReadTarget>();
@@ -2470,6 +2468,7 @@ mod writeback_scenario_instruments_tests {
             mode: crate::trading::ExecutionMode::Replay,
         });
         app.init_resource::<InstrumentRegistry>();
+        app.init_resource::<crate::trading::InstrumentTradingDataMap>();
         app.init_resource::<ScenarioMetadata>();
         app.init_resource::<ScenarioFileWatchState>();
         app.init_resource::<ScenarioReadTarget>();

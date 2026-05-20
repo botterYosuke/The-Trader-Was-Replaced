@@ -32,6 +32,7 @@ def bar_to_kline_update(bar, instrument_id: str = "") -> KlineUpdate:
         low=bar.low.as_double(),
         close=bar.close.as_double(),
         instrument_id=instrument_id,
+        volume=bar.volume.as_double(),
     )
 
 

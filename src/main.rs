@@ -9,9 +9,9 @@ use backcast::trading::{
     AvailableInstruments, BackendChannel, BackendStartupStage, BackendStatus, BackendStatusUpdate,
     ExecutionMode, ExecutionModeRes, LastPrices, LastRunResult, PortfolioOrder, PortfolioPosition,
     PortfolioState, ReplaySpeed, RunState, SelectedSymbol, Ticker, Tickers, TickersSource,
-    TickersStatus, TradingData, TradingSettings, TransportCommand, TransportCommandSender,
+    TickersStatus, TradingSettings, TransportCommand, TransportCommandSender,
     VenueState, VenueStatusRes, backend_update_system, engine, parse_summary_json,
-    price_simulation_system, tickers_source_to_wire,
+    tickers_source_to_wire,
 };
 use backcast::ui::UiPlugin;
 use backcast::ui::replay_startup_window::{
@@ -145,7 +145,8 @@ async fn main() {
         .add_plugins(UiPlugin)
         .add_plugins(GridPlugin)
         .add_plugins(BackendSupervisorPlugin)
-        .insert_resource(TradingData::default())
+        .insert_resource(backcast::trading::InstrumentTradingDataMap::default())
+        .insert_resource(backcast::trading::TradingSession::default())
         .insert_resource(TradingSettings::default())
         .insert_resource(BackendStatus::default())
         .insert_resource(LastRunResult::default())
@@ -171,7 +172,6 @@ async fn main() {
         .add_systems(
             Update,
             (
-                price_simulation_system,
                 backend_update_system,
                 status_update_system,
                 update_replay_startup_window_system,
