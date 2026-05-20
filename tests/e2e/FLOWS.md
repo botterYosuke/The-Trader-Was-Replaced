@@ -64,9 +64,9 @@
 - [x] **A8 stale_startup_id_ignored** ★★ be:`mock`（回帰しやすい）
   - seam: 旧 `startup_id` の status update を後追い注入
   - 観測: 古い update が新しい startup window を閉じない（相関 ID ロジック）
-- [ ] **A9 replay_startup_timeout** ★ be:`mock`（保留: 60s ソフトタイムアウト→error+`Close` を観測したいが、`ReplayStartupProgress` にタイムアウト状態の seam が無く timer 駆動。要 timer 注入 / progress resource 拡張）（wiki: replay.md「Replay Startup 進捗ウィンドウ」のタイムアウト）
-  - seam: startup 開始後、first tick が来ないまま 60s 経過
-  - 観測: `ReplayStartupProgress` がタイムアウトエラー表示へ遷移し、`Close` で閉じられる
+- [x] **A9 replay_startup_timeout** ★ be:`mock`（timer 駆動。本番 `replay_startup_timeout_system` をハーネスに登録し、`Time<Real>` を `advance_real_time` で進めて駆動）（wiki: replay.md「Replay Startup 進捗ウィンドウ」のタイムアウト）
+  - seam: startup 開始後（`arm_startup_timeout`）、first tick が来ないまま 60s 経過
+  - 観測: 59s では error なし → 61s で `ReplayStartupProgress.error` セット（phase 不変・window は開いたまま）→ `close_startup_window` で error クリア+hide
 
 ## B. ポートフォリオ / 実行結果
 
@@ -220,9 +220,12 @@
   `new_backend_disabled()` で `backend_enabled=false` のハーネスを構築。`backend_enabled()` アクセサで
   footer `grpc: DISABLED` 条件を、`push_state` 後の `timestamp_ms` 不変で `backend_update_system` の
   early-return（send no-op）を観測。
+- ✅ **A9 replay_startup_timeout 追加（26 passed）**: 本番 `replay_startup_timeout_system` をハーネスの
+  `Update` に登録し、`arm_startup_timeout(id)` で startup window を開いて `started_at_elapsed` を採番、
+  `advance_real_time(dur)` で headless `Time<Real>` を進めて駆動。59s で error なし→61s で
+  `error` セット（phase 不変）→ `close_startup_window()` でクリアを観測。
 - ⬜ **保留（同ハーネスでは観測不能）**:
   - **A5 set_speed**: `BackendStatusUpdate` に speed ack variant が無い（Phase A-full 待ち）。
-  - **A9 replay_startup_timeout**: `ReplayStartupProgress` にタイムアウト状態 seam が無く timer 駆動。
   - **C5 select_instrument**: `SelectedSymbol` は UI 駆動のみで backend→ECS seam を通らない。
   - **D8 prod_guard**: env 二重ガードは backend 側ロジック（be:`real` / backend 単体テスト向き）。
   - **D5/F3/F4/F5（event seam）**: `backend_event_drain_system` が `info!` するだけで resource を

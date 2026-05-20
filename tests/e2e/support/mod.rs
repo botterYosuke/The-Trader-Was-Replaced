@@ -14,10 +14,13 @@ use bevy::prelude::*;
 use bevy::MinimalPlugins;
 use tokio::sync::mpsc;
 
+use std::time::Duration;
+
 use backcast::backend_sync::{
     backend_event_drain_system, status_update_system, BackendEventChannel, StatusUpdateChannel,
 };
 use backcast::replay::{ReplayStartupPhase, ReplayStartupProgress};
+use backcast::ui::replay_startup_window::replay_startup_timeout_system;
 use backcast::trading::{
     backend_update_system, AvailableInstruments, BackendChannel, BackendEvent, BackendStatus,
     BackendStatusUpdate, BackendTradingState, ExecutionModeRes, InstrumentTradingDataMap,
@@ -85,6 +88,7 @@ impl Harness {
                 backend_update_system,
                 status_update_system,
                 backend_event_drain_system,
+                replay_startup_timeout_system,
             ),
         );
 
@@ -201,6 +205,40 @@ impl Harness {
         progress.visible = true;
         progress.startup_id = startup_id;
         progress.phase = ReplayStartupPhase::Idle;
+        progress.error = None;
+    }
+
+    /// Open a startup window and arm the soft-timeout clock (`started_at_elapsed`
+    /// = current `Time<Real>` elapsed). Use with [`advance_real_time`] to drive
+    /// `replay_startup_timeout_system` (A9).
+    pub fn arm_startup_timeout(&mut self, startup_id: u64) {
+        let now = self.app.world().resource::<Time<Real>>().elapsed();
+        let mut progress = self.app.world_mut().resource_mut::<ReplayStartupProgress>();
+        progress.visible = true;
+        progress.startup_id = startup_id;
+        progress.phase = ReplayStartupPhase::WaitingForFirstTick;
+        progress.error = None;
+        progress.started_at_elapsed = Some(now);
+    }
+
+    /// Advance the headless `Time<Real>` clock and pump one frame, so timer-driven
+    /// systems (e.g. the startup soft-timeout) observe elapsed wall time.
+    pub fn advance_real_time(&mut self, dur: Duration) {
+        self.app.world_mut().resource_mut::<Time<Real>>().advance_by(dur);
+        self.tick();
+    }
+
+    /// Mirror of the production Close-button reset (`replay_startup_close_button_system`).
+    /// The button itself is UI-driven (Interaction), so headless tests invoke the
+    /// state transition directly.
+    pub fn close_startup_window(&mut self) {
+        let mut progress = self.app.world_mut().resource_mut::<ReplayStartupProgress>();
+        progress.visible = false;
+        progress.phase = ReplayStartupPhase::Idle;
+        progress.detail = None;
+        progress.baseline_timestamp_ms = None;
+        progress.started_at_elapsed = None;
+        progress.start_engine_accepted = false;
         progress.error = None;
     }
 }
