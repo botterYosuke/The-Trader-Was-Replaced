@@ -13,7 +13,7 @@
 | Step | 内容 | 状態 |
 | --- | --- | --- |
 | 0 | Backend Event Transport (`SubscribeBackendEvents`) | ✅ 完了 — `96c7370c` + レビュー修正 `e221399e` |
-| 1 | MockVenueAdapter 発注経路 + SecretVault | ⬜ 未着手 |
+| 1 | MockVenueAdapter 発注経路 + SecretVault + SubmitSecret RPC | ✅ 完了 (2026-05-20、未コミット) |
 | 2 | ExecEngine 有効化 + OrderEvent stream | ⬜ 未着手 |
 | 3 | OrderPanel UI + SecretModal UI | ⬜ 未着手 |
 | 4 | Account 同期 + Panel Live 対応 | ⬜ 未着手 |
@@ -33,6 +33,16 @@
 - **レビュー修正** (`e221399e`): events 再接続の connect/subscribe 失敗も 500ms backoff で self-heal（永久 stall 回避）/ streaming テストの無限ハング回避（subscription 登録待ち + 5s deadline + cancel 後除去 assert）/ `BackendEventBus.subscriber_count()` 追加
 - **⚠️ 計画書ドリフト訂正**: §3.12 / §4 / §5 を実装に合わせて訂正（① `asyncio.Queue`/`LiveEventBus` → threadsafe `BackendEventBus`、② `src/backend_client.rs` → `src/main.rs`、③ Step 0 はログのみで `on_account_event`/`on_order_event` 結線は Step 4）
 - **次**: Step 1（MockVenueAdapter 発注経路 + SecretVault）
+
+### Step 1 完了サマリー (2026-05-20)
+
+- **SecretVault** (`python/engine/live/secret_vault.py` 新設): Tachibana 専用 secret 仲介。公開 API は `create_request(venue,purpose)->rid`（同期）/ `await wait_for(rid,timeout)->secret` / `submit(rid,secret)->None`（同期）/ `get(venue,purpose)->str|None`（同期）。`threading.Lock` で並行制御（gRPC は sync ThreadPool、`submit` は worker thread・`wait_for` は live-loop thread で走る cross-thread 構造のため `asyncio.Lock` 不可）。cross-thread の Future 解決は `future.get_loop().call_soon_threadsafe`、TTL 60s（保管時刻起点・再利用でリセットしない・purpose 別独立）。Future は `wait_for` が running loop 上で遅延生成（`create_request` は loop 非依存）。平文 secret は `_store` のみが保持し TTL で削除、`_pending` は timeout 時掃除（§6 整合）。unit test 11。
+- **MockVenueAdapter.submit_order** (`mock_adapter.py`) + **OrderResult** (`python/engine/live/order_types.py` 新設): mock 発注経路。成功 `FILLED` / 失敗 `REJECTED` / 部分約定 `PARTIALLY_FILLED` を `set_next_order_outcome` で注入。async・kwargs 拡張可（§9）。`OrderResult` は proto `OrderEvent` と field 一致。`LiveVenueAdapter` Protocol は不変（mock 固有メソッド、発注は本来 ExecutionClient の責務）。unit test 12。
+- **SubmitSecret RPC**: proto に `rpc SubmitSecret(SubmitSecretReq{token,request_id,secret}) returns (SubmitSecretRes{success,error_code})` 追加（secret は Req のみ・Res/ログに残さない、§1.3）。`server_grpc.py` に `SecretVault` の最小 wiring + handler（bad token → `UNAUTHENTICATED`、unknown request_id → `success=false`/`error_code="UNKNOWN_REQUEST_ID"`、正常 → `vault.submit` 後 `success=true`）。Rust mock (`tests/backend_integration.rs` の `MyDataEngine`) に `submit_secret` stub 追従。Python handler test 3 + Rust backend_integration 10 passed。
+- **テスト**: 新規/変更分 26 passed（secret_vault 11 + mock_adapter 12 + submit_secret 3）。全体回帰 919 passed / 11 skipped。**pre-existing 失敗 4 件**（`test_grpc_shutdown` ×3 / `test_grpc_startup_sentinel` ×1）は Windows の `select.select` on pipe FD（`WinError 10038`）による test-harness 制約で本 Step と無関係（`python -m engine` 手動起動は `GRPC_LISTENING` で正常起動を確認）。
+- **計画書ドリフト訂正**: §3.1 の `asyncio.Lock` → `threading.Lock`（cross-thread 構造のため）。
+- **Step 2 への申し送り**: ① SecretVault に live-loop 参照を注入し、submit-先行/no-loop 経路でも TTL を arm（現状は本番 wait_for-先行 flow で arm されるため実害なし）。② `_targets`/`_ttl_armed` の長期掃除。③ grpc-server test fixture の `conftest.py` 共通化（任意）。
+- **次**: Step 2（ExecEngine 有効化 + OrderEvent stream）
 
 ---
 
@@ -210,7 +220,7 @@ Tachibana の場合は警告不要（`CLMKabuCorrectOrder` で atomic）。
 - Nautilus `OrderFactory` を Strategy 外から呼べる薄い wrapper (`live/order_facade.py`) を追加。Phase 9 は手動発注のみなので Strategy 経由ではなく gRPC handler から直接 facade を叩く
   - **`OrderFactory` は `trader_id` + `strategy_id` を必須引数に取る**（`.claude/skills/nautilus_trader/src/nautilus_trader/common/factories.pyx:73` 確認済み）。手動発注には Strategy が無いため、合成 ID（例 `StrategyId("MANUAL-001")` / 既存 `TraderId`）を facade が固定で与える
   - **発注は `ExecEngine.submit_order()` ではなく `SubmitOrder` コマンドを生成して `ExecEngine.execute(command)` に渡す**（`ExecutionEngine` に `submit_order()` メソッドは存在しない。エントリ点は `execute(TradingCommand)`、`.../execution/engine.pyx:866` 確認済み。取消/訂正も同様に `CancelOrder` / `ModifyOrder` コマンド → `execute()`）
-- `live/secret_vault.py` を新設。`asyncio.Lock` で並行アクセス制御、TTL チェックは `asyncio.get_event_loop().call_later(60, ...)`
+- `live/secret_vault.py` を新設。**`threading.Lock`** で並行アクセス制御する（gRPC servicer は sync ThreadPool で `submit` は worker thread・`wait_for` は live loop thread で走る cross-thread 構造のため `asyncio.Lock` は使えない）。cross-thread の Future 解決は `future.get_loop().call_soon_threadsafe(future.set_result, secret)`、TTL は `loop.call_soon_threadsafe(loop.call_later, 60, ...)` で loop thread 上に仕掛ける。**【ドリフト訂正 — 当初案 `asyncio.Lock` / `asyncio.get_event_loop().call_later` を Step 1 実装で訂正】**
 
 ### 3.2 Backend: 発注 RPC 追加
 

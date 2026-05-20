@@ -211,6 +211,11 @@ class DataEngineStub(object):
                 request_serializer=engine__pb2.SubscribeBackendEventsReq.SerializeToString,
                 response_deserializer=engine__pb2.BackendEvent.FromString,
                 _registered_method=True)
+        self.SubmitSecret = channel.unary_unary(
+                '/engine.DataEngine/SubmitSecret',
+                request_serializer=engine__pb2.SubmitSecretReq.SerializeToString,
+                response_deserializer=engine__pb2.SubmitSecretRes.FromString,
+                _registered_method=True)
         self.Shutdown = channel.unary_unary(
                 '/engine.DataEngine/Shutdown',
                 request_serializer=engine__pb2.ShutdownRequest.SerializeToString,
@@ -355,6 +360,13 @@ class DataEngineServicer(object):
         context.set_details('Method not implemented!')
         raise NotImplementedError('Method not implemented!')
 
+    def SubmitSecret(self, request, context):
+        """Phase 9 Step 1: secret relay (Tachibana second-password).
+        """
+        context.set_code(grpc.StatusCode.UNIMPLEMENTED)
+        context.set_details('Method not implemented!')
+        raise NotImplementedError('Method not implemented!')
+
     def Shutdown(self, request, context):
         """Lifecycle (Step 2: backend-startup-sync)
         """
@@ -469,6 +481,11 @@ def add_DataEngineServicer_to_server(servicer, server):
                     servicer.SubscribeBackendEvents,
                     request_deserializer=engine__pb2.SubscribeBackendEventsReq.FromString,
                     response_serializer=engine__pb2.BackendEvent.SerializeToString,
+            ),
+            'SubmitSecret': grpc.unary_unary_rpc_method_handler(
+                    servicer.SubmitSecret,
+                    request_deserializer=engine__pb2.SubmitSecretReq.FromString,
+                    response_serializer=engine__pb2.SubmitSecretRes.SerializeToString,
             ),
             'Shutdown': grpc.unary_unary_rpc_method_handler(
                     servicer.Shutdown,
@@ -1043,6 +1060,33 @@ class DataEngine(object):
             '/engine.DataEngine/SubscribeBackendEvents',
             engine__pb2.SubscribeBackendEventsReq.SerializeToString,
             engine__pb2.BackendEvent.FromString,
+            options,
+            channel_credentials,
+            insecure,
+            call_credentials,
+            compression,
+            wait_for_ready,
+            timeout,
+            metadata,
+            _registered_method=True)
+
+    @staticmethod
+    def SubmitSecret(request,
+            target,
+            options=(),
+            channel_credentials=None,
+            call_credentials=None,
+            insecure=False,
+            compression=None,
+            wait_for_ready=None,
+            timeout=None,
+            metadata=None):
+        return grpc.experimental.unary_unary(
+            request,
+            target,
+            '/engine.DataEngine/SubmitSecret',
+            engine__pb2.SubmitSecretReq.SerializeToString,
+            engine__pb2.SubmitSecretRes.FromString,
             options,
             channel_credentials,
             insecure,

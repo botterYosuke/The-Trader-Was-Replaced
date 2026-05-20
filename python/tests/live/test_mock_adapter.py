@@ -9,6 +9,7 @@ import asyncio
 
 from engine.live.adapter import InstrumentRaw, LiveVenueAdapter, VenueCredentials
 from engine.live.mock_adapter import MockVenueAdapter
+from engine.live.order_types import OrderResult
 
 
 def test_mock_adapter_satisfies_protocol() -> None:
@@ -242,3 +243,92 @@ def test_mock_adapter_logout_clears_subscriptions() -> None:
 
     with pytest.raises(asyncio.TimeoutError):
         asyncio.run(scenario())
+
+
+def test_mock_adapter_submit_order_default_is_filled() -> None:
+    """S4-a RED: 仕込み無しの submit_order は FILLED 全約定を返す。
+
+    承認設計の既定挙動: set_next_order_outcome を呼ばなければ
+    status="FILLED", filled_qty == qty, avg_price 設定済み,
+    client_order_id 非空。submit_order は MockVenueAdapter 固有の
+    async メソッド（Protocol 外）で、返り値は engine.live.order_types.OrderResult。
+    """
+    adapter = MockVenueAdapter()
+
+    async def scenario() -> OrderResult:
+        creds = VenueCredentials(credentials_source="env", environment_hint="demo")
+        await adapter.login(creds)
+        return await adapter.submit_order(
+            venue="MOCK",
+            instrument_id="7203.TSE",
+            side="buy",
+            qty=100.0,
+            price=2500.0,
+            order_type="LIMIT",
+            time_in_force="GTC",
+        )
+
+    result = asyncio.run(scenario())
+    assert isinstance(result, OrderResult)
+    assert result.status == "FILLED"
+    assert result.filled_qty == 100.0
+    assert result.avg_price is not None
+    assert result.client_order_id  # 非空
+    assert result.reject_reason is None
+
+
+def test_mock_adapter_submit_order_rejected_outcome() -> None:
+    """S4-a RED: set_next_order_outcome(REJECTED) 注入時は REJECTED + reject_reason。
+
+    set_next_order_outcome は inject_tick 流の同期テスト補助メソッド。
+    REJECTED の場合 filled_qty=0、reject_reason が伝播する。
+    """
+    adapter = MockVenueAdapter()
+
+    async def scenario() -> OrderResult:
+        creds = VenueCredentials(credentials_source="env", environment_hint="demo")
+        await adapter.login(creds)
+        adapter.set_next_order_outcome(status="REJECTED", reject_reason="insufficient margin")
+        return await adapter.submit_order(
+            venue="MOCK",
+            instrument_id="7203.TSE",
+            side="buy",
+            qty=100.0,
+            price=2500.0,
+            order_type="LIMIT",
+            time_in_force="GTC",
+        )
+
+    result = asyncio.run(scenario())
+    assert result.status == "REJECTED"
+    assert result.reject_reason == "insufficient margin"
+    assert result.filled_qty == 0.0
+
+
+def test_mock_adapter_submit_order_partially_filled_outcome() -> None:
+    """S4-a RED: set_next_order_outcome(PARTIALLY_FILLED, filled_qty=...) で部分約定。
+
+    filled_qty < qty となり、avg_price は設定される。
+    """
+    adapter = MockVenueAdapter()
+
+    async def scenario() -> OrderResult:
+        creds = VenueCredentials(credentials_source="env", environment_hint="demo")
+        await adapter.login(creds)
+        adapter.set_next_order_outcome(status="PARTIALLY_FILLED", filled_qty=40.0)
+        return await adapter.submit_order(
+            venue="MOCK",
+            instrument_id="7203.TSE",
+            side="buy",
+            qty=100.0,
+            price=2500.0,
+            order_type="LIMIT",
+            time_in_force="GTC",
+        )
+
+    result = asyncio.run(scenario())
+    assert result.status == "PARTIALLY_FILLED"
+    assert result.filled_qty == 40.0
+    assert result.filled_qty < 100.0
+    assert result.avg_price is not None
+    assert result.reject_reason is None

@@ -76,6 +76,9 @@ service DataEngine {
   // Must be added before other Phase 9 RPCs (everything depends on this transport).
   rpc SubscribeBackendEvents (SubscribeBackendEventsReq) returns (stream BackendEvent);
 
+  // Phase 9 Step 1: secret relay (Tachibana second-password).
+  rpc SubmitSecret (SubmitSecretReq) returns (SubmitSecretRes);
+
   // Lifecycle (Step 2: backend-startup-sync)
   rpc Shutdown (ShutdownRequest) returns (ShutdownResponse);
 }
@@ -332,6 +335,19 @@ message SecretRequired {
   string venue = 2;
   string kind = 3;     // e.g. "second_secret"
   string purpose = 4;  // e.g. "new_order" / "cancel_order" / "correct_order"
+}
+
+// SubmitSecret: UI returns the collected secret for a SecretRequired.request_id.
+// `secret` lives only on the request; never echoed in the response or logs.
+message SubmitSecretReq {
+  string token = 1;
+  string request_id = 2;
+  string secret = 3;
+}
+
+message SubmitSecretRes {
+  bool success = 1;
+  string error_code = 2;
 }
 
 message OrderEvent {
