@@ -204,11 +204,14 @@ pub fn price_axis_labels_system(
             }
         }
 
-        let (low, high) = state.visible_price_range();
+        // ⚠️ main area (上 80%) の価格域だけにラベルを引く。フル bounds だと volume sub-pane
+        //    (下 20%) の y 行に価格目盛りが出てしまい、volume bar と無関係な価格が並ぶ (Phase E)。
+        let (low, high) = state.main_area_price_range();
         if !low.is_finite() || !high.is_finite() || (high - low).abs() < f32::EPSILON {
             continue;
         }
-        let labels_can_fit = (state.bounds.y / (TEXT_SIZE * PRICE_LABEL_PITCH)).max(1.0) as i32;
+        let labels_can_fit =
+            (state.main_area_height() / (TEXT_SIZE * PRICE_LABEL_PITCH)).max(1.0) as i32;
         let (step, rounded_max) = calc_optimal_price_ticks(high, low, labels_can_fit);
         if step <= 0.0 || !step.is_finite() {
             continue;
@@ -497,6 +500,63 @@ mod tests {
             assert!(
                 gap >= MIN_TIME_LABEL_SPACING - 1e-3,
                 "time labels too close: gap={gap} < {MIN_TIME_LABEL_SPACING}"
+            );
+        }
+    }
+
+    /// 価格ラベルは main area 内 (`y >= main_area_y_bottom`) にのみ生成され、volume sub-pane
+    /// (下 20%) の y 行には出ないこと (Phase E 回帰防止)。
+    #[test]
+    fn price_labels_stay_within_main_area() {
+        use crate::ui::chart_viewstate::ChartViewState;
+
+        let mut app = App::new();
+
+        let price_gutter = app.world_mut().spawn((PriceGutter, Transform::default())).id();
+        let time_gutter = app.world_mut().spawn((TimeGutter, Transform::default())).id();
+        // autoscale 相当の実値を直接固定し、毎フレーム Changed を立てる。
+        let mut state = ChartViewState::default();
+        state.auto_scale = false;
+        state.base_price_y = 105.0;
+        // autoscale 出力相当: main_area_height * tick_size / range。range≈13 (98..111) を想定。
+        state.cell_height = state.main_area_height() * state.tick_size / 13.0;
+        state.latest_x = 9 * 60_000;
+        let chart = app
+            .world_mut()
+            .spawn((
+                state.clone(),
+                ChartInstrument {
+                    instrument_id: "T".to_string(),
+                },
+                PriceGutterRef(price_gutter),
+                TimeGutterRef(time_gutter),
+            ))
+            .id();
+
+        app.add_systems(
+            Update,
+            (
+                move |mut q: Query<&mut ChartViewState>| {
+                    if let Ok(mut s) = q.get_mut(chart) {
+                        s.set_changed();
+                    }
+                },
+                price_axis_labels_system,
+            )
+                .chain(),
+        );
+        app.update();
+
+        let bottom = state.main_area_y_bottom();
+        let world = app.world_mut();
+        let mut pq = world.query::<(&PriceLabel, &Transform)>();
+        let labels: Vec<_> = pq.iter(world).collect();
+        assert!(!labels.is_empty(), "price labels should be generated");
+        for (_, tf) in &labels {
+            assert!(
+                tf.translation.y >= bottom - 1e-3,
+                "price label at y={} leaked into volume area (bottom={bottom})",
+                tf.translation.y
             );
         }
     }

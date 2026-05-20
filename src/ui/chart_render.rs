@@ -11,6 +11,11 @@ use crate::ui::components::ChartInstrument;
 use bevy::prelude::*;
 use bevy_vector_shapes::prelude::*;
 
+/// 陽線 (close >= open) の色。volume bar も同色 (alpha を足す) なので single source 化。
+pub const BULLISH_CANDLE_COLOR: Color = Color::srgb(0.0, 0.78, 0.31);
+/// 陰線 (close < open) の色。
+pub const BEARISH_CANDLE_COLOR: Color = Color::srgb(0.9, 0.2, 0.2);
+
 /// 1 本のローソク足を描く。`x` は chart-local x (= `interval_to_x` の結果)。
 fn draw_candle(
     painter: &mut ShapePainter,
@@ -21,9 +26,9 @@ fn draw_candle(
     state: &ChartViewState,
 ) {
     let color = if pt.close >= pt.open {
-        Color::srgb(0.0, 0.78, 0.31) // bullish green
+        BULLISH_CANDLE_COLOR
     } else {
-        Color::srgb(0.9, 0.2, 0.2) // bearish red
+        BEARISH_CANDLE_COLOR
     };
 
     let y_high = state.price_to_y(pt.high);

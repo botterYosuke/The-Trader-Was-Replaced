@@ -4,6 +4,7 @@ pub mod chart_crosshair;
 pub mod chart_interaction;
 pub mod chart_render;
 pub mod chart_viewstate;
+pub mod chart_volume;
 pub mod components;
 pub mod editor_history;
 pub mod floating_window;
@@ -43,6 +44,7 @@ use crate::ui::chart_crosshair::{
 };
 use crate::ui::chart_interaction::{chart_scroll_zoom_system, install_chart_drag_observer};
 use crate::ui::chart_render::chart_main_render_system;
+use crate::ui::chart_volume::volume_render_system;
 use crate::ui::chart_viewstate::{
     ChartSet, RequestAutoscale, chart_autoscale_apply_system, chart_data_tick_system,
     chart_interaction_tick_system,
@@ -237,6 +239,8 @@ impl Plugin for UiPlugin {
                 install_chart_drag_observer,
                 chart_scroll_zoom_system.in_set(ChartSet::Interaction),
                 chart_main_render_system.in_set(ChartSet::Render),
+                // Phase E: volume サブペイン。immediate-mode 純 draw (Changed gate しない)。
+                volume_render_system.in_set(ChartSet::Render),
                 // Phase B: axis label は Changed<ChartViewState> 駆動の retained Text2d なので
                 // Render set (autoscale 確定後) に置く。
                 // ⚠️ instrument_chart_sync_system の後に置く: chart panel が prune→sync で despawn

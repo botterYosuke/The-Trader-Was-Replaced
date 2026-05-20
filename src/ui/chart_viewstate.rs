@@ -206,6 +206,15 @@ impl ChartViewState {
         (low.min(high), low.max(high))
     }
 
+    /// main (price) area に表示中の価格域 `(low, high)`。volume area (下端 20%) を除く。
+    /// 価格軸ラベルはこの範囲だけに引く (volume sub-pane の y 行に価格目盛りを出さない —
+    /// crosshair の `hovered_price` が `main_area_y_bottom()` でガードしているのと対称)。
+    pub fn main_area_price_range(&self) -> (f32, f32) {
+        let high = self.y_to_price(self.bounds.y / 2.0);
+        let low = self.y_to_price(self.main_area_y_bottom());
+        (low.min(high), low.max(high))
+    }
+
     /// 表示中の時刻域 `(earliest_ms, latest_ms)`。
     pub fn visible_time_range(&self) -> (i64, i64) {
         let left = -self.bounds.x / 2.0;

@@ -21,10 +21,12 @@
 //!   パターン (Caveat #26: `despawn` は子孫を消さないので個別 / `despawn_recursive`)。
 //!   z は cross line +0.5 の上の +0.6 (axis label +0.3 — Caveat #16)。
 
+use crate::trading::{InstrumentTradingDataMap, OhlcPoint};
 use crate::ui::chart_axes::{
     PriceGutter, PriceGutterRef, TimeGutter, TimeGutterRef, format_time_label,
 };
 use crate::ui::chart_viewstate::ChartViewState;
+use crate::ui::chart_volume::format_volume;
 use crate::ui::components::ChartInstrument;
 use bevy::prelude::*;
 use bevy::sprite::Anchor;
@@ -41,6 +43,9 @@ pub struct CrosshairState {
     pub hovered_price: Option<f32>,
     /// hover 列の時刻 (ms)。derive system が書く。
     pub hovered_time_ms: Option<i64>,
+    /// hover 中の最近傍 candle の volume (volume area 内のみ `Some`)。derive system が書く。
+    /// `hovered_price` とは排他 (同時に `Some` にならない)。
+    pub hovered_volume: Option<f32>,
 }
 
 /// crosshair の price/time badge。どの chart のものかで despawn 対象を絞る。
@@ -90,7 +95,12 @@ pub fn install_chart_crosshair_observer(
                 // `hit.position` は world space (bevy_sprite_picking_backend 前提 — Caveat #12/#24)。
                 // chart GlobalTransform は scale=1 (translation のみ) なので引き算で chart-local 化。
                 // observer は ChartSet::Autoscale 順序非依存にするため ChartViewState を読まない。
-                let local = trigger.event().hit.position.unwrap_or(Vec3::ZERO) - gt.translation();
+                // position が None の Move は位置不明なので skip する (旧 unwrap_or(ZERO) は world
+                // 原点 - chart 位置という garbage 座標に crosshair を飛ばすので使わない)。
+                let Some(world_pos) = trigger.event().hit.position else {
+                    return;
+                };
+                let local = world_pos - gt.translation();
                 crosshair.cursor_world = Some(local.xy());
                 // hovered_price / hovered_time_ms は touch しない (Render system が計算)。
             },
@@ -101,6 +111,7 @@ pub fn install_chart_crosshair_observer(
                     crosshair.cursor_world = None;
                     crosshair.hovered_price = None;
                     crosshair.hovered_time_ms = None;
+                    crosshair.hovered_volume = None;
                 }
             },
         );
@@ -115,22 +126,32 @@ pub fn install_chart_crosshair_observer(
 /// が動いた frame で `hovered_price` が stale になる。`Or<(Changed<CrosshairState>,
 /// Changed<ChartViewState>)>` で「cursor 動 or viewstate 動」どちらの起点でも再計算する。
 pub fn chart_crosshair_derive_system(
+    map: Res<InstrumentTradingDataMap>,
     mut chart_q: Query<
-        (&ChartViewState, &mut CrosshairState),
+        (&ChartViewState, &ChartInstrument, &mut CrosshairState),
         Or<(Changed<CrosshairState>, Changed<ChartViewState>)>,
     >,
 ) {
-    for (state, mut crosshair) in &mut chart_q {
+    for (state, instrument, mut crosshair) in &mut chart_q {
         let Some(c) = crosshair.cursor_world else {
             continue; // Out observer 側で既に None 化済み
         };
         let new_t = state.x_to_time_ms(c.x);
         // ⚠️ hovered_price は main_area 内のみ計算する。volume area (`y < main_area_y_bottom()`) の
         //    y を y_to_price に渡すと base_price_y 以下に外挿された偽の価格が badge に出る。
-        let new_p = if c.y >= state.main_area_y_bottom() {
+        let in_main = c.y >= state.main_area_y_bottom();
+        let new_p = if in_main {
             Some(state.y_to_price(c.y))
         } else {
             None
+        };
+        // volume area のときだけ最近傍 candle の volume を入れる (price とは排他 if/else)。
+        let new_vol = if in_main {
+            None
+        } else {
+            map.map
+                .get(&instrument.instrument_id)
+                .and_then(|data| nearest_candle_volume(&data.ohlc_points, new_t))
         };
         // DerefMut 抑制ガード (Caveat #29 と同根: 同値代入で Changed を立てると derive が再発火し続ける)。
         if crosshair.hovered_price != new_p {
@@ -139,7 +160,34 @@ pub fn chart_crosshair_derive_system(
         if crosshair.hovered_time_ms != Some(new_t) {
             crosshair.hovered_time_ms = Some(new_t);
         }
+        if crosshair.hovered_volume != new_vol {
+            crosshair.hovered_volume = new_vol;
+        }
     }
+}
+
+/// `open_time_ms` 昇順の candle 列から `target_ms` に最も近い candle の volume を返す。
+/// 該当 candle の volume が `None` ならそのまま `None`。空列でも `None`。
+fn nearest_candle_volume(ohlc: &[OhlcPoint], target_ms: i64) -> Option<f32> {
+    if ohlc.is_empty() {
+        return None;
+    }
+    let idx = match ohlc.binary_search_by_key(&target_ms, |c| c.open_time_ms) {
+        Ok(i) => i,
+        Err(i) => {
+            // i は挿入位置。前後どちらの candle が近いか距離で選ぶ。
+            if i == 0 {
+                0
+            } else if i >= ohlc.len() {
+                ohlc.len() - 1
+            } else {
+                let prev_dist = target_ms - ohlc[i - 1].open_time_ms;
+                let next_dist = ohlc[i].open_time_ms - target_ms;
+                if prev_dist <= next_dist { i - 1 } else { i }
+            }
+        }
+    };
+    ohlc[idx].volume
 }
 
 // ─── render (ChartSet::Render, 毎フレーム) ───
@@ -212,6 +260,21 @@ pub fn crosshair_badge_system(
                     Vec2::new(0.0, y),
                     Vec2::new(PRICE_GUTTER_WIDTH, PRICE_BADGE_HEIGHT),
                     format!("{:.*}", state.decimals, price),
+                );
+            }
+        }
+
+        // volume badge — volume area hover のときだけ (hovered_volume = Some、price とは排他)。
+        // price gutter (右軸) の cursor.y 行に出す (price badge と対称: horizontal cross line 上)。
+        if let Some((vol, cursor)) = crosshair.hovered_volume.zip(crosshair.cursor_world) {
+            if live_price_gutter.contains(price_ref.0) {
+                spawn_badge(
+                    &mut commands,
+                    chart_entity,
+                    price_ref.0,
+                    Vec2::new(0.0, cursor.y),
+                    Vec2::new(PRICE_GUTTER_WIDTH, PRICE_BADGE_HEIGHT),
+                    format_volume(vol),
                 );
             }
         }
@@ -293,6 +356,7 @@ mod tests {
     #[test]
     fn derive_computes_price_and_time_in_main_area() {
         let mut app = App::new();
+        app.init_resource::<InstrumentTradingDataMap>();
         let state = state_for_hover();
         // main area 中央付近 (y >= main_area_y_bottom)。
         let cursor = Vec2::new(20.0, 15.0);
@@ -326,6 +390,7 @@ mod tests {
     #[test]
     fn derive_price_none_in_volume_area() {
         let mut app = App::new();
+        app.init_resource::<InstrumentTradingDataMap>();
         let state = state_for_hover();
         // volume area (下 20%): y < main_area_y_bottom。
         let cursor = Vec2::new(10.0, state.main_area_y_bottom() - 5.0);
@@ -352,10 +417,96 @@ mod tests {
         assert_eq!(cs.hovered_time_ms, Some(expected_time));
     }
 
+    fn ohlc_vol(open_time_ms: i64, vol: Option<f32>) -> OhlcPoint {
+        OhlcPoint {
+            timestamp_ms: open_time_ms,
+            open_time_ms,
+            open: 100.0,
+            high: 101.0,
+            low: 99.0,
+            close: 100.5,
+            volume: vol,
+        }
+    }
+
+    /// volume area の cursor → 最近傍 candle の volume が hovered_volume に入り、price は None。
+    #[test]
+    fn derive_computes_volume_in_volume_area() {
+        use crate::trading::InstrumentTradingData;
+
+        let mut app = App::new();
+        app.init_resource::<InstrumentTradingDataMap>();
+
+        let state = state_for_hover();
+        // 600_000 の candle (vol 250) に重なる cursor.x を round-trip で求める。
+        let cursor_x = state.interval_to_x(600_000);
+        let cursor = Vec2::new(cursor_x, state.main_area_y_bottom() - 5.0);
+        assert!(cursor.y < state.main_area_y_bottom());
+
+        {
+            let mut map = app.world_mut().resource_mut::<InstrumentTradingDataMap>();
+            map.map.insert(
+                "T".to_string(),
+                InstrumentTradingData {
+                    ohlc_points: vec![ohlc_vol(540_000, Some(100.0)), ohlc_vol(600_000, Some(250.0))],
+                    ..Default::default()
+                },
+            );
+        }
+
+        let chart = app
+            .world_mut()
+            .spawn((
+                state,
+                ChartInstrument {
+                    instrument_id: "T".to_string(),
+                },
+                CrosshairState {
+                    cursor_world: Some(cursor),
+                    ..default()
+                },
+            ))
+            .id();
+        app.add_systems(Update, chart_crosshair_derive_system);
+        app.update();
+
+        let cs = app.world().entity(chart).get::<CrosshairState>().unwrap();
+        assert_eq!(cs.hovered_volume, Some(250.0), "nearest candle volume");
+        assert_eq!(cs.hovered_price, None, "price is None in volume area");
+    }
+
+    #[test]
+    fn nearest_candle_volume_picks_closest() {
+        let candles = [
+            ohlc_vol(0, Some(10.0)),
+            ohlc_vol(60_000, Some(20.0)),
+            ohlc_vol(120_000, Some(30.0)),
+        ];
+        // 完全一致。
+        assert_eq!(nearest_candle_volume(&candles, 60_000), Some(20.0));
+        // 中間 (20_000 は 0 に近い)。
+        assert_eq!(nearest_candle_volume(&candles, 20_000), Some(10.0));
+        // 中間 (50_000 は 60_000 に近い)。
+        assert_eq!(nearest_candle_volume(&candles, 50_000), Some(20.0));
+        // 範囲外 (左)。
+        assert_eq!(nearest_candle_volume(&candles, -100_000), Some(10.0));
+        // 範囲外 (右)。
+        assert_eq!(nearest_candle_volume(&candles, 999_999), Some(30.0));
+    }
+
+    #[test]
+    fn nearest_candle_volume_empty_and_none() {
+        assert_eq!(nearest_candle_volume(&[], 0), None);
+        // 最近傍 candle の volume が None なら None。
+        let candles = [ohlc_vol(0, None)];
+        assert_eq!(nearest_candle_volume(&candles, 0), None);
+    }
+
     /// cursor_world=None (hover 外) では derive は readout を触らない。
     #[test]
     fn derive_noop_when_cursor_none() {
         let mut app = App::new();
+        app.init_resource::<InstrumentTradingDataMap>();
         let chart = app
             .world_mut()
             .spawn((
@@ -382,6 +533,7 @@ mod tests {
 
         let mut app = App::new();
         app.init_resource::<ChangedLog>();
+        app.init_resource::<InstrumentTradingDataMap>();
         app.world_mut().spawn((
             state_for_hover(),
             ChartInstrument {
@@ -443,6 +595,7 @@ mod tests {
                     cursor_world: Some(Vec2::new(10.0, 15.0)),
                     hovered_price: Some(101.5),
                     hovered_time_ms: Some(540_000),
+                    hovered_volume: None,
                 },
                 PriceGutterRef(price_gutter),
                 TimeGutterRef(time_gutter),
@@ -492,6 +645,7 @@ mod tests {
                     cursor_world: Some(Vec2::new(10.0, 15.0)),
                     hovered_price: Some(101.5),
                     hovered_time_ms: Some(540_000),
+                    hovered_volume: None,
                 },
                 PriceGutterRef(price_gutter),
                 TimeGutterRef(time_gutter),
@@ -529,6 +683,52 @@ mod tests {
         assert_eq!(count_1, count_3, "badges must replace, not accumulate");
     }
 
+    /// volume area hover: price badge は出ず、volume + time の 2 badge が gutter 子になる。
+    #[test]
+    fn badge_volume_area_spawns_volume_and_time_badges() {
+        let mut app = App::new();
+
+        let price_gutter = app
+            .world_mut()
+            .spawn((PriceGutter, Transform::default()))
+            .id();
+        let time_gutter = app
+            .world_mut()
+            .spawn((TimeGutter, Transform::default()))
+            .id();
+
+        let chart = app
+            .world_mut()
+            .spawn((
+                state_for_hover(),
+                ChartInstrument {
+                    instrument_id: "T".to_string(),
+                },
+                CrosshairState {
+                    cursor_world: Some(Vec2::new(10.0, -80.0)),
+                    hovered_price: None,
+                    hovered_time_ms: Some(540_000),
+                    hovered_volume: Some(1234.0),
+                },
+                PriceGutterRef(price_gutter),
+                TimeGutterRef(time_gutter),
+            ))
+            .id();
+
+        app.add_systems(Update, crosshair_badge_system);
+        app.update();
+
+        let world = app.world_mut();
+        let mut bq = world.query::<(&CrosshairBadge, &Parent)>();
+        let badges: Vec<_> = bq.iter(world).collect();
+        assert_eq!(badges.len(), 2, "expected volume + time badge (no price badge)");
+        for (badge, parent) in &badges {
+            assert_eq!(badge.target_chart, chart);
+            let p = parent.get();
+            assert!(p == price_gutter || p == time_gutter);
+        }
+    }
+
     /// gutter が despawn 済でも set_parent panic せず、badge 0 件で完走すること。
     #[test]
     fn badge_skips_despawned_gutter_without_panic() {
@@ -554,6 +754,7 @@ mod tests {
                 cursor_world: Some(Vec2::new(10.0, 15.0)),
                 hovered_price: Some(101.5),
                 hovered_time_ms: Some(540_000),
+                hovered_volume: None,
             },
             PriceGutterRef(price_gutter),
             TimeGutterRef(time_gutter),
