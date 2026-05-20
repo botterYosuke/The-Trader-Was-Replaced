@@ -16,7 +16,9 @@ pub fn update_price_display(
         None => "$--".to_string(),
     };
     for mut text in query.iter_mut() {
-        text.0 = label.clone();
+        if text.0 != label {
+            text.0 = label.clone();
+        }
     }
 }
 

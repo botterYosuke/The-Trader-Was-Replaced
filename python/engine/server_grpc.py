@@ -1464,6 +1464,8 @@ class GrpcDataEngineServer(
             self._live_price_cache.remove(request.instrument_id)
         if self._live_depth_cache is not None:
             self._live_depth_cache.remove(request.instrument_id)
+        # A0: drop reducer per-id state so the symbol stops surfacing in per_instrument
+        self.engine.forget_instrument(request.instrument_id)
         return engine_pb2.SubscribeResponse(success=True, error_code="")
 
 

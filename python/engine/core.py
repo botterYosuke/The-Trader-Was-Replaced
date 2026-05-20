@@ -402,6 +402,14 @@ class DataEngine:
         with self._lock:
             return dict(self._rs.per_id_close)
 
+    def forget_instrument(self, instrument_id: str) -> None:
+        """Drop an instrument's per-id reducer state (last close + OHLC history) so it
+        stops surfacing in per_instrument after unsubscribe. Without this the symbol
+        persists every poll and its capped OHLC list stays resident."""
+        with self._lock:
+            self._rs.per_id_close.pop(instrument_id, None)
+            self._rs.per_id_ohlc_points.pop(instrument_id, None)
+
     def get_current_state(self) -> TradingState:
         """Return the current trading state as a read-only snapshot."""
         with self._lock:

@@ -120,3 +120,53 @@ def test_live_depth_surfaces_via_depth_cache_snapshot():
     assert [(b.price, b.size) for b in ds.bids] == [(100.0, 3.0)]
     assert [(a.price, a.size) for a in ds.asks] == [(102.0, 2.0)]
     assert ds.timestamp_ms == 1_700_000_000_000  # ts_ns // 1_000_000
+
+
+def test_forget_instrument_drops_per_id_state():
+    """unsubscribe 相当: forget_instrument 後はその銘柄が per_instrument / last_prices から消える。"""
+    p1 = _StubProvider([(2.0, 100.0, 110.0, 90.0, 105.0)])
+    p2 = _StubProvider([(2.0, 200.0, 220.0, 180.0, 210.0)])
+    engine = _engine_with_providers({"A.TSE": p1, "B.TSE": p2})
+    engine._advance_one_locked()
+    assert "B.TSE" in engine.get_current_state().per_instrument
+
+    engine.forget_instrument("B.TSE")
+
+    state = engine.get_current_state()
+    assert "B.TSE" not in state.per_instrument
+    assert "B.TSE" not in engine.get_replay_last_prices()
+    assert "A.TSE" in state.per_instrument  # 他銘柄は残る
+
+
+def test_depth_cache_survives_malformed_level():
+    """不正な depth level (price<=0) が来ても consume loop は死なず、後続の正常 update を拾う。"""
+    from engine.live.adapter import DepthLevel as AdDepthLevel, DepthUpdate
+    from engine.live.event_bus import LiveEventBus
+    from engine.live.depth_cache import DepthCache
+
+    bad = DepthUpdate(  # adapter 側は price 制約なしなので構築可。models.DepthLevel(gt=0) で reject される
+        kind="depth", instrument_id="BAD", ts_ns=1_700_000_000_000_000_000,
+        bids=(AdDepthLevel(price=-1.0, size=1.0),), asks=(),
+    )
+    good = DepthUpdate(
+        kind="depth", instrument_id="7203", ts_ns=1_700_000_000_000_000_000,
+        bids=(AdDepthLevel(price=100.0, size=3.0),), asks=(),
+    )
+
+    async def scenario():
+        bus = LiveEventBus()
+        cache = DepthCache(bus=bus)
+        await cache.start()
+        await bus.publish(bad)   # 先に不正 → loop が死ねば good を拾えない
+        await bus.publish(good)
+        await asyncio.sleep(0.05)
+        result = (cache.snapshot(), cache.last_error)
+        await cache.stop()
+        await bus.close()
+        return result
+
+    snap, last_error = asyncio.run(scenario())
+    assert last_error is None              # loop は生存
+    assert "BAD" not in snap               # 不正 update は skip
+    assert "7203" in snap                  # 後続の正常 update は反映
+    assert [(b.price, b.size) for b in snap["7203"].bids] == [(100.0, 3.0)]

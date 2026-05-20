@@ -32,11 +32,18 @@ class DepthCache:
         try:
             async for evt in self._iter:
                 if isinstance(evt, DepthUpdate):
-                    self._depth[evt.instrument_id] = DepthSnapshot(
-                        bids=[DepthLevel(price=l.price, size=l.size) for l in evt.bids],
-                        asks=[DepthLevel(price=l.price, size=l.size) for l in evt.asks],
-                        timestamp_ms=evt.ts_ns // 1_000_000,
-                    )
+                    try:
+                        snapshot = DepthSnapshot(
+                            bids=[DepthLevel(price=l.price, size=l.size) for l in evt.bids],
+                            asks=[DepthLevel(price=l.price, size=l.size) for l in evt.asks],
+                            timestamp_ms=evt.ts_ns // 1_000_000,
+                        )
+                    except Exception:
+                        # 不正な level (price<=0 / NaN 等で strict DepthLevel が reject)
+                        # は該当 update だけ skip。1 銘柄の不正 tick で全 depth feed が
+                        # 永久停止するのを防ぐ（consume loop は止めない）。
+                        continue
+                    self._depth[evt.instrument_id] = snapshot
         except asyncio.CancelledError:
             return
         except BaseException as exc:
