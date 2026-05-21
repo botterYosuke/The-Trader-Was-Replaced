@@ -189,6 +189,10 @@ impl Harness {
         self.app.world().resource::<ReloginPrompt>().clone()
     }
 
+    pub fn reconcile_prompt(&self) -> ReconcilePrompt {
+        self.app.world().resource::<ReconcilePrompt>().clone()
+    }
+
     pub fn startup_progress(&self) -> ReplayStartupProgress {
         self.app.world().resource::<ReplayStartupProgress>().clone()
     }

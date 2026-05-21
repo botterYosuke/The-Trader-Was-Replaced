@@ -1,6 +1,6 @@
 ---
 name: rust-testing
-description: Rust testing patterns including unit tests, integration tests, async testing, property-based testing, mocking, and coverage. Follows TDD methodology. Trigger: "cargo test", "Rust テスト", "テストブロック修正", "test fails", "#[test]", "テスト破損", "旧テストを新 API に合わせる", "init_resource が欠落", "Bevy App テスト", "app.add_systems テスト", "serial_test", "env var test", "RAII guard", "EnvGuard", "環境変数テスト", "std::env::set_var", "serial", "headless E2E ハーネス", "tests/e2e_replay", "tests/e2e/FLOWS.md", "FLOWS.md の flow 追加", "MinimalPlugins resource 駆動テスト", "backend→ECS seam テスト", "BackendStatusUpdate を注入して resource を assert". 注: ここでの「E2E」は **ヘッドレスな Rust テスト**（`cargo test --test e2e_replay`）であり、GUI 目視検証の `e2e-testing` スキルとは別物。 pair-relay の Navigator が Rust テストを書く前にこのスキルを参照すると、RAII guard パターン・serial_test 直列化・unsafe env var 操作の落とし穴を回避できる。
+description: Rust testing patterns including unit tests, integration tests, async testing, property-based testing, mocking, and coverage. Follows TDD methodology. Trigger: "cargo test", "Rust テスト", "テストブロック修正", "test fails", "#[test]", "テスト破損", "旧テストを新 API に合わせる", "init_resource が欠落", "Bevy App テスト", "app.add_systems テスト", "serial_test", "env var test", "RAII guard", "EnvGuard", "環境変数テスト", "std::env::set_var", "serial", "headless E2E ハーネス", "tests/e2e_replay", "tests/e2e/FLOWS.md", "FLOWS.md の flow 追加", "MinimalPlugins resource 駆動テスト", "backend→ECS seam テスト", "BackendStatusUpdate を注入して resource を assert", "テストごとにファイルを分けて", "1テスト1ファイル", "テストファイルを分割", "テストの数が分かりにくい", "#[path] mod でテストを分ける", "テストバイナリが遅い". 注: ここでの「E2E」は **ヘッドレスな Rust テスト**（`cargo test --test e2e_replay`）であり、GUI 目視検証の `e2e-testing` スキルとは別物。 pair-relay の Navigator が Rust テストを書く前にこのスキルを参照すると、RAII guard パターン・serial_test 直列化・unsafe env var 操作の落とし穴を回避できる。
 origin: ECC
 ---
 
@@ -167,6 +167,31 @@ my_crate/
 │   └── common/         # Shared test utilities
 │       └── mod.rs
 ```
+
+### One file per test, single binary (`#[path] mod`)
+
+**落とし穴**: `tests/` 直下の `.rs` は1ファイル=1テストバイナリ。テストを「数が分かるよう」1テスト=1ファイルに割ると、ファイル数だけフルリンクが走り `cargo test` が極端に遅くなる。
+
+**解法**: ランナー1本 (`tests/foo.rs`) を残し、各テストを `tests/foo/flows/*.rs` に置いて `#[path]` で取り込む。単一バイナリのまま、ファイル数=テスト数にできる。
+
+```rust
+// tests/e2e_replay.rs — ランナー（#[path] mod 宣言だけ）
+#[path = "e2e/support/mod.rs"]
+mod support;                       // 共有ハーネス
+#[path = "e2e/flows/a1_runs.rs"]
+mod a1_runs;                       // 1ファイル1 #[test]
+// ... 1テスト1行
+
+// tests/e2e/flows/a1_runs.rs — フロー本体
+use crate::support::Harness;       // ランナーの兄弟モジュールを参照
+#[test]
+fn a1_runs() { /* ... */ }
+```
+
+- 各フローファイルは `use crate::support::...;` で兄弟モジュールを参照（`crate` = ランナーのクレートルート）。
+- `import` は各ファイルで使う型だけに絞る（`#![allow(unused)]` でごまかさない）。
+- 実行は従来通り `cargo test --test e2e_replay`、絞り込みは `cargo test --test e2e_replay a1` でモジュール名・テスト名前方一致。
+- `tests/e2e/FLOWS.md` カタログとファイル名 (`a1_...`) を揃えると索引↔実体が1対1で追える。
 
 ### Writing Integration Tests
 
