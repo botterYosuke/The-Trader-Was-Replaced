@@ -602,7 +602,7 @@ Strategy 内 `self.log.info(...)` の出力先:
 | Step | 内容 | 状態 |
 | --- | --- | --- |
 | 1 | Strategy Portability 確認 + Live Bar 供給の設計確定 | ✅ 完了 (2026-05-21) |
-| 2 | LiveStrategyHost + RunRegistry | ⬜ 未着手 |
+| 2 | LiveStrategyHost + RunRegistry | 🔶 進行中 (state machine + RunRegistry 完了 / LiveStrategyHost 未) |
 | 3 | gRPC RPC + `BackendEvent` oneof 拡張 (M8) | ⬜ |
 | 4 | Safety Rails (ネイティブ config + 独自 hook) | ⬜ |
 | 5 | Bevy UI: Safety Rails Modal + Promote to Live | ⬜ |
@@ -631,3 +631,19 @@ Strategy 内 `self.log.info(...)` の出力先:
   `LiveDataEngine` に INTERNAL を subscribe させる + `Trader.add_strategy()` で attach。
 - **TDD baseline**: Python `-m "not slow"` の pre-existing 失敗は 4 件
   (`test_grpc_shutdown`×3 / `test_grpc_startup_sentinel`×1、Windows pipe FD 由来)。Step 1 で増減なし。
+
+### Step 2 進行中サマリー (2026-05-21)
+
+- **完了した成果物**:
+  - `python/engine/live/strategy_state_machine.py` [NEW] — `LiveStrategyStateMachine` (§1.2)。
+    IDLE→LOADING→READY→RUNNING→(PAUSED)→STOPPING→STOPPED / ↘ERROR。`is_running`（新規発注ゲート,
+    PAUSED は False）/ `is_active` / `is_terminal` / `error(code)`。venue 用 `VenueStateMachine` とは別物。
+  - `python/engine/live/run_registry.py` [NEW] — `RunRegistry` (§2.6 / M4 / M6)。
+    `max_active_live_auto_runs=1` の単一 run 制約、`(strategy_id, instrument_id)` 重複検出、
+    `nautilus_strategy_id → run_id` 逆引き（発注主体識別）。in-memory・永続化なし。
+  - tests: `test_live_strategy_state_machine.py` (10) / `test_run_registry.py` (10)、全 green。
+- **未完（次の手）**: `python/engine/live/strategy_host.py`（`LiveStrategyHost`）。
+  Nautilus live engine（`Trader`+`LiveDataEngine`+`LiveExecutionEngine`+`LiveRiskEngine`）の
+  起動/停止 + `Trader.add_strategy()` + 既存 live session の**所有権モデル確定**（共有 or 明示 handoff、
+  §1.1 の ⚠️）。server_grpc の `_live_runner` / `_order_facade` / adapter と二重起動しないことが要件。
+  async 統合 + 既存 contended ファイル（server_grpc 周辺）との競合に注意。
