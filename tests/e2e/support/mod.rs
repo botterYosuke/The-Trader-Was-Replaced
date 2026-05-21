@@ -10,7 +10,8 @@
 
 #![allow(dead_code)]
 
-use bevy::input::keyboard::KeyboardInput;
+use bevy::input::keyboard::{Key, KeyboardInput};
+use bevy::input::ButtonState;
 use bevy::prelude::*;
 use bevy::MinimalPlugins;
 use tokio::sync::mpsc;
@@ -27,7 +28,8 @@ use backcast::trading::{
     BackendStatusUpdate, BackendTradingState, ExecutionMode, ExecutionModeRes,
     InstrumentTradingDataMap, LastPrices, LastRunResult, LiveOrders, OrderFeedback, PortfolioState,
     ReconcilePrompt, ReloginPrompt, ReplaySpeed, RunState, SecretPrompt, SelectedSymbol, Tickers,
-    TradingSession, TradingSettings, TransportCommand, TransportCommandSender, VenueStatusRes,
+    TradingSession, TradingSettings, TransportCommand, TransportCommandSender, VenueState,
+    VenueStatusRes,
 };
 
 // Production UI input systems (mirror src/main.rs wiring).
@@ -421,6 +423,58 @@ impl Harness {
             .world()
             .resource::<ReplayStartupProgress>()
             .startup_id
+    }
+
+    /// Force the current execution mode (what the backend would have pushed). The
+    /// mode toggle never writes this optimistically — see `e1`.
+    pub fn set_exec_mode(&mut self, mode: ExecutionMode) {
+        self.app.world_mut().resource_mut::<ExecutionModeRes>().mode = mode;
+    }
+
+    /// Set venue connection state — the precondition Live-mode UI gates on.
+    pub fn set_venue(&mut self, state: VenueState, venue_id: &str) {
+        let mut v = self.app.world_mut().resource_mut::<VenueStatusRes>();
+        v.state = state;
+        v.venue_id = Some(venue_id.to_string());
+        v.configured_venue = Some(venue_id.to_string());
+    }
+
+    /// Set the scenario end date the replay-entry auto-fetch keys on.
+    pub fn set_scenario_end(&mut self, end: &str) {
+        self.app.world_mut().resource_mut::<ScenarioMetadata>().end = Some(end.to_string());
+    }
+
+    /// Seed the live-mode instrument registry (universe) for sidebar/prune flows.
+    pub fn set_instruments(&mut self, ids: &[&str]) {
+        let mut reg = self.app.world_mut().resource_mut::<InstrumentRegistry>();
+        reg.editable = true;
+        reg.replace_all(&ids.iter().map(|s| s.to_string()).collect::<Vec<_>>());
+    }
+
+    /// Type plaintext into the open SecretModal via real keyboard events (the
+    /// modal drains `Events<KeyboardInput>`). The prompt must already be active.
+    pub fn type_secret(&mut self, text: &str) {
+        {
+            let mut kb = self.app.world_mut().resource_mut::<Events<KeyboardInput>>();
+            for ch in text.chars() {
+                kb.send(KeyboardInput {
+                    key_code: KeyCode::KeyA,
+                    logical_key: Key::Character(ch.to_string().into()),
+                    state: ButtonState::Pressed,
+                    repeat: false,
+                    window: Entity::PLACEHOLDER,
+                });
+            }
+        }
+        self.tick();
+    }
+
+    pub fn selected_symbol(&self) -> Option<String> {
+        self.app.world().resource::<SelectedSymbol>().id.clone()
+    }
+
+    pub fn replay_speed(&self) -> u32 {
+        self.app.world().resource::<ReplaySpeed>().current
     }
 }
 

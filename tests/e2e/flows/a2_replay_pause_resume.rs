@@ -1,31 +1,52 @@
-//! A2 replay_pause_resume — 一時停止中はリプレイ時計が止まり、再開で進むこと。
+//! A2 replay_pause_resume — Run 後に Pause/Resume ボタンが正しいコマンドを送り、
+//! 一時停止中はリプレイ時計が止まり再開で進むこと。
 //!
-//! UI は backend が押し出すリプレイ時計をミラーする。新しい state が来ない
-//! （pause）間は tick しても `TradingSession.timestamp_ms` が進まず、後続の
-//! push_state（resume）で進む。最後に `RunComplete` で Completed になる。
-//! gRPC 経由の Pause/Resume は transport task 依存（Phase A-full）のため、ここ
-//! では「時計のミラー忠実性」のみを検証する。
+//! 実フッター操作を本番 `footer_pause_resume_system` で駆動する。replay 状態に
+//! 応じて同じ Pause/Resume ボタンが `TransportCommand::Pause` / `Resume` を送り
+//! 分けることを transport channel で観測する。時計のミラーは backend が押し出す
+//! state（pause 中は来ない）を `TradingSession.timestamp_ms` が忠実に追うことで確認する。
 //! 詳細は `tests/e2e/FLOWS.md` の A2 を参照。
 
 use crate::support::Harness;
-use backcast::trading::{BackendStatusUpdate, RunState};
+use backcast::trading::{BackendStatusUpdate, RunState, TransportCommand};
+use backcast::ui::components::PauseResumeButton;
 
 #[test]
 fn a2_replay_pause_resume() {
     let mut h = Harness::new();
-
-    h.send_status(BackendStatusUpdate::RunStarted);
+    h.run_via_ui();
+    h.drain_commands(); // clear the RunStrategy command from the Run click.
     assert_eq!(h.run_state(), RunState::Running);
 
+    // backend pushes the replay clock, then confirms RUNNING. Order matters: a
+    // clock push carries no replay_state and would reset it, so set it afterward.
     h.push_state(1000);
     assert_eq!(h.timestamp_ms(), 1000);
+    h.set_replay_state(Some("RUNNING"));
 
-    // Pause: no new state pushed, ticking must not advance the clock.
+    // ユーザーが Pause ボタンを押す → RUNNING なので Pause コマンド。
+    h.click(PauseResumeButton);
+    let cmds = h.drain_commands();
+    assert!(
+        cmds.iter().any(|c| matches!(c, TransportCommand::Pause)),
+        "RUNNING 中の押下は Pause を送るはず (got {cmds:?})"
+    );
+
+    // Pause 中: 新しい state が来ないので tick しても時計は進まない。
     h.tick();
     h.tick();
     assert_eq!(h.timestamp_ms(), 1000);
 
-    // Resume: backend pushes a later clock, UI mirrors it.
+    // ユーザーが Resume ボタンを押す → PAUSED なので Resume コマンド。
+    h.set_replay_state(Some("PAUSED"));
+    h.click(PauseResumeButton);
+    let cmds = h.drain_commands();
+    assert!(
+        cmds.iter().any(|c| matches!(c, TransportCommand::Resume)),
+        "PAUSED 中の押下は Resume を送るはず (got {cmds:?})"
+    );
+
+    // Resume: backend が後続の時計を押し出し UI がミラーする。
     h.push_state(2000);
     assert_eq!(h.timestamp_ms(), 2000);
 
