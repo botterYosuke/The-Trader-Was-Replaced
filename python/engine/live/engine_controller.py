@@ -1,20 +1,23 @@
 """engine.live.engine_controller — `LiveEngineController` の実体 (Phase 10)。
 
-Step 2 の `LiveStrategyHost` は `LiveEngineController` Protocol
+`LiveStrategyHost` は `LiveEngineController` Protocol
 （`attach` / `detach` / `cancel_inflight_orders`）だけに依存する。本ファイルは
-その実体を提供する。
+その実体を 2 つ提供する。
 
-Step 3 時点では **placeholder**（`NoopLiveEngineController`）。
-gRPC RPC 配線・state machine・RunRegistry・イベント transport の疎通を mock で
-検証するためのもので、Nautilus live engine（`Trader` + `LiveDataEngine` +
-`LiveExecutionEngine` + `LiveRiskEngine`）への実 attach はまだ行わない。
-attach/detach/cancel を記録（last_attach 等）し、戦略を **インスタンス化だけ** して
-（`engine_runner` が backtest でやるのと同じ contract 確認）engine には繋がない。
+- **`NautilusLiveEngineController`（本番実装）**: 既存 `OrderingVenueAdapter` を
+  Nautilus live stack に bridge し、`attach()` で run ごとに `NautilusKernel`
+  （`Trader` + `LiveExecutionEngine` + `LiveRiskEngine` + `LiveDataEngine` + `Cache` +
+  `Portfolio` + `MessageBus` + `LiveClock`）を組んで `NautilusVenueExecClient` を
+  `register_client` し、戦略を `add_strategy()` して live loop 上で起動する
+  （Step 4/7/8 で結線済み）。`server_grpc` の既定 controller はこれで、StartLiveStrategy が
+  成功すると当該戦略は実際に venue へ発注し得る。
 
-実体（既存 `OrderingVenueAdapter` を Nautilus client に bridge して
-`Trader.add_strategy()` する controller）は Step 3+/4/8 で結線する
-（Step 2 完了サマリーの「次の手」参照）。本 placeholder は構造的に安全:
-注文経路に繋がっていないため、StartLiveStrategy が成功しても実発注は発生しない。
+- **`NoopLiveEngineController`（テスト専用 placeholder）**: Nautilus engine には繋がない。
+  attach/detach/cancel を記録するのみで、戦略を **インスタンス化だけ** して
+  （`engine_runner` が backtest でやるのと同じ contract 確認）engine には載せない。
+  gRPC RPC 配線・state machine・RunRegistry・イベント transport の疎通を、Nautilus を
+  起動せずに検証するためのもの。注文経路に繋がっていないため実発注は発生しない。
+  テスト（server_grpc 単体テスト等）が明示的に注入する。
 """
 
 from __future__ import annotations
@@ -28,10 +31,11 @@ log = logging.getLogger(__name__)
 
 
 class NoopLiveEngineController:
-    """Nautilus engine に繋がない placeholder controller（Step 3 疎通用）。
+    """Nautilus engine に繋がない placeholder controller（テスト専用 / gRPC plumbing 疎通用）。
 
-    `attach` は戦略コンストラクタの contract（kwargs を受けるか）だけ確認し、
-    engine には載せない。最後の attach 引数を記録してテスト/デバッグ可能にする。
+    本番経路は `NautilusLiveEngineController`。これはテストが注入する placeholder で、
+    `attach` は戦略コンストラクタの contract（kwargs を受けるか）だけ確認し、engine には
+    載せない。最後の attach 引数を記録してテスト/デバッグ可能にする。
     """
 
     def __init__(self) -> None:
@@ -49,7 +53,7 @@ class NoopLiveEngineController:
         session: Any,
         safety_rails: Any = None,
     ) -> None:
-        # 実 engine には繋がない（Step 3 placeholder）。引数を記録するのみ。
+        # 実 engine には繋がない（テスト専用 placeholder）。引数を記録するのみ。
         self.attached[nautilus_strategy_id] = {
             "strategy_cls": getattr(strategy_cls, "__name__", str(strategy_cls)),
             "instrument_id": instrument_id,
@@ -57,9 +61,9 @@ class NoopLiveEngineController:
             "params": dict(params),
         }
         log.warning(
-            "LiveAuto attach is a Step 3 PLACEHOLDER: strategy %s (%s on %s) "
-            "is NOT connected to a Nautilus engine; no live orders will be placed "
-            "until the engine bridge lands (Phase 10 Step 3+/4/8).",
+            "LiveAuto attach via NoopLiveEngineController (TEST PLACEHOLDER): strategy %s "
+            "(%s on %s) is NOT connected to a Nautilus engine; no live orders will be placed. "
+            "Production uses NautilusLiveEngineController.",
             nautilus_strategy_id,
             getattr(strategy_cls, "__name__", strategy_cls),
             instrument_id,
@@ -103,6 +107,7 @@ class NautilusLiveEngineController:
         on_order_event: Optional[Callable[[Any, str], None]] = None,
         on_telemetry: Optional[Callable[[str, dict], None]] = None,
         on_strategy_log: Optional[Callable[[Any, str], None]] = None,
+        run_gate_provider: Optional[Callable[[str], bool]] = None,
         attach_timeout_s: float = 10.0,
         trader_id: str = "LIVEHOST-001",
     ) -> None:
@@ -121,6 +126,10 @@ class NautilusLiveEngineController:
         # §570 (Step 9 remediation): strategy が `strategy.log.{strategy_id}` に publish した
         # UI ログ行を橋渡しする callback。署名は (StrategyLogRecord, strategy_id)。
         self._on_strategy_log = on_strategy_log
+        # Issue #6: 当該 run（nautilus_strategy_id）が PAUSED で新規発注ゲートが閉じているかを
+        # 返す provider。`(nautilus_strategy_id) -> bool`、True なら exec client が deny する。
+        # server_grpc が RunRegistry 逆引き + state_machine.is_running で構成する。
+        self._run_gate_provider = run_gate_provider
         self._attach_timeout_s = attach_timeout_s
         self._trader_id = trader_id
         self._kernel = None
@@ -230,6 +239,7 @@ class NautilusLiveEngineController:
             safety_rails=rails,
             instrument_provider=InstrumentProvider(),
             on_safety_violation=self._on_safety_violation,
+            is_run_gated=self._run_gate_provider,
         )
         kernel.exec_engine.register_client(client)
 

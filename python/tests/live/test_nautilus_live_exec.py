@@ -68,7 +68,7 @@ class _OneShotLimit(Strategy):
 class _Harness:
     """Kernel + custom exec client + one-shot strategy を組んで回す薄いテストハーネス。"""
 
-    def __init__(self, *, rails: SafetyRails, adapter: MockVenueAdapter) -> None:
+    def __init__(self, *, rails: SafetyRails, adapter: MockVenueAdapter, is_run_gated=None) -> None:
         self.loop = asyncio.new_event_loop()
         asyncio.set_event_loop(self.loop)
         self.violations = []
@@ -92,6 +92,7 @@ class _Harness:
             safety_rails=rails,
             instrument_provider=InstrumentProvider(),
             on_safety_violation=self.violations.append,
+            is_run_gated=is_run_gated,
         )
         self.kernel.exec_engine.register_client(self.client)
 
@@ -168,6 +169,55 @@ def test_allowed_instruments_whitelist_denies(logged_in_adapter):
         assert "DENIED" in h.order_statuses()
         assert not logged_in_adapter.submit_calls
         assert any(v.kind == "ALLOWED_INSTRUMENTS" for v in h.violations)
+    finally:
+        h.close()
+
+
+# --- Issue #6: PAUSE gates new orders (is_run_gated seam) --------------------
+
+
+def test_paused_run_denies_new_order_before_venue(logged_in_adapter):
+    """Issue #6: PAUSED の run（is_run_gated→True）からの submit は venue に届かず
+    `OrderDenied`（DENIED）になる。state_machine.is_running が False の間 host/exec client が
+    新規発注を deny する、という docstring の主張を実装で担保する。"""
+    logged_in_adapter.set_next_order_outcome(status="FILLED", filled_qty=100, avg_price=2500.0)
+    # 数量/価格は十分小さく、rails では弾かれない（gate のみが deny 理由になることを保証）。
+    rails = SafetyRails(SafetyLimits(max_order_value_jpy=10_000_000, max_position_size_jpy=10_000_000))
+    h = _Harness(rails=rails, adapter=logged_in_adapter, is_run_gated=lambda sid: True)
+    try:
+        h.run_strategy(qty=100, price=2500.0)
+        assert "DENIED" in h.order_statuses(), "paused run order must be DENIED"
+        assert not logged_in_adapter.submit_calls, "paused order must not reach the venue"
+        # PAUSE gate は safety-rail 違反ではない（on_safety_violation は発火しない）。
+        assert h.violations == []
+    finally:
+        h.close()
+
+
+def test_running_run_submits_when_not_gated(logged_in_adapter):
+    """Issue #6 リグレッション防止: gate が開いている（is_run_gated→False）RUNNING の run は
+    従来どおり venue に届いて約定する。PAUSE gate が常時 deny になっていないことを確認する。"""
+    logged_in_adapter.set_next_order_outcome(status="FILLED", filled_qty=100, avg_price=2500.0)
+    rails = SafetyRails(SafetyLimits(max_order_value_jpy=10_000_000, max_position_size_jpy=10_000_000))
+    h = _Harness(rails=rails, adapter=logged_in_adapter, is_run_gated=lambda sid: False)
+    try:
+        h.run_strategy(qty=100, price=2500.0)
+        assert logged_in_adapter.submit_calls, "non-gated order must reach the venue"
+        assert "FILLED" in h.order_statuses()
+        assert "DENIED" not in h.order_statuses()
+    finally:
+        h.close()
+
+
+def test_no_gate_provider_submits_as_before(logged_in_adapter):
+    """is_run_gated 未注入（None）なら従来挙動（手動発注経路など gate 概念が無い文脈）。"""
+    logged_in_adapter.set_next_order_outcome(status="FILLED", filled_qty=100, avg_price=2500.0)
+    rails = SafetyRails(SafetyLimits(max_order_value_jpy=10_000_000, max_position_size_jpy=10_000_000))
+    h = _Harness(rails=rails, adapter=logged_in_adapter, is_run_gated=None)
+    try:
+        h.run_strategy(qty=100, price=2500.0)
+        assert logged_in_adapter.submit_calls
+        assert "FILLED" in h.order_statuses()
     finally:
         h.close()
 

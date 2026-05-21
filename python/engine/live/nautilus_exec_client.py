@@ -14,6 +14,12 @@ Safety Rails の二段構え（§2.4）:
   `_submit_order` 内で `SafetyRails.check_pre_trade()` を評価し、違反なら venue に送らず
   `generate_order_denied()` + `on_safety_violation` callback で `SafetyRailViolation` を push。
 
+PAUSE ゲート（Issue #6 / §1.2）:
+- 当該 run が PAUSED の間（`state_machine.is_running` が False）は host が新規発注ゲートを
+  閉じる。本 client は `_submit_order` の **SUBMITTED 前** に `is_run_gated(strategy_id)` を
+  確認し、ゲートが閉じていれば venue に送らず `generate_order_denied()` で deny する。
+  ゲート判定は controller 経由で注入される（StrategyId → run state machine を参照）。
+
 注意（Step 4 の射程）:
 - market data／bar 供給は Step 8。よって MARKET 注文の参照価格が cache に無い場合、
   notional は LIMIT 値か 0 にフォールバックし position-size チェックを保守的にスキップする
@@ -72,6 +78,7 @@ class NautilusVenueExecClient(LiveExecutionClient):
         safety_rails: SafetyRails,
         instrument_provider,
         on_safety_violation: Optional[Callable[[RailViolation], None]] = None,
+        is_run_gated: Optional[Callable[[str], bool]] = None,
         config=None,
     ) -> None:
         super().__init__(
@@ -90,6 +97,10 @@ class NautilusVenueExecClient(LiveExecutionClient):
         self._adapter = adapter
         self._rails = safety_rails
         self._on_safety_violation = on_safety_violation
+        # Issue #6: 当該注文を出した run（StrategyId）が PAUSED で新規発注ゲートが
+        # 閉じているかを返す seam。`(strategy_id_str) -> bool`、True なら deny する。
+        # None の場合は gate 概念が無い文脈（手動発注経路 / 単体テスト）として素通し。
+        self._is_run_gated = is_run_gated
         self._venue_str = venue.value
 
     # ── connection ───────────────────────────────────────────────────────────
@@ -129,6 +140,21 @@ class NautilusVenueExecClient(LiveExecutionClient):
 
     async def _submit_order(self, command: SubmitOrder) -> None:
         order = command.order
+        # Issue #6: PAUSE ゲート。当該 run（StrategyId）が PAUSED なら新規発注を venue に
+        # 送らず deny する（state_machine.is_running が False → host が発注ゲートを閉じる）。
+        # rails と同じく **SUBMITTED 前**（INITIALIZED）に判定する。OrderDenied は
+        # INITIALIZED からのみ有効な遷移のため、generate_order_submitted より前に deny しないと
+        # 「SUBMITTED → DENIED」が不正遷移として落ち、注文が SUBMITTED で固着する。
+        if self._is_run_gated is not None and self._is_run_gated(order.strategy_id.value):
+            self.generate_order_denied(
+                order.strategy_id,
+                order.instrument_id,
+                order.client_order_id,
+                "STRATEGY_PAUSED: new orders are gated while the run is PAUSED",
+                self._clock.timestamp_ns(),
+            )
+            return
+
         # 独自 pre-trade rails を **SUBMITTED 前** に評価する（ネイティブ rail は RiskEngine が
         # 既に通過させている）。OrderDenied は INITIALIZED からのみ有効な遷移なので、
         # generate_order_submitted より前に deny しないと「SUBMITTED → DENIED」が

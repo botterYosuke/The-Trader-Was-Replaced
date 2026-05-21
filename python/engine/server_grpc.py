@@ -295,6 +295,8 @@ class GrpcDataEngineServer(
                 on_telemetry=self._on_auto_telemetry,
                 # §570 (Step 9 remediation): strategy の emit_strategy_log() を UI へ橋渡し。
                 on_strategy_log=self._on_auto_strategy_log,
+                # Issue #6: PAUSE 中の run からの新規発注を exec client で deny するゲート。
+                run_gate_provider=self._is_run_gated,
             )
         self._strategy_host: LiveStrategyHost = LiveStrategyHost(
             run_registry=self._run_registry,
@@ -2132,6 +2134,25 @@ class GrpcDataEngineServer(
                 )
             )
         )
+
+    def _is_run_gated(self, strategy_id: str) -> bool:
+        """controller の run_gate_provider: 当該 run が新規発注ゲートを閉じているか (Issue #6)。
+
+        `strategy_id`（= nautilus_strategy_id "LIVE-{run}"）を RunRegistry の逆引きで run_id に
+        解決し、state machine が RUNNING でなければ True（= deny）を返す。PAUSED は当然 gate を
+        閉じる（§1.2）。逆引きできない（detach 済み等）なら gate しない（False）——遅延注文を
+        必要以上に弾かず、teardown 経路の cancel に委ねる。
+
+        ⚠️ exec client の `_submit_order` から live loop thread 上で呼ばれる。RunRegistry は
+        内部 lock で自衛するので軽量な dict 引きのみ。`_live_strategy_lock` は取らない
+        （§Step4 不変条件、自己デッドロック回避）。"""
+        run_id = self._run_registry.run_id_for_nautilus_strategy(strategy_id)
+        if not run_id:
+            return False
+        record = self._run_registry.get(run_id)
+        if record is None:
+            return False
+        return not record.state_machine.is_running
 
     # ── Safety Rails (§2.4) ──────────────────────────────────────────────────
 
