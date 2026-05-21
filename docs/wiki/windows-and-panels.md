@@ -79,6 +79,21 @@
 - cosmic-edit ベースのコードエディタで、戦略 `.py` を編集します。複数のエディタウィンドウ（リージョン）を同時に開けます。 [M5]/[J1]
 - 詳細な編集機能（Find / Replace、リージョン分割、シンタックスハイライト等）は [戦略エディタ](strategy.md) を参照してください。
 
+## Order Panel（発注フォーム）
+
+- Manual モードでサイドバー選択中の銘柄に発注するフォームです（Bevy UI Node + Interaction 流派）。 [K10]
+- side（BUY / SELL）・order type・数量・価格を指定し、`[発注]` で validation → 2 段階 confirm モーダル → `[Confirm]` で `PlaceOrder`。 [K7]/[K10]/[K11]
+- 注文行の右クリック context menu から訂正・取消（訂正モーダル）を開始します。 [K9]/[K12]/[K16]
+- Tachibana で第二暗証番号を要求されると SecretModal が開きます。 [F5]/[K8]/[K15]
+- 詳細は [注文](orders.md) を参照してください。
+
+## Live Run Panel（ライブラン）
+
+- Auto モードで Promote to Live により起動した Live Auto run を一覧表示し、`[Pause]` / `[Resume]` / `[Stop]` で制御するパネルです（Bevy UI Node + Interaction 流派、run が無いあいだは非表示）。 [N1]
+- 各 run 行に lifecycle 状態（READY / RUNNING / PAUSED / STOPPING / STOPPED / ERROR、色分け）・開始時刻・run 単位の PnL / order / fill テレメトリを表示します。 [N1]/[N2]
+- 下部に戦略ログ（`self.log.*`）の直近行を tail 表示します（リングバッファ 100 行）。 [N4]
+- Safety Rail 違反は Footer のトーストで通知されます。 [N3]
+
 ## Chart（チャート）
 
 - サイズ: 約 360 × 244（Live モードでは Ladder ペインを伴い拡大）。タイトル: `CHART — {instrument_id}`。 [K1]/[K5]
@@ -88,4 +103,5 @@
 ## 表示の前提（重要）
 
 - Buying Power / Positions / Orders / Run Result はいずれもバックエンド由来の読み取り専用表示です。 [B1]/[F3]/[F4]
-- ライブ発注時の Orders / Positions のリアルタイム更新は Phase 9 で開発中です。現状これらのパネルは主に戦略実行（バックテスト・リプレイ）の結果反映を前提としています。 [F3]/[F4]/[H1]/[H2]
+- これらのパネルは Replay 実行の結果反映に加え、Live（Manual / Auto）の注文イベント（OrderEvent）・口座更新（AccountEvent）でもリアルタイムに更新されます。 [F3]/[F4]/[H1]/[H2]
+- 発注・訂正・取消の操作は読み取り専用パネルではなく **Order Panel** から行います。Live Auto 戦略の制御は **Live Run Panel** です。

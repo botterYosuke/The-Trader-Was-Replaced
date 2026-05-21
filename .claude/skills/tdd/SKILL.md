@@ -1,6 +1,6 @@
 ---
 name: tdd
-description: Test-driven development with red-green-refactor loop. Use when user wants to build features or fix bugs using TDD, mentions "red-green-refactor", wants integration tests, or asks for test-first development.
+description: Test-driven development with red-green-refactor loop. Use when user wants to build features or fix bugs using TDD, mentions "red-green-refactor", wants integration tests, or asks for test-first development. ALSO use when a task spec / issue / instruction mandates TDD or "write a failing regression test first" (e.g. "TDD 厳守", "RED→GREEN", "回帰テストを先に書いて失敗を確認してから実装", "must write the regression test from RED") — the trigger is the instruction requiring test-first, not only the user phrasing it live. Especially for safety-critical bug fixes where a RED test must prove the bug before the fix.
 ---
 
 # Test-Driven Development

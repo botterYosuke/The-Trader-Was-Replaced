@@ -292,6 +292,22 @@ impl Harness {
         self.app.world().resource::<ReconcilePrompt>().clone()
     }
 
+    pub fn live_runs(&self) -> LiveRuns {
+        self.app.world().resource::<LiveRuns>().clone()
+    }
+
+    pub fn safety_toast(&self) -> SafetyToast {
+        self.app.world().resource::<SafetyToast>().clone()
+    }
+
+    pub fn strategy_logs(&self) -> StrategyLogs {
+        self.app.world().resource::<StrategyLogs>().clone()
+    }
+
+    pub fn promote_feedback(&self) -> PromoteFeedback {
+        self.app.world().resource::<PromoteFeedback>().clone()
+    }
+
     pub fn startup_progress(&self) -> ReplayStartupProgress {
         self.app.world().resource::<ReplayStartupProgress>().clone()
     }

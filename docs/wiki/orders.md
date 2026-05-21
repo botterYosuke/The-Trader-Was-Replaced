@@ -1,51 +1,63 @@
 # 注文と口座
 
-> **ライブ発注（新規 / 訂正 / 取消）・第二暗証番号モーダル・口座同期は Phase 9 で開発中です。** 本ページの「将来像」節は未実装の設計であり、現行ビルドでは動作しません。
-
 > 文中の `[B1]` などは、その挙動を保証する E2E flow の ID。一覧は [`tests/e2e/FLOWS.md`](../../tests/e2e/FLOWS.md) を参照。
 
-関連ページ: [venues](venues.md) / [settings](settings.md) / [replay](replay.md) / [troubleshooting](troubleshooting.md)
+関連ページ: [venues](venues.md) / [modes](modes.md) / [strategy](strategy.md) / [settings](settings.md) / [replay](replay.md) / [troubleshooting](troubleshooting.md)
 
-## 現状（実装済み）
+注文・建玉・余力の表示は **2 つの文脈**で意味を持ちます。
 
-現在、注文・建玉・余力は **Replay（仮想実行）の結果として読み取り専用で表示**されます。実際の証券会社へは発注しません。
+- **Replay（仮想実行）**: 戦略を再生した結果として、仮想注文・仮想建玉・仮想ポートフォリオが**読み取り専用**で表示されます。実際の証券会社へは発注しません。
+- **Live（Manual / Auto）**: ライブ venue に接続し、Manual モードでは**手動で発注**、Auto モードでは**戦略が自動で発注**します。約定・口座の更新はバックエンドから push され、同じパネルに反映されます。
 
-| パネル | 内容 |
-|---|---|
-| Orders | Replay 中に発生した仮想注文の一覧 |
-| Positions | 仮想建玉（数量・平均取得単価・含み損益） |
-| Buying Power | 仮想ポートフォリオの cash / equity / buying power |
+Replay 完了後にポートフォリオ（positions / orders / equity）が反映されることは [B1]、サマリ（fills_count / total_pnl 等）の parse は [B2] で保証されます。
 
-これらは戦略を Replay 実行した結果がバックエンドから届き、パネルに反映されたものです。ユーザーがこの画面から発注・取消・訂正を行うことはできません。Replay 完了後にポートフォリオ（positions / orders / equity）が反映されることは [B1]、サマリ（fills_count / total_pnl 等）の parse は [B2] で保証されます。
+## Manual モードの発注
 
-## 将来像（Phase 9 で開発中）
+フッターのモードトグルを **Manual** にすると（Venue 接続が前提）、サイドバーで選択中の銘柄に対する **OrderPanel（発注フォーム）** が使えます。
 
-Phase 9 では、ライブ venue に対する実発注パイプラインを開発中です。以下は実装中の設計であり、本ビルドでは利用できません。
+- **新規発注**: side（BUY / SELL）・order type・数量・価格を指定して `[発注]`。入力 validation を通すと **2 段階 confirm**（確認モーダル）が開き、`[Confirm]` で `PlaceOrder` が送られます。フォーム操作と validation は [K10]、submit→confirm→`PlaceOrder` の本番経路は [K7]、確認モーダルの `Escape` 優先順位は [K11]。
+- **訂正 / 取消**: 注文行を右クリック（context menu）から訂正・取消を開始します。context menu の開閉は [K16]、訂正・取消の発火は [K9]、訂正モーダルの submit / cancel / validation は [K12]。
+  - 訂正は「取消 → 新規」方式で、**未約定の残数量のみ**を再発注します（qty − already_filled）。全数量を再発注すると部分約定済みのぶんが二重発注になり実弾の over-fill になるため。
+- **第二暗証番号モーダル（SecretModal）**: Tachibana で注文時に第二暗証番号を要求された場合に表示されます。入力値は短時間だけメモリ保持（SecretVault、TTL）し、永続化しません。submit / retry は [K8]、timeout zeroize / 空 submit ガードは [K15]。kabu は第二暗証番号を必要としません。 [F5]
 
-- **Manual モードでの発注**: 新規注文・訂正・取消。フォーム操作と validation は [K10]、2 段階 confirm は [K7]/[K11]、context menu は [K9]/[K16]、訂正モーダルは [K12]。
-- **第二暗証番号モーダル**: Tachibana で注文時に第二暗証番号を要求するモーダル。入力値は短時間だけ保持（SecretVault、60 秒 TTL）し、永続化しません。kabu は第二暗証番号を必要としません。 [F5]/[K8]/[K15]
-- **注文 → 約定 → ポートフォリオ反映パイプライン**: 発注した注文の状態（受付・約定・拒否など）と約定結果が口座に反映されます。発注成功時は full レコードが `LiveOrders` に seed され [H1]、以後のステータス/約定更新がマージされます [H2]/[F3]。訂正は qty/price の差分のみ上書きされ [H3]、拒否は OrderPanel のエラー行に整形メッセージが出ます [H4]。構造化 reject ではない注文 notice も同じフィードバック行に表示されます [H6]。第二暗証番号の提出失敗は SecretModal 側の retry 可能 error として表示されます [H7]。実行モードを切り替えると口座スナップショットは一旦リセットされ、Live/Replay のデータが混ざらないようになっています [H5]。
-- **口座同期**: venue 側の現金残高・建玉を取得して Positions / Buying Power に反映します [F4]。
+### 注文 → 約定 → ポートフォリオ反映パイプライン
 
-### 注文フロー（開発中）
+発注した注文の状態（受付・約定・拒否など）と約定結果が口座に反映されます。
 
-![注文フロー(開発中)](assets/order-flow.drawio.svg)
+- 発注成功時は full レコードが `LiveOrders` に seed され [H1]、以後のステータス/約定更新が `client_order_id` でマージされます [H2]/[F3]。
+- 訂正は qty/price の差分のみ上書きされ [H3]、約定数量は単調増加でしか上書きしません（部分約定の取りこぼし防止）。
+- 拒否は OrderPanel のエラー行に整形メッセージが出ます [H4]。構造化 reject ではない注文 notice（追跡不能な受付・transport error 等）も同じフィードバック行に verbatim 表示されます [H6]。
+- 第二暗証番号の提出失敗は SecretModal 側の retry 可能 error として表示されます（注文エラー行には出しません） [H7]。
+- 実行モードを切り替えると口座スナップショットは一旦リセットされ、Live/Replay のデータが混ざらないようになっています [H5]。
+- venue 側の現金残高・建玉（AccountEvent）は Positions / Buying Power に反映されます [F4]。
 
-> 上図の点線部分は **Phase 9 で開発中**の経路を表します。実線部分（Replay の読み取り表示）のみが現行ビルドで動作します。
+### 注文フロー
 
-## バックエンドイベント（gRPC）の概念
+![注文フロー](assets/order-flow.drawio.svg)
 
-Phase 9 では、バックエンドから UI へ向けたサーバー送信ストリーム `SubscribeBackendEvents` を通じて、`BackendEvent` が push されます。`BackendEvent` は次のいずれか 1 つを運びます（`python/proto/engine.proto`）。
+### backend 再起動後の reconcile
 
-| イベント種別 | 意味 | E2E |
-|---|---|---|
-| SecretRequired | 第二暗証番号の入力要求（Tachibana のみ。kabu は送出しない） | [F5] |
-| OrderEvent | 注文状態の更新（ステータス・約定数量・平均約定価格など） | [F3] |
-| AccountEvent | 口座更新（現金・買付余力・建玉一覧） | [F4] |
-| VenueLogoutDetected | venue 側でのログアウト検知 | [D5] |
+backend が auto-restart した後、UI が working と信じている注文のうち**再起動後の backend が追跡していない**ものだけが ReconcileModal に表示されます（terminal orders は無視）。 [K6] 通知の dismiss / Escape 優先順位は [K14]。モーダルは通知のみで、再ログインと注文の再確認は venue 側で行います。
 
-> 4 つの event seam はいずれも Phase 9 マージで `backend_event_drain_system` に reducer が入り、E2E で観測可能になりました。SecretRequired → `SecretPrompt`（[F5]）、OrderEvent → `LiveOrders`（[F3]）、AccountEvent → `PortfolioState`（[F4]）、VenueLogoutDetected → `ReloginPrompt`（[D5]、Step 7 health watchdog）。
+## Auto モードの発注（Live Auto 戦略実行）
 
-ユーザー視点では、SecretRequired を受けると第二暗証番号モーダルが表示され、OrderEvent / AccountEvent によって Orders / Positions / Buying Power が更新され、VenueLogoutDetected を受けると ReloginModal が開いて再ログインを促します（モーダルは通知のみで、再ログイン自体は Venue メニューから行います）。
+**Auto** モードでは、Promote to Live で起動した戦略がライブ venue に**自動で発注**します。起動手順（Promote to Live）と Safety Rails の設定は [strategy.md](strategy.md) を、モード概要は [modes.md](modes.md) を参照してください。実行中の run の状態・PnL・ログは **Live Run Panel** に表示されます（[windows-and-panels.md](windows-and-panels.md) 参照）。
 
-backend 再起動後の注文 reconcile では、backend が追跡していない working orders だけが ReconcileModal に表示され、terminal orders は無視されます [K6]。通知の dismiss / Escape 優先順位は [K14]。working order の context menu から訂正・取消を開始する UI は [K9]/[K16]、Manual 発注フォームからの新規発注は [K7]/[K10]/[K11]、第二暗証番号モーダルの入力と retry は [K8]/[K15] で保証します。
+## バックエンドイベント（gRPC）
+
+バックエンドから UI へ向けたサーバー送信ストリーム `SubscribeBackendEvents` を通じて `BackendEvent` が push されます（`python/proto/engine.proto` / `src/trading.rs`）。
+
+| イベント種別 | 意味 | reducer → resource | E2E |
+|---|---|---|---|
+| SecretRequired | 第二暗証番号の入力要求（Tachibana のみ。kabu は送出しない） | `SecretPrompt` | [F5] |
+| OrderEvent | 注文状態の更新（ステータス・約定数量・平均約定価格など） | `LiveOrders` | [F3] |
+| AccountEvent | 口座更新（現金・買付余力・建玉一覧） | `PortfolioState` | [F4] |
+| VenueLogoutDetected | venue 側でのログアウト検知 | `ReloginPrompt` | [D5] |
+| LiveStrategyEvent | Live Auto run の lifecycle 変化（READY / RUNNING / PAUSED / STOPPING / STOPPED / ERROR） | `LiveRuns` | [N1] |
+| LiveStrategyTelemetry | run-scoped の PnL / order / fill カウンタ（任意の頻度で届く） | `LiveRuns` | [N2] |
+| SafetyRailViolation | pre/post-trade の Safety Rail 違反 | `SafetyToast` | [N3] |
+| StrategyLogMessage | 戦略の `self.log.*` 行の中継（Live Run Panel のログ tail 用） | `StrategyLogs` | [N4] |
+
+> Promote to Live の結果（成功 = 新 run id / 構造化拒否 = error_code）は `BackendEvent` ではなく unary RPC 応答に相当する status seam `LiveStrategyPromoteResult` で届き、`PromoteFeedback` に反映されます [N5]。成功は併せて `LiveStrategyEvent{status:"RUNNING"}` としても push されます。
+
+ユーザー視点では、SecretRequired を受けると第二暗証番号モーダルが表示され、OrderEvent / AccountEvent によって Orders / Positions / Buying Power が更新され、VenueLogoutDetected を受けると ReloginModal が開いて再ログインを促します（モーダルは通知のみで、再ログイン自体は Venue メニューから行います）。Live Auto では LiveStrategyEvent / LiveStrategyTelemetry / StrategyLogMessage が Live Run Panel を駆動し、SafetyRailViolation は Footer トーストで通知されます。

@@ -11,6 +11,12 @@ description: >-
   「venue ログインの状態遷移をテスト」「銘柄リストの取得失敗をテスト」「回帰テストを追加」「E2E を1本足して」
   「FLOWS.md の flow を実装」「backend からこのイベントが来たら UI がこうなる、をテスト」
   「メニュー/エディタ/チャート/モーダル/レイアウトの操作をリリース前に保証したい」と言われたとき。
+  **`docs/wiki` 等のドキュメント/wiki レビューで「実装済みなのに『未実装』『開発中』『将来』扱い」の機能が
+  見つかった**ときも本スキルを開く（「wiki を修正」「ドキュメントを実装に追従」と言われたら併発）: その機能は
+  E2E 未カバーのことが多い（実装が先行し doc も flow も置き去り）。wiki を現行化しつつ、対応 flow が
+  `tests/e2e/flows/` に無ければ追加し、wiki 本文に `[FlowID]` を引く。例: Phase 10 Live Auto
+  （LiveStrategyEvent / SafetyRailViolation / StrategyLogMessage / LiveStrategyTelemetry /
+  LiveStrategyPromoteResult）は wiki が「未実装」と書く一方で flow 皆無 → N 群（`kind:state`）を新設。
   さらに **`e2e_replay` が全本落ちる / ハーネスが panic する / `could not access system parameter` が出た /
   マージ後に E2E が壊れた / `BackendEvent`・`BackendStatusUpdate` などの列挙子にフィールドが増えて
   `e2e_replay` が `missing field` でコンパイルできない（テストドリフト）**ときの**ハーネス修復**も本スキルの対象
