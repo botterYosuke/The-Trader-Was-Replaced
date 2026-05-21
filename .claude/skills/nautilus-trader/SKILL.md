@@ -154,6 +154,14 @@ These bite people repeatedly. Worth holding in working memory rather than redisc
 - **Logging.** Use `self.log.info(...)` etc. from inside an Actor/Strategy; never `print` or
   `logging` directly — those bypass the structured log and the in-memory log buffer used by
   tests.
+  - **There is NO Python log sink — you cannot tap `self.log.*` into Python.** `Logger.{info,
+    warning,error}` route straight into the Rust subsystem (`nautilus_pyo3.logger_log`), `init_logging`
+    only writes stdout/file (no callback param), the strategy's `_log` is `cdef readonly`, and `Logger`
+    is a non-monkeypatchable extension type. So if you need to forward strategy log lines to an external
+    consumer (a UI, a gRPC stream), do **not** try to intercept `self.log.*` — instead publish on a
+    **msgbus topic** (`self.msgbus.publish("strategy.log.{id}", record)`) via a small helper that also
+    mirrors to `self.log.<level>`, and subscribe to that topic on the kernel side (`kernel.msgbus.subscribe`).
+    This is the same proven seam as bridging `events.order.{strategy_id}`. (Phase 10 §570 / `python/engine/live/strategy_log.py`.)
 - **Identifiers are value types.** `InstrumentId`, `ClientId`, `Venue`, `StrategyId`,
   `ClientOrderId`, `PositionId` — construct from strings with the factory (`InstrumentId.from_str("AAPL.NASDAQ")`),
   don't pass raw strings to APIs expecting them.

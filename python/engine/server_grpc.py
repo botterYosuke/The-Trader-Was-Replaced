@@ -293,6 +293,8 @@ class GrpcDataEngineServer(
                 # Step 7 C/D: auto 戦略の kernel 内 order events / run telemetry を UI へ橋渡し。
                 on_order_event=self._on_auto_order_event,
                 on_telemetry=self._on_auto_telemetry,
+                # §570 (Step 9 remediation): strategy の emit_strategy_log() を UI へ橋渡し。
+                on_strategy_log=self._on_auto_strategy_log,
             )
         self._strategy_host: LiveStrategyHost = LiveStrategyHost(
             run_registry=self._run_registry,
@@ -2104,6 +2106,29 @@ class GrpcDataEngineServer(
                     order_count=metrics["order_count"],
                     fill_count=metrics["fill_count"],
                     ts_ms=int(time.time() * 1000),
+                )
+            )
+        )
+
+    def _on_auto_strategy_log(self, record, strategy_id: str) -> None:
+        """controller の on_strategy_log callback: 戦略の UI ログ行を push する (§570)。
+
+        `strategy_id`（= nautilus_strategy_id）を RunRegistry の逆引きで run_id に解決し
+        （telemetry と同方針）、`StrategyLogMessage` を push する。逆引きできない
+        （既に detach 済み等）場合は skip する。
+
+        ⚠️ live loop thread から呼ばれる。`_live_strategy_lock` は取らない（§Step4 不変条件）。
+        `record` は `engine.live.strategy_log.StrategyLogRecord`（level / message / ts_ns）。"""
+        run_id = self._run_registry.run_id_for_nautilus_strategy(strategy_id)
+        if not run_id:
+            return
+        self.publish_backend_event(
+            engine_pb2.BackendEvent(
+                strategy_log_message=engine_pb2.StrategyLogMessage(
+                    run_id=run_id,
+                    level=record.level,
+                    message=record.message,
+                    ts_ms=record.ts_ns // 1_000_000,
                 )
             )
         )
