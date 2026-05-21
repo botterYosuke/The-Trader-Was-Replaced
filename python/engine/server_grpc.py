@@ -58,6 +58,14 @@ def engine_run(*args, **kwargs):
     return run(*args, **kwargs)
 
 
+# Phase 10 §2.9 / M6: 発注主体を示す OrderEvent.strategy_id のタグ規則。
+# - 手動発注（ManualOrderFacade 由来の unary 応答）→ "MANUAL-001"。
+# - 自動発注（auto 戦略の kernel bridge 由来）→ "LIVE-{run[:8]}"（host が採番）。
+# - 共有 adapter の EC stream（_publish_order_event）→ "" のまま（どちらの注文か区別
+#   できないため。UI 側のマージ規則「非空が勝つ・空は既知値を消さない」に委ねる）。
+MANUAL_STRATEGY_ID = "MANUAL-001"
+
+
 class _LiveSessionView:
     """`LiveStrategyHost` が借用する live session の read-only ビュー (Phase 10 §1.1)。
 
@@ -280,6 +288,9 @@ class GrpcDataEngineServer(
                 loop_provider=self._ensure_live_loop,
                 adapter_provider=self._live_adapter,
                 on_safety_violation=self._on_pretrade_violation,
+                # Step 7 C/D: auto 戦略の kernel 内 order events / run telemetry を UI へ橋渡し。
+                on_order_event=self._on_auto_order_event,
+                on_telemetry=self._on_auto_telemetry,
             )
         self._strategy_host: LiveStrategyHost = LiveStrategyHost(
             run_registry=self._run_registry,
@@ -287,7 +298,15 @@ class GrpcDataEngineServer(
             engine_controller=engine_controller,
         )
         # 単一 run スロットの TOCTOU を防ぐ (gRPC handler は threadpool で並行する)。
+        # ⚠️ 不変条件: この lock を **live loop thread のコールバックから取得しない**。
+        # start_run / stop_run / fail_run は本 lock を握ったまま live loop へ blocking
+        # round-trip する (attach / kernel.stop_async)。live loop 側がこの lock を待つと
+        # 「live loop は lock 待ち / lock 保持側は live loop 待ち」の相互デッドロックになる。
         self._live_strategy_lock = threading.Lock()
+        # run_id → SafetyRails / equity baseline。post-trade 評価は live loop thread
+        # (AccountSync callback) から走るため、blocking round-trip を一切伴わない
+        # 軽量 dict 操作専用の別 lock で保護する（_live_strategy_lock とは分離）。
+        self._run_rails_lock = threading.Lock()
         # run_id → SafetyRails（post-trade 評価 / pre-trade 違反の run 紐付けに使う）。
         self._run_rails: dict = {}
         # run_id → 起動時 equity baseline（daily P&L = 現在 equity - baseline）。
@@ -1726,10 +1745,11 @@ class GrpcDataEngineServer(
     def _order_event_to_proto(ev, strategy_id: str = "") -> "engine_pb2.OrderEvent":
         """Convert a transport-agnostic OrderEventData → proto OrderEvent.
 
-        Phase 10 (§2.9 / M6): `strategy_id` identifies the ordering subject. It is
-        additive — left "" here because Step 3 only mirrors the field through the
-        transport; populating it (manual → "MANUAL-001", auto → "LIVE-{run}") and
-        the OrdersPanel filter are Step 7.
+        Phase 10 (§2.9 / M6): `strategy_id` identifies the ordering subject. Callers
+        tag it per the規則: manual unary responses → `MANUAL_STRATEGY_ID` ("MANUAL-001"),
+        auto kernel bridge → "LIVE-{run}", shared adapter EC stream → "" (unknown
+        subject; the UI merge rule "non-empty wins, empty does not clear a known value"
+        keeps the earlier MANUAL/LIVE tag). Default "" is the safe EC-stream value.
         """
         return engine_pb2.OrderEvent(
             order_id=ev.order_id,
@@ -1798,7 +1818,11 @@ class GrpcDataEngineServer(
     def _publish_order_event(self, ev) -> None:
         """adapter on_order_event callback: EC 由来 OrderEventData を push する。
 
-        EC WS タスク (live-loop thread) から呼ばれる。proto 変換は既存ヘルパを再利用。"""
+        EC WS タスク (live-loop thread) から呼ばれる。proto 変換は既存ヘルパを再利用。
+        ⚠️ 共有 adapter の EC stream は manual / auto どちらの注文か区別できないため
+        `strategy_id` は **空のまま**にする（§2.9）。unary 応答（MANUAL-001）や kernel
+        bridge（LIVE-{run}）が先にタグした行を、UI の「非空が勝つ」マージ規則のもとで
+        空イベントが上書きしないようにする。"""
         self.publish_backend_event(
             engine_pb2.BackendEvent(order_event=self._order_event_to_proto(ev))
         )
@@ -1854,7 +1878,9 @@ class GrpcDataEngineServer(
             logging.exception("PlaceOrder failed: %s", exc)
             return engine_pb2.PlaceOrderRes(success=False, error_code="PLACE_FAILED")
 
-        proto_ev = self._order_event_to_proto(event)
+        # 手動発注はこの unary 経路でのみ MANUAL-001 を確定タグできる（共有 adapter の
+        # EC stream は strategy_id 空、§2.9）。push / inline 応答とも同じ proto を使う。
+        proto_ev = self._order_event_to_proto(event, strategy_id=MANUAL_STRATEGY_ID)
         # Push on the backend-event stream AND echo inline in the unary response.
         self.publish_backend_event(engine_pb2.BackendEvent(order_event=proto_ev))
         return engine_pb2.PlaceOrderRes(success=True, error_code="", order_event=proto_ev)
@@ -1897,7 +1923,7 @@ class GrpcDataEngineServer(
             logging.exception("CancelOrder failed: %s", exc)
             return engine_pb2.CancelOrderRes(success=False, error_code="CANCEL_FAILED")
 
-        proto_ev = self._order_event_to_proto(event)
+        proto_ev = self._order_event_to_proto(event, strategy_id=MANUAL_STRATEGY_ID)
         self.publish_backend_event(engine_pb2.BackendEvent(order_event=proto_ev))
         return engine_pb2.CancelOrderRes(success=True, error_code="", order_event=proto_ev)
 
@@ -1949,7 +1975,7 @@ class GrpcDataEngineServer(
             logging.exception("ModifyOrder failed: %s", exc)
             return engine_pb2.ModifyOrderRes(success=False, error_code="MODIFY_FAILED")
 
-        proto_ev = self._order_event_to_proto(event)
+        proto_ev = self._order_event_to_proto(event, strategy_id=MANUAL_STRATEGY_ID)
         self.publish_backend_event(engine_pb2.BackendEvent(order_event=proto_ev))
         return engine_pb2.ModifyOrderRes(success=True, error_code="", order_event=proto_ev)
 
@@ -1974,7 +2000,7 @@ class GrpcDataEngineServer(
         return engine_pb2.GetOrderStatusRes(
             success=True,
             error_code="",
-            order_event=self._order_event_to_proto(event),
+            order_event=self._order_event_to_proto(event, strategy_id=MANUAL_STRATEGY_ID),
         )
 
     def GetOrders(self, request, context):
@@ -1990,7 +2016,10 @@ class GrpcDataEngineServer(
         return engine_pb2.GetOrdersRes(
             success=True,
             error_code="",
-            orders=[self._order_event_to_proto(e) for e in facade.list_orders()],
+            orders=[
+                self._order_event_to_proto(e, strategy_id=MANUAL_STRATEGY_ID)
+                for e in facade.list_orders()
+            ],
         )
 
     # === Phase 10 Step 3: live strategy execution ===
@@ -2030,6 +2059,47 @@ class GrpcDataEngineServer(
             )
         )
 
+    def _on_auto_order_event(self, ev, strategy_id: str) -> None:
+        """controller の on_order_event callback: auto 戦略の OrderEvent を UI へ push (Step 7 C)。
+
+        controller は kernel msgbus の order event を受け、UI 互換 `OrderEventData` と
+        当該 run の `strategy_id`（"LIVE-{run}"）を渡す。ここで proto に詰めて
+        `strategy_id` 付きで push する（run_id は不要、OrderEvent は strategy_id だけ運ぶ）。
+
+        ⚠️ live loop thread から呼ばれる。`_live_strategy_lock` は取らない
+        （Step 4 不変条件、自己デッドロック回避）。BackendEventBus は threadsafe。"""
+        self.publish_backend_event(
+            engine_pb2.BackendEvent(
+                order_event=self._order_event_to_proto(ev, strategy_id=strategy_id)
+            )
+        )
+
+    def _on_auto_telemetry(self, strategy_id: str, metrics: dict) -> None:
+        """controller の on_telemetry callback: run 別 telemetry を UI へ push (Step 7 D)。
+
+        `strategy_id`（= nautilus_strategy_id）を RunRegistry の逆引きで run_id に解決し、
+        `LiveStrategyTelemetry` を push する。逆引きできない（既に detach 済み等）場合は
+        skip する（terminal run の遅延イベントを誤って report しない）。
+
+        ⚠️ live loop thread から呼ばれる。`_live_strategy_lock` は取らない（RunRegistry は
+        内部 lock で自衛する。Step 4 不変条件）。"""
+        run_id = self._run_registry.run_id_for_nautilus_strategy(strategy_id)
+        if not run_id:
+            return
+        self.publish_backend_event(
+            engine_pb2.BackendEvent(
+                live_strategy_telemetry=engine_pb2.LiveStrategyTelemetry(
+                    run_id=run_id,
+                    strategy_id=strategy_id,
+                    realized_pnl=metrics["realized_pnl"],
+                    unrealized_pnl=metrics["unrealized_pnl"],
+                    order_count=metrics["order_count"],
+                    fill_count=metrics["fill_count"],
+                    ts_ms=int(time.time() * 1000),
+                )
+            )
+        )
+
     # ── Safety Rails (§2.4) ──────────────────────────────────────────────────
 
     def _live_adapter(self):
@@ -2049,6 +2119,15 @@ class GrpcDataEngineServer(
                 allowed_instruments=tuple(sl.allowed_instruments),
             )
         )
+
+    def _release_run_rails_locked(self, run_id: str) -> None:
+        """run の Safety Rails 状態（rails + equity baseline）を対で解放する。
+
+        呼び出し元が `_run_rails_lock` を保持していること。両 dict を必ず一緒に外して
+        「rails は消えたが baseline が残る」等の不整合を作らない。
+        """
+        self._run_rails.pop(run_id, None)
+        self._run_equity_baseline.pop(run_id, None)
 
     def _publish_safety_rail_violation(self, run_id: str, violation: RailViolation) -> None:
         """`SafetyRailViolation` を UI に push する（§2.10 トースト、M8）。"""
@@ -2090,8 +2169,12 @@ class GrpcDataEngineServer(
         live loop thread（AccountSync callback）から呼ばれる。違反時の run 停止は
         `fail_run`（controller teardown が同 loop へ blocking round-trip する）を **別スレッド**に
         逃がす（同 loop 上での `future.result()` 自己待ちデッドロックを避ける）。
+
+        ⚠️ ここは live loop thread なので `_live_strategy_lock`（teardown 中に保持される）は
+        **絶対に取らない**。rails dict 専用の `_run_rails_lock`（blocking round-trip を伴わない）
+        だけを使う。
         """
-        with self._live_strategy_lock:
+        with self._run_rails_lock:
             active = self._run_registry.list_active()
             if not active:
                 return
@@ -2108,8 +2191,7 @@ class GrpcDataEngineServer(
             if violation is None:
                 return
             # 二重発火防止: 失敗確定でこの run の rails を外す（後続 snapshot はスキップ）。
-            self._run_rails.pop(record.run_id, None)
-            self._run_equity_baseline.pop(record.run_id, None)
+            self._release_run_rails_locked(record.run_id)
             run_id = record.run_id
 
         threading.Thread(
@@ -2188,7 +2270,10 @@ class GrpcDataEngineServer(
                     request_id=request.request_id,
                     error_code=exc.error_code,
                 )
-            # post-trade（max_daily_loss）評価用に run の rails を記録する。
+        # post-trade（max_daily_loss）評価用に run の rails を記録する。
+        # rails dict は live loop の評価 callback と共有するので専用 lock で囲う
+        # （_live_strategy_lock を live loop に晒さないため、外で取得する）。
+        with self._run_rails_lock:
             self._run_rails[record.run_id] = rails
             self._run_equity_baseline.pop(record.run_id, None)
         self._publish_live_strategy_event(record)
@@ -2211,10 +2296,12 @@ class GrpcDataEngineServer(
                     request_id=request.request_id,
                     error_code=exc.error_code,
                 )
-            # 終端に達した run の Safety Rails 状態を解放する（post-trade 評価対象から外す）。
-            if record.state_machine.is_terminal:
-                self._run_rails.pop(record.run_id, None)
-                self._run_equity_baseline.pop(record.run_id, None)
+            terminal = record.state_machine.is_terminal
+        # 終端に達した run の Safety Rails 状態を解放する（post-trade 評価対象から外す）。
+        # rails dict は専用 lock（_run_rails_lock）で保護する。
+        if terminal:
+            with self._run_rails_lock:
+                self._release_run_rails_locked(record.run_id)
         self._publish_live_strategy_event(record)
         return engine_pb2.LiveStrategyControlRes(
             success=True,

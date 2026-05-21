@@ -221,15 +221,14 @@ class NautilusVenueExecClient(LiveExecutionClient):
             return
         if res.status == "REJECTED":
             return
-        instrument = self._cache.instrument(command.instrument_id)
         ts = self._clock.timestamp_ns()
         self.generate_order_updated(
             command.strategy_id,
             command.instrument_id,
             command.client_order_id,
             command.venue_order_id or self._synth_venue_order_id(command.client_order_id),
-            command.quantity if command.quantity is not None else None,
-            command.price if command.price is not None else None,
+            command.quantity,  # None なら数量据え置き（Nautilus 側で許容）
+            command.price,
             None,  # trigger_price
             ts,
         )

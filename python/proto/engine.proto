@@ -441,6 +441,26 @@ message StrategyLogMessage {
   int64 ts_ms = 4;
 }
 
+// === Phase 10 Step 7: per-run telemetry (BackendEvent oneof addition, §2.9) ===
+
+// LiveStrategyTelemetry: run-scoped PnL / order / fill counters for the Live Run
+// Panel (§2.8 / §2.9). The lifecycle `LiveStrategyEvent` carries only status, so
+// run-level numbers ride this separate event. `strategy_id` is the run's Nautilus
+// StrategyId ("LIVE-{run}") — the same value tagged on that run's OrderEvents, so
+// the panel and the OrdersPanel filter agree on the ordering subject.
+// Pushed on order events for the run and on each account snapshot (for unrealized
+// mark-to-market). Account-level net position stays in the existing AccountEvent /
+// PositionsPanel (§2.9) — this is run-scoped, not the account total.
+message LiveStrategyTelemetry {
+  string run_id = 1;
+  string strategy_id = 2;       // Nautilus StrategyId ("LIVE-{run}")
+  double realized_pnl = 3;      // JPY, this run's strategy only
+  double unrealized_pnl = 4;    // JPY, this run's open positions marked-to-market
+  int64 order_count = 5;        // orders submitted by this run
+  int64 fill_count = 6;         // filled orders for this run
+  int64 ts_ms = 7;
+}
+
 message BackendEvent {
   oneof payload {
     SecretRequired secret_required = 1;
@@ -450,6 +470,7 @@ message BackendEvent {
     LiveStrategyEvent live_strategy_event = 5;
     SafetyRailViolation safety_rail_violation = 6;
     StrategyLogMessage strategy_log_message = 7;
+    LiveStrategyTelemetry live_strategy_telemetry = 8;
   }
 }
 

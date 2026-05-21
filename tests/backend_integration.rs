@@ -6,17 +6,17 @@ use backcast::trading::engine::{
     GetOrderStatusReq, GetOrderStatusRes, GetOrdersReq, GetOrdersRes, GetPortfolioRequest,
     GetPortfolioResponse, GetStateRequest, GetStateResponse, ListAllListedSymbolsRequest,
     ListAllListedSymbolsResponse, ListInstrumentsRequest, ListInstrumentsResponse,
-    LoadReplayDataRequest, ModifyOrderReq, ModifyOrderRes, PauseReplayRequest, PlaceOrderReq,
-    PlaceOrderRes, ReplayControlResponse, ResumeReplayRequest, SetExecutionModeRequest,
-    SetExecutionModeResponse, SetReplaySpeedRequest, ShutdownRequest, ShutdownResponse,
+    GetLiveStrategyStatusReq, GetLiveStrategyStatusRes, ListLiveStrategiesReq,
+    ListLiveStrategiesRes, LiveStrategyControlRes, LoadReplayDataRequest, ModifyOrderReq,
+    ModifyOrderRes, PauseLiveStrategyReq, PauseReplayRequest, PlaceOrderReq, PlaceOrderRes,
+    RegisterLiveStrategyReq, RegisterLiveStrategyRes, ReplayControlResponse, ResumeLiveStrategyReq,
+    ResumeReplayRequest, SetExecutionModeRequest, SetExecutionModeResponse, SetReplaySpeedRequest,
+    StartLiveStrategyReq, StartLiveStrategyRes, StopLiveStrategyReq, ShutdownRequest,
+    ShutdownResponse,
     StartEngineRequest, StartEngineResponse, StartResponse, StepReplayRequest, StopEngineRequest,
     StopReplayRequest, StopRequest, StopResponse, SubmitSecretReq, SubmitSecretRes,
     SubscribeBackendEventsReq, SubscribeRequest, SubscribeResponse, UnsubscribeRequest,
     VenueControlResponse, VenueLoginRequest, VenueLoginResponse, VenueLogoutRequest,
-    GetLiveStrategyStatusReq, GetLiveStrategyStatusRes, ListLiveStrategiesReq,
-    ListLiveStrategiesRes, LiveStrategyControlRes, PauseLiveStrategyReq, RegisterLiveStrategyReq,
-    RegisterLiveStrategyRes, ResumeLiveStrategyReq, StartLiveStrategyReq, StartLiveStrategyRes,
-    StopLiveStrategyReq,
     data_engine_server::{DataEngine, DataEngineServer},
 };
 use backcast::trading::engine::{
@@ -486,6 +486,8 @@ impl DataEngine for MyDataEngine {
         }))
     }
 
+    // Phase 10 live-strategy RPCs (Step 3). This integration mock does not exercise
+    // them; minimal token-gated stubs keep the `DataEngine` trait implemented.
     async fn register_live_strategy(
         &self,
         request: Request<RegisterLiveStrategyReq>,

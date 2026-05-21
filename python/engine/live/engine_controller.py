@@ -97,12 +97,20 @@ class NautilusLiveEngineController:
         loop_provider: Callable[[], Any],
         adapter_provider: Callable[[], Any],
         on_safety_violation: Optional[Callable[[Any], None]] = None,
+        on_order_event: Optional[Callable[[Any, str], None]] = None,
+        on_telemetry: Optional[Callable[[str, dict], None]] = None,
         attach_timeout_s: float = 10.0,
         trader_id: str = "LIVEHOST-001",
     ) -> None:
         self._loop_provider = loop_provider
         self._adapter_provider = adapter_provider
         self._on_safety_violation = on_safety_violation
+        # Step 7 C: kernel msgbus 由来の OrderEvent を UI へ橋渡しする callback。
+        # 署名は (OrderEventData, strategy_id) で、strategy_id は当該 run の
+        # nautilus_strategy_id（"LIVE-{run}"）。server_grpc が注入する。
+        self._on_order_event = on_order_event
+        # Step 7 D: run 別 telemetry を push する callback。署名は (strategy_id, metrics dict)。
+        self._on_telemetry = on_telemetry
         self._attach_timeout_s = attach_timeout_s
         self._trader_id = trader_id
         self._kernel = None
@@ -166,12 +174,13 @@ class NautilusLiveEngineController:
             LiveExecEngineConfig,
             LiveRiskEngineConfig,
         )
-        from nautilus_trader.model.identifiers import InstrumentId, Venue
+        from nautilus_trader.model.identifiers import InstrumentId, StrategyId, Venue
         from nautilus_trader.system.kernel import NautilusKernel
 
+        from engine.live.bar_supply import live_bar_type
         from engine.live.nautilus_exec_client import NautilusVenueExecClient
         from engine.live.safety_rails import SafetyLimits, SafetyRails
-        from engine.strategy_runtime.engine_runner import default_strategy_init_kwargs
+        from engine.strategy_runtime.catalog_data_loader import normalize_granularity
         from engine.strategy_runtime.instrument_factory import make_equity_instrument
 
         rails = safety_rails if safety_rails is not None else SafetyRails(SafetyLimits())
@@ -212,16 +221,161 @@ class NautilusLiveEngineController:
         # 戦略インスタンス化（engine_runner の backtest と同じ contract）。
         # config= 形式の戦略は scenario/params から組めないため、kwargs 形式
         # （instrument_id / bar_type_str）を default として渡す（mean_reversion_01 等）。
-        kwargs = default_strategy_init_kwargs(scenario)
+        # 起動対象は **request の instrument_id**（kernel cache / RiskEngine に登録したのと
+        # 同じ銘柄）。scenario の既定銘柄ではなくユーザーが指定した銘柄に従う。bar_type は
+        # Live 用 INTERNAL（ADR-B: live aggregation 由来。EXTERNAL→INTERNAL 読み替えは
+        # bar_supply に集約）。
+        kwargs = {
+            "instrument_id": instrument_id,
+            "bar_type_str": live_bar_type(
+                instrument_id, normalize_granularity(scenario["granularity"])
+            ),
+        }
         kwargs.update(params)
         strategy = strategy_cls(**kwargs)
+        # Step 7 B: 発注主体 StrategyId を run の nautilus_strategy_id ("LIVE-{run}") に強制する。
+        # Strategy.__init__ は self.id を `{ClassName}-{order_id_tag}` で採番するため
+        # （StrategyConfig.strategy_id だけでは "-{tag}" が付いて一致しない）、
+        # change_id で直接差し替える。**add_strategy の前**に行うことが必須:
+        # register() が `events.order.{self.id}` を購読し order_factory を self.id で
+        # 構成するため、ここで id を確定しないと order が旧 id を運ぶ。
+        #
+        # ⚠️ Trader.add_strategy は `order_id_tag in (None, "None")` のとき id を
+        # `{id.partition('-')[0]}-{NNN}` に**再採番する**（"LIVE-ab12cd34" → "LIVE-000"）。
+        # これを防ぐため order_id_tag も明示設定する（"LIVE-" の後ろ = run 短縮 id）。
+        # 単一 run なので tag 衝突は起きない。Replay（engine_runner）は change_id を
+        # 呼ばないので従来通り ClassName 由来のまま（id 強制は Live 経路に閉じる）。
+        strategy.change_id(StrategyId(nautilus_strategy_id))
+        strategy.change_order_id_tag(nautilus_strategy_id.partition("-")[2] or nautilus_strategy_id)
         kernel.trader.add_strategy(strategy)
+
+        # Step 7 C: kernel msgbus の order events を購読し UI へ橋渡しする。
+        # 戦略は `events.order.{strategy_id}` に publish するので、当該 run の id で購読する
+        # （change_id 後 = nautilus_strategy_id）。handler は live loop thread で呼ばれる。
+        if self._on_order_event is not None or self._on_telemetry is not None:
+            kernel.msgbus.subscribe(
+                topic=f"events.order.{nautilus_strategy_id}",
+                handler=self._make_order_event_handler(
+                    kernel, nautilus_strategy_id, venue_str
+                ),
+            )
 
         kernel.start()
 
         self._kernel = kernel
         self._strategy = strategy
         self._strategy_id_str = str(strategy.id)
+
+    def _make_order_event_handler(self, kernel, strategy_id: str, venue_str: str):
+        """`events.order.{strategy_id}` の msgbus handler を作る (Step 7 C)。
+
+        Nautilus OrderEvent を受け、`cache.order(client_order_id)` で order を引いて
+        UI 互換の `OrderEventData` を構成し、`on_order_event(ev, strategy_id)` を呼ぶ。
+        その後 `on_telemetry(strategy_id, metrics)` で run 別 telemetry を push する
+        （fill / order の都度更新）。
+
+        ⚠️ live loop thread 上で呼ばれる。重い処理・blocking round-trip・外側 lock の
+        取得はしない（自己デッドロック回避、§Step4 不変条件）。
+
+        重複報告の注意: 実 venue では同じ約定が共有 adapter の EC stream
+        （`server_grpc._publish_order_event`、strategy_id 空）でも届き得るが、UI 側は
+        client_order_id でマージし「非空が勝つ」規則で LIVE-{run} を保持する。mock の
+        EC stream は発火しないため Step 7 のテスト範囲では二重化しない。
+        """
+
+        def _handler(event) -> None:
+            try:
+                ev_data = self._order_event_data(kernel, event)
+                if ev_data is not None and self._on_order_event is not None:
+                    self._on_order_event(ev_data, strategy_id)
+            except Exception:  # noqa: BLE001 — bridge は best-effort（戦略を止めない）
+                log.exception("order-event bridge handler failed")
+            try:
+                if self._on_telemetry is not None:
+                    self._on_telemetry(
+                        strategy_id, self._compute_telemetry(kernel, venue_str)
+                    )
+            except Exception:  # noqa: BLE001
+                log.exception("telemetry compute/push failed")
+
+        return _handler
+
+    @staticmethod
+    def _order_event_data(kernel, event):
+        """Nautilus OrderEvent → UI 互換 `OrderEventData`（Step 7 C）。
+
+        order を cache から引けない（未登録/同期前）場合は None を返してスキップする。
+        mock では venue_order_id が無いので client_order_id を order_id に流用する
+        （ManualOrderFacade の正規化と同方針）。
+        """
+        from engine.live.order_types import OrderEventData
+
+        client_order_id = getattr(event, "client_order_id", None)
+        if client_order_id is None:
+            return None
+        order = kernel.cache.order(client_order_id)
+        if order is None:
+            return None
+        venue_order_id = order.venue_order_id
+        veid = venue_order_id.value if venue_order_id is not None else ""
+        return OrderEventData(
+            order_id=client_order_id.value,
+            venue_order_id=veid,
+            client_order_id=client_order_id.value,
+            status=order.status.name,
+            filled_qty=float(order.filled_qty),
+            avg_price=float(order.avg_px),
+            ts_ms=int(kernel.clock.timestamp_ns() // 1_000_000),
+        )
+
+    @staticmethod
+    def _compute_telemetry(kernel, venue_str: str) -> dict:
+        """run（= 単一 kernel、§0.7）の telemetry を算出する（Step 7 D）。
+
+        - order_count = cache.orders() 件数（この kernel は単一 run なので全件 = この run）。
+        - fill_count = filled_qty>0 の order 数（OrderFilled カウンタの代理。終端/部分約定を
+          問わず「約定が付いた注文」を数える。単純で cache だけで再現でき、再起動時の
+          ドリフトが無い）。
+        - realized_pnl / unrealized_pnl = Portfolio の public API を JPY で合算。市場データ
+          未供給（Step 8 前）では unrealized は空 dict（→ 0.0）になり得るのを graceful に扱う。
+
+        live loop thread から呼ばれるため lock を取らず軽量に保つ。
+        """
+        from nautilus_trader.model.currencies import JPY
+        from nautilus_trader.model.identifiers import Venue
+
+        orders = kernel.cache.orders()
+        order_count = len(orders)
+        fill_count = sum(1 for o in orders if float(o.filled_qty) > 0.0)
+
+        venue = Venue(venue_str)
+        realized = NautilusLiveEngineController._sum_jpy(
+            kernel.portfolio.realized_pnls(venue, target_currency=JPY)
+        )
+        unrealized = NautilusLiveEngineController._sum_jpy(
+            kernel.portfolio.unrealized_pnls(venue, target_currency=JPY)
+        )
+        return {
+            "realized_pnl": realized,
+            "unrealized_pnl": unrealized,
+            "order_count": order_count,
+            "fill_count": fill_count,
+        }
+
+    @staticmethod
+    def _sum_jpy(pnls: dict) -> float:
+        """`Portfolio.*_pnls()` の dict[Currency, Money] から JPY 額を取り出す。
+
+        target_currency=JPY 指定時は JPY のみ含まれる。空 dict（建玉なし / market data
+        未供給 / 換算失敗）は 0.0。`Money.as_double()` で JPY 額を取る。
+        """
+        from nautilus_trader.model.currencies import JPY
+
+        total = 0.0
+        for currency, money in pnls.items():
+            if currency == JPY:
+                total += money.as_double()
+        return total
 
     def detach(self, *, nautilus_strategy_id: str) -> None:
         self._teardown_kernel()
@@ -239,10 +393,14 @@ class NautilusLiveEngineController:
 
         async def _cancel() -> None:
             try:
-                # 当該戦略の open order のみ cancel（§1.3 / M6）。手動・他戦略は巻き込まない。
-                strategy.cancel_all_orders(strategy.instrument_id) if hasattr(
-                    strategy, "instrument_id"
-                ) else None
+                # 当該戦略の order **のみ** cancel（§1.3 / M6）。手動・他戦略は巻き込まない。
+                # instrument 属性に依存せず cache を strategy.id で引く（戦略ごとに
+                # instrument_id の保持名/型が異なるため）。teardown 中は accepted（open）に
+                # 加え submit 済み未 ack（inflight）も取り消す——どちらも放置すると venue に
+                # 残る。両 index は排他なので二重 cancel しない。
+                inflight = kernel.cache.orders_inflight(strategy_id=strategy.id)
+                for order in list(kernel.cache.orders_open(strategy_id=strategy.id)) + inflight:
+                    strategy.cancel_order(order)
             except Exception:  # noqa: BLE001 — best-effort
                 log.exception("cancel_inflight_orders failed")
 

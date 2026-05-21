@@ -161,6 +161,51 @@ These bite people repeatedly. Worth holding in working memory rather than redisc
   fifth segment (`EXTERNAL` / `INTERNAL`) decides whether nautilus aggregates the bars from
   ticks or trusts an external feed. Mismatch is a common silent bug.
 
+### Live execution stack gotchas (custom `LiveExecutionClient` / live `NautilusKernel`)
+
+Hit while building Phase 10 Step 4 (`python/engine/live/nautilus_exec_client.py` +
+`engine_controller.py`, nautilus 1.226.0). These bite anyone wrapping a bespoke venue
+adapter as a live client:
+
+- **Minimal live stack = `NautilusKernel` directly, no `TradingNode` needed.**
+  `NautilusKernel(name=..., config=TradingNodeConfig(trader_id, logging, exec_engine=LiveExecEngineConfig(), risk_engine=LiveRiskEngineConfig(...), data_engine=LiveDataEngineConfig()), loop=loop)`
+  gives you `kernel.{trader,exec_engine,risk_engine,data_engine,cache,portfolio,msgbus,clock}`.
+  Then `cache.add_instrument(...)` → `exec_engine.register_client(client)` → `trader.add_strategy(...)`
+  → `kernel.start()` / `await kernel.stop_async()`. `TradingNode` only adds client-factory
+  wiring + signal handling on top.
+- **`OrderDenied` is only a valid transition from `INITIALIZED`.** A custom pre-trade rail in
+  `LiveExecutionClient._submit_order` must call `generate_order_denied(...)` **before**
+  `generate_order_submitted(...)`. Deny after submit → `SUBMITTED → DENIED` is rejected and the
+  order sticks at SUBMITTED. (Native `LiveRiskEngineConfig` rails — `max_notional_per_order`
+  dict, `max_order_submit_rate="N/HH:MM:SS"` — deny before the client is reached, so they're fine.)
+- **A live client must set its `account_id` before `generate_account_state`.** In `_connect`:
+  `if self.account_id is None: self._set_account_id(AccountId(f"{venue}-001"))`, then
+  `generate_account_state(balances=[AccountBalance(total, locked, free)], margins=[], reported=True, ts_event=...)`.
+  Without an account, RiskEngine free-balance checks deny orders.
+- **Live forbids `LoggingConfig(bypass_logging=True)`** (`InvalidConfiguration`). Use
+  `LoggingConfig(log_level="ERROR", log_level_file="OFF")` to avoid littering `*.log` in cwd.
+  The live kernel initializes Nautilus's process-global logger once, which then defeats a
+  backtest's `bypass_logging=True` in the **same process** (combined test runs leak backtest
+  dispose logs; production unaffected since replay/live are separate processes).
+- **Live-loop self-deadlock.** Code on the live asyncio-loop thread (e.g. an account-sync
+  callback) must NOT call anything that does `run_coroutine_threadsafe(coro, loop).result()`
+  targeting that *same* loop (e.g. tearing down via `kernel.stop_async()`). Offload to a
+  `threading.Thread`.
+  - **Offloading to a thread is necessary but NOT sufficient** (Phase 10 Step 4 review). If the
+    offloaded worker holds a lock *across* its blocking `.result()`, and a live-loop callback
+    also acquires that lock, the deadlock just moves: live loop blocks on the lock → can't run
+    the coro → worker waits until `.result(timeout=…)` fires (leaving a runaway kernel
+    un-torn-down). **Invariant: no live-loop callback may acquire a lock that is held across a
+    blocking round-trip to that loop.** Fix: give the live-loop-reachable state its own
+    lightweight lock, never held across a round-trip; keep the heavy lifecycle lock (held during
+    start/stop/teardown) off the live-loop path entirely.
+- **Cancel a strategy's orders by `strategy.id`, not by an instrument attribute.** To cancel a
+  run's in-flight orders, query the cache (`cache.orders_open(strategy_id=s.id)` +
+  `cache.orders_inflight(strategy_id=s.id)`) and `strategy.cancel_order(o)` each — don't rely on
+  `strategy.instrument_id` (the base `Strategy` has no such attribute; kwargs/config strategies
+  store it privately, so an attribute-based cancel silently no-ops). `cancel_all_orders` requires
+  an `InstrumentId` and also sweeps emulated/exec-algo orders if you use those.
+
 ## How to research an API question
 
 When the user asks "how do I do X with nautilus", follow this in order:

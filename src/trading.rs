@@ -196,6 +196,22 @@ pub struct StrategyRunConfig {
     pub initial_cash: Option<i64>,
 }
 
+/// Phase 10 §2.4 / §0.6: the safety-rail limits the user sets in the
+/// Promote-to-Live modal, carried in `TransportCommand::PromoteToLive` and mapped
+/// to the proto `SafetyLimits` by the transport task. **`0` disables that rail**
+/// (mirrors the backend `SafetyRails`, where `0 = rail off`). `allowed_instruments`
+/// is the pre-trade whitelist; the modal defaults it to the single promoted
+/// instrument. Transport-neutral mirror so the lib (UI) never imports the
+/// generated proto types.
+#[derive(Debug, Clone, Default, PartialEq)]
+pub struct SafetyLimitsInput {
+    pub max_position_size_jpy: i64,
+    pub max_order_value_jpy: i64,
+    pub max_daily_loss_jpy: i64,
+    pub max_orders_per_minute: i32,
+    pub allowed_instruments: Vec<String>,
+}
+
 #[derive(Debug, Clone)]
 pub enum TransportCommand {
     Pause,
@@ -296,6 +312,37 @@ pub enum TransportCommand {
     /// `OrdersReconciled`.
     GetOrders {
         venue: String,
+    },
+    /// Phase 10 §2.7 / §1.3: promote the editor's saved strategy to a Live Auto
+    /// run. The transport task expands this into the RPC chain
+    /// `RegisterLiveStrategy` → (`SetExecutionMode(LiveAuto)` when `ensure_live_auto`)
+    /// → `StartLiveStrategy`, **awaited in order** so the backend's
+    /// `ExecutionMode == LiveAuto` precondition is satisfied before Start (firing
+    /// the three as independent commands would race). `token` is injected by the
+    /// transport task. `expected_sha256` is the TOCTOU guard (empty → backend
+    /// computes only). The unary outcome comes back as
+    /// `BackendStatusUpdate::LiveStrategyPromoteResult`; success ALSO arrives as a
+    /// pushed `LiveStrategyEvent{status:"RUNNING"}`.
+    PromoteToLive {
+        strategy_file: std::path::PathBuf,
+        expected_sha256: String,
+        instrument_id: String,
+        venue: String,
+        params: HashMap<String, String>,
+        safety_limits: SafetyLimitsInput,
+        ensure_live_auto: bool,
+    },
+    /// Phase 10 §2.8: Live Run Panel controls. `token` is injected by the transport
+    /// task. `Pause`/`Resume`/`Stop` are gated on `run_id` existence on the backend
+    /// only (no mode hard-gate, §2.5) so a runaway run can always be stopped.
+    PauseLiveStrategy {
+        run_id: String,
+    },
+    ResumeLiveStrategy {
+        run_id: String,
+    },
+    StopLiveStrategy {
+        run_id: String,
     },
 }
 
@@ -717,6 +764,10 @@ pub enum BackendStatusUpdate {
         filled_qty: f64,
         avg_price: f64,
         ts_ms: i64,
+        /// Phase 10 (§2.9 / M6): the ordering subject's Nautilus StrategyId. A
+        /// manual `PlaceOrder` carries "MANUAL-001"; a non-empty value seeds the
+        /// `LiveOrders` row so a later empty EC-stream `OrderEvent` cannot wipe it.
+        strategy_id: String,
     },
     /// Phase 9 §3.2: status/fill update for an already-known order (e.g. a
     /// `CancelOrder` response, whose `OrderEvent` has no symbol/side/qty/price).
@@ -778,6 +829,17 @@ pub enum BackendStatusUpdate {
     OrdersReconciled {
         backend_client_order_ids: Vec<String>,
     },
+    /// Phase 10 §2.7: structured outcome of a `PromoteToLive` RPC chain. Success
+    /// also arrives as a pushed `LiveStrategyEvent{status:"RUNNING"}`, so this is
+    /// primarily for surfacing a structured reject (`EXECUTION_MODE_PRECONDITION` /
+    /// `VENUE_LOGIN_REQUIRED` / `LIVE_STRATEGY_ALREADY_RUNNING` /
+    /// `STRATEGY_LOAD_FAILED` / `STRATEGY_HASH_MISMATCH`) to the user via
+    /// `PromoteFeedback`. On success `run_id` is the new Live run.
+    LiveStrategyPromoteResult {
+        success: bool,
+        error_code: String,
+        run_id: String,
+    },
 }
 
 /// Bevy 側に流す backend event。proto の `backend_event::Payload` (oneof) を
@@ -830,6 +892,19 @@ pub enum BackendEvent {
         run_id: String,
         level: String,
         message: String,
+        ts_ms: i64,
+    },
+    /// Phase 10 Step 7 (§2.8 / §2.9): run-scoped PnL / order / fill counters,
+    /// pushed periodically for the Live Run Panel telemetry cells. Separate from
+    /// the lifecycle `LiveStrategyEvent` so it can arrive at any cadence and even
+    /// before the first lifecycle event.
+    LiveStrategyTelemetry {
+        run_id: String,
+        strategy_id: String,
+        realized_pnl: f64,
+        unrealized_pnl: f64,
+        order_count: i64,
+        fill_count: i64,
         ts_ms: i64,
     },
 }
@@ -917,6 +992,13 @@ impl LiveOrders {
     /// (symbol/side/qty/price) are preserved when the order is already known;
     /// an unknown `client_order_id` is inserted with empty static fields so the
     /// event is still visible (e.g. orders placed before this session).
+    ///
+    /// Phase 10 (§2.9 / M6) `strategy_id` merge invariant: a **non-empty**
+    /// `strategy_id` overwrites the stored one; an **empty** value never clears a
+    /// known one. This lets a unary `PlaceOrder` response (MANUAL-001) or the auto
+    /// bridge (LIVE-..) tag a row that a later untagged EC-stream `OrderEvent`
+    /// (strategy_id="") must not wipe — same pattern as `venue_order_id`.
+    #[allow(clippy::too_many_arguments)]
     pub fn apply_event(
         &mut self,
         client_order_id: &str,
@@ -925,6 +1007,7 @@ impl LiveOrders {
         filled_qty: f64,
         avg_price: f64,
         ts_ms: i64,
+        strategy_id: &str,
     ) {
         if let Some(existing) = self
             .orders
@@ -933,6 +1016,9 @@ impl LiveOrders {
         {
             if !venue_order_id.is_empty() {
                 existing.venue_order_id = venue_order_id.to_string();
+            }
+            if !strategy_id.is_empty() {
+                existing.strategy_id = strategy_id.to_string();
             }
             // status / venue_order_id / ts_ms always refresh; cumulative fill is
             // advanced monotonically (see LiveOrder::advance_fill, §3.12).
@@ -949,11 +1035,46 @@ impl LiveOrders {
                     filled_qty,
                     avg_price,
                     ts_ms,
+                    strategy_id: strategy_id.to_string(),
                     ..Default::default()
                 },
             );
             self.orders.truncate(MAX_LIVE_ORDERS);
         }
+    }
+
+    /// Orders matching `filter`, newest-first (the storage order), as borrowed
+    /// refs (§2.9). Both the OrdersPanel cell renderer and its right-click hit
+    /// observer index into THIS view so the displayed row N maps to the same order
+    /// in both — filtering must never desync the two.
+    pub fn filtered<'a>(&'a self, filter: &OrdersFilter) -> Vec<&'a LiveOrder> {
+        self.orders
+            .iter()
+            .filter(|o| order_matches_filter(&o.strategy_id, filter))
+            .collect()
+    }
+
+    /// The `n`-th order matching `filter` in storage order (newest-first), without
+    /// allocating. The OrdersPanel pulls each displayed row (≤6/frame) this way and
+    /// its right-click hit observer uses the same lookup, so row N maps to the same
+    /// order in both — without the per-frame `Vec` that `filtered()` would build.
+    pub fn nth_filtered<'a>(&'a self, filter: &OrdersFilter, n: usize) -> Option<&'a LiveOrder> {
+        self.orders
+            .iter()
+            .filter(|o| order_matches_filter(&o.strategy_id, filter))
+            .nth(n)
+    }
+
+    /// Distinct non-empty `strategy_id`s present in the book, in first-seen
+    /// (newest-first) order (§2.9). Drives the filter's cycle options.
+    pub fn distinct_strategy_ids(&self) -> Vec<String> {
+        let mut seen = Vec::new();
+        for o in &self.orders {
+            if !o.strategy_id.is_empty() && !seen.contains(&o.strategy_id) {
+                seen.push(o.strategy_id.clone());
+            }
+        }
+        seen
     }
 
     /// Merge a `ModifyOrder` (訂正) result into the existing record. `symbol`/
@@ -996,6 +1117,201 @@ impl LiveOrders {
             existing.ts_ms = ts_ms;
         }
         // Unknown id: no-op (modify always targets a known order).
+    }
+}
+
+/// Phase 10 §2.9: OrdersPanel strategy_id filter. The panel cycles through
+/// `All` → `Manual` → each distinct strategy → `All`. Read by `orders_panel_system`
+/// in Live mode only; the Replay path (`PortfolioState.orders`) ignores it.
+#[derive(Resource, Debug, Clone, PartialEq, Eq, Default)]
+pub enum OrdersFilter {
+    /// Show every order regardless of strategy_id.
+    #[default]
+    All,
+    /// Manual orders only (`strategy_id == "MANUAL-001"`).
+    Manual,
+    /// A specific automated strategy (`strategy_id == "LIVE-…"`).
+    Strategy(String),
+}
+
+/// The Nautilus StrategyId tag a manual `PlaceOrder` carries (§2.9). Centralised
+/// here so the OrdersPanel filter and any producer-mirror use the same literal.
+pub const MANUAL_STRATEGY_ID: &str = "MANUAL-001";
+
+/// Whether an order with `order_strategy_id` is shown under `filter` (§2.9 pure
+/// predicate, unit-tested). `All` always matches; `Manual` matches MANUAL-001;
+/// `Strategy(s)` matches an exact strategy_id.
+pub fn order_matches_filter(order_strategy_id: &str, filter: &OrdersFilter) -> bool {
+    match filter {
+        OrdersFilter::All => true,
+        OrdersFilter::Manual => order_strategy_id == MANUAL_STRATEGY_ID,
+        OrdersFilter::Strategy(s) => order_strategy_id == s,
+    }
+}
+
+/// The ordered cycle of filter options for the current order book (§2.9):
+/// `All`, then `Manual` (only if any MANUAL-001 order exists), then one
+/// `Strategy(id)` per distinct non-manual strategy_id (newest-first). The cell
+/// click cycles through this list and wraps to `All`.
+pub fn filter_cycle(orders: &LiveOrders) -> Vec<OrdersFilter> {
+    let mut cycle = vec![OrdersFilter::All];
+    let distinct = orders.distinct_strategy_ids();
+    if distinct.iter().any(|s| s == MANUAL_STRATEGY_ID) {
+        cycle.push(OrdersFilter::Manual);
+    }
+    for s in distinct {
+        if s != MANUAL_STRATEGY_ID {
+            cycle.push(OrdersFilter::Strategy(s));
+        }
+    }
+    cycle
+}
+
+/// Next filter in the cycle for `orders`, wrapping `All` → … → `All`. If `current`
+/// is no longer present in the cycle (its strategy_id vanished), fall back to the
+/// next option after `All` (or `All` if that's all there is).
+pub fn next_filter(current: &OrdersFilter, orders: &LiveOrders) -> OrdersFilter {
+    let cycle = filter_cycle(orders);
+    match cycle.iter().position(|f| f == current) {
+        Some(i) => cycle[(i + 1) % cycle.len()].clone(),
+        // current dropped out of the cycle (e.g. its strategy retired): advance to
+        // the next meaningful option, else stay at All.
+        None => cycle.get(1).cloned().unwrap_or(OrdersFilter::All),
+    }
+}
+
+/// Short display label for a strategy_id in the filter cell (§2.9):
+/// "MANUAL-001" → "Manual", "LIVE-abcd…" → "Strategy: <tail>", else the raw id.
+/// `n` is the tail length passed to the shared `short_id` shortener.
+pub fn filter_label(filter: &OrdersFilter) -> String {
+    match filter {
+        OrdersFilter::All => "All".to_string(),
+        OrdersFilter::Manual => "Manual".to_string(),
+        OrdersFilter::Strategy(s) => format!("Strategy: {}", short_id(s, 8)),
+    }
+}
+
+/// Tail-`n`-char shortener for ids (shared by the Live Run Panel and the OrdersPanel
+/// filter so the two stay visually consistent). Short ids pass through unchanged;
+/// longer ones are rendered as `…<last n chars>`.
+pub fn short_id(id: &str, n: usize) -> String {
+    let count = id.chars().count();
+    if count <= n {
+        return id.to_string();
+    }
+    let tail: String = id.chars().skip(count - n).collect();
+    format!("…{tail}")
+}
+
+/// Phase 10 §2.8: one Live Auto run tracked by the UI for the Live Run Panel.
+/// Populated from `BackendEvent::LiveStrategyEvent` pushes. Run-level PnL / order
+/// / fill telemetry is NOT here yet — that needs a telemetry event (Step 7 / §2.9);
+/// Step 6 shows lifecycle status + timing only.
+#[derive(Debug, Clone, Default)]
+pub struct LiveRunRecord {
+    pub run_id: String,
+    pub strategy_id: String,
+    /// READY / RUNNING / PAUSED / STOPPING / STOPPED / ERROR.
+    pub status: String,
+    /// ts_ms of the first event seen for this run (run start).
+    pub started_ts_ms: i64,
+    /// ts_ms of the most recent event.
+    pub updated_ts_ms: i64,
+    /// Phase 10 Step 7 (§2.8 / §2.9): run-scoped telemetry from
+    /// `LiveStrategyTelemetry` pushes. Lifecycle events (`apply_event`) never
+    /// touch these; they default to 0 until the first telemetry push.
+    pub realized_pnl: f64,
+    pub unrealized_pnl: f64,
+    pub order_count: i64,
+    pub fill_count: i64,
+}
+
+/// Terminal run states — settled, so no longer controllable.
+pub fn is_terminal_run_status(status: &str) -> bool {
+    matches!(status, "STOPPED" | "ERROR")
+}
+
+/// Live Auto runs as seen by the UI, newest first. Keyed by `run_id`. Read by the
+/// Live Run Panel (§2.8). Phase 10 caps active automated runs to 1, but the list
+/// retains recent terminal runs so the user sees their final state.
+#[derive(Resource, Default, Debug, Clone)]
+pub struct LiveRuns {
+    pub runs: Vec<LiveRunRecord>,
+}
+
+const MAX_LIVE_RUNS: usize = 8;
+
+impl LiveRuns {
+    /// Upsert a run from a `LiveStrategyEvent`. `started_ts_ms` is fixed at the
+    /// first event; later events only refresh `status` / `updated_ts_ms`. An empty
+    /// `strategy_id` (older producer) never clears a known one.
+    pub fn apply_event(&mut self, run_id: &str, strategy_id: &str, status: &str, ts_ms: i64) {
+        if let Some(r) = self.runs.iter_mut().find(|r| r.run_id == run_id) {
+            r.status = status.to_string();
+            if !strategy_id.is_empty() {
+                r.strategy_id = strategy_id.to_string();
+            }
+            r.updated_ts_ms = ts_ms;
+        } else {
+            self.runs.insert(
+                0,
+                LiveRunRecord {
+                    run_id: run_id.to_string(),
+                    strategy_id: strategy_id.to_string(),
+                    status: status.to_string(),
+                    started_ts_ms: ts_ms,
+                    updated_ts_ms: ts_ms,
+                    ..Default::default()
+                },
+            );
+            self.runs.truncate(MAX_LIVE_RUNS);
+        }
+    }
+
+    /// Merge a run-scoped telemetry push (§2.8 / §2.9) into the run's counters.
+    /// Upserts the run so telemetry that races ahead of the first lifecycle event
+    /// still creates a row (status is left empty until a `LiveStrategyEvent`
+    /// arrives). The merge invariants mirror `apply_event`: a non-empty
+    /// `strategy_id` wins / an empty one never clears a known one, and
+    /// `started_ts_ms` is fixed at whichever event is seen first. Lifecycle status
+    /// is never touched here (telemetry carries no status).
+    #[allow(clippy::too_many_arguments)]
+    pub fn apply_telemetry(
+        &mut self,
+        run_id: &str,
+        strategy_id: &str,
+        realized_pnl: f64,
+        unrealized_pnl: f64,
+        order_count: i64,
+        fill_count: i64,
+        ts_ms: i64,
+    ) {
+        if let Some(r) = self.runs.iter_mut().find(|r| r.run_id == run_id) {
+            if !strategy_id.is_empty() {
+                r.strategy_id = strategy_id.to_string();
+            }
+            r.realized_pnl = realized_pnl;
+            r.unrealized_pnl = unrealized_pnl;
+            r.order_count = order_count;
+            r.fill_count = fill_count;
+            r.updated_ts_ms = ts_ms;
+        } else {
+            self.runs.insert(
+                0,
+                LiveRunRecord {
+                    run_id: run_id.to_string(),
+                    strategy_id: strategy_id.to_string(),
+                    status: String::new(),
+                    started_ts_ms: ts_ms,
+                    updated_ts_ms: ts_ms,
+                    realized_pnl,
+                    unrealized_pnl,
+                    order_count,
+                    fill_count,
+                },
+            );
+            self.runs.truncate(MAX_LIVE_RUNS);
+        }
     }
 }
 
@@ -1056,6 +1372,16 @@ pub struct ReloginPrompt {
 /// system lands (tracked for a later step).
 #[derive(Resource, Default, Debug, Clone)]
 pub struct OrderFeedback {
+    pub message: Option<String>,
+}
+
+/// Phase 10 §2.7: latest user-facing notice for the Promote-to-Live flow. Set by
+/// `apply_status_update` from a `LiveStrategyPromoteResult` (success → run id,
+/// reject → error code) and surfaced by the Safety Rails modal / Promote button.
+/// Distinct from `OrderFeedback` because the OrderPanel error line only shows in
+/// `LiveManual`, whereas a promote outcome must be visible in `LiveAuto`.
+#[derive(Resource, Default, Debug, Clone)]
+pub struct PromoteFeedback {
     pub message: Option<String>,
 }
 
@@ -1216,7 +1542,7 @@ mod tests {
     fn live_orders_apply_event_preserves_static_fields() {
         let mut lo = LiveOrders::default();
         lo.upsert_full(make_live_order("c1"));
-        lo.apply_event("c1", "V123", "FILLED", 100.0, 2501.0, 42);
+        lo.apply_event("c1", "V123", "FILLED", 100.0, 2501.0, 42, "");
         let o = &lo.orders[0];
         // status/fill updated from the event...
         assert_eq!(o.status, "FILLED");
@@ -1234,7 +1560,7 @@ mod tests {
     #[test]
     fn live_orders_apply_event_inserts_unknown_id_with_empty_static_fields() {
         let mut lo = LiveOrders::default();
-        lo.apply_event("ghost", "V9", "ACCEPTED", 0.0, 0.0, 7);
+        lo.apply_event("ghost", "V9", "ACCEPTED", 0.0, 0.0, 7, "");
         assert_eq!(lo.orders.len(), 1);
         let o = &lo.orders[0];
         assert_eq!(o.client_order_id, "ghost");
@@ -1323,7 +1649,7 @@ mod tests {
         let mut seeded = make_live_order("c1");
         seeded.venue_order_id = "V1".to_string();
         lo.upsert_full(seeded);
-        lo.apply_event("c1", "", "PARTIALLY_FILLED", 50.0, 2500.0, 9);
+        lo.apply_event("c1", "", "PARTIALLY_FILLED", 50.0, 2500.0, 9, "");
         assert_eq!(
             lo.orders[0].venue_order_id, "V1",
             "blank venue_order_id in event must not wipe the known id"
@@ -1339,9 +1665,9 @@ mod tests {
         let mut lo = LiveOrders::default();
         lo.upsert_full(make_live_order("c1"));
         // EC stream recorded a 40-share partial fill at 2502.0.
-        lo.apply_event("c1", "V123", "PARTIALLY_FILLED", 40.0, 2502.0, 10);
+        lo.apply_event("c1", "V123", "PARTIALLY_FILLED", 40.0, 2502.0, 10, "");
         // Cancel RPC response comes back with filled=0.0.
-        lo.apply_event("c1", "V123", "CANCELED", 0.0, 0.0, 20);
+        lo.apply_event("c1", "V123", "CANCELED", 0.0, 0.0, 20, "");
         let o = &lo.orders[0];
         assert_eq!(o.status, "CANCELED", "status always updates");
         assert_eq!(o.filled_qty, 40.0, "monotonic: downward fill is ignored");
@@ -1357,8 +1683,8 @@ mod tests {
         // Forward progress (40 -> 100) must overwrite filled/avg as before.
         let mut lo = LiveOrders::default();
         lo.upsert_full(make_live_order("c1"));
-        lo.apply_event("c1", "V123", "PARTIALLY_FILLED", 40.0, 2502.0, 10);
-        lo.apply_event("c1", "V123", "FILLED", 100.0, 2505.0, 20);
+        lo.apply_event("c1", "V123", "PARTIALLY_FILLED", 40.0, 2502.0, 10, "");
+        lo.apply_event("c1", "V123", "FILLED", 100.0, 2505.0, 20, "");
         let o = &lo.orders[0];
         assert_eq!(o.filled_qty, 100.0);
         assert_eq!(o.avg_price, 2505.0);
@@ -1372,7 +1698,7 @@ mod tests {
         // NOT clobber a larger partial already recorded by the EC stream.
         let mut lo = LiveOrders::default();
         lo.upsert_full(make_live_order("c1"));
-        lo.apply_event("c1", "V123", "PARTIALLY_FILLED", 40.0, 2502.0, 10);
+        lo.apply_event("c1", "V123", "PARTIALLY_FILLED", 40.0, 2502.0, 10, "");
         // Modify ACCEPTED response comes back reporting filled=0.0 (new leg).
         lo.apply_modify("c1", "V456", Some(60.0), None, "ACCEPTED", 0.0, 0.0, 20);
         let o = &lo.orders[0];
@@ -1385,6 +1711,212 @@ mod tests {
         );
         assert_eq!(o.venue_order_id, "V456", "remapped venue_order_id updates");
         assert_eq!(o.ts_ms, 20, "ts_ms always updates");
+    }
+
+    #[test]
+    fn live_runs_apply_event_inserts_and_fixes_start_ts() {
+        let mut lr = LiveRuns::default();
+        lr.apply_event("run-1", "strat-a", "READY", 100);
+        lr.apply_event("run-1", "strat-a", "RUNNING", 200);
+        assert_eq!(lr.runs.len(), 1, "same run_id upserts, no dup");
+        let r = &lr.runs[0];
+        assert_eq!(r.status, "RUNNING", "status refreshes");
+        assert_eq!(r.started_ts_ms, 100, "start ts is fixed at first event");
+        assert_eq!(r.updated_ts_ms, 200, "updated ts advances");
+    }
+
+    #[test]
+    fn live_runs_blank_strategy_id_does_not_clear() {
+        let mut lr = LiveRuns::default();
+        lr.apply_event("run-1", "strat-a", "RUNNING", 100);
+        lr.apply_event("run-1", "", "PAUSED", 200);
+        assert_eq!(
+            lr.runs[0].strategy_id, "strat-a",
+            "an empty strategy_id must not wipe a known one"
+        );
+    }
+
+    #[test]
+    fn is_terminal_run_status_classifies_states() {
+        assert!(is_terminal_run_status("STOPPED"));
+        assert!(is_terminal_run_status("ERROR"));
+        assert!(!is_terminal_run_status("RUNNING"));
+        assert!(!is_terminal_run_status("PAUSED"));
+    }
+
+    #[test]
+    fn live_runs_caps_retention() {
+        let mut lr = LiveRuns::default();
+        for i in 0..(MAX_LIVE_RUNS + 5) {
+            lr.apply_event(&format!("run-{i}"), "s", "RUNNING", i as i64);
+        }
+        assert_eq!(lr.runs.len(), MAX_LIVE_RUNS, "retention is capped");
+    }
+
+    // ── Phase 10 §2.9: strategy_id merge + OrdersFilter ──────────────────────
+
+    #[test]
+    fn apply_event_strategy_id_merge_invariant() {
+        let mut lo = LiveOrders::default();
+        // Unary PlaceOrder seeds MANUAL-001.
+        let mut seeded = make_live_order("c1");
+        seeded.strategy_id = "MANUAL-001".to_string();
+        lo.upsert_full(seeded);
+        // A later untagged EC-stream OrderEvent (strategy_id="") must NOT clear it.
+        lo.apply_event("c1", "V1", "PARTIALLY_FILLED", 10.0, 2500.0, 5, "");
+        assert_eq!(
+            lo.orders[0].strategy_id, "MANUAL-001",
+            "empty strategy_id must not wipe a known tag"
+        );
+        // A non-empty value overwrites.
+        lo.apply_event("c1", "V1", "FILLED", 100.0, 2500.0, 6, "LIVE-abc12345");
+        assert_eq!(lo.orders[0].strategy_id, "LIVE-abc12345", "non-empty wins");
+    }
+
+    #[test]
+    fn apply_event_inserts_unknown_with_received_strategy_id() {
+        let mut lo = LiveOrders::default();
+        lo.apply_event("ghost", "V9", "ACCEPTED", 0.0, 0.0, 7, "LIVE-deadbeef");
+        assert_eq!(lo.orders[0].strategy_id, "LIVE-deadbeef");
+    }
+
+    #[test]
+    fn live_runs_apply_telemetry_upserts_before_lifecycle() {
+        let mut lr = LiveRuns::default();
+        // Telemetry races ahead of any lifecycle event → creates the row.
+        lr.apply_telemetry("run-1", "LIVE-abc", 100.0, 50.0, 3, 1, 500);
+        assert_eq!(lr.runs.len(), 1);
+        let r = &lr.runs[0];
+        assert_eq!(r.realized_pnl, 100.0);
+        assert_eq!(r.order_count, 3);
+        assert_eq!(r.started_ts_ms, 500, "started fixed at first event seen");
+        assert_eq!(r.status, "", "telemetry carries no lifecycle status");
+        // A later lifecycle event fills status without clobbering started_ts_ms.
+        lr.apply_event("run-1", "LIVE-abc", "RUNNING", 600);
+        assert_eq!(lr.runs[0].status, "RUNNING");
+        assert_eq!(lr.runs[0].started_ts_ms, 500);
+        assert_eq!(
+            lr.runs[0].realized_pnl, 100.0,
+            "lifecycle must not reset PnL"
+        );
+    }
+
+    #[test]
+    fn live_runs_apply_telemetry_after_lifecycle_updates_counters_only() {
+        let mut lr = LiveRuns::default();
+        lr.apply_event("run-1", "LIVE-abc", "RUNNING", 100);
+        lr.apply_telemetry("run-1", "LIVE-abc", 2000.0, -300.0, 5, 4, 200);
+        let r = &lr.runs[0];
+        assert_eq!(r.status, "RUNNING", "telemetry must not touch status");
+        assert_eq!(r.started_ts_ms, 100);
+        assert_eq!(r.realized_pnl, 2000.0);
+        assert_eq!(r.unrealized_pnl, -300.0);
+        assert_eq!(r.order_count, 5);
+        assert_eq!(r.fill_count, 4);
+    }
+
+    #[test]
+    fn live_runs_apply_telemetry_empty_strategy_id_does_not_clear() {
+        let mut lr = LiveRuns::default();
+        lr.apply_telemetry("run-1", "LIVE-abc", 0.0, 0.0, 0, 0, 100);
+        lr.apply_telemetry("run-1", "", 10.0, 0.0, 1, 0, 200);
+        assert_eq!(
+            lr.runs[0].strategy_id, "LIVE-abc",
+            "empty strategy_id must not wipe a known one"
+        );
+    }
+
+    #[test]
+    fn order_matches_filter_all_manual_strategy() {
+        assert!(order_matches_filter("MANUAL-001", &OrdersFilter::All));
+        assert!(order_matches_filter("", &OrdersFilter::All));
+        assert!(order_matches_filter("MANUAL-001", &OrdersFilter::Manual));
+        assert!(!order_matches_filter("LIVE-abc", &OrdersFilter::Manual));
+        assert!(order_matches_filter(
+            "LIVE-abc",
+            &OrdersFilter::Strategy("LIVE-abc".to_string())
+        ));
+        assert!(!order_matches_filter(
+            "LIVE-xyz",
+            &OrdersFilter::Strategy("LIVE-abc".to_string())
+        ));
+    }
+
+    fn order_tagged(client_order_id: &str, strategy_id: &str) -> LiveOrder {
+        let mut o = make_live_order(client_order_id);
+        o.strategy_id = strategy_id.to_string();
+        o
+    }
+
+    #[test]
+    fn filtered_view_and_distinct_ids() {
+        let mut lo = LiveOrders::default();
+        lo.upsert_full(order_tagged("c1", "MANUAL-001"));
+        lo.upsert_full(order_tagged("c2", "LIVE-abc"));
+        lo.upsert_full(order_tagged("c3", "MANUAL-001"));
+        // distinct (newest-first storage): c3 MANUAL, c2 LIVE, c1 MANUAL → [MANUAL-001, LIVE-abc]
+        assert_eq!(
+            lo.distinct_strategy_ids(),
+            vec!["MANUAL-001".to_string(), "LIVE-abc".to_string()]
+        );
+        let manual = lo.filtered(&OrdersFilter::Manual);
+        assert_eq!(manual.len(), 2);
+        assert!(manual.iter().all(|o| o.strategy_id == "MANUAL-001"));
+        let live = lo.filtered(&OrdersFilter::Strategy("LIVE-abc".to_string()));
+        assert_eq!(live.len(), 1);
+        assert_eq!(live[0].client_order_id, "c2");
+        assert_eq!(lo.filtered(&OrdersFilter::All).len(), 3);
+    }
+
+    #[test]
+    fn next_filter_cycles_all_manual_strategy_wrap() {
+        let mut lo = LiveOrders::default();
+        lo.upsert_full(order_tagged("c1", "MANUAL-001"));
+        lo.upsert_full(order_tagged("c2", "LIVE-abc"));
+        // Cycle: All → Manual → Strategy(LIVE-abc) → All
+        let f0 = OrdersFilter::All;
+        let f1 = next_filter(&f0, &lo);
+        assert_eq!(f1, OrdersFilter::Manual);
+        let f2 = next_filter(&f1, &lo);
+        assert_eq!(f2, OrdersFilter::Strategy("LIVE-abc".to_string()));
+        let f3 = next_filter(&f2, &lo);
+        assert_eq!(f3, OrdersFilter::All, "wraps back to All");
+    }
+
+    #[test]
+    fn next_filter_no_manual_skips_manual_option() {
+        let mut lo = LiveOrders::default();
+        lo.upsert_full(order_tagged("c1", "LIVE-abc"));
+        // Only All → Strategy(LIVE-abc) → All (no MANUAL-001 present).
+        let f1 = next_filter(&OrdersFilter::All, &lo);
+        assert_eq!(f1, OrdersFilter::Strategy("LIVE-abc".to_string()));
+        assert_eq!(next_filter(&f1, &lo), OrdersFilter::All);
+    }
+
+    #[test]
+    fn next_filter_dropped_current_falls_back() {
+        // current = a strategy no longer in the book → advance to first real option.
+        let lo = LiveOrders::default(); // empty → cycle is just [All]
+        let stale = OrdersFilter::Strategy("LIVE-gone".to_string());
+        assert_eq!(next_filter(&stale, &lo), OrdersFilter::All);
+    }
+
+    #[test]
+    fn filter_label_renders_each_variant() {
+        assert_eq!(filter_label(&OrdersFilter::All), "All");
+        assert_eq!(filter_label(&OrdersFilter::Manual), "Manual");
+        // "LIVE-abcdef1234" is 15 chars; short_id(.., 8) tails to the last 8 = "cdef1234".
+        assert_eq!(
+            filter_label(&OrdersFilter::Strategy("LIVE-abcdef1234".to_string())),
+            "Strategy: …cdef1234"
+        );
+    }
+
+    #[test]
+    fn short_id_keeps_short_and_truncates_long() {
+        assert_eq!(short_id("abc", 6), "abc");
+        assert_eq!(short_id("strat-deadbeef0011", 8), "…beef0011");
+        assert_eq!(short_id("strat-deadbeef0011", 8).chars().count(), 9);
     }
 
     #[test]

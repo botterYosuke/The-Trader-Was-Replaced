@@ -269,6 +269,8 @@ Phase 6 ─→ Phase 7 ─→ Phase 8
 9. **Bevy system chain の 20-tuple 上限を忘れる** — `add_systems(Update, (sys1, sys2, ...).chain())` の tuple は最大 20 要素。§5.3 の順序指定で 18+ systems になる場合は複数 chain を `.after()` で繋ぐ形に分割する
 10. **複数エージェントを同一 working dir に「同時刻」並行起動する（ファイル分担していても）** — ファイル単位で担当を分けても、**同一ディレクトリで同時に走る**と次の干渉が起きる: ① 一方が `cargo fmt`（**全ツリー**を整形）を走らせ、他方の編集中ファイルや無関係ファイルを書き換える、② 双方の `git status`/`git stash`/中間 `cargo build` 失敗状態が互いの作業の見え方を壊す、③ その結果エージェントが「自分の edit が revert された」「proto が消えた」「QUARANTINE stash に退避された」と**事実無根の報告をして中断**する（Phase 9 Step 4 実例: git hook は標準 LFS のみ・quarantine 機構は存在せず・stash も無し・最終ツリーは全テスト緑で正しく再収束していた）。**対策**: (a) サブエージェントには **`cargo fmt` の全ツリー実行を禁止**し `cargo fmt -- <担当ファイル>` か `--check` のみ許可（最終 fmt はオーケストレーターが直列で 1 回）。(b) **エージェントの「revert された/blocker」報告は鵜呑みにせず、オーケストレーターが必ず `git reflog`/`git stash list`/`git status`/`cargo check --all-targets`/テストで実地確認**してから判断する（#6 の延長）。(c) proto 等の共有 artifact はオーケストレーターが**直列で凍結・regen・コミット**してからサブエージェントを起動する（本 Step は凍結はしたが未コミットのまま並行起動したため、未コミット proto 変更が並行 fmt/git 操作の中で一時的に見え隠れした）。可能なら大型 UI フェーズは「真に独立した言語境界（Python のみ / Rust のみ）」でも **時間的にずらして直列気味に**回す方が事故が少ない。
 
+11. **`cargo test --lib`/`--bins` を `--workspace` の代替にする** — 中間/最終検証で `--lib`/`--bins` だけ走らせると、**integration test クレート（`tests/*.rs`）のコンパイル失敗が露見しない**。実例（Phase 10）: Step 3 が `engine.proto` に gRPC RPC を 7 本足したのに `tests/backend_integration.rs` の mock `impl DataEngine` を更新せず、`--workspace` が **Step 3 → Step 7 までずっとコンパイル不能**だった（各 Step は `--lib`/`--bins` で「緑」と誤認）。**対策**: (a) 検証ゲートは必ず `cargo test --workspace`。(b) `engine.proto` に RPC を足したら同じ変更で `tests/backend_integration.rs` の mock trait impl も更新する（token-gate `::default()` スタブで十分）。サブエージェントへの完了条件にも `--workspace` を明記する。
+
 ---
 
 ## parallel-agent-dev vs pair-relay の使い分け

@@ -24,8 +24,9 @@ use backcast::ui::replay_startup_window::replay_startup_timeout_system;
 use backcast::trading::{
     backend_update_system, AvailableInstruments, BackendChannel, BackendEvent, BackendStatus,
     BackendStatusUpdate, BackendTradingState, ExecutionModeRes, InstrumentTradingDataMap,
-    LastPrices, LastRunResult, LiveOrders, OrderFeedback, PortfolioState, ReconcilePrompt,
-    ReloginPrompt, RunState, SecretPrompt, Tickers, TradingSession, TradingSettings, VenueStatusRes,
+    LastPrices, LastRunResult, LiveOrders, LiveRuns, OrderFeedback, PortfolioState,
+    PromoteFeedback, ReconcilePrompt, ReloginPrompt, RunState, SecretPrompt, Tickers,
+    TradingSession, TradingSettings, VenueStatusRes,
 };
 
 pub struct Harness {
@@ -82,6 +83,11 @@ impl Harness {
             .insert_resource(TradingSession::default())
             .insert_resource(InstrumentTradingDataMap::default())
             .insert_resource(LiveOrders::default())
+            // Phase 10: backend_event_drain_system mutates LiveRuns and
+            // status_update_system mutates PromoteFeedback. Without these the
+            // headless schedule panics ("could not access system parameter").
+            .insert_resource(LiveRuns::default())
+            .insert_resource(PromoteFeedback::default())
             .insert_resource(OrderFeedback::default())
             .insert_resource(ReconcilePrompt::default())
             .insert_resource(SecretPrompt::default())

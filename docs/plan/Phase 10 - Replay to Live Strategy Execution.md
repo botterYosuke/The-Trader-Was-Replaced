@@ -605,9 +605,9 @@ Strategy 内 `self.log.info(...)` の出力先:
 | 2 | LiveStrategyHost + RunRegistry | ✅ 完了 (2026-05-21) — host shell (lifecycle / 所有権 / RunRegistry 連携 / 戦略ロード)。Nautilus engine bridge は seam として Step 3+ に委譲 |
 | 3 | gRPC RPC + `BackendEvent` oneof 拡張 (M8) | ✅ 完了 (2026-05-21) — 7 unary RPC + LiveStrategyEvent/SafetyRailViolation/StrategyLogMessage + OrderEvent.strategy_id。engine bridge は placeholder（実発注なし）で mock 疎通。 |
 | 4 | Safety Rails (ネイティブ config + 独自 hook) | ✅ 完了 (2026-05-21) — **Nautilus live engine bridge を実装**（NautilusKernel + 実 LiveExecutionClient over OrderingVenueAdapter）。ネイティブ rail = LiveRiskEngineConfig、独自 rail = safety_rails.py。mock で全 rail 検証。bar 供給は Step 8。 |
-| 5 | Bevy UI: Safety Rails Modal + Promote to Live | ⬜ |
-| 6 | Bevy UI: Live Run Panel | ⬜ |
-| 7 | OrdersPanel strategy_id フィルタ + LiveRun telemetry | ⬜ |
+| 5 | Bevy UI: Safety Rails Modal + Promote to Live | ✅ 完了 (2026-05-21) — `safety_rails_modal.rs` (UI-node trigger + modal、± ステッパー、Replay KPI)。`PromoteToLive` 1 コマンドが transport で Register→SetExecutionMode(LiveAuto)→Start を順次 await。結果は `LiveStrategyPromoteResult`→`PromoteFeedback`。14 新規 test、lib 515 / bin 30 green。GUI mock E2E は未実施（要手動 verify）。 |
+| 6 | Bevy UI: Live Run Panel | ✅ 完了 (2026-05-21) — `live_run_panel.rs` (UI-node、`LiveRuns` resource を `LiveStrategyEvent` から駆動、status/ids/起動時刻 + Pause/Resume/Stop、状態 gating)。3 制御コマンド + main.rs dispatch。telemetry(PnL/件数)は Step 7。lib 526 / bin 30 green。 |
+| 7 | OrdersPanel strategy_id フィルタ + LiveRun telemetry | ✅ 完了 (2026-05-21) — manual→`MANUAL-001` / auto→`LIVE-{run}` タグ（kernel msgbus bridge + `change_id`/`change_order_id_tag` で StrategyId 強制）、`LiveStrategyTelemetry`(oneof#8) 新設、orders.rs 循環フィルタ、live_run_panel に PnL/件数。parallel-agent-dev 2 並列（PY/RS）。workspace 全緑（lib547/bin30/integ10、backend_integration の pre-existing Step3 breakage も修復）。 |
 | 8 | Partial Bar Push + Live Bar 供給の検証 | ⬜ |
 | 9 | Live E2E (Demo / Verify) | ⬜ |
 | 10 | Polish (drawio / docs / Phase 11 引き継ぎ) | ⬜ |
@@ -760,5 +760,172 @@ Strategy 内 `self.log.info(...)` の出力先:
     dispose ログ（`InvalidStateTrigger RUNNING->DISPOSE`）が console に漏れる（Nautilus の global logging が
     once 初期化のため）。production は replay / live が別プロセスなので無影響。test の console ノイズのみ。
 - **回帰**: live + grpc + strategy_runtime `-m "not slow"` 498 passed / 11 skipped。新規 20 tests green。
+
+#### Step 4 レビュー remediation (2026-05-21)
+
+実装完了後の横断レビューで **Medium ×2 + 潜在バグ ×1** を修正した（Medium 以上ゼロまで反復）。
+
+- **Finding 1 (Medium) — post-trade 評価のデッドロック窓**: `_evaluate_post_trade_loss` は live loop
+  thread（AccountSync callback）から走るのに `_live_strategy_lock` を取得していた。同 lock は
+  `StopLiveStrategy` / `_fail_run_for_loss` が **live loop への blocking round-trip（`kernel.stop_async`/cancel）
+  中ずっと保持**する。teardown 中に account snapshot が来ると「live loop は lock 待ち / lock 保持側は live loop
+  待ち」で相互デッドロックし、`.result(timeout=5/10)` のタイムアウトまでハング（しかも timeout した
+  `stop_async` は runaway kernel を片付け損ねる）。→ rails dict 専用の `_run_rails_lock`（blocking round-trip を
+  伴わない軽量 lock）を新設し、live loop 経路はそちらだけを取得。**不変条件「live loop callback は
+  `_live_strategy_lock` を取らない」** をコードコメントで明文化（2 lock は同時保持しないので lock 順序起因の
+  別デッドロックも無い）。回帰テスト `test_post_trade_eval_does_not_block_on_live_strategy_lock`。
+- **Finding 2 (Medium) — `cancel_inflight_orders` が暗黙 no-op**: `strategy.cancel_all_orders(strategy.instrument_id)`
+  を `hasattr(strategy, "instrument_id")` ガードで呼んでいたが、サンプル戦略は `self._instrument_id`（private）や
+  `config` 形式で public `instrument_id` を持たず、ガードが常に False → §5 の「max_daily_loss → 当該 StrategyId の
+  in-flight order を cancel」が**黙って何もしない**。→ `kernel.cache.orders_open(strategy_id=strategy.id)` で当該 run の
+  open 注文を引き `strategy.cancel_order(order)`（instrument 属性に非依存・型差に頑健）。回帰テスト
+  `test_cancel_inflight_orders_cancels_by_strategy_id`。
+- **Finding 3 (潜在) — controller が起動 instrument_id を無視**: `attach` は kernel cache / RiskEngine に request の
+  `instrument_id` を登録するのに、戦略 kwargs は `default_strategy_init_kwargs(scenario)`（**scenario の既定銘柄** +
+  EXTERNAL bar_type）で組んでいた。両者が食い違うと戦略が cache 未登録銘柄で発注し破綻し得る。また ADR-B /
+  host docstring が定める「controller が INTERNAL bar_type を供給」も未実施（`bar_supply.live_bar_type` が未使用）。
+  → kwargs を **request の instrument_id** と `live_bar_type()`（INTERNAL）で組む。回帰テスト
+  `test_attach_uses_request_instrument_not_scenario`。
+- **simplify パス（3 review agent: reuse / quality / efficiency, medium）**:
+  - 死コード `engine_runner.default_strategy_init_kwargs` を削除（Finding 3 で controller が使わなくなり全 caller 消滅）。
+  - `cancel_inflight_orders` を open 注文に加え **inflight（submit 済み未 ack）** も cancel するよう拡張
+    （teardown 中の取りこぼし防止。両 index は排他で二重 cancel しない）。
+  - `_modify_order` の未使用 `instrument` 変数 / `X if X is not None else None` の no-op 三項を除去。
+  - rails+baseline の対 pop を `_release_run_rails_locked()` に集約（両 dict を必ず一緒に外す不変条件を担保）。
+  - test の background-loop 定型を `_bg_loop`/`_stop_bg_loop` に共通化（lifecycle test も移行）。
+- **回帰（remediation + simplify 後）**: live + grpc + strategy_runtime `-m "not slow"` 474 passed / 11 skipped（新規 3 tests 込み）。
+
 - **次の手 (Step 5)**: Bevy UI（Safety Rails モーダル + Promote to Live ボタン）。`SafetyLimits` の入力 UI と
   Replay KPI サマリー（既存 `summary.py` の項目のみ、§5 M3）。
+
+### Step 5 完了サマリー (2026-05-21)
+
+- **完了した成果物**:
+  - `src/ui/safety_rails_modal.rs` [NEW] — Promote-to-Live トリガー + Safety Rails モーダル（**Bevy UI Node 流派**、
+    `order_panel.rs` / `secret_modal.rs` を手本に Startup spawn + `Node.display` で出し入れ）。トリガーは pre-flight
+    （戦略ロード済み + venue 接続 + 銘柄選択）で enabled/disabled（greyed）。押下で Run と同じ merge→`flush_strategy_cache`
+    を行い canonical `.py` path を確定してモーダルを開く。モーダルは **± ステッパー**（text 入力ではなく
+    `order_panel` の qty/price 流儀、`0 = OFF`）で 4 レール（max_order_value / max_position / max_daily_loss / max_orders_per_min）、
+    Replay KPI サマリー（**既存 `summary.py` 項目のみ**: total_pnl / fills / equity_points / status、§5 M3）、
+    `allowed_instruments` は起動銘柄 1 件に固定表示。Esc/Cancel で閉じ、Confirm で `TransportCommand::PromoteToLive` を 1 本発射。
+    純関数（`preflight_blocker` / `build_safety_limits` / `format_limit_jpy` / `replay_kpi_summary`）+ 14 unit tests。
+  - `src/trading.rs` — `SafetyLimitsInput`（transport 非依存ミラー、`0 = rail 無効`）/ `TransportCommand::PromoteToLive`
+    （`strategy_file` / `expected_sha256` / `instrument_id` / `venue` / `params` / `safety_limits` / `ensure_live_auto`）/
+    `BackendStatusUpdate::LiveStrategyPromoteResult` / `PromoteFeedback` resource を additive 追加。
+  - `src/main.rs` — `PromoteToLive` dispatch arm。transport task で **RegisterLiveStrategy → SetExecutionMode(LiveAuto) →
+    StartLiveStrategy を順次 await**（3 本を独立コマンドにすると LiveAuto 反映前に Start が走るレースになるため 1 コマンド集約）。
+    各段の reject / transport error を `LiveStrategyPromoteResult` で surface。`PromoteFeedback` を insert。
+  - `src/backend_sync.rs` — `apply_status_update` / `status_update_system` に `PromoteFeedback` param 追加、
+    `LiveStrategyPromoteResult` arm（成功 = run id、reject = error code を notice 文字列に）。
+  - `src/ui/mod.rs` — module 登録 + `init_resource`（`PromotePrompt` / `SafetyRailsForm`、`PromoteFeedback` は main.rs）+
+    Startup spawn + 専用 Update ブロック（`safety_rails_modal_button_system.before(secret_modal_input_system)` で
+    §3.10 Escape determinism を踏襲）。
+- **設計確定 / 学び**:
+  - **ボタン配置**: 計画書 §2.7 は「strategy_editor.rs にボタン」だが、Replay の Run トリガーは実際には
+    `footer.rs` にある（world-space cosmic editor に Interaction/Button を載せない流儀）。Promote も同じ判断で
+    **UI-node 常駐ボタン**（自己完結モジュール内）にし、editor 本体は無改変。
+  - **結果 surface の二重経路**: 成功は backend が push する `LiveStrategyEvent{status:"RUNNING"}`（Step 6 panel が消費）と
+    unary 応答の両方で来る。reject は unary のみなので `PromoteFeedback`（LiveAuto でも見える、OrderFeedback は
+    LiveManual 専用）に集約。
+  - **mode gate**: Confirm 時に `ensure_live_auto=true` で SetExecutionMode を chain に含め、`StartLiveStrategy` の
+    backend `ExecutionMode == LiveAuto` precondition（Step 3）を構造的に満たす。
+- **未実施 / 次の手 (Step 6)**: ① **GUI mock E2E**（`[Promote to Live]` → モーダル → Live 起動を実アプリで通す）は未実施＝
+  要手動 verify。② `live_run_panel.rs`（アクティブ run 一覧 + Pause/Resume/Stop、`LiveStrategyEvent` を消費）。
+  Step 5 で配線済みの `LiveStrategyEvent` / `PromoteFeedback` をパネルが読む。
+- **回帰**: Rust lib 515 passed / bin 30 passed（新規 14 込み）。Python は無改変（Step 3/4 の RPC をそのまま叩く）。
+  proto 変更なし（RPC は Step 3 で追加済み、Rust は build.rs で既に生成済み）。
+
+### Step 5 後追い (2026-05-21)
+
+- **Promote フィードバック行を常駐表示**: モーダルは Confirm で閉じるため RPC chain の async な
+  成功/拒否をモーダル内で出せない。`safety_rails_modal.rs` に `PromoteFeedbackText`（起動ボタン直下の
+  常駐行）+ `promote_feedback_sync_system` を追加し、pre-flight ブロック理由 /「起動中…」/ 成功 (run id) /
+  構造化 reject (error_code) を `PromoteFeedback.message` から差分表示する。
+
+### Step 6 完了サマリー (2026-05-21)
+
+- **完了した成果物**:
+  - `src/ui/live_run_panel.rs` [NEW] — Live Run Panel（**Bevy UI Node 流派**: 制御ボタンを持つので
+    world-space sprite ではなく UI-node。Startup spawn + パネル全体を `Node.display` gate）。`LiveRuns`
+    resource を行ソースに、各行 status（色分け）/ strategy・run id（短縮）/ 起動時刻（`HH:MM:SS`）+
+    `[Pause]`/`[Resume]`/`[Stop]` を表示。状態 gating（Pause=RUNNING のみ / Resume=PAUSED のみ /
+    Stop=非終端のみ、無効ボタンはグレー）。Phase 10 は automated run 1 件だが UI は固定 3 行で複数対応の前提。
+    純関数（`status_color` / `format_hms` / `short_id` / `can_pause`/`can_resume`/`can_stop`）+ 6 unit tests。
+  - `src/trading.rs` — `LiveRunRecord` / `LiveRuns` resource（`apply_event` upsert、`started_ts` は初回固定、
+    空 strategy_id は既知値を消さない、`MAX_LIVE_RUNS=8` cap、`active_run_id()`）/ `is_terminal_run_status()` /
+    `TransportCommand::{Pause,Resume,Stop}LiveStrategy{run_id}` を additive 追加。4 unit tests。
+  - `src/backend_sync.rs` — `backend_event_drain_system` に `LiveRuns` param 追加、`LiveStrategyEvent` arm を
+    log のみ → `live_runs.apply_event(...)` に結線（既存テストに `init_resource::<LiveRuns>()` 追従）。
+  - `src/main.rs` — `Pause/Resume/StopLiveStrategy` の 3 dispatch arm（spawn して RPC、結果は backend が push する
+    `LiveStrategyEvent` で panel に反映＝fire-and-log）。`LiveRuns` を insert。
+  - `src/ui/mod.rs` — module 登録 + Startup spawn + 専用 Update ブロック（5 systems）。`LiveRuns` は main.rs insert
+    （`LiveOrders` と同じ＝transport-facing）。
+- **設計確定**:
+  - **telemetry は Step 7**: `LiveStrategyEvent` は {run_id, strategy_id, status, ts_ms} のみで PnL/発注数/約定数を
+    運ばない。§2.9 の通り run 別 telemetry は別イベント（Step 7）。Step 6 は lifecycle + 制御に限定。
+  - **制御の mode gate なし**: Pause/Resume/Stop は run 存在のみを条件にする（§2.5、runaway を常に止められる）。
+    client 側は状態 gating（UX）で送信を間引くが、backend が最終ゲート。
+- **回帰**: Rust lib 526 passed / bin 30 passed（新規 10 + Step 5 後追いの feedback 行）。proto/Python 無改変。
+- **次の手 (Step 7)**: `OrderEvent.strategy_id` を populate（manual→`MANUAL-001` / auto→`LIVE-{run}`、Python 側）+
+  `orders.rs` に strategy_id フィルタ + run 別 telemetry イベント（PnL/件数）を `LiveRunPanel` に表示。
+
+### Step 7 完了サマリー (2026-05-21)
+
+> オーケストレーション: **parallel-agent-dev** で proto 凍結（直列）→ PY（`python/`）/ RS（`src/`）の 2 エージェント並列。
+> 言語境界で完全分離（ファイル非重複）。共有 artifact（proto/pb2）はオーケストレーターが先に凍結・再生成・相対 import 修正。
+
+- **完了した成果物**:
+  - `python/proto/engine.proto` — `LiveStrategyTelemetry`（run_id/strategy_id/realized_pnl/unrealized_pnl/
+    order_count/fill_count/ts_ms）を `BackendEvent.oneof` field 8 に additive 追加（§2.9）。pb2 再生成 + 相対 import 手修正。
+    Rust は build.rs(tonic) で自動再生。
+  - `python/engine/live/engine_controller.py` — **(B) StrategyId 強制**: `NautilusLiveEngineController._do_attach` で
+    `add_strategy` の**前**に `strategy.change_id(StrategyId(nautilus_strategy_id))` + `change_order_id_tag(run短縮)` を呼ぶ。
+    **学び**: `StrategyConfig.strategy_id` 単独では `Strategy.__init__` が `{ClassName}-{tag}` を必ず付けて不一致。
+    さらに `Trader.add_strategy` は `order_id_tag in (None,"None")` のとき id を `{head}-{NNN}` に**再採番**する
+    （trader.py:407-413、"LIVE-ab12cd34"→"LIVE-000"）ため `change_order_id_tag` も必須。これで `str(strategy.id)==nautilus_strategy_id`。
+    Replay（engine_runner）は change_id を呼ばないので従来の ClassName 由来のまま（id 強制は Live 経路に閉じる）。
+    **(C) kernel→UI bridge**: `kernel.msgbus.subscribe(topic=f"events.order.{nautilus_strategy_id}", handler=...)`。
+    handler は OrderEvent を受け `cache.order(client_order_id)` から `OrderEventData` を組み `on_order_event(ev, strategy_id)` を呼ぶ。
+    best-effort（例外は log のみ）、live loop thread・外側 lock 非取得（Step4 不変条件）。
+    **(D) telemetry 算出**: order_count=`cache.orders()` 件数、fill_count=filled_qty>0 件数（単一 kernel=単一 run, §0.7）、
+    realized/unrealized=`portfolio.realized_pnls/unrealized_pnls(venue, target_currency=JPY)` を JPY 合算（空 dict→0.0）。
+  - `python/engine/server_grpc.py` — **(A) タグ規則**: 定数 `MANUAL_STRATEGY_ID="MANUAL-001"`。manual unary 応答 5 経路
+    （PlaceOrder/CancelOrder/ModifyOrder/GetOrderStatus/GetOrders）を `_order_event_to_proto(ev, strategy_id=MANUAL_STRATEGY_ID)` でタグ。
+    adapter EC stream（`_publish_order_event`）は `""` のまま（共有 adapter、UI 側「非空が勝つ」マージに委ねる）。
+    `_on_auto_order_event`（bridge → `LIVE-{run}` タグ push）/ `_on_auto_telemetry`（`run_id_for_nautilus_strategy` で逆引き →
+    `LiveStrategyTelemetry` push）を controller に注入。
+  - `src/trading.rs` — `BackendEvent::LiveStrategyTelemetry` variant、`LiveRunRecord` に telemetry 4 フィールド、
+    `LiveRuns::apply_telemetry`（lifecycle 前後不問 upsert・非空 strategy_id が勝つ・started 初回固定）、
+    `LiveOrders::apply_event` に `strategy_id` 引数（**非空が勝つ・空は既知値を消さない**＝venue_order_id と同パターン）、
+    `LiveOrders::filtered`/`distinct_strategy_ids`、`OrdersFilter` resource + 純関数（`order_matches_filter`/`next_filter`/
+    `filter_label`/共有 `short_id`）、`BackendStatusUpdate::OrderSeeded` に `strategy_id`。
+  - `src/main.rs` — proto→mirror の `LiveStrategyTelemetry` arm（網羅 match 維持）、PlaceOrder 応答→`OrderSeeded` に
+    `strategy_id: ev.strategy_id.unwrap_or_default()`。
+  - `src/backend_sync.rs` — `OrderEvent` arm で `strategy_id` を `apply_event` に渡す、`LiveStrategyTelemetry` arm →
+    `apply_telemetry`、`OrderSeeded` arm で受領 strategy_id を使用。
+  - `src/ui/orders.rs` — フィルタラベルセル + クリック Sprite（**world-space パネルなので bevy-engine 流儀に従い
+    UI-node Button ではなく `OrdersRowHit` と同流の透明 Sprite + `Pointer<Down>` 観測子で循環切替**）。
+    **正しさ**: 表示 (`orders_panel_system`) と右クリックメニュー (`OrdersRowHit` 観測子) の両方が `LiveOrders::filtered(&filter)` を
+    index するので、フィルタ後も行 N→注文 N がズレない。Replay 経路（`PortfolioState.orders`）はフィルタ非適用で挙動不変。
+  - `src/ui/live_run_panel.rs` — `LiveRunRow` を 3 行構成に拡張（status/ids/started → telemetry(PnL 符号色 + `o:n f:m`) → 制御ボタン）。
+    `format_pnl`/`pnl_color`/`format_counts`。
+  - `tests/backend_integration.rs` — **(オーケストレーター修復)** Step 3 が proto に追加した 7 live-strategy RPC を mock
+    `MyDataEngine` が未実装で `cargo test --workspace` が Step 3 以来コンパイル不能だった（lib/bin 個別実行では露見せず）。
+    token-gate スタブ 7 メソッドを追加して workspace を緑に戻した。
+- **設計確定 / タグ規則（不変条件）**:
+  - OrderEvent.strategy_id = manual→`"MANUAL-001"` / auto→`"LIVE-{run[:8]}"`（= run の Nautilus StrategyId、`LiveRunRecord.strategy_id` と同値）/
+    未タグ EC stream→`""`。UI マージは **非空が勝つ・空は既知値を消さない**（unary 応答/auto bridge がタグした行を後続の空 EC イベントが上書きしない）。
+- **既知の限界 / 次工程**:
+  - **unrealized_pnl**: 市場データ未供給（Step 8 前）では建玉の mark-to-market 不可 → 0.0。Step 8 で bar/価格供給後に意味を持つ。
+  - **二重報告**: 実 venue では同一約定が共有 adapter EC stream（空 strategy_id）でも届き得るが client_order_id マージ + 非空優先で
+    `LIVE-{run}` を保持（mock は EC stream 非発火のため Step 7 テスト範囲では二重化しない）。Step 9 の実 venue E2E で要確認。
+  - telemetry は order event 都度更新（account snapshot 連動の unrealized 再計算は Step 8 で追加が自然）。
+- **回帰（オーケストレーター実地検証）**: Python `python/tests/{live,strategy_runtime}` + `test_grpc_live_strategy` = **483 passed / 33 skipped / 0 failed**
+  （pre-existing flaky `test_secret_vault::test_double_submit...` は再実行で緑 = タイミング由来・Step 7 無関係。除外対象の
+  `test_grpc_shutdown`×3 / `test_grpc_startup_sentinel`×1 は非対象）。Rust `cargo test --workspace` = **lib 547 / bin 30 /
+  backend_integration 10、全緑**。clippy: Step 7 delta はクリーン（残存警告は rust-1.93 toolchain 由来の pre-existing で
+  ~30 ファイルに分散＝Step 7 以前から `-D warnings` は workspace 全体で失敗状態、別途 toolchain cleanup タスク）。
+- **未実施 / 次の手 (Step 8)**: ① **GUI mock E2E**（OrdersPanel フィルタ + LiveRunPanel telemetry を実アプリで目視）は要手動 verify。
+  ② Partial Bar Push（`aggregator.py` `build_now()` を 1 秒間隔で `LiveEventBus` に push）+ Strategy 供給経路（Nautilus
+  aggregation 由来 `Bar` が `on_bar` に届く）の検証 + Replay/Live で同 `BarSpecification`・OHLCV 一致の回帰テスト。
+  Step 7 で配線した telemetry の unrealized は Step 8 の価格供給後に意味を持つ。

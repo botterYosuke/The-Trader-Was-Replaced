@@ -719,6 +719,7 @@ fn h1_order_seeded() {
         filled_qty: 0.0,
         avg_price: 0.0,
         ts_ms: 1000,
+        strategy_id: "MANUAL-001".to_string(),
     });
 
     let orders = h.live_orders().orders;
@@ -751,6 +752,7 @@ fn h2_order_status_updated() {
         filled_qty: 0.0,
         avg_price: 0.0,
         ts_ms: 1000,
+        strategy_id: "MANUAL-001".to_string(),
     });
 
     h.send_status(BackendStatusUpdate::OrderStatusUpdated {
@@ -789,6 +791,7 @@ fn h3_order_modified() {
         filled_qty: 0.0,
         avg_price: 0.0,
         ts_ms: 1000,
+        strategy_id: "MANUAL-001".to_string(),
     });
 
     // Modify only the price; qty is None so it must stay at 100.
