@@ -32,6 +32,10 @@ _SECRET_KEY_RE = re.compile(
     r"|api[_-]?key"
     r"|p_pwd"
     r"|second[_-]?password"
+    # Phase 9: mask any key containing "secret" — covers the proto wire field
+    # `second_secret` (PlaceOrder/Cancel/ModifyOrderReq), which `second[_-]?password`
+    # missed (it has no "password" token), plus client_secret / *_secret in general.
+    r"|secret"
     r"|virtual_url"
     r"|cookie"
     r"|set-cookie"

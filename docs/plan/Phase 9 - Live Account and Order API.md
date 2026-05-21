@@ -22,7 +22,7 @@
 | 7 | Venue Health Watchdog | ✅ 完了 (2026-05-21、未コミット) — kabu `check_health`(GET /apisoftlimit→4001007/4001017) + `live/health_watchdog.py`(poll型・debounce) + Tachibana SS=閉局 push 検知(⚠️TENTATIVE) + server_grpc 配線(`_publish_venue_logout`) + Rust ReloginModal(通知のみ) |
 | 8 | Backend Auto-Restart + Idle Shutdown | ✅ 完了 (2026-05-21、未コミット) — **§3.7 Idle gRPC Shutdown ✅** (`live/idle_shutdown.py` ほか、既コミット)。**§3.8 Auto-Restart + in-flight re-sync ✅** — supervisor を crash-loop budget (60s/3回) の session loop に再構成 (`CrashBudget` + auto-respawn + 手動 `Restart` 機能化) + `GetOrders` proto RPC 新設 (facade.list_orders→稼働中注文) + Rust 再起動後 reconcile (`backend_restart_resync_system`→GetOrders→diff→`ReconcilePrompt`→通知モーダル) |
 | 9 | Instruments Daily Refresh | ✅ 完了 (2026-05-21、未コミット) — `instruments_store.py`(atomic parquet write/read) + `instruments_scheduler.py`(login時persist + 営業日5:00 JST更新) + server_grpc 配線(store-first ListInstruments)。**ドリフト訂正**: J-Quants `/markets/trading_calendar` クライアントと「Phase 8 がログイン時に全置換する parquet store」は**いずれも未実装だった**ため、① 営業日カレンダーは持たず venue の fetch_instruments エラー/空に委ねる、② parquet store を本 Step で新設しフル結線 (ユーザー決定) |
-| 10 | Polish | ⬜ 未着手 |
+| 10 | Polish | ✅ 完了 (2026-05-21、未コミット) — secret masking 再検証（**`mask_secrets` が proto wire field `second_secret` を伏字にしていなかった漏れを発見・修正** + SecretVault pickle/repr/TTL 失効テスト）+ drawio アーキ図 `docs/assets/phase9-architecture.drawio.svg` + Phase 10 引き継ぎ doc `docs/plan/phase9-to-phase10-handoff.md` |
 
 ### Step 0 完了サマリー (2026-05-20)
 
@@ -274,6 +274,14 @@ R1/R2/simplify 収束後にコミットした Step 6 (`558eabb1`) を改めて 3
 - **D. ドリフト訂正（「[Restart Backend] disabled UI」）**: 計画書 §3.8 は budget 超過時に「既存の [Restart Backend] disabled UI に格下げ」と書くが、**その Restart ボタン UI は未実装だった**（`SupervisorCommand::Restart` は UI から一度も送られていない）。本 Step は budget 超過時に lifecycle を `Crashed` のまま留め（footer が表示）supervisor は手動 `Restart` を待ち受ける形にし、`Restart` コマンド自体を機能化した（将来ボタンを足せば即動く）。専用トースト「Backend を再起動しました」は lifecycle 遷移 Crashed→Spawning→Ready が footer に出るため見送り（forward-compat）。
 - **self-review (simplify)**: 3 並行レビュー（reuse / quality / correctness）で **correctness バグ 0**（auto-restart 7 シナリオ全 trace 済み）。検出は LOW/MEDIUM の house-style 指摘のみ（reconcile_modal↔relogin_modal の並行＝意図的・既存 secret_modal と同型、terminal-status の Rust↔Python 重複＝wire 定数で正当、`apply_status_update` 13 引数＝Step 4/6 から続く `#[allow(too_many_arguments)]` baseline）→ いずれも修正せず据え置き（bundle struct / match arm 抽出は確立パターンを崩す churn で見送り）。
 - **残課題 / forward-compat**: ① **venue-truth GetOrders**（kabu `GET /orders` / Tachibana `CLMOrderList` で venue 実注文を引く richer reconcile）は未実装。現状は facade in-memory store（再起動で空）を返す MVP で「再起動で状態不明」AC は満たすが、再ログイン後の自動 reconcile は将来。② [Restart Backend] ボタン UI 本体 + auto-restart トースト。③ §5.1 layer-3（実 taskkill /F → 自動再起動 + reconcile モーダルの E2E）は未実施（CrashBudget 純テスト + supervisor シナリオ trace で網羅）。
+
+### Step 10 完了サマリー (2026-05-21)
+
+> **状態**: ✅ **完了**（2026-05-21、未コミット）。Python 新規テスト 4（secret masking 再検証）。`mask_secrets` の漏れ修正に伴う回帰なし（test_logging 緑）。
+
+- **secret masking 再検証 — ⚠️ 実バグ発見・修正**: `mask_secrets`（`live/logging.py`）の secret-key regex は `second[_-]?password`（"password" token 必須）だったため、**Phase 9 の proto wire field `second_secret`（PlaceOrder/Cancel/ModifyOrderReq）が伏字にならず素通りしていた**。`PlaceOrderReq` 等の dict をログに出すと平文が漏れる経路（実際は facade 終端 + 未ログインで低リスクだが §6 AC 違反）。regex に `|secret`（"secret" を含む任意 key を伏字）を追加してフェイルセーフ化。回帰テスト `test_secret_masking_phase9.py` 4 件（`second_secret`/`sSecondPassword` 伏字 / SecretVault repr に平文なし / pickle スナップショットに平文なし＝Lock/Future で直列化不可 / TTL `_expire` 後に `_store` から平文消失）。Rust `RedactedSecret` の Debug 伏字は trading.rs unit test で既出。
+- **drawio アーキ図**: `docs/assets/phase9-architecture.drawio.svg`（phase7 と同じ host="app.diagrams.net" SVG 流儀）。Rust(Bevy GUI: UI panels/modals + backend_sync + supervisor + transport task) ↔ gRPC(:19876, GetOrders ★) ↔ Python(server_grpc + ManualOrderFacade + SecretVault + background components + BackendEventBus/IdleShutdown + venue adapters) ↔ 立花/kabu API の全体像。★=Phase 9 新規、青=command、緑=event/push を凡例化。
+- **Phase 10 引き継ぎ doc**: `docs/plan/phase9-to-phase10-handoff.md`。§8 引き継ぎ表 + 各 Step の forward-compat（ExecEngine wiring 移行順序 / secret 単一チャネル維持 / kabu in-place remap / unrealized_pnl 非対称 / AccountType / venue-truth GetOrders / [Restart Backend] ボタン / J-Quants trading_calendar / §5.1 layer-3 Demo 検証 / セキュリティ不変条件）を集約。
 
 ### Step 9 完了サマリー (2026-05-21)
 
