@@ -379,7 +379,7 @@ fn compute_cache_restore_fallback_spawns(
         .collect()
 }
 
-fn apply_cache_restore_system(
+pub fn apply_cache_restore_system(
     mut events: EventReader<CacheRestoreRequested>,
     mut buffer: ResMut<StrategyBuffer>,
     mut allocator: ResMut<RegionKeyAllocator>,
@@ -504,7 +504,7 @@ fn apply_cache_restore_system(
 }
 
 #[allow(clippy::type_complexity)]
-fn handle_save_layout_system(
+pub fn handle_save_layout_system(
     mut events: EventReader<LayoutSaveRequested>,
     panels: Query<
         (

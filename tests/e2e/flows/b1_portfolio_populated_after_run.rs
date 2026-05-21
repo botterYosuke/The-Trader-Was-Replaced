@@ -1,16 +1,21 @@
-//! B1 portfolio_populated_after_run — 実行後にポートフォリオが反映されること。
+//! B1 portfolio_populated_after_run — Run 実行後にポートフォリオが反映されること。
 //!
-//! `PortfolioLoaded` で `PortfolioState.loaded` が true になり、positions /
-//! orders / equity / buying_power が充填されることを確認する。
+//! ポートフォリオは Run の結果として埋まる。実 Run ボタンを本番経路で駆動した後、
+//! backend が `PortfolioLoaded` を status seam に押し戻すと `PortfolioState.loaded` が
+//! true になり、positions / orders / equity / buying_power が充填されることを確認する。
 //! 詳細は `tests/e2e/FLOWS.md` の B1 を参照。
 
 use crate::support::Harness;
-use backcast::trading::{BackendStatusUpdate, PortfolioOrder, PortfolioPosition};
+use backcast::trading::{BackendStatusUpdate, PortfolioOrder, PortfolioPosition, RunState};
 
 #[test]
 fn b1_portfolio_populated_after_run() {
     let mut h = Harness::new();
     assert!(!h.portfolio().loaded);
+
+    h.run_via_ui();
+    h.drain_commands();
+    assert_eq!(h.run_state(), RunState::Running);
 
     h.send_status(BackendStatusUpdate::PortfolioLoaded {
         buying_power: 100_000.0,

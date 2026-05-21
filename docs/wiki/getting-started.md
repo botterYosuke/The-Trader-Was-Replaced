@@ -1,5 +1,7 @@
 # はじめに
 
+> 文中の `[G1]` などは、その挙動を保証する E2E flow の ID。一覧は [`tests/e2e/FLOWS.md`](../../tests/e2e/FLOWS.md) を参照。
+
 このページでは、前提環境の準備からバックエンドと GUI の起動、最初の Replay 実行までの最短手順を説明します。GUI 上での実行手順の一次情報は `docs/strategy-replay.md` です。
 
 ## 前提
@@ -22,7 +24,7 @@ uv sync
 
 ## 1. バックエンド（Python gRPC）を起動
 
-バックエンドは GUI とは別プロセスです。`python/` ディレクトリで起動します。
+バックエンドは GUI とは別プロセスです。`python/` ディレクトリで起動します。 [L5]
 
 ```bash
 cd python && uv run python -m engine --token your-secret-token
@@ -40,7 +42,7 @@ cd python && uv run python -m engine --token your-secret-token
 | `--jquants-catalog-path` | env `JQUANTS_CATALOG_PATH` / `ARTIFACTS_PATH` | catalog パス |
 | `--live-venue` | None（Replay のみ） | `TACHIBANA` / `KABU` |
 
-`Starting gRPC server on port 19876` が表示されれば起動成功です。
+`Starting gRPC server on port 19876` が表示されれば起動成功です。 [L5]
 
 > `python -m engine.server_grpc` ではなく `python -m engine` を使ってください（`server_grpc` には `__main__` がないためエラーになります）。
 
@@ -89,12 +91,12 @@ state: IDLE  grpc: OK
 
 ## 4. 最初の Replay 実行
 
-1. メニューバー左の **File(&F)** から **Open (Ctrl+O)** で戦略の **サイドカー JSON（`<strategy>.json`）** を選択する（ファイルダイアログは `.json` のみを表示する。同じ場所の `<strategy>.py` が自動で読み込まれる）
-2. Strategy Editor ウィンドウが開く
+1. メニューバー左の **File(&F)** から **Open (Ctrl+O)** で戦略の **サイドカー JSON（`<strategy>.json`）** を選択する（ファイルダイアログは `.json` のみを表示する。同じ場所の `<strategy>.py` が自動で読み込まれる） [I5]/[I9]
+2. Strategy Editor ウィンドウが開く [I5]
 3. フッター中央の **▶** ボタンをクリックして Run を開始 [A1]
 4. フッターが `state: RUNNING` になり、ボタンが **||**（一時停止／再開）に切り替わる [A2]
 5. 完了すると `state: IDLE` に戻り、Run Result パネルが `Completed` になり fills / pnl が表示される [A1]/[B1]
-6. チャートエリアに最新バーのローソク足（赤／緑）が描画される
+6. チャートエリアに最新バーのローソク足（赤／緑）が描画される [K1]
 
 詳細な手順は [Replay 実行](replay.md) を参照してください。
 
@@ -104,9 +106,9 @@ state: IDLE  grpc: OK
 
 | エリア | 位置 | 役割 |
 |---|---|---|
-| メニューバー | 上 | File / Edit / Venue メニュー |
-| サイドバー | 左 | 銘柄リスト＋価格、パネルを開くボタン、Settings |
-| フッター | 下 | 実行モードトグル、再生コントロール、速度、Venue 状態、gRPC 状態 |
-| フローティングウィンドウ | 中央 | Strategy Editor / Chart / Buying Power / Positions / Orders / Run Result |
+| メニューバー | 上 | File / Edit / Venue メニュー [I1]/[I2] |
+| サイドバー | 左 | 銘柄リスト＋価格、パネルを開くボタン、Settings [J13]/[M1]/[M6] |
+| フッター | 下 | 実行モードトグル、再生コントロール、速度、Venue 状態、gRPC 状態 [I4]/[A1]/[G1] |
+| フローティングウィンドウ | 中央 | Strategy Editor / Chart / Buying Power / Positions / Orders / Run Result [M1]/[K1] |
 
 各エリアの詳細は [画面構成](screen-layout.md) を参照してください。

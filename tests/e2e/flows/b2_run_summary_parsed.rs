@@ -1,18 +1,22 @@
-//! B2 run_summary_parsed — 実行サマリ JSON がパースされること。
+//! B2 run_summary_parsed — Run 実行サマリ JSON がパースされること。
 //!
-//! `RunComplete{summary_json}` の JSON が `LastRunResult.parsed_summary`
-//! （fills_count / equity_points / total_pnl / status）に正しくパースされること
-//! を確認する。
+//! 実 Run ボタンを本番経路で駆動した後、backend が `RunComplete{summary_json}` を
+//! 押し戻すと、その JSON が `LastRunResult.parsed_summary`（fills_count /
+//! equity_points / total_pnl / status）に正しくパースされることを確認する。
 //! 詳細は `tests/e2e/FLOWS.md` の B2 を参照。
 
 use crate::support::Harness;
-use backcast::trading::BackendStatusUpdate;
+use backcast::trading::{BackendStatusUpdate, RunState};
 
 #[test]
 fn b2_run_summary_parsed() {
     let mut h = Harness::new();
+    let startup_id = h.run_via_ui();
+    h.drain_commands();
+    assert_eq!(h.run_state(), RunState::Running);
+
     h.send_status(BackendStatusUpdate::RunComplete {
-        startup_id: None,
+        startup_id: Some(startup_id),
         run_id: "run-summary".to_string(),
         summary_json: r#"{"fills_count":7,"equity_points":42,"total_pnl":-1500.25,"status":"ok"}"#
             .to_string(),

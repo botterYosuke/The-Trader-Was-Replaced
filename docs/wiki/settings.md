@@ -1,22 +1,24 @@
 # 設定と環境変数
 
+> 文中の `[M6]` などは、その挙動を保証する E2E flow の ID。一覧は [`tests/e2e/FLOWS.md`](../../tests/e2e/FLOWS.md) を参照。
+
 関連ページ: [getting-started](getting-started.md) / [venues](venues.md) / [troubleshooting](troubleshooting.md)
 
 ## サイドバー Settings セクション
 
-サイドバー下部の **Settings** セクションに現在の設定が表示されます（`src/ui/sidebar.rs`）。
+サイドバー下部の **Settings** セクションに現在の設定が表示されます（`src/ui/sidebar.rs`）。 [M6]
 
 | 項目 | 値 |
 |---|---|
-| Theme | Dark |
-| Backend | localhost:19876 |
-| Save Layout | — |
+| Theme | Dark [M6] |
+| Backend | localhost:19876 [M6] |
+| Save Layout | — [M6] |
 
 ## ポートとバックエンド
 
-- バックエンド gRPC サーバーの既定ポートは **19876** です。
-- バックエンドは `python -m engine` で起動します（`python -m engine.server_grpc` は `__main__` が無いため不可）。
-- ライブ venue を使う場合は起動時に `--live-venue TACHIBANA` または `--live-venue KABU` を付けます。省略すると Replay 専用で起動します。
+- バックエンド gRPC サーバーの既定ポートは **19876** です。 [L5]
+- バックエンドは `python -m engine` で起動します（`python -m engine.server_grpc` は `__main__` が無いため不可）。 [L5]
+- ライブ venue を使う場合は起動時に `--live-venue TACHIBANA` または `--live-venue KABU` を付けます。省略すると Replay 専用で起動します。 [L5]
 
 ## 環境変数
 
@@ -43,7 +45,7 @@
 
 ## データ準備
 
-J-Quants の CSV から Nautilus ParquetDataCatalog への変換は自動で行われます。
+J-Quants の CSV から Nautilus ParquetDataCatalog への変換は自動で行われます。 [L6]
 
 - ソース: `DEV_J_QUANTS_CACHE`（既定 `S:/j-quants`）の J-Quants CSV
 - 出力: `{ARTIFACTS_PATH}/jquants-catalog`（`--jquants-catalog-path` / `JQUANTS_CATALOG_PATH` で明示指定も可能）

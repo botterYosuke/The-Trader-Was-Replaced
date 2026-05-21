@@ -105,9 +105,120 @@ mod h6_order_notice;
 mod h7_secret_submit_failed;
 
 // I. Menu / file-open / layout (UI / integration)
+#[path = "e2e/flows/i1_menu_click_open_close.rs"]
+mod i1_menu_click_open_close;
+#[path = "e2e/flows/i2_menu_keyboard_alt_shortcuts.rs"]
+mod i2_menu_keyboard_alt_shortcuts;
+// i3: stub のみ（production に Escape/outside-close handler 未実装）
+#[path = "e2e/flows/i4_mode_toggle_client_gating.rs"]
+mod i4_mode_toggle_client_gating;
 #[path = "e2e/flows/i5_file_open_spawns_editor_and_chart.rs"]
 mod i5_file_open_spawns_editor_and_chart;
+#[path = "e2e/flows/i6_file_new_resets_loaded_strategy.rs"]
+mod i6_file_new_resets_loaded_strategy;
+#[path = "e2e/flows/i7_save_layout_writes_sidecar.rs"]
+mod i7_save_layout_writes_sidecar;
+#[path = "e2e/flows/i8_save_as_writes_new_strategy_pair.rs"]
+mod i8_save_as_writes_new_strategy_pair;
+#[path = "e2e/flows/i9_file_shortcuts_dispatch.rs"]
+mod i9_file_shortcuts_dispatch;
+#[path = "e2e/flows/i10_open_live_switches_auto.rs"]
+mod i10_open_live_switches_auto;
+#[path = "e2e/flows/i11_edit_menu_undo_redo.rs"]
+mod i11_edit_menu_undo_redo;
+#[path = "e2e/flows/i12_restore_last_strategy_cache_on_launch.rs"]
+mod i12_restore_last_strategy_cache_on_launch;
+#[path = "e2e/flows/i13_open_scenario_only_json.rs"]
+mod i13_open_scenario_only_json;
 
-// K. Reconcile
+// J. Strategy editor / startup panel / scenario / instrument picker (UI / integration)
+#[path = "e2e/flows/j1_strategy_editor_text_autosaves_cache.rs"]
+mod j1_strategy_editor_text_autosaves_cache;
+#[path = "e2e/flows/j2_strategy_editor_tab_indent.rs"]
+mod j2_strategy_editor_tab_indent;
+#[path = "e2e/flows/j3_strategy_editor_enter_autoindent.rs"]
+mod j3_strategy_editor_enter_autoindent;
+#[path = "e2e/flows/j4_strategy_editor_bracket_autoclose.rs"]
+mod j4_strategy_editor_bracket_autoclose;
+#[path = "e2e/flows/j5_find_panel_open_close_navigate.rs"]
+mod j5_find_panel_open_close_navigate;
+#[path = "e2e/flows/j6_find_replace_current_and_all.rs"]
+mod j6_find_replace_current_and_all;
+#[path = "e2e/flows/j7_startup_panel_validation_blocks_run.rs"]
+mod j7_startup_panel_validation_blocks_run;
+#[path = "e2e/flows/j8_startup_panel_valid_run_command.rs"]
+mod j8_startup_panel_valid_run_command;
+#[path = "e2e/flows/j9_instruments_ref_fail_closed.rs"]
+mod j9_instruments_ref_fail_closed;
+#[path = "e2e/flows/j10_instruments_ref_readonly_sidebar.rs"]
+mod j10_instruments_ref_readonly_sidebar;
+#[path = "e2e/flows/j11_instrument_picker_search_add_close.rs"]
+mod j11_instrument_picker_search_add_close;
+#[path = "e2e/flows/j12_instrument_picker_placeholders.rs"]
+mod j12_instrument_picker_placeholders;
+#[path = "e2e/flows/j13_sidebar_instrument_select_remove.rs"]
+mod j13_sidebar_instrument_select_remove;
+#[path = "e2e/flows/j14_scenario_schema_normalization.rs"]
+mod j14_scenario_schema_normalization;
+#[path = "e2e/flows/j15_scenario_file_watch_reparse.rs"]
+mod j15_scenario_file_watch_reparse;
+#[path = "e2e/flows/j16_startup_panel_field_commit.rs"]
+mod j16_startup_panel_field_commit;
+
+// K. Chart interaction / Reconcile / Order UI
+// k1: stub のみ（kind:render — ShapePainter + Text2d は GPU 必要、headless 不可）
+#[path = "e2e/flows/k2_chart_wheel_zoom_clamps.rs"]
+mod k2_chart_wheel_zoom_clamps;
+#[path = "e2e/flows/k3_chart_drag_pan_and_double_click_reset.rs"]
+mod k3_chart_drag_pan_and_double_click_reset;
+#[path = "e2e/flows/k4_chart_ctrl_wheel_camera_zoom.rs"]
+mod k4_chart_ctrl_wheel_camera_zoom;
+#[path = "e2e/flows/k5_chart_ladder_live_mode.rs"]
+mod k5_chart_ladder_live_mode;
 #[path = "e2e/flows/k6_reconcile_modal_after_backend_restart.rs"]
 mod k6_reconcile_modal_after_backend_restart;
+#[path = "e2e/flows/k7_manual_order_submit_confirm.rs"]
+mod k7_manual_order_submit_confirm;
+#[path = "e2e/flows/k8_secret_modal_submit_retry.rs"]
+mod k8_secret_modal_submit_retry;
+#[path = "e2e/flows/k9_order_context_modify_cancel.rs"]
+mod k9_order_context_modify_cancel;
+#[path = "e2e/flows/k10_order_form_controls_and_validation.rs"]
+mod k10_order_form_controls_and_validation;
+#[path = "e2e/flows/k11_order_confirm_cancel_escape_priority.rs"]
+mod k11_order_confirm_cancel_escape_priority;
+#[path = "e2e/flows/k12_modify_modal_submit_cancel_validation.rs"]
+mod k12_modify_modal_submit_cancel_validation;
+#[path = "e2e/flows/k13_relogin_modal_dismiss_escape_priority.rs"]
+mod k13_relogin_modal_dismiss_escape_priority;
+#[path = "e2e/flows/k14_reconcile_modal_dismiss_escape_priority.rs"]
+mod k14_reconcile_modal_dismiss_escape_priority;
+#[path = "e2e/flows/k15_secret_modal_timeout_zeroize_empty_submit.rs"]
+mod k15_secret_modal_timeout_zeroize_empty_submit;
+#[path = "e2e/flows/k16_order_context_menu_open_close.rs"]
+mod k16_order_context_menu_open_close;
+
+// L. CLI / backend process / prod guard
+// l1: stub のみ（PowerShell .ps1 — Windows 専用、darwin CI 不可）
+#[path = "e2e/flows/l2_strategy_replay_cli_outputs_run_buffer.rs"]
+mod l2_strategy_replay_cli_outputs_run_buffer;
+#[path = "e2e/flows/l3_prod_guard_blocks_without_env.rs"]
+mod l3_prod_guard_blocks_without_env;
+// l4: stub のみ（kind:render — winit + GPU 必要、headless 不可）
+#[path = "e2e/flows/l5_backend_process_launch_and_grpc_ready.rs"]
+mod l5_backend_process_launch_and_grpc_ready;
+#[path = "e2e/flows/l6_catalog_auto_build_from_jquants.rs"]
+mod l6_catalog_auto_build_from_jquants;
+
+// M. Window / sidebar (UI)
+#[path = "e2e/flows/m1_sidebar_panel_buttons_spawn_windows.rs"]
+mod m1_sidebar_panel_buttons_spawn_windows;
+#[path = "e2e/flows/m2_window_drag_updates_position_and_autosave.rs"]
+mod m2_window_drag_updates_position_and_autosave;
+#[path = "e2e/flows/m3_window_close_hides_or_despawns.rs"]
+mod m3_window_close_hides_or_despawns;
+#[path = "e2e/flows/m4_window_focus_brings_to_front.rs"]
+mod m4_window_focus_brings_to_front;
+#[path = "e2e/flows/m5_panel_duplicate_policy.rs"]
+mod m5_panel_duplicate_policy;
+// m6: stub のみ（settings sidebar は固定文字列で BackendStatus 等に未接続）

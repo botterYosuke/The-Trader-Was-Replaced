@@ -173,6 +173,23 @@ backend→ECS seam だけでは十分条件にならない。
   （必須は `price`/`history`/`timestamp` のみ、他は `#[serde(default)]`）。
 - **文字列フィールドは wire フォーマットのまま**。`PortfolioOrder.side`/`.status` は `String`
   （`"BUY"`/`"FILLED"`）。enum 化されていないので文字列リテラルで正しい。
+- **bare `App`（UI flow）には input プラグインが無く `ButtonInput<KeyCode>` はフレーム境界で自動 clear されない**。
+  `just_pressed` が前フレームから sticky に残り、既に pressed のキーへの再 `press()` は no-op（just_pressed を作らない）。
+  各キー操作の前に `keys.reset_all()` してから `press(...)` し直すこと。Escape の連続押下・トグル系（メニュー Alt+F、
+  注文/モーダルの Escape 優先テスト）で「2 回目が効かない」のは大抵これ。同様に **`Time::<()>` の delta は最後の
+  `advance_by` 値で固定**（`update()` で 0 に戻らない）。cooldown 等を「時間未経過」で検証したいときは
+  `advance_by(Duration::ZERO)` で delta=0 にし、cooldown 解除には `advance_by(1s)` する。
+- **`tests/e2e/support/mod.rs` の `Harness` は UI 駆動メソッド（`run_via_ui`/`click<M>`/`drain_commands`/`set_replay_state`）
+  を持つ拡張版で、A/B/C 群の flow がこれらに依存する**。failing な 1 本を直すために `git checkout HEAD -- mod.rs`
+  したり mod.rs / 他 flow を安易に上書きしないこと（未コミットの拡張を消すと 10+ 本が `no method named run_via_ui`
+  で全落ちし、working-tree のみの内容は復元不能になりうる）。共有ファイル（mod.rs / runner / 別 flow）を触る前に
+  「その working-tree 版に依存する未コミット flow が無いか」を必ず確認する。詳細は memory `e2e-harness-extended-ui-driven`。
+- **共有 runner（`tests/e2e_replay.rs`）の登録は orchestrator が一括で行う**。並行 subagent に書かせると重複登録・
+  順序衝突・cargo の target ロック競合が起きる。subagent には「flow ファイルだけ書く / cargo も runner も触らない」と
+  明示し、登録・コンパイル・修正は中央で回す。
+- **headless 不可 / 未実装の flow は fake せず doc stub（`//!` のみ・`#[test]` 無し）にして runner 未登録のまま残す**。
+  `kind:render`（ShapePainter+Text2d=GPU 必要）、Windows 専用 PowerShell、実ウィンドウ smoke、production 未実装機能が該当。
+  外部データ依存（catalog / J-Quants）や OS dialog（rfd 直呼び）は `#[test] #[ignore]` + 理由 doc にする。
 - **既存 warning は触らない**（`main.rs:33 UnsubscribeRequest` 等、本作業と無関係）。新規 warning は増やさない。
 - **コメントは「なぜ」だけ**。何をしているかの説明やタスク言及は書かない（プロジェクト規約）。
 

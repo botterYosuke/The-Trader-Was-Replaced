@@ -1,20 +1,23 @@
 # E2E Flow Conventions — The-Trader-Was-Replaced
 
 > リリース前の最後の砦として、ユーザーが取りうる行動を原則すべて列挙し、自動テストの対象にする。
-> 実装済み flow は `tests/e2e/flows/<id>.rs`（1 ファイル 1 テスト）に索引化されている。各ファイル先頭の
-> `//!` が「何の挙動か / seam / 観測」を記述するため、flow 一覧はこの markdown ではなく `.rs` 群が正本。
+> 実装済み flow は `tests/e2e/flows/<id>.rs`（1 ファイル 1 テスト）に索引化されている。未実装の予定 flow も
+> 同じディレクトリに `//!` だけのプレースホルダーとして置き、「何の挙動か / seam / 観測」を先に固定する。
+> flow 一覧はこの markdown ではなく `.rs` 群が正本。
 > 既存の Bevy resource/event/system 直接駆動ハーネスで観測できるものはこの方式で assert する。
 > 直接駆動だけでは忠実に検証できない操作（描画依存、OS ダイアログ、キーボード入力、実 backend/環境依存）は
 > 「対象外」にせず、代替方式（UI harness / smoke / integration / manual release gate）を明記する。
 
 ## このファイルの使い方（編集ルール）
 
-- **実装済み flow の索引は `tests/e2e/flows/<id>.rs`（1 ファイル 1 テスト）に移行した**。flow を1本足す
-  = `tests/e2e/flows/<id>.rs` を追加し、`tests/e2e_replay.rs`（runner）に `#[path]` + `mod` を1行足す。
+- **実装済み flow の索引は `tests/e2e/flows/<id>.rs`（1 ファイル 1 テスト）に移行した**。実装する flow を1本足す
+  = `tests/e2e/flows/<id>.rs` に `#[test]` を追加し、`tests/e2e_replay.rs`（runner）に `#[path]` + `mod` を1行足す。
+  `//!` だけのファイルは予定 flow で、runner にはまだ登録しない。
 - このファイルは **flow 一覧そのものではなく**、(1) 駆動の縫い目と観測の凡例、(2) 直接駆動では headless
   検証できない操作の代替方式と release gate、(3) ハーネス計画 を定義するメタ文書。
 - まだ `.rs` 化していない操作（UI / integration / render / manual-gate 系）は、末尾の「直接駆動では
-  不可能な場合の代替方式」テーブルに方式と release gate を記録する。
+  不可能な場合の代替方式」テーブルに方式と release gate を記録する。予定 flow は `tests/e2e/flows/<id>.rs` の
+  `//!` コメントと wiki の `[FlowID]` 引用を先に作ってよい。
 
 ### wiki ↔ E2E 同期ルール（必須）
 
@@ -55,24 +58,33 @@
 
 release gate 列の ID（`I*` / `J*` / `K*` / `L*` 群、保留中の `A5` / `C5` / `D8` など）は **まだ `.rs` 化していない planned flow** の識別子。実装時に `tests/e2e/flows/<id>.rs`（または `kind:render` / `kind:integration` の専用ハーネス）として起こす。
 
-実装済みの代替方式 flow:
+実装済みの代替方式 flow（I/J/K/L/M 群は `tests/e2e/flows/<id>.rs` に実装済み・`cargo test --test e2e_replay` で green）:
 
-- **I5 ✅** `tests/e2e/flows/i5_file_open_spawns_editor_and_chart.rs`（`kind:integration`）— temp `.json` を `LayoutLoadRequested{UserJsonOpen}` で開き、本番の `apply_layout_system` → `panel_spawn_dispatcher_system` で Strategy Editor、`instrument_chart_sync_system` で Chart の entity spawn を assert（rfd ダイアログはバイパス、cosmic はフォント resource のみ headless 挿入）。残る画面 smoke は `L4`。
+- **I 群（メニュー / file / layout）✅** — i1 メニュー開閉, i2 Alt+F/E/V, i4 モード切替 gating（未送信 assert）, i5 file-open→Editor/Chart spawn, i6 File→New, i7 Save→sidecar, i9 Ctrl+S/Shift+S/O dispatch, i10 open→Auto, i11 Edit→Undo/Redo, i12 起動時 cache 復元, i13 scenario-only JSON。`i3`（Escape/outside-close）は本番未実装のため doc stub。`i8`（Save As）は rfd ダイアログ直呼びで headless 不可 → `#[test] #[ignore]`。
+- **J 群（editor / find / startup / scenario / picker）✅** — j1 autosave, j2 Tab indent, j3 Enter autoindent, j4 bracket autoclose, j5 find open/nav, j6 replace current/all, j7 startup 検証 block, j8 valid run command, j9 instruments_ref fail-closed, j10 readonly registry, j11 picker search/add/close, j12 placeholder, j13 sidebar select/remove, j14 schema 正規化, j15 file-watch reparse, j16 field commit→cache writeback。
+- **K 群（chart / order / modal）✅** — k2 wheel zoom gate, k3 drag/double-click reset（observer 駆動）, k4 Ctrl+wheel 抑制, k5 ladder live mode entity-tree, k6 reconcile diff, k7 order submit→confirm→PlaceOrder, k8 secret submit/retry, k9 context modify/cancel, k10 form controls/validation, k11 confirm Escape 優先, k12 modify modal, k13 relogin Escape 優先, k14 reconcile Escape 優先, k15 secret zeroize/empty-submit, k16 context menu open/close。`k1`（candle/crosshair 描画）は `kind:render`（ShapePainter+Text2d=GPU 必要）→ doc stub。
+- **L 群（CLI / guard / backend）✅** — l3 prod guard（env unset→backend disabled, `#[serial]`）, l5 supervisor→mock gRPC Ready。l2 strategy_replay CLI は `STRATEGY_REPLAY_CLI_INTEGRATION=1` gate、l6 catalog build は `DEV_J_QUANTS_CACHE` 依存で `#[ignore]`。`l1`（run_replay.ps1）は Windows 専用 PowerShell → doc stub。`l4`（実ウィンドウ全体 smoke）は `kind:render` → doc stub。
+- **M 群（window / sidebar）✅** — m1 sidebar Panels ボタン spawn, m2 drag→位置更新+autosave dirty, m3 close→despawn, m4 focus→z 前面, m5 duplicate policy（StrategyEditor のみ multi）。`m6`（settings sidebar）は固定文字列で BackendStatus 未接続 → doc stub。
+
+残る doc stub（headless 不可 / 未実装の release gate）: `i3`(menu Escape 未実装), `k1`/`l4`(kind:render), `l1`(Windows PowerShell), `m6`(未接続)。
 
 | 対象 | 直接駆動だけで不足する理由 | 代替方式 | release gate |
 |---|---|---|---|
-| メニュー開閉 / Alt+F/E/V | backend seam を通らず、keyboard focus と UI entity 表示が本体 | `kind:ui`。`ButtonInput<KeyCode>` と `Interaction` を注入し `OpenMenu` / entity 表示を assert | I1/I3 必須 |
-| モード切替 gating | command を送らないことが仕様で、backend ack では観測できない | `kind:ui`。送信 channel を監視し「未送信」を assert | I4 必須 |
-| OS ファイルダイアログ | CI で OS native dialog を安定操作しにくい | dialog 自体はバイパスし、選択済み path event/resource を注入。別途 smoke で起動確認 | I5 ✅ + L4 |
-| レイアウト永続化 | ファイル I/O と debounce が主対象 | temp dir fixture で `Save/Load` を integration 実行し JSON と復元 entity を assert | I7/I8 必須 |
-| cosmic_edit 入力 | text editor plugin の focus/keyboard 処理が主対象 | `kind:ui`。focused entity と keyboard/text input を注入。必要なら最小実ウィンドウ smoke を追加 | J1-J4 必須 |
-| Startup パネル入力検証 | Run command を送らない UI gating が仕様 | `kind:ui`。field editor state、error label、transport channel 未送信/送信を assert | J5/J6 必須 |
-| `instruments_ref` fail-closed | file-watch / parser / writeback の連携 | temp sidecar/ref file を使う integration。破損・空・正常の fixture を固定 | J7 必須 |
-| 銘柄ピッカー | searchbox、debounce、候補表示、readonly が純 UI | `kind:ui`。time advance と text/entity assert。取得 seam は C1-C4 と組み合わせる | J8/J9 必須 |
-| Chart 操作 | wheel/drag/double click と render state が主対象 | `kind:ui` で `ChartViewState` / camera を assert。描画崩れは `kind:render` smoke | K2/K3 + L4 |
-| 注文フォーム / modal / context menu | 2 段階 confirm、focus、Escape 優先順位が主対象 | `kind:ui`。command channel、modal visibility、feedback resource を assert | K4/K5/K6 必須 |
-| Prod guard / 実 venue | CI で実口座・外部環境に依存 | env isolated backend integration で guard を確認。実接続はリリース時 manual-gate に残す | L3 必須 |
-| 画面全体の見た目 | headless resource assert では重なり・欠落を検出しづらい | `BACKCAST_E2E=1` 固定 fixture 起動、スクリーンショットまたは構造化 UI dump の smoke | L4 必須 |
+| メニュー開閉 / Alt+F/E/V | backend seam を通らず、keyboard focus と UI entity 表示が本体 | `kind:ui`。`ButtonInput<KeyCode>` と `Interaction` を注入し `OpenMenu` / entity 表示を assert | I1 ✅ / I2 ✅ / I3 stub（Escape 未実装） |
+| モード切替 gating | command を送らないことが仕様で、backend ack では観測できない | `kind:ui`。送信 channel を監視し「未送信」を assert | I4 ✅ |
+| OS ファイルダイアログ | CI で OS native dialog を安定操作しにくい | dialog 自体はバイパスし、選択済み path event/resource を注入。別途 smoke で起動確認 | I5 ✅ / I6 ✅ / I7 ✅ / I8 `#[ignore]`(rfd) / L4 stub |
+| レイアウト永続化 | ファイル I/O と debounce が主対象 | temp dir fixture で `Save/Load` を integration 実行し JSON と復元 entity を assert | I7 ✅ / I12 ✅ / M2 ✅（drag autosave） |
+| cosmic_edit 入力 | text editor plugin の focus/keyboard 処理が主対象 | `kind:ui`。focused entity と keyboard/text input を注入。必要なら最小実ウィンドウ smoke を追加 | J1-J4 ✅ |
+| find / replace | match span 計算と置換が主対象 | `kind:ui`。FindReplaceState と FindActionRequested を駆動 | J5/J6 ✅ |
+| Startup パネル入力検証 | Run command を送らない UI gating が仕様 | `kind:ui`。field editor state、error label、transport channel 未送信/送信を assert | J7/J8/J16 ✅ |
+| `instruments_ref` fail-closed | file-watch / parser / writeback の連携 | temp sidecar/ref file を使う integration。破損・空・正常の fixture を固定 | J9/J10/J14/J15 ✅ |
+| 銘柄ピッカー | searchbox、debounce、候補表示、readonly が純 UI | `kind:ui`。time advance と text/entity assert。取得 seam は C1-C4 と組み合わせる | J11/J12/J13 ✅ |
+| Chart 操作 | wheel/drag/double click と render state が主対象 | `kind:ui` で `ChartViewState` / camera を assert。描画崩れは `kind:render` smoke | K2/K3/K4/K5 ✅ / K1 stub(render) / L4 stub |
+| 注文フォーム / modal / context menu | 2 段階 confirm、focus、Escape 優先順位が主対象 | `kind:ui`。command channel、modal visibility、feedback resource を assert | K7-K16 ✅ |
+| Prod guard / 実 venue | CI で実口座・外部環境に依存 | env isolated backend integration で guard を確認。実接続はリリース時 manual-gate に残す | L3 ✅ / L5 ✅(mock gRPC) / 実接続は manual |
+| CLI replay / catalog | 外部データ・uv 依存 | `std::process::Command` で driver、env-gate / `#[ignore]` | L2 `#[ignore]`(env) / L6 `#[ignore]`(data) / L1 stub(Windows) |
+| window 操作 | drag/close/focus/duplicate が observer + ECS | `kind:ui`。observer trigger と Transform/WindowManager/AutoSaveState を assert | M1-M5 ✅ / M6 stub(未接続) |
+| 画面全体の見た目 | headless resource assert では重なり・欠落を検出しづらい | `BACKCAST_E2E=1` 固定 fixture 起動、スクリーンショットまたは構造化 UI dump の smoke | L4 stub(必須・kind:render) |
 
 ## ハーネス計画（参考・別途実装）
 
