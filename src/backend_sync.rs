@@ -17,10 +17,9 @@ use crate::trading::{
     AccountPosition, AvailableInstruments, BackendEvent, BackendStartupStage, BackendStatus,
     BackendStatusUpdate, ExecutionModeRes, LastPrices, LastRunResult, LiveOrder, LiveOrders,
     LiveRuns, OrderFeedback, PortfolioPosition, PortfolioState, PromoteFeedback, ReconcilePrompt,
-    ReloginPrompt, RunState,
-    SecretPrompt, SecretPromptRequest, Tickers, TickersStatus, TransportCommand,
-    TransportCommandSender, VenueStatusRes, is_terminal_order_status, parse_summary_json,
-    reconcile_unknown_orders,
+    ReloginPrompt, RunState, SecretPrompt, SecretPromptRequest, Tickers, TickersStatus,
+    TransportCommand, TransportCommandSender, VenueStatusRes, is_terminal_order_status,
+    parse_summary_json, reconcile_unknown_orders,
 };
 use bevy::prelude::*;
 use chrono::NaiveDate;
@@ -117,14 +116,16 @@ pub fn backend_event_drain_system(
                 filled_qty,
                 avg_price,
                 ts_ms,
-                // Phase 10 §2.9 / M6: ordering subject. Step 7 wires the OrdersPanel
-                // filter; Step 3 only mirrors the field through the transport.
-                strategy_id: _,
+                // Phase 10 §2.9 / M6: ordering subject's StrategyId — drives the
+                // OrdersPanel filter. Merge invariant (apply_event): a non-empty
+                // value tags the row; an empty EC-stream value never clears a
+                // known MANUAL-001 / LIVE-.. tag.
+                strategy_id,
             } => {
                 // Phase 9 §3.12 (entry side): merge status/fill into the order the
                 // PlaceOrder response seeded.
                 info!(
-                    "[backend-event] OrderEvent order_id={order_id} venue_order_id={venue_order_id} client_order_id={client_order_id} status={status} filled_qty={filled_qty} avg_price={avg_price} ts_ms={ts_ms}"
+                    "[backend-event] OrderEvent order_id={order_id} venue_order_id={venue_order_id} client_order_id={client_order_id} status={status} filled_qty={filled_qty} avg_price={avg_price} ts_ms={ts_ms} strategy_id={strategy_id}"
                 );
                 live_orders.apply_event(
                     &client_order_id,
@@ -133,6 +134,7 @@ pub fn backend_event_drain_system(
                     filled_qty,
                     avg_price,
                     ts_ms,
+                    &strategy_id,
                 );
             }
             BackendEvent::AccountEvent {
@@ -191,6 +193,29 @@ pub fn backend_event_drain_system(
             } => {
                 info!(
                     "[backend-event] StrategyLogMessage run_id={run_id} level={level} message={message} ts_ms={ts_ms}"
+                );
+            }
+            // Phase 10 Step 7 (§2.8 / §2.9): run-scoped PnL / order / fill counters.
+            BackendEvent::LiveStrategyTelemetry {
+                run_id,
+                strategy_id,
+                realized_pnl,
+                unrealized_pnl,
+                order_count,
+                fill_count,
+                ts_ms,
+            } => {
+                info!(
+                    "[backend-event] LiveStrategyTelemetry run_id={run_id} strategy_id={strategy_id} realized_pnl={realized_pnl} unrealized_pnl={unrealized_pnl} order_count={order_count} fill_count={fill_count} ts_ms={ts_ms}"
+                );
+                live_runs.apply_telemetry(
+                    &run_id,
+                    &strategy_id,
+                    realized_pnl,
+                    unrealized_pnl,
+                    order_count,
+                    fill_count,
+                    ts_ms,
                 );
             }
         }
@@ -390,6 +415,7 @@ pub fn apply_status_update(
             filled_qty,
             avg_price,
             ts_ms,
+            strategy_id,
         } => {
             live_orders.upsert_full(LiveOrder {
                 client_order_id,
@@ -402,8 +428,10 @@ pub fn apply_status_update(
                 filled_qty,
                 avg_price,
                 ts_ms,
-                // Step 7 populates this from OrderEvent.strategy_id; "" for now.
-                strategy_id: String::new(),
+                // §2.9: the manual PlaceOrder response's MANUAL-001 tag (or "" from an
+                // old producer). A non-empty tag here is preserved by apply_event's
+                // empty-never-clears rule against later untagged EC-stream events.
+                strategy_id,
             });
             // A successful place clears any prior reject/timeout notice.
             order_feedback.message = None;
@@ -423,6 +451,9 @@ pub fn apply_status_update(
                 filled_qty,
                 avg_price,
                 ts_ms,
+                // A Cancel response carries no strategy_id; "" preserves the row's
+                // existing tag (apply_event empty-never-clears invariant, §2.9).
+                "",
             );
         }
         BackendStatusUpdate::OrderModified {
@@ -636,5 +667,85 @@ mod tests {
             order_feedback.message.is_none(),
             "secret-flow failure must NOT pollute the OrderPanel feedback line"
         );
+    }
+
+    fn drain_app() -> (App, mpsc::UnboundedSender<BackendEvent>) {
+        let (tx, rx) = mpsc::unbounded_channel();
+        let mut app = App::new();
+        app.insert_resource(BackendEventChannel { rx });
+        app.init_resource::<SecretPrompt>();
+        app.init_resource::<LiveOrders>();
+        app.init_resource::<PortfolioState>();
+        app.init_resource::<ReloginPrompt>();
+        app.init_resource::<LiveRuns>();
+        app.add_systems(Update, backend_event_drain_system);
+        (app, tx)
+    }
+
+    /// §2.8 / §2.9: a LiveStrategyTelemetry push drives the LiveRuns counters.
+    #[test]
+    fn telemetry_push_drives_live_runs_counters() {
+        let (mut app, tx) = drain_app();
+        tx.send(BackendEvent::LiveStrategyTelemetry {
+            run_id: "run-1".to_string(),
+            strategy_id: "LIVE-abc12345".to_string(),
+            realized_pnl: 5000.0,
+            unrealized_pnl: 1234.0,
+            order_count: 4,
+            fill_count: 2,
+            ts_ms: 100,
+        })
+        .unwrap();
+        app.update();
+        let runs = app.world().resource::<crate::trading::LiveRuns>();
+        assert_eq!(
+            runs.runs.len(),
+            1,
+            "telemetry upserts a run even before lifecycle"
+        );
+        let r = &runs.runs[0];
+        assert_eq!(r.realized_pnl, 5000.0);
+        assert_eq!(r.unrealized_pnl, 1234.0);
+        assert_eq!(r.order_count, 4);
+        assert_eq!(r.fill_count, 2);
+        assert_eq!(r.strategy_id, "LIVE-abc12345");
+    }
+
+    /// §2.9 merge invariant through the drain: an OrderEvent's non-empty strategy_id
+    /// tags the row; a later empty EC-stream OrderEvent must not clear it.
+    #[test]
+    fn order_event_strategy_id_merges_through_drain() {
+        let (mut app, tx) = drain_app();
+        tx.send(BackendEvent::OrderEvent {
+            order_id: "o1".to_string(),
+            venue_order_id: "v1".to_string(),
+            client_order_id: "c1".to_string(),
+            status: "ACCEPTED".to_string(),
+            filled_qty: 0.0,
+            avg_price: 0.0,
+            ts_ms: 10,
+            strategy_id: "LIVE-abc12345".to_string(),
+        })
+        .unwrap();
+        tx.send(BackendEvent::OrderEvent {
+            order_id: "o1".to_string(),
+            venue_order_id: "v1".to_string(),
+            client_order_id: "c1".to_string(),
+            status: "FILLED".to_string(),
+            filled_qty: 100.0,
+            avg_price: 2500.0,
+            ts_ms: 20,
+            // untagged EC-stream follow-up.
+            strategy_id: String::new(),
+        })
+        .unwrap();
+        app.update();
+        let orders = app.world().resource::<crate::trading::LiveOrders>();
+        assert_eq!(orders.orders.len(), 1);
+        assert_eq!(
+            orders.orders[0].strategy_id, "LIVE-abc12345",
+            "empty EC-stream strategy_id must not clear the tagged row"
+        );
+        assert_eq!(orders.orders[0].status, "FILLED");
     }
 }

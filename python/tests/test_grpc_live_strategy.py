@@ -445,6 +445,172 @@ def test_post_trade_eval_does_not_block_on_live_strategy_lock(live_strategy_serv
     )
 
 
+# --- Step 7 A: OrderEvent.strategy_id tagging ------------------------------
+
+
+def _place(stub, token, **over):
+    base = dict(
+        token=token,
+        venue="MOCK",
+        instrument_id="7203.TSE",
+        side="BUY",
+        qty=100.0,
+        order_type="MARKET",
+        time_in_force="DAY",
+    )
+    base.update(over)
+    return stub.PlaceOrder(engine_pb2.PlaceOrderReq(**base))
+
+
+def test_manual_order_event_tagged_manual_001(live_strategy_server):
+    """手動 PlaceOrder の OrderEvent は MANUAL-001 を運ぶ（unary 応答 + backend stream）。"""
+    from engine.server_grpc import MANUAL_STRATEGY_ID
+
+    assert MANUAL_STRATEGY_ID == "MANUAL-001"
+    port, token, servicer = live_strategy_server
+    _arm_live_auto(servicer)
+    stub = _stub(port)
+
+    pushed = []
+
+    def _drain():
+        try:
+            for ev in _stub(port).SubscribeBackendEvents(
+                engine_pb2.SubscribeBackendEventsReq(token=token)
+            ):
+                if ev.WhichOneof("payload") == "order_event":
+                    pushed.append(ev.order_event)
+        except grpc.RpcError:
+            pass
+
+    import threading
+
+    threading.Thread(target=_drain, daemon=True).start()
+    time.sleep(0.2)
+
+    res = _place(stub, token)
+    assert res.success, res.error_code
+    assert res.order_event.strategy_id == "MANUAL-001"
+    # backend stream にも MANUAL-001 付きで届く。
+    assert _wait_until(lambda: any(e.strategy_id == "MANUAL-001" for e in pushed))
+
+
+def test_get_orders_and_status_tagged_manual(live_strategy_server):
+    """GetOrders / GetOrderStatus の OrderEvent も MANUAL-001 を運ぶ。"""
+    port, token, servicer = live_strategy_server
+    adapter = _arm_live_auto(servicer)
+    stub = _stub(port)
+    # resting order を作る（GetOrders は非終端のみ返す）。mock の既定は FILLED（終端）なので
+    # ACCEPTED を仕込んで非終端に保つ。
+    adapter.set_next_order_outcome(status="ACCEPTED", filled_qty=0)
+    placed = _place(stub, token, order_type="LIMIT", price=2500.0)
+    assert placed.success, placed.error_code
+    oid = placed.order_event.order_id
+
+    got = stub.GetOrderStatus(
+        engine_pb2.GetOrderStatusReq(token=token, order_id=oid)
+    )
+    assert got.success and got.order_event.strategy_id == "MANUAL-001"
+
+    listing = stub.GetOrders(engine_pb2.GetOrdersReq(token=token))
+    assert listing.orders, "expected at least the resting order"
+    assert all(o.strategy_id == "MANUAL-001" for o in listing.orders)
+
+
+def test_auto_order_event_callback_tags_live_strategy_id(live_strategy_server):
+    """Step 7 C: controller の on_order_event callback 経由の OrderEvent は LIVE-... を運ぶ。
+
+    実 kernel は Noop controller では作られないため、server に注入された
+    `_on_auto_order_event` を直接叩いて、push 経路が strategy_id を保持することを固定する。"""
+    from engine.live.order_types import OrderEventData
+
+    port, token, servicer = live_strategy_server
+    stub = _stub(port)
+
+    pushed = []
+
+    def _drain():
+        try:
+            for ev in _stub(port).SubscribeBackendEvents(
+                engine_pb2.SubscribeBackendEventsReq(token=token)
+            ):
+                if ev.WhichOneof("payload") == "order_event":
+                    pushed.append(ev.order_event)
+        except grpc.RpcError:
+            pass
+
+    import threading
+
+    threading.Thread(target=_drain, daemon=True).start()
+    time.sleep(0.2)
+
+    ev = OrderEventData(
+        order_id="O-1",
+        venue_order_id="V-1",
+        client_order_id="O-1",
+        status="FILLED",
+        filled_qty=100.0,
+        avg_price=2500.0,
+        ts_ms=123,
+    )
+    servicer._on_auto_order_event(ev, "LIVE-abc12345")
+    assert _wait_until(
+        lambda: any(
+            e.strategy_id == "LIVE-abc12345" and e.status == "FILLED" for e in pushed
+        )
+    )
+
+
+def test_auto_telemetry_callback_resolves_run_id_and_pushes(live_strategy_server):
+    """Step 7 D: on_telemetry callback は nautilus_strategy_id を run_id に逆引きして push する。"""
+    port, token, servicer = live_strategy_server
+    _arm_live_auto(servicer)
+    stub = _stub(port)
+    sid = _register(stub, token).strategy_id
+    started = _start(stub, token, sid)
+    assert started.success
+    run_id = started.run_id
+    nsid = started.status.nautilus_strategy_id  # "LIVE-..."
+
+    telem = []
+
+    def _drain():
+        try:
+            for ev in _stub(port).SubscribeBackendEvents(
+                engine_pb2.SubscribeBackendEventsReq(token=token)
+            ):
+                if ev.WhichOneof("payload") == "live_strategy_telemetry":
+                    telem.append(ev.live_strategy_telemetry)
+        except grpc.RpcError:
+            pass
+
+    import threading
+
+    threading.Thread(target=_drain, daemon=True).start()
+    time.sleep(0.2)
+
+    servicer._on_auto_telemetry(
+        nsid,
+        {"realized_pnl": 1234.0, "unrealized_pnl": -56.0, "order_count": 3, "fill_count": 1},
+    )
+    assert _wait_until(lambda: any(t.run_id == run_id for t in telem))
+    t0 = next(t for t in telem if t.run_id == run_id)
+    assert t0.strategy_id == nsid
+    assert t0.realized_pnl == 1234.0
+    assert t0.unrealized_pnl == -56.0
+    assert t0.order_count == 3
+    assert t0.fill_count == 1
+
+    # 逆引き不可（未知 sid）は push しない（terminal run の遅延イベントを誤報しない）。
+    before = len(telem)
+    servicer._on_auto_telemetry(
+        "LIVE-unknown99",
+        {"realized_pnl": 0.0, "unrealized_pnl": 0.0, "order_count": 0, "fill_count": 0},
+    )
+    time.sleep(0.3)
+    assert len(telem) == before
+
+
 def test_post_trade_within_loss_limit_keeps_run_running(live_strategy_server):
     """損失が上限内なら run は RUNNING のまま（誤検知しない）。"""
     from engine.live.order_types import AccountSnapshot

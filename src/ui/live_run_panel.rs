@@ -15,7 +15,7 @@ use bevy::prelude::*;
 use chrono::{Local, TimeZone};
 
 use crate::trading::{
-    LiveRuns, TransportCommand, TransportCommandSender, is_terminal_run_status,
+    LiveRuns, TransportCommand, TransportCommandSender, is_terminal_run_status, short_id,
 };
 
 const MAX_PANEL_ROWS: usize = 3;
@@ -31,6 +31,8 @@ const COLOR_STOPPED: Color = Color::srgb(0.55, 0.55, 0.55);
 const COLOR_BTN_IDLE: Color = Color::srgba(0.18, 0.20, 0.28, 1.0);
 const COLOR_BTN_STOP: Color = Color::srgba(0.30, 0.16, 0.20, 1.0);
 const COLOR_BTN_DISABLED: Color = Color::srgba(0.12, 0.12, 0.16, 1.0);
+const COLOR_PNL_POS: Color = Color::srgb(0.0, 1.0, 0.50);
+const COLOR_PNL_NEG: Color = Color::srgb(1.0, 0.20, 0.40);
 
 // ===========================================================================
 // Pure helpers (testable)
@@ -58,16 +60,6 @@ pub fn format_hms(ts_ms: i64) -> String {
     }
 }
 
-/// id の末尾 `n` 文字（短縮表示用）。短い id はそのまま。
-pub fn short_id(id: &str, n: usize) -> String {
-    let count = id.chars().count();
-    if count <= n {
-        return id.to_string();
-    }
-    let tail: String = id.chars().skip(count - n).collect();
-    format!("…{tail}")
-}
-
 /// Pause を送れる状態か（RUNNING のみ）。
 pub fn can_pause(status: &str) -> bool {
     status == "RUNNING"
@@ -81,6 +73,50 @@ pub fn can_resume(status: &str) -> bool {
 /// Stop を送れる状態か（非終端なら常に可 — runaway を止められるように）。
 pub fn can_stop(status: &str) -> bool {
     !is_terminal_run_status(status)
+}
+
+/// Combined run PnL (realized + unrealized) → signed JPY string (§2.8 / §2.9).
+/// e.g. `+12,345` / `-980` / `±0`. Whole-yen, thousands-separated, no decimals.
+pub fn format_pnl(realized_pnl: f64, unrealized_pnl: f64) -> String {
+    let total = realized_pnl + unrealized_pnl;
+    // Round to whole yen first so a tiny residual doesn't flip the sign glyph.
+    let yen = total.round() as i64;
+    let sign = match yen.cmp(&0) {
+        std::cmp::Ordering::Greater => "+",
+        std::cmp::Ordering::Less => "-",
+        std::cmp::Ordering::Equal => "±",
+    };
+    format!("{sign}{}", group_thousands(yen.unsigned_abs()))
+}
+
+/// Color for a combined PnL value: green if > 0, red if < 0, neutral at 0.
+pub fn pnl_color(realized_pnl: f64, unrealized_pnl: f64) -> Color {
+    let yen = (realized_pnl + unrealized_pnl).round() as i64;
+    match yen.cmp(&0) {
+        std::cmp::Ordering::Greater => COLOR_PNL_POS,
+        std::cmp::Ordering::Less => COLOR_PNL_NEG,
+        std::cmp::Ordering::Equal => COLOR_VALUE,
+    }
+}
+
+/// Order / fill counters → compact `o:<n> f:<m>` cell (§2.8 / §2.9).
+pub fn format_counts(order_count: i64, fill_count: i64) -> String {
+    format!("o:{order_count} f:{fill_count}")
+}
+
+/// Group an unsigned integer with `,` thousands separators (e.g. 12345 → "12,345").
+fn group_thousands(n: u64) -> String {
+    let digits = n.to_string();
+    let bytes = digits.as_bytes();
+    let mut out = String::with_capacity(digits.len() + digits.len() / 3);
+    let len = bytes.len();
+    for (i, b) in bytes.iter().enumerate() {
+        if i > 0 && (len - i).is_multiple_of(3) {
+            out.push(',');
+        }
+        out.push(*b as char);
+    }
+    out
 }
 
 // ===========================================================================
@@ -101,6 +137,10 @@ pub enum LiveRunCell {
     Status,
     Ids,
     Started,
+    /// Combined run PnL (realized + unrealized), JPY, colored by sign.
+    Pnl,
+    /// Order / fill counters (`o:<n> f:<m>`).
+    Counts,
 }
 
 #[derive(Component, Clone, Copy)]
@@ -114,6 +154,18 @@ pub enum LiveRunControlAction {
     Pause,
     Resume,
     Stop,
+}
+
+impl LiveRunControlAction {
+    /// Whether this control may be sent for a run in `status`. Shared by the visual
+    /// (greys out) and dispatch (blocks send) systems so the two never drift.
+    fn is_allowed(self, status: &str) -> bool {
+        match self {
+            Self::Pause => can_pause(status),
+            Self::Resume => can_resume(status),
+            Self::Stop => can_stop(status),
+        }
+    }
 }
 
 #[derive(Component, Clone, Copy)]
@@ -185,7 +237,12 @@ pub fn spawn_live_run_panel(mut commands: Commands) {
             Node {
                 display: Display::None,
                 position_type: PositionType::Absolute,
-                top: Val::Px(72.0),
+                // Stacks below the top-right promote cluster: the Promote button
+                // (top 46, h22) and its resident PromoteFeedbackText (top 70, up to
+                // ~2 lines for the success "run: <uuid>" line, GlobalZIndex 65).
+                // Starting at 72 let that higher-z feedback overprint the panel
+                // header on a successful promote — the exact happy path. 108 clears it.
+                top: Val::Px(108.0),
                 right: Val::Px(12.0),
                 width: Val::Px(304.0),
                 flex_direction: FlexDirection::Column,
@@ -234,7 +291,18 @@ pub fn spawn_live_run_panel(mut commands: Commands) {
                             spawn_cell(line, row, LiveRunCell::Ids, 130.0);
                             spawn_cell(line, row, LiveRunCell::Started, 70.0);
                         });
-                    // 2 行目: 制御ボタン
+                    // 2 行目: telemetry (§2.8 / §2.9) — PnL (符号で色分け) / order·fill 数
+                    r.spawn((Node {
+                        width: Val::Percent(100.0),
+                        align_items: AlignItems::Center,
+                        margin: UiRect::top(Val::Px(2.0)),
+                        ..default()
+                    },))
+                        .with_children(|line| {
+                            spawn_cell(line, row, LiveRunCell::Pnl, 150.0);
+                            spawn_cell(line, row, LiveRunCell::Counts, 120.0);
+                        });
+                    // 3 行目: 制御ボタン
                     r.spawn((Node {
                         width: Val::Percent(100.0),
                         margin: UiRect::top(Val::Px(2.0)),
@@ -242,12 +310,7 @@ pub fn spawn_live_run_panel(mut commands: Commands) {
                     },))
                         .with_children(|btns| {
                             spawn_control_button(btns, row, LiveRunControlAction::Pause, "Pause");
-                            spawn_control_button(
-                                btns,
-                                row,
-                                LiveRunControlAction::Resume,
-                                "Resume",
-                            );
+                            spawn_control_button(btns, row, LiveRunControlAction::Resume, "Resume");
                             spawn_control_button(btns, row, LiveRunControlAction::Stop, "Stop");
                         });
                 });
@@ -264,6 +327,9 @@ pub fn live_run_panel_visibility_system(
     runs: Res<LiveRuns>,
     mut root_q: Query<&mut Node, With<LiveRunPanelRoot>>,
 ) {
+    if !runs.is_changed() {
+        return;
+    }
     let target = if runs.runs.is_empty() {
         Display::None
     } else {
@@ -281,6 +347,9 @@ pub fn live_run_row_visibility_system(
     runs: Res<LiveRuns>,
     mut rows: Query<(&LiveRunRow, &mut Node)>,
 ) {
+    if !runs.is_changed() {
+        return;
+    }
     for (row, mut node) in &mut rows {
         let target = if row.index < runs.runs.len() {
             Display::Flex
@@ -298,6 +367,9 @@ pub fn live_run_panel_sync_system(
     runs: Res<LiveRuns>,
     mut cells: Query<(&LiveRunCellTag, &mut Text, &mut TextColor)>,
 ) {
+    if !runs.is_changed() {
+        return;
+    }
     for (tag, mut text, mut color) in &mut cells {
         let Some(run) = runs.runs.get(tag.row) else {
             if !text.0.is_empty() {
@@ -308,10 +380,19 @@ pub fn live_run_panel_sync_system(
         let (new_text, new_color) = match tag.cell {
             LiveRunCell::Status => (run.status.clone(), status_color(&run.status)),
             LiveRunCell::Ids => (
-                format!("{} · {}", short_id(&run.strategy_id, 8), short_id(&run.run_id, 6)),
+                format!(
+                    "{} · {}",
+                    short_id(&run.strategy_id, 8),
+                    short_id(&run.run_id, 6)
+                ),
                 COLOR_VALUE,
             ),
             LiveRunCell::Started => (format_hms(run.started_ts_ms), COLOR_VALUE),
+            LiveRunCell::Pnl => (
+                format!("PnL {}", format_pnl(run.realized_pnl, run.unrealized_pnl)),
+                pnl_color(run.realized_pnl, run.unrealized_pnl),
+            ),
+            LiveRunCell::Counts => (format_counts(run.order_count, run.fill_count), COLOR_VALUE),
         };
         if text.0 != new_text {
             text.0 = new_text;
@@ -327,15 +408,14 @@ pub fn live_run_control_visual_system(
     runs: Res<LiveRuns>,
     mut buttons: Query<(&LiveRunControlButton, &mut BackgroundColor)>,
 ) {
+    if !runs.is_changed() {
+        return;
+    }
     for (btn, mut bg) in &mut buttons {
         let enabled = runs
             .runs
             .get(btn.row)
-            .map(|r| match btn.action {
-                LiveRunControlAction::Pause => can_pause(&r.status),
-                LiveRunControlAction::Resume => can_resume(&r.status),
-                LiveRunControlAction::Stop => can_stop(&r.status),
-            })
+            .map(|r| btn.action.is_allowed(&r.status))
             .unwrap_or(false);
         let target = if !enabled {
             COLOR_BTN_DISABLED
@@ -353,7 +433,10 @@ pub fn live_run_control_visual_system(
 /// 制御ボタン押下を run_id 付きの `Pause/Resume/StopLiveStrategy` に変換して送る。
 /// 状態が許さない遷移（PAUSED でない run の Pause 等）と終端 run は送らない。
 pub fn live_run_control_button_system(
-    interactions: Query<(&Interaction, &LiveRunControlButton), (Changed<Interaction>, With<Button>)>,
+    interactions: Query<
+        (&Interaction, &LiveRunControlButton),
+        (Changed<Interaction>, With<Button>),
+    >,
     runs: Res<LiveRuns>,
     sender: Option<Res<TransportCommandSender>>,
 ) {
@@ -364,12 +447,7 @@ pub fn live_run_control_button_system(
         let Some(run) = runs.runs.get(btn.row) else {
             continue;
         };
-        let allowed = match btn.action {
-            LiveRunControlAction::Pause => can_pause(&run.status),
-            LiveRunControlAction::Resume => can_resume(&run.status),
-            LiveRunControlAction::Stop => can_stop(&run.status),
-        };
-        if !allowed {
+        if !btn.action.is_allowed(&run.status) {
             continue;
         }
         let run_id = run.run_id.clone();
@@ -413,14 +491,8 @@ mod tests {
             status: status.to_string(),
             started_ts_ms: 1,
             updated_ts_ms: 1,
+            ..Default::default()
         }
-    }
-
-    #[test]
-    fn short_id_keeps_short_and_truncates_long() {
-        assert_eq!(short_id("abc", 6), "abc");
-        assert_eq!(short_id("strat-deadbeef0011", 8), "…beef0011");
-        assert_eq!(short_id("strat-deadbeef0011", 8).chars().count(), 9); // ellipsis + 8
     }
 
     #[test]
@@ -436,6 +508,77 @@ mod tests {
         assert_eq!(format_hms(0), "—");
         assert_eq!(format_hms(-5), "—");
         assert_ne!(format_hms(1_700_000_000_000), "—");
+    }
+
+    #[test]
+    fn format_pnl_signs_and_groups_thousands() {
+        assert_eq!(format_pnl(12000.0, 345.0), "+12,345");
+        assert_eq!(format_pnl(-980.0, 0.0), "-980");
+        assert_eq!(format_pnl(0.0, 0.0), "±0");
+        // realized + unrealized combine; rounding to whole yen.
+        assert_eq!(format_pnl(1000.4, -0.4), "+1,000");
+        assert_eq!(format_pnl(1_234_567.0, 0.0), "+1,234,567");
+    }
+
+    #[test]
+    fn format_pnl_residual_does_not_flip_sign() {
+        // -0.3 rounds to 0 → must read ±0, not -0.
+        assert_eq!(format_pnl(-0.3, 0.0), "±0");
+    }
+
+    #[test]
+    fn pnl_color_tracks_sign() {
+        assert_eq!(pnl_color(100.0, 0.0), COLOR_PNL_POS);
+        assert_eq!(pnl_color(-100.0, 0.0), COLOR_PNL_NEG);
+        assert_eq!(pnl_color(0.0, 0.0), COLOR_VALUE);
+    }
+
+    #[test]
+    fn format_counts_renders_both() {
+        assert_eq!(format_counts(3, 1), "o:3 f:1");
+        assert_eq!(format_counts(0, 0), "o:0 f:0");
+    }
+
+    #[test]
+    fn telemetry_cells_render_from_run_record() {
+        let mut app = make_app();
+        let mut r = run("RUNNING");
+        r.realized_pnl = 5000.0;
+        r.unrealized_pnl = 1234.0;
+        r.order_count = 4;
+        r.fill_count = 2;
+        app.world_mut().resource_mut::<LiveRuns>().runs = vec![r];
+        app.add_systems(Update, live_run_panel_sync_system);
+        let pnl = app
+            .world_mut()
+            .spawn((
+                Text::new(""),
+                LiveRunCellTag {
+                    row: 0,
+                    cell: LiveRunCell::Pnl,
+                },
+                TextColor(COLOR_VALUE),
+            ))
+            .id();
+        let counts = app
+            .world_mut()
+            .spawn((
+                Text::new(""),
+                LiveRunCellTag {
+                    row: 0,
+                    cell: LiveRunCell::Counts,
+                },
+                TextColor(COLOR_VALUE),
+            ))
+            .id();
+        app.update();
+        assert_eq!(app.world().get::<Text>(pnl).unwrap().0, "PnL +6,234");
+        assert_eq!(
+            app.world().get::<TextColor>(pnl).unwrap().0,
+            COLOR_PNL_POS,
+            "positive PnL renders green"
+        );
+        assert_eq!(app.world().get::<Text>(counts).unwrap().0, "o:4 f:2");
     }
 
     #[test]

@@ -132,9 +132,9 @@ use crate::ui::restore::restore_fixed_registry_on_replay_entry_system;
 use crate::ui::run_result_panel::run_result_panel_system;
 use crate::ui::safety_rails_modal::{
     PromotePrompt, SafetyRailsForm, promote_feedback_sync_system, promote_trigger_button_system,
-    promote_trigger_visual_system, safety_rails_modal_button_system, safety_rails_modal_sync_system,
-    safety_rails_modal_visibility_system, safety_rails_stepper_system, spawn_promote_trigger,
-    spawn_safety_rails_modal,
+    promote_trigger_visual_system, safety_rails_modal_button_system,
+    safety_rails_modal_sync_system, safety_rails_modal_visibility_system,
+    safety_rails_stepper_system, spawn_promote_trigger, spawn_safety_rails_modal,
 };
 use crate::ui::scenario_parser::parse_scenario_system;
 use crate::ui::scenario_startup_panel::{
@@ -250,6 +250,8 @@ impl Plugin for UiPlugin {
         // Phase 9 §3.11 / §3.12 (Step 4): right-click context menu + Modify modal.
         .init_resource::<OrderContextMenu>()
         .init_resource::<ModifyForm>()
+        // Phase 10 §2.9: OrdersPanel strategy_id filter (All / Manual / Strategy).
+        .init_resource::<crate::trading::OrdersFilter>()
         // Phase 10 §2.7: Promote-to-Live trigger + Safety Rails modal state.
         // `PromoteFeedback` is inserted in the binary (main.rs) since the
         // transport-facing `status_update_system` mutates it.

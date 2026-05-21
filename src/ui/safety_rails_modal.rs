@@ -772,6 +772,9 @@ pub fn promote_feedback_sync_system(
     feedback: Res<PromoteFeedback>,
     mut q: Query<&mut Text, With<PromoteFeedbackText>>,
 ) {
+    if !feedback.is_changed() {
+        return;
+    }
     let msg = feedback.message.as_deref().unwrap_or_default();
     for mut text in &mut q {
         if text.0 != msg {
@@ -875,9 +878,14 @@ mod tests {
         let mut app = make_app();
         app.add_systems(Update, safety_rails_stepper_system);
         // closed: stepper is ignored.
-        app.world_mut().resource_mut::<SafetyRailsForm>().max_daily_loss_jpy = 0;
         app.world_mut()
-            .spawn((Button, Interaction::Pressed, SafetyRailsStepper::DailyLossDec));
+            .resource_mut::<SafetyRailsForm>()
+            .max_daily_loss_jpy = 0;
+        app.world_mut().spawn((
+            Button,
+            Interaction::Pressed,
+            SafetyRailsStepper::DailyLossDec,
+        ));
         app.update();
         assert_eq!(
             app.world().resource::<SafetyRailsForm>().max_daily_loss_jpy,
@@ -899,7 +907,9 @@ mod tests {
         let mut app = make_app();
         open_prompt(&mut app);
         app.add_systems(Update, safety_rails_stepper_system);
-        app.world_mut().resource_mut::<SafetyRailsForm>().max_order_value_jpy = 0;
+        app.world_mut()
+            .resource_mut::<SafetyRailsForm>()
+            .max_order_value_jpy = 0;
         app.world_mut().spawn((
             Button,
             Interaction::Pressed,
@@ -907,7 +917,9 @@ mod tests {
         ));
         app.update();
         assert_eq!(
-            app.world().resource::<SafetyRailsForm>().max_order_value_jpy,
+            app.world()
+                .resource::<SafetyRailsForm>()
+                .max_order_value_jpy,
             JPY_STEP
         );
     }

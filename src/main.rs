@@ -11,11 +11,11 @@ use backcast::grid::GridPlugin;
 use backcast::replay::ReplayStartupProgress;
 use backcast::trading::{
     AvailableInstruments, BackendChannel, BackendStartupStage, BackendStatus, BackendStatusUpdate,
-    ExecutionMode, ExecutionModeRes, LastPrices, LastRunResult, LiveOrders, OrderFeedback,
-    LiveRuns, PortfolioOrder, PortfolioPosition, PortfolioState, PromoteFeedback, ReconcilePrompt,
-    ReloginPrompt, ReplaySpeed, SecretPrompt, SelectedSymbol, Ticker, Tickers, TickersSource,
-    TradingSettings, TransportCommand, TransportCommandSender, VenueState, VenueStatusRes,
-    backend_update_system, engine, tickers_source_to_wire,
+    ExecutionMode, ExecutionModeRes, LastPrices, LastRunResult, LiveOrders, LiveRuns,
+    OrderFeedback, PortfolioOrder, PortfolioPosition, PortfolioState, PromoteFeedback,
+    ReconcilePrompt, ReloginPrompt, ReplaySpeed, SecretPrompt, SelectedSymbol, Ticker, Tickers,
+    TickersSource, TradingSettings, TransportCommand, TransportCommandSender, VenueState,
+    VenueStatusRes, backend_update_system, engine, tickers_source_to_wire,
 };
 use backcast::ui::UiPlugin;
 use backcast::ui::replay_startup_window::{
@@ -28,12 +28,12 @@ use bevy_pancam::{PanCamPlugin, PanCamSystemSet};
 use engine::data_engine_client::DataEngineClient;
 use engine::{
     EngineKind, EngineStartConfig, ForceStopReplayRequest, GetPortfolioRequest, GetStateRequest,
-    ListAllListedSymbolsRequest, ListInstrumentsRequest, LoadReplayDataRequest, PauseReplayRequest,
-    PauseLiveStrategyReq, RegisterLiveStrategyReq, ReplayGranularity, ResumeLiveStrategyReq,
-    ResumeReplayRequest, SafetyLimits, SetExecutionModeRequest, SetReplaySpeedRequest,
-    StartEngineRequest, StartEngineResponse, StartLiveStrategyReq, StepReplayRequest,
-    StopLiveStrategyReq, SubscribeBackendEventsReq, SubscribeRequest, VenueLoginRequest,
-    VenueLogoutRequest,
+    ListAllListedSymbolsRequest, ListInstrumentsRequest, LoadReplayDataRequest,
+    PauseLiveStrategyReq, PauseReplayRequest, RegisterLiveStrategyReq, ReplayGranularity,
+    ResumeLiveStrategyReq, ResumeReplayRequest, SafetyLimits, SetExecutionModeRequest,
+    SetReplaySpeedRequest, StartEngineRequest, StartEngineResponse, StartLiveStrategyReq,
+    StepReplayRequest, StopLiveStrategyReq, SubscribeBackendEventsReq, SubscribeRequest,
+    VenueLoginRequest, VenueLogoutRequest,
 };
 use tokio::sync::mpsc;
 
@@ -892,6 +892,9 @@ fn setup_backend_connection(
                                             filled_qty: ev.filled_qty,
                                             avg_price: ev.avg_price,
                                             ts_ms: ev.ts_ms,
+                                            // §2.9: a manual PlaceOrder is tagged "MANUAL-001" by
+                                            // the backend; "" when an old producer leaves it unset.
+                                            strategy_id: ev.strategy_id.unwrap_or_default(),
                                         });
                                     } else {
                                         // success=true but no order_event: the order was
@@ -1512,6 +1515,17 @@ fn setup_backend_connection(
                                     ts_ms: p.ts_ms,
                                 }
                             }
+                            engine::backend_event::Payload::LiveStrategyTelemetry(p) => {
+                                backcast::trading::BackendEvent::LiveStrategyTelemetry {
+                                    run_id: p.run_id,
+                                    strategy_id: p.strategy_id,
+                                    realized_pnl: p.realized_pnl,
+                                    unrealized_pnl: p.unrealized_pnl,
+                                    order_count: p.order_count,
+                                    fill_count: p.fill_count,
+                                    ts_ms: p.ts_ms,
+                                }
+                            }
                         };
                         let _ = event_tx.send(mapped);
                     }
@@ -1793,6 +1807,7 @@ mod tests {
                 filled_qty: 0.0,
                 avg_price: 0.0,
                 ts_ms: 1,
+                strategy_id: "MANUAL-001".to_string(),
             },
             Some("発注が拒否されました (X)"),
         );

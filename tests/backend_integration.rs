@@ -6,9 +6,13 @@ use backcast::trading::engine::{
     GetOrderStatusReq, GetOrderStatusRes, GetOrdersReq, GetOrdersRes, GetPortfolioRequest,
     GetPortfolioResponse, GetStateRequest, GetStateResponse, ListAllListedSymbolsRequest,
     ListAllListedSymbolsResponse, ListInstrumentsRequest, ListInstrumentsResponse,
-    LoadReplayDataRequest, ModifyOrderReq, ModifyOrderRes, PauseReplayRequest, PlaceOrderReq,
-    PlaceOrderRes, ReplayControlResponse, ResumeReplayRequest, SetExecutionModeRequest,
-    SetExecutionModeResponse, SetReplaySpeedRequest, ShutdownRequest, ShutdownResponse,
+    GetLiveStrategyStatusReq, GetLiveStrategyStatusRes, ListLiveStrategiesReq,
+    ListLiveStrategiesRes, LiveStrategyControlRes, LoadReplayDataRequest, ModifyOrderReq,
+    ModifyOrderRes, PauseLiveStrategyReq, PauseReplayRequest, PlaceOrderReq, PlaceOrderRes,
+    RegisterLiveStrategyReq, RegisterLiveStrategyRes, ReplayControlResponse, ResumeLiveStrategyReq,
+    ResumeReplayRequest, SetExecutionModeRequest, SetExecutionModeResponse, SetReplaySpeedRequest,
+    StartLiveStrategyReq, StartLiveStrategyRes, StopLiveStrategyReq, ShutdownRequest,
+    ShutdownResponse,
     StartEngineRequest, StartEngineResponse, StartResponse, StepReplayRequest, StopEngineRequest,
     StopReplayRequest, StopRequest, StopResponse, SubmitSecretReq, SubmitSecretRes,
     SubscribeBackendEventsReq, SubscribeRequest, SubscribeResponse, UnsubscribeRequest,
@@ -480,6 +484,85 @@ impl DataEngine for MyDataEngine {
             error_code: String::new(),
             orders: vec![],
         }))
+    }
+
+    // Phase 10 live-strategy RPCs (Step 3). This integration mock does not exercise
+    // them; minimal token-gated stubs keep the `DataEngine` trait implemented.
+    async fn register_live_strategy(
+        &self,
+        request: Request<RegisterLiveStrategyReq>,
+    ) -> Result<Response<RegisterLiveStrategyRes>, Status> {
+        let req = request.into_inner();
+        if req.token != self.token {
+            return Err(Status::unauthenticated("Invalid token"));
+        }
+        Ok(Response::new(RegisterLiveStrategyRes::default()))
+    }
+
+    async fn start_live_strategy(
+        &self,
+        request: Request<StartLiveStrategyReq>,
+    ) -> Result<Response<StartLiveStrategyRes>, Status> {
+        let req = request.into_inner();
+        if req.token != self.token {
+            return Err(Status::unauthenticated("Invalid token"));
+        }
+        Ok(Response::new(StartLiveStrategyRes::default()))
+    }
+
+    async fn stop_live_strategy(
+        &self,
+        request: Request<StopLiveStrategyReq>,
+    ) -> Result<Response<LiveStrategyControlRes>, Status> {
+        let req = request.into_inner();
+        if req.token != self.token {
+            return Err(Status::unauthenticated("Invalid token"));
+        }
+        Ok(Response::new(LiveStrategyControlRes::default()))
+    }
+
+    async fn pause_live_strategy(
+        &self,
+        request: Request<PauseLiveStrategyReq>,
+    ) -> Result<Response<LiveStrategyControlRes>, Status> {
+        let req = request.into_inner();
+        if req.token != self.token {
+            return Err(Status::unauthenticated("Invalid token"));
+        }
+        Ok(Response::new(LiveStrategyControlRes::default()))
+    }
+
+    async fn resume_live_strategy(
+        &self,
+        request: Request<ResumeLiveStrategyReq>,
+    ) -> Result<Response<LiveStrategyControlRes>, Status> {
+        let req = request.into_inner();
+        if req.token != self.token {
+            return Err(Status::unauthenticated("Invalid token"));
+        }
+        Ok(Response::new(LiveStrategyControlRes::default()))
+    }
+
+    async fn get_live_strategy_status(
+        &self,
+        request: Request<GetLiveStrategyStatusReq>,
+    ) -> Result<Response<GetLiveStrategyStatusRes>, Status> {
+        let req = request.into_inner();
+        if req.token != self.token {
+            return Err(Status::unauthenticated("Invalid token"));
+        }
+        Ok(Response::new(GetLiveStrategyStatusRes::default()))
+    }
+
+    async fn list_live_strategies(
+        &self,
+        request: Request<ListLiveStrategiesReq>,
+    ) -> Result<Response<ListLiveStrategiesRes>, Status> {
+        let req = request.into_inner();
+        if req.token != self.token {
+            return Err(Status::unauthenticated("Invalid token"));
+        }
+        Ok(Response::new(ListLiveStrategiesRes::default()))
     }
 }
 
