@@ -13,6 +13,7 @@ pub mod footer;
 pub mod instrument_picker;
 pub mod instruments_universe_prune;
 pub mod layout_persistence;
+pub mod live_run_panel;
 pub mod menu_bar;
 pub mod modify_modal;
 pub mod order_context_menu;
@@ -92,6 +93,10 @@ use crate::ui::instruments_universe_prune::{
     invalidate_tickers_on_venue_disconnect_system, prune_instruments_outside_universe_system,
     unsubscribe_removed_instruments_system,
 };
+use crate::ui::live_run_panel::{
+    live_run_control_button_system, live_run_control_visual_system, live_run_panel_sync_system,
+    live_run_panel_visibility_system, live_run_row_visibility_system, spawn_live_run_panel,
+};
 use crate::ui::menu_bar::{
     gate_venue_menu_items_system, handle_strategy_file_load_system, handle_strategy_run_system,
     hide_unconfigured_venue_items_system, log_strategy_file_load_requested_system,
@@ -126,8 +131,8 @@ use crate::ui::relogin_modal::{
 use crate::ui::restore::restore_fixed_registry_on_replay_entry_system;
 use crate::ui::run_result_panel::run_result_panel_system;
 use crate::ui::safety_rails_modal::{
-    PromotePrompt, SafetyRailsForm, promote_trigger_button_system, promote_trigger_visual_system,
-    safety_rails_modal_button_system, safety_rails_modal_sync_system,
+    PromotePrompt, SafetyRailsForm, promote_feedback_sync_system, promote_trigger_button_system,
+    promote_trigger_visual_system, safety_rails_modal_button_system, safety_rails_modal_sync_system,
     safety_rails_modal_visibility_system, safety_rails_stepper_system, spawn_promote_trigger,
     spawn_safety_rails_modal,
 };
@@ -276,6 +281,8 @@ impl Plugin for UiPlugin {
                 // Phase 10 §2.7: Promote-to-Live トリガー + Safety Rails モーダル
                 spawn_promote_trigger,
                 spawn_safety_rails_modal,
+                // Phase 10 §2.8: Live Run Panel (アクティブ run + Pause/Resume/Stop)
+                spawn_live_run_panel,
             ),
         )
         .add_systems(
@@ -606,6 +613,18 @@ impl Plugin for UiPlugin {
                 // to an open SecretModal by reading its flag before the secret drain.
                 safety_rails_modal_button_system.before(secret_modal_input_system),
                 safety_rails_modal_sync_system,
+                promote_feedback_sync_system,
+            ),
+        )
+        // ── Phase 10 §2.8: Live Run Panel ──
+        .add_systems(
+            Update,
+            (
+                live_run_panel_visibility_system,
+                live_run_row_visibility_system,
+                live_run_panel_sync_system,
+                live_run_control_visual_system,
+                live_run_control_button_system,
             ),
         );
     }

@@ -12,7 +12,7 @@ use backcast::replay::ReplayStartupProgress;
 use backcast::trading::{
     AvailableInstruments, BackendChannel, BackendStartupStage, BackendStatus, BackendStatusUpdate,
     ExecutionMode, ExecutionModeRes, LastPrices, LastRunResult, LiveOrders, OrderFeedback,
-    PortfolioOrder, PortfolioPosition, PortfolioState, PromoteFeedback, ReconcilePrompt,
+    LiveRuns, PortfolioOrder, PortfolioPosition, PortfolioState, PromoteFeedback, ReconcilePrompt,
     ReloginPrompt, ReplaySpeed, SecretPrompt, SelectedSymbol, Ticker, Tickers, TickersSource,
     TradingSettings, TransportCommand, TransportCommandSender, VenueState, VenueStatusRes,
     backend_update_system, engine, tickers_source_to_wire,
@@ -29,10 +29,11 @@ use engine::data_engine_client::DataEngineClient;
 use engine::{
     EngineKind, EngineStartConfig, ForceStopReplayRequest, GetPortfolioRequest, GetStateRequest,
     ListAllListedSymbolsRequest, ListInstrumentsRequest, LoadReplayDataRequest, PauseReplayRequest,
-    RegisterLiveStrategyReq, ReplayGranularity, ResumeReplayRequest, SafetyLimits,
-    SetExecutionModeRequest, SetReplaySpeedRequest, StartEngineRequest, StartEngineResponse,
-    StartLiveStrategyReq, StepReplayRequest, SubscribeBackendEventsReq, SubscribeRequest,
-    VenueLoginRequest, VenueLogoutRequest,
+    PauseLiveStrategyReq, RegisterLiveStrategyReq, ReplayGranularity, ResumeLiveStrategyReq,
+    ResumeReplayRequest, SafetyLimits, SetExecutionModeRequest, SetReplaySpeedRequest,
+    StartEngineRequest, StartEngineResponse, StartLiveStrategyReq, StepReplayRequest,
+    StopLiveStrategyReq, SubscribeBackendEventsReq, SubscribeRequest, VenueLoginRequest,
+    VenueLogoutRequest,
 };
 use tokio::sync::mpsc;
 
@@ -204,6 +205,8 @@ async fn main() {
         // `status_update_system` / `backend_event_drain_system` that mutate them
         // live in this binary.
         .insert_resource(LiveOrders::default())
+        // Phase 10 §2.8: Live Run Panel run list (filled by backend_event_drain_system).
+        .insert_resource(LiveRuns::default())
         .insert_resource(SecretPrompt::default())
         .insert_resource(ReloginPrompt::default())
         .insert_resource(ReconcilePrompt::default())
@@ -1230,6 +1233,82 @@ fn setup_backend_connection(
                                     error!("StartLiveStrategy failed: {}", e);
                                     reject(&promote_status_tx, PROMOTE_TRANSPORT_ERROR);
                                 }
+                            }
+                        });
+                    }
+                    TransportCommand::PauseLiveStrategy { run_id } => {
+                        // §2.8: pause = new-order gate on the backend. Success arrives
+                        // as a pushed LiveStrategyEvent{status:"PAUSED"} that updates the
+                        // panel; here we only fire-and-log.
+                        let mut c = client.clone();
+                        let t = token.clone();
+                        tokio::spawn(async move {
+                            let req = tonic::Request::new(PauseLiveStrategyReq {
+                                token: t,
+                                request_id: String::new(),
+                                run_id: run_id.clone(),
+                            });
+                            match c.pause_live_strategy(req).await {
+                                Ok(r) => {
+                                    let inner = r.into_inner();
+                                    if !inner.success {
+                                        error!(
+                                            "PauseLiveStrategy rejected: run_id={} error_code={}",
+                                            run_id, inner.error_code
+                                        );
+                                    }
+                                }
+                                Err(e) => error!("PauseLiveStrategy failed: run_id={run_id} err={e}"),
+                            }
+                        });
+                    }
+                    TransportCommand::ResumeLiveStrategy { run_id } => {
+                        let mut c = client.clone();
+                        let t = token.clone();
+                        tokio::spawn(async move {
+                            let req = tonic::Request::new(ResumeLiveStrategyReq {
+                                token: t,
+                                request_id: String::new(),
+                                run_id: run_id.clone(),
+                            });
+                            match c.resume_live_strategy(req).await {
+                                Ok(r) => {
+                                    let inner = r.into_inner();
+                                    if !inner.success {
+                                        error!(
+                                            "ResumeLiveStrategy rejected: run_id={} error_code={}",
+                                            run_id, inner.error_code
+                                        );
+                                    }
+                                }
+                                Err(e) => {
+                                    error!("ResumeLiveStrategy failed: run_id={run_id} err={e}")
+                                }
+                            }
+                        });
+                    }
+                    TransportCommand::StopLiveStrategy { run_id } => {
+                        // §1.2: graceful stop. The backend cancels only this run's
+                        // in-flight orders and pushes LiveStrategyEvent{status:"STOPPED"}.
+                        let mut c = client.clone();
+                        let t = token.clone();
+                        tokio::spawn(async move {
+                            let req = tonic::Request::new(StopLiveStrategyReq {
+                                token: t,
+                                request_id: String::new(),
+                                run_id: run_id.clone(),
+                            });
+                            match c.stop_live_strategy(req).await {
+                                Ok(r) => {
+                                    let inner = r.into_inner();
+                                    if !inner.success {
+                                        error!(
+                                            "StopLiveStrategy rejected: run_id={} error_code={}",
+                                            run_id, inner.error_code
+                                        );
+                                    }
+                                }
+                                Err(e) => error!("StopLiveStrategy failed: run_id={run_id} err={e}"),
                             }
                         });
                     }

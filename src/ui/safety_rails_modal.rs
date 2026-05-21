@@ -175,6 +175,13 @@ pub fn replay_kpi_summary(last_run: &LastRunResult) -> String {
 #[derive(Component)]
 pub struct PromoteTriggerButton;
 
+/// 起動ボタン直下の常駐フィードバック行。`PromoteFeedback.message` を表示する。
+/// モーダルは Confirm で閉じるため、RPC chain の async な成功/拒否はモーダル内では
+/// 出せない。常駐するこの行に出すことで pre-flight ブロック理由・「起動中…」・
+/// 起動成功 (run id)・構造化 reject (error_code) のすべてをユーザーに surface する。
+#[derive(Component)]
+pub struct PromoteFeedbackText;
+
 #[derive(Component)]
 pub struct SafetyRailsModalRoot;
 
@@ -243,6 +250,25 @@ pub fn spawn_promote_trigger(mut commands: Commands) {
                 TextColor(COLOR_VALUE),
             ));
         });
+    // 起動ボタン直下の常駐フィードバック行 (right 12px に右端を固定)。
+    commands.spawn((
+        Node {
+            position_type: PositionType::Absolute,
+            top: Val::Px(70.0),
+            right: Val::Px(12.0),
+            max_width: Val::Px(320.0),
+            ..default()
+        },
+        Text::new(""),
+        TextFont {
+            font_size: 11.0,
+            ..default()
+        },
+        TextColor(COLOR_HEADER),
+        GlobalZIndex(65),
+        PromoteFeedbackText,
+        Name::new("PromoteFeedbackText"),
+    ));
 }
 
 fn spawn_stepper(parent: &mut ChildBuilder, action: SafetyRailsStepper, label: &str) {
@@ -737,6 +763,21 @@ pub fn safety_rails_modal_sync_system(
         }
     }
     let _ = last_run.state; // RunState は KPI 文字列に含めない (Step 6 panel が担当)
+}
+
+/// `PromoteFeedback.message` を起動ボタン直下の常駐行に差分反映する。
+/// pre-flight ブロック理由・「起動中…」・起動成功/拒否 (RPC chain の async 結果) を
+/// surface する唯一の経路 (モーダルは Confirm で閉じるため async 結果を出せない)。
+pub fn promote_feedback_sync_system(
+    feedback: Res<PromoteFeedback>,
+    mut q: Query<&mut Text, With<PromoteFeedbackText>>,
+) {
+    let msg = feedback.message.as_deref().unwrap_or_default();
+    for mut text in &mut q {
+        if text.0 != msg {
+            text.0 = msg.to_string();
+        }
+    }
 }
 
 #[cfg(test)]

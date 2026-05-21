@@ -16,7 +16,7 @@ use crate::replay::{ReplayStartupPhase, ReplayStartupProgress};
 use crate::trading::{
     AccountPosition, AvailableInstruments, BackendEvent, BackendStartupStage, BackendStatus,
     BackendStatusUpdate, ExecutionModeRes, LastPrices, LastRunResult, LiveOrder, LiveOrders,
-    OrderFeedback, PortfolioPosition, PortfolioState, PromoteFeedback, ReconcilePrompt,
+    LiveRuns, OrderFeedback, PortfolioPosition, PortfolioState, PromoteFeedback, ReconcilePrompt,
     ReloginPrompt, RunState,
     SecretPrompt, SecretPromptRequest, Tickers, TickersStatus, TransportCommand,
     TransportCommandSender, VenueStatusRes, is_terminal_order_status, parse_summary_json,
@@ -85,6 +85,7 @@ pub fn backend_event_drain_system(
     mut live_orders: ResMut<LiveOrders>,
     mut portfolio: ResMut<PortfolioState>,
     mut relogin_prompt: ResMut<ReloginPrompt>,
+    mut live_runs: ResMut<LiveRuns>,
 ) {
     while let Ok(event) = channel.rx.try_recv() {
         match event {
@@ -169,6 +170,8 @@ pub fn backend_event_drain_system(
                 info!(
                     "[backend-event] LiveStrategyEvent run_id={run_id} strategy_id={strategy_id} status={status} ts_ms={ts_ms}"
                 );
+                // §2.8: drive the Live Run Panel's run list.
+                live_runs.apply_event(&run_id, &strategy_id, &status, ts_ms);
             }
             BackendEvent::SafetyRailViolation {
                 run_id,
@@ -566,6 +569,7 @@ mod tests {
         app.init_resource::<LiveOrders>();
         app.init_resource::<PortfolioState>();
         app.init_resource::<ReloginPrompt>();
+        app.init_resource::<LiveRuns>();
         app.add_systems(Update, backend_event_drain_system);
 
         tx.send(BackendEvent::VenueLogoutDetected {

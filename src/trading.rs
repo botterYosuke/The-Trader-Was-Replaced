@@ -332,6 +332,18 @@ pub enum TransportCommand {
         safety_limits: SafetyLimitsInput,
         ensure_live_auto: bool,
     },
+    /// Phase 10 §2.8: Live Run Panel controls. `token` is injected by the transport
+    /// task. `Pause`/`Resume`/`Stop` are gated on `run_id` existence on the backend
+    /// only (no mode hard-gate, §2.5) so a runaway run can always be stopped.
+    PauseLiveStrategy {
+        run_id: String,
+    },
+    ResumeLiveStrategy {
+        run_id: String,
+    },
+    StopLiveStrategy {
+        run_id: String,
+    },
 }
 
 /// Wrapper around a Tachibana second password that redacts itself in `Debug`
@@ -1045,6 +1057,73 @@ impl LiveOrders {
     }
 }
 
+/// Phase 10 §2.8: one Live Auto run tracked by the UI for the Live Run Panel.
+/// Populated from `BackendEvent::LiveStrategyEvent` pushes. Run-level PnL / order
+/// / fill telemetry is NOT here yet — that needs a telemetry event (Step 7 / §2.9);
+/// Step 6 shows lifecycle status + timing only.
+#[derive(Debug, Clone, Default)]
+pub struct LiveRunRecord {
+    pub run_id: String,
+    pub strategy_id: String,
+    /// READY / RUNNING / PAUSED / STOPPING / STOPPED / ERROR.
+    pub status: String,
+    /// ts_ms of the first event seen for this run (run start).
+    pub started_ts_ms: i64,
+    /// ts_ms of the most recent event.
+    pub updated_ts_ms: i64,
+}
+
+/// Terminal run states — settled, so no longer controllable.
+pub fn is_terminal_run_status(status: &str) -> bool {
+    matches!(status, "STOPPED" | "ERROR")
+}
+
+/// Live Auto runs as seen by the UI, newest first. Keyed by `run_id`. Read by the
+/// Live Run Panel (§2.8). Phase 10 caps active automated runs to 1, but the list
+/// retains recent terminal runs so the user sees their final state.
+#[derive(Resource, Default, Debug, Clone)]
+pub struct LiveRuns {
+    pub runs: Vec<LiveRunRecord>,
+}
+
+const MAX_LIVE_RUNS: usize = 8;
+
+impl LiveRuns {
+    /// Upsert a run from a `LiveStrategyEvent`. `started_ts_ms` is fixed at the
+    /// first event; later events only refresh `status` / `updated_ts_ms`. An empty
+    /// `strategy_id` (older producer) never clears a known one.
+    pub fn apply_event(&mut self, run_id: &str, strategy_id: &str, status: &str, ts_ms: i64) {
+        if let Some(r) = self.runs.iter_mut().find(|r| r.run_id == run_id) {
+            r.status = status.to_string();
+            if !strategy_id.is_empty() {
+                r.strategy_id = strategy_id.to_string();
+            }
+            r.updated_ts_ms = ts_ms;
+        } else {
+            self.runs.insert(
+                0,
+                LiveRunRecord {
+                    run_id: run_id.to_string(),
+                    strategy_id: strategy_id.to_string(),
+                    status: status.to_string(),
+                    started_ts_ms: ts_ms,
+                    updated_ts_ms: ts_ms,
+                },
+            );
+            self.runs.truncate(MAX_LIVE_RUNS);
+        }
+    }
+
+    /// `run_id` of the single active (non-terminal) run, if any. Phase 10 enforces
+    /// at most one active automated run, so this is the control target.
+    pub fn active_run_id(&self) -> Option<&str> {
+        self.runs
+            .iter()
+            .find(|r| !is_terminal_run_status(&r.status))
+            .map(|r| r.run_id.as_str())
+    }
+}
+
 /// Active `SecretRequired` prompt driving the SecretModal. Phase 9 §3.10:
 /// Tachibana-only. The drain system sets `active` when a `SecretRequired` event
 /// arrives; the modal opens while `active` is `Some` and clears it on
@@ -1441,6 +1520,49 @@ mod tests {
         );
         assert_eq!(o.venue_order_id, "V456", "remapped venue_order_id updates");
         assert_eq!(o.ts_ms, 20, "ts_ms always updates");
+    }
+
+    #[test]
+    fn live_runs_apply_event_inserts_and_fixes_start_ts() {
+        let mut lr = LiveRuns::default();
+        lr.apply_event("run-1", "strat-a", "READY", 100);
+        lr.apply_event("run-1", "strat-a", "RUNNING", 200);
+        assert_eq!(lr.runs.len(), 1, "same run_id upserts, no dup");
+        let r = &lr.runs[0];
+        assert_eq!(r.status, "RUNNING", "status refreshes");
+        assert_eq!(r.started_ts_ms, 100, "start ts is fixed at first event");
+        assert_eq!(r.updated_ts_ms, 200, "updated ts advances");
+    }
+
+    #[test]
+    fn live_runs_blank_strategy_id_does_not_clear() {
+        let mut lr = LiveRuns::default();
+        lr.apply_event("run-1", "strat-a", "RUNNING", 100);
+        lr.apply_event("run-1", "", "PAUSED", 200);
+        assert_eq!(
+            lr.runs[0].strategy_id, "strat-a",
+            "an empty strategy_id must not wipe a known one"
+        );
+    }
+
+    #[test]
+    fn live_runs_active_run_id_skips_terminal() {
+        let mut lr = LiveRuns::default();
+        lr.apply_event("run-old", "s", "STOPPED", 1);
+        lr.apply_event("run-new", "s", "RUNNING", 2);
+        assert_eq!(lr.active_run_id(), Some("run-new"));
+        assert!(is_terminal_run_status("STOPPED"));
+        assert!(is_terminal_run_status("ERROR"));
+        assert!(!is_terminal_run_status("RUNNING"));
+    }
+
+    #[test]
+    fn live_runs_caps_retention() {
+        let mut lr = LiveRuns::default();
+        for i in 0..(MAX_LIVE_RUNS + 5) {
+            lr.apply_event(&format!("run-{i}"), "s", "RUNNING", i as i64);
+        }
+        assert_eq!(lr.runs.len(), MAX_LIVE_RUNS, "retention is capped");
     }
 
     #[test]
