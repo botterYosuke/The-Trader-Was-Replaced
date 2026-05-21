@@ -1054,6 +1054,17 @@ impl LiveOrders {
             .collect()
     }
 
+    /// The `n`-th order matching `filter` in storage order (newest-first), without
+    /// allocating. The OrdersPanel pulls each displayed row (≤6/frame) this way and
+    /// its right-click hit observer uses the same lookup, so row N maps to the same
+    /// order in both — without the per-frame `Vec` that `filtered()` would build.
+    pub fn nth_filtered<'a>(&'a self, filter: &OrdersFilter, n: usize) -> Option<&'a LiveOrder> {
+        self.orders
+            .iter()
+            .filter(|o| order_matches_filter(&o.strategy_id, filter))
+            .nth(n)
+    }
+
     /// Distinct non-empty `strategy_id`s present in the book, in first-seen
     /// (newest-first) order (§2.9). Drives the filter's cycle options.
     pub fn distinct_strategy_ids(&self) -> Vec<String> {

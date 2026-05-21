@@ -178,8 +178,7 @@ pub fn spawn_orders_panel(commands: &mut Commands) {
                     };
                     // §2.9: index into the SAME filtered view the panel renders, so
                     // row N maps to the displayed order N (not the raw Vec index).
-                    let view = live_orders.filtered(&filter);
-                    let Some(order) = view.get(hit.row) else {
+                    let Some(order) = live_orders.nth_filtered(&filter, hit.row) else {
                         return;
                     };
                     menu.open = true;
@@ -300,13 +299,21 @@ pub fn orders_panel_system(
     >,
 ) {
     let live = is_live_mode(exec_mode.mode);
-    // Live: index into the filtered view (§2.9). Replay: PortfolioState (no filter).
-    let view = if live {
-        live_orders.filtered(&filter)
+    // Live: pull the ≤6 displayed rows from the filtered view (§2.9) into a stack
+    // array — no per-frame heap `Vec` (this system runs every frame). Replay:
+    // PortfolioState (no filter). Both `nth_filtered` here and the right-click hit
+    // observer use the same lookup, so row N maps to the same order in both.
+    let mut live_view: [Option<&crate::trading::LiveOrder>; MAX_ROWS] = [None; MAX_ROWS];
+    if live {
+        for (row, slot) in live_view.iter_mut().enumerate() {
+            *slot = live_orders.nth_filtered(&filter, row);
+        }
+    }
+    let count = if live {
+        live_view.iter().take_while(|o| o.is_some()).count()
     } else {
-        Vec::new()
+        state.orders.len()
     };
-    let count = if live { view.len() } else { state.orders.len() };
 
     // status text
     let status_text = if !live && !state.loaded {
@@ -341,7 +348,7 @@ pub fn orders_panel_system(
         let (new_text, new_color) = if cell.row >= count {
             (String::new(), COLOR_DEFAULT)
         } else if live {
-            let o = view[cell.row];
+            let o = live_view[cell.row].expect("row < count ⇒ slot is Some");
             match cell.col {
                 OrdersColumn::Symbol => (o.symbol.clone(), COLOR_DEFAULT),
                 OrdersColumn::Side => (o.side.clone(), side_color(&o.side)),
@@ -460,7 +467,8 @@ mod tests {
             ],
             OrdersFilter::Manual,
         );
-        // only the two MANUAL-001 orders, in storage order (newest-first → c3, c1).
+        // only the two MANUAL-001 orders, in storage order (c1=7203 then c3=9984;
+        // c2=LIVE-abc filtered out).
         assert_eq!(syms[0], "7203.T");
         assert_eq!(syms[1], "9984.T");
         assert_eq!(syms[2], "", "LIVE-abc order is filtered out");
