@@ -1,17 +1,27 @@
-//! F4 account_event — 口座イベントでポートフォリオが更新されること。
+//! F4 account_event — 接続中の口座イベントでポートフォリオが更新されること。
 //!
-//! `AccountEvent` で `PortfolioState`（cash / buying_power / positions / loaded）
-//! が更新され、equity が cash + Σ(qty*avg_price + unrealized_pnl) で導出される
-//! ことを確認する。
+//! Venue→Connect で接続を要求し backend が Connected を押した後、backend の `AccountEvent` で
+//! `PortfolioState`（cash / buying_power / positions / loaded）が更新され、equity が
+//! cash + Σ(qty*avg_price + unrealized_pnl) で導出されることを確認する。
 //! 詳細は `tests/e2e/FLOWS.md` の F4 を参照。
 
 use crate::support::Harness;
-use backcast::trading::{AccountPosition, BackendEvent};
+use backcast::trading::{AccountPosition, BackendEvent, BackendStatusUpdate, VenueState};
+use backcast::ui::components::MenuItem;
 
 #[test]
 fn f4_account_event() {
     let mut h = Harness::new();
     assert!(!h.portfolio().loaded);
+
+    // 接続済みにする（Connect → backend Connected）。
+    h.click(MenuItem::VenueConnectTachibanaDemo);
+    h.drain_commands();
+    h.send_status(BackendStatusUpdate::VenueChanged {
+        state: VenueState::Connected,
+        venue_id: Some("tachibana".to_string()),
+        instruments_loaded: 0,
+    });
 
     h.send_event(BackendEvent::AccountEvent {
         cash: 50_000.0,

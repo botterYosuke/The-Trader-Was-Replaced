@@ -51,8 +51,8 @@ use backcast::ui::layout_persistence::{
 };
 use backcast::ui::menu_bar::{handle_strategy_run_system, menu_item_system};
 use backcast::ui::order_panel::{
-    confirm_modal_button_system, order_form_button_system, order_submit_button_system, OrderConfirm,
-    OrderForm,
+    confirm_modal_button_system, order_form_button_system, order_submit_button_system, ConfirmButton,
+    OrderButton, OrderConfirm, OrderForm,
 };
 use backcast::ui::secret_modal::{secret_modal_button_system, secret_modal_input_system, SecretInput};
 use backcast::ui::sidebar::{instrument_remove_button_system, instrument_row_click_system};
@@ -475,6 +475,19 @@ impl Harness {
 
     pub fn replay_speed(&self) -> u32 {
         self.app.world().resource::<ReplaySpeed>().current
+    }
+
+    /// Drive the production order panel in Manual mode end to end: select the
+    /// symbol, click `[発注]` (validate → confirm modal), then `[Confirm]`
+    /// (`PlaceOrder`). Returns the commands so the caller can assert the order.
+    /// Uses the default form (BUY / market / 1 lot).
+    pub fn place_order_via_ui(&mut self, symbol: &str) -> Vec<TransportCommand> {
+        self.set_exec_mode(ExecutionMode::LiveManual);
+        self.set_venue(VenueState::Connected, "tachibana");
+        self.app.world_mut().resource_mut::<SelectedSymbol>().id = Some(symbol.to_string());
+        self.click(OrderButton::Submit);
+        self.click(ConfirmButton::Confirm);
+        self.drain_commands()
     }
 }
 

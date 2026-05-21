@@ -1,16 +1,28 @@
 //! D7 live_universe_overwrite — Live 銘柄ユニバースが Replay fallback を丸ごと上書きすること。
 //!
-//! ReplayCatalogFallback の list がある状態で LiveVenue の `InstrumentsListed`
-//! が来ると、union ではなく wholesale 上書きされる（plan §0.5.1 の不変条件）。
-//! fallback の銘柄が残らないことも確認する。
+//! Venue→Connect で接続を要求した後、ReplayCatalogFallback の list がある状態で
+//! LiveVenue の `InstrumentsListed` が来ると、union ではなく wholesale 上書きされる
+//! （plan §0.5.1 の不変条件）。fallback の銘柄が残らないことも確認する。
 //! 詳細は `tests/e2e/FLOWS.md` の D7 を参照。
 
 use crate::support::Harness;
-use backcast::trading::{BackendStatusUpdate, Ticker, TickersSource};
+use backcast::trading::{BackendStatusUpdate, Ticker, TickersSource, TransportCommand};
+use backcast::ui::components::MenuItem;
 
 #[test]
 fn d7_live_universe_overwrite() {
     let mut h = Harness::new();
+
+    h.click(MenuItem::VenueConnectTachibanaDemo);
+    let cmds = h.drain_commands();
+    assert!(
+        cmds.iter().any(|c| matches!(
+            c,
+            TransportCommand::VenueLogin { venue_id, .. } if venue_id == "tachibana"
+        )),
+        "Venue→Connect は VenueLogin を送るはず (got {cmds:?})"
+    );
+
     h.send_status(BackendStatusUpdate::InstrumentsListed {
         source: TickersSource::ReplayCatalogFallback,
         instruments: vec![

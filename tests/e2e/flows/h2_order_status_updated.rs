@@ -1,16 +1,24 @@
-//! H2 order_status_updated — 注文 status 更新が seed 済みレコードにマージされること。
+//! H2 order_status_updated — 発注後、注文 status 更新が seed 済みレコードにマージされること。
 //!
-//! `OrderStatusUpdated` が `client_order_id` 一致レコードに status / fill を
-//! マージし、seed 済みの static フィールド（symbol / qty 等）を保持・重複挿入
+//! Manual モードの注文フォームを本番経路で駆動して `PlaceOrder` を送る。backend が
+//! `OrderSeeded` で seed した後、`OrderStatusUpdated` が `client_order_id` 一致レコードに
+//! status / fill をマージし、seed 済みの static フィールド（symbol / qty 等）を保持・重複挿入
 //! しないことを確認する。
 //! 詳細は `tests/e2e/FLOWS.md` の H2 を参照。
 
 use crate::support::Harness;
-use backcast::trading::BackendStatusUpdate;
+use backcast::trading::{BackendStatusUpdate, TransportCommand};
 
 #[test]
 fn h2_order_status_updated() {
     let mut h = Harness::new();
+    let cmds = h.place_order_via_ui("1301.TSE");
+    assert!(
+        cmds.iter()
+            .any(|c| matches!(c, TransportCommand::PlaceOrder { .. })),
+        "[発注]→[Confirm] は PlaceOrder を送るはず (got {cmds:?})"
+    );
+
     h.send_status(BackendStatusUpdate::OrderSeeded {
         client_order_id: "c-1".to_string(),
         venue_order_id: "v-1".to_string(),

@@ -1,17 +1,25 @@
 //! H1 order_seeded — 発注 seed で LiveOrders に full レコードが入り feedback がクリアされること。
 //!
-//! `OrderSeeded` は（OrderEvent には無い symbol / side / qty / price を含む）full
-//! レコードを `LiveOrders` に seed し、同時に以前の `OrderFeedback` notice
-//! （前回の拒否メッセージ等）をクリアすることを確認する。
+//! Manual モードの注文フォームを本番経路で駆動して `PlaceOrder` を送る。backend がまず拒否
+//! （`OrderRejected` で feedback がセット）した後、再試行の `OrderSeeded` が（OrderEvent には無い
+//! symbol / side / qty / price を含む）full レコードを `LiveOrders` に seed し、同時に以前の
+//! `OrderFeedback` notice をクリアすることを確認する。
 //! 詳細は `tests/e2e/FLOWS.md` の H1 を参照。
 
 use crate::support::Harness;
-use backcast::trading::BackendStatusUpdate;
+use backcast::trading::{BackendStatusUpdate, TransportCommand};
 
 #[test]
 fn h1_order_seeded() {
     let mut h = Harness::new();
-    // A stale reject notice from a prior attempt.
+    let cmds = h.place_order_via_ui("1301.TSE");
+    assert!(
+        cmds.iter()
+            .any(|c| matches!(c, TransportCommand::PlaceOrder { .. })),
+        "[発注]→[Confirm] は PlaceOrder を送るはず (got {cmds:?})"
+    );
+
+    // backend がこの試行を拒否（feedback に notice が残る）。
     h.send_status(BackendStatusUpdate::OrderRejected {
         action: "発注".to_string(),
         error_code: "VENUE_LOGIN_REQUIRED".to_string(),

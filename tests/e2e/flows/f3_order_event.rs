@@ -1,16 +1,28 @@
-//! F3 order_event — 注文イベントが LiveOrders に反映・マージされること。
+//! F3 order_event — 発注後、注文イベントが LiveOrders に反映・マージされること。
 //!
-//! 未知の `client_order_id` の `OrderEvent` は static フィールド（symbol 等）を
-//! 空にしてレコード挿入され、同 id の後続イベントは in-place マージされる
-//! （重複挿入しない）ことを確認する。
+//! Manual モードの注文フォームを本番経路で駆動して `PlaceOrder` を送った後、backend が
+//! 返す `OrderEvent` を観測する。未知の `client_order_id` は static フィールド（symbol 等）を
+//! 空にしてレコード挿入され、同 id の後続イベントは in-place マージされる（重複挿入しない）
+//! ことを確認する。
 //! 詳細は `tests/e2e/FLOWS.md` の F3 を参照。
 
 use crate::support::Harness;
-use backcast::trading::BackendEvent;
+use backcast::trading::{BackendEvent, TransportCommand};
 
 #[test]
 fn f3_order_event() {
     let mut h = Harness::new();
+    assert!(h.live_orders().orders.is_empty());
+
+    // 実注文フォームで発注 → PlaceOrder コマンド。LiveOrders はまだ空（backend が echo する）。
+    let cmds = h.place_order_via_ui("1301.TSE");
+    assert!(
+        cmds.iter().any(|c| matches!(
+            c,
+            TransportCommand::PlaceOrder { instrument_id, .. } if instrument_id == "1301.TSE"
+        )),
+        "[発注]→[Confirm] は PlaceOrder を送るはず (got {cmds:?})"
+    );
     assert!(h.live_orders().orders.is_empty());
 
     h.send_event(BackendEvent::OrderEvent {

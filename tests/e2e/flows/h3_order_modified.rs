@@ -1,15 +1,23 @@
-//! H3 order_modified — 注文訂正で Some の項目のみ上書きされること。
+//! H3 order_modified — 発注後、注文訂正で Some の項目のみ上書きされること。
 //!
-//! `OrderModified` は `Some` の qty / price のみ上書きし、`None` は追跡中の値を
-//! 維持する。status / fill も更新されることを確認する（部分訂正の不変条件）。
+//! Manual モードの注文フォームを本番経路で駆動して `PlaceOrder` を送る。backend が
+//! `OrderSeeded` で seed した後、`OrderModified` は `Some` の qty / price のみ上書きし、`None`
+//! は追跡中の値を維持する。status / fill も更新されることを確認する（部分訂正の不変条件）。
 //! 詳細は `tests/e2e/FLOWS.md` の H3 を参照。
 
 use crate::support::Harness;
-use backcast::trading::BackendStatusUpdate;
+use backcast::trading::{BackendStatusUpdate, TransportCommand};
 
 #[test]
 fn h3_order_modified() {
     let mut h = Harness::new();
+    let cmds = h.place_order_via_ui("1301.TSE");
+    assert!(
+        cmds.iter()
+            .any(|c| matches!(c, TransportCommand::PlaceOrder { .. })),
+        "[発注]→[Confirm] は PlaceOrder を送るはず (got {cmds:?})"
+    );
+
     h.send_status(BackendStatusUpdate::OrderSeeded {
         client_order_id: "c-1".to_string(),
         venue_order_id: "v-1".to_string(),
