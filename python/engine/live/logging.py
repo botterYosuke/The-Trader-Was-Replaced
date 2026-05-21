@@ -24,6 +24,17 @@ import dataclasses
 import re
 from typing import Any
 
+try:  # pydantic is a hard project dependency; guard only so logging never hard-fails.
+    from pydantic import BaseModel as _PydanticBaseModel
+except Exception:  # pragma: no cover - pydantic always present in this project
+    _PydanticBaseModel = None  # type: ignore[assignment]
+
+# Hard cap on recursion so a self-referential / cyclic payload (a dict that contains
+# itself, or a model whose model_dump() reconstructs a cycle) can never drive
+# mask_secrets into a RecursionError *at log time* (MEDIUM-1 follow-up). A masking
+# helper that crashes the log call defeats its own purpose.
+_MAX_MASK_DEPTH = 25
+
 # Case-insensitive: apiKey / APIKEY / Authorization / Bearer などを 1 つの
 # regex でカバーする。sUrl[A-Z] だけは小文字 sUrlfoo が秘密じゃないので、
 # 後段で個別に case-sensitive チェックする。
@@ -67,38 +78,60 @@ def mask_secrets(payload: Any) -> Any:
 
     - dict: 各 key を判定し、対象なら値を '***'、それ以外は再帰
     - list / tuple: 要素ごとに再帰（tuple は tuple で返す）
-    - pydantic model (`model_dump` を持つ): model_dump() の dict を再帰
+    - pydantic BaseModel: model_dump() の dict を再帰
       （MEDIUM-1: VenueCredentials / OrderResult 等を直接 log すると repr に
       token / second_secret が平文で漏れるため、masked dict に変換して返す）
     - dataclass: dataclasses.asdict() の dict を再帰
     - その他: そのまま返す（immutable / scalar 想定）
 
     元の payload は変更しない（マスク済みの新オブジェクトを返す）。protobuf 等の
-    任意オブジェクトは対象外（scalar 扱いでそのまま返す）。
+    任意オブジェクトは対象外（scalar 扱いでそのまま返す）。深さ ``_MAX_MASK_DEPTH``
+    を超えると ``'<max-depth>'`` を返して再帰を打ち切る（cyclic payload 防御）。
     """
+    return _mask(payload, 0)
+
+
+def _mask(payload: Any, depth: int) -> Any:
+    if depth >= _MAX_MASK_DEPTH:
+        # Cyclic / pathologically-nested payload: bail before RecursionError. The
+        # bail-out is itself non-secret (a sentinel string), so nothing leaks.
+        return "<max-depth>"
     if isinstance(payload, dict):
         out: dict[Any, Any] = {}
         for k, v in payload.items():
             if _is_secret_key(k):
                 out[k] = _MASK
             else:
-                out[k] = mask_secrets(v)
+                out[k] = _mask(v, depth + 1)
         return out
     if isinstance(payload, list):
-        return [mask_secrets(item) for item in payload]
+        return [_mask(item, depth + 1) for item in payload]
     if isinstance(payload, tuple):
-        return tuple(mask_secrets(item) for item in payload)
-    # pydantic BaseModel (v2: model_dump). dataclass の前に判定する。
-    model_dump = getattr(payload, "model_dump", None)
-    if callable(model_dump):
-        try:
-            return mask_secrets(model_dump())
-        except Exception:  # noqa: BLE001 — defensive: 怪しい dump はそのまま返す
-            return payload
+        return tuple(_mask(item, depth + 1) for item in payload)
+    # pydantic BaseModel (v2: model_dump). dataclass の前に判定する。`model_dump` の
+    # duck-type は広すぎる（任意 obj の callable を呼んでしまう）ので isinstance で絞る。
+    if _PydanticBaseModel is not None:
+        if isinstance(payload, _PydanticBaseModel):
+            try:
+                return _mask(payload.model_dump(), depth + 1)
+            except Exception:  # noqa: BLE001 — defensive: 怪しい dump はそのまま返す
+                return payload
+    else:  # pragma: no cover - pydantic is a hard project dependency
+        # Degraded env (pydantic import failed): we cannot isinstance-gate, so fall
+        # back to a `model_dump` duck-type PURELY for masking. The dump output is
+        # re-masked below, so this is fail-safe (prefer masking a model's fields over
+        # leaking its repr); the duck-type breadth only matters in this never-reached
+        # path.
+        model_dump = getattr(payload, "model_dump", None)
+        if callable(model_dump):
+            try:
+                return _mask(model_dump(), depth + 1)
+            except Exception:  # noqa: BLE001
+                return payload
     # plain dataclass instance (not the class itself)
     if dataclasses.is_dataclass(payload) and not isinstance(payload, type):
         try:
-            return mask_secrets(dataclasses.asdict(payload))
+            return _mask(dataclasses.asdict(payload), depth + 1)
         except Exception:  # noqa: BLE001
             return payload
     return payload

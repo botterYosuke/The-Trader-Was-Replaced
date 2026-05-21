@@ -209,7 +209,12 @@ fn format_unknown_list(prompt: &ReconcilePrompt) -> String {
     prompt
         .unknown
         .iter()
-        .map(|o| format!("• {} {} (最後の状態: {})", o.symbol, o.client_order_id, o.status))
+        .map(|o| {
+            format!(
+                "• {} {} (最後の状態: {})",
+                o.symbol, o.client_order_id, o.status
+            )
+        })
         .collect::<Vec<_>>()
         .join("\n")
 }
@@ -297,12 +302,72 @@ mod tests {
         );
     }
 
+    /// §3.10 SCHEDULE-LEVEL ordering regression (review L2): the per-modal guard
+    /// tests above set `secret_prompt.active` by hand and pass even under the WRONG
+    /// system ordering. This test runs BOTH real systems with the production
+    /// `.before` constraint and a single real Escape (event drain + ButtonInput), so
+    /// it would catch a `.before`→`.after` flip (which would let one Escape close
+    /// both modals) or an ordering cycle. The SecretModal must close; the reconcile
+    /// notice must survive.
+    #[test]
+    fn schedule_orders_reconcile_before_secret_drain_so_one_escape_closes_only_secret() {
+        use crate::trading::SecretPromptRequest;
+        use crate::ui::secret_modal::{SecretInput, secret_modal_input_system};
+        use bevy::input::ButtonState;
+        use bevy::input::keyboard::{Key, KeyboardInput};
+
+        let mut app = make_app();
+        app.init_resource::<SecretInput>();
+        app.init_resource::<Events<KeyboardInput>>();
+        app.world_mut().resource_mut::<ReconcilePrompt>().unknown = vec![unknown("c1")];
+        app.world_mut().resource_mut::<SecretPrompt>().active = Some(SecretPromptRequest {
+            request_id: "r1".to_string(),
+            venue: "TACHIBANA".to_string(),
+            kind: "second_password".to_string(),
+            purpose: "new_order".to_string(),
+        });
+        // Same ordering as ui/mod.rs: notice reader runs before the secret drain.
+        app.add_systems(
+            Update,
+            (
+                reconcile_modal_button_system.before(secret_modal_input_system),
+                secret_modal_input_system,
+            ),
+        );
+        // One real Escape: ButtonInput (read by the notice reader) + a KeyboardInput
+        // event (drained by the secret modal).
+        app.world_mut()
+            .resource_mut::<ButtonInput<KeyCode>>()
+            .press(KeyCode::Escape);
+        app.world_mut()
+            .resource_mut::<Events<KeyboardInput>>()
+            .send(KeyboardInput {
+                key_code: KeyCode::Escape,
+                logical_key: Key::Escape,
+                state: ButtonState::Pressed,
+                repeat: false,
+                window: Entity::PLACEHOLDER,
+            });
+        app.update();
+        assert!(
+            app.world().resource::<SecretPrompt>().active.is_none(),
+            "the SecretModal (top priority) must consume the Escape and close"
+        );
+        assert!(
+            !app.world().resource::<ReconcilePrompt>().unknown.is_empty(),
+            "the reconcile notice must survive — one Escape closes only the top modal"
+        );
+    }
+
     #[test]
     fn sync_writes_orders_into_list_line() {
         let mut app = make_app();
         app.world_mut().resource_mut::<ReconcilePrompt>().unknown =
             vec![unknown("c1"), unknown("c2")];
-        let id = app.world_mut().spawn((Text::new(""), ReconcileListText)).id();
+        let id = app
+            .world_mut()
+            .spawn((Text::new(""), ReconcileListText))
+            .id();
         app.add_systems(Update, reconcile_modal_sync_system);
         app.update();
         let text = app.world().get::<Text>(id).unwrap();

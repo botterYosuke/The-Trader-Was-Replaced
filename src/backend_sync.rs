@@ -416,8 +416,7 @@ pub fn apply_status_update(
             // §3.10: secret-flow failure surfaces in the SecretModal so the user can
             // retry — NOT in OrderFeedback (wrong bucket; would pop OrderPanel even
             // with no order flow and could be cleared by unrelated order updates).
-            secret_prompt.error =
-                Some(format!("第二暗証番号が拒否されました ({error_code})"));
+            secret_prompt.error = Some(format!("第二暗証番号が拒否されました ({error_code})"));
         }
         BackendStatusUpdate::OrdersReconciled {
             backend_client_order_ids,

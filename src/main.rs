@@ -13,9 +13,9 @@ use backcast::trading::{
     AvailableInstruments, BackendChannel, BackendStartupStage, BackendStatus, BackendStatusUpdate,
     ExecutionMode, ExecutionModeRes, LastPrices, LastRunResult, LiveOrders, OrderFeedback,
     PortfolioOrder, PortfolioPosition, PortfolioState, ReconcilePrompt, ReloginPrompt, ReplaySpeed,
-    SecretPrompt, SelectedSymbol,
-    Ticker, Tickers, TickersSource, TradingSettings, TransportCommand, TransportCommandSender,
-    VenueState, VenueStatusRes, backend_update_system, engine, tickers_source_to_wire,
+    SecretPrompt, SelectedSymbol, Ticker, Tickers, TickersSource, TradingSettings,
+    TransportCommand, TransportCommandSender, VenueState, VenueStatusRes, backend_update_system,
+    engine, tickers_source_to_wire,
 };
 use backcast::ui::UiPlugin;
 use backcast::ui::replay_startup_window::{
@@ -49,30 +49,35 @@ fn parse_replay_granularity(s: &str) -> Result<i32, String> {
 }
 
 /// SELECTIVE reconnect flush (§3.8): on the Crashed→Ready (or Ready-entry) edge we
-/// drain the transport queue but must NOT discard everything. Stale replay-control
-/// commands (`Pause`/`Resume`/`StepForward`/`ForceStop`) are meaningless to the new
-/// session and dropped; order/reconcile commands (`GetOrders`, `PlaceOrder`,
-/// `CancelOrder`, `ModifyOrder`, `SubmitSecret`, ...) MUST be preserved and
-/// re-dispatched, or the post-restart reconcile `GetOrders` is silently eaten.
-fn is_stale_replay_control(cmd: &TransportCommand) -> bool {
-    matches!(
-        cmd,
-        TransportCommand::Pause
-            | TransportCommand::Resume
-            | TransportCommand::StepForward
-            | TransportCommand::ForceStop
-    )
+/// drain the transport queue. The original flush discarded EVERYTHING, which
+/// silently ate the post-restart reconcile `GetOrders`. The fix preserves ONLY the
+/// reconcile primitive `GetOrders` — every other queued command is a stale intent
+/// against the now-dead session and is dropped:
+///   - replay-control (`Pause`/`Resume`/`StepForward`/`ForceStop`) — meaningless to a
+///     fresh session;
+///   - optimistic order commands (`PlaceOrder`/`CancelOrder`/`ModifyOrder`) — per the
+///     §3.8 ADR the user re-logs-in and verifies at the venue, we do NOT auto-replay
+///     them (the fresh backend would reject them `VENUE_LOGIN_REQUIRED` anyway, but
+///     replaying a real-money intent the user clicked pre-crash is the wrong default);
+///   - `SubmitSecret` — its `request_id` correlates to a `SecretRequired` from the OLD
+///     backend session; replaying a captured plaintext second-secret at a fresh
+///     backend only yields a spurious reject (§3.10 secret hygiene).
+///   - and **every other variant** (`VenueLogin`/`VenueLogout`/`SubscribeMarketData`/
+///     `ListInstruments`/`SetExecutionMode`/`RunStrategy`/…) — all session-scoped; the
+///     fresh, un-logged-in backend would reject a re-dispatch anyway, and the user is
+///     already being shown the relogin/reconcile modals. If a future command should
+///     survive a restart, add it to `is_reconcile_command` (and document why).
+fn is_reconcile_command(cmd: &TransportCommand) -> bool {
+    matches!(cmd, TransportCommand::GetOrders { .. })
 }
 
-/// Partition a batch of drained transport commands: drop stale replay-control,
-/// preserve everything else (FIFO order retained for re-dispatch).
+/// Partition a batch of drained transport commands across the reconnect edge: keep
+/// only the reconcile primitive (`GetOrders`, FIFO order retained), drop all stale
+/// session-scoped intents.
 fn flush_stale_transport_commands(
     drained: impl IntoIterator<Item = TransportCommand>,
 ) -> std::collections::VecDeque<TransportCommand> {
-    drained
-        .into_iter()
-        .filter(|c| !is_stale_replay_control(c))
-        .collect()
+    drained.into_iter().filter(is_reconcile_command).collect()
 }
 
 /// Parse `VenueState` from backend string (e.g. `"CONNECTED"`).
@@ -392,11 +397,13 @@ fn setup_backend_connection(
             let mut prev_mode: Option<String> = None;
 
             // (4) Ready 前 / Restart 中に溜まった transport command を SELECTIVE に flush する。
-            // 旧 replay-control コマンド (Pause/Resume/StepForward/ForceStop) は新しい
-            // セッションに無意味なので捨てるが、order/reconcile 系
-            // (GetOrders / PlaceOrder / CancelOrder / ModifyOrder / SubmitSecret 等) は
-            // 必ず保持して inner loop で dispatch する。さもないと §3.8 post-restart の
-            // reconcile GetOrders が黙って消える (Crashed→Ready edge race)。
+            // 保持するのは reconcile primitive の GetOrders のみ。旧セッション宛ての
+            // replay-control (Pause/Resume/StepForward/ForceStop)・楽観的注文
+            // (PlaceOrder/CancelOrder/ModifyOrder)・SubmitSecret は新セッションには
+            // 無意味/有害な stale intent として捨てる (§3.8 ADR: 再ログイン後に venue で
+            // 確認する。注文を勝手に再送しない / 旧 request_id の secret を再送しない)。
+            // GetOrders だけは保持しないと §3.8 post-restart reconcile が黙って消える。
+            // 詳細は flush_stale_transport_commands の doc を参照。
             let mut drained: Vec<TransportCommand> = Vec::new();
             while let Ok(cmd) = transport_rx.try_recv() {
                 drained.push(cmd);
@@ -1299,11 +1306,11 @@ mod tests {
         BackendLifecycle, ReplayGranularity, ReplayStartupProgress, flush_stale_transport_commands,
         parse_replay_granularity, should_send_graceful_shutdown,
     };
-    use backcast::trading::TransportCommand;
     use backcast::backend_sync::{
         apply_account_event, apply_available_failed, apply_available_loaded, apply_status_update,
     };
     use backcast::replay::ReplayStartupPhase;
+    use backcast::trading::TransportCommand;
     use backcast::trading::{
         AccountPosition, AvailableInstruments, BackendStartupStage, BackendStatus,
         BackendStatusUpdate, ExecutionModeRes, LastPrices, LastRunResult, LiveOrders,
@@ -1312,12 +1319,15 @@ mod tests {
     };
     use chrono::NaiveDate;
 
-    /// §3.8 regression: the reconnect (Crashed→Ready) flush must DROP stale
-    /// replay-control commands but PRESERVE the post-restart reconcile `GetOrders`
-    /// (and other order-flow commands) so they reach the backend client. The old
-    /// `while try_recv {}` flush ate everything, silently defeating the reconcile.
+    /// §3.8 regression: the reconnect (Crashed→Ready) flush must PRESERVE only the
+    /// post-restart reconcile `GetOrders` and DROP everything else — replay-control,
+    /// optimistic order commands (stale real-money intents against a dead session,
+    /// §3.8 ADR), and `SubmitSecret` (a pre-crash plaintext secret bound to the OLD
+    /// session's request_id, §3.10). The old `while try_recv {}` flush ate everything
+    /// (silently defeating the reconcile); the first fix over-preserved order/secret
+    /// commands.
     #[test]
-    fn reconnect_flush_preserves_get_orders_drops_replay_control() {
+    fn reconnect_flush_preserves_only_get_orders() {
         let drained = vec![
             TransportCommand::Pause,
             TransportCommand::GetOrders {
@@ -1331,17 +1341,33 @@ mod tests {
             },
             TransportCommand::StepForward,
             TransportCommand::ForceStop,
+            TransportCommand::SubmitSecret {
+                request_id: "r-old".to_string(),
+                secret: backcast::trading::RedactedSecret::new("hunter2".to_string()),
+            },
+            // Other session-scoped variants (L1): must also be dropped.
+            TransportCommand::VenueLogout,
         ];
         let preserved = flush_stale_transport_commands(drained);
-        // Replay-control gone; order/reconcile commands kept in FIFO order.
-        assert_eq!(preserved.len(), 2);
+        // Only the reconcile primitive survives; all stale session intents dropped.
+        assert_eq!(preserved.len(), 1, "only GetOrders must survive the flush");
         assert!(
             matches!(preserved[0], TransportCommand::GetOrders { ref venue } if venue == "tachibana"),
             "post-restart GetOrders must survive the flush"
         );
+        // A queued CancelOrder (stale order intent) must NOT be auto-replayed.
         assert!(
-            matches!(preserved[1], TransportCommand::CancelOrder { .. }),
-            "queued order-flow commands must survive the flush"
+            !preserved
+                .iter()
+                .any(|c| matches!(c, TransportCommand::CancelOrder { .. })),
+            "stale order commands must be dropped (re-verify at venue, §3.8 ADR)"
+        );
+        // A queued SubmitSecret (old session's request_id) must NOT be auto-replayed.
+        assert!(
+            !preserved
+                .iter()
+                .any(|c| matches!(c, TransportCommand::SubmitSecret { .. })),
+            "stale SubmitSecret must be dropped (§3.10 secret hygiene)"
         );
     }
 

@@ -19,13 +19,13 @@ pub mod order_context_menu;
 pub mod order_panel;
 pub mod orders;
 pub mod positions;
+pub mod reconcile_modal;
+pub mod relogin_modal;
 pub mod replay_startup_window;
 pub mod restore;
 pub mod run_result_panel;
 pub mod scenario_parser;
 pub mod scenario_startup_panel;
-pub mod reconcile_modal;
-pub mod relogin_modal;
 pub mod secret_modal;
 pub mod sidebar;
 pub mod strategy_editor;
@@ -114,6 +114,14 @@ use crate::ui::order_panel::{
 };
 use crate::ui::orders::orders_panel_system;
 use crate::ui::positions::positions_panel_system;
+use crate::ui::reconcile_modal::{
+    reconcile_modal_button_system, reconcile_modal_sync_system, reconcile_modal_visibility_system,
+    spawn_reconcile_modal,
+};
+use crate::ui::relogin_modal::{
+    relogin_modal_button_system, relogin_modal_sync_system, relogin_modal_visibility_system,
+    spawn_relogin_modal,
+};
 use crate::ui::restore::restore_fixed_registry_on_replay_entry_system;
 use crate::ui::run_result_panel::run_result_panel_system;
 use crate::ui::scenario_parser::parse_scenario_system;
@@ -124,14 +132,6 @@ use crate::ui::scenario_startup_panel::{
     spawn_scenario_startup_panel, sync_startup_param_editors_text_system,
     sync_startup_params_from_scenario_system, update_scenario_startup_param_ui_system,
     write_startup_params_to_cache_sidecar_system,
-};
-use crate::ui::reconcile_modal::{
-    reconcile_modal_button_system, reconcile_modal_sync_system, reconcile_modal_visibility_system,
-    spawn_reconcile_modal,
-};
-use crate::ui::relogin_modal::{
-    relogin_modal_button_system, relogin_modal_sync_system, relogin_modal_visibility_system,
-    spawn_relogin_modal,
 };
 use crate::ui::secret_modal::{
     SecretInput, secret_modal_button_system, secret_modal_input_system,
@@ -506,7 +506,11 @@ impl Plugin for UiPlugin {
                 order_submit_button_system,
                 order_panel_sync_system,
                 confirm_modal_visibility_system,
-                confirm_modal_button_system,
+                // §3.10 Escape determinism: the confirm modal yields its Escape to an
+                // open SecretModal. Because SecretModal consumes Escape via its event
+                // drain (not ButtonInput), this system must read `secret_prompt.active`
+                // BEFORE the drain clears it — so run `.before(secret_modal_input_system)`.
+                confirm_modal_button_system.before(secret_modal_input_system),
                 confirm_modal_sync_system,
                 // SecretModal — input は cosmic より先に走って keystroke を消費する
                 // (picker_searchbox と同じ drain パターン)。最前面オーバーレイ (z=300) なので
@@ -528,7 +532,13 @@ impl Plugin for UiPlugin {
             (
                 // Context menu (右クリック → [取消]/[訂正])
                 context_menu_visibility_system,
-                context_menu_keyboard_system,
+                // §3.10 Escape determinism (see confirm_modal_button_system): this
+                // notice reader yields Escape to a higher-priority modal, so it must
+                // read those flags BEFORE they are cleared — run before both the
+                // SecretModal drain and the confirm-modal button system.
+                context_menu_keyboard_system
+                    .before(secret_modal_input_system)
+                    .before(confirm_modal_button_system),
                 context_menu_item_system,
                 context_menu_hover_system,
                 // Modify modal — input は cosmic / picker / menu より先に keystroke を消費する
@@ -550,7 +560,10 @@ impl Plugin for UiPlugin {
             Update,
             (
                 relogin_modal_visibility_system,
-                relogin_modal_button_system,
+                // §3.10 Escape determinism (see context_menu_keyboard_system).
+                relogin_modal_button_system
+                    .before(secret_modal_input_system)
+                    .before(confirm_modal_button_system),
                 relogin_modal_sync_system,
             ),
         )
@@ -559,7 +572,10 @@ impl Plugin for UiPlugin {
             Update,
             (
                 reconcile_modal_visibility_system,
-                reconcile_modal_button_system,
+                // §3.10 Escape determinism (see context_menu_keyboard_system).
+                reconcile_modal_button_system
+                    .before(secret_modal_input_system)
+                    .before(confirm_modal_button_system),
                 reconcile_modal_sync_system,
             ),
         );

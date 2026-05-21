@@ -840,6 +840,21 @@ pub struct LiveOrder {
     pub ts_ms: i64,
 }
 
+impl LiveOrder {
+    /// Advance the cumulative fill MONOTONICALLY (§3.12). A cancel/modify RPC
+    /// response carries `filled_qty=0.0` (or only the new leg's fill); it must NOT
+    /// clobber a larger partial already recorded by the EC stream, or a real-money
+    /// position is under-reported. Fills never legitimately decrease (incl. kabu
+    /// telescoping, which keeps the wire value cumulative). Shared by `apply_event`
+    /// and `apply_modify` so this real-money invariant stays identical.
+    fn advance_fill(&mut self, filled_qty: f64, avg_price: f64) {
+        if filled_qty >= self.filled_qty {
+            self.filled_qty = filled_qty;
+            self.avg_price = avg_price;
+        }
+    }
+}
+
 /// Live-mode order book as seen by the UI, keyed by `client_order_id`.
 /// Populated by the order RPC response + `OrderEvent` push (Step 3). The Replay
 /// path keeps using `PortfolioState.orders`; this resource is read by the
@@ -892,17 +907,10 @@ impl LiveOrders {
             if !venue_order_id.is_empty() {
                 existing.venue_order_id = venue_order_id.to_string();
             }
-            // status / venue_order_id / ts_ms always refresh. Cumulative fill is
-            // MONOTONIC per client_order_id: a cancel/modify RPC response carries
-            // filled_qty=0.0, which must NOT clobber a prior partial fill recorded
-            // by the EC stream (would under-report a real-money position, §3.12).
-            // Only advance filled_qty/avg_price when the incoming fill is >= the
-            // tracked one. Fills never legitimately decrease (incl. kabu telescoping).
+            // status / venue_order_id / ts_ms always refresh; cumulative fill is
+            // advanced monotonically (see LiveOrder::advance_fill, §3.12).
             existing.status = status.to_string();
-            if filled_qty >= existing.filled_qty {
-                existing.filled_qty = filled_qty;
-                existing.avg_price = avg_price;
-            }
+            existing.advance_fill(filled_qty, avg_price);
             existing.ts_ms = ts_ms;
         } else {
             self.orders.insert(
@@ -954,8 +962,10 @@ impl LiveOrders {
                 existing.price = Some(p);
             }
             existing.status = status.to_string();
-            existing.filled_qty = filled_qty;
-            existing.avg_price = avg_price;
+            // Cumulative fill advanced monotonically (see LiveOrder::advance_fill,
+            // §3.12): a CLMKabuCorrectOrder / kabu-remap ACCEPTED response may report
+            // only the new leg's fill while the EC stream recorded a larger partial.
+            existing.advance_fill(filled_qty, avg_price);
             existing.ts_ms = ts_ms;
         }
         // Unknown id: no-op (modify always targets a known order).
@@ -974,6 +984,16 @@ pub struct SecretPrompt {
     /// failure must not pop the OrderPanel feedback line (wrong bucket; could be
     /// cleared by unrelated order updates). Cleared on submit / cancel / new prompt.
     pub error: Option<String>,
+}
+
+impl SecretPrompt {
+    /// Fully close the prompt: drop the active request AND any stale submit error.
+    /// Single choke point so no closing path can forget the `error` field and leave
+    /// a stale rejection lingering for the next prompt (§3.10).
+    pub fn close(&mut self) {
+        self.active = None;
+        self.error = None;
+    }
 }
 
 #[derive(Debug, Clone)]
@@ -1298,7 +1318,10 @@ mod tests {
         let o = &lo.orders[0];
         assert_eq!(o.status, "CANCELED", "status always updates");
         assert_eq!(o.filled_qty, 40.0, "monotonic: downward fill is ignored");
-        assert_eq!(o.avg_price, 2502.0, "avg_price kept with the fill it belongs to");
+        assert_eq!(
+            o.avg_price, 2502.0,
+            "avg_price kept with the fill it belongs to"
+        );
         assert_eq!(o.ts_ms, 20, "ts_ms always updates");
     }
 
@@ -1313,6 +1336,46 @@ mod tests {
         assert_eq!(o.filled_qty, 100.0);
         assert_eq!(o.avg_price, 2505.0);
         assert_eq!(o.status, "FILLED");
+    }
+
+    #[test]
+    fn live_orders_apply_modify_fill_is_monotonic() {
+        // §3.12 regression (symmetric with apply_event): a modify ACK (Tachibana
+        // CLMKabuCorrectOrder / kabu remap) reporting only the new leg's fill must
+        // NOT clobber a larger partial already recorded by the EC stream.
+        let mut lo = LiveOrders::default();
+        lo.upsert_full(make_live_order("c1"));
+        lo.apply_event("c1", "V123", "PARTIALLY_FILLED", 40.0, 2502.0, 10);
+        // Modify ACCEPTED response comes back reporting filled=0.0 (new leg).
+        lo.apply_modify("c1", "V456", Some(60.0), None, "ACCEPTED", 0.0, 0.0, 20);
+        let o = &lo.orders[0];
+        assert_eq!(o.status, "ACCEPTED", "status always updates");
+        assert_eq!(o.qty, 60.0, "new_qty applied");
+        assert_eq!(o.filled_qty, 40.0, "monotonic: downward fill is ignored");
+        assert_eq!(
+            o.avg_price, 2502.0,
+            "avg_price kept with the fill it belongs to"
+        );
+        assert_eq!(o.venue_order_id, "V456", "remapped venue_order_id updates");
+        assert_eq!(o.ts_ms, 20, "ts_ms always updates");
+    }
+
+    #[test]
+    fn secret_prompt_close_clears_active_and_error() {
+        // §3.10: close() is the single choke point — it must null BOTH fields so a
+        // stale submit error never lingers for the next prompt.
+        let mut p = SecretPrompt {
+            active: Some(SecretPromptRequest {
+                request_id: "r1".to_string(),
+                venue: "TACHIBANA".to_string(),
+                kind: "second_password".to_string(),
+                purpose: "new_order".to_string(),
+            }),
+            error: Some("SECOND_SECRET_INVALID".to_string()),
+        };
+        p.close();
+        assert!(p.active.is_none(), "close must drop the active request");
+        assert!(p.error.is_none(), "close must drop the stale error");
     }
 
     #[test]

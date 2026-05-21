@@ -755,7 +755,11 @@ class TachibanaAdapter:
         seen_key = (report.venue_order_id, report.trade_id, report.notification_type)
         if seen_key in self._seen_ec:
             return
-        self._seen_ec.add(seen_key)
+        # NB: seen_key is marked AFTER a successful callback (below), not here. If the
+        # callback raised and we had already marked it seen, the reconnect re-send
+        # (which is the only redelivery path) would dedup-suppress it forever → a
+        # real-money fill silently lost. Downstream fill application is idempotent
+        # (3-tuple seen-set), so marking-on-success is the safe ordering.
 
         status = _orders.ec_status(report.notification_type, report.leaves_qty)
         client_order_id = self._order_number_to_cid.get(report.venue_order_id, "")
@@ -784,6 +788,10 @@ class TachibanaAdapter:
         except Exception:
             log.exception(
                 "tachibana on_order_event callback raised for venue_order_id=%s; "
-                "isolated (EC stream preserved)",
+                "isolated (EC stream preserved); not marking seen so reconnect "
+                "re-delivers this fill",
                 report.venue_order_id,
             )
+            return  # do NOT mark seen → next reconnect re-sends this fill (idempotent).
+        # Delivered successfully → mark seen so the per-day re-send dedups it.
+        self._seen_ec.add(seen_key)
