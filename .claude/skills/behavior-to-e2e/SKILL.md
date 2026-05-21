@@ -70,15 +70,24 @@ description: >-
 - 起動窓を開く: `h.begin_startup(startup_id)` — `ReplayStartup`/`RunComplete` の相関ロジックは
   `visible==true` かつ id 一致でないと no-op になるため、起動進捗系テストの前に必須
 - 観測: `run_state()` / `last_run()` / `portfolio()` / `timestamp_ms()` / `venue()` / `exec_mode()` /
-  `tickers()` / `available()` / `last_prices()` / `startup_progress()` / `backend_connected()` / `backend_running()`
+  `tickers()` / `available()` / `last_prices()` / `startup_progress()` / `backend_connected()` / `backend_running()` /
+  `live_orders()` / `order_feedback()` / `secret_prompt()`
 
 ## 落とし穴（事前に知らないと必ずハマる）
 
-- **event seam は今は resource を変えない**。`backend_event_drain_system` は `BackendEvent`
-  （`OrderEvent`/`AccountEvent`/`SecretRequired`/`VenueLogoutDetected`）を `info!` するだけ。
-  → **F3/F4/F5/D5 を実装するには、まず `src/backend_sync.rs` の `backend_event_drain_system` に
-  resource 反映ロジックを足し、本番 `main.rs` の挙動と一致させる**必要がある。スコープが production
-  コードに広がるので、着手前にユーザーへ確認すること。
+- **event seam は一部だけ resource を変える（Phase 9 マージ以降）**。`backend_event_drain_system` は
+  `OrderEvent` → `LiveOrders.apply_event`、`AccountEvent` → `apply_account_event`（`PortfolioState`）、
+  `SecretRequired` → `SecretPrompt.active` を反映する（= F3/F4/F5 は実装済み・観測可能）。**ただし
+  `VenueLogoutDetected` だけは今も `info!` のみで resource を変えない**ので D5 は assert 不可。
+  D5 を実装するには `VenueStatusRes` を Disconnected 相当へクリアする本番拡張（`src/backend_sync.rs`）が
+  必要 = スコープ拡大。着手前にユーザーへ確認すること。**重要: この欄も含め要約はドリフトしうるので、
+  着手時は必ず `src/backend_sync.rs` の `backend_event_drain_system` / `apply_status_update` を実際に
+  読んで「どの seam がどの resource を変えるか」を現物確認する**こと。
+- **注文 RPC（status seam, Phase 9）**: `OrderSeeded`/`OrderStatusUpdated`/`OrderModified`/`OrderRejected`
+  は `apply_status_update` が `LiveOrders`（`upsert_full`/`apply_event`/`apply_modify`）と `OrderFeedback`
+  を更新する（FLOWS.md の H セクション=H1〜H5）。`ExecutionModeChanged` は実モード変更時に
+  `PortfolioState` を default リセット（Live/Replay 口座データ混線防止）する点が回帰の肝。観測には
+  ハーネスの `live_orders()` / `order_feedback()` / `secret_prompt()` アクセサを使う。
 - **`TransportCommand` 側（UI → gRPC）はハーネスでは駆動しない**。`SetSpeed`/`StepForward`/`SelectedSymbol`
   のような「UI が backend に投げるコマンド」は seam の手前。v1 は「backend が押し返す ack/clock を UI が
   忠実にミラーする」ことの検証に留める（A2/A3 がこの形）。backend ack の variant が無い挙動
