@@ -294,6 +294,32 @@ R1/R2/simplify 収束後にコミットした Step 6 (`558eabb1`) を改めて 3
 - **self-review (simplify)**: 3 並行レビューで検出した worthwhile 3 件を反映（① venue_id の getattr reach-in 2 箇所を `LiveRunner.venue_id` プロパティ使用に統一、② pyarrow schema を per-write 再構築 → lazy singleton 化、③ `read_instruments` の `path.exists()` TOCTOU を `try/except FileNotFoundError` に）。**据え置き判断**: cache-dir helper / atomic-write helper / scheduler 基底クラス / time_helpers の共通化は **shared artifact（tachibana_file_store / run_buffer 等）を巻き込む out-of-scope な churn**で、account_sync との lifecycle mirror も計画書記載の意図的並行のため見送り（並行エージェント churn 教訓と整合）。
 - **残課題 / forward-compat**: ① **J-Quants `/markets/trading_calendar` 連携**は未実装（`next_delay_s` / business-day gate の差し替えで将来足せる形にしてある）。現状の「venue エラーに委ねる」は非営業日に venue がエラーを返す前提に依存する。② instruments store を読む consumer は現状 `_list_instruments_live` のみ。③ §5.1 layer-3（実 Demo で 5:00 JST 実走）は未実施（時刻 mock の決定論テストで網羅）。
 
+### Phase 9 全体レビュー反映 (2026-05-21, 横断ラウンド) — 未コミット review-fix delta の再レビュー
+
+> Phase 9 (Step 0–10) コミット後に working-tree に積まれていた未コミットの review-fix delta（Finding 1/3・MEDIUM-1..5・items 5–9）を、5 観点並行レビュー（kabu+tachibana spec / Python gRPC+silent-failure / Bevy ECS / Rust core+supervisor / 各 venue skill）で再検証し、検出した **HIGH 2 + MEDIUM 8 + clippy correctness 1 + LOW 1** を全消化。検証緑（Rust lib 500 / bin 30 / integration 10、Python exchanges+live+grpc 848 passed / 2 skipped、`cargo clippy` correctness error 0）。
+
+- **[HIGH] Escape クロストークの修正がフレーム非決定的だった** (`src/ui/mod.rs`) — SecretModal は Escape を `Events<KeyboardInput>` drain で消費、4 つの通知/確認 reader は `ButtonInput::just_pressed` で読むため、両者に順序制約が無く「scheduler 順次第で 1 回の Escape が両モーダルを閉じる」窓があった（テストは偶然の順序で通っていた）。reader が「上位モーダルがフラグをクリアする前」にガードを評価できるよう、`confirm_modal_button_system.before(secret_modal_input_system)` と通知 3 reader の `.before(secret_modal_input_system).before(confirm_modal_button_system)` を付与して決定化（優先度 lattice: secret > confirm > 通知/コンテキスト、cycle 無し）。
+- **[HIGH] 失敗ハンドシェイク child の reap が async 上で blocking `child.wait()` だった** (`src/backend_supervisor.rs`) — `spawn_and_handshake` は `async fn` なので素の `Child::wait()` が Tokio worker を stall させる。`handle_shutdown` の前例どおり `spawn_blocking` + `wait_timeout(500ms)` に変更。
+- **[MEDIUM] `mask_secrets` に再帰/循環ガードが無く、再帰が `try` の外** (`logging.py`) — cyclic payload で `RecursionError`（= ログ時クラッシュ）。`_mask(payload, depth)` + `_MAX_MASK_DEPTH=25`（超過で `"<max-depth>"` sentinel）に再構成。
+- **[MEDIUM] `mask_secrets` の `model_dump` duck-type が広すぎ** (`logging.py`) — `isinstance(BaseModel)` に厳格化（副作用ある任意 `model_dump` を呼ばない）。
+- **[MEDIUM] 再接続 flush が order/secret コマンドまで保持していた** (`src/main.rs`) — preserve 対象を **reconcile primitive の `GetOrders` のみ**に絞り、stale な PlaceOrder/Cancel/Modify と旧 session の `SubmitSecret`（平文 secret の再送）を drop（§3.8 ADR / §3.10 secret hygiene）。
+- **[MEDIUM] `apply_modify` の fill が単調でない** (`src/trading.rs`) — `apply_event` と同じ `filled_qty >= existing.filled_qty` ガードを追加（modify ACK の filled=0 が EC partial を潰すのを防止）。
+- **[MEDIUM] Tachibana EC seen-set を隔離 callback の *前* に mark していた** (`tachibana.py`) — callback が raise すると実弾 fill が seen 済みになり再接続再送でも永久 dedup → fill 消失。mark を **成功後**に移動（失敗時は mark せず再送に委ねる、downstream 冪等）。
+- **[MEDIUM] SS `sSystemStatus=="2"`（一時停止）の logout 判定ドリフト** — 実装は「真の閉局 `"0"` / 真の不許可 `"0"` のみ logout」で正しいが `event_protocol.md:87` の不変条件と乖離していた → doc を実挙動に更新＋`test_ss_suspended_status2_does_not_fire` で固定。
+- **[MEDIUM] `SecretPrompt.error` のクリア漏れ余地** (`src/trading.rs`/`secret_modal.rs`) — `SecretPrompt::close()`（active+error を同時 null）を新設し閉じる経路を集約。
+- **[MEDIUM] secret 失敗エラー行が 320px カードを溢れうる** (`secret_modal.rs`) — info ノードに `width: 100%` を付け wrap を保証。
+- **[clippy correctness / pre-existing] `wait_for_command_after_terminal` の `while let` が `never_loop`** (`src/backend_supervisor.rs`) — 両 arm が return する degenerate loop。`if let` に変更（挙動同一・`cargo clippy` の deny-by-default correctness error を解消）。
+- **[LOW] kabu modify の merged_qty<=0 で CANCELED 丸めが広すぎ** (`kabusapi.py`) — `!= "FILLED"` → `== "REJECTED"` に絞り、明細由来の正当な EXPIRED を保つ。
+- **[doc / MEDIUM-C] idle-shutdown「UI 接続中は発火しない」セマンティクスを §3.7 に明文化**（挙動はテスト固定済み・バグではない）。
+
+**ラウンド 2（fix 由来の silent-failure 再走、2 観点並行）**: Python silent-failure と Rust+Bevy correctness を再投入。**新規 CRITICAL/HIGH/MEDIUM 0**。Rust reviewer は H1 の `.before` 方向の正しさ（interleaving trace）と ordering グラフの非循環を独立確認。検出は Python の理論上 MEDIUM 1（pydantic import 失敗時の fallthrough = hard 依存ゆえ到達不能・pre-existing）→ fail-safe な duck-type fallback で塞ぎ、Rust の LOW 2 件を消化:
+- **[L1] flush の drop 範囲をコメントで網羅**（`GetOrders` のみ保持＝VenueLogin/SubscribeMarketData/… 全 variant を drop する旨を明記＋回帰テストに `VenueLogout` drop を追加）。
+- **[L2] Escape ordering の schedule レベル回帰テストを新設**（`reconcile_modal.rs::schedule_orders_reconcile_before_secret_drain_so_one_escape_closes_only_secret`）。per-modal テストは誤順序でも通るため、両 system を本番 `.before` で組み・実 Escape（event drain + ButtonInput）を 1 回流して「上位モーダルのみ閉じる」を固定。`.before`→`.after` flip / cycle を CI で検出可能に。
+
+**収束**: CRITICAL/HIGH/MEDIUM **ゼロ**。検証緑（Rust lib 501 / bin 30 / integration 10、`cargo clippy` correctness error 0、Python 全体 `-m "not slow"` 1238 passed / 11 skipped、failing 4 は既知の Windows pipe-FD baseline = `test_grpc_shutdown`×3 / `test_grpc_startup_sentinel`×1 で本作業と無関係）。
+
+**simplify パス（reuse / quality / efficiency 3 並行）**: efficiency CLEAN（`mask_secrets` は `isinstance` 化で per-node コストむしろ低下）。reuse + quality が共通指摘した **MEDIUM 1 のみ反映** — 単調 fill ガードが `apply_event` と `apply_modify` でバイト同一複製になっていたため `LiveOrder::advance_fill(&mut self, filled_qty, avg_price)` に抽出（実弾不変条件を 1 箇所に集約・drift 防止）。pydantic fallback（pragma:no-cover の fail-safe）と reap idiom の 3 重化（`handle_shutdown` 既決ミラー・スコープ外）は据え置き。
+
 ---
 
 ## 0. Feature Inventory / バックエンド機能一覧
@@ -534,6 +560,7 @@ service DataEngine {
   1. `unregister/all` を best-effort で発射
   2. `server.stop(grace=2.0)`
 - Bevy supervisor 配下では `BACKEND_SUPERVISED=1` 環境変数で判定し idle shutdown を無効化
+- **確定セマンティクス (レビュー M-C)**: 開きっぱなしの `SubscribeBackendEvents` ストリームは「アクティビティ」として扱う（per-stream heartbeat スレッドが idle clock を周期 touch する）。Rust UI は全モードでこのストリームを常時張るため、**UI が接続している間は idle shutdown が発火しない**（= idle shutdown は「UI も他クライアントも居ない、CLI 単独起動・非 supervised の放置 backend」だけを self-terminate する）。これは §3.7 の「60s 無 RPC で自己終了」を意図的に狭めたもので、`test_open_subscribe_stream_keeps_clock_fresh` で固定。idle なストリーム購読だけで誤って backend を落とすのを防ぐのが目的。
 
 ### 3.8 Backend: Auto-Restart (Phase 8 繰り越し)
 

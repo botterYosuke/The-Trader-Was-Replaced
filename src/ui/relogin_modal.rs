@@ -186,9 +186,7 @@ pub fn relogin_modal_button_system(
     if prompt.active.is_none() {
         return;
     }
-    let pressed = interactions
-        .iter()
-        .any(|i| *i == Interaction::Pressed);
+    let pressed = interactions.iter().any(|i| *i == Interaction::Pressed);
     // A button click is unambiguous. But Escape is read via ButtonInput (NOT the
     // SecretModal's event drain), so a single Escape could close BOTH this notice
     // and a higher-priority input modal (burning a one-shot Tachibana request_id).
@@ -326,10 +324,7 @@ mod tests {
     fn sync_writes_venue_into_info_line() {
         let mut app = make_app();
         app.world_mut().resource_mut::<ReloginPrompt>().active = Some("KABU".to_string());
-        let id = app
-            .world_mut()
-            .spawn((Text::new(""), ReloginInfoText))
-            .id();
+        let id = app.world_mut().spawn((Text::new(""), ReloginInfoText)).id();
         app.add_systems(Update, relogin_modal_sync_system);
         app.update();
         let text = app.world().get::<Text>(id).unwrap();

@@ -49,6 +49,34 @@ def test_mask_secrets_descends_into_pydantic_model() -> None:
     assert masked["creds"]["token"] == "***"
 
 
+def test_mask_secrets_survives_cyclic_payload() -> None:
+    # review fix [MEDIUM]: a self-referential payload must not drive mask_secrets
+    # into a RecursionError at log time (the recursion guard caps depth).
+    d: dict = {"token": _PLAINTEXT, "nested": {}}
+    d["nested"]["self"] = d  # cycle
+    masked = mask_secrets(d)  # must not raise
+    assert masked["token"] == "***"
+    assert _PLAINTEXT not in repr(masked)
+
+
+def test_mask_secrets_does_not_invoke_non_pydantic_model_dump() -> None:
+    # review fix [MEDIUM]: the pydantic branch is gated on isinstance(BaseModel),
+    # not a `model_dump` duck-type — a plain object exposing a side-effecting
+    # `model_dump` must NOT be invoked.
+    calls: list[int] = []
+
+    class NotAModel:
+        def model_dump(self):  # noqa: D401 — must never be called by mask_secrets
+            calls.append(1)
+            return {"token": _PLAINTEXT}
+
+    obj = NotAModel()
+    masked = mask_secrets({"x": obj})
+    assert calls == [], "mask_secrets must not call model_dump on a non-BaseModel"
+    # The object is passed through untouched (scalar fallback), not serialized.
+    assert masked["x"] is obj
+
+
 def test_secret_vault_repr_has_no_plaintext() -> None:
     vault = SecretVault()
     rid = vault.create_request("TACHIBANA", "new_order")

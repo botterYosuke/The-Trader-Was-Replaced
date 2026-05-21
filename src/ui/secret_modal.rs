@@ -140,12 +140,12 @@ fn do_submit(
 
 /// prompt を閉じてバッファを zeroize する (発注はしない)。
 fn do_cancel(input: &mut SecretInput, prompt: &mut SecretPrompt, reason: &str) {
-    if prompt.active.take().is_some() {
+    if prompt.active.is_some() {
         // 平文は出さない。理由コードのみ。
         warn!("[secret] modal closed: {reason}");
     }
-    // Prompt closed — drop any stale submit error so it doesn't linger.
-    prompt.error = None;
+    // close() drops both `active` and any stale submit error (§3.10).
+    prompt.close();
     input.clear();
 }
 
@@ -198,6 +198,10 @@ pub fn spawn_secret_modal(mut commands: Commands) {
                 ));
                 card.spawn((
                     Node {
+                        // Bound the width to the card's content box so a long
+                        // SubmitSecret error line (§3.10, appended after a `\n`)
+                        // wraps inside the 320px card instead of overflowing.
+                        width: Val::Percent(100.0),
                         margin: UiRect::bottom(Val::Px(8.0)),
                         ..default()
                     },

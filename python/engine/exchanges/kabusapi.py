@@ -724,9 +724,10 @@ class KabuStationAdapter:
                 # _terminal_zero_fill_status の既定 REJECTED が立つが、論理注文には
                 # total_filled>0 の約定がある (filled_base 由来)。REJECTED は約定ゼロを
                 # 含意するため自己矛盾 → CANCELED に丸める (約定済みは REJECTED にしない
-                # 既存ルール order_status のミラー、fix #4)。
+                # 既存ルール order_status のミラー、fix #4)。**REJECTED のみ**を書き換え、
+                # 明細由来の正当な EXPIRED/CANCELED/FILLED は保つ (review L2)。
                 final_status = terminal.status
-                if total_filled > 0 and final_status != "FILLED":
+                if total_filled > 0 and final_status == "REJECTED":
                     final_status = "CANCELED"
                 return OrderResult(
                     status=final_status,

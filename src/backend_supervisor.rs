@@ -459,7 +459,8 @@ pub async fn run_supervisor(
                                 AUTO_RESTART_MAX,
                                 AUTO_RESTART_WINDOW
                             );
-                            match wait_for_command_after_terminal(&mut cmd_rx, &lifecycle_tx).await {
+                            match wait_for_command_after_terminal(&mut cmd_rx, &lifecycle_tx).await
+                            {
                                 ManualWait::Restart => {
                                     budget.reset();
                                     continue 'session;
@@ -612,9 +613,18 @@ async fn spawn_and_handshake(
         // Handshake failed before Ready: kill and reap the child here. There is no
         // Job Object in this repo, and dropping a `Child` does NOT terminate the OS
         // process — without this the failed-handshake Python backend would be
-        // orphaned. Kill is unconditional on this failure branch.
-        let _ = child.kill();
-        let _ = child.wait();
+        // orphaned. The reap MUST go through `spawn_blocking` + `wait_timeout`: a bare
+        // `Child::wait()` is a blocking syscall and this is an `async fn`, so calling
+        // it directly stalls the Tokio worker until the process is reaped (mirrors
+        // `handle_shutdown`'s bounded reap). `kill()` on an already-exited child is a
+        // harmless `Err(InvalidInput)`, discarded.
+        let _ = tokio::task::spawn_blocking(move || {
+            use wait_timeout::ChildExt;
+            let mut child = child;
+            let _ = child.kill();
+            let _ = child.wait_timeout(std::time::Duration::from_millis(500));
+        })
+        .await;
         SpawnOutcome::Failed
     }
 }
@@ -627,9 +637,13 @@ async fn wait_for_command_after_terminal(
     cmd_rx: &mut mpsc::UnboundedReceiver<SupervisorCommand>,
     lifecycle_tx: &watch::Sender<BackendLifecycle>,
 ) -> ManualWait {
-    while let Some(cmd) = cmd_rx.recv().await {
+    // `if let` (not `while let`): both command variants below are terminal for this
+    // wait, so a single received command always resolves it; a closed channel
+    // (`None`) ends the supervisor. (Was a degenerate `while let` → clippy
+    // `never_loop`, a deny-by-default correctness lint.)
+    if let Some(cmd) = cmd_rx.recv().await {
         match cmd {
-            SupervisorCommand::Restart => return ManualWait::Restart,
+            SupervisorCommand::Restart => ManualWait::Restart,
             SupervisorCommand::Shutdown { reply_tx, .. } => {
                 // Nothing alive to shut down; publish Stopped and ack so the
                 // AppExit waiter unblocks.
@@ -637,11 +651,12 @@ async fn wait_for_command_after_terminal(
                 if let Some(tx) = reply_tx {
                     let _ = tx.send(());
                 }
-                return ManualWait::Terminal;
+                ManualWait::Terminal
             }
         }
+    } else {
+        ManualWait::Terminal
     }
-    ManualWait::Terminal
 }
 
 /// Final fallback drain, reached only after the session loop breaks on a truly

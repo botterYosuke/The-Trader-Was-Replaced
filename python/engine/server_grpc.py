@@ -30,6 +30,10 @@ from .live.secret_vault import SecretVault
 from .live.secret_provider import SecondSecretResolver, SecretTimeoutError
 from .live.order_facade import ManualOrderFacade, OrderFacadeError
 from .live.account_sync import AccountSync
+from .live.run_registry import RunRegistry
+from .live.strategy_registry import StrategyRegistry, StrategyRegistryError
+from .live.strategy_host import LiveStrategyHost, LiveStrategyHostError, StartParams
+from .live.engine_controller import NoopLiveEngineController
 from .live.health_watchdog import VenueHealthWatchdog
 from .live.instruments_scheduler import InstrumentsScheduler
 from .live import instruments_store
@@ -52,6 +56,20 @@ from engine.jquants_to_catalog import ensure_jquants_catalog
 def engine_run(*args, **kwargs):
     from engine.strategy_runtime.engine_runner import run
     return run(*args, **kwargs)
+
+
+class _LiveSessionView:
+    """`LiveStrategyHost` が借用する live session の read-only ビュー (Phase 10 §1.1)。
+
+    既存 Phase 9 live session を共有所有権で借りるための薄いラッパ。host は
+    `is_logged_in` だけを見て二重 login しない。`_order_facade` の存在を logged-in の
+    根拠にする（PlaceOrder の VENUE_LOGIN_REQUIRED 判定と同じ基準）。
+    """
+
+    __slots__ = ("is_logged_in",)
+
+    def __init__(self, is_logged_in: bool) -> None:
+        self.is_logged_in = is_logged_in
 
 
 _INSTRUMENT_ID_RE = re.compile(r"^(.+?)-\d+-[A-Z]")
@@ -248,6 +266,19 @@ class GrpcDataEngineServer(
         # 更新, lifetime = live session). 営業日カレンダーは持たず venue の fetch_instruments
         # エラー/空に委ねる (ユーザー決定。詳細は instruments_scheduler のドキュメント参照)。
         self._instruments_scheduler: Optional[InstrumentsScheduler] = None
+        # Phase 10 Step 3: live auto strategy execution. servicer lifetime で 1 つ持つ
+        # (RunRegistry は単一 run 制約を強制する)。engine controller は Step 3 時点では
+        # placeholder (Nautilus engine 未接続、実発注なし、§engine_controller)。実 bridge は
+        # Step 3+/4/8 で差し替える。session は既存 Phase 9 live session を共有借用する。
+        self._run_registry: RunRegistry = RunRegistry()
+        self._strategy_registry: StrategyRegistry = StrategyRegistry()
+        self._strategy_host: LiveStrategyHost = LiveStrategyHost(
+            run_registry=self._run_registry,
+            session_provider=self._live_session_view,
+            engine_controller=NoopLiveEngineController(),
+        )
+        # 単一 run スロットの TOCTOU を防ぐ (gRPC handler は threadpool で並行する)。
+        self._live_strategy_lock = threading.Lock()
 
     _KNOWN_VENUES = {"TACHIBANA", "KABU", "MOCK"}  # D26: MOCK added
     _KNOWN_CRED_SOURCES = {"prompt", "session_cache", "env", "prompt_result"}
@@ -1679,8 +1710,14 @@ class GrpcDataEngineServer(
     # === Phase 9 Step 2: manual order execution facade ===
 
     @staticmethod
-    def _order_event_to_proto(ev) -> "engine_pb2.OrderEvent":
-        """Convert a transport-agnostic OrderEventData → proto OrderEvent."""
+    def _order_event_to_proto(ev, strategy_id: str = "") -> "engine_pb2.OrderEvent":
+        """Convert a transport-agnostic OrderEventData → proto OrderEvent.
+
+        Phase 10 (§2.9 / M6): `strategy_id` identifies the ordering subject. It is
+        additive — left "" here because Step 3 only mirrors the field through the
+        transport; populating it (manual → "MANUAL-001", auto → "LIVE-{run}") and
+        the OrdersPanel filter are Step 7.
+        """
         return engine_pb2.OrderEvent(
             order_id=ev.order_id,
             venue_order_id=ev.venue_order_id,
@@ -1689,6 +1726,7 @@ class GrpcDataEngineServer(
             filled_qty=ev.filled_qty,
             avg_price=ev.avg_price,
             ts_ms=ev.ts_ms,
+            strategy_id=strategy_id,
         )
 
     def _is_live_ordering_mode(self) -> bool:
@@ -1938,6 +1976,173 @@ class GrpcDataEngineServer(
             success=True,
             error_code="",
             orders=[self._order_event_to_proto(e) for e in facade.list_orders()],
+        )
+
+    # === Phase 10 Step 3: live strategy execution ===
+
+    def _live_session_view(self):
+        """`LiveStrategyHost` の session_provider。既存 live session を共有借用する。
+
+        `_order_facade` の存在を logged-in の根拠にする（PlaceOrder の
+        VENUE_LOGIN_REQUIRED 判定と同基準）。未ログインなら None を返し、host は
+        VENUE_LOGIN_REQUIRED で reject する（新規 login はしない、§1.1）。
+        """
+        if self._order_facade is None:
+            return None
+        return _LiveSessionView(is_logged_in=True)
+
+    def _live_status_proto(self, record) -> "engine_pb2.LiveStrategyStatus":
+        return engine_pb2.LiveStrategyStatus(
+            run_id=record.run_id,
+            strategy_id=record.strategy_id,
+            nautilus_strategy_id=record.nautilus_strategy_id,
+            instrument_id=record.instrument_id,
+            venue=record.venue,
+            status=record.state_machine.current,
+            ts_ms=int(time.time() * 1000),
+        )
+
+    def _publish_live_strategy_event(self, record) -> None:
+        """run の lifecycle 遷移を LiveStrategyEvent として UI に push する (§1.3 / M8)。"""
+        self.publish_backend_event(
+            engine_pb2.BackendEvent(
+                live_strategy_event=engine_pb2.LiveStrategyEvent(
+                    run_id=record.run_id,
+                    strategy_id=record.strategy_id,
+                    status=record.state_machine.current,
+                    ts_ms=int(time.time() * 1000),
+                )
+            )
+        )
+
+    def RegisterLiveStrategy(self, request, context):
+        # 検証系: saved .py をロードして strategy_id を発行する（mode gate なし、§2.5）。
+        if not self._token_ok(request):
+            context.abort(grpc.StatusCode.UNAUTHENTICATED, "Invalid token")
+        try:
+            handle = self._strategy_registry.register(
+                request.strategy_file, request.expected_sha256
+            )
+        except StrategyRegistryError as exc:
+            return engine_pb2.RegisterLiveStrategyRes(
+                success=False, request_id=request.request_id, error_code=exc.error_code
+            )
+        return engine_pb2.RegisterLiveStrategyRes(
+            success=True,
+            request_id=request.request_id,
+            error_code="",
+            strategy_id=handle.strategy_id,
+            strategy_sha256=handle.sha256,
+            display_name=handle.display_name,
+        )
+
+    def StartLiveStrategy(self, request, context):
+        if not self._token_ok(request):
+            context.abort(grpc.StatusCode.UNAUTHENTICATED, "Invalid token")
+        # write 系の precondition: ExecutionMode == LiveAuto（構造的 reject、§2.5）。
+        mode = self.mode_manager.current_mode if self.mode_manager else "Replay"
+        if mode != "LiveAuto":
+            return engine_pb2.StartLiveStrategyRes(
+                success=False,
+                request_id=request.request_id,
+                error_code="EXECUTION_MODE_PRECONDITION",
+            )
+        # strategy_id（検証済みハンドル）を解決。生パスは受け取らない（M9）。
+        try:
+            handle = self._strategy_registry.resolve(request.strategy_id)
+        except StrategyRegistryError as exc:
+            return engine_pb2.StartLiveStrategyRes(
+                success=False, request_id=request.request_id, error_code=exc.error_code
+            )
+        # safety_limits は Step 4（RiskEngine + safety_rails）で enforce する。Step 3 は
+        # transport を通すのみ（accept-and-defer）。
+        start_params = StartParams(
+            strategy_id=handle.strategy_id,
+            strategy_file=handle.resolved_path,
+            instrument_id=request.instrument_id,
+            venue=request.venue,
+            params=dict(request.params),
+        )
+        with self._live_strategy_lock:
+            try:
+                record = self._strategy_host.start_run(start_params)
+            except LiveStrategyHostError as exc:
+                return engine_pb2.StartLiveStrategyRes(
+                    success=False,
+                    request_id=request.request_id,
+                    error_code=exc.error_code,
+                )
+        self._publish_live_strategy_event(record)
+        return engine_pb2.StartLiveStrategyRes(
+            success=True,
+            request_id=request.request_id,
+            error_code="",
+            run_id=record.run_id,
+            status=self._live_status_proto(record),
+        )
+
+    def _control_run(self, request, op):
+        """Pause/Resume/Stop の共通骨子。run 存在チェック + host 呼び出し + event push。"""
+        with self._live_strategy_lock:
+            try:
+                record = op(request.run_id)
+            except LiveStrategyHostError as exc:
+                return engine_pb2.LiveStrategyControlRes(
+                    success=False,
+                    request_id=request.request_id,
+                    error_code=exc.error_code,
+                )
+        self._publish_live_strategy_event(record)
+        return engine_pb2.LiveStrategyControlRes(
+            success=True,
+            request_id=request.request_id,
+            error_code="",
+            status=self._live_status_proto(record),
+        )
+
+    def StopLiveStrategy(self, request, context):
+        # graceful 停止は mode に依らず常に許可する（runaway を止められないと困る）。
+        if not self._token_ok(request):
+            context.abort(grpc.StatusCode.UNAUTHENTICATED, "Invalid token")
+        return self._control_run(request, self._strategy_host.stop_run)
+
+    def PauseLiveStrategy(self, request, context):
+        if not self._token_ok(request):
+            context.abort(grpc.StatusCode.UNAUTHENTICATED, "Invalid token")
+        return self._control_run(request, self._strategy_host.pause_run)
+
+    def ResumeLiveStrategy(self, request, context):
+        if not self._token_ok(request):
+            context.abort(grpc.StatusCode.UNAUTHENTICATED, "Invalid token")
+        return self._control_run(request, self._strategy_host.resume_run)
+
+    def GetLiveStrategyStatus(self, request, context):
+        # 読み取り系: mode gate なし。run が無ければ UNKNOWN_RUN。
+        if not self._token_ok(request):
+            context.abort(grpc.StatusCode.UNAUTHENTICATED, "Invalid token")
+        record = self._run_registry.get(request.run_id)
+        if record is None:
+            return engine_pb2.GetLiveStrategyStatusRes(
+                success=False, request_id=request.request_id, error_code="UNKNOWN_RUN"
+            )
+        return engine_pb2.GetLiveStrategyStatusRes(
+            success=True,
+            request_id=request.request_id,
+            error_code="",
+            status=self._live_status_proto(record),
+        )
+
+    def ListLiveStrategies(self, request, context):
+        # 読み取り系: アクティブ（非終端）run の一覧を返す（§2.8）。
+        if not self._token_ok(request):
+            context.abort(grpc.StatusCode.UNAUTHENTICATED, "Invalid token")
+        return engine_pb2.ListLiveStrategiesRes(
+            success=True,
+            request_id=request.request_id,
+            error_code="",
+            strategies=[
+                self._live_status_proto(r) for r in self._run_registry.list_active()
+            ],
         )
 
     def publish_backend_event(self, event):

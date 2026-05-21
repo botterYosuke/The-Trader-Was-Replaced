@@ -241,6 +241,41 @@ class DataEngineStub(object):
                 request_serializer=engine__pb2.GetOrdersReq.SerializeToString,
                 response_deserializer=engine__pb2.GetOrdersRes.FromString,
                 _registered_method=True)
+        self.RegisterLiveStrategy = channel.unary_unary(
+                '/engine.DataEngine/RegisterLiveStrategy',
+                request_serializer=engine__pb2.RegisterLiveStrategyReq.SerializeToString,
+                response_deserializer=engine__pb2.RegisterLiveStrategyRes.FromString,
+                _registered_method=True)
+        self.StartLiveStrategy = channel.unary_unary(
+                '/engine.DataEngine/StartLiveStrategy',
+                request_serializer=engine__pb2.StartLiveStrategyReq.SerializeToString,
+                response_deserializer=engine__pb2.StartLiveStrategyRes.FromString,
+                _registered_method=True)
+        self.StopLiveStrategy = channel.unary_unary(
+                '/engine.DataEngine/StopLiveStrategy',
+                request_serializer=engine__pb2.StopLiveStrategyReq.SerializeToString,
+                response_deserializer=engine__pb2.LiveStrategyControlRes.FromString,
+                _registered_method=True)
+        self.PauseLiveStrategy = channel.unary_unary(
+                '/engine.DataEngine/PauseLiveStrategy',
+                request_serializer=engine__pb2.PauseLiveStrategyReq.SerializeToString,
+                response_deserializer=engine__pb2.LiveStrategyControlRes.FromString,
+                _registered_method=True)
+        self.ResumeLiveStrategy = channel.unary_unary(
+                '/engine.DataEngine/ResumeLiveStrategy',
+                request_serializer=engine__pb2.ResumeLiveStrategyReq.SerializeToString,
+                response_deserializer=engine__pb2.LiveStrategyControlRes.FromString,
+                _registered_method=True)
+        self.GetLiveStrategyStatus = channel.unary_unary(
+                '/engine.DataEngine/GetLiveStrategyStatus',
+                request_serializer=engine__pb2.GetLiveStrategyStatusReq.SerializeToString,
+                response_deserializer=engine__pb2.GetLiveStrategyStatusRes.FromString,
+                _registered_method=True)
+        self.ListLiveStrategies = channel.unary_unary(
+                '/engine.DataEngine/ListLiveStrategies',
+                request_serializer=engine__pb2.ListLiveStrategiesReq.SerializeToString,
+                response_deserializer=engine__pb2.ListLiveStrategiesRes.FromString,
+                _registered_method=True)
         self.Shutdown = channel.unary_unary(
                 '/engine.DataEngine/Shutdown',
                 request_serializer=engine__pb2.ShutdownRequest.SerializeToString,
@@ -432,6 +467,52 @@ class DataEngineServicer(object):
         context.set_details('Method not implemented!')
         raise NotImplementedError('Method not implemented!')
 
+    def RegisterLiveStrategy(self, request, context):
+        """Phase 10 Step 3: live strategy execution (auto). All unary — the only
+        streaming transport remains SubscribeBackendEvents (Phase 9 ADR "single
+        channel", M7). RegisterLiveStrategy validates a saved .py and issues an
+        opaque strategy_id; StartLiveStrategy promotes it to a Live Auto run.
+        """
+        context.set_code(grpc.StatusCode.UNIMPLEMENTED)
+        context.set_details('Method not implemented!')
+        raise NotImplementedError('Method not implemented!')
+
+    def StartLiveStrategy(self, request, context):
+        """Missing associated documentation comment in .proto file."""
+        context.set_code(grpc.StatusCode.UNIMPLEMENTED)
+        context.set_details('Method not implemented!')
+        raise NotImplementedError('Method not implemented!')
+
+    def StopLiveStrategy(self, request, context):
+        """Missing associated documentation comment in .proto file."""
+        context.set_code(grpc.StatusCode.UNIMPLEMENTED)
+        context.set_details('Method not implemented!')
+        raise NotImplementedError('Method not implemented!')
+
+    def PauseLiveStrategy(self, request, context):
+        """Missing associated documentation comment in .proto file."""
+        context.set_code(grpc.StatusCode.UNIMPLEMENTED)
+        context.set_details('Method not implemented!')
+        raise NotImplementedError('Method not implemented!')
+
+    def ResumeLiveStrategy(self, request, context):
+        """Missing associated documentation comment in .proto file."""
+        context.set_code(grpc.StatusCode.UNIMPLEMENTED)
+        context.set_details('Method not implemented!')
+        raise NotImplementedError('Method not implemented!')
+
+    def GetLiveStrategyStatus(self, request, context):
+        """Missing associated documentation comment in .proto file."""
+        context.set_code(grpc.StatusCode.UNIMPLEMENTED)
+        context.set_details('Method not implemented!')
+        raise NotImplementedError('Method not implemented!')
+
+    def ListLiveStrategies(self, request, context):
+        """Missing associated documentation comment in .proto file."""
+        context.set_code(grpc.StatusCode.UNIMPLEMENTED)
+        context.set_details('Method not implemented!')
+        raise NotImplementedError('Method not implemented!')
+
     def Shutdown(self, request, context):
         """Lifecycle (Step 2: backend-startup-sync)
         """
@@ -576,6 +657,41 @@ def add_DataEngineServicer_to_server(servicer, server):
                     servicer.GetOrders,
                     request_deserializer=engine__pb2.GetOrdersReq.FromString,
                     response_serializer=engine__pb2.GetOrdersRes.SerializeToString,
+            ),
+            'RegisterLiveStrategy': grpc.unary_unary_rpc_method_handler(
+                    servicer.RegisterLiveStrategy,
+                    request_deserializer=engine__pb2.RegisterLiveStrategyReq.FromString,
+                    response_serializer=engine__pb2.RegisterLiveStrategyRes.SerializeToString,
+            ),
+            'StartLiveStrategy': grpc.unary_unary_rpc_method_handler(
+                    servicer.StartLiveStrategy,
+                    request_deserializer=engine__pb2.StartLiveStrategyReq.FromString,
+                    response_serializer=engine__pb2.StartLiveStrategyRes.SerializeToString,
+            ),
+            'StopLiveStrategy': grpc.unary_unary_rpc_method_handler(
+                    servicer.StopLiveStrategy,
+                    request_deserializer=engine__pb2.StopLiveStrategyReq.FromString,
+                    response_serializer=engine__pb2.LiveStrategyControlRes.SerializeToString,
+            ),
+            'PauseLiveStrategy': grpc.unary_unary_rpc_method_handler(
+                    servicer.PauseLiveStrategy,
+                    request_deserializer=engine__pb2.PauseLiveStrategyReq.FromString,
+                    response_serializer=engine__pb2.LiveStrategyControlRes.SerializeToString,
+            ),
+            'ResumeLiveStrategy': grpc.unary_unary_rpc_method_handler(
+                    servicer.ResumeLiveStrategy,
+                    request_deserializer=engine__pb2.ResumeLiveStrategyReq.FromString,
+                    response_serializer=engine__pb2.LiveStrategyControlRes.SerializeToString,
+            ),
+            'GetLiveStrategyStatus': grpc.unary_unary_rpc_method_handler(
+                    servicer.GetLiveStrategyStatus,
+                    request_deserializer=engine__pb2.GetLiveStrategyStatusReq.FromString,
+                    response_serializer=engine__pb2.GetLiveStrategyStatusRes.SerializeToString,
+            ),
+            'ListLiveStrategies': grpc.unary_unary_rpc_method_handler(
+                    servicer.ListLiveStrategies,
+                    request_deserializer=engine__pb2.ListLiveStrategiesReq.FromString,
+                    response_serializer=engine__pb2.ListLiveStrategiesRes.SerializeToString,
             ),
             'Shutdown': grpc.unary_unary_rpc_method_handler(
                     servicer.Shutdown,
@@ -1312,6 +1428,195 @@ class DataEngine(object):
             '/engine.DataEngine/GetOrders',
             engine__pb2.GetOrdersReq.SerializeToString,
             engine__pb2.GetOrdersRes.FromString,
+            options,
+            channel_credentials,
+            insecure,
+            call_credentials,
+            compression,
+            wait_for_ready,
+            timeout,
+            metadata,
+            _registered_method=True)
+
+    @staticmethod
+    def RegisterLiveStrategy(request,
+            target,
+            options=(),
+            channel_credentials=None,
+            call_credentials=None,
+            insecure=False,
+            compression=None,
+            wait_for_ready=None,
+            timeout=None,
+            metadata=None):
+        return grpc.experimental.unary_unary(
+            request,
+            target,
+            '/engine.DataEngine/RegisterLiveStrategy',
+            engine__pb2.RegisterLiveStrategyReq.SerializeToString,
+            engine__pb2.RegisterLiveStrategyRes.FromString,
+            options,
+            channel_credentials,
+            insecure,
+            call_credentials,
+            compression,
+            wait_for_ready,
+            timeout,
+            metadata,
+            _registered_method=True)
+
+    @staticmethod
+    def StartLiveStrategy(request,
+            target,
+            options=(),
+            channel_credentials=None,
+            call_credentials=None,
+            insecure=False,
+            compression=None,
+            wait_for_ready=None,
+            timeout=None,
+            metadata=None):
+        return grpc.experimental.unary_unary(
+            request,
+            target,
+            '/engine.DataEngine/StartLiveStrategy',
+            engine__pb2.StartLiveStrategyReq.SerializeToString,
+            engine__pb2.StartLiveStrategyRes.FromString,
+            options,
+            channel_credentials,
+            insecure,
+            call_credentials,
+            compression,
+            wait_for_ready,
+            timeout,
+            metadata,
+            _registered_method=True)
+
+    @staticmethod
+    def StopLiveStrategy(request,
+            target,
+            options=(),
+            channel_credentials=None,
+            call_credentials=None,
+            insecure=False,
+            compression=None,
+            wait_for_ready=None,
+            timeout=None,
+            metadata=None):
+        return grpc.experimental.unary_unary(
+            request,
+            target,
+            '/engine.DataEngine/StopLiveStrategy',
+            engine__pb2.StopLiveStrategyReq.SerializeToString,
+            engine__pb2.LiveStrategyControlRes.FromString,
+            options,
+            channel_credentials,
+            insecure,
+            call_credentials,
+            compression,
+            wait_for_ready,
+            timeout,
+            metadata,
+            _registered_method=True)
+
+    @staticmethod
+    def PauseLiveStrategy(request,
+            target,
+            options=(),
+            channel_credentials=None,
+            call_credentials=None,
+            insecure=False,
+            compression=None,
+            wait_for_ready=None,
+            timeout=None,
+            metadata=None):
+        return grpc.experimental.unary_unary(
+            request,
+            target,
+            '/engine.DataEngine/PauseLiveStrategy',
+            engine__pb2.PauseLiveStrategyReq.SerializeToString,
+            engine__pb2.LiveStrategyControlRes.FromString,
+            options,
+            channel_credentials,
+            insecure,
+            call_credentials,
+            compression,
+            wait_for_ready,
+            timeout,
+            metadata,
+            _registered_method=True)
+
+    @staticmethod
+    def ResumeLiveStrategy(request,
+            target,
+            options=(),
+            channel_credentials=None,
+            call_credentials=None,
+            insecure=False,
+            compression=None,
+            wait_for_ready=None,
+            timeout=None,
+            metadata=None):
+        return grpc.experimental.unary_unary(
+            request,
+            target,
+            '/engine.DataEngine/ResumeLiveStrategy',
+            engine__pb2.ResumeLiveStrategyReq.SerializeToString,
+            engine__pb2.LiveStrategyControlRes.FromString,
+            options,
+            channel_credentials,
+            insecure,
+            call_credentials,
+            compression,
+            wait_for_ready,
+            timeout,
+            metadata,
+            _registered_method=True)
+
+    @staticmethod
+    def GetLiveStrategyStatus(request,
+            target,
+            options=(),
+            channel_credentials=None,
+            call_credentials=None,
+            insecure=False,
+            compression=None,
+            wait_for_ready=None,
+            timeout=None,
+            metadata=None):
+        return grpc.experimental.unary_unary(
+            request,
+            target,
+            '/engine.DataEngine/GetLiveStrategyStatus',
+            engine__pb2.GetLiveStrategyStatusReq.SerializeToString,
+            engine__pb2.GetLiveStrategyStatusRes.FromString,
+            options,
+            channel_credentials,
+            insecure,
+            call_credentials,
+            compression,
+            wait_for_ready,
+            timeout,
+            metadata,
+            _registered_method=True)
+
+    @staticmethod
+    def ListLiveStrategies(request,
+            target,
+            options=(),
+            channel_credentials=None,
+            call_credentials=None,
+            insecure=False,
+            compression=None,
+            wait_for_ready=None,
+            timeout=None,
+            metadata=None):
+        return grpc.experimental.unary_unary(
+            request,
+            target,
+            '/engine.DataEngine/ListLiveStrategies',
+            engine__pb2.ListLiveStrategiesReq.SerializeToString,
+            engine__pb2.ListLiveStrategiesRes.FromString,
             options,
             channel_credentials,
             insecure,

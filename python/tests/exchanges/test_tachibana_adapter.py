@@ -1557,3 +1557,16 @@ async def test_ss_login_not_permitted_zero_still_fires():
         "SS", {"sSystemStatus": "1", "sLoginKyokaKubun": "0"}, 1,
     )
     assert fired == ["TACHIBANA"]
+
+
+# review fix [MEDIUM]: sSystemStatus=="2" (一時停止/suspended) is a transient halt,
+# NOT a session loss → must NOT fire a re-login modal (intentional, beyond what
+# event_protocol.md endorses for sLoginKyokaKubun; locked here so a future reviewer
+# does not "fix" it back to `sSystemStatus != "1"`).
+async def test_ss_suspended_status2_does_not_fire():
+    """sSystemStatus=2 (一時停止) は閉局ではない → 通知しない。"""
+    adapter, fired = _ss_adapter()
+    await adapter._dispatch_event_frame(
+        "SS", {"sSystemStatus": "2", "sLoginKyokaKubun": "1"}, 1,
+    )
+    assert fired == []
