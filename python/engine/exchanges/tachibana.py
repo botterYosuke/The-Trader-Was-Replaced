@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import dataclasses
 import json
 import logging
 import os
@@ -116,6 +117,10 @@ class TachibanaAdapter:
         self._env = environment
         # R4: PNoCounter は adapter で 1 個保持し、retry / re-login で共有する。
         self._p_no_counter = PNoCounter()
+        # Issue #9.2: 単一 httpx.AsyncClient を再利用しコネクションプール/keepalive を効か
+        # せる (注文ホットパス含む)。kabu (kabusapi.py:__init__) と同方針。timeout は
+        # request/master で異なるため client 構築時には固定せず、各 .get() に渡す。
+        self._client: httpx.AsyncClient = httpx.AsyncClient()
         self._session: TachibanaSession | None = None
         # Phase 8 §3.2 A3.3: per-ticker WS hub registry.
         self._hubs: dict[str, TickerEventWsHub] = {}
@@ -167,6 +172,10 @@ class TachibanaAdapter:
 
     async def login(self, creds: VenueCredentials) -> None:
         """Resolve credentials per `creds.credentials_source` and call auth.login()."""
+        # Issue #9.2: re-login after a prior logout() closed the shared client.
+        # Recreate it so REQUEST/master I/O works again (kabu と同方針)。
+        if self._client.is_closed:
+            self._client = httpx.AsyncClient()
         # Recreate the queue rather than draining: a prior logout() enqueued a
         # None sentinel that would terminate the next session's events() consumer.
         # Any pending producer task holding the old queue is also severed.
@@ -253,6 +262,9 @@ class TachibanaAdapter:
         self._last_system_open = None  # SS 閉局 debounce を新セッションでリセット
         self._ss_keys_unparsed_logged = False  # 新セッションで SS フィールド診断を再 arm
         self._session = None
+        # Issue #9.2: 共有 client を閉じてコネクション/リソースを解放する (kabu と同方針)。
+        # 再 login は is_closed を見て作り直す。idempotent: aclose は二重呼びでも安全。
+        await self._client.aclose()
         # Wake any active events() consumer so it sees StopAsyncIteration
         # instead of hanging on queue.get() forever.
         self._queue.put_nowait(None)  # type: ignore[arg-type]
@@ -286,20 +298,21 @@ class TachibanaAdapter:
             connect=10.0, read=_MASTER_READ_TIMEOUT, write=10.0, pool=5.0
         )
         parser = MasterStreamParser()
-        async with httpx.AsyncClient(timeout=_TIMEOUT) as client:
-            async with client.stream("GET", url) as resp:
-                resp.raise_for_status()
-                async for chunk in resp.aiter_bytes():
-                    # SJIS decoder is errors="strict" (R7) — wrap UnicodeDecodeError
-                    # so callers see a typed ApiError rather than a raw exception.
-                    try:
-                        parser.feed(chunk)
-                    except UnicodeDecodeError as exc:
-                        raise ApiError(
-                            "MASTER_DECODE_FAILED", str(exc)
-                        ) from exc
-                    if parser.is_complete:
-                        break
+        # Issue #9.2: 単一 client を再利用。master DL は長い read timeout が要るため
+        # stream() に per-request timeout を渡す (client 構築時には固定しない)。
+        async with self._client.stream("GET", url, timeout=_TIMEOUT) as resp:
+            resp.raise_for_status()
+            async for chunk in resp.aiter_bytes():
+                # SJIS decoder is errors="strict" (R7) — wrap UnicodeDecodeError
+                # so callers see a typed ApiError rather than a raw exception.
+                try:
+                    parser.feed(chunk)
+                except UnicodeDecodeError as exc:
+                    raise ApiError(
+                        "MASTER_DECODE_FAILED", str(exc)
+                    ) from exc
+                if parser.is_complete:
+                    break
 
         records = parser.records()
         # An error envelope (p_errno / sResultCode) arrives without the
@@ -462,10 +475,10 @@ class TachibanaAdapter:
         url = build_request_url(
             RequestUrl(str(self._session.url_request)), body, sJsonOfmt="5"
         )
-        async with httpx.AsyncClient(timeout=_REQUEST_TIMEOUT) as client:
-            resp = await client.get(url)
-            resp.raise_for_status()
-            return json.loads(decode_response_body(resp.content))
+        # Issue #9.2: 単一 client を再利用 (per-request の new client を廃止)。
+        resp = await self._client.get(url, timeout=_REQUEST_TIMEOUT)
+        resp.raise_for_status()
+        return json.loads(decode_response_body(resp.content))
 
     @staticmethod
     def _rejected_result(client_order_id: str, ack: "_orders.OrderAck") -> OrderResult:
@@ -596,6 +609,13 @@ class TachibanaAdapter:
         ack = _orders.parse_order_response(await self._request(payload))
         if ack.rejected:
             return self._rejected_result(order_id, ack)
+        # Issue #5: 訂正 ack 後、内部追跡 qty を新数量へ差し替える。EC 約定は累計約定
+        # 数量を ``ref.qty - leaves_qty`` で導出する (_dispatch_event_frame) ため、
+        # ここで更新しないと訂正前 qty 基準で過大/過少報告し、実弾のポジション/P&L を
+        # 汚染する。_TachibanaOrderRef は frozen なので dataclasses.replace で差し替える。
+        # new_qty is None (価格のみ訂正) の場合は qty 据え置き。
+        if new_qty is not None:
+            self._orders_ref[order_id] = dataclasses.replace(ref, qty=new_qty)
         return OrderResult(
             status="ACCEPTED", filled_qty=0.0, avg_price=None, client_order_id=order_id,
         )

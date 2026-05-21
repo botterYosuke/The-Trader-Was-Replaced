@@ -1201,6 +1201,118 @@ async def test_modify_order_uses_correct_order(monkeypatch, httpx_mock: HTTPXMoc
     await adapter.logout()
 
 
+# Issue #5 [HIGH]: qty 訂正後、内部追跡 ref.qty を新数量へ差し替えないと、EC 約定の
+# 累計約定数量 (filled_qty = ref.qty - leaves_qty) を訂正前 qty 基準で過大報告する。
+# 実弾のポジション/P&L を汚染する。
+async def test_modify_qty_then_ec_fill_reports_filled_against_new_qty(
+    monkeypatch, httpx_mock: HTTPXMock,
+):
+    """1000 株発注 → 600 株へ qty 訂正 → 残 400 で部分約定。
+
+    累計約定 = 新 qty(600) - 残(400) = 200。
+    バグ時は 旧 qty(1000) - 400 = 600 と過大報告する。
+    """
+    adapter, _, events = await _login_with_hooks(monkeypatch, httpx_mock)
+    httpx_mock.add_response(url=_REQUEST_URL_RE, method="GET", content=_order_ok_bytes())
+    httpx_mock.add_response(
+        url=_REQUEST_URL_RE, method="GET",
+        content=_order_ok_bytes(clmid="CLMKabuCorrectOrder"),
+    )
+
+    placed = await adapter.submit_order(
+        venue="TACHIBANA", instrument_id="7203.TSE", side="BUY",
+        qty=1000.0, price=2400.0, order_type="LIMIT", time_in_force="DAY",
+    )
+    res = await adapter.modify_order(
+        venue="TACHIBANA", order_id=placed.client_order_id, new_qty=600.0,
+    )
+    assert res.status == "ACCEPTED"
+    # 訂正後、内部追跡 ref.qty は新 qty(600) に差し替わっていること。
+    assert adapter._orders_ref[placed.client_order_id].qty == 600.0
+
+    # 残 400 で部分約定 (200 株約定)。
+    await adapter._dispatch_event_frame(
+        "EC", _ec_frame(**{"p_DSU": "200", "p_ZSU": "400"}), 1_700_000_000_000,
+    )
+    assert len(events) == 1
+    assert events[0].status == "PARTIALLY_FILLED"
+    assert events[0].filled_qty == 200.0  # 600 - 400 (旧基準なら誤って 600)
+
+
+# Issue #5: 価格のみ訂正 (new_qty is None) は qty を据え置く。
+async def test_modify_price_only_keeps_qty_for_ec_fill(
+    monkeypatch, httpx_mock: HTTPXMock,
+):
+    adapter, _, events = await _login_with_hooks(monkeypatch, httpx_mock)
+    httpx_mock.add_response(url=_REQUEST_URL_RE, method="GET", content=_order_ok_bytes())
+    httpx_mock.add_response(
+        url=_REQUEST_URL_RE, method="GET",
+        content=_order_ok_bytes(clmid="CLMKabuCorrectOrder"),
+    )
+
+    placed = await adapter.submit_order(
+        venue="TACHIBANA", instrument_id="7203.TSE", side="BUY",
+        qty=100.0, price=2400.0, order_type="LIMIT", time_in_force="DAY",
+    )
+    await adapter.modify_order(
+        venue="TACHIBANA", order_id=placed.client_order_id, new_price=2500.0,
+    )
+    # 価格のみ訂正なので qty は据え置き (100)。
+    assert adapter._orders_ref[placed.client_order_id].qty == 100.0
+
+    # 残 30 で約定 → 累計 70 (= 100 - 30)。
+    await adapter._dispatch_event_frame(
+        "EC", _ec_frame(**{"p_DSU": "70", "p_ZSU": "30"}), 1_700_000_000_000,
+    )
+    assert len(events) == 1
+    assert events[0].filled_qty == 70.0
+
+
+# Issue #9.2 [LOW]: per-request httpx.AsyncClient を廃止し単一 client を再利用する。
+# コネクションプール/keepalive を効かせ、注文ホットパスの TLS handshake コストを除く。
+async def test_reuses_single_httpx_client_across_requests(
+    monkeypatch, httpx_mock: HTTPXMock,
+):
+    adapter, _, _ = await _login_with_hooks(monkeypatch, httpx_mock)
+    httpx_mock.add_response(url=_REQUEST_URL_RE, method="GET", content=_order_ok_bytes())
+    httpx_mock.add_response(
+        url=_REQUEST_URL_RE, method="GET",
+        content=_order_ok_bytes(clmid="CLMKabuCancelOrder"),
+    )
+
+    client_before = adapter._client
+    placed = await adapter.submit_order(
+        venue="TACHIBANA", instrument_id="7203.TSE", side="BUY",
+        qty=100.0, price=None, order_type="MARKET", time_in_force="DAY",
+    )
+    await adapter.cancel_order(venue="TACHIBANA", order_id=placed.client_order_id)
+    # 2 リクエストが同一 client インスタンスを再利用していること (new client を作らない)。
+    assert adapter._client is client_before
+    assert not adapter._client.is_closed
+    await adapter.logout()
+
+
+async def test_logout_closes_client_and_relogin_reopens(
+    monkeypatch, httpx_mock: HTTPXMock,
+):
+    adapter, _, _ = await _login_with_hooks(monkeypatch, httpx_mock)
+    first_client = adapter._client
+    assert not first_client.is_closed
+
+    await adapter.logout()
+    # logout で共有 client をクローズ (リソースリーク防止)。
+    assert first_client.is_closed
+
+    # 再 login で client を作り直す。
+    monkeypatch.setenv("DEV_TACHIBANA_USER_ID", "uid")
+    monkeypatch.setenv("DEV_TACHIBANA_PASSWORD", "pwd")
+    _add_login_response(httpx_mock, _ok_login_payload())
+    await adapter.login(VenueCredentials(credentials_source="env"))
+    assert adapter._client is not first_client
+    assert not adapter._client.is_closed
+    await adapter.logout()
+
+
 async def test_fetch_account_parses_buying_power_and_positions(
     monkeypatch, httpx_mock: HTTPXMock,
 ):
