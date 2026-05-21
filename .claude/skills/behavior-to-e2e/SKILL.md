@@ -184,6 +184,18 @@ backend→ECS seam だけでは十分条件にならない。
   したり mod.rs / 他 flow を安易に上書きしないこと（未コミットの拡張を消すと 10+ 本が `no method named run_via_ui`
   で全落ちし、working-tree のみの内容は復元不能になりうる）。共有ファイル（mod.rs / runner / 別 flow）を触る前に
   「その working-tree 版に依存する未コミット flow が無いか」を必ず確認する。詳細は memory `e2e-harness-extended-ui-driven`。
+- **`click<M>(marker)` の仕組み = `(marker, Button, Interaction::Pressed)` を spawn して `tick()` 1 回**。新規追加した
+  `Interaction` は `Changed<Interaction>` に必ずヒットするので、本番ハンドラ（`*_button_system`）が**ちょうど 1 回**発火する
+  （実マウス押下と同じ経路）。毎回新 entity なので同じボタンを連続クリックしても再発火する。producer→consumer
+  （例 `footer_pause_resume_system`→`handle_strategy_run_system`、remove→`unsubscribe_removed_instruments_system`）は
+  harness 側で `.chain()` 済みなので 1 tick で「クリック→`StrategyRunRequested`→`RunStrategy` コマンド」まで通る。
+  発射コマンドは `drain_commands()` で受ける。**「実 UI 操作で `TransportCommand` を assert → その後 backend 応答を
+  seam から注入」**が A–H の基本パターン。
+- **`push_state(ts)` は `TradingSession.replay_state` を `None` に上書きする**（fixture に replay_state が無いため）。
+  footer の Pause/Resume は `replay_state` で分岐するので、**`set_replay_state(Some("RUNNING"))` は必ず `push_state` の
+  「後」に呼ぶ**。順序を逆にすると clock push が RUNNING を消し、Pause クリックが Run 扱いになって command assert が落ちる
+  （A2 で踏んだ）。`unsubscribe_removed_instruments_system` は mode 切替 frame を skip するので、削除クリックの前に
+  `set_instruments` + 安定 tick を 1 回挟んで Local の prev 集合を整えてから × ボタンを押す（F2）。
 - **共有 runner（`tests/e2e_replay.rs`）の登録は orchestrator が一括で行う**。並行 subagent に書かせると重複登録・
   順序衝突・cargo の target ロック競合が起きる。subagent には「flow ファイルだけ書く / cargo も runner も触らない」と
   明示し、登録・コンパイル・修正は中央で回す。

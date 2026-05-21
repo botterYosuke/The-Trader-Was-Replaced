@@ -91,9 +91,18 @@ release gate 列の ID（`I*` / `J*` / `K*` / `L*` 群、保留中の `A5` / `C5
 - **済**: 各 flow を手書きの `tests/e2e/flows/<id>.rs` として実装し、`tests/e2e_replay.rs` が
   `MinimalPlugins` の headless App に `BackendStatusUpdate` / `BackendEvent` / replay clock を注入して
   resource を assert する（`tests/e2e/support/mod.rs` の `Harness`）。CI 向き。
+- **済（A–H の UI ジャーニー化）**: `Harness` は backend→ECS の注入だけでなく、本番 UI 入力 system も
+  載せ（footer の Run/Pause/Resume/Step/Stop・モードトグル・速度、サイドバー行クリック/× 削除、Venue メニュー
+  Connect/Disconnect、注文フォーム→確認モーダル、SecretModal、universe auto-fetch）、`TransportCommandSender`
+  の受信側を保持する。A–H 各 flow は **まず実 UI 操作を本番 system で駆動**（`click(marker)` で `Interaction::Pressed`
+  を注入 / `run_via_ui` / `place_order_via_ui` / `type_secret`）して発射された `TransportCommand` を `drain_commands`
+  で assert し、**その後 backend 応答を seam から注入**して resource 遷移を assert する。これで「ユーザー操作 →
+  コマンド」の前半が本番経路で保証される。G1–G3 は起動時の transport 自動接続が縫い目でクリック UI が無いため
+  backend-seam のみ（前置 UI 無し）。
 - **Phase A-full（未）**: App 組み立てとトランスポートタスクを `main.rs` から lib へ抽出し、
   `TransportCommand` 注入 → mock gRPC（`backend_integration.rs` の `MyDataEngine` を `tests/e2e/support/`
-  へ共有抽出）→ `RunState` 観測 の単一プロセスループを閉じる。現状は片側（`BackendStatusUpdate` 注入）のみ。
+  へ共有抽出）→ `RunState` 観測 の単一プロセスループを閉じる。**UI→`TransportCommand` の前半は上記の本番 UI
+  system 駆動で既に閉じている**。残るのは発射コマンドを実 gRPC に通して `BackendStatusUpdate` として戻す往復のみ。
 - **Phase B（未）**: `--e2e` / `BACKCAST_E2E=1` のウィンドウ実行モード（固定ウィンドウ・固定パス・
   構造化ログ）で、`.rs` flow と同じシナリオを実描画で smoke 実行（`kind:render` / `L4`）。
 
