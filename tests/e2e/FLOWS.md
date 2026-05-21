@@ -109,7 +109,7 @@
 - [x] **D4 venue_logout** ★ be:`mock`
   - seam: `VenueLogout`
   - 観測: `→Disconnected`
-- [ ] **D5 venue_logout_detected** ★ be:`mock`（保留: event seam — `backend_event_drain_system` が resource を変えない。実装には `src/backend_sync.rs` 拡張が必要）
+- [ ] **D5 venue_logout_detected** ★ be:`mock`（保留据え置き: `backend_event_drain_system` の `VenueLogoutDetected` アームは `info!` のみで resource を変えない。assert 可能にするには `VenueStatusRes` を Disconnected 相当へクリアする本番拡張が必要 = スコープ拡大。F3/F4/F5 と異なり Phase 9 マージでも reducer が入っていない）
   - seam: `BackendEvent::VenueLogoutDetected`
   - 観測: 外部ログアウトで状態クリア
 - [x] **D6 venue_reconnecting** ★★ be:`mock`
@@ -136,15 +136,33 @@
 - [x] **F2 unsubscribe_market_data** ★ be:`mock`
   - seam: `UnsubscribeMarketData(id)`
   - 観測: price 更新停止
-- [ ] **F3 order_event** ★ be:`mock`（保留: event seam — `backend_event_drain_system` が resource を変えない。`src/backend_sync.rs` 拡張が必要）
+- [x] **F3 order_event** ★ be:`mock`
   - seam: `BackendEvent::OrderEvent`
-  - 観測: `PortfolioState.orders` に fill 反映
-- [ ] **F4 account_event** ★ be:`mock`（保留: event seam — 同上）
+  - 観測: `LiveOrders.orders` に `client_order_id` 一致レコードが現れ status/filled_qty/avg_price 反映。未知 id は static フィールド空で挿入され、同 id の後続イベントは in-place マージ
+- [x] **F4 account_event** ★ be:`mock`
   - seam: `BackendEvent::AccountEvent`
-  - 観測: `PortfolioState` の cash/buying_power/positions 更新
-- [ ] **F5 secret_required** ★ be:`mock`（保留: event seam — pending-secret resource 自体が未実装）
+  - 観測: `PortfolioState` の cash/buying_power/positions 更新・`loaded==true`・`equity == cash + Σ(qty*avg_price + unrealized_pnl)`
+- [x] **F5 secret_required** ★ be:`mock`
   - seam: `BackendEvent::SecretRequired`
-  - 観測: pending-secret 状態（第二暗証要求）
+  - 観測: `SecretPrompt.active` が `Some` になり request_id/venue/kind/purpose 一致（第二暗証要求）
+
+## H. 注文 RPC（Phase 9 ライブ発注 / status seam）
+
+- [x] **H1 order_seeded** ★★ be:`mock`
+  - seam: `BackendStatusUpdate::OrderSeeded`
+  - 観測: `LiveOrders` に full レコード（symbol/side/qty/price 含む）を seed、`OrderFeedback.message` クリア
+- [x] **H2 order_status_updated** ★★ be:`mock`
+  - seam: seed 済みに `BackendStatusUpdate::OrderStatusUpdated`
+  - 観測: `client_order_id` 一致レコードに status/fill をマージ（static フィールドは保持・重複挿入しない）
+- [x] **H3 order_modified** ★★ be:`mock`
+  - seam: seed 済みに `BackendStatusUpdate::OrderModified`
+  - 観測: `apply_modify` で `Some` の qty/price のみ上書き・`None` は不変、status/fill 更新
+- [x] **H4 order_rejected** ★★ be:`mock`
+  - seam: `BackendStatusUpdate::OrderRejected{action,error_code}`
+  - 観測: `OrderFeedback.message == Some("{action}が拒否されました ({error_code})")`
+- [x] **H5 exec_mode_change_resets_portfolio** ★★ be:`mock`（回帰の肝）
+  - seam: `BackendStatusUpdate::ExecutionModeChanged`
+  - 観測: 実モード変更時に `PortfolioState` を default リセット（Live/Replay 口座データ混線防止）、同一モードは no-op
 
 ## G. バックエンド接続 / 自己修復（既存 supervisor テストと一部重複）
 
@@ -182,7 +200,7 @@
 
 ---
 
-## 実装状況（2026-05-20 時点 / branch: feat/e2e-test-harness）
+## 実装状況（2026-05-21 時点 / branch: docs/wiki）
 
 - ✅ **ECS 同期層の lib 抽出済み**: `apply_status_update` / `status_update_system` /
   `apply_available_loaded` / `apply_available_failed` / `BackendEventChannel` /
@@ -224,14 +242,28 @@
   `Update` に登録し、`arm_startup_timeout(id)` で startup window を開いて `started_at_elapsed` を採番、
   `advance_real_time(dur)` で headless `Time<Real>` を進めて駆動。59s で error なし→61s で
   `error` セット（phase 不変）→ `close_startup_window()` でクリアを観測。
-- ⬜ **保留（同ハーネスでは観測不能）**:
+- ✅ **event seam 3 本 + 注文 RPC 5 本追加（`cargo test --test e2e_replay` で 34 passed）**: Phase 9
+  ライブ口座・発注 API のマージで `backend_event_drain_system` / `apply_status_update` に reducer が
+  入り、event seam が観測可能になった。`tests/e2e/support/mod.rs` に `live_orders()` /
+  `order_feedback()` / `secret_prompt()` アクセサを追加。
+  - **F3 order_event**=`OrderEvent` → `LiveOrders.apply_event`（未知 id は static 空で挿入、同 id は
+    in-place マージ）。**F4 account_event**=`AccountEvent` → `apply_account_event`（cash/buying_power/
+    positions/loaded、`equity = cash + Σ(qty*avg_price + unrealized_pnl)`）。**F5 secret_required**=
+    `SecretRequired` → `SecretPrompt.active` が `Some`。
+  - **H1 order_seeded**=`OrderSeeded` → full レコード seed + `OrderFeedback` クリア。
+    **H2 order_status_updated**=`OrderStatusUpdated` → `apply_event` マージ（static 保持）。
+    **H3 order_modified**=`OrderModified` → `apply_modify`（`Some` のみ上書き・`None` 不変）。
+    **H4 order_rejected**=`OrderRejected` → `OrderFeedback.message` に整形メッセージ。
+    **H5 exec_mode_change_resets_portfolio**=実モード変更で `PortfolioState` を default リセット
+    （同一モードは no-op）— Live/Replay 口座データ混線防止の回帰の肝。
+- ⬜ **保留（同ハーネスでは観測不能 / 本番拡張が必要）**:
   - **A5 set_speed**: `BackendStatusUpdate` に speed ack variant が無い（Phase A-full 待ち）。
   - **C5 select_instrument**: `SelectedSymbol` は UI 駆動のみで backend→ECS seam を通らない。
   - **D8 prod_guard**: env 二重ガードは backend 側ロジック（be:`real` / backend 単体テスト向き）。
-  - **D5/F3/F4/F5（event seam）**: `backend_event_drain_system` が `info!` するだけで resource を
-    変えないため assert 不可。実装には `src/backend_sync.rs` の event drain に
-    `PortfolioState`/`VenueStatusRes`/pending-secret resource 反映を足し、本番 `main.rs` の挙動と
-    一致させる必要がある（スコープ拡大 = 依頼者確認待ち）。
+  - **D5 venue_logout_detected（保留据え置き）**: F3/F4/F5 と違い Phase 9 マージでも
+    `backend_event_drain_system` の `VenueLogoutDetected` アームは `info!` のみで resource を変えない。
+    assert 可能にするには `VenueStatusRes` を Disconnected 相当へクリアする**本番拡張**が必要
+    （スコープ拡大 = 依頼者確認待ち）。本作業では本番コードを変えず保留のまま据え置いた。
 - 📌 **設計メモ**: 本 v1 は backend→ECS の片側（`BackendStatusUpdate` 注入）を駆動する。
   反対側（`TransportCommand`→gRPC→`BackendStatusUpdate`）は既に `tests/backend_integration.rs`
   が mock tonic サーバでカバー済み。**両者で end-to-end をカバー**する構図。完全な単一プロセス

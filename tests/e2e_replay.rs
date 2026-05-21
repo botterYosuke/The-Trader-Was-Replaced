@@ -11,8 +11,8 @@ use support::Harness;
 
 use backcast::replay::ReplayStartupPhase;
 use backcast::trading::{
-    BackendStartupStage, BackendStatusUpdate, ExecutionMode, PortfolioOrder, PortfolioPosition,
-    RunState, Ticker, TickersSource, TickersStatus, VenueState,
+    AccountPosition, BackendEvent, BackendStartupStage, BackendStatusUpdate, ExecutionMode,
+    PortfolioOrder, PortfolioPosition, RunState, Ticker, TickersSource, TickersStatus, VenueState,
 };
 use chrono::NaiveDate;
 
@@ -568,4 +568,278 @@ fn g3_backend_disabled_sim() {
     // backend_update_system early-returns: the pushed clock must be ignored.
     h.push_state(5000);
     assert_eq!(h.timestamp_ms(), 0, "disabled backend must not advance the clock");
+}
+
+/// F3 order_event: a `BackendEvent::OrderEvent` for an unknown `client_order_id`
+/// inserts a `LiveOrders` record (empty static fields) carrying the event's
+/// status/fill, and a later event for the same id merges in place.
+#[test]
+fn f3_order_event() {
+    let mut h = Harness::new();
+    assert!(h.live_orders().orders.is_empty());
+
+    h.send_event(BackendEvent::OrderEvent {
+        order_id: "o-1".to_string(),
+        venue_order_id: "v-1".to_string(),
+        client_order_id: "c-1".to_string(),
+        status: "WORKING".to_string(),
+        filled_qty: 0.0,
+        avg_price: 0.0,
+        ts_ms: 1000,
+    });
+
+    let orders = h.live_orders().orders;
+    assert_eq!(orders.len(), 1);
+    let o = &orders[0];
+    assert_eq!(o.client_order_id, "c-1");
+    assert_eq!(o.venue_order_id, "v-1");
+    assert_eq!(o.status, "WORKING");
+    // Unknown id inserted with empty static fields (no PlaceOrder seed yet).
+    assert!(o.symbol.is_empty());
+    assert_eq!(o.filled_qty, 0.0);
+
+    // A fill update for the same client_order_id merges in place.
+    h.send_event(BackendEvent::OrderEvent {
+        order_id: "o-1".to_string(),
+        venue_order_id: "v-1".to_string(),
+        client_order_id: "c-1".to_string(),
+        status: "FILLED".to_string(),
+        filled_qty: 100.0,
+        avg_price: 1500.0,
+        ts_ms: 2000,
+    });
+
+    let orders = h.live_orders().orders;
+    assert_eq!(orders.len(), 1, "merge must not insert a duplicate");
+    let o = &orders[0];
+    assert_eq!(o.status, "FILLED");
+    assert_eq!(o.filled_qty, 100.0);
+    assert_eq!(o.avg_price, 1500.0);
+}
+
+/// F4 account_event: a `BackendEvent::AccountEvent` populates `PortfolioState`
+/// (cash/buying_power/positions, loaded), with equity derived as
+/// `cash + Σ(qty*avg_price + unrealized_pnl)`.
+#[test]
+fn f4_account_event() {
+    let mut h = Harness::new();
+    assert!(!h.portfolio().loaded);
+
+    h.send_event(BackendEvent::AccountEvent {
+        cash: 50_000.0,
+        buying_power: 120_000.0,
+        positions: vec![
+            AccountPosition {
+                symbol: "1301.TSE".to_string(),
+                qty: 100,
+                avg_price: 1500.0,
+                unrealized_pnl: 250.0,
+            },
+            AccountPosition {
+                symbol: "7203.TSE".to_string(),
+                qty: 10,
+                avg_price: 2000.0,
+                unrealized_pnl: -100.0,
+            },
+        ],
+        ts_ms: 1000,
+    });
+
+    let p = h.portfolio();
+    assert!(p.loaded);
+    assert_eq!(p.cash, 50_000.0);
+    assert_eq!(p.buying_power, 120_000.0);
+    assert_eq!(p.positions.len(), 2);
+    assert_eq!(p.positions[0].symbol, "1301.TSE");
+    // cash + (100*1500 + 250) + (10*2000 + -100) = 50000 + 150250 + 19900
+    assert_eq!(p.equity, 50_000.0 + 150_250.0 + 19_900.0);
+}
+
+/// F5 secret_required: a `BackendEvent::SecretRequired` opens the secret prompt
+/// (`SecretPrompt.active` becomes `Some` with the request's fields).
+#[test]
+fn f5_secret_required() {
+    let mut h = Harness::new();
+    assert!(h.secret_prompt().active.is_none());
+
+    h.send_event(BackendEvent::SecretRequired {
+        request_id: "req-1".to_string(),
+        venue: "tachibana".to_string(),
+        kind: "second_password".to_string(),
+        purpose: "place_order".to_string(),
+    });
+
+    let req = h.secret_prompt().active.expect("prompt active");
+    assert_eq!(req.request_id, "req-1");
+    assert_eq!(req.venue, "tachibana");
+    assert_eq!(req.kind, "second_password");
+    assert_eq!(req.purpose, "place_order");
+}
+
+/// H1 order_seeded: `OrderSeeded` seeds the full `LiveOrders` record (including
+/// the static symbol/side/qty/price the OrderEvent lacks) and clears any prior
+/// `OrderFeedback` notice.
+#[test]
+fn h1_order_seeded() {
+    let mut h = Harness::new();
+    // A stale reject notice from a prior attempt.
+    h.send_status(BackendStatusUpdate::OrderRejected {
+        action: "発注".to_string(),
+        error_code: "VENUE_LOGIN_REQUIRED".to_string(),
+    });
+    assert!(h.order_feedback().message.is_some());
+
+    h.send_status(BackendStatusUpdate::OrderSeeded {
+        client_order_id: "c-1".to_string(),
+        venue_order_id: "v-1".to_string(),
+        symbol: "1301.TSE".to_string(),
+        side: "BUY".to_string(),
+        qty: 100.0,
+        price: Some(1500.0),
+        status: "WORKING".to_string(),
+        filled_qty: 0.0,
+        avg_price: 0.0,
+        ts_ms: 1000,
+    });
+
+    let orders = h.live_orders().orders;
+    assert_eq!(orders.len(), 1);
+    let o = &orders[0];
+    assert_eq!(o.client_order_id, "c-1");
+    assert_eq!(o.symbol, "1301.TSE");
+    assert_eq!(o.side, "BUY");
+    assert_eq!(o.qty, 100.0);
+    assert_eq!(o.price, Some(1500.0));
+    assert!(
+        h.order_feedback().message.is_none(),
+        "a successful seed clears the prior reject notice"
+    );
+}
+
+/// H2 order_status_updated: `OrderStatusUpdated` merges status/fill into the
+/// existing seeded record by `client_order_id`, preserving static fields.
+#[test]
+fn h2_order_status_updated() {
+    let mut h = Harness::new();
+    h.send_status(BackendStatusUpdate::OrderSeeded {
+        client_order_id: "c-1".to_string(),
+        venue_order_id: "v-1".to_string(),
+        symbol: "1301.TSE".to_string(),
+        side: "BUY".to_string(),
+        qty: 100.0,
+        price: Some(1500.0),
+        status: "WORKING".to_string(),
+        filled_qty: 0.0,
+        avg_price: 0.0,
+        ts_ms: 1000,
+    });
+
+    h.send_status(BackendStatusUpdate::OrderStatusUpdated {
+        client_order_id: "c-1".to_string(),
+        venue_order_id: "v-1".to_string(),
+        status: "FILLED".to_string(),
+        filled_qty: 100.0,
+        avg_price: 1499.0,
+        ts_ms: 2000,
+    });
+
+    let orders = h.live_orders().orders;
+    assert_eq!(orders.len(), 1, "merge must not insert a duplicate");
+    let o = &orders[0];
+    assert_eq!(o.status, "FILLED");
+    assert_eq!(o.filled_qty, 100.0);
+    assert_eq!(o.avg_price, 1499.0);
+    // Static fields from the seed survive the merge.
+    assert_eq!(o.symbol, "1301.TSE");
+    assert_eq!(o.qty, 100.0);
+}
+
+/// H3 order_modified: `OrderModified` overwrites qty/price only when `Some`
+/// (None keeps the tracked value) and refreshes status/fills.
+#[test]
+fn h3_order_modified() {
+    let mut h = Harness::new();
+    h.send_status(BackendStatusUpdate::OrderSeeded {
+        client_order_id: "c-1".to_string(),
+        venue_order_id: "v-1".to_string(),
+        symbol: "1301.TSE".to_string(),
+        side: "BUY".to_string(),
+        qty: 100.0,
+        price: Some(1500.0),
+        status: "WORKING".to_string(),
+        filled_qty: 0.0,
+        avg_price: 0.0,
+        ts_ms: 1000,
+    });
+
+    // Modify only the price; qty is None so it must stay at 100.
+    h.send_status(BackendStatusUpdate::OrderModified {
+        client_order_id: "c-1".to_string(),
+        venue_order_id: "v-1".to_string(),
+        new_qty: None,
+        new_price: Some(1450.0),
+        status: "WORKING".to_string(),
+        filled_qty: 0.0,
+        avg_price: 0.0,
+        ts_ms: 2000,
+    });
+
+    let o = h.live_orders().orders[0].clone();
+    assert_eq!(o.price, Some(1450.0), "Some(price) overwrites");
+    assert_eq!(o.qty, 100.0, "None new_qty keeps the tracked value");
+    assert_eq!(o.ts_ms, 2000);
+}
+
+/// H4 order_rejected: `OrderRejected` surfaces a formatted notice in
+/// `OrderFeedback.message`.
+#[test]
+fn h4_order_rejected() {
+    let mut h = Harness::new();
+    assert!(h.order_feedback().message.is_none());
+
+    h.send_status(BackendStatusUpdate::OrderRejected {
+        action: "発注".to_string(),
+        error_code: "EXECUTION_MODE_PRECONDITION".to_string(),
+    });
+
+    assert_eq!(
+        h.order_feedback().message.as_deref(),
+        Some("発注が拒否されました (EXECUTION_MODE_PRECONDITION)")
+    );
+}
+
+/// H5 exec_mode_change_resets_portfolio: a real `ExecutionModeChanged` resets
+/// `PortfolioState` to default so Live/Replay account data cannot bleed across
+/// modes. A no-op change (same mode) leaves the portfolio intact.
+#[test]
+fn h5_exec_mode_change_resets_portfolio() {
+    let mut h = Harness::new();
+    // Populate Live account data.
+    h.send_event(BackendEvent::AccountEvent {
+        cash: 50_000.0,
+        buying_power: 120_000.0,
+        positions: vec![AccountPosition {
+            symbol: "1301.TSE".to_string(),
+            qty: 100,
+            avg_price: 1500.0,
+            unrealized_pnl: 0.0,
+        }],
+        ts_ms: 1000,
+    });
+    assert!(h.portfolio().loaded);
+
+    // A no-op change (already Replay) must not wipe the data.
+    h.send_status(BackendStatusUpdate::ExecutionModeChanged {
+        mode: ExecutionMode::Replay,
+    });
+    assert!(h.portfolio().loaded, "same-mode change is a no-op for the portfolio");
+
+    // A real change wipes the mode-specific account snapshot.
+    h.send_status(BackendStatusUpdate::ExecutionModeChanged {
+        mode: ExecutionMode::LiveManual,
+    });
+    let p = h.portfolio();
+    assert!(!p.loaded, "a real mode change resets the portfolio");
+    assert!(p.positions.is_empty());
+    assert_eq!(p.cash, 0.0);
 }

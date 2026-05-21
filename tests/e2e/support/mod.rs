@@ -171,6 +171,18 @@ impl Harness {
         self.app.world().resource::<LastPrices>().clone()
     }
 
+    pub fn live_orders(&self) -> LiveOrders {
+        self.app.world().resource::<LiveOrders>().clone()
+    }
+
+    pub fn order_feedback(&self) -> OrderFeedback {
+        self.app.world().resource::<OrderFeedback>().clone()
+    }
+
+    pub fn secret_prompt(&self) -> SecretPrompt {
+        self.app.world().resource::<SecretPrompt>().clone()
+    }
+
     pub fn startup_progress(&self) -> ReplayStartupProgress {
         self.app.world().resource::<ReplayStartupProgress>().clone()
     }
