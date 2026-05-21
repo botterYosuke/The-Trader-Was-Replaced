@@ -30,6 +30,8 @@ from .live.secret_provider import SecondSecretResolver, SecretTimeoutError
 from .live.order_facade import ManualOrderFacade, OrderFacadeError
 from .live.account_sync import AccountSync
 from .live.health_watchdog import VenueHealthWatchdog
+from .live.instruments_scheduler import InstrumentsScheduler
+from .live import instruments_store
 from .live.idle_shutdown import (
     IdleShutdownMonitor,
     LastRequestClock,
@@ -232,6 +234,10 @@ class GrpcDataEngineServer(
         # Phase 9 Step 7: venue health watchdog (kabu 本体ログアウト検知, lifetime = live
         # session). kabu のみ (poll 型)。Tachibana は EVENT WS の SS 閉局フレームで push 検知。
         self._health_watchdog: Optional[VenueHealthWatchdog] = None
+        # Phase 9 Step 9: instruments daily refresh (login 時 persist + 営業日 5:00 JST
+        # 更新, lifetime = live session). 営業日カレンダーは持たず venue の fetch_instruments
+        # エラー/空に委ねる (ユーザー決定。詳細は instruments_scheduler のドキュメント参照)。
+        self._instruments_scheduler: Optional[InstrumentsScheduler] = None
 
     _KNOWN_VENUES = {"TACHIBANA", "KABU", "MOCK"}  # D26: MOCK added
     _KNOWN_CRED_SOURCES = {"prompt", "session_cache", "env", "prompt_result"}
@@ -355,6 +361,13 @@ class GrpcDataEngineServer(
             interval_s=30.0,
         )
         self._account_sync = account_sync
+        # Phase 9 Step 9: instruments daily refresh. login 直後の初期 refresh で
+        # parquet を全置換 (= ログイン時 persist) し、以降は営業日 5:00 JST 毎に更新する。
+        # account_sync と同じく login 前に生成し、start はログイン成功後 (§_attempt)。
+        self._instruments_scheduler = InstrumentsScheduler(
+            adapter,
+            venue_id=runner.venue_id,
+        )
         # NOTE: do NOT start the sync here. _start_live_components runs *before*
         # adapter.login() in the VenueLogin handler, so the forced initial
         # fetch_account() would hit a not-logged-in adapter — the guaranteed first
@@ -406,6 +419,11 @@ class GrpcDataEngineServer(
     def _start_health_watchdog_after_login(self) -> None:
         self._start_bg_component_after_login(self._health_watchdog, "health watchdog")
 
+    def _start_instruments_scheduler_after_login(self) -> None:
+        self._start_bg_component_after_login(
+            self._instruments_scheduler, "instruments scheduler"
+        )
+
     async def _teardown_live_components_async(self):
         bridge = self._live_bridge
         cache = self._live_price_cache
@@ -413,6 +431,10 @@ class GrpcDataEngineServer(
         runner = self._live_runner
         account_sync = self._account_sync
         health_watchdog = self._health_watchdog
+        instruments_scheduler = self._instruments_scheduler
+        # Stop the instruments refresh first (it only touches parquet; cheap to stop).
+        if instruments_scheduler is not None:
+            await instruments_scheduler.stop()
         # Stop the watchdog first so no VenueLogoutDetected is pushed mid-teardown
         # (the adapter is about to be torn down → check_health would race on a
         # closing transport).
@@ -450,6 +472,7 @@ class GrpcDataEngineServer(
             self._order_facade = None
             self._account_sync = None
             self._health_watchdog = None
+            self._instruments_scheduler = None
             # Arm clear-on-toggle: a prior lifecycle's last_error must not bleed
             # into the next Live session or stay visible after returning to Replay.
             self._suppress_live_last_error = True
@@ -957,20 +980,40 @@ class GrpcDataEngineServer(
         return self._list_instruments_local(context)
 
     def _list_instruments_live(self, context):
-        """D1/D10: Fetch instruments from live adapter (must be logged in)."""
+        """D1/D10: Fetch instruments from live adapter (must be logged in).
+
+        Phase 9 Step 9: store-first — InstrumentsScheduler persists the universe to
+        parquet at login + daily (5:00 JST), so we serve the persisted snapshot when
+        present and only hit the venue on a miss (then persist for next time).
+        """
         runner = self._live_runner
         if runner is None or not runner.is_logged_in():
             return engine_pb2.ListInstrumentsResponse(
                 success=False,
                 error_message="LIVE_VENUE_NOT_LOGGED_IN",
             )
-        try:
-            raws = runner.fetch_instruments_blocking(timeout=self._live_timeout_s)
-        except Exception as exc:
-            return engine_pb2.ListInstrumentsResponse(
-                success=False,
-                error_message=f"fetch_instruments failed: {exc}",
-            )
+        venue = runner.venue_id
+        raws = None
+        if venue:
+            try:
+                raws = instruments_store.read_instruments(venue)
+            except Exception:
+                logging.exception("ListInstruments: store read failed; fetching live")
+                raws = None
+        if not raws:
+            try:
+                raws = runner.fetch_instruments_blocking(timeout=self._live_timeout_s)
+            except Exception as exc:
+                return engine_pb2.ListInstrumentsResponse(
+                    success=False,
+                    error_message=f"fetch_instruments failed: {exc}",
+                )
+            # Best-effort persist so subsequent calls hit the store (does not gate the response).
+            if raws and venue:
+                try:
+                    instruments_store.write_instruments(venue, raws)
+                except Exception:
+                    logging.exception("ListInstruments: persist after fetch failed")
         # v4 fix: empty list == adapter not implemented, treat as failure
         if not raws:
             return engine_pb2.ListInstrumentsResponse(
@@ -1431,6 +1474,10 @@ class GrpcDataEngineServer(
                 # Phase 9 Step 7: start the kabu health watchdog now that the
                 # adapter is logged in (no-op for Tachibana/mock, which have none).
                 self._start_health_watchdog_after_login()
+                # Phase 9 Step 9: start the instruments daily refresh. Its forced
+                # initial fetch+persist writes the parquet store now that the adapter
+                # is logged in (= login-time persist), then refreshes at 5:00 JST.
+                self._start_instruments_scheduler_after_login()
                 # Arm clear-on-toggle: suppress stale errors from a prior session.
                 self._suppress_live_last_error = True
                 return True, ""

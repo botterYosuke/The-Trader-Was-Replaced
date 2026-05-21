@@ -145,6 +145,11 @@ class LiveRunner:
         """
         return getattr(self._adapter, "is_logged_in", False) and self.bus is not None
 
+    @property
+    def venue_id(self) -> str:
+        """Phase 9 Step 9: adapter の venue id（instruments store のキー）。"""
+        return getattr(self._adapter, "venue_id", "") or ""
+
     def fetch_instruments_blocking(self, timeout: float = 5.0):
         """D10: Fetch instruments from adapter synchronously (from gRPC thread).
 
