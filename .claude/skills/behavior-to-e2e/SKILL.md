@@ -9,6 +9,8 @@ description: >-
   「リプレイが完走することをテスト」「Run が失敗したら error が出るのを担保」「ポートフォリオが反映されるか」
   「venue ログインの状態遷移をテスト」「銘柄リストの取得失敗をテスト」「回帰テストを追加」「E2E を1本足して」
   「FLOWS.md の flow を実装」「backend からこのイベントが来たら UI がこうなる、をテスト」と言われたとき。
+  さらに **`e2e_replay` が全本落ちる / ハーネスが panic する / `could not access system parameter` が出た /
+  マージ後に E2E が壊れた**ときの**ハーネス修復**も本スキルの対象（必要 resource の insert 漏れが定番原因）。
   GUI を実際に起動して目視する手動検証は本スキルではなく `e2e-testing` を使う。本スキルは描画に依存しない
   resource レベルの自動テスト専用。Rust の一般的なユニットテスト作法は `rust-testing` を併用する。
 ---
@@ -75,6 +77,17 @@ description: >-
 
 ## 落とし穴（事前に知らないと必ずハマる）
 
+- **ハーネスは wire した system が要求する resource を全部 insert していないと全テストが即死する**。
+  `Harness::with_backend_enabled`（`mod.rs`）は `status_update_system` / `backend_update_system` /
+  `backend_event_drain_system` / `replay_startup_timeout_system` が取る `ResMut<T>` を**手で全部
+  `insert_resource(T::default())` している**。これらの system に新しい resource param が増えたら
+  （例: Phase 9 hardening が `status_update_system` に `ResMut<ReconcilePrompt>` を追加）、
+  **ハーネスにも同じ 1 行を足さないと**全 e2e_replay が
+  `... could not access system parameter ResMut<'_, T>` で 0.05 秒のうちに 35 本まとめてパニックする
+  （bevy_ecs の system-param validation）。パニックは `bevy_ecs/.../function_system.rs` を指すので
+  ハーネス漏れだと気づきにくい。**正解セットは `src/main.rs` の `insert_resource(...)` 群**＝ハーネスは
+  これをミラーする。**ブランチをマージした直後は特に要注意**（片方が system に resource を足し、
+  もう片方がハーネスを持つと、テキスト無衝突でも合体時に必ずこれで壊れる）。
 - **event seam は一部だけ resource を変える（Phase 9 マージ以降）**。`backend_event_drain_system` は
   `OrderEvent` → `LiveOrders.apply_event`、`AccountEvent` → `apply_account_event`（`PortfolioState`）、
   `SecretRequired` → `SecretPrompt.active` を反映する（= F3/F4/F5 は実装済み・観測可能）。**ただし
