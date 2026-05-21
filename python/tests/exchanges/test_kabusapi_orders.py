@@ -245,10 +245,56 @@ def test_order_status_partial_then_canceled_via_details_is_canceled():
     assert o.order_status(state=5, order_qty=100, cum_qty=40, details=details) == "CANCELED"
 
 
-def test_order_status_zero_fill_cancel_detail_state5_is_canceled():
-    """取消明細が State=5 (削除済み) でも確定明細として CANCELED に分類する (review M1)。"""
-    details = [{"RecType": 6, "State": 5}]
+def test_order_status_zero_fill_cancel_detail_state3_is_canceled():
+    """取消明細が確定 (State=3 処理済) なら CANCELED に分類する。
+
+    OpenAPI Details.State enum: 1=待機 / 2=処理中 / 3=処理済 (取消済・全約定・期限切れを
+    含む唯一の完了状態) / 4=エラー / 5=削除済み。確定 = 処理済 (3) のみ (review fix #1)。
+    """
+    details = [{"RecType": 6, "State": 3}]
     assert o.order_status(state=5, order_qty=100, cum_qty=0, details=details) == "CANCELED"
+
+
+def test_order_status_cancel_detail_waiting_or_error_not_confirmed_cancel():
+    """fix #1: State==1 (待機) / ==4 (エラー) の取消明細は確定 (処理済=3) ではないので
+    CANCELED と誤分類しない。約定ゼロ・取消明細が非確定なら既定の REJECTED に落ちる
+    (取消の確定理由として扱わない)。"""
+    waiting = [{"RecType": 6, "State": 1}]
+    errored = [{"RecType": 6, "State": 4}]
+    assert o.order_status(state=5, order_qty=100, cum_qty=0, details=waiting) == "REJECTED"
+    assert o.order_status(state=5, order_qty=100, cum_qty=0, details=errored) == "REJECTED"
+
+
+def test_order_status_state5_parent_nonconfirmed_cancel_detail_not_canceled():
+    """fix #1 regression: State==5 (削除済み) の親注文 + CumQty>0 + RecType==6 (取消) 明細が
+    Details.State==1 (待機) および ==4 (エラー) のとき、確定取消として分類しない。
+
+    部分約定して終了 (cum_qty>0) の残数量理由判定でも、非確定 (≠3) の取消明細は
+    無視され、既定の CANCELED (部分約定後の残数量) に落ちる (EXPIRED にもならない)。"""
+    waiting = [{"RecType": 8, "Qty": 40, "Price": 2500.0, "State": 3},
+               {"RecType": 6, "State": 1}]
+    errored = [{"RecType": 8, "Qty": 40, "Price": 2500.0, "State": 3},
+               {"RecType": 6, "State": 4}]
+    # 取消明細が非確定でも残数量の既定は CANCELED (部分約定済みは REJECTED にしない)。
+    assert o.order_status(state=5, order_qty=100, cum_qty=40, details=waiting) == "CANCELED"
+    assert o.order_status(state=5, order_qty=100, cum_qty=40, details=errored) == "CANCELED"
+
+
+def test_avg_fill_price_ignores_nonconfirmed_execution_rows():
+    """fix #2: RecType==8 (約定) 明細でも Details.State!=3 (処理中=2 / 待機=1 / エラー=4) は
+    確定前なので加重平均価格に算入しない (#1 の確定判定と整合)。"""
+    # 確定約定 60@2500 のみ採用。State==2 の 40@9999 (処理中) は無視。
+    details = [
+        {"RecType": 8, "Qty": 60, "Price": 2500.0, "State": 3},
+        {"RecType": 8, "Qty": 40, "Price": 9999.0, "State": 2},
+    ]
+    assert o._avg_fill_price(details, fallback=0.0) == pytest.approx(2500.0)
+
+
+def test_avg_fill_price_falls_back_when_only_nonconfirmed_executions():
+    """確定約定が無く処理中明細のみなら fallback (注文 Price) を返す。"""
+    details = [{"RecType": 8, "Qty": 40, "Price": 9999.0, "State": 2}]
+    assert o._avg_fill_price(details, fallback=1234.0) == 1234.0
 
 
 @pytest.mark.parametrize("bad_state", [0, 9, 99])

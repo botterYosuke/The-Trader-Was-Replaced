@@ -27,7 +27,8 @@ flowsurface kabu venue 統合は **Python 側 `python/engine/exchanges/kabusapi*
 >   - **訂正は「取消→新規発注」変換**（kabu に訂正 API 無し）。補償結果は facade の `OrderResult.status` で表現する（取消失敗=REJECTED / 取消成功+新規失敗=CANCELED / 全成功=ACCEPTED で同一 client_order_id に新 OrderId を再マップ）。取消→新規の隙間で polling が中間状態を push しないよう `_modifying` ガードで抑止する。
 >   - **発注に Password フィールドは無い**（R3）。Tachibana の第二暗証番号 (SecretVault/SecretRequired) 経路は kabu では一切使わない。`set_execution_hooks` は Tachibana と同じ呼び出し口を保つため `secret_resolver` を受理して無視する。
 >   - **AccountType は MVP 既定 = 特定(4) 定数**（kabu は login 応答に口座種別を載せない）。一般/法人は将来 venue_params で上書き。
-> - **未実装（残課題）**: kabu 早朝ログアウト自動回復 Watchdog（`health_watchdog.py`、Phase 9 Step 7）・`kabusapi_login_flow` の prompt フロー本体・instruments 日次更新。
+> - **Venue Health Watchdog（Phase 9 Step 7・実装済み）**: `KabuStationAdapter.check_health()` = `GET /apisoftlimit`（info 系・最軽量・副作用なし。`HEAD` は `4001014` で不可、新規 `/token` は本体負荷のため使わない）。`4001007`/`4001017`（本体ログアウト/未ログイン）→ `False`、流量 429・接続断等は transient として **raise**（誤った再ログイン modal を出さないため）。`live/health_watchdog.py` の `VenueHealthWatchdog` が 30s poll で呼び、`False` で `VenueLogoutDetected` を push（debounce 1 回・復旧で re-arm）。server_grpc は `hasattr(check_health)` で kabu のみ watchdog 起動。
+> - **未実装（残課題）**: `kabusapi_login_flow` の prompt フロー本体・instruments 日次更新（Phase 9 Step 9）・Backend Auto-Restart（Phase 9 Step 8 §3.8、`GetOrders` proto RPC 新設が前提）。
 
 ## 参照リソース
 

@@ -236,6 +236,11 @@ class DataEngineStub(object):
                 request_serializer=engine__pb2.GetOrderStatusReq.SerializeToString,
                 response_deserializer=engine__pb2.GetOrderStatusRes.FromString,
                 _registered_method=True)
+        self.GetOrders = channel.unary_unary(
+                '/engine.DataEngine/GetOrders',
+                request_serializer=engine__pb2.GetOrdersReq.SerializeToString,
+                response_deserializer=engine__pb2.GetOrdersRes.FromString,
+                _registered_method=True)
         self.Shutdown = channel.unary_unary(
                 '/engine.DataEngine/Shutdown',
                 request_serializer=engine__pb2.ShutdownRequest.SerializeToString,
@@ -418,6 +423,15 @@ class DataEngineServicer(object):
         context.set_details('Method not implemented!')
         raise NotImplementedError('Method not implemented!')
 
+    def GetOrders(self, request, context):
+        """Phase 9 Step 8 §3.8: list the backend's currently-tracked working orders.
+        Used after an auto-restart to reconcile the UI's optimistic order list with
+        the backend's truth (a fresh backend has none → UI orders flagged "unknown").
+        """
+        context.set_code(grpc.StatusCode.UNIMPLEMENTED)
+        context.set_details('Method not implemented!')
+        raise NotImplementedError('Method not implemented!')
+
     def Shutdown(self, request, context):
         """Lifecycle (Step 2: backend-startup-sync)
         """
@@ -557,6 +571,11 @@ def add_DataEngineServicer_to_server(servicer, server):
                     servicer.GetOrderStatus,
                     request_deserializer=engine__pb2.GetOrderStatusReq.FromString,
                     response_serializer=engine__pb2.GetOrderStatusRes.SerializeToString,
+            ),
+            'GetOrders': grpc.unary_unary_rpc_method_handler(
+                    servicer.GetOrders,
+                    request_deserializer=engine__pb2.GetOrdersReq.FromString,
+                    response_serializer=engine__pb2.GetOrdersRes.SerializeToString,
             ),
             'Shutdown': grpc.unary_unary_rpc_method_handler(
                     servicer.Shutdown,
@@ -1266,6 +1285,33 @@ class DataEngine(object):
             '/engine.DataEngine/GetOrderStatus',
             engine__pb2.GetOrderStatusReq.SerializeToString,
             engine__pb2.GetOrderStatusRes.FromString,
+            options,
+            channel_credentials,
+            insecure,
+            call_credentials,
+            compression,
+            wait_for_ready,
+            timeout,
+            metadata,
+            _registered_method=True)
+
+    @staticmethod
+    def GetOrders(request,
+            target,
+            options=(),
+            channel_credentials=None,
+            call_credentials=None,
+            insecure=False,
+            compression=None,
+            wait_for_ready=None,
+            timeout=None,
+            metadata=None):
+        return grpc.experimental.unary_unary(
+            request,
+            target,
+            '/engine.DataEngine/GetOrders',
+            engine__pb2.GetOrdersReq.SerializeToString,
+            engine__pb2.GetOrdersRes.FromString,
             options,
             channel_credentials,
             insecure,

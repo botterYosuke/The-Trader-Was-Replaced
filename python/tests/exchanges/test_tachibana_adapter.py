@@ -1324,6 +1324,97 @@ async def test_ec_partial_fill_uses_leaves_qty(monkeypatch, httpx_mock: HTTPXMoc
     await adapter.logout()
 
 
+# Finding 1 [HIGH]: a raising on_order_event callback must not tear down the EC
+# stream — the exception must be isolated/logged so a subsequent distinct EC is
+# still processed and delivered.
+async def test_raising_on_order_event_does_not_block_next_ec(
+    monkeypatch, httpx_mock: HTTPXMock,
+):
+    adapter, _, _ = await _login_with_hooks(monkeypatch, httpx_mock)
+    httpx_mock.add_response(url=_REQUEST_URL_RE, method="GET", content=_order_ok_bytes())
+    await adapter.submit_order(
+        venue="TACHIBANA", instrument_id="7203.TSE", side="BUY",
+        qty=100.0, price=None, order_type="MARKET", time_in_force="DAY",
+    )
+
+    delivered: list = []
+    calls = {"n": 0}
+
+    def _raises_first_then_records(event):
+        calls["n"] += 1
+        if calls["n"] == 1:
+            raise RuntimeError("boom in publish_order_event")
+        delivered.append(event)
+
+    adapter._on_order_event = _raises_first_then_records
+
+    # First EC: callback raises — must NOT propagate out of _dispatch_event_frame.
+    await adapter._dispatch_event_frame("EC", _ec_frame(), 1_700_000_000_000)
+    # Second distinct EC (different trade_id): must still be processed/delivered.
+    await adapter._dispatch_event_frame(
+        "EC", _ec_frame(**{"p_EDA": "2", "p_DSU": "50", "p_ZSU": "50"}),
+        1_700_000_001_000,
+    )
+
+    assert len(delivered) == 1
+    assert delivered[0].venue_order_id == "9000015"
+    await adapter.logout()
+
+
+async def test_raising_system_status_handler_is_isolated():
+    """SS ハンドラ内 (on_venue_logout) が raise しても _dispatch_event_frame は伝播しない。"""
+    adapter, _ = _ss_adapter()
+
+    def _boom(_venue):
+        raise RuntimeError("boom in venue logout publish")
+
+    adapter._on_venue_logout = _boom
+    # Must not raise out of the recv-loop entry point.
+    await adapter._dispatch_event_frame("SS", {"sSystemStatus": "0"}, 1)
+
+
+# Finding 3 [MEDIUM]: a non-rejected ACK with empty sEigyouDay/sOrderNumber would
+# register an UNCANCELABLE order (cancel/correct need both ids). Must instead
+# surface a REJECTED-style result and register nothing.
+async def test_submit_order_incomplete_ack_empty_eigyou_day_rejected(
+    monkeypatch, httpx_mock: HTTPXMock,
+):
+    adapter, _, _ = await _login_with_hooks(monkeypatch, httpx_mock)
+    # success envelope (p_errno=0, sResultCode=0) but sEigyouDay empty.
+    httpx_mock.add_response(
+        url=_REQUEST_URL_RE, method="GET",
+        content=_order_ok_bytes(eigyou_day=""),
+    )
+    res = await adapter.submit_order(
+        venue="TACHIBANA", instrument_id="7203.TSE", side="BUY",
+        qty=100.0, price=None, order_type="MARKET", time_in_force="DAY",
+    )
+    assert res.status == "REJECTED"
+    assert res.reject_reason == "INCOMPLETE_ORDER_ACK"
+    # No cancelable ref registered.
+    assert adapter._orders_ref == {}
+    assert adapter._order_number_to_cid == {}
+    await adapter.logout()
+
+
+async def test_submit_order_incomplete_ack_empty_order_number_rejected(
+    monkeypatch, httpx_mock: HTTPXMock,
+):
+    adapter, _, _ = await _login_with_hooks(monkeypatch, httpx_mock)
+    httpx_mock.add_response(
+        url=_REQUEST_URL_RE, method="GET",
+        content=_order_ok_bytes(order_number=""),
+    )
+    res = await adapter.submit_order(
+        venue="TACHIBANA", instrument_id="7203.TSE", side="BUY",
+        qty=100.0, price=None, order_type="MARKET", time_in_force="DAY",
+    )
+    assert res.status == "REJECTED"
+    assert res.reject_reason == "INCOMPLETE_ORDER_ACK"
+    assert adapter._orders_ref == {}
+    await adapter.logout()
+
+
 async def test_non_ec_frame_does_not_push(monkeypatch, httpx_mock: HTTPXMock):
     adapter, _, events = await _login_with_hooks(monkeypatch, httpx_mock)
     await adapter._dispatch_event_frame("KP", {}, 1_700_000_000_000)
@@ -1415,6 +1506,20 @@ async def test_ss_unrecognized_fields_are_ignored():
     assert fired == []
 
 
+async def test_ss_unrecognized_fields_log_actual_keys_once(caplog):
+    """既知フィールド欠落時、実フィールド名を 1 度だけ warning (Demo で prefix 確定用)。
+    再送でスパムしない (本番で p_* 変種だった場合に恒常スパムさせないため)。"""
+    import logging
+    adapter, fired = _ss_adapter()
+    with caplog.at_level(logging.WARNING, logger="engine.exchanges.tachibana"):
+        await adapter._dispatch_event_frame("SS", {"p_GSCD": "0", "p_foo": "1"}, 1)
+        await adapter._dispatch_event_frame("SS", {"p_GSCD": "0", "p_foo": "1"}, 2)
+    diag = [r for r in caplog.records if "actual field keys" in r.getMessage()]
+    assert len(diag) == 1, "診断 warning はセッション 1 回だけ"
+    assert "p_GSCD" in diag[0].getMessage() and "p_foo" in diag[0].getMessage()
+    assert fired == []  # 通知はしない (安全側)
+
+
 async def test_ss_does_not_push_order_event():
     """SS フレームは OrderEvent を push しない。"""
     adapter, fired = _ss_adapter()
@@ -1422,4 +1527,33 @@ async def test_ss_does_not_push_order_event():
     adapter._on_order_event = events.append
     await adapter._dispatch_event_frame("SS", {"sSystemStatus": "0"}, 1)
     assert events == []
+    assert fired == ["TACHIBANA"]
+
+
+# Finding 2 [MEDIUM]: sLoginKyokaKubun=="2" (時間外) is benign off-hours, NOT
+# a logout. event_protocol.md:98 explicitly warns against treating "2" as logout.
+async def test_ss_login_kubun_out_of_hours_does_not_fire():
+    """開局 + ログイン許可区分=2 (不許可・時間外) は平常の時間外 → 通知しない。"""
+    adapter, fired = _ss_adapter()
+    await adapter._dispatch_event_frame(
+        "SS", {"sSystemStatus": "1", "sLoginKyokaKubun": "2"}, 1,
+    )
+    assert fired == []
+
+
+async def test_ss_closed_still_fires_with_out_of_hours_kubun():
+    """sSystemStatus=0 (閉局) は sLoginKyokaKubun=2 でも依然 logout 通知する。"""
+    adapter, fired = _ss_adapter()
+    await adapter._dispatch_event_frame(
+        "SS", {"sSystemStatus": "0", "sLoginKyokaKubun": "2"}, 1,
+    )
+    assert fired == ["TACHIBANA"]
+
+
+async def test_ss_login_not_permitted_zero_still_fires():
+    """sLoginKyokaKubun=0 (不許可) は依然 logout 通知する (finding 2 で壊さない)。"""
+    adapter, fired = _ss_adapter()
+    await adapter._dispatch_event_frame(
+        "SS", {"sSystemStatus": "1", "sLoginKyokaKubun": "0"}, 1,
+    )
     assert fired == ["TACHIBANA"]

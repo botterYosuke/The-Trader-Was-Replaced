@@ -27,7 +27,11 @@ _WALLET = endpoint("wallet/cash", env="verify")
 
 
 async def _noop_sleep(_seconds: float) -> None:
-    return None
+    # 実時間を消費しないが、必ず制御を一度手放す。fix #5 で modify 成功が polling task を
+    # 再武装するようになり、_run_orders_poll の backoff ループがこの sleep を呼ぶ。完全な
+    # no-op だと yield point が無く、孤児 poll task が CPU を握って event loop を飢餓させ
+    # 後続テストがハングする。asyncio.sleep(0) で 1 回 yield して cancel/他タスクを通す。
+    await asyncio.sleep(0)
 
 
 def _logged_in_adapter() -> KabuStationAdapter:
@@ -114,6 +118,21 @@ async def test_submit_order_system_error_raises(httpx_mock: HTTPXMock):
             venue="KABU", instrument_id="7203.TSE", side="BUY", qty=100,
             price=2500.0, order_type="LIMIT", time_in_force="DAY",
         )
+
+
+async def test_submit_order_accepted_without_order_id_raises(httpx_mock: HTTPXMock):
+    """fix #3: Result==0 だが OrderId 欠落の応答は「採番されない受付」= 追跡不能なので
+    KabuApiError を投げ、空キー ("") → cid マッピングを登録しない (R9: OrderID はサーバ採番。
+    "" を残すと ID 空の任意 /orders 行と誤マッチする latent cross-match)。"""
+    httpx_mock.add_response(method="POST", url=_SEND, json={"Result": 0})  # OrderId 無し
+    a = _logged_in_adapter()
+    with pytest.raises(KabuApiError):
+        await a.submit_order(
+            venue="KABU", instrument_id="7203.TSE", side="BUY", qty=100,
+            price=2500.0, order_type="LIMIT", time_in_force="DAY",
+        )
+    assert "" not in a._order_id_to_cid  # 空キーは登録されない
+    assert a._orders_ref == {}  # 追跡もしない
 
 
 async def test_submit_order_requires_login():
@@ -250,6 +269,32 @@ async def test_modify_when_already_filled_to_target_skips_resubmit(httpx_mock: H
     assert not any(str(r.url).endswith("/sendorder") for r in httpx_mock.get_requests())
 
 
+async def test_modify_merged_qty_zero_with_fills_never_rejected(httpx_mock: HTTPXMock):
+    """fix #4: merged_qty<=0 (目標達成済み) で取消 leg の CumQty==0 かつ Details に取消
+    RecType が無い場合、_terminal_zero_fill_status の既定 REJECTED が立つ。だが論理注文の
+    total_filled>0 なので REJECTED (= 約定ゼロ含意) は自己矛盾。CANCELED に丸める
+    (約定済み注文は REJECTED にしない既存ルールのミラー)。filled_qty は total_filled のまま。"""
+    httpx_mock.add_response(method="PUT", url=_CANCEL, json={"Result": 0, "OrderId": "O1"})
+    # 取消 leg は終端 (State=5) だが CumQty==0・取消 RecType 無し → zero_fill 既定 REJECTED。
+    httpx_mock.add_response(
+        method="GET",
+        json=[{"ID": "O1", "State": 5, "OrderQty": 40, "CumQty": 0, "Price": 2500.0,
+               "Details": []}],
+    )
+    a = _logged_in_adapter()
+    ref = _ref(qty=40.0)
+    ref.filled_base = 40.0  # 旧 leg で既に 40 約定済み (論理注文の総目標 = 40 + 40 = 80)
+    ref.notional_base = 40.0 * 2500.0
+    a._register_order(ref)
+    # new_qty=40 → total_target=40, total_filled=40 → merged_qty=0 (再発注しない経路)
+    res = await a.modify_order(venue="KABU", order_id="C1", new_qty=40.0)
+    assert res.status in ("FILLED", "CANCELED")
+    assert res.status != "REJECTED"
+    assert res.filled_qty == 40.0  # total_filled
+    assert "C1" not in a._orders_ref  # 終端化・再発注なし
+    assert not any(str(r.url).endswith("/sendorder") for r in httpx_mock.get_requests())
+
+
 async def test_modify_resubmit_system_error_propagates(httpx_mock: HTTPXMock):
     """再発注が Result=-1 (システムエラー) なら KabuApiError を伝播し (§2.2)、
     原注文は unregister せず polling に後追いさせる。"""
@@ -359,6 +404,40 @@ async def test_modify_new_failed_after_partial_reports_filled(httpx_mock: HTTPXM
     assert res.filled_qty == 40.0
     assert res.avg_price == 2500.0
     assert "C1" not in a._orders_ref
+
+
+async def test_modify_success_rearms_poll_task(httpx_mock: HTTPXMock):
+    """fix #5: 訂正成功後 (新 OrderId に remap・非終端) は polling task を再武装する。
+    poll task が既に自己終了 (.done()) していても、modify が _ensure_orders_poll を呼んで
+    再起動し、新 OrderId への後続約定を push できるようにする (submit_order と対称)。"""
+    events = []
+    a = _logged_in_adapter()
+    a.set_execution_hooks(secret_resolver=None, on_order_event=events.append)
+    a._register_order(_ref(qty=100.0))
+
+    # 先行 polling task が自己終了済み (.done()) の状態を作る。
+    async def _already_done() -> None:
+        return None
+
+    done_task = asyncio.ensure_future(_already_done())
+    await done_task
+    a._orders_poll_task = done_task
+    assert a._orders_poll_task.done()
+
+    httpx_mock.add_response(method="PUT", url=_CANCEL, json={"Result": 0, "OrderId": "O1"})
+    httpx_mock.add_response(
+        method="GET",
+        json=[{"ID": "O1", "State": 5, "OrderQty": 100, "CumQty": 0,
+               "Details": [{"RecType": 6, "State": 3}]}],
+    )
+    httpx_mock.add_response(method="POST", url=_SEND, json={"Result": 0, "OrderId": "O2"})
+    res = await a.modify_order(venue="KABU", order_id="C1", new_price=2600.0)
+    assert res.status == "ACCEPTED"
+    # poll task が再武装された (旧 done task ではない・実行中)。
+    assert a._orders_poll_task is not None
+    assert a._orders_poll_task is not done_task
+    assert not a._orders_poll_task.done()
+    await a._stop_orders_poll()  # テスト後始末: 再武装した task を止める
 
 
 async def test_cancel_order_rejected_while_modifying():

@@ -129,11 +129,17 @@ class TachibanaAdapter:
         # SS フレームの直近システム状態。閉局 (sSystemStatus="0") への遷移を一度だけ通知
         # するための debounce 用 (SS は接続毎に初回再送されるため毎フレーム通知すると連打)。
         self._last_system_open: bool | None = None
+        # SS フィールド診断ログをセッション 1 回に抑える gate (詳細は _handle_system_status)。
+        self._ss_keys_unparsed_logged = False
         # client_order_id -> venue 識別子。取消/訂正・EC 解決に使う。
         self._orders_ref: dict[str, _TachibanaOrderRef] = {}
         self._order_number_to_cid: dict[str, str] = {}
-        # EC は接続毎に当日分を全件再送するため、(venue_order_id, trade_id,
-        # notification_type) の seen-set で重複 push を抑止する (e-station C-H3 流儀)。
+        # EC は接続毎に当日分を全件再送するため、seen-set で重複 push を抑止する。
+        # キーは意図的に 3-tuple (venue_order_id, trade_id, notification_type)。
+        # e-station は 2-tuple (p_NO, p_EDA) でデデュープするが、本実装はあえて
+        # notification_type を加える: 下流の fill 適用は冪等で、3-tuple は同一
+        # (注文, 枝番) に対する受付/約定/取消/失効など種別の異なる非約定通知を別イベント
+        # として正しく区別できる (2-tuple だと取りこぼす)。
         self._seen_ec: set[tuple[str, str, str]] = set()
         # 口座レベル EC (約定通知) WS。login で起動・logout で停止する。
         self._ec_ws: TachibanaEventWs | None = None
@@ -173,6 +179,7 @@ class TachibanaAdapter:
         self._order_number_to_cid.clear()
         self._seen_ec.clear()
         self._last_system_open = None  # SS 閉局 debounce を新セッションでリセット
+        self._ss_keys_unparsed_logged = False  # 新セッションで SS フィールド診断を再 arm
         source = creds.credentials_source
         if source == "session_cache":
             from engine.exchanges.tachibana_file_store import load_session, is_session_valid_for_today
@@ -244,6 +251,7 @@ class TachibanaAdapter:
         self._order_number_to_cid.clear()
         self._seen_ec.clear()
         self._last_system_open = None  # SS 閉局 debounce を新セッションでリセット
+        self._ss_keys_unparsed_logged = False  # 新セッションで SS フィールド診断を再 arm
         self._session = None
         # Wake any active events() consumer so it sees StopAsyncIteration
         # instead of hanging on queue.get() forever.
@@ -513,6 +521,22 @@ class TachibanaAdapter:
         client_order_id = uuid.uuid4().hex
         if ack.rejected:
             return self._rejected_result(client_order_id, ack)
+        # Finding 3: 取消/訂正は sOrderNumber + sEigyouDay の 2 識別子が必須。成功
+        # envelope (p_errno=0, sResultCode=0) でも片方が空なら、登録しても後で
+        # cancel が空の sEigyouDay を送って venue に弾かれる "cancel できない注文"
+        # になる。異常 ACK として REJECTED を返し、ref を登録しない (uncancelable
+        # な「受付済み」を作らない)。
+        if not ack.order_number or not ack.eigyou_day:
+            log.error(
+                "tachibana new-order ACK missing identifiers "
+                "(sOrderNumber=%r sEigyouDay=%r); treating as REJECTED",
+                ack.order_number, ack.eigyou_day,
+            )
+            return OrderResult(
+                status="REJECTED", filled_qty=0.0, avg_price=None,
+                client_order_id=client_order_id,
+                reject_reason="INCOMPLETE_ORDER_ACK",
+            )
         self._register_order(
             client_order_id, ack.order_number, ack.eigyou_day, issue_code, qty
         )
@@ -667,17 +691,35 @@ class TachibanaAdapter:
           ``sSystemStatus``    システム状態     ``0``:閉局 / ``1``:開局 / ``2``:一時停止
           ``sLoginKyokaKubun`` ログイン許可区分  ``0``:不許可 / ``1``:許可 / ``2``:不許可(時間外) / ``9``:管理者のみ
 
-        閉局 (``sSystemStatus != "1"``) か ログイン不許可 (``sLoginKyokaKubun`` not in
-        ``{"1","9"}``) を「本体ログアウト → 要再ログイン」とみなす。SS は接続毎に初回再送
-        されるため、open→closed の遷移時 (または初回観測が closed) のみ 1 回通知する。
+        「本体ログアウト → 要再ログイン」とみなすのは **真の閉局/不許可のみ**:
+          - ``sSystemStatus == "0"`` (閉局)
+          - ``sLoginKyokaKubun == "0"`` (不許可)
+        ``sLoginKyokaKubun == "2"`` (不許可・時間外) は平常の時間外であり logout 扱いに
+        しない (event_protocol.md §SS: "2"(時間外) を logout 扱いにすると平常時間外で
+        偽の再ログイン modal が出る)。同様に ``sSystemStatus == "2"`` (一時停止) も
+        非アクション扱い (= open 相当) とし、停止だけで logout を撃たない。
+        SS は接続毎に初回再送されるため、open→closed の遷移時 (または初回観測が closed)
+        のみ 1 回通知する (debounce)。
         """
         system_status = fields.get("sSystemStatus")
         login_kubun = fields.get("sLoginKyokaKubun")
         if system_status is None and login_kubun is None:
+            # Demo 検証補助: 既知フィールドが無い = EVENT フレームが s* でなく p_* 変種で
+            # 来ている (= 検知が inert) 可能性。実フィールド名をセッション 1 回だけ warning し、
+            # Demo の初回 SS で正しいキーを確定できるようにする (本番で恒常スパムさせない)。
+            if not self._ss_keys_unparsed_logged:
+                self._ss_keys_unparsed_logged = True
+                log.warning(
+                    "tachibana SS frame lacks sSystemStatus/sLoginKyokaKubun; "
+                    "閉局検知 inert. actual field keys=%s (Demo §5.1 layer-3 で確定要)",
+                    sorted(fields),
+                )
             return  # SS と判別できるフィールドが無い → prefix 不一致等。安全側で無視。
-        is_open = system_status == "1" and (
-            login_kubun is None or login_kubun in ("1", "9")
-        )
+        # 真の閉局 ("0") か 真の不許可 ("0") のみが logout を駆動する。
+        # 時間外 ("2") / 管理者のみ ("9") / 一時停止 ("2") は非アクション (= open 相当)。
+        is_closed = system_status == "0"
+        is_not_permitted = login_kubun == "0"
+        is_open = not (is_closed or is_not_permitted)
         prev_open = self._last_system_open
         self._last_system_open = is_open
         if is_open:
@@ -685,7 +727,13 @@ class TachibanaAdapter:
         if prev_open is False:
             return  # 既に閉局通知済み (SS 再送) → 連打しない。
         if self._on_venue_logout is not None:
-            self._on_venue_logout(self.venue_id)
+            # Finding 1: callback は EC WS recv-loop 上で同期実行される。例外を
+            # 伝播させると recv-loop が落ち → 切断扱い → 再接続フラップになる。
+            # ログだけ取り隔離し、ストリームを巻き込まない。
+            try:
+                self._on_venue_logout(self.venue_id)
+            except Exception:
+                log.exception("tachibana on_venue_logout callback raised; isolated")
 
     async def _dispatch_event_frame(
         self, frame_type: str, fields: dict[str, str], recv_ts_ms: int
@@ -699,8 +747,11 @@ class TachibanaAdapter:
         report = _orders.parse_ec_frame(fields)
         if report is None:
             return
-        # EC は再接続毎に当日分を全件再送する。(venue_order_id, trade_id,
-        # notification_type) の seen-set で再送をスキップする (新規イベントのみ push)。
+        # EC は再接続毎に当日分を全件再送する。意図的な 3-tuple
+        # (venue_order_id, trade_id, notification_type) の seen-set で再送をスキップ
+        # する (新規イベントのみ push)。e-station の 2-tuple (p_NO, p_EDA) ではなく
+        # notification_type を含めるのは設計判断 (種別違いの非約定通知を区別するため。
+        # __init__ の self._seen_ec コメント参照)。
         seen_key = (report.venue_order_id, report.trade_id, report.notification_type)
         if seen_key in self._seen_ec:
             return
@@ -725,4 +776,14 @@ class TachibanaAdapter:
             avg_price=report.last_price if report.last_price is not None else 0.0,
             ts_ms=report.ts_event_ms if report.ts_event_ms else recv_ts_ms,
         )
-        self._on_order_event(event)
+        # Finding 1: callback は EC WS recv-loop 上で同期実行される。例外を伝播
+        # させると recv-loop が落ち → 切断扱い → 再接続 → 全件再送フラップになり、
+        # 約定が届かなくなる。 log だけ取り隔離し、後続 EC の配信を止めない。
+        try:
+            self._on_order_event(event)
+        except Exception:
+            log.exception(
+                "tachibana on_order_event callback raised for venue_order_id=%s; "
+                "isolated (EC stream preserved)",
+                report.venue_order_id,
+            )

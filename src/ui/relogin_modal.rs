@@ -16,7 +16,9 @@
 
 use bevy::prelude::*;
 
-use crate::trading::ReloginPrompt;
+use crate::trading::{ReloginPrompt, SecretPrompt};
+use crate::ui::modify_modal::ModifyForm;
+use crate::ui::order_panel::OrderConfirm;
 
 const COLOR_PANEL_BG: Color = Color::srgba(0.07, 0.07, 0.12, 0.98);
 const COLOR_BACKDROP: Color = Color::srgba(0.0, 0.0, 0.0, 0.6);
@@ -79,7 +81,10 @@ pub fn spawn_relogin_modal(mut commands: Commands) {
                         margin: UiRect::bottom(Val::Px(8.0)),
                         ..default()
                     },
-                    Text::new("⚠ venue からログアウトされました"),
+                    // NOTE: 記号グリフ (⚠ 等) は既定フォントに無く □ 落ちする
+                    // (footer は ▶/■ 用に NotoSansSymbols2 を別ロードしている)。
+                    // 警告色 (COLOR_HEADER=オレンジ) で代替し、本文は Basic-Latin+JP のみ。
+                    Text::new("venue からログアウトされました"),
                     TextFont {
                         font_size: 15.0,
                         ..default()
@@ -174,6 +179,9 @@ pub fn relogin_modal_button_system(
     interactions: Query<&Interaction, (Changed<Interaction>, With<ReloginDismissButton>)>,
     keys: Res<ButtonInput<KeyCode>>,
     mut prompt: ResMut<ReloginPrompt>,
+    secret_prompt: Res<SecretPrompt>,
+    order_confirm: Res<OrderConfirm>,
+    modify_form: Res<ModifyForm>,
 ) {
     if prompt.active.is_none() {
         return;
@@ -181,7 +189,14 @@ pub fn relogin_modal_button_system(
     let pressed = interactions
         .iter()
         .any(|i| *i == Interaction::Pressed);
-    if pressed || keys.just_pressed(KeyCode::Escape) {
+    // A button click is unambiguous. But Escape is read via ButtonInput (NOT the
+    // SecretModal's event drain), so a single Escape could close BOTH this notice
+    // and a higher-priority input modal (burning a one-shot Tachibana request_id).
+    // Yield the Escape to the higher-priority modal when one is open (§3.10).
+    let higher_priority_open =
+        secret_prompt.active.is_some() || order_confirm.pending.is_some() || modify_form.open;
+    let escape = keys.just_pressed(KeyCode::Escape) && !higher_priority_open;
+    if pressed || escape {
         prompt.active = None;
     }
 }
@@ -213,6 +228,9 @@ mod tests {
     fn make_app() -> App {
         let mut app = App::new();
         app.init_resource::<ReloginPrompt>();
+        app.init_resource::<SecretPrompt>();
+        app.init_resource::<OrderConfirm>();
+        app.init_resource::<ModifyForm>();
         app.insert_resource(ButtonInput::<KeyCode>::default());
         app
     }
@@ -241,6 +259,56 @@ mod tests {
         app.add_systems(Update, relogin_modal_button_system);
         app.update();
         assert!(app.world().resource::<ReloginPrompt>().active.is_none());
+    }
+
+    #[test]
+    fn escape_yields_to_open_secret_prompt() {
+        // §3.10 cross-talk regression: a SecretModal is open (one-shot Tachibana
+        // request_id). A single Escape must close ONLY the secret modal — the
+        // relogin notice must survive so the user still sees the venue dropped.
+        use crate::trading::SecretPromptRequest;
+        let mut app = make_app();
+        app.world_mut().resource_mut::<ReloginPrompt>().active = Some("TACHIBANA".to_string());
+        app.world_mut().resource_mut::<SecretPrompt>().active = Some(SecretPromptRequest {
+            request_id: "r1".to_string(),
+            venue: "TACHIBANA".to_string(),
+            kind: "second_password".to_string(),
+            purpose: "new_order".to_string(),
+        });
+        app.world_mut()
+            .resource_mut::<ButtonInput<KeyCode>>()
+            .press(KeyCode::Escape);
+        app.add_systems(Update, relogin_modal_button_system);
+        app.update();
+        assert!(
+            app.world().resource::<ReloginPrompt>().active.is_some(),
+            "relogin notice must survive the Escape consumed by the SecretModal"
+        );
+    }
+
+    #[test]
+    fn escape_yields_to_open_order_confirm() {
+        let mut app = make_app();
+        app.world_mut().resource_mut::<ReloginPrompt>().active = Some("KABU".to_string());
+        app.world_mut().resource_mut::<OrderConfirm>().pending =
+            Some(crate::ui::order_panel::OrderDraft {
+                venue: "kabu".to_string(),
+                symbol: "7203.T".to_string(),
+                side: crate::ui::order_panel::Side::Buy,
+                order_type: crate::ui::order_panel::OrderType::Market,
+                qty: 100.0,
+                price: None,
+                tif: crate::ui::order_panel::TimeInForce::Day,
+            });
+        app.world_mut()
+            .resource_mut::<ButtonInput<KeyCode>>()
+            .press(KeyCode::Escape);
+        app.add_systems(Update, relogin_modal_button_system);
+        app.update();
+        assert!(
+            app.world().resource::<ReloginPrompt>().active.is_some(),
+            "relogin notice must survive Escape while the order-confirm modal is open"
+        );
     }
 
     #[test]

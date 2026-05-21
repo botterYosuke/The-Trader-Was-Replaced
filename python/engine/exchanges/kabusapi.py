@@ -577,6 +577,14 @@ class KabuStationAdapter:
                 # 異常終了コード (システムエラー): トーストで明示するため上層へ伝播 (§2.2)。
                 raise KabuApiError(-1, ack.reject_text or "kabu sendorder system error")
             return self._rejected_result(client_order_id, ack)
+        if not ack.order_id:
+            # 受付 (Result==0) なのにサーバが OrderId を採番していない応答は追跡不能
+            # (R9: OrderID はサーバ採番)。空文字を _order_id_to_cid に入れると ID 空の
+            # 任意 /orders 行と誤マッチする latent cross-match になるため、登録せず
+            # KabuApiError を上層へ伝播する (fix #3)。
+            raise KabuApiError(
+                0, "kabu sendorder accepted but returned no OrderId"
+            )
         self._register_order(
             _KabuOrderRef(
                 client_order_id=client_order_id,
@@ -712,13 +720,21 @@ class KabuStationAdapter:
                 # 取消確定までに目標数量を満たして約定済み → 再発注しない。同一
                 # client_order_id を原注文の終端状態 (FILLED / CANCELED) で終端化する。
                 self._unregister_order(order_id)
+                # terminal.status は取消 leg 単体の判定。CumQty==0 かつ取消明細欠落だと
+                # _terminal_zero_fill_status の既定 REJECTED が立つが、論理注文には
+                # total_filled>0 の約定がある (filled_base 由来)。REJECTED は約定ゼロを
+                # 含意するため自己矛盾 → CANCELED に丸める (約定済みは REJECTED にしない
+                # 既存ルール order_status のミラー、fix #4)。
+                final_status = terminal.status
+                if total_filled > 0 and final_status != "FILLED":
+                    final_status = "CANCELED"
                 return OrderResult(
-                    status=terminal.status,
+                    status=final_status,
                     filled_qty=total_filled,
                     avg_price=total_avg,
                     client_order_id=order_id,
                     reject_reason=(
-                        None if terminal.status == "FILLED"
+                        None if final_status == "FILLED"
                         else "MODIFY_ALREADY_FILLED:原注文が目標数量まで約定済みのため再発注しません"
                     ),
                 )
@@ -764,6 +780,9 @@ class KabuStationAdapter:
             ref.filled_base = total_filled
             ref.notional_base = total_notional
             self._order_id_to_cid[new_ack.order_id] = order_id
+            # 新 OrderId は非終端なので polling 継続が必要。poll task が (全注文終端で)
+            # 自己終了済みでも再武装する。submit_order と対称 (fix #5)。
+            self._ensure_orders_poll()
             return OrderResult(
                 status="ACCEPTED",
                 filled_qty=total_filled,

@@ -11,13 +11,15 @@
 //! the channel, pump `app.update()`, and assert the resulting resource state —
 //! exactly the seam issue #4 asks for. See `tests/e2e/FLOWS.md`.
 
+use crate::backend_supervisor::{BackendLifecycle, BackendLifecycleHandle};
 use crate::replay::{ReplayStartupPhase, ReplayStartupProgress};
 use crate::trading::{
     AccountPosition, AvailableInstruments, BackendEvent, BackendStartupStage, BackendStatus,
     BackendStatusUpdate, ExecutionModeRes, LastPrices, LastRunResult, LiveOrder, LiveOrders,
-    OrderFeedback, PortfolioPosition, PortfolioState, ReloginPrompt, RunState, SecretPrompt,
-    SecretPromptRequest,
-    Tickers, TickersStatus, VenueStatusRes, parse_summary_json,
+    OrderFeedback, PortfolioPosition, PortfolioState, ReconcilePrompt, ReloginPrompt, RunState,
+    SecretPrompt, SecretPromptRequest, Tickers, TickersStatus, TransportCommand,
+    TransportCommandSender, VenueStatusRes, is_terminal_order_status, parse_summary_json,
+    reconcile_unknown_orders,
 };
 use bevy::prelude::*;
 use chrono::NaiveDate;
@@ -45,6 +47,8 @@ pub fn status_update_system(
     mut last_prices: ResMut<LastPrices>,
     mut live_orders: ResMut<LiveOrders>,
     mut order_feedback: ResMut<OrderFeedback>,
+    mut reconcile_prompt: ResMut<ReconcilePrompt>,
+    mut secret_prompt: ResMut<SecretPrompt>,
 ) {
     while let Ok(update) = channel.rx.try_recv() {
         apply_status_update(
@@ -60,6 +64,8 @@ pub fn status_update_system(
             &mut last_prices,
             &mut live_orders,
             &mut order_feedback,
+            &mut reconcile_prompt,
+            &mut secret_prompt,
         );
     }
 }
@@ -96,6 +102,8 @@ pub fn backend_event_drain_system(
                     kind,
                     purpose,
                 });
+                // A fresh prompt supersedes any stale submit error.
+                secret_prompt.error = None;
             }
             BackendEvent::OrderEvent {
                 order_id,
@@ -198,6 +206,8 @@ pub fn apply_status_update(
     last_prices: &mut LastPrices,
     live_orders: &mut LiveOrders,
     order_feedback: &mut OrderFeedback,
+    reconcile_prompt: &mut ReconcilePrompt,
+    secret_prompt: &mut SecretPrompt,
 ) {
     match update {
         BackendStatusUpdate::Connected(c) => status.connected = c,
@@ -397,7 +407,72 @@ pub fn apply_status_update(
             // Surfaced to the user via the OrderPanel error line (no toast infra yet).
             order_feedback.message = Some(format!("{action}が拒否されました ({error_code})"));
         }
+        BackendStatusUpdate::OrderNotice { message } => {
+            // Order-flow notice (incomplete success / transport error). Same bucket
+            // as OrderRejected; surfaced verbatim in the OrderPanel feedback line.
+            order_feedback.message = Some(message);
+        }
+        BackendStatusUpdate::SecretSubmitFailed { error_code } => {
+            // §3.10: secret-flow failure surfaces in the SecretModal so the user can
+            // retry — NOT in OrderFeedback (wrong bucket; would pop OrderPanel even
+            // with no order flow and could be cleared by unrelated order updates).
+            secret_prompt.error =
+                Some(format!("第二暗証番号が拒否されました ({error_code})"));
+        }
+        BackendStatusUpdate::OrdersReconciled {
+            backend_client_order_ids,
+        } => {
+            // §3.8: diff the UI's optimistic working orders against the backend's
+            // truth. Any working order the backend no longer tracks is surfaced in
+            // the reconcile modal (after a restart the fresh backend has none).
+            reconcile_prompt.unknown =
+                reconcile_unknown_orders(live_orders, &backend_client_order_ids);
+        }
     }
+}
+
+/// Phase 9 §3.8: after the supervisor auto-restarts a crashed backend and reaches
+/// `Ready` again, fire a `GetOrders` to reconcile the UI's optimistic order list
+/// with the (fresh, session-less) backend's truth. Only fires on a Ready that
+/// *follows* a Crashed (an actual restart — not the initial startup) and only
+/// when there are working orders to reconcile. `Local` state tracks the previous
+/// lifecycle and whether a crash has been seen since the last reconcile.
+pub fn backend_restart_resync_system(
+    lifecycle: Res<BackendLifecycleHandle>,
+    live_orders: Res<LiveOrders>,
+    venue_status: Res<VenueStatusRes>,
+    sender: Option<Res<TransportCommandSender>>,
+    mut saw_crash: Local<bool>,
+    mut prev: Local<Option<BackendLifecycle>>,
+) {
+    let current = lifecycle.current();
+    let changed = *prev != Some(current);
+    *prev = Some(current);
+
+    if matches!(current, BackendLifecycle::Crashed) {
+        *saw_crash = true;
+        return;
+    }
+    // Only act on the *transition* into Ready that follows a crash.
+    if !(changed && current == BackendLifecycle::Ready && *saw_crash) {
+        return;
+    }
+    *saw_crash = false;
+
+    let has_working = live_orders
+        .orders
+        .iter()
+        .any(|o| !is_terminal_order_status(&o.status));
+    if !has_working {
+        return; // nothing optimistic to reconcile
+    }
+    let Some(tx) = sender.as_ref() else {
+        warn!("[backend] post-restart reconcile skipped: TransportCommandSender unavailable");
+        return;
+    };
+    let venue = venue_status.venue_id.clone().unwrap_or_default();
+    info!("[backend] auto-restart reached Ready — reconciling in-flight orders (GetOrders)");
+    let _ = tx.tx.send(TransportCommand::GetOrders { venue });
 }
 
 pub fn apply_available_loaded(
@@ -446,6 +521,57 @@ mod tests {
             app.world().resource::<ReloginPrompt>().active.as_deref(),
             Some("KABU"),
             "VenueLogoutDetected must open the relogin prompt with the venue id"
+        );
+    }
+
+    /// §3.10 regression: a failed SubmitSecret must surface on the SecretPrompt
+    /// (so the SecretModal can show it / let the user retry), NOT on OrderFeedback
+    /// (which would pop the OrderPanel out of context).
+    #[test]
+    fn secret_submit_failed_sets_secret_prompt_error_not_order_feedback() {
+        let mut status = BackendStatus::default();
+        let mut last_run = LastRunResult::default();
+        let mut portfolio = PortfolioState::default();
+        let mut available = AvailableInstruments::default();
+        let mut progress = ReplayStartupProgress::default();
+        let mut venue_status = VenueStatusRes::default();
+        let mut exec_mode = ExecutionModeRes::default();
+        let mut tickers = Tickers::default();
+        let mut last_prices = LastPrices::default();
+        let mut live_orders = LiveOrders::default();
+        let mut order_feedback = OrderFeedback::default();
+        let mut reconcile_prompt = ReconcilePrompt::default();
+        let mut secret_prompt = SecretPrompt::default();
+
+        apply_status_update(
+            BackendStatusUpdate::SecretSubmitFailed {
+                error_code: "SECOND_SECRET_INVALID".to_string(),
+            },
+            &mut status,
+            &mut last_run,
+            &mut portfolio,
+            &mut available,
+            &mut progress,
+            &mut venue_status,
+            &mut exec_mode,
+            &mut tickers,
+            &mut last_prices,
+            &mut live_orders,
+            &mut order_feedback,
+            &mut reconcile_prompt,
+            &mut secret_prompt,
+        );
+
+        assert!(
+            secret_prompt
+                .error
+                .as_deref()
+                .is_some_and(|e| e.contains("SECOND_SECRET_INVALID")),
+            "secret-flow failure must attach its error to the SecretPrompt"
+        );
+        assert!(
+            order_feedback.message.is_none(),
+            "secret-flow failure must NOT pollute the OrderPanel feedback line"
         );
     }
 }

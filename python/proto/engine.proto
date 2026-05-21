@@ -90,6 +90,10 @@ service DataEngine {
   // Step 4 wires the full path through the mock adapter's modify_order.
   rpc ModifyOrder (ModifyOrderReq) returns (ModifyOrderRes);
   rpc GetOrderStatus (GetOrderStatusReq) returns (GetOrderStatusRes);
+  // Phase 9 Step 8 §3.8: list the backend's currently-tracked working orders.
+  // Used after an auto-restart to reconcile the UI's optimistic order list with
+  // the backend's truth (a fresh backend has none → UI orders flagged "unknown").
+  rpc GetOrders (GetOrdersReq) returns (GetOrdersRes);
 
   // Lifecycle (Step 2: backend-startup-sync)
   rpc Shutdown (ShutdownRequest) returns (ShutdownResponse);
@@ -457,4 +461,15 @@ message GetOrderStatusRes {
   bool success = 1;
   string error_code = 2;
   OrderEvent order_event = 3;
+}
+
+message GetOrdersReq {
+  string token = 1;
+  string venue = 2;
+}
+
+message GetOrdersRes {
+  bool success = 1;
+  string error_code = 2;
+  repeated OrderEvent orders = 3;  // backend's currently-tracked working (non-terminal) orders
 }

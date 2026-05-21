@@ -85,6 +85,83 @@ pub enum SupervisorCommand {
     },
 }
 
+/// Auto-restart crash-loop budget (§3.8 / ADR "60s 内 3 回未満を自動"): a backend
+/// we spawned that exits abnormally is re-spawned automatically while fewer than
+/// `AUTO_RESTART_MAX` crashes have occurred within `AUTO_RESTART_WINDOW`. Once the
+/// budget is exhausted the supervisor stops auto-restarting and waits for a manual
+/// `Restart` command (the [Restart Backend] button), preferring human triage of a
+/// crash loop over an infinite respawn storm.
+pub const AUTO_RESTART_WINDOW: std::time::Duration = std::time::Duration::from_secs(60);
+pub const AUTO_RESTART_MAX: usize = 3;
+
+/// Sliding-window crash counter. Time is injected into `record_and_allows_restart`
+/// so the 60s / 3-strike budget is unit-testable without sleeping.
+#[derive(Debug)]
+pub struct CrashBudget {
+    window: std::time::Duration,
+    max: usize,
+    crashes: Vec<std::time::Instant>,
+}
+
+impl CrashBudget {
+    pub fn new(window: std::time::Duration, max: usize) -> Self {
+        Self {
+            window,
+            max,
+            crashes: Vec::new(),
+        }
+    }
+
+    /// Record a crash at `now` (pruning entries older than `window`) and return
+    /// whether an auto-restart is still within budget: `true` while the count in
+    /// the window is below `max`, `false` once the budget is exhausted.
+    pub fn record_and_allows_restart(&mut self, now: std::time::Instant) -> bool {
+        self.crashes
+            .retain(|t| now.duration_since(*t) < self.window);
+        self.crashes.push(now);
+        self.crashes.len() < self.max
+    }
+
+    /// Forget recorded crashes — after a manual restart or a healthy run.
+    pub fn reset(&mut self) {
+        self.crashes.clear();
+    }
+}
+
+/// Why `run_post_ready_monitor` returned. Drives the auto-restart decision in the
+/// session loop (`run_supervisor`).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum MonitorOutcome {
+    /// Abnormal exit / health loss while Ready — re-spawn if budget allows.
+    Crashed,
+    /// Graceful stop (clean exit or NOT_SERVING streak) — terminal, no restart.
+    Stopped,
+    /// A manual `Restart` arrived (the old child was shut down first) — re-spawn
+    /// and reset the budget.
+    RestartRequested,
+    /// A `Shutdown` was handled (RPC + child reaped) — terminal.
+    ShutdownComplete,
+    /// The command channel closed (app exiting) — terminal.
+    ChannelClosed,
+}
+
+/// Result of one spawn+handshake attempt on the spawn path.
+enum SpawnOutcome {
+    /// Reached Ready; the caller owns the child for crash/shutdown handling.
+    Ready(Child),
+    /// A terminal `StartupFailed(_)` was already published (resolve / preflight /
+    /// spawn / handshake failure).
+    Failed,
+}
+
+/// What a post-terminal command wait resolved to.
+enum ManualWait {
+    /// A manual `Restart` — the session loop should start a fresh session.
+    Restart,
+    /// Shutdown handled or channel closed — the supervisor should exit.
+    Terminal,
+}
+
 /// Supervisor-side env snapshot, read once when the task is spawned. (C-3..C-4)
 #[derive(Debug, Clone)]
 pub struct SupervisorConfig {
@@ -297,157 +374,112 @@ pub async fn run_supervisor(
         }
     };
 
-    let _ = lifecycle_tx.send(BackendLifecycle::NotStarted);
-    let _ = lifecycle_tx.send(BackendLifecycle::ProbingExisting);
+    // Crash-loop budget spans the whole supervisor lifetime; a manual Restart or
+    // a graceful Stopped resets it. Each session-loop iteration is one
+    // probe → (attach | spawn) → monitor cycle; on a crash we decide whether to
+    // start another session (auto-restart) or wait for a manual [Restart Backend].
+    let mut budget = CrashBudget::new(AUTO_RESTART_WINDOW, AUTO_RESTART_MAX);
 
-    // TCP probe: 100ms timeout, single attempt.
-    let probe_ok = tokio::time::timeout(
-        std::time::Duration::from_millis(100),
-        tokio::net::TcpStream::connect(&authority),
-    )
-    .await
-    .map(|r| r.is_ok())
-    .unwrap_or(false);
+    'session: loop {
+        let _ = lifecycle_tx.send(BackendLifecycle::NotStarted);
+        let _ = lifecycle_tx.send(BackendLifecycle::ProbingExisting);
 
-    if probe_ok {
-        // Attach path: an existing backend answered the probe.
-        if run_attach_handshake(&config, &lifecycle_tx).await {
-            run_post_ready_monitor(&config, &lifecycle_tx, None, false, &mut cmd_rx).await;
-        }
-    } else if !config.autospawn {
-        // AUTOSPAWN=0: no existing backend and we are forbidden to start one.
-        bevy::log::warn!("[backend] TCP probe of {} failed, AUTOSPAWN=0", authority);
-        let _ = lifecycle_tx.send(BackendLifecycle::StartupFailed(error_code::NOT_REACHABLE));
-    } else {
-        // Spawn path (C-3b): probe failed and AUTOSPAWN=1.
-        // Resolve cwd / interpreter / preflight on a blocking thread (these
-        // touch the filesystem and may run a 5s preflight subprocess).
-        let resolve_cfg = config.clone();
-        let resolved = tokio::task::spawn_blocking(move || {
-            let cwd = resolve_cwd(resolve_cfg.cwd.as_deref())?;
-            let python_bin = resolve_python_bin(resolve_cfg.python_bin.as_deref(), &cwd)?;
-            // Preflight only when PYTHON_BIN was set explicitly (C-4).
-            if resolve_cfg.python_bin.is_some() {
-                run_preflight(&python_bin, &cwd)?;
-            }
-            Ok::<_, &'static str>((cwd, python_bin))
-        })
-        .await;
-
-        let (cwd, python_bin) = match resolved {
-            Ok(Ok(paths)) => paths,
-            Ok(Err(code)) => {
-                bevy::log::error!("[backend] spawn preflight failed: {}", code);
-                let _ = lifecycle_tx.send(BackendLifecycle::StartupFailed(code));
-                drain_commands(cmd_rx).await;
-                return;
-            }
-            Err(e) => {
-                bevy::log::error!("[backend] spawn preflight join error: {}", e);
-                let _ =
-                    lifecycle_tx.send(BackendLifecycle::StartupFailed(error_code::CWD_NOT_FOUND));
-                drain_commands(cmd_rx).await;
-                return;
-            }
-        };
-
-        // Extract the port from BACKEND_URL for the --port arg.
-        let port = match url::Url::parse(&config.url).ok().and_then(|u| u.port()) {
-            Some(p) => p,
-            None => {
-                let _ = lifecycle_tx.send(BackendLifecycle::StartupFailed(error_code::URL_INVALID));
-                drain_commands(cmd_rx).await;
-                return;
-            }
-        };
-
-        // Spawn the subprocess.
-        let mut child = match spawn_python_backend(&python_bin, &cwd, &config.token, port) {
-            Ok(c) => c,
-            Err(e) => {
-                bevy::log::error!("[backend] failed to spawn python backend: {}", e);
-                let _ =
-                    lifecycle_tx.send(BackendLifecycle::StartupFailed(error_code::VENV_NOT_FOUND));
-                drain_commands(cmd_rx).await;
-                return;
-            }
-        };
-
-        // We started it: claim ownership before announcing Spawning.
-        let _ = ownership_tx.send(BackendOwnership { own_process: true });
-        let _ = lifecycle_tx.send(BackendLifecycle::Spawning);
-
-        // Drain stdout/stderr on dedicated OS threads. stdout lines are scanned
-        // for the readiness sentinel and forwarded to `sentinel_rx`; stderr is
-        // logged at warn. (C-5)
-        let (sentinel_tx, mut sentinel_rx) = mpsc::channel::<u16>(16);
-        if let Some(stdout) = child.stdout.take() {
-            let tx = sentinel_tx.clone();
-            std::thread::spawn(move || {
-                let reader = BufReader::new(stdout);
-                for line in reader.lines().map_while(Result::ok) {
-                    if let Some(p) = parse_sentinel_line(&line) {
-                        if let Err(e) = tx.try_send(p) {
-                            bevy::log::warn!("[backend] sentinel channel send failed: {}", e);
-                        }
-                    } else {
-                        bevy::log::info!("[backend] {}", line);
-                    }
-                }
-            });
-        }
-        if let Some(stderr) = child.stderr.take() {
-            std::thread::spawn(move || {
-                let reader = BufReader::new(stderr);
-                for line in reader.lines().map_while(Result::ok) {
-                    bevy::log::warn!("[backend] {}", line);
-                }
-            });
-        }
-
-        // Wait for the readiness sentinel up to a bounded timeout so it becomes
-        // the fastest trigger to start the handshake.
-        // If the sentinel arrives we validate its advertised port; a mismatch
-        // is logged but non-fatal (the handshake still probes BACKEND_URL).
-        // If the timeout fires first we fall through to the handshake anyway,
-        // so a backend that never emits the sentinel still gets probed. (C-1/C-5)
-        tokio::select! {
-            maybe_port = sentinel_rx.recv() => {
-                match maybe_port {
-                    Some(p) if sentinel_port_matches(p, port) => {
-                        bevy::log::info!("[backend] readiness sentinel on port {}", p);
-                    }
-                    Some(p) => {
-                        bevy::log::error!(
-                            "[backend] sentinel port {} != expected {}; proceeding to handshake",
-                            p, port
-                        );
-                    }
-                    None => {
-                        bevy::log::warn!("[backend] sentinel channel closed before readiness");
-                    }
-                }
-            }
-            _ = tokio::time::sleep(std::time::Duration::from_secs(5)) => {
-                bevy::log::warn!("[backend] sentinel not received within 5s; proceeding to handshake");
-            }
-        }
-
-        // `child` is held alive here so the pipes stay open; the post-Ready
-        // monitor takes ownership of it for crash / shutdown handling.
-        let ready = run_health_and_getstate_handshake(
-            &config,
-            &lifecycle_tx,
-            75,
-            error_code::SERVICER_MISSING,
+        // TCP probe: 100ms timeout, single attempt.
+        let probe_ok = tokio::time::timeout(
+            std::time::Duration::from_millis(100),
+            tokio::net::TcpStream::connect(&authority),
         )
-        .await;
-        if ready {
-            run_post_ready_monitor(&config, &lifecycle_tx, Some(child), true, &mut cmd_rx).await;
+        .await
+        .map(|r| r.is_ok())
+        .unwrap_or(false);
+
+        // Resolve the outcome of this session, then decide restart vs terminal.
+        // `own_process` gates auto-restart: only a backend we spawned is re-spawned
+        // on crash; attach crashes / startup failures wait for a manual Restart.
+        if probe_ok {
+            // Attach path: an existing backend answered the probe. We do not own
+            // it, so a crash is never auto-restarted (avoid collateral respawn of
+            // an externally-managed backend) — a manual Restart re-probes.
+            let outcome = if run_attach_handshake(&config, &lifecycle_tx).await {
+                run_post_ready_monitor(&config, &lifecycle_tx, None, false, &mut cmd_rx).await
+            } else {
+                MonitorOutcome::Crashed
+            };
+            match outcome {
+                MonitorOutcome::RestartRequested => continue 'session,
+                MonitorOutcome::Stopped
+                | MonitorOutcome::ShutdownComplete
+                | MonitorOutcome::ChannelClosed => break 'session,
+                MonitorOutcome::Crashed => {
+                    match wait_for_command_after_terminal(&mut cmd_rx, &lifecycle_tx).await {
+                        ManualWait::Restart => continue 'session,
+                        ManualWait::Terminal => break 'session,
+                    }
+                }
+            }
+        } else if !config.autospawn {
+            // AUTOSPAWN=0: no existing backend and we are forbidden to start one.
+            bevy::log::warn!("[backend] TCP probe of {} failed, AUTOSPAWN=0", authority);
+            let _ = lifecycle_tx.send(BackendLifecycle::StartupFailed(error_code::NOT_REACHABLE));
+            match wait_for_command_after_terminal(&mut cmd_rx, &lifecycle_tx).await {
+                ManualWait::Restart => continue 'session,
+                ManualWait::Terminal => break 'session,
+            }
         } else {
-            // Handshake failed before Ready: drop the child handle (cleanup of
-            // an orphaned subprocess is handled separately via the Job Object).
-            let _ = &mut child;
+            // Spawn path (C-3b): probe failed and AUTOSPAWN=1. This is the only
+            // auto-restartable path (we own the child).
+            match spawn_and_handshake(&config, &lifecycle_tx, &ownership_tx).await {
+                SpawnOutcome::Ready(child) => {
+                    match run_post_ready_monitor(
+                        &config,
+                        &lifecycle_tx,
+                        Some(child),
+                        true,
+                        &mut cmd_rx,
+                    )
+                    .await
+                    {
+                        MonitorOutcome::RestartRequested => {
+                            budget.reset();
+                            continue 'session;
+                        }
+                        MonitorOutcome::Stopped
+                        | MonitorOutcome::ShutdownComplete
+                        | MonitorOutcome::ChannelClosed => break 'session,
+                        MonitorOutcome::Crashed => {
+                            if budget.record_and_allows_restart(std::time::Instant::now()) {
+                                bevy::log::warn!(
+                                    "[backend] crashed — auto-restarting (within crash-loop budget)"
+                                );
+                                continue 'session;
+                            }
+                            bevy::log::error!(
+                                "[backend] crash-loop budget exhausted (>= {} crashes / {:?}); \
+                                 waiting for manual [Restart Backend]",
+                                AUTO_RESTART_MAX,
+                                AUTO_RESTART_WINDOW
+                            );
+                            match wait_for_command_after_terminal(&mut cmd_rx, &lifecycle_tx).await {
+                                ManualWait::Restart => {
+                                    budget.reset();
+                                    continue 'session;
+                                }
+                                ManualWait::Terminal => break 'session,
+                            }
+                        }
+                    }
+                }
+                SpawnOutcome::Failed => {
+                    // StartupFailed already published. A manual Restart retries.
+                    match wait_for_command_after_terminal(&mut cmd_rx, &lifecycle_tx).await {
+                        ManualWait::Restart => {
+                            budget.reset();
+                            continue 'session;
+                        }
+                        ManualWait::Terminal => break 'session,
+                    }
+                }
+            }
         }
     }
 
@@ -455,15 +487,173 @@ pub async fn run_supervisor(
     drain_commands(cmd_rx).await;
 }
 
-/// Drain the supervisor command channel on paths that never reach the
-/// post-Ready monitor (e.g. after `StartupFailed`). Real Restart / Shutdown
-/// handling lives in `run_post_ready_monitor`; here we only keep the task alive
-/// and reply to Shutdown acks so command sends from Bevy don't error.
+/// One spawn + readiness-handshake attempt on the spawn path (C-3b..C-5). On
+/// success returns the live `Child` (the caller's monitor owns it for crash /
+/// shutdown handling). On any resolve / preflight / spawn / handshake failure it
+/// publishes the terminal `StartupFailed(_)` and returns `SpawnOutcome::Failed`.
+async fn spawn_and_handshake(
+    config: &SupervisorConfig,
+    lifecycle_tx: &watch::Sender<BackendLifecycle>,
+    ownership_tx: &watch::Sender<BackendOwnership>,
+) -> SpawnOutcome {
+    // Resolve cwd / interpreter / preflight on a blocking thread (these touch the
+    // filesystem and may run a 5s preflight subprocess).
+    let resolve_cfg = config.clone();
+    let resolved = tokio::task::spawn_blocking(move || {
+        let cwd = resolve_cwd(resolve_cfg.cwd.as_deref())?;
+        let python_bin = resolve_python_bin(resolve_cfg.python_bin.as_deref(), &cwd)?;
+        // Preflight only when PYTHON_BIN was set explicitly (C-4).
+        if resolve_cfg.python_bin.is_some() {
+            run_preflight(&python_bin, &cwd)?;
+        }
+        Ok::<_, &'static str>((cwd, python_bin))
+    })
+    .await;
+
+    let (cwd, python_bin) = match resolved {
+        Ok(Ok(paths)) => paths,
+        Ok(Err(code)) => {
+            bevy::log::error!("[backend] spawn preflight failed: {}", code);
+            let _ = lifecycle_tx.send(BackendLifecycle::StartupFailed(code));
+            return SpawnOutcome::Failed;
+        }
+        Err(e) => {
+            bevy::log::error!("[backend] spawn preflight join error: {}", e);
+            let _ = lifecycle_tx.send(BackendLifecycle::StartupFailed(error_code::CWD_NOT_FOUND));
+            return SpawnOutcome::Failed;
+        }
+    };
+
+    // Extract the port from BACKEND_URL for the --port arg.
+    let port = match url::Url::parse(&config.url).ok().and_then(|u| u.port()) {
+        Some(p) => p,
+        None => {
+            let _ = lifecycle_tx.send(BackendLifecycle::StartupFailed(error_code::URL_INVALID));
+            return SpawnOutcome::Failed;
+        }
+    };
+
+    // Spawn the subprocess.
+    let mut child = match spawn_python_backend(&python_bin, &cwd, &config.token, port) {
+        Ok(c) => c,
+        Err(e) => {
+            bevy::log::error!("[backend] failed to spawn python backend: {}", e);
+            let _ = lifecycle_tx.send(BackendLifecycle::StartupFailed(error_code::VENV_NOT_FOUND));
+            return SpawnOutcome::Failed;
+        }
+    };
+
+    // We started it: claim ownership before announcing Spawning.
+    let _ = ownership_tx.send(BackendOwnership { own_process: true });
+    let _ = lifecycle_tx.send(BackendLifecycle::Spawning);
+
+    // Drain stdout/stderr on dedicated OS threads. stdout lines are scanned for
+    // the readiness sentinel and forwarded to `sentinel_rx`; stderr is logged at
+    // warn. (C-5)
+    let (sentinel_tx, mut sentinel_rx) = mpsc::channel::<u16>(16);
+    if let Some(stdout) = child.stdout.take() {
+        let tx = sentinel_tx.clone();
+        std::thread::spawn(move || {
+            let reader = BufReader::new(stdout);
+            for line in reader.lines().map_while(Result::ok) {
+                if let Some(p) = parse_sentinel_line(&line) {
+                    if let Err(e) = tx.try_send(p) {
+                        bevy::log::warn!("[backend] sentinel channel send failed: {}", e);
+                    }
+                } else {
+                    bevy::log::info!("[backend] {}", line);
+                }
+            }
+        });
+    }
+    if let Some(stderr) = child.stderr.take() {
+        std::thread::spawn(move || {
+            let reader = BufReader::new(stderr);
+            for line in reader.lines().map_while(Result::ok) {
+                bevy::log::warn!("[backend] {}", line);
+            }
+        });
+    }
+
+    // Wait for the readiness sentinel up to a bounded timeout so it becomes the
+    // fastest trigger to start the handshake. A port mismatch is logged but
+    // non-fatal (the handshake still probes BACKEND_URL); a timeout falls through
+    // to the handshake anyway, so a backend that never emits the sentinel still
+    // gets probed. (C-1/C-5)
+    tokio::select! {
+        maybe_port = sentinel_rx.recv() => {
+            match maybe_port {
+                Some(p) if sentinel_port_matches(p, port) => {
+                    bevy::log::info!("[backend] readiness sentinel on port {}", p);
+                }
+                Some(p) => {
+                    bevy::log::error!(
+                        "[backend] sentinel port {} != expected {}; proceeding to handshake",
+                        p, port
+                    );
+                }
+                None => {
+                    bevy::log::warn!("[backend] sentinel channel closed before readiness");
+                }
+            }
+        }
+        _ = tokio::time::sleep(std::time::Duration::from_secs(5)) => {
+            bevy::log::warn!("[backend] sentinel not received within 5s; proceeding to handshake");
+        }
+    }
+
+    // `child` is held alive here so the pipes stay open; the post-Ready monitor
+    // takes ownership of it for crash / shutdown handling.
+    if run_health_and_getstate_handshake(config, lifecycle_tx, 75, error_code::SERVICER_MISSING)
+        .await
+    {
+        SpawnOutcome::Ready(child)
+    } else {
+        // Handshake failed before Ready: kill and reap the child here. There is no
+        // Job Object in this repo, and dropping a `Child` does NOT terminate the OS
+        // process — without this the failed-handshake Python backend would be
+        // orphaned. Kill is unconditional on this failure branch.
+        let _ = child.kill();
+        let _ = child.wait();
+        SpawnOutcome::Failed
+    }
+}
+
+/// Park after a terminal session (Crashed budget-exhausted / StartupFailed /
+/// attach crash) until the next supervisor command. A `Restart` resumes the
+/// session loop; a `Shutdown` is acked (nothing live to stop) and a closed
+/// channel both end the supervisor.
+async fn wait_for_command_after_terminal(
+    cmd_rx: &mut mpsc::UnboundedReceiver<SupervisorCommand>,
+    lifecycle_tx: &watch::Sender<BackendLifecycle>,
+) -> ManualWait {
+    while let Some(cmd) = cmd_rx.recv().await {
+        match cmd {
+            SupervisorCommand::Restart => return ManualWait::Restart,
+            SupervisorCommand::Shutdown { reply_tx, .. } => {
+                // Nothing alive to shut down; publish Stopped and ack so the
+                // AppExit waiter unblocks.
+                let _ = lifecycle_tx.send(BackendLifecycle::Stopped);
+                if let Some(tx) = reply_tx {
+                    let _ = tx.send(());
+                }
+                return ManualWait::Terminal;
+            }
+        }
+    }
+    ManualWait::Terminal
+}
+
+/// Final fallback drain, reached only after the session loop breaks on a truly
+/// terminal outcome (graceful Stopped / ShutdownComplete / closed channel). The
+/// session loop itself handles Restart (respawn) and Shutdown while alive; here a
+/// late Restart is a no-op (the supervisor has already concluded) and we only ack
+/// Shutdown so Bevy command sends don't error.
 async fn drain_commands(mut cmd_rx: mpsc::UnboundedReceiver<SupervisorCommand>) {
     while let Some(cmd) = cmd_rx.recv().await {
         match cmd {
             SupervisorCommand::Restart => {
-                bevy::log::info!("[backend] Restart received (no-op stub)");
+                bevy::log::info!("[backend] Restart received after terminal shutdown — ignoring");
             }
             SupervisorCommand::Shutdown { reply_tx, .. } => {
                 if let Some(tx) = reply_tx {
@@ -662,13 +852,13 @@ async fn run_post_ready_monitor(
     mut child: Option<Child>,
     own_process: bool,
     cmd_rx: &mut mpsc::UnboundedReceiver<SupervisorCommand>,
-) {
+) -> MonitorOutcome {
     let mut health = match HealthClient::connect(config.url.clone()).await {
         Ok(c) => c,
         Err(_) => {
             // Lost the connection right after Ready -> treat as a crash.
             let _ = lifecycle_tx.send(BackendLifecycle::Crashed);
-            return;
+            return MonitorOutcome::Crashed;
         }
     };
 
@@ -685,8 +875,13 @@ async fn run_post_ready_monitor(
                 if let Some(c) = child.as_mut() {
                     match c.try_wait() {
                         Ok(Some(exit)) => {
-                            let _ = lifecycle_tx.send(classify_child_exit(exit));
-                            return;
+                            let lc = classify_child_exit(exit);
+                            let _ = lifecycle_tx.send(lc);
+                            return if lc == BackendLifecycle::Stopped {
+                                MonitorOutcome::Stopped
+                            } else {
+                                MonitorOutcome::Crashed
+                            };
                         }
                         Ok(None) => {} // still running
                         Err(e) => {
@@ -724,7 +919,7 @@ async fn run_post_ready_monitor(
                         not_serving_streak += 1;
                         if not_serving_streak >= 30 {
                             let _ = lifecycle_tx.send(BackendLifecycle::Stopped);
-                            return;
+                            return MonitorOutcome::Stopped;
                         }
                     }
                 } else {
@@ -735,7 +930,7 @@ async fn run_post_ready_monitor(
                         consecutive_failures += 1;
                         if consecutive_failures >= 3 {
                             let _ = lifecycle_tx.send(BackendLifecycle::Crashed);
-                            return;
+                            return MonitorOutcome::Crashed;
                         }
                     }
                 }
@@ -747,13 +942,18 @@ async fn run_post_ready_monitor(
                         if let Some(tx) = reply_tx {
                             let _ = tx.send(());
                         }
-                        return;
+                        return MonitorOutcome::ShutdownComplete;
                     }
                     Some(SupervisorCommand::Restart) => {
-                        bevy::log::info!("[backend] Restart received during monitor (no-op stub)");
+                        // Tear the current backend down before the session loop
+                        // re-spawns it, so we never run two backends at once (a
+                        // dropped Child handle would NOT kill the process).
+                        bevy::log::info!("[backend] Restart requested — shutting down before respawn");
+                        handle_shutdown(config, lifecycle_tx, &mut child, own_process).await;
+                        return MonitorOutcome::RestartRequested;
                     }
                     None => {
-                        return;
+                        return MonitorOutcome::ChannelClosed;
                     }
                 }
             }
@@ -887,6 +1087,49 @@ mod tests {
     fn ownership_defaults_to_attached() {
         let o = BackendOwnership::default();
         assert!(!o.own_process);
+    }
+
+    // --- §3.8 crash-loop budget ---
+
+    #[test]
+    fn crash_budget_allows_first_two_then_exhausts_on_third() {
+        // 60s window, 3-strike budget. Crashes 1 and 2 still allow auto-restart;
+        // the 3rd exhausts the budget (>= max within window).
+        let mut b = CrashBudget::new(std::time::Duration::from_secs(60), 3);
+        let t0 = std::time::Instant::now();
+        assert!(b.record_and_allows_restart(t0));
+        assert!(b.record_and_allows_restart(t0 + std::time::Duration::from_secs(1)));
+        assert!(!b.record_and_allows_restart(t0 + std::time::Duration::from_secs(2)));
+    }
+
+    #[test]
+    fn crash_budget_prunes_crashes_outside_window() {
+        // A crash older than the window is pruned, so the count never reaches max:
+        // three crashes spaced > window apart each stay within budget.
+        let mut b = CrashBudget::new(std::time::Duration::from_secs(60), 3);
+        let t0 = std::time::Instant::now();
+        assert!(b.record_and_allows_restart(t0));
+        assert!(b.record_and_allows_restart(t0 + std::time::Duration::from_secs(61)));
+        assert!(b.record_and_allows_restart(t0 + std::time::Duration::from_secs(122)));
+    }
+
+    #[test]
+    fn crash_budget_reset_clears_history() {
+        let mut b = CrashBudget::new(std::time::Duration::from_secs(60), 3);
+        let t0 = std::time::Instant::now();
+        b.record_and_allows_restart(t0);
+        b.record_and_allows_restart(t0 + std::time::Duration::from_secs(1));
+        // Exhausted at the 3rd...
+        assert!(!b.record_and_allows_restart(t0 + std::time::Duration::from_secs(2)));
+        // ...but a reset (manual restart) restores the full budget.
+        b.reset();
+        assert!(b.record_and_allows_restart(t0 + std::time::Duration::from_secs(3)));
+    }
+
+    #[test]
+    fn auto_restart_window_and_max_match_adr() {
+        assert_eq!(AUTO_RESTART_MAX, 3);
+        assert_eq!(AUTO_RESTART_WINDOW, std::time::Duration::from_secs(60));
     }
 
     #[test]

@@ -121,6 +121,8 @@ fn do_submit(
     let Some(req) = prompt.active.take() else {
         return;
     };
+    // Clear any prior submit error before resubmitting (§3.10).
+    prompt.error = None;
     // to_string() は平文を新 String にコピーするが、即 RedactedSecret(Zeroizing) に
     // move されるため滞留しない。送信後はコマンドごとドロップされる (§1.3)。
     let secret = RedactedSecret::new(input.buffer.to_string());
@@ -142,6 +144,8 @@ fn do_cancel(input: &mut SecretInput, prompt: &mut SecretPrompt, reason: &str) {
         // 平文は出さない。理由コードのみ。
         warn!("[secret] modal closed: {reason}");
     }
+    // Prompt closed — drop any stale submit error so it doesn't linger.
+    prompt.error = None;
     input.clear();
 }
 
@@ -422,7 +426,15 @@ pub fn secret_modal_sync_system(
         t.0 = mask;
     }
     let info = match prompt.active.as_ref() {
-        Some(req) => format!("venue: {} / purpose: {}", req.venue, req.purpose),
+        Some(req) => {
+            let base = format!("venue: {} / purpose: {}", req.venue, req.purpose);
+            // §3.10: a failed SubmitSecret surfaces here (NOT the OrderPanel) so the
+            // user can retry within this same modal.
+            match prompt.error.as_ref() {
+                Some(err) => format!("{base}\n{err}"),
+                None => base,
+            }
+        }
         None => String::new(),
     };
     if let Ok(mut t) = info_q.get_single_mut()

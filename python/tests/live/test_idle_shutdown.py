@@ -115,6 +115,84 @@ def test_monitor_stop_prevents_fire() -> None:
     assert mon.fired is False
 
 
+def test_open_subscribe_stream_keeps_clock_fresh() -> None:
+    """MEDIUM-3: an open SubscribeBackendEvents stream counts as activity.
+
+    A standalone backend whose only active client is an idle event subscriber must
+    NOT self-shutdown. The handler must touch the idle clock on each periodic poll
+    (not only at RPC dispatch), so the monitor never fires while the stream is open.
+    """
+    import threading as _threading
+
+    from engine.core import DataEngine
+    from engine.live.state_machine import VenueStateMachine
+    from engine.mode_manager import ModeManager
+    from engine.server_grpc import GrpcDataEngineServer
+
+    venue_sm = VenueStateMachine()
+    engine = DataEngine(state_machine=venue_sm)
+    mm = ModeManager(venue_sm, engine)
+    engine.attach_mode_manager(mm)
+
+    clock = LastRequestClock()
+    servicer = GrpcDataEngineServer(
+        "tok", engine, mode_manager=mm, venue_sm=venue_sm, idle_clock=clock
+    )
+    # Shorten the stream heartbeat so the test runs fast; it must stay well under
+    # the monitor's idle_timeout below.
+    servicer._subscribe_heartbeat_s = 0.05
+
+    class _Ctx:
+        """Minimal server-streaming context: stays active, ignores callbacks."""
+
+        def __init__(self) -> None:
+            self._active = True
+
+        def is_active(self) -> bool:
+            return self._active
+
+        def add_callback(self, cb) -> None:  # noqa: ANN001
+            self._cb = cb
+
+        def abort(self, *_a, **_k):  # pragma: no cover - good token here
+            raise AssertionError("should not abort with valid token")
+
+    from engine.proto import engine_pb2
+
+    ctx = _Ctx()
+    req = engine_pb2.SubscribeBackendEventsReq(token="tok")
+
+    # Drive the streaming handler in a worker thread; it blocks on the empty queue
+    # but must wake periodically to touch the clock.
+    stop = _threading.Event()
+
+    def _pump():
+        gen = servicer.SubscribeBackendEvents(req, ctx)
+        for _ in gen:  # no events published → relies on periodic poll touches
+            if stop.is_set():
+                break
+
+    t = _threading.Thread(target=_pump, daemon=True)
+    t.start()
+
+    fired: list[int] = []
+    mon = IdleShutdownMonitor(
+        clock,
+        on_idle=lambda: fired.append(1),
+        idle_timeout_s=0.3,
+        check_interval_s=0.02,
+    )
+    mon.start()
+    time.sleep(0.6)  # well past idle_timeout while stream is open + idle
+    mon.stop()
+    ctx._active = False
+    stop.set()
+    servicer._backend_event_bus.close()  # unblock the pump's queue.get
+    t.join(timeout=2.0)
+
+    assert fired == [], "idle monitor fired while an event stream was open"
+
+
 def test_monitor_stop_is_idempotent_and_thread_exits() -> None:
     mon = IdleShutdownMonitor(
         _FakeClock(0.0), on_idle=lambda: None, check_interval_s=0.01

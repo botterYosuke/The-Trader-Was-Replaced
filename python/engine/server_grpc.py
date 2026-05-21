@@ -1,3 +1,4 @@
+import hmac
 import json
 import logging
 import os
@@ -30,6 +31,8 @@ from .live.secret_provider import SecondSecretResolver, SecretTimeoutError
 from .live.order_facade import ManualOrderFacade, OrderFacadeError
 from .live.account_sync import AccountSync
 from .live.health_watchdog import VenueHealthWatchdog
+from .live.instruments_scheduler import InstrumentsScheduler
+from .live import instruments_store
 from .live.idle_shutdown import (
     IdleShutdownMonitor,
     LastRequestClock,
@@ -195,9 +198,18 @@ class GrpcDataEngineServer(
         venue_sm=None,
         live_adapter_factory=None,
         live_venue_id: Optional[str] = None,
+        idle_clock: Optional[LastRequestClock] = None,
     ):
         self.token = token
         self.engine = engine
+        # Phase 9 §3.7 MEDIUM-3: the idle-shutdown clock, so a long-lived open
+        # SubscribeBackendEvents stream counts as activity (touched per periodic
+        # poll, not only at RPC dispatch). None when idle shutdown is not armed
+        # (e.g. unit fixtures); the handler then skips touching.
+        self._idle_clock = idle_clock
+        # Heartbeat cadence for keeping an open event stream "active" (≪ the 60s
+        # idle timeout). Instance attribute so tests can shorten it deterministically.
+        self._subscribe_heartbeat_s: float = 1.0
         self.mode_manager = mode_manager
         self.venue_sm = venue_sm
         self._live_adapter_factory = live_adapter_factory
@@ -232,10 +244,25 @@ class GrpcDataEngineServer(
         # Phase 9 Step 7: venue health watchdog (kabu 本体ログアウト検知, lifetime = live
         # session). kabu のみ (poll 型)。Tachibana は EVENT WS の SS 閉局フレームで push 検知。
         self._health_watchdog: Optional[VenueHealthWatchdog] = None
+        # Phase 9 Step 9: instruments daily refresh (login 時 persist + 営業日 5:00 JST
+        # 更新, lifetime = live session). 営業日カレンダーは持たず venue の fetch_instruments
+        # エラー/空に委ねる (ユーザー決定。詳細は instruments_scheduler のドキュメント参照)。
+        self._instruments_scheduler: Optional[InstrumentsScheduler] = None
 
     _KNOWN_VENUES = {"TACHIBANA", "KABU", "MOCK"}  # D26: MOCK added
     _KNOWN_CRED_SOURCES = {"prompt", "session_cache", "env", "prompt_result"}
     _KNOWN_MODES = {"Replay", "LiveManual", "LiveAuto"}
+
+    def _token_ok(self, request) -> bool:
+        """Constant-time auth-token check (MEDIUM-2).
+
+        Phase 9 が初めて実弾の注文 RPC を gating するため、`!=` のような早期 return で
+        タイミングが観測される比較を避け、`hmac.compare_digest` で固定時間比較する。
+        request.token が空でも安全に比較できるよう "" にフォールバックする。
+        """
+        return hmac.compare_digest(
+            getattr(request, "token", None) or "", self.token or ""
+        )
 
     def _current_engine_state(self):
         """Map the core replay state string to the gRPC EngineState enum."""
@@ -355,6 +382,13 @@ class GrpcDataEngineServer(
             interval_s=30.0,
         )
         self._account_sync = account_sync
+        # Phase 9 Step 9: instruments daily refresh. login 直後の初期 refresh で
+        # parquet を全置換 (= ログイン時 persist) し、以降は営業日 5:00 JST 毎に更新する。
+        # account_sync と同じく login 前に生成し、start はログイン成功後 (§_attempt)。
+        self._instruments_scheduler = InstrumentsScheduler(
+            adapter,
+            venue_id=runner.venue_id,
+        )
         # NOTE: do NOT start the sync here. _start_live_components runs *before*
         # adapter.login() in the VenueLogin handler, so the forced initial
         # fetch_account() would hit a not-logged-in adapter — the guaranteed first
@@ -406,6 +440,11 @@ class GrpcDataEngineServer(
     def _start_health_watchdog_after_login(self) -> None:
         self._start_bg_component_after_login(self._health_watchdog, "health watchdog")
 
+    def _start_instruments_scheduler_after_login(self) -> None:
+        self._start_bg_component_after_login(
+            self._instruments_scheduler, "instruments scheduler"
+        )
+
     async def _teardown_live_components_async(self):
         bridge = self._live_bridge
         cache = self._live_price_cache
@@ -413,6 +452,10 @@ class GrpcDataEngineServer(
         runner = self._live_runner
         account_sync = self._account_sync
         health_watchdog = self._health_watchdog
+        instruments_scheduler = self._instruments_scheduler
+        # Stop the instruments refresh first (it only touches parquet; cheap to stop).
+        if instruments_scheduler is not None:
+            await instruments_scheduler.stop()
         # Stop the watchdog first so no VenueLogoutDetected is pushed mid-teardown
         # (the adapter is about to be torn down → check_health would race on a
         # closing transport).
@@ -450,6 +493,7 @@ class GrpcDataEngineServer(
             self._order_facade = None
             self._account_sync = None
             self._health_watchdog = None
+            self._instruments_scheduler = None
             # Arm clear-on-toggle: a prior lifecycle's last_error must not bleed
             # into the next Live session or stay visible after returning to Replay.
             self._suppress_live_last_error = True
@@ -460,7 +504,7 @@ class GrpcDataEngineServer(
 
     def Shutdown(self, request, context):
         # C-6: token 一致確認 → start_shutdown() 戻り値で 4 段判定
-        if request.token != self.token:
+        if not self._token_ok(request):
             return engine_pb2.ShutdownResponse(
                 accepted=False, error_code="INVALID_TOKEN"
             )
@@ -492,7 +536,7 @@ class GrpcDataEngineServer(
         return err
 
     def GetState(self, request, context):
-        if request.token != self.token:
+        if not self._token_ok(request):
             context.abort(grpc.StatusCode.UNAUTHENTICATED, "Invalid token")
 
         err = self._resolve_live_last_error()
@@ -556,21 +600,21 @@ class GrpcDataEngineServer(
         return engine_pb2.GetStateResponse(json_data=state.model_dump_json())
 
     def Start(self, request, context):
-        if request.token != self.token:
+        if not self._token_ok(request):
             context.abort(grpc.StatusCode.UNAUTHENTICATED, "Invalid token")
         self.engine.start()
         logging.info("Engine start requested via gRPC")
         return engine_pb2.StartResponse(success=True)
 
     def Stop(self, request, context):
-        if request.token != self.token:
+        if not self._token_ok(request):
             context.abort(grpc.StatusCode.UNAUTHENTICATED, "Invalid token")
         self.engine.stop()
         logging.info("Engine stop requested via gRPC")
         return engine_pb2.StopResponse(success=True)
 
     def LoadReplayData(self, request, context):
-        if request.token != self.token:
+        if not self._token_ok(request):
             context.abort(grpc.StatusCode.UNAUTHENTICATED, "Invalid token")
 
         granularity_name = self._replay_granularity_name(request.granularity)
@@ -600,7 +644,7 @@ class GrpcDataEngineServer(
         )
 
     def StartEngine(self, request, context):
-        if request.token != self.token:
+        if not self._token_ok(request):
             context.abort(grpc.StatusCode.UNAUTHENTICATED, "Invalid token")
 
         strategy_file = request.config.strategy_file if request.HasField("config") and request.config.HasField("strategy_file") else None
@@ -813,7 +857,7 @@ class GrpcDataEngineServer(
         return resp
 
     def StopEngine(self, request, context):
-        if request.token != self.token:
+        if not self._token_ok(request):
             context.abort(grpc.StatusCode.UNAUTHENTICATED, "Invalid token")
 
         success, error = self.engine.stop_replay()
@@ -826,7 +870,7 @@ class GrpcDataEngineServer(
         )
 
     def PauseReplay(self, request, context):
-        if request.token != self.token:
+        if not self._token_ok(request):
             context.abort(grpc.StatusCode.UNAUTHENTICATED, "Invalid token")
 
         success, error = self.engine.pause_replay()
@@ -839,7 +883,7 @@ class GrpcDataEngineServer(
         )
 
     def ResumeReplay(self, request, context):
-        if request.token != self.token:
+        if not self._token_ok(request):
             context.abort(grpc.StatusCode.UNAUTHENTICATED, "Invalid token")
 
         success, error = self.engine.resume_replay()
@@ -852,7 +896,7 @@ class GrpcDataEngineServer(
         )
 
     def StepReplay(self, request, context):
-        if request.token != self.token:
+        if not self._token_ok(request):
             context.abort(grpc.StatusCode.UNAUTHENTICATED, "Invalid token")
 
         success, error = self.engine.step_replay()
@@ -865,7 +909,7 @@ class GrpcDataEngineServer(
         )
 
     def StopReplay(self, request, context):
-        if request.token != self.token:
+        if not self._token_ok(request):
             context.abort(grpc.StatusCode.UNAUTHENTICATED, "Invalid token")
 
         success, error = self.engine.stop_replay()
@@ -878,7 +922,7 @@ class GrpcDataEngineServer(
         )
 
     def ForceStopReplay(self, request, context):
-        if request.token != self.token:
+        if not self._token_ok(request):
             context.abort(grpc.StatusCode.UNAUTHENTICATED, "Invalid token")
 
         success, error = self.engine.force_stop_replay()
@@ -891,7 +935,7 @@ class GrpcDataEngineServer(
         )
 
     def SetReplaySpeed(self, request, context):
-        if request.token != self.token:
+        if not self._token_ok(request):
             context.abort(grpc.StatusCode.UNAUTHENTICATED, "Invalid token")
 
         success, error = self.engine.set_replay_speed(request.multiplier)
@@ -904,7 +948,7 @@ class GrpcDataEngineServer(
         )
 
     def GetPortfolio(self, request, context):
-        if request.token != self.token:
+        if not self._token_ok(request):
             context.abort(grpc.StatusCode.UNAUTHENTICATED, "Invalid token")
 
         p = self.engine.last_portfolio
@@ -941,7 +985,7 @@ class GrpcDataEngineServer(
         )
 
     def ListInstruments(self, request, context):
-        if request.token != self.token:
+        if not self._token_ok(request):
             context.abort(grpc.StatusCode.UNAUTHENTICATED, "Invalid token")
 
         # D1: source dispatch — "local" (default) vs "live"
@@ -957,20 +1001,40 @@ class GrpcDataEngineServer(
         return self._list_instruments_local(context)
 
     def _list_instruments_live(self, context):
-        """D1/D10: Fetch instruments from live adapter (must be logged in)."""
+        """D1/D10: Fetch instruments from live adapter (must be logged in).
+
+        Phase 9 Step 9: store-first — InstrumentsScheduler persists the universe to
+        parquet at login + daily (5:00 JST), so we serve the persisted snapshot when
+        present and only hit the venue on a miss (then persist for next time).
+        """
         runner = self._live_runner
         if runner is None or not runner.is_logged_in():
             return engine_pb2.ListInstrumentsResponse(
                 success=False,
                 error_message="LIVE_VENUE_NOT_LOGGED_IN",
             )
-        try:
-            raws = runner.fetch_instruments_blocking(timeout=self._live_timeout_s)
-        except Exception as exc:
-            return engine_pb2.ListInstrumentsResponse(
-                success=False,
-                error_message=f"fetch_instruments failed: {exc}",
-            )
+        venue = runner.venue_id
+        raws = None
+        if venue:
+            try:
+                raws = instruments_store.read_instruments(venue)
+            except Exception:
+                logging.exception("ListInstruments: store read failed; fetching live")
+                raws = None
+        if not raws:
+            try:
+                raws = runner.fetch_instruments_blocking(timeout=self._live_timeout_s)
+            except Exception as exc:
+                return engine_pb2.ListInstrumentsResponse(
+                    success=False,
+                    error_message=f"fetch_instruments failed: {exc}",
+                )
+            # Best-effort persist so subsequent calls hit the store (does not gate the response).
+            if raws and venue:
+                try:
+                    instruments_store.write_instruments(venue, raws)
+                except Exception:
+                    logging.exception("ListInstruments: persist after fetch failed")
         # v4 fix: empty list == adapter not implemented, treat as failure
         if not raws:
             return engine_pb2.ListInstrumentsResponse(
@@ -1034,7 +1098,7 @@ class GrpcDataEngineServer(
             )
 
     def ListAllListedSymbols(self, request, context):
-        if request.token != self.token:
+        if not self._token_ok(request):
             context.abort(grpc.StatusCode.UNAUTHENTICATED, "Invalid token")
 
         end_date = (request.end_date or "").strip()
@@ -1273,7 +1337,7 @@ class GrpcDataEngineServer(
                     )
 
     def VenueLogin(self, request, context):
-        if request.token != self.token:
+        if not self._token_ok(request):
             context.abort(grpc.StatusCode.UNAUTHENTICATED, "Invalid token")
 
         cred_source = request.credentials_source or "prompt"
@@ -1431,6 +1495,10 @@ class GrpcDataEngineServer(
                 # Phase 9 Step 7: start the kabu health watchdog now that the
                 # adapter is logged in (no-op for Tachibana/mock, which have none).
                 self._start_health_watchdog_after_login()
+                # Phase 9 Step 9: start the instruments daily refresh. Its forced
+                # initial fetch+persist writes the parquet store now that the adapter
+                # is logged in (= login-time persist), then refreshes at 5:00 JST.
+                self._start_instruments_scheduler_after_login()
                 # Arm clear-on-toggle: suppress stale errors from a prior session.
                 self._suppress_live_last_error = True
                 return True, ""
@@ -1466,7 +1534,7 @@ class GrpcDataEngineServer(
         )
 
     def VenueLogout(self, request, context):
-        if request.token != self.token:
+        if not self._token_ok(request):
             context.abort(grpc.StatusCode.UNAUTHENTICATED, "Invalid token")
         # Fix 1: stop live runner, bridge, price cache, and reset venue state machine
         if self._live_runner is not None or self._live_bridge is not None:
@@ -1476,7 +1544,7 @@ class GrpcDataEngineServer(
         return engine_pb2.VenueControlResponse(success=True, error_code="")
 
     def SetExecutionMode(self, request, context):
-        if request.token != self.token:
+        if not self._token_ok(request):
             context.abort(grpc.StatusCode.UNAUTHENTICATED, "Invalid token")
         if request.mode not in self._KNOWN_MODES:
             context.abort(grpc.StatusCode.INVALID_ARGUMENT, "INVALID_MODE")
@@ -1527,7 +1595,7 @@ class GrpcDataEngineServer(
     _MAX_LIVE_SUBSCRIPTIONS = 50
 
     def SubscribeMarketData(self, request, context):
-        if request.token != self.token:
+        if not self._token_ok(request):
             context.abort(grpc.StatusCode.UNAUTHENTICATED, "Invalid token")
         # Live runner 未起動 (Replay モード等) は precondition reject
         if self._live_runner is None:
@@ -1564,7 +1632,7 @@ class GrpcDataEngineServer(
         return engine_pb2.SubscribeResponse(success=True, error_code="")
 
     def UnsubscribeMarketData(self, request, context):
-        if request.token != self.token:
+        if not self._token_ok(request):
             context.abort(grpc.StatusCode.UNAUTHENTICATED, "Invalid token")
         # Live runner 未起動 (Replay モード等) は precondition reject
         if self._live_runner is None:
@@ -1594,7 +1662,7 @@ class GrpcDataEngineServer(
         return engine_pb2.SubscribeResponse(success=True, error_code="")
 
     def SubmitSecret(self, request, context):
-        if request.token != self.token:
+        if not self._token_ok(request):
             context.abort(grpc.StatusCode.UNAUTHENTICATED, "Invalid token")
         # secret は Res にもログにも残さない。
         try:
@@ -1683,7 +1751,7 @@ class GrpcDataEngineServer(
         )
 
     def PlaceOrder(self, request, context):
-        if request.token != self.token:
+        if not self._token_ok(request):
             context.abort(grpc.StatusCode.UNAUTHENTICATED, "Invalid token")
         # Replay (or no mode_manager) is structurally rejected — never reaches venue.
         if not self._is_live_ordering_mode():
@@ -1739,7 +1807,7 @@ class GrpcDataEngineServer(
         return engine_pb2.PlaceOrderRes(success=True, error_code="", order_event=proto_ev)
 
     def CancelOrder(self, request, context):
-        if request.token != self.token:
+        if not self._token_ok(request):
             context.abort(grpc.StatusCode.UNAUTHENTICATED, "Invalid token")
         if not self._is_live_ordering_mode():
             return engine_pb2.CancelOrderRes(
@@ -1781,7 +1849,7 @@ class GrpcDataEngineServer(
         return engine_pb2.CancelOrderRes(success=True, error_code="", order_event=proto_ev)
 
     def ModifyOrder(self, request, context):
-        if request.token != self.token:
+        if not self._token_ok(request):
             context.abort(grpc.StatusCode.UNAUTHENTICATED, "Invalid token")
         if not self._is_live_ordering_mode():
             return engine_pb2.ModifyOrderRes(
@@ -1834,7 +1902,7 @@ class GrpcDataEngineServer(
 
     def GetOrderStatus(self, request, context):
         # 読み取り系: Replay でも reject しない（§3.2）。live session が無ければ空応答。
-        if request.token != self.token:
+        if not self._token_ok(request):
             context.abort(grpc.StatusCode.UNAUTHENTICATED, "Invalid token")
         # Snapshot once (see PlaceOrder): a concurrent teardown nulling
         # self._order_facade between this check and get_status() would otherwise
@@ -1856,12 +1924,28 @@ class GrpcDataEngineServer(
             order_event=self._order_event_to_proto(event),
         )
 
+    def GetOrders(self, request, context):
+        # 読み取り系: Replay でも reject しない（§3.2）。§3.8 reconcile primitive。
+        if not self._token_ok(request):
+            context.abort(grpc.StatusCode.UNAUTHENTICATED, "Invalid token")
+        # Snapshot once (see GetOrderStatus): a concurrent teardown nulling
+        # self._order_facade between the check and list_orders() would otherwise
+        # surface as gRPC INTERNAL instead of a clean NO_LIVE_SESSION.
+        facade = self._order_facade
+        if facade is None:
+            return engine_pb2.GetOrdersRes(success=False, error_code="NO_LIVE_SESSION")
+        return engine_pb2.GetOrdersRes(
+            success=True,
+            error_code="",
+            orders=[self._order_event_to_proto(e) for e in facade.list_orders()],
+        )
+
     def publish_backend_event(self, event):
         """Fan a BackendEvent out to all open SubscribeBackendEvents streams."""
         self._backend_event_bus.publish(event)
 
     def SubscribeBackendEvents(self, request, context):
-        if request.token != self.token:
+        if not self._token_ok(request):
             context.abort(grpc.StatusCode.UNAUTHENTICATED, "Invalid token")
 
         sub = self._backend_event_bus.subscribe()
@@ -1870,12 +1954,37 @@ class GrpcDataEngineServer(
         # the worker thread parks forever in queue.get() and the at-exit
         # ThreadPoolExecutor join hangs the process. (Phase 9 Step 0 fix.)
         context.add_callback(sub.close)
+
+        # Phase 9 §3.7 MEDIUM-3: treat an open event stream as activity so the
+        # idle-shutdown monitor does not self-terminate a standalone backend whose
+        # only active client is an idle subscriber. The __next__ loop blocks until
+        # an event arrives, so a quiet stream would never touch the clock; a small
+        # heartbeat thread refreshes it periodically while the stream is open.
+        clock = self._idle_clock
+        hb_stop = threading.Event()
+
+        def _heartbeat() -> None:
+            # Touch well within the idle timeout so a quiet subscriber always keeps
+            # idle_seconds() below it (default 60s timeout ≫ this interval).
+            while not hb_stop.wait(self._subscribe_heartbeat_s):
+                if not context.is_active():
+                    break
+                clock.touch()
+
+        if clock is not None:
+            clock.touch()
+            threading.Thread(
+                target=_heartbeat, daemon=True, name="subscribe_events_heartbeat"
+            ).start()
         try:
             for event in sub:
                 if not context.is_active():
                     break
+                if clock is not None:
+                    clock.touch()
                 yield event
         finally:
+            hb_stop.set()
             sub.close()
 
 
@@ -1944,6 +2053,7 @@ def serve(
         venue_sm=venue_sm,
         live_adapter_factory=live_adapter_factory,
         live_venue_id=live_venue,
+        idle_clock=idle_clock,
     )
 
     engine_pb2_grpc.add_HealthServicer_to_server(servicer, server)

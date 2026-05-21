@@ -15,8 +15,8 @@
 use bevy::prelude::*;
 
 use crate::trading::{
-    ExecutionMode, ExecutionModeRes, LastPrices, OrderFeedback, SelectedSymbol, TransportCommand,
-    TransportCommandSender, VenueStatusRes,
+    ExecutionMode, ExecutionModeRes, LastPrices, OrderFeedback, SecretPrompt, SelectedSymbol,
+    TransportCommand, TransportCommandSender, VenueStatusRes,
 };
 
 // ── デフォルト売買単位・呼値 ───────────────────────────────────────────────
@@ -704,10 +704,30 @@ pub fn confirm_modal_visibility_system(
 /// `[Cancel]` → pending クリア (発注しない)。
 pub fn confirm_modal_button_system(
     interactions: Query<(&Interaction, &ConfirmButton), (Changed<Interaction>, With<Button>)>,
+    keys: Res<ButtonInput<KeyCode>>,
+    secret_prompt: Res<SecretPrompt>,
     mut confirm: ResMut<OrderConfirm>,
     mut feedback: ResMut<OrderFeedback>,
     sender: Option<Res<TransportCommandSender>>,
 ) {
+    // Item 8: this is the single most safety-critical button (real-money
+    // PlaceOrder). Guard on open-state — never act on a stray `Pressed` for a
+    // `ConfirmButton` when no order is pending (mirrors modify/context-menu
+    // systems; the Display::None zero-size invariant is the only other latch).
+    if confirm.pending.is_none() {
+        return;
+    }
+
+    // Item 9: Esc cancels the confirm modal (clears pending, fires nothing),
+    // consistent with every other Phase 9 modal. Escape is read via ButtonInput
+    // (not the SecretModal event drain), so yield to an open SecretModal so one
+    // keystroke can't close both (§3.10 / item 7 prioritization). The confirm
+    // modal is otherwise high priority — it does NOT yield to notice modals.
+    if keys.just_pressed(KeyCode::Escape) && secret_prompt.active.is_none() {
+        confirm.pending = None;
+        return;
+    }
+
     for (interaction, button) in &interactions {
         if *interaction != Interaction::Pressed {
             continue;
@@ -972,6 +992,8 @@ mod tests {
         app.init_resource::<OrderForm>();
         app.init_resource::<OrderConfirm>();
         app.init_resource::<OrderFeedback>();
+        app.init_resource::<SecretPrompt>();
+        app.init_resource::<ButtonInput<KeyCode>>();
         app.insert_resource(SelectedSymbol {
             id: Some("7203.T".to_string()),
         });
@@ -1100,6 +1122,85 @@ mod tests {
 
         assert!(app.world().resource::<OrderConfirm>().pending.is_none());
         assert!(rx.try_recv().is_err(), "Cancel must not fire a command");
+    }
+
+    /// Item 8 regression: with NO order pending, a stray `ConfirmButton::Confirm`
+    /// Pressed must NOT fire a PlaceOrder (the single most safety-critical button).
+    #[test]
+    fn confirm_button_is_noop_when_pending_none() {
+        let mut app = make_app();
+        let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel();
+        app.insert_resource(TransportCommandSender { tx });
+        // pending stays None (default).
+        app.add_systems(Update, confirm_modal_button_system);
+        app.world_mut()
+            .spawn((Button, Interaction::Pressed, ConfirmButton::Confirm));
+        app.update();
+        assert!(
+            rx.try_recv().is_err(),
+            "no PlaceOrder may be sent when nothing is pending"
+        );
+        assert!(app.world().resource::<OrderConfirm>().pending.is_none());
+    }
+
+    /// Item 9 regression: Esc cancels the confirm modal — clears pending, fires
+    /// nothing — consistent with the other Phase 9 modals.
+    #[test]
+    fn escape_cancels_confirm_modal() {
+        let mut app = make_app();
+        let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel();
+        app.insert_resource(TransportCommandSender { tx });
+        app.world_mut().resource_mut::<OrderConfirm>().pending = Some(OrderDraft {
+            venue: "MOCK".to_string(),
+            symbol: "7203.T".to_string(),
+            side: Side::Buy,
+            order_type: OrderType::Market,
+            qty: 100.0,
+            price: None,
+            tif: TimeInForce::Day,
+        });
+        app.world_mut()
+            .resource_mut::<ButtonInput<KeyCode>>()
+            .press(KeyCode::Escape);
+        app.add_systems(Update, confirm_modal_button_system);
+        app.update();
+        assert!(
+            app.world().resource::<OrderConfirm>().pending.is_none(),
+            "Esc must clear pending (cancel)"
+        );
+        assert!(rx.try_recv().is_err(), "Esc must not fire a command");
+    }
+
+    /// Item 9 + item 7: while a SecretModal is open, Esc is consumed by the secret
+    /// modal — the confirm modal must NOT also close on the same keystroke.
+    #[test]
+    fn escape_on_confirm_yields_to_open_secret_prompt() {
+        use crate::trading::SecretPromptRequest;
+        let mut app = make_app();
+        app.world_mut().resource_mut::<OrderConfirm>().pending = Some(OrderDraft {
+            venue: "MOCK".to_string(),
+            symbol: "7203.T".to_string(),
+            side: Side::Buy,
+            order_type: OrderType::Market,
+            qty: 100.0,
+            price: None,
+            tif: TimeInForce::Day,
+        });
+        app.world_mut().resource_mut::<SecretPrompt>().active = Some(SecretPromptRequest {
+            request_id: "r1".to_string(),
+            venue: "MOCK".to_string(),
+            kind: "second_password".to_string(),
+            purpose: "new_order".to_string(),
+        });
+        app.world_mut()
+            .resource_mut::<ButtonInput<KeyCode>>()
+            .press(KeyCode::Escape);
+        app.add_systems(Update, confirm_modal_button_system);
+        app.update();
+        assert!(
+            app.world().resource::<OrderConfirm>().pending.is_some(),
+            "confirm modal must survive Escape consumed by the SecretModal"
+        );
     }
 
     #[test]
