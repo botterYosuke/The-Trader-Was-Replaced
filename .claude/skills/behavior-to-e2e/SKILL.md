@@ -130,6 +130,14 @@ backend→ECS seam だけでは十分条件にならない。
   ハーネス漏れだと気づきにくい。**正解セットは `src/main.rs` の `insert_resource(...)` 群**＝ハーネスは
   これをミラーする。**ブランチをマージした直後は特に要注意**（片方が system に resource を足し、
   もう片方がハーネスを持つと、テキスト無衝突でも合体時に必ずこれで壊れる）。
+- **`BackendEvent` / `BackendStatusUpdate` の variant にフィールドが増えると e2e_replay の構築が壊れる**。
+  Phase ブランチをマージすると `OrderEvent` 等にフィールドが足される（例: Phase 10 で `OrderEvent.strategy_id: String`）。
+  `tests/e2e_replay.rs` の `h.send_event(BackendEvent::OrderEvent { ... })` が `missing field`(E0063) で
+  コンパイル不可になるので、新フィールドを足す（まだ値が無いものは `String::new()` 等の中立値で OK＝
+  assert 対象でなければ挙動は変わらない）。同名フィールドを持つ別 variant（`BackendStatusUpdate::OrderSeeded`
+  等）もあるので、**`BackendEvent::OrderEvent {` 行でアンカーして該当箇所だけ**直すこと（一括置換は誤爆する）。
+  なお backend 側の gRPC 拡張（新 RPC）は `tests/backend_integration.rs` のモック `impl DataEngine` が
+  trait 未実装(E0046)になる別件 — マージ後チェックリストは memory `phase-merge-breaks-test-doubles` 参照。
 - **event seam は一部だけ resource を変える（Phase 9 マージ以降）**。`backend_event_drain_system` は
   `OrderEvent` → `LiveOrders.apply_event`、`AccountEvent` → `apply_account_event`（`PortfolioState`）、
   `SecretRequired` → `SecretPrompt.active`、`VenueLogoutDetected` → `ReloginPrompt.active` を反映する

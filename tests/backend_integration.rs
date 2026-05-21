@@ -13,6 +13,10 @@ use backcast::trading::engine::{
     StopReplayRequest, StopRequest, StopResponse, SubmitSecretReq, SubmitSecretRes,
     SubscribeBackendEventsReq, SubscribeRequest, SubscribeResponse, UnsubscribeRequest,
     VenueControlResponse, VenueLoginRequest, VenueLoginResponse, VenueLogoutRequest,
+    GetLiveStrategyStatusReq, GetLiveStrategyStatusRes, ListLiveStrategiesReq,
+    ListLiveStrategiesRes, LiveStrategyControlRes, PauseLiveStrategyReq, RegisterLiveStrategyReq,
+    RegisterLiveStrategyRes, ResumeLiveStrategyReq, StartLiveStrategyReq, StartLiveStrategyRes,
+    StopLiveStrategyReq,
     data_engine_server::{DataEngine, DataEngineServer},
 };
 use backcast::trading::engine::{
@@ -479,6 +483,121 @@ impl DataEngine for MyDataEngine {
             success: true,
             error_code: String::new(),
             orders: vec![],
+        }))
+    }
+
+    async fn register_live_strategy(
+        &self,
+        request: Request<RegisterLiveStrategyReq>,
+    ) -> Result<Response<RegisterLiveStrategyRes>, Status> {
+        let req = request.into_inner();
+        if req.token != self.token {
+            return Err(Status::unauthenticated("Invalid token"));
+        }
+        Ok(Response::new(RegisterLiveStrategyRes {
+            success: true,
+            request_id: req.request_id,
+            error_code: String::new(),
+            strategy_id: "test-strategy".to_string(),
+            strategy_sha256: String::new(),
+            display_name: String::new(),
+        }))
+    }
+
+    async fn start_live_strategy(
+        &self,
+        request: Request<StartLiveStrategyReq>,
+    ) -> Result<Response<StartLiveStrategyRes>, Status> {
+        let req = request.into_inner();
+        if req.token != self.token {
+            return Err(Status::unauthenticated("Invalid token"));
+        }
+        Ok(Response::new(StartLiveStrategyRes {
+            success: true,
+            request_id: req.request_id,
+            error_code: String::new(),
+            run_id: "test-run".to_string(),
+            status: None,
+        }))
+    }
+
+    async fn stop_live_strategy(
+        &self,
+        request: Request<StopLiveStrategyReq>,
+    ) -> Result<Response<LiveStrategyControlRes>, Status> {
+        let req = request.into_inner();
+        if req.token != self.token {
+            return Err(Status::unauthenticated("Invalid token"));
+        }
+        Ok(Response::new(LiveStrategyControlRes {
+            success: true,
+            request_id: req.request_id,
+            error_code: String::new(),
+            status: None,
+        }))
+    }
+
+    async fn pause_live_strategy(
+        &self,
+        request: Request<PauseLiveStrategyReq>,
+    ) -> Result<Response<LiveStrategyControlRes>, Status> {
+        let req = request.into_inner();
+        if req.token != self.token {
+            return Err(Status::unauthenticated("Invalid token"));
+        }
+        Ok(Response::new(LiveStrategyControlRes {
+            success: true,
+            request_id: req.request_id,
+            error_code: String::new(),
+            status: None,
+        }))
+    }
+
+    async fn resume_live_strategy(
+        &self,
+        request: Request<ResumeLiveStrategyReq>,
+    ) -> Result<Response<LiveStrategyControlRes>, Status> {
+        let req = request.into_inner();
+        if req.token != self.token {
+            return Err(Status::unauthenticated("Invalid token"));
+        }
+        Ok(Response::new(LiveStrategyControlRes {
+            success: true,
+            request_id: req.request_id,
+            error_code: String::new(),
+            status: None,
+        }))
+    }
+
+    async fn get_live_strategy_status(
+        &self,
+        request: Request<GetLiveStrategyStatusReq>,
+    ) -> Result<Response<GetLiveStrategyStatusRes>, Status> {
+        let req = request.into_inner();
+        if req.token != self.token {
+            return Err(Status::unauthenticated("Invalid token"));
+        }
+        Ok(Response::new(GetLiveStrategyStatusRes {
+            success: true,
+            request_id: req.request_id,
+            error_code: String::new(),
+            status: None,
+        }))
+    }
+
+    async fn list_live_strategies(
+        &self,
+        request: Request<ListLiveStrategiesReq>,
+    ) -> Result<Response<ListLiveStrategiesRes>, Status> {
+        let req = request.into_inner();
+        if req.token != self.token {
+            return Err(Status::unauthenticated("Invalid token"));
+        }
+        Ok(Response::new(ListLiveStrategiesRes {
+            success: true,
+            request_id: req.request_id,
+            error_code: String::new(),
+            strategies: vec![],
         }))
     }
 }
