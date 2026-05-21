@@ -204,6 +204,39 @@ def test_start_rejects_malformed_instrument_id(live_strategy_server):
     # needed, since the adapter echoes the subscribed instrument id).
 
 
+def test_on_auto_strategy_log_publishes_mapped_run(live_strategy_server):
+    # §570 remediation: a strategy-log record is forwarded as StrategyLogMessage,
+    # with the run_id resolved from the (forced) nautilus strategy id, ns→ms.
+    from engine.live.strategy_log import StrategyLogRecord
+
+    _port, _token, servicer = live_strategy_server
+    published = []
+    servicer.publish_backend_event = lambda ev: published.append(ev)
+    servicer._run_registry.run_id_for_nautilus_strategy = (
+        lambda sid: "run-xyz" if sid == "LIVE-abc" else ""
+    )
+    rec = StrategyLogRecord(level="WARNING", message="hi", ts_ns=1_700_000_000_123_000_000)
+    servicer._on_auto_strategy_log(rec, "LIVE-abc")
+    assert len(published) == 1
+    msg = published[0].strategy_log_message
+    assert msg.run_id == "run-xyz"
+    assert msg.level == "WARNING"
+    assert msg.message == "hi"
+    assert msg.ts_ms == 1_700_000_000_123  # ns // 1_000_000
+
+
+def test_on_auto_strategy_log_skips_unknown_strategy(live_strategy_server):
+    # Late record for an already-detached run (no run_id reverse-lookup) is dropped.
+    from engine.live.strategy_log import StrategyLogRecord
+
+    _port, _token, servicer = live_strategy_server
+    published = []
+    servicer.publish_backend_event = lambda ev: published.append(ev)
+    servicer._run_registry.run_id_for_nautilus_strategy = lambda sid: ""
+    servicer._on_auto_strategy_log(StrategyLogRecord("INFO", "x", 1), "LIVE-gone")
+    assert published == []
+
+
 # --- lifecycle + events -----------------------------------------------------
 
 def test_start_pause_resume_stop_lifecycle(live_strategy_server):

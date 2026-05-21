@@ -564,11 +564,24 @@ backend が crash → 自動再起動 (Phase 9) した場合、稼働中の Live
 
 理由: 自動復元は意図しないタイミングで戦略が再起動するリスクがある。Phase 10 段階では「クラッシュ時は人間判断」を採用し、永続化は Phase 11 で再評価。
 
-### Open Question: Live Strategy のログ出力先
+### Open Question: Live Strategy のログ出力先（→ 解決済み、Step 9 で実装）
 
-Strategy 内 `self.log.info(...)` の出力先:
-- Phase 10: backend のログファイルにのみ出力 + `StrategyLogMessage` イベントで Live Run Panel に直近 100 行表示
-- Phase 11 候補: 専用ログビューアパネル
+Strategy のログを Live Run Panel に出す方法。**当初は「`self.log.*` を backend が透過的に
+tap して中継」を想定していたが、この Nautilus 版では不可能**と判明した（`Logger.{info,warning,
+error}` は Rust logging subsystem 直行 / `init_logging` は stdout・file 出力のみで Python sink
+無し / 戦略の `_log` は `cdef readonly` / `Logger` は monkeypatch 不可の拡張型 / logger は
+process-global で一度しか初期化されない）。そこで msgbus ベースに**仕様を適合**させた:
+
+- **Phase 10（実装済み, Step 9）**: 戦略は `emit_strategy_log(self, message, level)`
+  （`engine/live/strategy_log.py`）で UI ログ行を出す。これは ① `self.log.<level>` に
+  ミラー（従来通り stdout/file に乗る）し、② msgbus topic `strategy.log.{strategy_id}` に
+  `StrategyLogRecord` を publish する。controller は order-event bridge と同じ seam で当該 run の
+  topic を購読し、`on_strategy_log` → `server_grpc._on_auto_strategy_log`（strategy_id→run_id
+  逆引き）→ `StrategyLogMessage` で UI に push。Live Run Panel が直近 100 行を tail する
+  （`StrategyLogs` ring buffer）。
+  - **トレードオフ（Nautilus 制約に起因、不可避）**: 素の `self.log.*` 行は自動中継**されない**
+    （stdout/file には従来通り出る）。UI に出したい行は `emit_strategy_log` で明示的に出す。
+- **Phase 11 候補**: フィルタ機能付き専用ログビューアパネル（現状は Panel 末尾 6 行 tail のみ）。
 
 ---
 
@@ -1038,9 +1051,13 @@ efficiency findings を修正した（reuse は「既存 bridge/converter パタ
     までで `backend_sync` は `warn!` ログのみ、UI 消費なし）。→ `src/ui/safety_toast.rs` [NEW]（Bevy
     UI-node、bottom-right、kind 別色、6s auto-expire）+ `trading::SafetyToast` resource。`backend_event_drain_system`
     が violation を `safety_toast.show()` する。
-  - **ログ Open Question「Strategy の `self.log.*` を Live Run Panel に直近 100 行表示」が未実装**だった
-    （`StrategyLogMessage` も `info!` ログのみ）。→ `trading::StrategyLogs`（ring buffer cap 100）+
-    `live_run_panel.rs` に "STRATEGY LOG" tail（直近 6 行、level 別色）。
+  - **ログ Open Question「Strategy ログを Live Run Panel に直近 100 行表示」が未実装**だった。まず UI consumer
+    （`trading::StrategyLogs` ring buffer cap 100 + `live_run_panel.rs` の "STRATEGY LOG" tail、直近 6 行・level
+    別色）を入れたが、**レビューで「`StrategyLogMessage` の producer が backend に存在せず常に空・plan が誤って
+    『解決済み』と記載」と判明**。当初想定の「`self.log.*` 透過 tap」は Nautilus 制約で不可能だったため
+    **msgbus ベースに仕様適合**（→ §「Open Question: Live Strategy のログ出力先」）: `strategy_log.py`
+    [NEW] `emit_strategy_log()`（`self.log` ミラー + `strategy.log.{id}` publish）→ controller 購読
+    （order-event bridge と同 seam）→ `server_grpc._on_auto_strategy_log`（run_id 逆引き）→ `StrategyLogMessage`。
   - **instrument_id guard（当初リスク = 誤検知だった）**: 検証中の「instrument の venue サフィックス（`.TSE`）が
     live session の `venue_id`（`TACHIBANA`）と食い違うと tick filter が全 drop して silent no-op」という
     リスクは、`exchanges/tachibana.py:404` が**購読した InstrumentId をそのまま `TradesUpdate` に echo する**
@@ -1048,6 +1065,9 @@ efficiency findings を修正した（reuse は「既存 bridge/converter パタ
     guard は設計と既存 486 テストに反するため**入れない**。代わりに **malformed instrument_id（`SYMBOL.VENUE`
     形でない）を `StartLiveStrategy` で早期 `INVALID_INSTRUMENT_ID` reject**（attach 後の不透明な失敗を
     明示エラーに前倒し）。
-- **回帰**: Rust lib 552（+5）/ bin 30 / integ 10 緑。Python `test_grpc_live_strategy` 21 passed（+1 guard）。
+- **回帰**: Rust lib 552（+5）/ bin 30 / integ 10 緑（delta clippy も clean: `backend_event_drain_system` の
+  `too_many_arguments` allow + `safety_toast` の collapsible-if let-chain 化）。Python: `test_grpc_live_strategy`
+  23 passed（+1 guard, +2 strategy-log mapping）/ `test_strategy_log` 5 passed [NEW] / live suite 344 passed
+  （strategy-log bridge integration test 含む）。
 - **次の手（残 Step 9）**: 実 venue E2E（Tachibana Demo / kabu Verify、1 営業日）と GUI mock E2E は
   認証情報・市場稼働時間・人手 verify が必要なため引き続き手動（[phase11-handoff.md](../phase11-handoff.md) §3）。

@@ -22,6 +22,8 @@ from __future__ import annotations
 import logging
 from typing import Any, Callable, Optional
 
+from engine.live.strategy_log import strategy_log_topic
+
 log = logging.getLogger(__name__)
 
 
@@ -100,6 +102,7 @@ class NautilusLiveEngineController:
         on_safety_violation: Optional[Callable[[Any], None]] = None,
         on_order_event: Optional[Callable[[Any, str], None]] = None,
         on_telemetry: Optional[Callable[[str, dict], None]] = None,
+        on_strategy_log: Optional[Callable[[Any, str], None]] = None,
         attach_timeout_s: float = 10.0,
         trader_id: str = "LIVEHOST-001",
     ) -> None:
@@ -115,6 +118,9 @@ class NautilusLiveEngineController:
         self._on_order_event = on_order_event
         # Step 7 D: run 別 telemetry を push する callback。署名は (strategy_id, metrics dict)。
         self._on_telemetry = on_telemetry
+        # §570 (Step 9 remediation): strategy が `strategy.log.{strategy_id}` に publish した
+        # UI ログ行を橋渡しする callback。署名は (StrategyLogRecord, strategy_id)。
+        self._on_strategy_log = on_strategy_log
         self._attach_timeout_s = attach_timeout_s
         self._trader_id = trader_id
         self._kernel = None
@@ -283,6 +289,14 @@ class NautilusLiveEngineController:
                 ),
             )
 
+        # §570 (Step 9 remediation): strategy が emit_strategy_log() で publish した UI ログ行
+        # を購読して橋渡しする。order-event bridge と同じく当該 run の id で購読する。
+        if self._on_strategy_log is not None:
+            kernel.msgbus.subscribe(
+                topic=strategy_log_topic(nautilus_strategy_id),
+                handler=self._make_strategy_log_handler(nautilus_strategy_id),
+            )
+
         kernel.start()
 
         self._kernel = kernel
@@ -320,6 +334,25 @@ class NautilusLiveEngineController:
                 log.exception("tick→TradeTick feed failed")
 
         return _listener
+
+    def _make_strategy_log_handler(self, strategy_id: str):
+        """`strategy.log.{strategy_id}` の msgbus handler を作る (§570 remediation)。
+
+        strategy が `emit_strategy_log()` で publish した `StrategyLogRecord` を受け、
+        `on_strategy_log(record, strategy_id)` で UI へ橋渡しする。
+
+        ⚠️ live loop thread 上で呼ばれる。order-event bridge と同じく best-effort で、
+        重い処理・blocking round-trip・外側 lock の取得はしない（§Step4 不変条件）。
+        """
+
+        def _handler(record) -> None:
+            try:
+                if self._on_strategy_log is not None:
+                    self._on_strategy_log(record, strategy_id)
+            except Exception:  # noqa: BLE001 — bridge は best-effort（戦略を止めない）
+                log.exception("strategy-log bridge handler failed")
+
+        return _handler
 
     def _make_order_event_handler(self, kernel, strategy_id: str, venue_str: str):
         """`events.order.{strategy_id}` の msgbus handler を作る (Step 7 C)。

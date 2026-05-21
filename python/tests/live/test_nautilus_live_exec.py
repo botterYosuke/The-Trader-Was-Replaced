@@ -218,6 +218,22 @@ class _OneShotLimitKwargs(Strategy):
         self.submit_order(order)
 
 
+class _LogEmitter(Strategy):
+    """on_start で UI ログ行を 1 本 emit する最小戦略（§570 strategy-log bridge 検証用）。
+
+    attach の kwargs 契約（instrument_id / bar_type_str）に合わせる。発注も購読もしない
+    ので data client は不要——bridge が emit を拾えることだけを見る。"""
+
+    def __init__(self, instrument_id: str, bar_type_str: str) -> None:
+        super().__init__()
+        self._iid = InstrumentId.from_str(instrument_id)
+
+    def on_start(self) -> None:
+        from engine.live.strategy_log import emit_strategy_log
+
+        emit_strategy_log(self, "strategy started", "INFO")
+
+
 def _bg_loop():
     import threading
 
@@ -464,6 +480,47 @@ def test_order_event_bridge_emits_with_strategy_id(logged_in_adapter):
         assert filled.client_order_id  # non-empty
     finally:
         controller.detach(nautilus_strategy_id="LIVE-bridge01")
+        _stop_bg_loop(loop, t)
+
+
+def test_strategy_log_bridge_emits_with_strategy_id(logged_in_adapter):
+    """§570 remediation: emit_strategy_log() の行が on_strategy_log callback に
+    LIVE-... 付き StrategyLogRecord で届く（kernel msgbus 経由の bridge）。"""
+    import time as _time
+
+    from engine.live.engine_controller import NautilusLiveEngineController
+
+    loop, t = _bg_loop()
+    logs: list = []
+    controller = NautilusLiveEngineController(
+        loop_provider=lambda: loop,
+        adapter_provider=lambda: logged_in_adapter,
+        on_strategy_log=lambda rec, sid: logs.append((rec, sid)),
+    )
+    scenario = {"instruments": [_IID], "granularity": "Minute"}
+
+    try:
+        controller.attach(
+            strategy_cls=_LogEmitter,
+            scenario=scenario,
+            instrument_id=_IID,
+            venue="TSE",
+            params={},
+            nautilus_strategy_id="LIVE-logbr01",
+            session=None,
+            safety_rails=SafetyRails(SafetyLimits(max_order_value_jpy=1_000_000)),
+        )
+        deadline = _time.time() + 5
+        while _time.time() < deadline and not logs:
+            _time.sleep(0.05)
+        assert logs, "strategy-log bridge must fire on emit_strategy_log"
+        rec, sid = logs[-1]
+        assert sid == "LIVE-logbr01"
+        assert rec.level == "INFO"
+        assert rec.message == "strategy started"
+        assert rec.ts_ns > 0
+    finally:
+        controller.detach(nautilus_strategy_id="LIVE-logbr01")
         _stop_bg_loop(loop, t)
 
 
