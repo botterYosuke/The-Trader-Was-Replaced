@@ -61,24 +61,6 @@ class RunBufferLike(Protocol):
 # ---------------------------------------------------------------------------
 
 
-def default_strategy_init_kwargs(scenario: dict) -> dict:
-    """scenario から最低限の strategy kwargs を生成する。
-
-    strategy_loader.load() で得た strategy_cls が instrument_id / bar_type_str を
-    直接受け取る形式（mean_reversion_01 等）のときに使う。
-
-    FakeBuyAndHold のように config= を受け取る形式には使わないこと。
-    strategy_init_kwargs が None のときにデフォルトとして渡せる。
-    """
-    instruments = instruments_from_scenario(scenario)
-    granularity = normalize_granularity(scenario["granularity"])
-    first = instruments[0]
-    return {
-        "instrument_id": first,
-        "bar_type_str": bar_type_for_instrument(first, granularity),
-    }
-
-
 # ---------------------------------------------------------------------------
 # Runner
 # ---------------------------------------------------------------------------

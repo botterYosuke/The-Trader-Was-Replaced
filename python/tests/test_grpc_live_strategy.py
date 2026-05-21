@@ -395,6 +395,56 @@ def test_post_trade_daily_loss_stops_run_and_pushes_violation(live_strategy_serv
     assert violations[0].run_id == run_id
 
 
+def test_post_trade_eval_does_not_block_on_live_strategy_lock(live_strategy_server):
+    """Finding 1 (Step 4 review): post-trade 評価は live loop thread（AccountSync callback）
+    から走る。stop/fail の teardown が `_live_strategy_lock` を blocking round-trip 中ずっと
+    保持しても、評価がその lock を待ってブロックしないこと（相互デッドロック回避）を確認する。"""
+    from engine.live.order_types import AccountSnapshot
+    import threading
+
+    port, token, servicer = live_strategy_server
+    _arm_live_auto(servicer)
+    stub = _stub(port)
+    sid = _register(stub, token).strategy_id
+    run_id = stub.StartLiveStrategy(
+        engine_pb2.StartLiveStrategyReq(
+            token=token, request_id="s1", strategy_id=sid,
+            instrument_id="7203.TSE", venue="MOCK",
+            safety_limits=engine_pb2.SafetyLimits(max_daily_loss_jpy=100_000),
+        )
+    ).run_id
+    # baseline を確定させる。
+    servicer._evaluate_post_trade_loss(
+        AccountSnapshot(cash=10_000_000.0, buying_power=10_000_000.0, positions=())
+    )
+
+    # 別スレッドで `_live_strategy_lock` を保持し続ける（teardown 中の round-trip を模擬）。
+    holding, release = threading.Event(), threading.Event()
+
+    def _hold():
+        with servicer._live_strategy_lock:
+            holding.set()
+            release.wait(5)
+
+    threading.Thread(target=_hold, daemon=True).start()
+    assert holding.wait(2), "could not acquire _live_strategy_lock in helper"
+
+    # lock 保持中でも評価は即座に完了しなければならない（_run_rails_lock しか取らない）。
+    start = time.monotonic()
+    servicer._evaluate_post_trade_loss(
+        AccountSnapshot(cash=9_800_000.0, buying_power=9_800_000.0, positions=())  # -200k
+    )
+    assert time.monotonic() - start < 1.0, "post-trade eval blocked on _live_strategy_lock"
+
+    # lock 解放後、worker の fail_run が走り run は STOPPED に達する。
+    release.set()
+    assert _wait_until(
+        lambda: stub.GetLiveStrategyStatus(
+            engine_pb2.GetLiveStrategyStatusReq(token=token, run_id=run_id)
+        ).status.status == "STOPPED"
+    )
+
+
 def test_post_trade_within_loss_limit_keeps_run_running(live_strategy_server):
     """損失が上限内なら run は RUNNING のまま（誤検知しない）。"""
     from engine.live.order_types import AccountSnapshot

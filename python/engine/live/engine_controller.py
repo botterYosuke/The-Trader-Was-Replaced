@@ -169,9 +169,10 @@ class NautilusLiveEngineController:
         from nautilus_trader.model.identifiers import InstrumentId, Venue
         from nautilus_trader.system.kernel import NautilusKernel
 
+        from engine.live.bar_supply import live_bar_type
         from engine.live.nautilus_exec_client import NautilusVenueExecClient
         from engine.live.safety_rails import SafetyLimits, SafetyRails
-        from engine.strategy_runtime.engine_runner import default_strategy_init_kwargs
+        from engine.strategy_runtime.catalog_data_loader import normalize_granularity
         from engine.strategy_runtime.instrument_factory import make_equity_instrument
 
         rails = safety_rails if safety_rails is not None else SafetyRails(SafetyLimits())
@@ -212,7 +213,16 @@ class NautilusLiveEngineController:
         # 戦略インスタンス化（engine_runner の backtest と同じ contract）。
         # config= 形式の戦略は scenario/params から組めないため、kwargs 形式
         # （instrument_id / bar_type_str）を default として渡す（mean_reversion_01 等）。
-        kwargs = default_strategy_init_kwargs(scenario)
+        # 起動対象は **request の instrument_id**（kernel cache / RiskEngine に登録したのと
+        # 同じ銘柄）。scenario の既定銘柄ではなくユーザーが指定した銘柄に従う。bar_type は
+        # Live 用 INTERNAL（ADR-B: live aggregation 由来。EXTERNAL→INTERNAL 読み替えは
+        # bar_supply に集約）。
+        kwargs = {
+            "instrument_id": instrument_id,
+            "bar_type_str": live_bar_type(
+                instrument_id, normalize_granularity(scenario["granularity"])
+            ),
+        }
         kwargs.update(params)
         strategy = strategy_cls(**kwargs)
         kernel.trader.add_strategy(strategy)
@@ -239,10 +249,14 @@ class NautilusLiveEngineController:
 
         async def _cancel() -> None:
             try:
-                # 当該戦略の open order のみ cancel（§1.3 / M6）。手動・他戦略は巻き込まない。
-                strategy.cancel_all_orders(strategy.instrument_id) if hasattr(
-                    strategy, "instrument_id"
-                ) else None
+                # 当該戦略の order **のみ** cancel（§1.3 / M6）。手動・他戦略は巻き込まない。
+                # instrument 属性に依存せず cache を strategy.id で引く（戦略ごとに
+                # instrument_id の保持名/型が異なるため）。teardown 中は accepted（open）に
+                # 加え submit 済み未 ack（inflight）も取り消す——どちらも放置すると venue に
+                # 残る。両 index は排他なので二重 cancel しない。
+                inflight = kernel.cache.orders_inflight(strategy_id=strategy.id)
+                for order in list(kernel.cache.orders_open(strategy_id=strategy.id)) + inflight:
+                    strategy.cancel_order(order)
             except Exception:  # noqa: BLE001 — best-effort
                 log.exception("cancel_inflight_orders failed")
 

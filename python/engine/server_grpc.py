@@ -287,7 +287,15 @@ class GrpcDataEngineServer(
             engine_controller=engine_controller,
         )
         # 単一 run スロットの TOCTOU を防ぐ (gRPC handler は threadpool で並行する)。
+        # ⚠️ 不変条件: この lock を **live loop thread のコールバックから取得しない**。
+        # start_run / stop_run / fail_run は本 lock を握ったまま live loop へ blocking
+        # round-trip する (attach / kernel.stop_async)。live loop 側がこの lock を待つと
+        # 「live loop は lock 待ち / lock 保持側は live loop 待ち」の相互デッドロックになる。
         self._live_strategy_lock = threading.Lock()
+        # run_id → SafetyRails / equity baseline。post-trade 評価は live loop thread
+        # (AccountSync callback) から走るため、blocking round-trip を一切伴わない
+        # 軽量 dict 操作専用の別 lock で保護する（_live_strategy_lock とは分離）。
+        self._run_rails_lock = threading.Lock()
         # run_id → SafetyRails（post-trade 評価 / pre-trade 違反の run 紐付けに使う）。
         self._run_rails: dict = {}
         # run_id → 起動時 equity baseline（daily P&L = 現在 equity - baseline）。
@@ -2050,6 +2058,15 @@ class GrpcDataEngineServer(
             )
         )
 
+    def _release_run_rails_locked(self, run_id: str) -> None:
+        """run の Safety Rails 状態（rails + equity baseline）を対で解放する。
+
+        呼び出し元が `_run_rails_lock` を保持していること。両 dict を必ず一緒に外して
+        「rails は消えたが baseline が残る」等の不整合を作らない。
+        """
+        self._run_rails.pop(run_id, None)
+        self._run_equity_baseline.pop(run_id, None)
+
     def _publish_safety_rail_violation(self, run_id: str, violation: RailViolation) -> None:
         """`SafetyRailViolation` を UI に push する（§2.10 トースト、M8）。"""
         self.publish_backend_event(
@@ -2090,8 +2107,12 @@ class GrpcDataEngineServer(
         live loop thread（AccountSync callback）から呼ばれる。違反時の run 停止は
         `fail_run`（controller teardown が同 loop へ blocking round-trip する）を **別スレッド**に
         逃がす（同 loop 上での `future.result()` 自己待ちデッドロックを避ける）。
+
+        ⚠️ ここは live loop thread なので `_live_strategy_lock`（teardown 中に保持される）は
+        **絶対に取らない**。rails dict 専用の `_run_rails_lock`（blocking round-trip を伴わない）
+        だけを使う。
         """
-        with self._live_strategy_lock:
+        with self._run_rails_lock:
             active = self._run_registry.list_active()
             if not active:
                 return
@@ -2108,8 +2129,7 @@ class GrpcDataEngineServer(
             if violation is None:
                 return
             # 二重発火防止: 失敗確定でこの run の rails を外す（後続 snapshot はスキップ）。
-            self._run_rails.pop(record.run_id, None)
-            self._run_equity_baseline.pop(record.run_id, None)
+            self._release_run_rails_locked(record.run_id)
             run_id = record.run_id
 
         threading.Thread(
@@ -2188,7 +2208,10 @@ class GrpcDataEngineServer(
                     request_id=request.request_id,
                     error_code=exc.error_code,
                 )
-            # post-trade（max_daily_loss）評価用に run の rails を記録する。
+        # post-trade（max_daily_loss）評価用に run の rails を記録する。
+        # rails dict は live loop の評価 callback と共有するので専用 lock で囲う
+        # （_live_strategy_lock を live loop に晒さないため、外で取得する）。
+        with self._run_rails_lock:
             self._run_rails[record.run_id] = rails
             self._run_equity_baseline.pop(record.run_id, None)
         self._publish_live_strategy_event(record)
@@ -2211,10 +2234,12 @@ class GrpcDataEngineServer(
                     request_id=request.request_id,
                     error_code=exc.error_code,
                 )
-            # 終端に達した run の Safety Rails 状態を解放する（post-trade 評価対象から外す）。
-            if record.state_machine.is_terminal:
-                self._run_rails.pop(record.run_id, None)
-                self._run_equity_baseline.pop(record.run_id, None)
+            terminal = record.state_machine.is_terminal
+        # 終端に達した run の Safety Rails 状態を解放する（post-trade 評価対象から外す）。
+        # rails dict は専用 lock（_run_rails_lock）で保護する。
+        if terminal:
+            with self._run_rails_lock:
+                self._release_run_rails_locked(record.run_id)
         self._publish_live_strategy_event(record)
         return engine_pb2.LiveStrategyControlRes(
             success=True,

@@ -1113,15 +1113,6 @@ impl LiveRuns {
             self.runs.truncate(MAX_LIVE_RUNS);
         }
     }
-
-    /// `run_id` of the single active (non-terminal) run, if any. Phase 10 enforces
-    /// at most one active automated run, so this is the control target.
-    pub fn active_run_id(&self) -> Option<&str> {
-        self.runs
-            .iter()
-            .find(|r| !is_terminal_run_status(&r.status))
-            .map(|r| r.run_id.as_str())
-    }
 }
 
 /// Active `SecretRequired` prompt driving the SecretModal. Phase 9 §3.10:
@@ -1546,14 +1537,11 @@ mod tests {
     }
 
     #[test]
-    fn live_runs_active_run_id_skips_terminal() {
-        let mut lr = LiveRuns::default();
-        lr.apply_event("run-old", "s", "STOPPED", 1);
-        lr.apply_event("run-new", "s", "RUNNING", 2);
-        assert_eq!(lr.active_run_id(), Some("run-new"));
+    fn is_terminal_run_status_classifies_states() {
         assert!(is_terminal_run_status("STOPPED"));
         assert!(is_terminal_run_status("ERROR"));
         assert!(!is_terminal_run_status("RUNNING"));
+        assert!(!is_terminal_run_status("PAUSED"));
     }
 
     #[test]

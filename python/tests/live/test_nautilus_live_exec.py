@@ -184,15 +184,128 @@ class _KwargsStrat(Strategy):
         self._bar_type_str = bar_type_str
 
 
-def test_controller_attach_then_detach_lifecycle(logged_in_adapter):
-    """NautilusLiveEngineController が背景 loop 上で kernel を組み、detach で停止する。"""
-    import threading
+class _OpenLimitKwargsStrat(Strategy):
+    """kwargs 形式。on_start で resting LIMIT BUY を 1 回出す。`instrument_id` を public
+    属性に持たない（`self._iid`）ことで、cancel が `strategy.id` 経由で効くことを検証する。"""
 
-    from engine.live.engine_controller import NautilusLiveEngineController
+    def __init__(self, instrument_id: str, bar_type_str: str) -> None:
+        super().__init__()
+        self._iid = InstrumentId.from_str(instrument_id)
+        self._bar_type_str = bar_type_str
+
+    def on_start(self) -> None:
+        order = self.order_factory.limit(
+            self._iid, OrderSide.BUY, Quantity.from_int(100), Price(2500.0, precision=1)
+        )
+        self.submit_order(order)
+
+
+def _bg_loop():
+    import threading
 
     loop = asyncio.new_event_loop()
     t = threading.Thread(target=loop.run_forever, daemon=True)
     t.start()
+    return loop, t
+
+
+def _stop_bg_loop(loop, t) -> None:
+    loop.call_soon_threadsafe(loop.stop)
+    t.join(timeout=5)
+    if not loop.is_closed():
+        loop.close()
+
+
+def test_cancel_inflight_orders_cancels_by_strategy_id(logged_in_adapter):
+    """Finding 2 (Step 4 review): cancel は cache を `strategy.id` で引く。戦略に
+    `instrument_id` 属性が無くても、当該 run の open 注文を確実に cancel する。"""
+    import time as _time
+
+    from engine.live.engine_controller import NautilusLiveEngineController
+
+    logged_in_adapter.set_next_order_outcome(status="ACCEPTED", filled_qty=0)  # resting
+    loop, t = _bg_loop()
+    controller = NautilusLiveEngineController(
+        loop_provider=lambda: loop, adapter_provider=lambda: logged_in_adapter
+    )
+    scenario = {"instruments": [_IID], "granularity": "Minute"}
+
+    async def _collect():
+        strat = controller._strategy
+        return [
+            o.status.name
+            for o in controller._kernel.cache.orders_open(strategy_id=strat.id)
+        ]
+
+    def _open():
+        return asyncio.run_coroutine_threadsafe(_collect(), loop).result(timeout=5)
+
+    def _wait(predicate) -> None:
+        deadline = _time.time() + 5
+        while _time.time() < deadline and not predicate():
+            _time.sleep(0.05)
+
+    try:
+        controller.attach(
+            strategy_cls=_OpenLimitKwargsStrat,
+            scenario=scenario,
+            instrument_id=_IID,
+            venue="TSE",
+            params={},
+            nautilus_strategy_id="LIVE-cncl0001",
+            session=None,
+            safety_rails=SafetyRails(SafetyLimits()),
+        )
+        # 旧実装が頼っていた public 属性が無い（= 旧コードなら cancel が no-op になる）。
+        assert not hasattr(controller._strategy, "instrument_id")
+
+        _wait(_open)
+        assert _open(), "LIMIT order should rest open before cancel"
+
+        controller.cancel_inflight_orders(nautilus_strategy_id="LIVE-cncl0001")
+        _wait(lambda: not _open())
+        assert not _open(), "strategy's open orders must be cancelled by strategy_id"
+    finally:
+        controller.detach(nautilus_strategy_id="LIVE-cncl0001")
+        _stop_bg_loop(loop, t)
+
+
+def test_attach_uses_request_instrument_not_scenario(logged_in_adapter):
+    """Finding 3 (Step 4 review): 戦略 kwargs は **request の instrument_id**（kernel cache に
+    登録した銘柄）を使い、scenario の既定銘柄は使わない。bar_type は Live INTERNAL。"""
+    from engine.live.engine_controller import NautilusLiveEngineController
+
+    loop, t = _bg_loop()
+    controller = NautilusLiveEngineController(
+        loop_provider=lambda: loop, adapter_provider=lambda: logged_in_adapter
+    )
+    # scenario の既定は 9984.TSE。だが起動指定は 7203.TSE（_IID）。
+    scenario = {"instruments": ["9984.TSE"], "granularity": "Minute"}
+    try:
+        controller.attach(
+            strategy_cls=_KwargsStrat,
+            scenario=scenario,
+            instrument_id=_IID,  # 7203.TSE
+            venue="TSE",
+            params={},
+            nautilus_strategy_id="LIVE-iid00001",
+            session=None,
+            safety_rails=SafetyRails(SafetyLimits()),
+        )
+        strat = controller._strategy
+        assert strat._iid == _IID  # scenario の 9984.TSE ではない
+        assert strat._bar_type_str.startswith("7203.TSE")
+        assert strat._bar_type_str.endswith("-INTERNAL")
+    finally:
+        controller.detach(nautilus_strategy_id="LIVE-iid00001")
+        _stop_bg_loop(loop, t)
+
+
+def test_controller_attach_then_detach_lifecycle(logged_in_adapter):
+    """NautilusLiveEngineController が背景 loop 上で kernel を組み、detach で停止する。"""
+    from engine.live.engine_controller import NautilusLiveEngineController
+
+    loop, t = _bg_loop()
     controller = NautilusLiveEngineController(
         loop_provider=lambda: loop,
         adapter_provider=lambda: logged_in_adapter,
@@ -215,7 +328,4 @@ def test_controller_attach_then_detach_lifecycle(logged_in_adapter):
         controller.detach(nautilus_strategy_id="LIVE-test1234")
         assert controller._kernel is None
     finally:
-        loop.call_soon_threadsafe(loop.stop)
-        t.join(timeout=5)
-        if not loop.is_closed():
-            loop.close()
+        _stop_bg_loop(loop, t)
