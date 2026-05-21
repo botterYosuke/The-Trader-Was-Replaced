@@ -8,6 +8,8 @@
 
 use std::ffi::OsString;
 
+use serial_test::serial;
+
 use bevy::prelude::*;
 
 use backcast::replay::ReplayStartupProgress;
@@ -35,6 +37,7 @@ impl Drop for CacheDirGuard {
 }
 
 #[test]
+#[serial]
 fn j16_startup_panel_field_commit() {
     let dir = tempfile::tempdir().unwrap();
     let cache_dir = dir.path().join("cache");

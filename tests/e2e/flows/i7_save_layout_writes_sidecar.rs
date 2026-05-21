@@ -12,6 +12,8 @@
 
 use std::ffi::OsString;
 
+use serial_test::serial;
+
 use bevy::prelude::*;
 use bevy::transform::TransformPlugin;
 
@@ -40,6 +42,7 @@ impl Drop for CacheDirGuard {
 }
 
 #[test]
+#[serial]
 fn i7_save_layout_writes_sidecar() {
     let dir = tempfile::tempdir().unwrap();
     let py_path = dir.path().join("strat.py");

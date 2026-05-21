@@ -9,6 +9,8 @@
 use std::ffi::OsString;
 use std::time::{Duration, Instant};
 
+use serial_test::serial;
+
 use bevy::prelude::*;
 
 use backcast::ui::components::{
@@ -34,6 +36,7 @@ impl Drop for CacheDirGuard {
 }
 
 #[test]
+#[serial]
 fn j1_strategy_editor_text_autosaves_cache() {
     let dir = tempfile::tempdir().unwrap();
     let cache_dir = dir.path().join("cache");

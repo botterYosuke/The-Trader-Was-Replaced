@@ -18,6 +18,8 @@
 
 use std::ffi::OsString;
 
+use serial_test::serial;
+
 use bevy::prelude::*;
 use bevy::transform::TransformPlugin;
 
@@ -46,6 +48,7 @@ impl Drop for CacheDirGuard {
 }
 
 #[test]
+#[serial]
 fn i12_restore_last_strategy_cache_on_launch() {
     let dir = tempfile::tempdir().unwrap();
     let cache_dir = dir.path().to_path_buf();

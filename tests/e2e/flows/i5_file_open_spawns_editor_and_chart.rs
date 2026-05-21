@@ -24,6 +24,8 @@
 
 use std::ffi::OsString;
 
+use serial_test::serial;
+
 use bevy::prelude::*;
 use bevy::transform::TransformPlugin;
 use bevy_cosmic_edit::prelude::CosmicFontSystem;
@@ -66,6 +68,7 @@ impl Drop for CacheDirGuard {
 }
 
 #[test]
+#[serial]
 fn i5_file_open_spawns_editor_and_chart() {
     let dir = tempfile::tempdir().unwrap();
     let py_path = dir.path().join("strat.py");
