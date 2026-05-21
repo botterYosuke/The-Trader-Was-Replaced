@@ -594,3 +594,40 @@ Strategy 内 `self.log.info(...)` の出力先:
 3. **Strategy 内で例外発生時の挙動** — Nautilus 標準では `on_bar` の例外で戦略が落ちる。Phase 10 では `LiveStrategyStateMachine.error("STRATEGY_EXCEPTION")` に遷移させ、`SafetyRailViolation` イベントで UI に通知 + 当該 `StrategyId` の in-flight order を cancel
 4. **Promote to Live の Replay KPI 信頼性** — 直近 Replay 結果を取得するが、戦略パラメータ変更後に Replay 未実行のまま `[Promote to Live]` を押されるとサマリーが古い。前提条件チェックに「直近 Replay 結果のパラメータが現在と一致しているか（params のハッシュ突合）」を含める
 5. **kabu は約定 tick feed が無い** — kabu の PUSH は板情報のみ、約定は 1 秒 polling（Phase 9 §0.1）。よって ① 戦略への `Bar` 供給は板 `CurrentPrice` か polling 約定からの構成となり Tachibana より精度が落ちる、② 「直近約定を見て次の判断」をする戦略は最大 1〜2 秒遅延する。Phase 11 で push 化を venue にリクエストするか、kabu 戦略に polling 前提の設計指針を出す
+
+---
+
+## 9. 進捗トラッカー (Implementation Progress)
+
+| Step | 内容 | 状態 |
+| --- | --- | --- |
+| 1 | Strategy Portability 確認 + Live Bar 供給の設計確定 | ✅ 完了 (2026-05-21) |
+| 2 | LiveStrategyHost + RunRegistry | ⬜ 未着手 |
+| 3 | gRPC RPC + `BackendEvent` oneof 拡張 (M8) | ⬜ |
+| 4 | Safety Rails (ネイティブ config + 独自 hook) | ⬜ |
+| 5 | Bevy UI: Safety Rails Modal + Promote to Live | ⬜ |
+| 6 | Bevy UI: Live Run Panel | ⬜ |
+| 7 | OrdersPanel strategy_id フィルタ + LiveRun telemetry | ⬜ |
+| 8 | Partial Bar Push + Live Bar 供給の検証 | ⬜ |
+| 9 | Live E2E (Demo / Verify) | ⬜ |
+| 10 | Polish (drawio / docs / Phase 11 引き継ぎ) | ⬜ |
+
+### Step 1 完了サマリー (2026-05-21)
+
+- **成果物**:
+  - `python/engine/live/bar_supply.py` [NEW] — `to_internal_bar_type()` / `live_bar_type()`。
+    Replay の EXTERNAL `BarType` を Live の INTERNAL に読み替える変換を 1 箇所に集約（ADR-B / §2.3）。
+    aggregation 本体は Nautilus 標準 (`data/aggregation.pyx`) を使うため新規実装なし（File Layout の「新ファイル不要」を踏襲）。
+  - `python/tests/live/test_live_bar_supply.py` [NEW] — 設計ロック用 PoC + 回帰（7 tests, green）。
+- **設計確定 (PoC で構造的に検証)**:
+  - 戦略は同一 `BarSpecification`（step/aggregation/price_type）を購読し続け、変わるのは
+    `aggregation_source`（EXTERNAL→INTERNAL）のみ。`BarType` 完全一致は成功条件にしない（§5）。
+  - Nautilus 標準 `TimeBarAggregator`(INTERNAL) に同一 `TradeTick` 列を流すと、確定 `Bar` の OHLCV が
+    手計算（open=最初 / high=最大 / low=最小 / close=最後 / volume=合計）と一致する。
+  - `strategy_loader.load()` はクラスを返すだけ（インスタンス化・clock/data 束縛なし）→
+    Replay/Live 双方から同じロードを使える（§0′-2 / §0.4）。
+- **回帰**: 既存コード無改変（新規ファイル追加のみ）。Replay 系 (`tests/strategy_runtime/`) は baseline 通り green。
+- **次の手 (Step 2)**: `LiveStrategyHost` が `to_internal_bar_type` で戦略 `bar_type` を読み替え、
+  `LiveDataEngine` に INTERNAL を subscribe させる + `Trader.add_strategy()` で attach。
+- **TDD baseline**: Python `-m "not slow"` の pre-existing 失敗は 4 件
+  (`test_grpc_shutdown`×3 / `test_grpc_startup_sentinel`×1、Windows pipe FD 由来)。Step 1 で増減なし。
