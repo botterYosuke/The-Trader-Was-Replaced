@@ -282,6 +282,17 @@ websockets 10+ では `async for raw in ws:` でループするコードが `Con
 
 **修正パターン**: `ws.recv()` を直接呼び出す + `asyncio.wait_for` でタイムアウトを設ける。**reviewer 観点**: WebSocket 受信ループを `async for` で書いたコードは、websockets バージョンと照合して `except ConnectionClosedOK` が実際に到達可能か確認する。
 
+### 19. レビュー修正中にユーザー（or 別セッション）が同じファイルを並行編集する
+
+review→fix ループ中に、ユーザーが**レビュー対象ファイルを並行で commit / 編集**することがある（実例: Phase 9 Step 6 のレビュー修正中に、ユーザーが Step 6 を commit して同じ `kabusapi.py` に Step 7 の `check_health` を書き足した）。兆候は ① `<system-reminder>`「ファイルが変更された」通知、② `git diff --stat` の行数が**減る**（HEAD が進んだ＝ commit された）、③ 自分が書いていない関数/定数が出現する。
+
+**これを「自分の編集が壊された/corruption」と早合点しない**（知見 #6/#10 の延長）。対処:
+- `git log --oneline -3` で HEAD が進んだか、`git status --short` で何が uncommitted かを確認する。`git diff --stat` の縮小は多くの場合 commit によるもので破損ではない。
+- **自分の編集が生存しているかは `grep` で実地確認**する（追加した定数名・関数名・reject_reason 文字列を数える）。diff-stat や reminder の本文だけで判断しない。
+- 以後の `Edit` は**直前に対象関数を狭く再 Read**（#17b）してから行う。並行編集と領域が重ならなければ exact-match Edit はそのまま通り、重なれば `old_string not found` で安全に失敗する（clobber しない）。
+- **全体テストは並行編集で moving target になる**。自分の担当スコープ（触ったファイルのテスト）に絞って緑を確認し、ユーザーの in-progress 変更（別 step）は自分の収束判定に含めない。
+- 共有ファイル（計画書 doc 等）への「レビュー反映」追記は、ユーザーが別 step セクションを書いていても**領域の重ならない自セクション末尾**に surgical に入れる。
+
 ---
 
 ## 汎用呼び出しテンプレート

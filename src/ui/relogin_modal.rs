@@ -79,7 +79,10 @@ pub fn spawn_relogin_modal(mut commands: Commands) {
                         margin: UiRect::bottom(Val::Px(8.0)),
                         ..default()
                     },
-                    Text::new("⚠ venue からログアウトされました"),
+                    // NOTE: 記号グリフ (⚠ 等) は既定フォントに無く □ 落ちする
+                    // (footer は ▶/■ 用に NotoSansSymbols2 を別ロードしている)。
+                    // 警告色 (COLOR_HEADER=オレンジ) で代替し、本文は Basic-Latin+JP のみ。
+                    Text::new("venue からログアウトされました"),
                     TextFont {
                         font_size: 15.0,
                         ..default()

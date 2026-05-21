@@ -129,6 +129,8 @@ class TachibanaAdapter:
         # SS フレームの直近システム状態。閉局 (sSystemStatus="0") への遷移を一度だけ通知
         # するための debounce 用 (SS は接続毎に初回再送されるため毎フレーム通知すると連打)。
         self._last_system_open: bool | None = None
+        # SS フィールド診断ログをセッション 1 回に抑える gate (詳細は _handle_system_status)。
+        self._ss_keys_unparsed_logged = False
         # client_order_id -> venue 識別子。取消/訂正・EC 解決に使う。
         self._orders_ref: dict[str, _TachibanaOrderRef] = {}
         self._order_number_to_cid: dict[str, str] = {}
@@ -173,6 +175,7 @@ class TachibanaAdapter:
         self._order_number_to_cid.clear()
         self._seen_ec.clear()
         self._last_system_open = None  # SS 閉局 debounce を新セッションでリセット
+        self._ss_keys_unparsed_logged = False  # 新セッションで SS フィールド診断を再 arm
         source = creds.credentials_source
         if source == "session_cache":
             from engine.exchanges.tachibana_file_store import load_session, is_session_valid_for_today
@@ -244,6 +247,7 @@ class TachibanaAdapter:
         self._order_number_to_cid.clear()
         self._seen_ec.clear()
         self._last_system_open = None  # SS 閉局 debounce を新セッションでリセット
+        self._ss_keys_unparsed_logged = False  # 新セッションで SS フィールド診断を再 arm
         self._session = None
         # Wake any active events() consumer so it sees StopAsyncIteration
         # instead of hanging on queue.get() forever.
@@ -674,6 +678,16 @@ class TachibanaAdapter:
         system_status = fields.get("sSystemStatus")
         login_kubun = fields.get("sLoginKyokaKubun")
         if system_status is None and login_kubun is None:
+            # Demo 検証補助: 既知フィールドが無い = EVENT フレームが s* でなく p_* 変種で
+            # 来ている (= 検知が inert) 可能性。実フィールド名をセッション 1 回だけ warning し、
+            # Demo の初回 SS で正しいキーを確定できるようにする (本番で恒常スパムさせない)。
+            if not self._ss_keys_unparsed_logged:
+                self._ss_keys_unparsed_logged = True
+                log.warning(
+                    "tachibana SS frame lacks sSystemStatus/sLoginKyokaKubun; "
+                    "閉局検知 inert. actual field keys=%s (Demo §5.1 layer-3 で確定要)",
+                    sorted(fields),
+                )
             return  # SS と判別できるフィールドが無い → prefix 不一致等。安全側で無視。
         is_open = system_status == "1" and (
             login_kubun is None or login_kubun in ("1", "9")

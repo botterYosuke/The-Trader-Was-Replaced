@@ -1,6 +1,6 @@
 ---
 name: drawio
-description: draw.io 図（.drawio / .drawio.svg / .drawio.png）をコードから生成する。「drawio を作って」「図を drawio で」「layout を svg に」「フローチャートを書いて」「アーキテクチャ図」「ER図」「シーケンス図」「ワイヤーフレーム」と言われたら起動する。
+description: draw.io 図（.drawio / .drawio.svg / .drawio.png）をコードから生成する。「drawio を作って」「図を drawio で」「layout を svg に」「フローチャートを書いて」「アーキテクチャ図」「アーキ図」「.drawio.svg を生成/作る」「phaseN-architecture.drawio.svg」「ER図」「シーケンス図」「ワイヤーフレーム」と言われたら起動する。**計画書/タスクが `.drawio` / `.drawio.svg` の成果物を明示しているときは、既存 SVG を手で真似て書くのではなく必ず本スキルを使う**（native XML を生成 → エクスポートで編集可能な図になる）。
 ---
 
 # Draw.io Diagram Skill

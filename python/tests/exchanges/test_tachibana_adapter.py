@@ -1415,6 +1415,20 @@ async def test_ss_unrecognized_fields_are_ignored():
     assert fired == []
 
 
+async def test_ss_unrecognized_fields_log_actual_keys_once(caplog):
+    """既知フィールド欠落時、実フィールド名を 1 度だけ warning (Demo で prefix 確定用)。
+    再送でスパムしない (本番で p_* 変種だった場合に恒常スパムさせないため)。"""
+    import logging
+    adapter, fired = _ss_adapter()
+    with caplog.at_level(logging.WARNING, logger="engine.exchanges.tachibana"):
+        await adapter._dispatch_event_frame("SS", {"p_GSCD": "0", "p_foo": "1"}, 1)
+        await adapter._dispatch_event_frame("SS", {"p_GSCD": "0", "p_foo": "1"}, 2)
+    diag = [r for r in caplog.records if "actual field keys" in r.getMessage()]
+    assert len(diag) == 1, "診断 warning はセッション 1 回だけ"
+    assert "p_GSCD" in diag[0].getMessage() and "p_foo" in diag[0].getMessage()
+    assert fired == []  # 通知はしない (安全側)
+
+
 async def test_ss_does_not_push_order_event():
     """SS フレームは OrderEvent を push しない。"""
     adapter, fired = _ss_adapter()
