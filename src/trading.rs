@@ -939,6 +939,22 @@ pub struct SecretPromptRequest {
     pub purpose: String,
 }
 
+/// Active venue-logout notice driving the ReloginModal (Phase 9 §3.5 / Step 7).
+/// `backend_event_drain_system` sets `active` to the venue id when a
+/// `VenueLogoutDetected` event arrives (kabu 本体早朝ログアウト / Tachibana 閉局). The
+/// modal opens while `active` is `Some`, telling the user the venue dropped and to
+/// re-login via the Venue menu. It clears on user dismiss.
+///
+/// **設計判断 (drift note)**: モーダルは「通知」に徹し、自身は `VenueLogin` を発射しない。
+/// 検知時点で backend の `venue_sm` はまだ `CONNECTED`（検知は push であって状態遷移では
+/// ない）なので、ここから直接 `VenueLogin` を撃つと busy slot に衝突する。実際の再ログインは
+/// 既存の Venue メニュー (Disconnect→Connect) を通す——そちらが slot のクリアと環境
+/// (demo/verify/prod) 選択を正しく所有している。誤った環境への再接続・二重発注リスクを避ける。
+#[derive(Resource, Default, Debug, Clone)]
+pub struct ReloginPrompt {
+    pub active: Option<String>,
+}
+
 /// Latest user-facing notice for the manual-order flow (§3.10 / §2.2). Phase 9
 /// has no toast/ModalLayer infrastructure yet (Phase 8 left venue-RPC rejects
 /// warn-only), so order/secret failures that the user must see — RPC rejects

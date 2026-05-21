@@ -11,7 +11,8 @@ use backcast::replay::ReplayStartupProgress;
 use backcast::trading::{
     AvailableInstruments, BackendChannel, BackendStartupStage, BackendStatus, BackendStatusUpdate,
     ExecutionMode, ExecutionModeRes, LastPrices, LastRunResult, LiveOrders, OrderFeedback,
-    PortfolioOrder, PortfolioPosition, PortfolioState, ReplaySpeed, SecretPrompt, SelectedSymbol,
+    PortfolioOrder, PortfolioPosition, PortfolioState, ReloginPrompt, ReplaySpeed, SecretPrompt,
+    SelectedSymbol,
     Ticker, Tickers, TickersSource, TradingSettings, TransportCommand, TransportCommandSender,
     VenueState, VenueStatusRes, backend_update_system, engine, tickers_source_to_wire,
 };
@@ -166,6 +167,7 @@ async fn main() {
         // live in this binary.
         .insert_resource(LiveOrders::default())
         .insert_resource(SecretPrompt::default())
+        .insert_resource(ReloginPrompt::default())
         .insert_resource(OrderFeedback::default())
         .insert_resource(tokio_handle)
         .add_systems(

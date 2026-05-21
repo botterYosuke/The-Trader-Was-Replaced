@@ -72,6 +72,11 @@ class _SecretResolver(Protocol):
 # transport コールバック (server_grpc が publish_backend_event に束ねて注入)。
 OnOrderEvent = Callable[[OrderEventData], None]
 
+# on_venue_logout(venue: str) -> None : 本体ログアウト (SS=閉局) を UI に push する
+# transport コールバック (Phase 9 §3.5 / Step 7)。server_grpc が VenueLogoutDetected に
+# 束ねて注入する。kabu は poll 型 watchdog で検知するが Tachibana は SS フレームで push 検知。
+OnVenueLogout = Callable[[str], None]
+
 
 @dataclass(frozen=True)
 class _TachibanaOrderRef:
@@ -119,6 +124,11 @@ class TachibanaAdapter:
         # Phase 9 Step 5: 発注経路 (set_execution_hooks で注入)。
         self._secret_resolver: _SecretResolver | None = None
         self._on_order_event: OnOrderEvent | None = None
+        # Phase 9 Step 7: 本体ログアウト (SS=閉局) 検知 callback (set_execution_hooks で注入)。
+        self._on_venue_logout: OnVenueLogout | None = None
+        # SS フレームの直近システム状態。閉局 (sSystemStatus="0") への遷移を一度だけ通知
+        # するための debounce 用 (SS は接続毎に初回再送されるため毎フレーム通知すると連打)。
+        self._last_system_open: bool | None = None
         # client_order_id -> venue 識別子。取消/訂正・EC 解決に使う。
         self._orders_ref: dict[str, _TachibanaOrderRef] = {}
         self._order_number_to_cid: dict[str, str] = {}
@@ -162,6 +172,7 @@ class TachibanaAdapter:
         self._orders_ref.clear()
         self._order_number_to_cid.clear()
         self._seen_ec.clear()
+        self._last_system_open = None  # SS 閉局 debounce を新セッションでリセット
         source = creds.credentials_source
         if source == "session_cache":
             from engine.exchanges.tachibana_file_store import load_session, is_session_valid_for_today
@@ -232,6 +243,7 @@ class TachibanaAdapter:
         self._orders_ref.clear()
         self._order_number_to_cid.clear()
         self._seen_ec.clear()
+        self._last_system_open = None  # SS 閉局 debounce を新セッションでリセット
         self._session = None
         # Wake any active events() consumer so it sees StopAsyncIteration
         # instead of hanging on queue.get() forever.
@@ -401,14 +413,17 @@ class TachibanaAdapter:
         *,
         secret_resolver: _SecretResolver,
         on_order_event: OnOrderEvent,
+        on_venue_logout: OnVenueLogout | None = None,
     ) -> None:
-        """server_grpc が secret 解決と OrderEvent push を注入する。
+        """server_grpc が secret 解決・OrderEvent push・ログアウト検知を注入する。
 
         ``login()`` より前に呼ぶこと (EC ストリームは on_order_event 設定済みの
         ときだけ起動するため)。既にログイン済みなら EC ストリームをここで起動する。
+        ``on_venue_logout`` は EVENT WS の SS=閉局フレームから呼ばれる (§3.5 / Step 7)。
         """
         self._secret_resolver = secret_resolver
         self._on_order_event = on_order_event
+        self._on_venue_logout = on_venue_logout
         if self._session is not None:
             try:
                 self._ensure_ec_stream()
@@ -640,10 +655,45 @@ class TachibanaAdapter:
         self._ec_ws = None
         self._ec_stop = None
 
+    def _handle_system_status(self, fields: dict[str, str]) -> None:
+        """SS=システムステータス (CLMSystemStatus) を読み本体ログアウト/閉局を検知する (§3.5)。
+
+        ⚠️ **TENTATIVE (要 Demo 検証 = 計画 §5.1 layer-3)**: SS は EVENT WS で配信される
+        CLMSystemStatus マスタレコードだが、EVENT フレームでのフィールド名 prefix
+        (``sSystemStatus`` か ``p_*`` 変種か) は実 Demo で未確認。EC 購読 URL / comma
+        エンコードと同じ Demo-pending 事項。判別フィールド欠落時は安全側 (= 通知しない)。
+
+        CLMSystemStatus (mfds_json_api_ref):
+          ``sSystemStatus``    システム状態     ``0``:閉局 / ``1``:開局 / ``2``:一時停止
+          ``sLoginKyokaKubun`` ログイン許可区分  ``0``:不許可 / ``1``:許可 / ``2``:不許可(時間外) / ``9``:管理者のみ
+
+        閉局 (``sSystemStatus != "1"``) か ログイン不許可 (``sLoginKyokaKubun`` not in
+        ``{"1","9"}``) を「本体ログアウト → 要再ログイン」とみなす。SS は接続毎に初回再送
+        されるため、open→closed の遷移時 (または初回観測が closed) のみ 1 回通知する。
+        """
+        system_status = fields.get("sSystemStatus")
+        login_kubun = fields.get("sLoginKyokaKubun")
+        if system_status is None and login_kubun is None:
+            return  # SS と判別できるフィールドが無い → prefix 不一致等。安全側で無視。
+        is_open = system_status == "1" and (
+            login_kubun is None or login_kubun in ("1", "9")
+        )
+        prev_open = self._last_system_open
+        self._last_system_open = is_open
+        if is_open:
+            return  # 開局 → debounce 解除 (次の閉局でまた通知できる)。
+        if prev_open is False:
+            return  # 既に閉局通知済み (SS 再送) → 連打しない。
+        if self._on_venue_logout is not None:
+            self._on_venue_logout(self.venue_id)
+
     async def _dispatch_event_frame(
         self, frame_type: str, fields: dict[str, str], recv_ts_ms: int
     ) -> None:
-        """EC フレームを正規化し OrderEvent を push する (KP/ST/SS/US は無視)。"""
+        """EC を OrderEvent に、SS=システムステータスを閉局検知に回す (KP/ST/US は無視)。"""
+        if frame_type == "SS":
+            self._handle_system_status(fields)
+            return
         if frame_type != "EC" or self._on_order_event is None:
             return
         report = _orders.parse_ec_frame(fields)

@@ -265,6 +265,9 @@ pub fn spawn_python_backend(
     Command::new(python_bin)
         .args(build_backend_command_args(token, port))
         .env("PYTHONPATH", cwd.join("python"))
+        // Phase 9 Step 8 / §3.7: tell the backend it is supervised so it disables
+        // its standalone idle self-shutdown (the supervisor owns process lifetime).
+        .env("BACKEND_SUPERVISED", "1")
         .current_dir(cwd)
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())
