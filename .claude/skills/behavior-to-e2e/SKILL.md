@@ -149,19 +149,31 @@ backend→ECS seam だけでは十分条件にならない。
   ダブル破壊は全て Rust 側 (`src/**`/`.proto`/`tests/*.rs`) が変わって初めて起きる。マージ後
   `git diff --cached --name-only HEAD | grep -E '\.rs$|\.proto$|Cargo'` が**空なら**ハーネスは壊れようが
   なく、検証面は Python+docs だけ（`uv run python -m pytest -m "not slow and not kabu_live"`）。空でなければ
-  上のチェックを実施し、最後に `cargo test --test e2e_replay`（35 本 green が正）で締める。
-  例: Phase 10 Step 8（`7125ff35`）のマージは Python+docs のみ＝Rust e2e は不変だった。
+  上のチェックを実施し、最後に `cargo test --test e2e_replay`（全 flow green が正＝現状 87 passed /
+  2 ignored）で締める。例: Phase 10 Step 8（`7125ff35`）のマージは Python+docs のみ＝Rust e2e は不変、
+  Phase 10 Step 9 は `backend_event_drain_system` に `SafetyToast`/`StrategyLogs` を足したので
+  ハーネスに 2 行 insert が要った。
 - **`git diff --stat main <branch>` の「削除」表示に騙されない（diff 方向の罠）**。これは対称差なので
   「main にあって branch に無い」ファイル（例: e2e_replay.rs / docs/wiki/*）が大量に `---` 削除と出るが、
   マージはそれらを**消さない**（merge-base にも branch にも無ければ touch されない）。マージが実際に何を
   するかは `git show --stat <commit>`（そのコミット自身の diff）で見、マージ後は
   `git diff --cached --diff-filter=D HEAD`（空＝削除なし）で確認する。
-- **`BackendEvent` / `BackendStatusUpdate` の variant にフィールドが増えると e2e_replay の構築が壊れる**。
-  Phase ブランチをマージすると `OrderEvent` 等にフィールドが足される（例: Phase 10 で `OrderEvent.strategy_id: String`）。
-  `tests/e2e_replay.rs` の `h.send_event(BackendEvent::OrderEvent { ... })` が `missing field`(E0063) で
-  コンパイル不可になるので、新フィールドを足す（まだ値が無いものは `String::new()` 等の中立値で OK＝
-  assert 対象でなければ挙動は変わらない）。同名フィールドを持つ別 variant（`BackendStatusUpdate::OrderSeeded`
-  等）もあるので、**`BackendEvent::OrderEvent {` 行でアンカーして該当箇所だけ**直すこと（一括置換は誤爆する）。
+- **マージ後に e2e が 1〜数本だけ落ちたら、まず単体で再実行して flake と回帰を切り分ける**。
+  `cargo test --test e2e_replay <name>` が単体で green なら、それはマージが**起こした**回帰ではなく、
+  プロセスグローバル状態（`std::env::set_var` の env var 等）を複数テストが並列で奪い合う既存の隔離バグを、
+  マージのスレッドタイミング変化が**露出させた**だけ。`#[serial]`（`serial_test`、前例 `l3_prod_guard`）で
+  該当テストを直列化する。例: Phase 10 Step 9 マージで `BACKCAST_CACHE_DIR` を使う i12/i5/i7/j16/j1 が
+  並列衝突し i12 が散発失敗 → 5 本に `#[serial]` 付与で解消。
+- **`BackendEvent` / `BackendStatusUpdate` の variant にフィールドが増えると e2e の構築が壊れる**。
+  Phase ブランチをマージすると `OrderEvent` / `OrderSeeded` 等にフィールドが足される（例: Phase 10 で
+  `OrderEvent.strategy_id` と `BackendStatusUpdate::OrderSeeded.strategy_id`）。テストが
+  `tests/e2e/flows/*.rs` に分割された後はドリフトが多数の flow に散るので、`cargo test --test e2e_replay
+  --no-run` で `missing field`(E0063) を列挙し、`grep -rn 'OrderSeeded\|BackendEvent::OrderEvent'
+  tests/e2e/flows/` で構築箇所を特定して新フィールドを足す（未使用値は `String::new()` 等の中立値で OK＝
+  assert 対象でなければ挙動は変わらない）。`OrderSeeded {` / `OrderEvent {` 行でアンカーして該当箇所だけ
+  直す（一括置換は誤爆する）。なお e2e ブランチが Phase より前に分岐していると、gutted な
+  `tests/e2e_replay.rs`（flow を `#[path]` で束ねるだけのファイル）は `git checkout --theirs` で branch 版を
+  採り、登録 flow が main の test 関数の superset であることを確認してから採用する（coverage を落とさない）。
   なお backend 側の gRPC 拡張（新 RPC）は `tests/backend_integration.rs` のモック `impl DataEngine` が
   trait 未実装(E0046)になる別件 — マージ後チェックリストは memory `phase-merge-breaks-test-doubles` 参照。
 - **event seam は一部だけ resource を変える（Phase 9 マージ以降）**。`backend_event_drain_system` は
