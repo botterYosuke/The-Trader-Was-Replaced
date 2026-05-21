@@ -287,6 +287,8 @@ class GrpcDataEngineServer(
             engine_controller = NautilusLiveEngineController(
                 loop_provider=self._ensure_live_loop,
                 adapter_provider=self._live_adapter,
+                # Step 8: live tick → Nautilus aggregation の供給源（共有 LiveRunner）。
+                runner_provider=self._live_runner_provider,
                 on_safety_violation=self._on_pretrade_violation,
                 # Step 7 C/D: auto 戦略の kernel 内 order events / run telemetry を UI へ橋渡し。
                 on_order_event=self._on_auto_order_event,
@@ -391,7 +393,13 @@ class GrpcDataEngineServer(
         if self._live_runner is not None and self._live_bridge is not None:
             return
 
-        runner = LiveRunner(adapter=adapter, interval_ns=60 * 1_000_000_000)
+        # Step 8: partial_push_interval_s=1.0 → 進行中バーのスナップショットを 1 秒間隔で
+        # bus に publish（UI 用 partial bar、§2.3）。確定バーは on_tick が emit する。
+        runner = LiveRunner(
+            adapter=adapter,
+            interval_ns=60 * 1_000_000_000,
+            partial_push_interval_s=1.0,
+        )
         # D10: wire the event loop reference so fetch_instruments_blocking works
         runner._loop = self._live_loop
         bridge = LiveReducerBridge(bus=runner.bus, data_engine=self.engine)
@@ -2106,6 +2114,14 @@ class GrpcDataEngineServer(
         """共有 live session の venue adapter（NautilusLiveEngineController に渡す）。"""
         facade = self._order_facade
         return getattr(facade, "_adapter", None) if facade is not None else None
+
+    def _live_runner_provider(self):
+        """共有 LiveRunner（NautilusLiveEngineController の tick 供給源、Step 8）。
+
+        controller は attach 時にここから runner を借り、tick listener を登録して
+        live 約定を Nautilus aggregation へ流す。未起動なら None（tap を張らない）。
+        """
+        return self._live_runner
 
     @staticmethod
     def _build_safety_rails(sl) -> SafetyRails:

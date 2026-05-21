@@ -96,6 +96,7 @@ class NautilusLiveEngineController:
         *,
         loop_provider: Callable[[], Any],
         adapter_provider: Callable[[], Any],
+        runner_provider: Optional[Callable[[], Any]] = None,
         on_safety_violation: Optional[Callable[[Any], None]] = None,
         on_order_event: Optional[Callable[[Any, str], None]] = None,
         on_telemetry: Optional[Callable[[str, dict], None]] = None,
@@ -104,6 +105,9 @@ class NautilusLiveEngineController:
     ) -> None:
         self._loop_provider = loop_provider
         self._adapter_provider = adapter_provider
+        # Step 8: live tick → Nautilus aggregation の供給源。`LiveRunner` を返す provider。
+        # None（テストの直結 kernel など）の場合は tick tap を張らない。
+        self._runner_provider = runner_provider
         self._on_safety_violation = on_safety_violation
         # Step 7 C: kernel msgbus 由来の OrderEvent を UI へ橋渡しする callback。
         # 署名は (OrderEventData, strategy_id) で、strategy_id は当該 run の
@@ -116,6 +120,10 @@ class NautilusLiveEngineController:
         self._kernel = None
         self._strategy = None
         self._strategy_id_str: Optional[str] = None
+        # Step 8: bar 供給用 data client と、それに tick を流す LiveRunner listener。
+        self._data_client = None
+        self._tick_listener: Optional[Callable[[Any], None]] = None
+        self._runner = None
 
     def attach(
         self,
@@ -178,6 +186,7 @@ class NautilusLiveEngineController:
         from nautilus_trader.system.kernel import NautilusKernel
 
         from engine.live.bar_supply import live_bar_type
+        from engine.live.nautilus_data_client import NautilusVenueDataClient
         from engine.live.nautilus_exec_client import NautilusVenueExecClient
         from engine.live.safety_rails import SafetyLimits, SafetyRails
         from engine.strategy_runtime.catalog_data_loader import normalize_granularity
@@ -217,6 +226,20 @@ class NautilusLiveEngineController:
             on_safety_violation=self._on_safety_violation,
         )
         kernel.exec_engine.register_client(client)
+
+        # Step 8: bar 供給用 data client を **kernel.start() の前** に登録する。戦略の
+        # on_start が `subscribe_bars(<...-INTERNAL>)` を呼ぶと engine は当該 venue 宛に
+        # SubscribeTradeTicks を発行するため、その時点で client が登録済みでないと
+        # aggregator が作られず on_bar が永遠に来ない。
+        data_client = NautilusVenueDataClient(
+            loop=loop,
+            venue=Venue(venue_str),
+            msgbus=kernel.msgbus,
+            cache=kernel.cache,
+            clock=kernel.clock,
+            instrument_provider=InstrumentProvider(),
+        )
+        kernel.data_engine.register_client(data_client)
 
         # 戦略インスタンス化（engine_runner の backtest と同じ contract）。
         # config= 形式の戦略は scenario/params から組めないため、kwargs 形式
@@ -265,6 +288,38 @@ class NautilusLiveEngineController:
         self._kernel = kernel
         self._strategy = strategy
         self._strategy_id_str = str(strategy.id)
+        self._data_client = data_client
+
+        # Step 8: live tick を data client に流す。LiveRunner（共有 session の adapter→tick
+        # pipeline）に listener を登録し、当該銘柄を購読させる（idempotent）。runner が無い
+        # 構成（テストの直結 kernel）では tap を張らず、テストが data_client を直接叩く。
+        runner = self._runner_provider() if self._runner_provider is not None else None
+        if runner is not None:
+            try:
+                await runner.subscribe(instrument_id)
+            except Exception:  # noqa: BLE001 — 既購読/購読失敗でも attach は続行（既存 UI 購読を尊重）
+                log.exception("runner.subscribe failed during attach")
+            self._runner = runner
+            self._tick_listener = self._make_tick_listener(data_client, instrument_id)
+            runner.add_tick_listener(self._tick_listener)
+
+    def _make_tick_listener(self, data_client, instrument_id: str):
+        """LiveRunner 用の tick listener を作る (Step 8)。
+
+        当該 run の instrument の `TradesUpdate` のみを data client に渡す。listener は
+        live loop thread 上で同期呼び出しされる（`feed_trades_update` は `_handle_data` =
+        msgbus.send のみで blocking しない、§Step4 不変条件と整合）。best-effort。
+        """
+
+        def _listener(trade) -> None:
+            try:
+                if str(trade.instrument_id) != instrument_id:
+                    return
+                data_client.feed_trades_update(trade)
+            except Exception:  # noqa: BLE001 — bar 供給の失敗で戦略/pipeline を止めない
+                log.exception("tick→TradeTick feed failed")
+
+        return _listener
 
     def _make_order_event_handler(self, kernel, strategy_id: str, venue_str: str):
         """`events.order.{strategy_id}` の msgbus handler を作る (Step 7 C)。
@@ -410,6 +465,14 @@ class NautilusLiveEngineController:
             log.exception("cancel_inflight_orders scheduling failed")
 
     def _teardown_kernel(self) -> None:
+        # Step 8: live tick tap を外す（kernel teardown の前に。listener が破棄済み
+        # data client / kernel を叩かないように）。runner が無ければ no-op。
+        if self._runner is not None and self._tick_listener is not None:
+            self._runner.remove_tick_listener(self._tick_listener)
+        self._tick_listener = None
+        self._runner = None
+        self._data_client = None
+
         kernel = self._kernel
         if kernel is None:
             return

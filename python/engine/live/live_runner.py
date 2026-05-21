@@ -20,7 +20,8 @@ Step スコープ外:
 from __future__ import annotations
 
 import asyncio
-from typing import Iterable, Optional
+import logging
+from typing import Callable, Iterable, Optional
 
 from engine.live.adapter import (
     DepthUpdate,
@@ -32,6 +33,8 @@ from engine.live.adapter import (
 from engine.live.aggregator import TickBarAggregator
 from engine.live.event_bus import LiveEventBus
 
+log = logging.getLogger(__name__)
+
 
 class LiveRunner:
     def __init__(
@@ -39,6 +42,7 @@ class LiveRunner:
         adapter: LiveVenueAdapter,
         interval_ns: Optional[int] = None,
         intervals_ns: Optional[Iterable[int]] = None,
+        partial_push_interval_s: float = 0.0,
     ) -> None:
         intervals = _normalize_intervals(interval_ns, intervals_ns)
         self._adapter = adapter
@@ -49,6 +53,17 @@ class LiveRunner:
         self._task: Optional[asyncio.Task[None]] = None
         self._last_error: Optional[BaseException] = None
         self._loop: Optional[asyncio.AbstractEventLoop] = None  # D10: set by server_grpc
+        # Phase 10 Step 8: 生 TradesUpdate を横取りする listener（Nautilus aggregation へ
+        # tick を流す engine_controller が登録する）。bus 経路（UI 用）とは別系統。
+        self._tick_listeners: list[Callable[[TradesUpdate], None]] = []
+        # Phase 10 Step 8: UI 用 partial bar push（build_now() を一定間隔で bus に publish）。
+        # 0 / None なら無効（既存テストの既定）。production は server_grpc が 1.0s を渡す。
+        self._partial_push_interval_s: float = float(partial_push_interval_s or 0.0)
+        self._partial_task: Optional[asyncio.Task[None]] = None
+        # 直近に push した partial bar（(instrument_id, interval 順位) → KlineUpdate）。
+        # 静かな相場で同一スナップショットを毎秒 publish して UI を溢れさせないための
+        # 変更検出ガード（Step 8 efficiency review）。
+        self._last_partial: dict[tuple, KlineUpdate] = {}
 
     async def subscribe(self, instrument_id: InstrumentId) -> None:
         # idempotent: 既に登録済みなら何もしない
@@ -78,11 +93,32 @@ class LiveRunner:
         await self._adapter.unsubscribe(instrument_id)
         self._aggregators.pop(instrument_id, None)
 
+    def add_tick_listener(self, listener: Callable[[TradesUpdate], None]) -> None:
+        """生 `TradesUpdate` を受け取る listener を登録する (Step 8)。
+
+        各 listener は `_run` の中で（live loop thread 上で）同期呼び出しされる。
+        engine_controller がここに登録し、tick を Nautilus `TradeTick` 化して
+        `LiveDataEngine` に注入する（戦略 `on_bar` への bar 供給経路）。冪等。
+        """
+        if listener not in self._tick_listeners:
+            self._tick_listeners.append(listener)
+
+    def remove_tick_listener(self, listener: Callable[[TradesUpdate], None]) -> None:
+        """登録済み tick listener を外す（未登録なら no-op）。detach で呼ぶ。"""
+        try:
+            self._tick_listeners.remove(listener)
+        except ValueError:
+            pass
+
     async def start(self) -> None:
         if self._task is not None and not self._task.done():
             return
         self._last_error = None
         self._task = asyncio.create_task(self._run())
+        if self._partial_push_interval_s > 0.0 and (
+            self._partial_task is None or self._partial_task.done()
+        ):
+            self._partial_task = asyncio.create_task(self._partial_push())
 
     def _is_subscribed(self, instrument_id: InstrumentId) -> bool:
         return instrument_id in self._aggregators
@@ -102,6 +138,13 @@ class LiveRunner:
                         closed = agg.on_tick(evt)
                         if closed is not None:
                             await self.bus.publish(closed)
+                    # Step 8: Nautilus aggregation など外部 consumer に生 tick を渡す。
+                    # listener は同期・best-effort（1 つが落ちても pipeline は止めない）。
+                    for listener in self._tick_listeners:
+                        try:
+                            listener(evt)
+                        except Exception:  # noqa: BLE001
+                            log.exception("tick listener failed")
                 elif isinstance(evt, (DepthUpdate, KlineUpdate)):
                     await self.bus.publish(evt)
         except asyncio.CancelledError:
@@ -110,9 +153,42 @@ class LiveRunner:
             self._last_error = exc
             return
 
+    async def _partial_push(self) -> None:
+        """進行中バーのスナップショット（`build_now()`）を一定間隔で bus に publish する。
+
+        UI 用の partial bar（未確定バー）経路（§2.3 / Step 8）。Strategy への bar 供給とは
+        別系統で、確定バーは `_run` の `on_tick` が emit する。bus が close 済みなら静かに終了。
+        """
+        try:
+            while True:
+                await asyncio.sleep(self._partial_push_interval_s)
+                for instrument_id, aggs in self._aggregators.items():
+                    for idx, agg in enumerate(aggs):
+                        kline = agg.build_now()
+                        if kline is None:
+                            continue
+                        key = (instrument_id, idx)
+                        # 前回と同一スナップショット（新しい tick 無し）なら push しない。
+                        if self._last_partial.get(key) == kline:
+                            continue
+                        self._last_partial[key] = kline
+                        await self.bus.publish(kline)
+        except asyncio.CancelledError:
+            return
+        except Exception:  # noqa: BLE001 — bus close 後など。push 経路の失敗で runner を壊さない
+            log.debug("partial bar push task stopped", exc_info=True)
+            return
+
     async def stop(self) -> None:
         # Does NOT close the bus — stop() is reversible; start() can re-arm on
         # the same bus. Use aclose() when discarding the runner entirely.
+        if self._partial_task is not None:
+            self._partial_task.cancel()
+            try:
+                await self._partial_task
+            except asyncio.CancelledError:
+                pass
+            self._partial_task = None
         if self._task is not None:
             self._task.cancel()
             try:

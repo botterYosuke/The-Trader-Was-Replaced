@@ -608,9 +608,9 @@ Strategy 内 `self.log.info(...)` の出力先:
 | 5 | Bevy UI: Safety Rails Modal + Promote to Live | ✅ 完了 (2026-05-21) — `safety_rails_modal.rs` (UI-node trigger + modal、± ステッパー、Replay KPI)。`PromoteToLive` 1 コマンドが transport で Register→SetExecutionMode(LiveAuto)→Start を順次 await。結果は `LiveStrategyPromoteResult`→`PromoteFeedback`。14 新規 test、lib 515 / bin 30 green。GUI mock E2E は未実施（要手動 verify）。 |
 | 6 | Bevy UI: Live Run Panel | ✅ 完了 (2026-05-21) — `live_run_panel.rs` (UI-node、`LiveRuns` resource を `LiveStrategyEvent` から駆動、status/ids/起動時刻 + Pause/Resume/Stop、状態 gating)。3 制御コマンド + main.rs dispatch。telemetry(PnL/件数)は Step 7。lib 526 / bin 30 green。 |
 | 7 | OrdersPanel strategy_id フィルタ + LiveRun telemetry | ✅ 完了 (2026-05-21) — manual→`MANUAL-001` / auto→`LIVE-{run}` タグ（kernel msgbus bridge + `change_id`/`change_order_id_tag` で StrategyId 強制）、`LiveStrategyTelemetry`(oneof#8) 新設、orders.rs 循環フィルタ、live_run_panel に PnL/件数。parallel-agent-dev 2 並列（PY/RS）。workspace 全緑（lib547/bin30/integ10、backend_integration の pre-existing Step3 breakage も修復）。 |
-| 8 | Partial Bar Push + Live Bar 供給の検証 | ⬜ |
-| 9 | Live E2E (Demo / Verify) | ⬜ |
-| 10 | Polish (drawio / docs / Phase 11 引き継ぎ) | ⬜ |
+| 8 | Partial Bar Push + Live Bar 供給の検証 | ✅ 完了 (2026-05-21) — **本丸**: `NautilusVenueDataClient`(LiveMarketDataClient) を kernel に register し、`LiveRunner` の tick tap 経由で live 約定を `TradeTick` 化 → `LiveDataEngine` internal aggregation → `on_bar`。実 kernel full-path test で OHLCV 一致・spec=INTERNAL を確認。UI partial push は `LiveRunner` 1s `build_now()`→bus。live+strategy_runtime+grpc 489 passed。GUI/実 venue E2E は Step 9。 |
+| 9 | Live E2E (Demo / Verify) | ⬜ — 実 venue 認証情報 + 市場稼働時間が必要（自動化不可、要手動）。手順は [phase11-handoff.md](../phase11-handoff.md) §3 |
+| 10 | Polish (drawio / docs / Phase 11 引き継ぎ) | ✅ 完了 (2026-05-21) — `assets/phase10-architecture.drawio.svg`（drawio skill / 編集可能 native XML + dark theme 静的 SVG）、`docs/live-strategy.md`（戦略開発者向け: 移植性 / bar 供給 / Safety Rails / Promote・制御）、`docs/phase11-handoff.md`（§7 + Step 4/7/8 既知の限界を集約）。 |
 
 ### Step 1 完了サマリー (2026-05-21)
 
@@ -929,3 +929,96 @@ Strategy 内 `self.log.info(...)` の出力先:
   ② Partial Bar Push（`aggregator.py` `build_now()` を 1 秒間隔で `LiveEventBus` に push）+ Strategy 供給経路（Nautilus
   aggregation 由来 `Bar` が `on_bar` に届く）の検証 + Replay/Live で同 `BarSpecification`・OHLCV 一致の回帰テスト。
   Step 7 で配線した telemetry の unrealized は Step 8 の価格供給後に意味を持つ。
+
+### Step 8 完了サマリー (2026-05-21)
+
+> Phase 10 の **本丸**: Step 2–4 で seam に委ねていた「live tick → Nautilus `Bar` → 戦略 `on_bar`」を結線した。
+> proto / Rust / engine.proto は無改変（純 Python）。
+
+- **完了した成果物**:
+  - `python/engine/live/bar_supply.py` — `trades_update_to_trade_tick(trade, instrument, seq)` を追加
+    （venue `TradesUpdate` → Nautilus `TradeTick`）。price/size は `make_price`/`make_qty` で precision 丸め、
+    aggressor は buy/sell→BUYER/SELLER（欠落/不明は NO_AGGRESSOR）、`trade_id={ts_ns}-{seq}`（同 ns 衝突回避）。純関数。
+  - `python/engine/live/nautilus_data_client.py` [NEW] — `NautilusVenueDataClient`(`LiveMarketDataClient`)。
+    `_connect`/`_disconnect`/`_subscribe_trade_ticks`/`_subscribe_quote_ticks` は no-op（共有 session は新規接続しない、§1.1）。
+    `feed_trades_update(trade)` が cache の instrument を引いて `TradeTick` 化し `_handle_data()`
+    （= `msgbus.send("DataEngine.process", tick)`、接続状態に非依存）。engine が trades topic に publish →
+    aggregator が確定 `Bar` を組み戦略の `on_bar` へ。
+  - `python/engine/live/live_runner.py` — ① **tick tap**: `add_tick_listener`/`remove_tick_listener`。
+    `_run` が各 `TradesUpdate` を bus publish 後に listener へ同期配布（best-effort、live loop thread）。
+    ② **partial bar push**: `partial_push_interval_s>0` のとき `build_now()` のスナップショットを一定間隔で bus に publish
+    する `_partial_push` タスク（`start` で起動 / `stop` で cancel）。**既定 0（無効）**で既存テスト不変、production は
+    server_grpc が **1.0s** を渡す（§2.3 UI 用 partial bar）。
+  - `python/engine/live/engine_controller.py` — `NautilusLiveEngineController` に `runner_provider` を追加。
+    `_do_attach` で **kernel.start() の前**に `NautilusVenueDataClient` を `data_engine.register_client`
+    （戦略 on_start の `subscribe_bars(<...-INTERNAL>)` が SubscribeTradeTicks を発行する時点で client 必須）。
+    start 後に `await runner.subscribe(instrument_id)`（idempotent）+ instrument フィルタ付き tick listener を登録。
+    detach/teardown で listener を外す。runner が無い構成（テスト直結 kernel）では tap を張らない。
+  - `python/engine/server_grpc.py` — controller に `runner_provider=self._live_runner_provider` を注入、
+    `LiveRunner(..., partial_push_interval_s=1.0)`。
+  - tests: `test_live_data_client.py` [NEW]（変換 ×2 / 実 kernel full-path で `on_bar` OHLCV 一致 + spec=INTERNAL ×2(slow) /
+    controller wiring が runner に listener を張り feed する ×1）+ `test_live_runner.py` に partial-push ×1。
+- **設計確定 / 学び**:
+  - **INTERNAL bar 供給の必須前提**: 戦略が INTERNAL `BarType` を購読すると `DataEngine` が aggregator を作り、
+    当該 venue 宛に `SubscribeTradeTicks` を発行する（`data/engine.pyx:_subscribe_bar_aggregator`）。よって
+    **その venue の data client が register 済みでないと aggregator が作られず `on_bar` が永遠に来ない**。
+    Step 4 まで data client 未登録だったため auto 戦略の `on_bar` は不発だった（= Step 8 が解決した本質）。
+  - **`_handle_data` は接続非依存**（`data/client.pyx:1247` = `msgbus.send` のみ）→ kernel start 済みなら
+    tick 注入が確定バーまで届く。`subscribe_trade_ticks` の coroutine は no-op でよい（INTERNAL 集約は engine が駆動）。
+  - **時間バーの close は LiveClock タイマー駆動**（tick の ts_event ではない）。決定論的な full-path テストは
+    SECOND バー + 実時間 settle で行い、`build_with_no_updates=True` 由来の空バーと区別するため「volume>0 の bar」を
+    検証対象にする。MINUTE の OHLCV 正しさは Step 1 の TestClock テストが別途ロック済み。
+  - **venue 別入力 (M2)**: Tachibana の EC 約定はそのまま `TradesUpdate`。kabu は約定 tick が無く板 `CurrentPrice`/
+    polling から `TradesUpdate` 相当を構成する必要がある（精度限界 §8 Open Risk 5）。本経路は `TradesUpdate` を
+    受ければ venue 非依存に動く。
+- **回帰**: Python `tests/{live,strategy_runtime}` + `test_grpc_live_strategy` = **489 passed / 33 skipped / 0 failed**
+  （Step 7 の 483 + 新規 6）。Rust / proto は無改変（純 Python のため `cargo` 再検証不要）。`InvalidStateTrigger
+  RUNNING→DISPOSE` の ERROR 行は Step 4 既知の console ノイズ（同一プロセスで live kernel が global logger を
+  once 初期化 → 後続 backtest の dispose ログが漏れる）で失敗ではない。
+- **未実施 / 次の手 (Step 9)**: ① Tachibana Demo + `mean_reversion_01` 等で 1 営業日 Live 稼働、② kabu Verify でも E2E
+  （約定 tick 無し前提の精度限界を確認）、③ GUI mock E2E（Promote→bar→on_bar→発注→OrdersPanel/LiveRunPanel）の手動 verify。
+  実 venue では同一約定が共有 adapter EC stream（空 strategy_id）でも届き得る二重報告を要確認（Step 7 既知）。
+
+#### Step 8 review remediation (2026-05-21)
+
+実装完了後の横断レビュー（code-review skill = simplify 相当、3 agent: reuse / quality / efficiency）で
+efficiency findings を修正した（reuse は「既存 bridge/converter パターン踏襲で clean」）。
+
+- **per-tick の関数内 import を撤去**: `bar_supply` の `TradeTick` / `TradeId` / `AggressorSide` を module scope に
+  hoist（`catalog_data_loader` 経由で既に nautilus が読まれるため新規 import コスト無し）。tick ごとの import lookup を消す。
+- **per-tick の `InstrumentId.from_str` をメモ化**: `NautilusVenueDataClient` に `_iid_cache`（venue id → InstrumentId）を
+  追加し、ホットパスの parse を 1 回に。
+- **partial bar push の no-op flood を抑止**: `LiveRunner._partial_push` に変更検出ガード（`_last_partial`、
+  (instrument_id, interval 順位) → KlineUpdate）を入れ、静かな相場で同一スナップショットを毎秒 publish しないようにした。
+  併せて `_partial_push` の `except BaseException` を `except Exception` に絞り CancelledError 以外の system 例外を握り潰さない。
+- **skip した findings**: `self._runner` 保持（add/remove を同一 runner で対称にする方が listener lifecycle 上安全）、
+  `self._strategy_id_str`（Step 4/7 の既存コードで scope 外）、コメントの Step/§ 参照（リポジトリの house style に準拠）。
+- **回帰**: refactor 後 `tests/live` + `test_grpc_live_strategy` = **335 passed**。
+
+### Step 10 完了サマリー (2026-05-21)
+
+> ユーザー決定: Step 9（実 venue E2E）は demo/verify 認証情報 + 市場稼働時間を要し自動実行不可のため後回しにし、
+> 自律実行可能な Step 10（Polish）を先に完了。
+
+- **完了した成果物**:
+  - `docs/assets/phase10-architecture.drawio.svg` [NEW] — **drawio skill** で生成（編集可能な native
+    `mxGraphModel` を `content` に埋め込み + phase9 と同じ dark theme の静的 SVG レンダリング。単一ソース
+    （node/edge 定義）から両表現を生成して同期）。UI / 制御（gRPC → LiveStrategyHost + RunRegistry/StrategyRegistry）
+    / Events single channel / NautilusKernel（Trader+Strategy / LiveDataEngine / LiveExecutionEngine / LiveRiskEngine+safety_rails）
+    / bar 供給（Replay EXTERNAL vs Live: Venue→LiveRunner tap→DataClient→INTERNAL aggregation→on_bar）を図示。
+    凡例: 青=command / 緑=event / 橙=bar・tick データ / 紫破線=UI 専用 partial bar。
+  - `docs/live-strategy.md` [NEW] — 戦略開発者向け: ①移植性（モード無分岐 / register 時注入）、②Live 可搬な戦略の
+    書き方（kwargs 形式 / StrategyConfig 形式 / bar_type は EXTERNAL を書けばホストが INTERNAL 読み替え）、
+    ③bar 供給（on_bar は確定バーのみ / partial は UI 専用 / venue 別精度）、④Safety Rails（ネイティブ + 独自、`0=OFF`）、
+    ⑤Promote フロー + run 制御、⑥やってはいけないこと chk。`REQUIRES_DEPTH` は未実装と明記（vaporware を書かない）。
+  - `docs/phase11-handoff.md` [NEW] — §7 の handoff 表 + Step 4/7/8 で判明した既知の限界（kabu 約定 tick 無し /
+    unrealized PnL の account 連動 / 共有 EC stream の二重報告 / ログ汚染）+ 未実施（Step 9 / GUI E2E / clippy cleanup）+
+    Phase 10 で確立した設計資産を集約。
+- **設計確定 / 学び**:
+  - **drawio `.drawio.svg` は単一ソース生成が正解**: phase9 は静的 SVG に title だけの最小 content だったが、
+    本図は memory note「editable native XML を使う」に従い **完全な mxGraphModel を埋め込み**つつ、静的 SVG と
+    乖離しないよう 1 つの node/edge 定義から両方を生成した（手書き二重管理を回避）。
+  - **CLAUDE.md mandated `simplify` skill が不在**: `.claude/skills/` に `simplify` ディレクトリが無く、
+    機能同等の `code-review` で代替した。CLAUDE.md の指示と実体が乖離（要 skill 新規作成 or CLAUDE.md 修正、別件）。
+- **Phase 10 全体の状態**: Step 1–8 + Step 10 完了。**Step 9（実 venue E2E）と GUI mock E2E のみ未実施**
+  （いずれも認証情報・市場稼働時間・人手 verify を要するため自動化不可、引き継ぎ済み）。
