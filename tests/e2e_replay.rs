@@ -586,6 +586,7 @@ fn f3_order_event() {
         filled_qty: 0.0,
         avg_price: 0.0,
         ts_ms: 1000,
+        strategy_id: String::new(),
     });
 
     let orders = h.live_orders().orders;
@@ -607,6 +608,7 @@ fn f3_order_event() {
         filled_qty: 100.0,
         avg_price: 1500.0,
         ts_ms: 2000,
+        strategy_id: String::new(),
     });
 
     let orders = h.live_orders().orders;
