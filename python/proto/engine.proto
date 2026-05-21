@@ -95,6 +95,18 @@ service DataEngine {
   // the backend's truth (a fresh backend has none → UI orders flagged "unknown").
   rpc GetOrders (GetOrdersReq) returns (GetOrdersRes);
 
+  // Phase 10 Step 3: live strategy execution (auto). All unary — the only
+  // streaming transport remains SubscribeBackendEvents (Phase 9 ADR "single
+  // channel", M7). RegisterLiveStrategy validates a saved .py and issues an
+  // opaque strategy_id; StartLiveStrategy promotes it to a Live Auto run.
+  rpc RegisterLiveStrategy (RegisterLiveStrategyReq) returns (RegisterLiveStrategyRes);
+  rpc StartLiveStrategy (StartLiveStrategyReq) returns (StartLiveStrategyRes);
+  rpc StopLiveStrategy (StopLiveStrategyReq) returns (LiveStrategyControlRes);
+  rpc PauseLiveStrategy (PauseLiveStrategyReq) returns (LiveStrategyControlRes);
+  rpc ResumeLiveStrategy (ResumeLiveStrategyReq) returns (LiveStrategyControlRes);
+  rpc GetLiveStrategyStatus (GetLiveStrategyStatusReq) returns (GetLiveStrategyStatusRes);
+  rpc ListLiveStrategies (ListLiveStrategiesReq) returns (ListLiveStrategiesRes);
+
   // Lifecycle (Step 2: backend-startup-sync)
   rpc Shutdown (ShutdownRequest) returns (ShutdownResponse);
 }
@@ -374,6 +386,10 @@ message OrderEvent {
   double filled_qty = 5;
   double avg_price = 6;
   int64 ts_ms = 7;
+  // Phase 10 (§2.9 / M6): the ordering subject's Nautilus StrategyId.
+  // Manual orders carry "MANUAL-001"; each Live Auto run carries "LIVE-{run}".
+  // Additive (proto3 optional): pre-Phase-10 producers leave it unset → "".
+  optional string strategy_id = 8;
 }
 
 message AccountPosition {
@@ -394,12 +410,46 @@ message VenueLogoutDetected {
   string venue = 1;
 }
 
+// === Phase 10 Step 3: live strategy telemetry (BackendEvent oneof additions, M8) ===
+
+// LiveStrategyEvent: a Live Auto run changed lifecycle state. Pushed on each
+// READY/RUNNING/PAUSED/STOPPED/ERROR transition so the UI Run Badge / Live Run
+// Panel can track state without polling GetLiveStrategyStatus.
+message LiveStrategyEvent {
+  string run_id = 1;
+  string strategy_id = 2;  // RegisterLiveStrategy opaque handle
+  string status = 3;       // READY/RUNNING/PAUSED/STOPPED/ERROR
+  int64 ts_ms = 4;
+}
+
+// SafetyRailViolation: a pre/post-trade safety rail blocked or tripped (§2.4).
+// `kind` is the rail name (e.g. "MAX_POSITION_SIZE", "MAX_DAILY_LOSS"); `detail`
+// is a short human-readable explanation for the toast (§2.10).
+message SafetyRailViolation {
+  string run_id = 1;
+  string kind = 2;
+  string detail = 3;
+  int64 ts_ms = 4;
+}
+
+// StrategyLogMessage: relays a strategy's own `self.log.*` line to the UI's
+// Live Run Panel (last ~100 lines). `level` is the Python log level name.
+message StrategyLogMessage {
+  string run_id = 1;
+  string level = 2;     // "INFO" / "WARNING" / "ERROR" ...
+  string message = 3;
+  int64 ts_ms = 4;
+}
+
 message BackendEvent {
   oneof payload {
     SecretRequired secret_required = 1;
     OrderEvent order_event = 2;
     AccountEvent account_event = 3;
     VenueLogoutDetected venue_logout_detected = 4;
+    LiveStrategyEvent live_strategy_event = 5;
+    SafetyRailViolation safety_rail_violation = 6;
+    StrategyLogMessage strategy_log_message = 7;
   }
 }
 
@@ -472,4 +522,89 @@ message GetOrdersRes {
   bool success = 1;
   string error_code = 2;
   repeated OrderEvent orders = 3;  // backend's currently-tracked working (non-terminal) orders
+}
+
+// === Phase 10 Step 3: live strategy execution ===
+
+message SafetyLimits {
+  int64 max_position_size_jpy = 1;   // independent pre-trade hook (§2.4 / M1)
+  int64 max_order_value_jpy = 2;     // → LiveRiskEngineConfig.max_notional_per_order (native)
+  int64 max_daily_loss_jpy = 3;      // independent post-trade hook
+  int32 max_orders_per_minute = 4;   // → LiveRiskEngineConfig.max_order_submit_rate (native)
+  repeated string allowed_instruments = 5;  // independent pre-trade hook (whitelist)
+}
+
+// Snapshot of a Live Auto run's lifecycle. nautilus_strategy_id is the ordering
+// subject (StrategyId) used to filter OrderEvent.strategy_id (§2.9 / M6).
+message LiveStrategyStatus {
+  string run_id = 1;
+  string strategy_id = 2;           // RegisterLiveStrategy opaque handle
+  string nautilus_strategy_id = 3;  // ordering-subject StrategyId
+  string instrument_id = 4;
+  string venue = 5;
+  string status = 6;                // READY/RUNNING/PAUSED/STOPPED/ERROR
+  int64 ts_ms = 7;
+}
+
+message RegisterLiveStrategyReq {
+  string token = 1;
+  string request_id = 2;
+  string strategy_file = 3;   // saved .py path; backend resolves + loads to validate
+  string expected_sha256 = 4; // TOCTOU guard vs the confirm modal; empty → skip check
+}
+
+message RegisterLiveStrategyRes {
+  bool success = 1;
+  string request_id = 2;
+  string error_code = 3;
+  string strategy_id = 4;      // opaque handle passed to StartLiveStrategy
+  string strategy_sha256 = 5;  // re-confirm at Promote time
+  string display_name = 6;
+}
+
+message StartLiveStrategyReq {
+  // No raw host path: StartLiveStrategy takes the validated strategy_id only
+  // (avoids letting the live auto path exec an arbitrary file, M9).
+  string token = 1;
+  string request_id = 2;
+  string strategy_id = 3;     // validated handle from RegisterLiveStrategy
+  string instrument_id = 4;
+  string venue = 5;
+  map<string, string> params = 6;
+  SafetyLimits safety_limits = 7;
+}
+
+message StartLiveStrategyRes {
+  bool success = 1;
+  string request_id = 2;
+  string error_code = 3;
+  string run_id = 4;
+  LiveStrategyStatus status = 5;
+}
+
+message StopLiveStrategyReq { string token = 1; string request_id = 2; string run_id = 3; }
+message PauseLiveStrategyReq { string token = 1; string request_id = 2; string run_id = 3; }
+message ResumeLiveStrategyReq { string token = 1; string request_id = 2; string run_id = 3; }
+message GetLiveStrategyStatusReq { string token = 1; string request_id = 2; string run_id = 3; }
+message ListLiveStrategiesReq { string token = 1; string request_id = 2; }
+
+message LiveStrategyControlRes {
+  bool success = 1;
+  string request_id = 2;
+  string error_code = 3;
+  LiveStrategyStatus status = 4;
+}
+
+message GetLiveStrategyStatusRes {
+  bool success = 1;
+  string request_id = 2;
+  string error_code = 3;
+  LiveStrategyStatus status = 4;
+}
+
+message ListLiveStrategiesRes {
+  bool success = 1;
+  string request_id = 2;
+  string error_code = 3;
+  repeated LiveStrategyStatus strategies = 4;
 }

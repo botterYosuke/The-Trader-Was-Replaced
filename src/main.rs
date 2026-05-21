@@ -1254,6 +1254,8 @@ fn setup_backend_connection(
                                     filled_qty: p.filled_qty,
                                     avg_price: p.avg_price,
                                     ts_ms: p.ts_ms,
+                                    // proto3 optional → "" when an old producer leaves it unset.
+                                    strategy_id: p.strategy_id.unwrap_or_default(),
                                 }
                             }
                             engine::backend_event::Payload::AccountEvent(p) => {
@@ -1276,6 +1278,30 @@ fn setup_backend_connection(
                             engine::backend_event::Payload::VenueLogoutDetected(p) => {
                                 backcast::trading::BackendEvent::VenueLogoutDetected {
                                     venue: p.venue,
+                                }
+                            }
+                            engine::backend_event::Payload::LiveStrategyEvent(p) => {
+                                backcast::trading::BackendEvent::LiveStrategyEvent {
+                                    run_id: p.run_id,
+                                    strategy_id: p.strategy_id,
+                                    status: p.status,
+                                    ts_ms: p.ts_ms,
+                                }
+                            }
+                            engine::backend_event::Payload::SafetyRailViolation(p) => {
+                                backcast::trading::BackendEvent::SafetyRailViolation {
+                                    run_id: p.run_id,
+                                    kind: p.kind,
+                                    detail: p.detail,
+                                    ts_ms: p.ts_ms,
+                                }
+                            }
+                            engine::backend_event::Payload::StrategyLogMessage(p) => {
+                                backcast::trading::BackendEvent::StrategyLogMessage {
+                                    run_id: p.run_id,
+                                    level: p.level,
+                                    message: p.message,
+                                    ts_ms: p.ts_ms,
                                 }
                             }
                         };

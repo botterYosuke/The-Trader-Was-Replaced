@@ -798,6 +798,9 @@ pub enum BackendEvent {
         filled_qty: f64,
         avg_price: f64,
         ts_ms: i64,
+        /// Phase 10 (§2.9 / M6): the ordering subject's Nautilus StrategyId.
+        /// "" until Step 7 populates it (manual → "MANUAL-001", auto → "LIVE-{run}").
+        strategy_id: String,
     },
     AccountEvent {
         cash: f64,
@@ -807,6 +810,27 @@ pub enum BackendEvent {
     },
     VenueLogoutDetected {
         venue: String,
+    },
+    /// Phase 10 Step 3 (M8): a Live Auto run changed lifecycle state.
+    LiveStrategyEvent {
+        run_id: String,
+        strategy_id: String,
+        status: String,
+        ts_ms: i64,
+    },
+    /// Phase 10 Step 3 (M8): a pre/post-trade safety rail blocked or tripped (§2.4).
+    SafetyRailViolation {
+        run_id: String,
+        kind: String,
+        detail: String,
+        ts_ms: i64,
+    },
+    /// Phase 10 Step 3 (M8): relayed strategy `self.log.*` line for the Live Run Panel.
+    StrategyLogMessage {
+        run_id: String,
+        level: String,
+        message: String,
+        ts_ms: i64,
     },
 }
 
@@ -838,6 +862,9 @@ pub struct LiveOrder {
     pub filled_qty: f64,
     pub avg_price: f64,
     pub ts_ms: i64,
+    /// Phase 10 (§2.9 / M6): ordering subject's StrategyId for the OrdersPanel
+    /// filter. Populated in Step 7; "" in Step 3 (additive mirror only).
+    pub strategy_id: String,
 }
 
 impl LiveOrder {

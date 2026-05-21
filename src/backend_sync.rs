@@ -113,6 +113,9 @@ pub fn backend_event_drain_system(
                 filled_qty,
                 avg_price,
                 ts_ms,
+                // Phase 10 §2.9 / M6: ordering subject. Step 7 wires the OrdersPanel
+                // filter; Step 3 only mirrors the field through the transport.
+                strategy_id: _,
             } => {
                 // Phase 9 §3.12 (entry side): merge status/fill into the order the
                 // PlaceOrder response seeded.
@@ -150,6 +153,39 @@ pub fn backend_event_drain_system(
                 // モーダルはユーザーに再ログインを促すのみ (実際の再ログインは Venue メニュー)。
                 info!("[backend-event] VenueLogoutDetected venue={venue}");
                 relogin_prompt.active = Some(venue);
+            }
+            // Phase 10 Step 3 (M8): live strategy telemetry. Step 3 only logs these —
+            // the Run Badge / Live Run Panel (Steps 5-6) and the SafetyRailViolation
+            // toast (Step 10) consume them once those panels exist.
+            BackendEvent::LiveStrategyEvent {
+                run_id,
+                strategy_id,
+                status,
+                ts_ms,
+            } => {
+                info!(
+                    "[backend-event] LiveStrategyEvent run_id={run_id} strategy_id={strategy_id} status={status} ts_ms={ts_ms}"
+                );
+            }
+            BackendEvent::SafetyRailViolation {
+                run_id,
+                kind,
+                detail,
+                ts_ms,
+            } => {
+                warn!(
+                    "[backend-event] SafetyRailViolation run_id={run_id} kind={kind} detail={detail} ts_ms={ts_ms}"
+                );
+            }
+            BackendEvent::StrategyLogMessage {
+                run_id,
+                level,
+                message,
+                ts_ms,
+            } => {
+                info!(
+                    "[backend-event] StrategyLogMessage run_id={run_id} level={level} message={message} ts_ms={ts_ms}"
+                );
             }
         }
     }
@@ -359,6 +395,8 @@ pub fn apply_status_update(
                 filled_qty,
                 avg_price,
                 ts_ms,
+                // Step 7 populates this from OrderEvent.strategy_id; "" for now.
+                strategy_id: String::new(),
             });
             // A successful place clears any prior reject/timeout notice.
             order_feedback.message = None;
