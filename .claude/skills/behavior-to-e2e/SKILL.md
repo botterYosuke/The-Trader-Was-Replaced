@@ -11,6 +11,11 @@ description: >-
   「FLOWS.md の flow を実装」「backend からこのイベントが来たら UI がこうなる、をテスト」と言われたとき。
   さらに **`e2e_replay` が全本落ちる / ハーネスが panic する / `could not access system parameter` が出た /
   マージ後に E2E が壊れた**ときの**ハーネス修復**も本スキルの対象（必要 resource の insert 漏れが定番原因）。
+  **Phase ブランチ（`sasa/N-...`）を main にマージする / フェーズマージの健全性を確認する**ときも、E2E が
+  壊れてから直すのではなく着手時に本スキルを開く: マージ後に各 system の `Res`/`ResMut` 引数を grep し
+  （`awk '/pub fn xxx_system/{f=1}f{print}f&&/\) \{/{exit}'`）、新規 resource が `tests/e2e/support/mod.rs`
+  の `Harness` に insert 漏れしていないか先に確認する（例: Phase 10 で `LiveRuns` / `PromoteFeedback` 追加 →
+  入れ忘れて全 35 本 panic）。
   GUI を実際に起動して目視する手動検証は本スキルではなく `e2e-testing` を使う。本スキルは描画に依存しない
   resource レベルの自動テスト専用。Rust の一般的なユニットテスト作法は `rust-testing` を併用する。
 ---
@@ -88,6 +93,17 @@ description: >-
   ハーネス漏れだと気づきにくい。**正解セットは `src/main.rs` の `insert_resource(...)` 群**＝ハーネスは
   これをミラーする。**ブランチをマージした直後は特に要注意**（片方が system に resource を足し、
   もう片方がハーネスを持つと、テキスト無衝突でも合体時に必ずこれで壊れる）。
+- **フェーズマージの健全性確認は「そもそも Rust を触っているか」から始める**。上記のハーネス／テスト
+  ダブル破壊は全て Rust 側 (`src/**`/`.proto`/`tests/*.rs`) が変わって初めて起きる。マージ後
+  `git diff --cached --name-only HEAD | grep -E '\.rs$|\.proto$|Cargo'` が**空なら**ハーネスは壊れようが
+  なく、検証面は Python+docs だけ（`uv run python -m pytest -m "not slow and not kabu_live"`）。空でなければ
+  上のチェックを実施し、最後に `cargo test --test e2e_replay`（35 本 green が正）で締める。
+  例: Phase 10 Step 8（`7125ff35`）のマージは Python+docs のみ＝Rust e2e は不変だった。
+- **`git diff --stat main <branch>` の「削除」表示に騙されない（diff 方向の罠）**。これは対称差なので
+  「main にあって branch に無い」ファイル（例: e2e_replay.rs / docs/wiki/*）が大量に `---` 削除と出るが、
+  マージはそれらを**消さない**（merge-base にも branch にも無ければ touch されない）。マージが実際に何を
+  するかは `git show --stat <commit>`（そのコミット自身の diff）で見、マージ後は
+  `git diff --cached --diff-filter=D HEAD`（空＝削除なし）で確認する。
 - **`BackendEvent` / `BackendStatusUpdate` の variant にフィールドが増えると e2e_replay の構築が壊れる**。
   Phase ブランチをマージすると `OrderEvent` 等にフィールドが足される（例: Phase 10 で `OrderEvent.strategy_id: String`）。
   `tests/e2e_replay.rs` の `h.send_event(BackendEvent::OrderEvent { ... })` が `missing field`(E0063) で
