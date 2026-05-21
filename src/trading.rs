@@ -753,6 +753,24 @@ pub enum BackendStatusUpdate {
         action: String,
         error_code: String,
     },
+    /// Phase 9 §3.10: a `SubmitSecret` RPC was rejected (`success=false`). This is
+    /// a SECRET-flow failure, not an order rejection — it is reduced into
+    /// `SecretPrompt.error` (surfaced by the SecretModal) so the user can retry,
+    /// NOT into `OrderFeedback` (which would pop the OrderPanel out of context and
+    /// could be cleared by unrelated order updates).
+    SecretSubmitFailed {
+        error_code: String,
+    },
+    /// Phase 9 §3.10 / §2.2: a user-visible order-flow notice surfaced verbatim in
+    /// the OrderPanel feedback line. Used for cases that are NOT a structured venue
+    /// reject but still demand the trader's attention: an incomplete success
+    /// response (`success=true` but no `order_event` → an accepted order we cannot
+    /// track) and an order-RPC transport error (place/cancel/modify `Err(_)` →
+    /// pressed-the-button-nothing-shown ambiguity). This IS an order-flow event, so
+    /// the OrderFeedback channel is the correct bucket (unlike SecretSubmitFailed).
+    OrderNotice {
+        message: String,
+    },
     /// Phase 9 §3.8: result of a post-restart `GetOrders` reconcile. Carries the
     /// `client_order_id`s the backend still tracks as working; `apply_status_update`
     /// diffs these against the UI's optimistic `LiveOrders` and populates
@@ -874,9 +892,17 @@ impl LiveOrders {
             if !venue_order_id.is_empty() {
                 existing.venue_order_id = venue_order_id.to_string();
             }
+            // status / venue_order_id / ts_ms always refresh. Cumulative fill is
+            // MONOTONIC per client_order_id: a cancel/modify RPC response carries
+            // filled_qty=0.0, which must NOT clobber a prior partial fill recorded
+            // by the EC stream (would under-report a real-money position, §3.12).
+            // Only advance filled_qty/avg_price when the incoming fill is >= the
+            // tracked one. Fills never legitimately decrease (incl. kabu telescoping).
             existing.status = status.to_string();
-            existing.filled_qty = filled_qty;
-            existing.avg_price = avg_price;
+            if filled_qty >= existing.filled_qty {
+                existing.filled_qty = filled_qty;
+                existing.avg_price = avg_price;
+            }
             existing.ts_ms = ts_ms;
         } else {
             self.orders.insert(
@@ -943,6 +969,11 @@ impl LiveOrders {
 #[derive(Resource, Default, Debug, Clone)]
 pub struct SecretPrompt {
     pub active: Option<SecretPromptRequest>,
+    /// Phase 9 §3.10: error_code from a failed `SubmitSecret` RPC, surfaced by the
+    /// SecretModal so the user can retry. This is NOT an order rejection — a secret
+    /// failure must not pop the OrderPanel feedback line (wrong bucket; could be
+    /// cleared by unrelated order updates). Cleared on submit / cancel / new prompt.
+    pub error: Option<String>,
 }
 
 #[derive(Debug, Clone)]
@@ -1250,6 +1281,38 @@ mod tests {
             lo.orders[0].venue_order_id, "V1",
             "blank venue_order_id in event must not wipe the known id"
         );
+    }
+
+    #[test]
+    fn live_orders_apply_event_fill_is_monotonic_cancel_keeps_partial() {
+        // §3.12 regression: a Tachibana cancel/modify RPC response carries
+        // filled_qty=0.0. Routed via OrderStatusUpdated -> apply_event it must NOT
+        // clobber a prior partial fill (recorded by the EC stream), or a real-money
+        // position is under-reported. Cumulative fill never legitimately decreases.
+        let mut lo = LiveOrders::default();
+        lo.upsert_full(make_live_order("c1"));
+        // EC stream recorded a 40-share partial fill at 2502.0.
+        lo.apply_event("c1", "V123", "PARTIALLY_FILLED", 40.0, 2502.0, 10);
+        // Cancel RPC response comes back with filled=0.0.
+        lo.apply_event("c1", "V123", "CANCELED", 0.0, 0.0, 20);
+        let o = &lo.orders[0];
+        assert_eq!(o.status, "CANCELED", "status always updates");
+        assert_eq!(o.filled_qty, 40.0, "monotonic: downward fill is ignored");
+        assert_eq!(o.avg_price, 2502.0, "avg_price kept with the fill it belongs to");
+        assert_eq!(o.ts_ms, 20, "ts_ms always updates");
+    }
+
+    #[test]
+    fn live_orders_apply_event_fill_advances_when_increasing() {
+        // Forward progress (40 -> 100) must overwrite filled/avg as before.
+        let mut lo = LiveOrders::default();
+        lo.upsert_full(make_live_order("c1"));
+        lo.apply_event("c1", "V123", "PARTIALLY_FILLED", 40.0, 2502.0, 10);
+        lo.apply_event("c1", "V123", "FILLED", 100.0, 2505.0, 20);
+        let o = &lo.orders[0];
+        assert_eq!(o.filled_qty, 100.0);
+        assert_eq!(o.avg_price, 2505.0);
+        assert_eq!(o.status, "FILLED");
     }
 
     #[test]

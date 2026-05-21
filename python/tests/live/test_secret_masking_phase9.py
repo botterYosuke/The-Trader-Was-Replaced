@@ -12,6 +12,7 @@ from __future__ import annotations
 
 import pickle
 
+from engine.live.adapter import VenueCredentials
 from engine.live.logging import mask_secrets
 from engine.live.secret_vault import SecretVault
 
@@ -32,6 +33,20 @@ def test_mask_secrets_redacts_phase9_second_secret_wire_fields() -> None:
     assert masked["second_secret"] == "***"
     assert masked["sOrderNumber"] == "12345"
     assert _PLAINTEXT not in repr(masked)
+
+
+def test_mask_secrets_descends_into_pydantic_model() -> None:
+    # MEDIUM-1: a logged pydantic model (e.g. VenueCredentials) must not leak its
+    # secret-bearing fields. mask_secrets should recurse via model_dump().
+    payload = {
+        "creds": VenueCredentials(
+            credentials_source="prompt_result", token="SEKRET"
+        )
+    }
+    masked = mask_secrets(payload)
+    assert "SEKRET" not in repr(masked)
+    # the token key inside the model_dump is masked
+    assert masked["creds"]["token"] == "***"
 
 
 def test_secret_vault_repr_has_no_plaintext() -> None:

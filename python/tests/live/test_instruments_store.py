@@ -9,6 +9,8 @@
 """
 from __future__ import annotations
 
+import threading
+
 from engine.live.adapter import InstrumentRaw
 from engine.live import instruments_store
 
@@ -59,3 +61,47 @@ def test_write_overwrites_previous(monkeypatch, tmp_path) -> None:
     smaller = [InstrumentRaw(code="1301", name="極洋", market="TSE", tick_size=1.0, lot_size=100)]
     instruments_store.write_instruments("TACHIBANA", smaller)
     assert instruments_store.read_instruments("TACHIBANA") == smaller
+
+
+def test_read_corrupt_parquet_returns_none(monkeypatch, tmp_path) -> None:
+    # MEDIUM-4: a corrupt/truncated parquet must be a clean store-miss (None),
+    # not propagate ArrowInvalid/OSError, so the caller falls back to live fetch.
+    monkeypatch.setenv("INSTRUMENTS_CACHE_DIR", str(tmp_path))
+    path = instruments_store.instruments_path("TACHIBANA")
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_bytes(b"this is not a parquet file at all \x00\x01\x02")
+    assert instruments_store.read_instruments("TACHIBANA") is None
+
+
+def test_concurrent_writes_do_not_corrupt_final_file(monkeypatch, tmp_path) -> None:
+    # MEDIUM-5: two writers (login persist + 5:00 refresh) to the same venue path
+    # must use unique tmp names so neither clobbers the other's tmp mid-write.
+    # The final file must always be one complete, valid, readable instrument list.
+    monkeypatch.setenv("INSTRUMENTS_CACHE_DIR", str(tmp_path))
+    list_a = [InstrumentRaw(code="1000", name="A", market="TSE", tick_size=1.0, lot_size=100)] * 50
+    list_b = [InstrumentRaw(code="2000", name="B", market="TSE", tick_size=0.5, lot_size=100)] * 50
+    start = threading.Barrier(2)
+    errors: list[BaseException] = []
+
+    def _w(lst):
+        try:
+            start.wait()
+            for _ in range(20):
+                instruments_store.write_instruments("TACHIBANA", lst)
+        except BaseException as e:  # noqa: BLE001
+            errors.append(e)
+
+    threads = [threading.Thread(target=_w, args=(list_a,)), threading.Thread(target=_w, args=(list_b,))]
+    for t in threads:
+        t.start()
+    for t in threads:
+        t.join()
+
+    assert errors == [], f"writer raised: {errors}"
+    # No tmp files left behind.
+    assert list(tmp_path.glob("*.tmp")) == []
+    # Final file is a complete, valid list (one writer's full payload, never a mix
+    # or a corrupt truncation).
+    got = instruments_store.read_instruments("TACHIBANA")
+    assert got is not None
+    assert got in (list_a, list_b)

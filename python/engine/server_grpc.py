@@ -1,3 +1,4 @@
+import hmac
 import json
 import logging
 import os
@@ -197,9 +198,18 @@ class GrpcDataEngineServer(
         venue_sm=None,
         live_adapter_factory=None,
         live_venue_id: Optional[str] = None,
+        idle_clock: Optional[LastRequestClock] = None,
     ):
         self.token = token
         self.engine = engine
+        # Phase 9 §3.7 MEDIUM-3: the idle-shutdown clock, so a long-lived open
+        # SubscribeBackendEvents stream counts as activity (touched per periodic
+        # poll, not only at RPC dispatch). None when idle shutdown is not armed
+        # (e.g. unit fixtures); the handler then skips touching.
+        self._idle_clock = idle_clock
+        # Heartbeat cadence for keeping an open event stream "active" (≪ the 60s
+        # idle timeout). Instance attribute so tests can shorten it deterministically.
+        self._subscribe_heartbeat_s: float = 1.0
         self.mode_manager = mode_manager
         self.venue_sm = venue_sm
         self._live_adapter_factory = live_adapter_factory
@@ -242,6 +252,17 @@ class GrpcDataEngineServer(
     _KNOWN_VENUES = {"TACHIBANA", "KABU", "MOCK"}  # D26: MOCK added
     _KNOWN_CRED_SOURCES = {"prompt", "session_cache", "env", "prompt_result"}
     _KNOWN_MODES = {"Replay", "LiveManual", "LiveAuto"}
+
+    def _token_ok(self, request) -> bool:
+        """Constant-time auth-token check (MEDIUM-2).
+
+        Phase 9 が初めて実弾の注文 RPC を gating するため、`!=` のような早期 return で
+        タイミングが観測される比較を避け、`hmac.compare_digest` で固定時間比較する。
+        request.token が空でも安全に比較できるよう "" にフォールバックする。
+        """
+        return hmac.compare_digest(
+            getattr(request, "token", None) or "", self.token or ""
+        )
 
     def _current_engine_state(self):
         """Map the core replay state string to the gRPC EngineState enum."""
@@ -483,7 +504,7 @@ class GrpcDataEngineServer(
 
     def Shutdown(self, request, context):
         # C-6: token 一致確認 → start_shutdown() 戻り値で 4 段判定
-        if request.token != self.token:
+        if not self._token_ok(request):
             return engine_pb2.ShutdownResponse(
                 accepted=False, error_code="INVALID_TOKEN"
             )
@@ -515,7 +536,7 @@ class GrpcDataEngineServer(
         return err
 
     def GetState(self, request, context):
-        if request.token != self.token:
+        if not self._token_ok(request):
             context.abort(grpc.StatusCode.UNAUTHENTICATED, "Invalid token")
 
         err = self._resolve_live_last_error()
@@ -579,21 +600,21 @@ class GrpcDataEngineServer(
         return engine_pb2.GetStateResponse(json_data=state.model_dump_json())
 
     def Start(self, request, context):
-        if request.token != self.token:
+        if not self._token_ok(request):
             context.abort(grpc.StatusCode.UNAUTHENTICATED, "Invalid token")
         self.engine.start()
         logging.info("Engine start requested via gRPC")
         return engine_pb2.StartResponse(success=True)
 
     def Stop(self, request, context):
-        if request.token != self.token:
+        if not self._token_ok(request):
             context.abort(grpc.StatusCode.UNAUTHENTICATED, "Invalid token")
         self.engine.stop()
         logging.info("Engine stop requested via gRPC")
         return engine_pb2.StopResponse(success=True)
 
     def LoadReplayData(self, request, context):
-        if request.token != self.token:
+        if not self._token_ok(request):
             context.abort(grpc.StatusCode.UNAUTHENTICATED, "Invalid token")
 
         granularity_name = self._replay_granularity_name(request.granularity)
@@ -623,7 +644,7 @@ class GrpcDataEngineServer(
         )
 
     def StartEngine(self, request, context):
-        if request.token != self.token:
+        if not self._token_ok(request):
             context.abort(grpc.StatusCode.UNAUTHENTICATED, "Invalid token")
 
         strategy_file = request.config.strategy_file if request.HasField("config") and request.config.HasField("strategy_file") else None
@@ -836,7 +857,7 @@ class GrpcDataEngineServer(
         return resp
 
     def StopEngine(self, request, context):
-        if request.token != self.token:
+        if not self._token_ok(request):
             context.abort(grpc.StatusCode.UNAUTHENTICATED, "Invalid token")
 
         success, error = self.engine.stop_replay()
@@ -849,7 +870,7 @@ class GrpcDataEngineServer(
         )
 
     def PauseReplay(self, request, context):
-        if request.token != self.token:
+        if not self._token_ok(request):
             context.abort(grpc.StatusCode.UNAUTHENTICATED, "Invalid token")
 
         success, error = self.engine.pause_replay()
@@ -862,7 +883,7 @@ class GrpcDataEngineServer(
         )
 
     def ResumeReplay(self, request, context):
-        if request.token != self.token:
+        if not self._token_ok(request):
             context.abort(grpc.StatusCode.UNAUTHENTICATED, "Invalid token")
 
         success, error = self.engine.resume_replay()
@@ -875,7 +896,7 @@ class GrpcDataEngineServer(
         )
 
     def StepReplay(self, request, context):
-        if request.token != self.token:
+        if not self._token_ok(request):
             context.abort(grpc.StatusCode.UNAUTHENTICATED, "Invalid token")
 
         success, error = self.engine.step_replay()
@@ -888,7 +909,7 @@ class GrpcDataEngineServer(
         )
 
     def StopReplay(self, request, context):
-        if request.token != self.token:
+        if not self._token_ok(request):
             context.abort(grpc.StatusCode.UNAUTHENTICATED, "Invalid token")
 
         success, error = self.engine.stop_replay()
@@ -901,7 +922,7 @@ class GrpcDataEngineServer(
         )
 
     def ForceStopReplay(self, request, context):
-        if request.token != self.token:
+        if not self._token_ok(request):
             context.abort(grpc.StatusCode.UNAUTHENTICATED, "Invalid token")
 
         success, error = self.engine.force_stop_replay()
@@ -914,7 +935,7 @@ class GrpcDataEngineServer(
         )
 
     def SetReplaySpeed(self, request, context):
-        if request.token != self.token:
+        if not self._token_ok(request):
             context.abort(grpc.StatusCode.UNAUTHENTICATED, "Invalid token")
 
         success, error = self.engine.set_replay_speed(request.multiplier)
@@ -927,7 +948,7 @@ class GrpcDataEngineServer(
         )
 
     def GetPortfolio(self, request, context):
-        if request.token != self.token:
+        if not self._token_ok(request):
             context.abort(grpc.StatusCode.UNAUTHENTICATED, "Invalid token")
 
         p = self.engine.last_portfolio
@@ -964,7 +985,7 @@ class GrpcDataEngineServer(
         )
 
     def ListInstruments(self, request, context):
-        if request.token != self.token:
+        if not self._token_ok(request):
             context.abort(grpc.StatusCode.UNAUTHENTICATED, "Invalid token")
 
         # D1: source dispatch — "local" (default) vs "live"
@@ -1077,7 +1098,7 @@ class GrpcDataEngineServer(
             )
 
     def ListAllListedSymbols(self, request, context):
-        if request.token != self.token:
+        if not self._token_ok(request):
             context.abort(grpc.StatusCode.UNAUTHENTICATED, "Invalid token")
 
         end_date = (request.end_date or "").strip()
@@ -1316,7 +1337,7 @@ class GrpcDataEngineServer(
                     )
 
     def VenueLogin(self, request, context):
-        if request.token != self.token:
+        if not self._token_ok(request):
             context.abort(grpc.StatusCode.UNAUTHENTICATED, "Invalid token")
 
         cred_source = request.credentials_source or "prompt"
@@ -1513,7 +1534,7 @@ class GrpcDataEngineServer(
         )
 
     def VenueLogout(self, request, context):
-        if request.token != self.token:
+        if not self._token_ok(request):
             context.abort(grpc.StatusCode.UNAUTHENTICATED, "Invalid token")
         # Fix 1: stop live runner, bridge, price cache, and reset venue state machine
         if self._live_runner is not None or self._live_bridge is not None:
@@ -1523,7 +1544,7 @@ class GrpcDataEngineServer(
         return engine_pb2.VenueControlResponse(success=True, error_code="")
 
     def SetExecutionMode(self, request, context):
-        if request.token != self.token:
+        if not self._token_ok(request):
             context.abort(grpc.StatusCode.UNAUTHENTICATED, "Invalid token")
         if request.mode not in self._KNOWN_MODES:
             context.abort(grpc.StatusCode.INVALID_ARGUMENT, "INVALID_MODE")
@@ -1574,7 +1595,7 @@ class GrpcDataEngineServer(
     _MAX_LIVE_SUBSCRIPTIONS = 50
 
     def SubscribeMarketData(self, request, context):
-        if request.token != self.token:
+        if not self._token_ok(request):
             context.abort(grpc.StatusCode.UNAUTHENTICATED, "Invalid token")
         # Live runner 未起動 (Replay モード等) は precondition reject
         if self._live_runner is None:
@@ -1611,7 +1632,7 @@ class GrpcDataEngineServer(
         return engine_pb2.SubscribeResponse(success=True, error_code="")
 
     def UnsubscribeMarketData(self, request, context):
-        if request.token != self.token:
+        if not self._token_ok(request):
             context.abort(grpc.StatusCode.UNAUTHENTICATED, "Invalid token")
         # Live runner 未起動 (Replay モード等) は precondition reject
         if self._live_runner is None:
@@ -1641,7 +1662,7 @@ class GrpcDataEngineServer(
         return engine_pb2.SubscribeResponse(success=True, error_code="")
 
     def SubmitSecret(self, request, context):
-        if request.token != self.token:
+        if not self._token_ok(request):
             context.abort(grpc.StatusCode.UNAUTHENTICATED, "Invalid token")
         # secret は Res にもログにも残さない。
         try:
@@ -1730,7 +1751,7 @@ class GrpcDataEngineServer(
         )
 
     def PlaceOrder(self, request, context):
-        if request.token != self.token:
+        if not self._token_ok(request):
             context.abort(grpc.StatusCode.UNAUTHENTICATED, "Invalid token")
         # Replay (or no mode_manager) is structurally rejected — never reaches venue.
         if not self._is_live_ordering_mode():
@@ -1786,7 +1807,7 @@ class GrpcDataEngineServer(
         return engine_pb2.PlaceOrderRes(success=True, error_code="", order_event=proto_ev)
 
     def CancelOrder(self, request, context):
-        if request.token != self.token:
+        if not self._token_ok(request):
             context.abort(grpc.StatusCode.UNAUTHENTICATED, "Invalid token")
         if not self._is_live_ordering_mode():
             return engine_pb2.CancelOrderRes(
@@ -1828,7 +1849,7 @@ class GrpcDataEngineServer(
         return engine_pb2.CancelOrderRes(success=True, error_code="", order_event=proto_ev)
 
     def ModifyOrder(self, request, context):
-        if request.token != self.token:
+        if not self._token_ok(request):
             context.abort(grpc.StatusCode.UNAUTHENTICATED, "Invalid token")
         if not self._is_live_ordering_mode():
             return engine_pb2.ModifyOrderRes(
@@ -1881,7 +1902,7 @@ class GrpcDataEngineServer(
 
     def GetOrderStatus(self, request, context):
         # 読み取り系: Replay でも reject しない（§3.2）。live session が無ければ空応答。
-        if request.token != self.token:
+        if not self._token_ok(request):
             context.abort(grpc.StatusCode.UNAUTHENTICATED, "Invalid token")
         # Snapshot once (see PlaceOrder): a concurrent teardown nulling
         # self._order_facade between this check and get_status() would otherwise
@@ -1905,7 +1926,7 @@ class GrpcDataEngineServer(
 
     def GetOrders(self, request, context):
         # 読み取り系: Replay でも reject しない（§3.2）。§3.8 reconcile primitive。
-        if request.token != self.token:
+        if not self._token_ok(request):
             context.abort(grpc.StatusCode.UNAUTHENTICATED, "Invalid token")
         # Snapshot once (see GetOrderStatus): a concurrent teardown nulling
         # self._order_facade between the check and list_orders() would otherwise
@@ -1924,7 +1945,7 @@ class GrpcDataEngineServer(
         self._backend_event_bus.publish(event)
 
     def SubscribeBackendEvents(self, request, context):
-        if request.token != self.token:
+        if not self._token_ok(request):
             context.abort(grpc.StatusCode.UNAUTHENTICATED, "Invalid token")
 
         sub = self._backend_event_bus.subscribe()
@@ -1933,12 +1954,37 @@ class GrpcDataEngineServer(
         # the worker thread parks forever in queue.get() and the at-exit
         # ThreadPoolExecutor join hangs the process. (Phase 9 Step 0 fix.)
         context.add_callback(sub.close)
+
+        # Phase 9 §3.7 MEDIUM-3: treat an open event stream as activity so the
+        # idle-shutdown monitor does not self-terminate a standalone backend whose
+        # only active client is an idle subscriber. The __next__ loop blocks until
+        # an event arrives, so a quiet stream would never touch the clock; a small
+        # heartbeat thread refreshes it periodically while the stream is open.
+        clock = self._idle_clock
+        hb_stop = threading.Event()
+
+        def _heartbeat() -> None:
+            # Touch well within the idle timeout so a quiet subscriber always keeps
+            # idle_seconds() below it (default 60s timeout ≫ this interval).
+            while not hb_stop.wait(self._subscribe_heartbeat_s):
+                if not context.is_active():
+                    break
+                clock.touch()
+
+        if clock is not None:
+            clock.touch()
+            threading.Thread(
+                target=_heartbeat, daemon=True, name="subscribe_events_heartbeat"
+            ).start()
         try:
             for event in sub:
                 if not context.is_active():
                     break
+                if clock is not None:
+                    clock.touch()
                 yield event
         finally:
+            hb_stop.set()
             sub.close()
 
 
@@ -2007,6 +2053,7 @@ def serve(
         venue_sm=venue_sm,
         live_adapter_factory=live_adapter_factory,
         live_venue_id=live_venue,
+        idle_clock=idle_clock,
     )
 
     engine_pb2_grpc.add_HealthServicer_to_server(servicer, server)

@@ -609,9 +609,12 @@ async fn spawn_and_handshake(
     {
         SpawnOutcome::Ready(child)
     } else {
-        // Handshake failed before Ready: drop the child handle (cleanup of an
-        // orphaned subprocess is handled separately via the Job Object).
-        let _ = &mut child;
+        // Handshake failed before Ready: kill and reap the child here. There is no
+        // Job Object in this repo, and dropping a `Child` does NOT terminate the OS
+        // process — without this the failed-handshake Python backend would be
+        // orphaned. Kill is unconditional on this failure branch.
+        let _ = child.kill();
+        let _ = child.wait();
         SpawnOutcome::Failed
     }
 }

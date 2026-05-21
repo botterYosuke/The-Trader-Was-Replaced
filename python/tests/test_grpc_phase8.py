@@ -146,6 +146,33 @@ def test_venue_login_wrong_token_raises_unauthenticated(phase8_grpc_server):
     assert exc.value.code() == grpc.StatusCode.UNAUTHENTICATED
 
 
+def test_token_one_char_off_is_rejected_constant_time(phase8_grpc_server):
+    # MEDIUM-2: token auth uses hmac.compare_digest (constant-time). A token that
+    # differs by a single trailing character must still be rejected.
+    port, token, *_ = phase8_grpc_server
+    stub = _stub(port)
+    bad = token[:-1] + ("Y" if token[-1] != "Y" else "Z")  # exactly 1 char off
+    assert bad != token and len(bad) == len(token)
+    with pytest.raises(grpc.RpcError) as exc:
+        stub.GetState(engine_pb2.GetStateRequest(token=bad))
+    assert exc.value.code() == grpc.StatusCode.UNAUTHENTICATED
+
+
+def test_token_ok_helper_constant_time(phase8_grpc_server):
+    # Unit-level check of the centralized helper.
+    _port, token, engine, venue_sm, mm = phase8_grpc_server
+    servicer = GrpcDataEngineServer(token, engine, mode_manager=mm, venue_sm=venue_sm)
+
+    class _Req:
+        def __init__(self, t):
+            self.token = t
+
+    assert servicer._token_ok(_Req(token)) is True
+    assert servicer._token_ok(_Req(token + "x")) is False
+    assert servicer._token_ok(_Req("")) is False
+    assert servicer._token_ok(_Req(None)) is False
+
+
 def test_venue_logout_wrong_token_raises_unauthenticated(phase8_grpc_server):
     port, *_ = phase8_grpc_server
     stub = _stub(port)

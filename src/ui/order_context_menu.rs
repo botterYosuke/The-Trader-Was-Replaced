@@ -15,8 +15,9 @@
 
 use bevy::prelude::*;
 
-use crate::trading::{TransportCommand, TransportCommandSender};
+use crate::trading::{SecretPrompt, TransportCommand, TransportCommandSender};
 use crate::ui::modify_modal::{ModifyFocus, ModifyForm};
+use crate::ui::order_panel::OrderConfirm;
 
 const COLOR_MENU_BG: Color = Color::srgba(0.10, 0.11, 0.16, 0.99);
 const COLOR_ITEM_TEXT: Color = Color::srgb(0.88, 0.91, 0.96);
@@ -192,8 +193,19 @@ pub fn context_menu_visibility_system(
 pub fn context_menu_keyboard_system(
     keys: Res<ButtonInput<KeyCode>>,
     mut menu: ResMut<OrderContextMenu>,
+    secret_prompt: Res<SecretPrompt>,
+    order_confirm: Res<OrderConfirm>,
+    modify_form: Res<ModifyForm>,
 ) {
-    if menu.open && keys.just_pressed(KeyCode::Escape) {
+    if !menu.open {
+        return;
+    }
+    // Escape is read via ButtonInput (not the SecretModal's event drain), so yield
+    // to a higher-priority input modal when one is open — one keystroke must not
+    // close both this menu and e.g. a SecretModal (one-shot request_id) (§3.10).
+    let higher_priority_open =
+        secret_prompt.active.is_some() || order_confirm.pending.is_some() || modify_form.open;
+    if keys.just_pressed(KeyCode::Escape) && !higher_priority_open {
         menu.close();
     }
 }
@@ -277,6 +289,8 @@ mod tests {
         let mut app = App::new();
         app.init_resource::<OrderContextMenu>();
         app.init_resource::<ModifyForm>();
+        app.init_resource::<SecretPrompt>();
+        app.init_resource::<OrderConfirm>();
         let (tx, rx) = tokio::sync::mpsc::unbounded_channel();
         app.insert_resource(TransportCommandSender { tx });
         app.world_mut().spawn(RxHolder { _rx: rx });
@@ -355,6 +369,31 @@ mod tests {
         app.add_systems(Update, context_menu_keyboard_system);
         app.update();
         assert!(!app.world().resource::<OrderContextMenu>().open);
+    }
+
+    #[test]
+    fn esc_yields_to_open_secret_prompt() {
+        // §3.10 cross-talk regression: Escape consumed by an open SecretModal must
+        // not also close the context menu.
+        use crate::trading::SecretPromptRequest;
+        let mut app = make_app();
+        open_menu(&mut app);
+        app.world_mut().resource_mut::<SecretPrompt>().active = Some(SecretPromptRequest {
+            request_id: "r1".to_string(),
+            venue: "MOCK".to_string(),
+            kind: "second_password".to_string(),
+            purpose: "new_order".to_string(),
+        });
+        app.init_resource::<ButtonInput<KeyCode>>();
+        app.world_mut()
+            .resource_mut::<ButtonInput<KeyCode>>()
+            .press(KeyCode::Escape);
+        app.add_systems(Update, context_menu_keyboard_system);
+        app.update();
+        assert!(
+            app.world().resource::<OrderContextMenu>().open,
+            "context menu must survive the Escape consumed by the SecretModal"
+        );
     }
 
     #[test]

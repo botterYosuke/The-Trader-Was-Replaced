@@ -13,7 +13,9 @@
 
 use bevy::prelude::*;
 
-use crate::trading::ReconcilePrompt;
+use crate::trading::{ReconcilePrompt, SecretPrompt};
+use crate::ui::modify_modal::ModifyForm;
+use crate::ui::order_panel::OrderConfirm;
 
 const COLOR_PANEL_BG: Color = Color::srgba(0.07, 0.07, 0.12, 0.98);
 const COLOR_BACKDROP: Color = Color::srgba(0.0, 0.0, 0.0, 0.6);
@@ -168,12 +170,20 @@ pub fn reconcile_modal_button_system(
     interactions: Query<&Interaction, (Changed<Interaction>, With<ReconcileDismissButton>)>,
     keys: Res<ButtonInput<KeyCode>>,
     mut prompt: ResMut<ReconcilePrompt>,
+    secret_prompt: Res<SecretPrompt>,
+    order_confirm: Res<OrderConfirm>,
+    modify_form: Res<ModifyForm>,
 ) {
     if prompt.unknown.is_empty() {
         return;
     }
     let pressed = interactions.iter().any(|i| *i == Interaction::Pressed);
-    if pressed || keys.just_pressed(KeyCode::Escape) {
+    // Escape (ButtonInput, not consumed by the SecretModal event drain) must yield
+    // to a higher-priority input modal so one keystroke can't close both (§3.10).
+    let higher_priority_open =
+        secret_prompt.active.is_some() || order_confirm.pending.is_some() || modify_form.open;
+    let escape = keys.just_pressed(KeyCode::Escape) && !higher_priority_open;
+    if pressed || escape {
         prompt.unknown.clear();
     }
 }
@@ -212,6 +222,9 @@ mod tests {
     fn make_app() -> App {
         let mut app = App::new();
         app.init_resource::<ReconcilePrompt>();
+        app.init_resource::<SecretPrompt>();
+        app.init_resource::<OrderConfirm>();
+        app.init_resource::<ModifyForm>();
         app.insert_resource(ButtonInput::<KeyCode>::default());
         app
     }
@@ -258,6 +271,30 @@ mod tests {
             .spawn((Button, Interaction::Pressed, ReconcileDismissButton));
         app.update();
         assert!(app.world().resource::<ReconcilePrompt>().unknown.is_empty());
+    }
+
+    #[test]
+    fn escape_yields_to_open_secret_prompt() {
+        // §3.10 cross-talk regression: Escape consumed by an open SecretModal must
+        // not also clear the reconcile notice.
+        use crate::trading::SecretPromptRequest;
+        let mut app = make_app();
+        app.world_mut().resource_mut::<ReconcilePrompt>().unknown = vec![unknown("c1")];
+        app.world_mut().resource_mut::<SecretPrompt>().active = Some(SecretPromptRequest {
+            request_id: "r1".to_string(),
+            venue: "TACHIBANA".to_string(),
+            kind: "second_password".to_string(),
+            purpose: "new_order".to_string(),
+        });
+        app.world_mut()
+            .resource_mut::<ButtonInput<KeyCode>>()
+            .press(KeyCode::Escape);
+        app.add_systems(Update, reconcile_modal_button_system);
+        app.update();
+        assert!(
+            !app.world().resource::<ReconcilePrompt>().unknown.is_empty(),
+            "reconcile notice must survive the Escape consumed by the SecretModal"
+        );
     }
 
     #[test]

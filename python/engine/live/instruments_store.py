@@ -14,9 +14,14 @@
 """
 from __future__ import annotations
 
+import logging
 import os
+import time as _time
 from pathlib import Path
 from typing import Optional
+from uuid import uuid4
+
+_LOG = logging.getLogger(__name__)
 
 from engine.live.adapter import InstrumentRaw
 
@@ -73,21 +78,59 @@ def write_instruments(venue: str, raws: list[InstrumentRaw]) -> Path:
         },
         schema=_schema(),
     )
-    tmp = path.with_suffix(path.suffix + ".tmp")
-    pq.write_table(table, tmp)
-    os.replace(tmp, path)
+    # MEDIUM-5: unique tmp name per write so concurrent writers (login persist +
+    # 5:00 daily refresh) never share/clobber a tmp mid-write. The atomic
+    # os.replace still publishes one complete file to the final path.
+    tmp = path.with_suffix(path.suffix + f".{os.getpid()}.{uuid4().hex}.tmp")
+    try:
+        pq.write_table(table, tmp)
+        _atomic_replace(tmp, path)
+    except BaseException:
+        # Best-effort cleanup so a failed write does not leave a stray tmp behind.
+        try:
+            tmp.unlink()
+        except OSError:
+            pass
+        raise
     return path
+
+
+def _atomic_replace(src: Path, dst: Path) -> None:
+    """os.replace with a small retry for Windows' transient sharing violations.
+
+    On Windows two concurrent writers replacing the same dst (login persist + 5:00
+    refresh) can each hit a transient PermissionError (access denied / file in use)
+    even though each uses a unique tmp; the OS serializes the rename. POSIX
+    os.replace is already atomic and never hits this. Retry briefly so concurrent
+    writers both succeed and the final file is always one complete payload.
+    """
+    last: Optional[OSError] = None
+    for attempt in range(20):
+        try:
+            os.replace(src, dst)
+            return
+        except PermissionError as exc:  # Windows-only transient sharing violation
+            last = exc
+            _time.sleep(0.01 * (attempt + 1))
+    assert last is not None
+    raise last
 
 
 def read_instruments(venue: str) -> Optional[list[InstrumentRaw]]:
     """parquet → list[InstrumentRaw]。ファイルが無ければ None（store-first の miss）。"""
     import pyarrow.parquet as pq
+    import pyarrow.lib
 
     path = instruments_path(venue)
     try:
         cols = pq.read_table(path).to_pydict()
     except FileNotFoundError:
         return None  # store miss → caller falls back to live fetch
+    except (OSError, pyarrow.lib.ArrowInvalid) as exc:
+        # MEDIUM-4: a corrupt/truncated parquet must read as a clean store-miss so
+        # the caller falls back to a live fetch instead of crashing the RPC.
+        _LOG.warning("instruments store corrupt at %s (%s); treating as miss", path, exc)
+        return None
 
     n = len(cols["code"])
     return [

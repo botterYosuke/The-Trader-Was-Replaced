@@ -48,6 +48,33 @@ fn parse_replay_granularity(s: &str) -> Result<i32, String> {
     }
 }
 
+/// SELECTIVE reconnect flush (§3.8): on the Crashed→Ready (or Ready-entry) edge we
+/// drain the transport queue but must NOT discard everything. Stale replay-control
+/// commands (`Pause`/`Resume`/`StepForward`/`ForceStop`) are meaningless to the new
+/// session and dropped; order/reconcile commands (`GetOrders`, `PlaceOrder`,
+/// `CancelOrder`, `ModifyOrder`, `SubmitSecret`, ...) MUST be preserved and
+/// re-dispatched, or the post-restart reconcile `GetOrders` is silently eaten.
+fn is_stale_replay_control(cmd: &TransportCommand) -> bool {
+    matches!(
+        cmd,
+        TransportCommand::Pause
+            | TransportCommand::Resume
+            | TransportCommand::StepForward
+            | TransportCommand::ForceStop
+    )
+}
+
+/// Partition a batch of drained transport commands: drop stale replay-control,
+/// preserve everything else (FIFO order retained for re-dispatch).
+fn flush_stale_transport_commands(
+    drained: impl IntoIterator<Item = TransportCommand>,
+) -> std::collections::VecDeque<TransportCommand> {
+    drained
+        .into_iter()
+        .filter(|c| !is_stale_replay_control(c))
+        .collect()
+}
+
 /// Parse `VenueState` from backend string (e.g. `"CONNECTED"`).
 /// Returns `None` for unknown values; caller should warn and skip.
 fn parse_venue_state(s: &str) -> Option<VenueState> {
@@ -364,8 +391,17 @@ fn setup_backend_connection(
             let mut prev_venue: Option<String> = None;
             let mut prev_mode: Option<String> = None;
 
-            // (4) Ready 前 / Restart 中に溜まった古い transport command を破棄する。
-            while transport_rx.try_recv().is_ok() {}
+            // (4) Ready 前 / Restart 中に溜まった transport command を SELECTIVE に flush する。
+            // 旧 replay-control コマンド (Pause/Resume/StepForward/ForceStop) は新しい
+            // セッションに無意味なので捨てるが、order/reconcile 系
+            // (GetOrders / PlaceOrder / CancelOrder / ModifyOrder / SubmitSecret 等) は
+            // 必ず保持して inner loop で dispatch する。さもないと §3.8 post-restart の
+            // reconcile GetOrders が黙って消える (Crashed→Ready edge race)。
+            let mut drained: Vec<TransportCommand> = Vec::new();
+            while let Ok(cmd) = transport_rx.try_recv() {
+                drained.push(cmd);
+            }
+            let mut preserved_cmds = flush_stale_transport_commands(drained);
             // Phase 8 §3.5 subtask 5: configured_venue の dedupe 用 (prev_venue /
             // prev_mode は上で宣言済み)。inner loop ごとに reset。
             let mut prev_configured_venue: Option<Option<String>> = None;
@@ -386,7 +422,9 @@ fn setup_backend_connection(
 
                     _ = async {
                         // Drain transport commands before polling state so the UI feels responsive.
-                        while let Ok(cmd) = transport_rx.try_recv() {
+                        // Preserved commands from the reconnect flush (order/reconcile, e.g. the
+                        // §3.8 post-restart GetOrders) are dispatched first, then the live channel.
+                        while let Some(cmd) = preserved_cmds.pop_front().or_else(|| transport_rx.try_recv().ok()) {
                             match cmd {
                     TransportCommand::Pause => {
                         let req = tonic::Request::new(PauseReplayRequest {
@@ -839,7 +877,15 @@ fn setup_backend_connection(
                                             ts_ms: ev.ts_ms,
                                         });
                                     } else {
+                                        // success=true but no order_event: the order was
+                                        // (claimed) accepted yet we cannot seed it into
+                                        // LiveOrders — it is invisible to the UI and the
+                                        // reconcile diff. Surface a user-visible notice so the
+                                        // trader checks the venue (§3.10 / §2.2).
                                         warn!("PlaceOrder ok but no order_event returned: {}", instrument_id);
+                                        let _ = status_tx.send(BackendStatusUpdate::OrderNotice {
+                                            message: "発注応答が不完全です — venue で注文状態を確認してください".to_string(),
+                                        });
                                     }
                                 } else {
                                     // Replay → EXECUTION_MODE_PRECONDITION, runner not up →
@@ -854,7 +900,15 @@ fn setup_backend_connection(
                                     });
                                 }
                             }
-                            Err(e) => error!("PlaceOrder failed: {} err={}", instrument_id, e),
+                            Err(e) => {
+                                // Transport error on a real-money place: the order may or
+                                // may not have reached the venue — surface the ambiguity
+                                // (not just a log) so the trader verifies (§3.10 / §2.2).
+                                error!("PlaceOrder failed: {} err={}", instrument_id, e);
+                                let _ = status_tx.send(BackendStatusUpdate::OrderNotice {
+                                    message: "通信エラー — venue で注文状態を確認してください (発注)".to_string(),
+                                });
+                            }
                         }
                     }
                     TransportCommand::CancelOrder {
@@ -901,7 +955,14 @@ fn setup_backend_connection(
                                     });
                                 }
                             }
-                            Err(e) => error!("CancelOrder failed: order_id={} err={}", order_id, e),
+                            Err(e) => {
+                                // Transport error on a real-money cancel: surface the
+                                // ambiguity (§3.10 / §2.2).
+                                error!("CancelOrder failed: order_id={} err={}", order_id, e);
+                                let _ = status_tx.send(BackendStatusUpdate::OrderNotice {
+                                    message: "通信エラー — venue で注文状態を確認してください (取消)".to_string(),
+                                });
+                            }
                         }
                     }
                     TransportCommand::ModifyOrder {
@@ -941,10 +1002,16 @@ fn setup_backend_connection(
                                             ts_ms: ev.ts_ms,
                                         });
                                     } else {
+                                        // success=true but no order_event: cannot reflect the
+                                        // modify in LiveOrders / reconcile — warn the trader to
+                                        // verify at the venue (§3.10 / §2.2).
                                         warn!(
                                             "ModifyOrder ok but no order_event returned: {}",
                                             client_order_id
                                         );
+                                        let _ = status_tx.send(BackendStatusUpdate::OrderNotice {
+                                            message: "発注応答が不完全です — venue で注文状態を確認してください".to_string(),
+                                        });
                                     }
                                 } else {
                                     warn!(
@@ -957,10 +1024,17 @@ fn setup_backend_connection(
                                     });
                                 }
                             }
-                            Err(e) => error!(
-                                "ModifyOrder failed: client_order_id={} err={}",
-                                client_order_id, e
-                            ),
+                            Err(e) => {
+                                // Transport error on a real-money modify: surface the
+                                // ambiguity (§3.10 / §2.2).
+                                error!(
+                                    "ModifyOrder failed: client_order_id={} err={}",
+                                    client_order_id, e
+                                );
+                                let _ = status_tx.send(BackendStatusUpdate::OrderNotice {
+                                    message: "通信エラー — venue で注文状態を確認してください (訂正)".to_string(),
+                                });
+                            }
                         }
                     }
                     TransportCommand::SubmitSecret { request_id, secret } => {
@@ -981,8 +1055,8 @@ fn setup_backend_connection(
                                         "SubmitSecret rejected: request_id={} error_code={}",
                                         request_id, inner.error_code
                                     );
-                                    let _ = status_tx.send(BackendStatusUpdate::OrderRejected {
-                                        action: "第二暗証番号".to_string(),
+                                    // Secret-flow failure → SecretModal (not OrderPanel).
+                                    let _ = status_tx.send(BackendStatusUpdate::SecretSubmitFailed {
                                         error_code: inner.error_code,
                                     });
                                 }
@@ -1222,9 +1296,10 @@ fn setup_backend_connection(
 #[cfg(test)]
 mod tests {
     use super::{
-        BackendLifecycle, ReplayGranularity, ReplayStartupProgress, parse_replay_granularity,
-        should_send_graceful_shutdown,
+        BackendLifecycle, ReplayGranularity, ReplayStartupProgress, flush_stale_transport_commands,
+        parse_replay_granularity, should_send_graceful_shutdown,
     };
+    use backcast::trading::TransportCommand;
     use backcast::backend_sync::{
         apply_account_event, apply_available_failed, apply_available_loaded, apply_status_update,
     };
@@ -1232,9 +1307,43 @@ mod tests {
     use backcast::trading::{
         AccountPosition, AvailableInstruments, BackendStartupStage, BackendStatus,
         BackendStatusUpdate, ExecutionModeRes, LastPrices, LastRunResult, LiveOrders,
-        OrderFeedback, PortfolioState, ReconcilePrompt, RunState, Ticker, Tickers, VenueStatusRes,
+        OrderFeedback, PortfolioState, ReconcilePrompt, RunState, SecretPrompt, Ticker, Tickers,
+        VenueStatusRes,
     };
     use chrono::NaiveDate;
+
+    /// §3.8 regression: the reconnect (Crashed→Ready) flush must DROP stale
+    /// replay-control commands but PRESERVE the post-restart reconcile `GetOrders`
+    /// (and other order-flow commands) so they reach the backend client. The old
+    /// `while try_recv {}` flush ate everything, silently defeating the reconcile.
+    #[test]
+    fn reconnect_flush_preserves_get_orders_drops_replay_control() {
+        let drained = vec![
+            TransportCommand::Pause,
+            TransportCommand::GetOrders {
+                venue: "tachibana".to_string(),
+            },
+            TransportCommand::Resume,
+            TransportCommand::CancelOrder {
+                venue: "tachibana".to_string(),
+                order_id: "co-1".to_string(),
+                second_secret: None,
+            },
+            TransportCommand::StepForward,
+            TransportCommand::ForceStop,
+        ];
+        let preserved = flush_stale_transport_commands(drained);
+        // Replay-control gone; order/reconcile commands kept in FIFO order.
+        assert_eq!(preserved.len(), 2);
+        assert!(
+            matches!(preserved[0], TransportCommand::GetOrders { ref venue } if venue == "tachibana"),
+            "post-restart GetOrders must survive the flush"
+        );
+        assert!(
+            matches!(preserved[1], TransportCommand::CancelOrder { .. }),
+            "queued order-flow commands must survive the flush"
+        );
+    }
 
     #[test]
     fn account_event_reduces_into_portfolio_with_derived_equity() {
@@ -1319,6 +1428,7 @@ mod tests {
             &mut live_orders,
             &mut order_feedback,
             &mut reconcile_prompt,
+            &mut SecretPrompt::default(),
         );
         last_run
     }
@@ -1354,6 +1464,7 @@ mod tests {
             &mut live_orders,
             &mut order_feedback,
             &mut reconcile_prompt,
+            &mut SecretPrompt::default(),
         );
         order_feedback
     }
@@ -1370,6 +1481,39 @@ mod tests {
         assert_eq!(
             fb.message.as_deref(),
             Some("発注が拒否されました (EXECUTION_MODE_PRECONDITION)")
+        );
+    }
+
+    /// §3.10 / §2.2 regression (items 5 & 6): an `OrderNotice` — emitted by the
+    /// transport task for an incomplete-success PlaceOrder/ModifyOrder response
+    /// (`success=true`, `order_event=None`) and for a place/cancel/modify transport
+    /// `Err(_)` — must surface verbatim in the OrderPanel feedback line so a
+    /// real-money order can't silently vanish.
+    #[test]
+    fn order_notice_surfaces_in_order_feedback() {
+        let fb = apply_feedback(
+            BackendStatusUpdate::OrderNotice {
+                message: "発注応答が不完全です — venue で注文状態を確認してください".to_string(),
+            },
+            None,
+        );
+        assert_eq!(
+            fb.message.as_deref(),
+            Some("発注応答が不完全です — venue で注文状態を確認してください"),
+            "incomplete-success / transport-error notices must reach the trader"
+        );
+
+        let fb2 = apply_feedback(
+            BackendStatusUpdate::OrderNotice {
+                message: "通信エラー — venue で注文状態を確認してください (発注)".to_string(),
+            },
+            None,
+        );
+        assert!(
+            fb2.message
+                .as_deref()
+                .is_some_and(|m| m.contains("通信エラー")),
+            "transport-error notice must reach the trader"
         );
     }
 
@@ -1451,6 +1595,7 @@ mod tests {
             &mut live_orders,
             &mut order_feedback,
             &mut reconcile_prompt,
+            &mut SecretPrompt::default(),
         );
         assert!(
             !portfolio.loaded,
@@ -1492,6 +1637,7 @@ mod tests {
             &mut live_orders,
             &mut order_feedback,
             &mut reconcile_prompt,
+            &mut SecretPrompt::default(),
         );
     }
 
@@ -1877,6 +2023,7 @@ mod tests {
             &mut live_orders,
             &mut order_feedback,
             &mut reconcile_prompt,
+            &mut SecretPrompt::default(),
         );
     }
 

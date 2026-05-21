@@ -193,8 +193,12 @@ _RECTYPE_CANCELED = 6
 _RECTYPE_VOIDED = 7
 _RECTYPE_EXECUTION = 8
 
-# Details State==2 (処理中) の明細は確定前。終端判定では確定 (State!=2) 明細のみ採用する。
-_DETAIL_STATE_PROCESSING = 2
+# Details State (明細状態) enum (OpenAPI OrdersSuccess.Details.State):
+# 1=待機 / 2=処理中 / 3=処理済 (取消済・全約定・期限切れを含む唯一の完了状態) /
+# 4=エラー / 5=削除済み。終端理由・約定平均の判定では「確定 = 処理済 (3)」のみを採用する。
+# State==1 (待機) / ==2 (処理中) / ==4 (エラー) / ==5 (削除済み) は完了していないため、
+# 取消/失効/約定の根拠として扱うと終端理由を誤分類する (review fix #1/#2)。
+_DETAIL_STATE_DONE = 3
 
 
 def parse_float(value: object) -> float:
@@ -208,11 +212,18 @@ def parse_float(value: object) -> float:
 
 
 def _avg_fill_price(details: list, fallback: float) -> float:
-    """Details の約定明細 (RecType==8) から数量加重平均価格を求める。無ければ fallback。"""
+    """Details の約定明細 (RecType==8 かつ確定 State==3) から数量加重平均価格を求める。
+
+    確定前 (State!=3 = 待機/処理中/エラー/削除済み) の約定行は終端理由判定 (#1) と同様に
+    無視する。算入すると未確定の仮値が加重平均を汚染する (review fix #2)。確定約定が
+    無ければ fallback (注文 Price) を返す。
+    """
     total_qty = 0.0
     total_notional = 0.0
     for d in details:
         if not isinstance(d, dict) or d.get("RecType") != _RECTYPE_EXECUTION:
+            continue
+        if d.get("State") != _DETAIL_STATE_DONE:
             continue
         qty = parse_float(d.get("Qty"))
         px = parse_float(d.get("Price"))
@@ -225,11 +236,15 @@ def _avg_fill_price(details: list, fallback: float) -> float:
 
 
 def _confirmed_rectypes(details: list) -> set:
-    """確定明細 (State!=2 = 処理中でない) の RecType 集合。終端理由の判定に使う。"""
+    """確定明細 (State==3 = 処理済) の RecType 集合。終端理由の判定に使う。
+
+    処理済 (3) が完了を表す唯一の状態。待機 (1) / 処理中 (2) / エラー (4) / 削除済み (5) は
+    完了していないため、取消/失効の根拠として数えると終端理由を誤分類する (review fix #1)。
+    """
     return {
         d.get("RecType")
         for d in details
-        if isinstance(d, dict) and d.get("State") != _DETAIL_STATE_PROCESSING
+        if isinstance(d, dict) and d.get("State") == _DETAIL_STATE_DONE
     }
 
 
