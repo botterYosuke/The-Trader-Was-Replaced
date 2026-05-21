@@ -112,3 +112,24 @@ def test_unregister_unknown_is_noop():
     assert reg.unregister("nope") is False
     _register(reg, run_id="R1")
     assert reg.unregister("R1") is True
+
+
+def test_terminal_runs_evicted_beyond_history_cap_oldest_first():
+    """STOPPED run は post-stop 照会用に残すが、上限超過分は古い順に退避する。"""
+    reg = RunRegistry(max_terminal_history=2)
+    for i in range(4):
+        sm = _advance(LiveStrategyStateMachine(), LOADING, READY, RUNNING, STOPPING, STOPPED)
+        reg.register(
+            run_id=f"R{i}",
+            strategy_id="S1",
+            instrument_id="1301.TSE",
+            nautilus_strategy_id=f"LIVE-R{i}",
+            venue="TACHIBANA",
+            started_ts_ms=1_700_000_000_000 + i,  # 昇順 = R0 が最古
+            state_machine=sm,
+        )
+    # 終端 run は新しい 2 件 (R2, R3) だけ残り、古い R0/R1 は退避される。
+    assert reg.get("R0") is None
+    assert reg.get("R1") is None
+    assert reg.get("R2") is not None
+    assert reg.get("R3") is not None

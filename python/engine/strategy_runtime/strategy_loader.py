@@ -7,12 +7,14 @@ e-station の engine.nautilus.strategy_loader を元に、返り値を
 Public API:
     load(path) -> tuple[ModuleType, dict, type[Strategy]]
     get_strategy_param_env() -> dict[str, str]
+    sha256_file(path) -> str
     StrategyLoadError
 """
 
 from __future__ import annotations
 
 import ast
+import hashlib
 import importlib.util
 import inspect
 import logging
@@ -23,6 +25,15 @@ from types import ModuleType
 from typing import Any
 
 log = logging.getLogger(__name__)
+
+
+def sha256_file(path: str | Path) -> str:
+    """戦略ファイルの sha256 を hex で返す（strict: 読めなければ例外を伝播）。
+
+    `strategy_sha256`（Replay run メタ / RegisterLiveStrategy ハンドル）の単一の
+    算出元。best-effort で "unknown" に倒したい呼び出し元は自前で握りつぶす。
+    """
+    return hashlib.sha256(Path(path).read_bytes()).hexdigest()
 
 _INCOMPATIBLE_HANDLERS: frozenset[str] = frozenset(
     {"on_order_book_delta", "on_order_book_deltas", "on_quote_tick"}

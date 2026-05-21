@@ -21,6 +21,7 @@ import grpc
 import pytest
 
 from engine.core import DataEngine
+from engine.live.engine_controller import NoopLiveEngineController
 from engine.live.mock_adapter import MockVenueAdapter
 from engine.live.order_facade import ManualOrderFacade
 from engine.live.state_machine import VenueStateMachine
@@ -42,7 +43,17 @@ def live_strategy_server():
     engine.attach_mode_manager(mm)
 
     server = grpc.server(futures.ThreadPoolExecutor(max_workers=4))
-    servicer = GrpcDataEngineServer(token, engine, mode_manager=mm, venue_sm=venue_sm)
+    # Step 3 plumbing tests inject the Noop controller: they verify the gRPC/state-machine/
+    # RunRegistry/event wiring, not the real Nautilus engine bridge (covered by Step 4's
+    # tests/live/test_nautilus_live_exec.py). The default servicer controller is now the
+    # real NautilusLiveEngineController, which would build a kernel on StartLiveStrategy.
+    servicer = GrpcDataEngineServer(
+        token,
+        engine,
+        mode_manager=mm,
+        venue_sm=venue_sm,
+        engine_controller=NoopLiveEngineController(),
+    )
     engine_pb2_grpc.add_DataEngineServicer_to_server(servicer, server)
     port = server.add_insecure_port("[::]:0")
     server.start()
@@ -57,6 +68,15 @@ def live_strategy_server():
 
 def _stub(port):
     return engine_pb2_grpc.DataEngineStub(grpc.insecure_channel(f"localhost:{port}"))
+
+
+def _wait_until(predicate, timeout=5.0, interval=0.02):
+    deadline = time.monotonic() + timeout
+    while time.monotonic() < deadline:
+        if predicate():
+            return True
+        time.sleep(interval)
+    return bool(predicate())
 
 
 def _arm_live_auto(servicer) -> MockVenueAdapter:
@@ -228,6 +248,23 @@ def test_control_unknown_run(live_strategy_server):
     assert not res.success and res.error_code == "UNKNOWN_RUN"
 
 
+def test_double_pause_returns_structured_error_not_rpc_error(live_strategy_server):
+    """不正遷移は gRPC 500 ではなく success=false / structured error_code で返る。"""
+    port, token, servicer = live_strategy_server
+    _arm_live_auto(servicer)
+    stub = _stub(port)
+    sid = _register(stub, token).strategy_id
+    run_id = _start(stub, token, sid).run_id
+    assert stub.PauseLiveStrategy(
+        engine_pb2.PauseLiveStrategyReq(token=token, run_id=run_id)
+    ).success
+    again = stub.PauseLiveStrategy(
+        engine_pb2.PauseLiveStrategyReq(token=token, run_id=run_id)
+    )
+    assert not again.success
+    assert again.error_code == "INVALID_LIVE_STRATEGY_STATE"
+
+
 def test_get_status_and_list(live_strategy_server):
     port, token, servicer = live_strategy_server
     _arm_live_auto(servicer)
@@ -301,3 +338,81 @@ def test_lifecycle_pushes_live_strategy_events(live_strategy_server):
     assert "PAUSED" in statuses
     assert "STOPPED" in statuses
     assert all(e.run_id == run_id for e in events)
+
+
+# --- Step 4: post-trade max_daily_loss ------------------------------------
+
+def test_post_trade_daily_loss_stops_run_and_pushes_violation(live_strategy_server):
+    """口座スナップショットの当日 P&L が max_daily_loss を割ると run を STOPPED にし
+    SafetyRailViolation を push する (§2.4 post-trade)。Noop controller なので fail_run の
+    teardown は no-op（実 kernel の loop 往復デッドロックは production 経路のみ）。"""
+    from engine.live.order_types import AccountSnapshot
+
+    port, token, servicer = live_strategy_server
+    _arm_live_auto(servicer)
+    stub = _stub(port)
+    sid = _register(stub, token).strategy_id
+    started = stub.StartLiveStrategy(
+        engine_pb2.StartLiveStrategyReq(
+            token=token,
+            request_id="s1",
+            strategy_id=sid,
+            instrument_id="7203.TSE",
+            venue="MOCK",
+            safety_limits=engine_pb2.SafetyLimits(max_daily_loss_jpy=100_000),
+        )
+    )
+    assert started.success
+    run_id = started.run_id
+
+    violations = []
+
+    def _drain():
+        try:
+            for ev in _stub(port).SubscribeBackendEvents(
+                engine_pb2.SubscribeBackendEventsReq(token=token)
+            ):
+                if ev.WhichOneof("payload") == "safety_rail_violation":
+                    violations.append(ev.safety_rail_violation)
+        except grpc.RpcError:
+            pass
+
+    import threading
+
+    threading.Thread(target=_drain, daemon=True).start()
+    time.sleep(0.2)
+
+    # 1st snapshot = baseline (equity 10M). 2nd = -200k P&L → breaches 100k loss cap.
+    servicer._publish_account_snapshot(AccountSnapshot(cash=10_000_000.0, buying_power=10_000_000.0, positions=()))
+    servicer._publish_account_snapshot(AccountSnapshot(cash=9_800_000.0, buying_power=9_800_000.0, positions=()))
+
+    assert _wait_until(
+        lambda: stub.GetLiveStrategyStatus(
+            engine_pb2.GetLiveStrategyStatusReq(token=token, run_id=run_id)
+        ).status.status == "STOPPED"
+    )
+    assert _wait_until(lambda: any(v.kind == "MAX_DAILY_LOSS" for v in violations))
+    assert violations[0].run_id == run_id
+
+
+def test_post_trade_within_loss_limit_keeps_run_running(live_strategy_server):
+    """損失が上限内なら run は RUNNING のまま（誤検知しない）。"""
+    from engine.live.order_types import AccountSnapshot
+
+    port, token, servicer = live_strategy_server
+    _arm_live_auto(servicer)
+    stub = _stub(port)
+    sid = _register(stub, token).strategy_id
+    run_id = stub.StartLiveStrategy(
+        engine_pb2.StartLiveStrategyReq(
+            token=token, request_id="s1", strategy_id=sid,
+            instrument_id="7203.TSE", venue="MOCK",
+            safety_limits=engine_pb2.SafetyLimits(max_daily_loss_jpy=100_000),
+        )
+    ).run_id
+    servicer._publish_account_snapshot(AccountSnapshot(cash=10_000_000.0, buying_power=10_000_000.0, positions=()))
+    servicer._publish_account_snapshot(AccountSnapshot(cash=9_950_000.0, buying_power=9_950_000.0, positions=()))  # -50k, within
+    time.sleep(0.3)
+    assert stub.GetLiveStrategyStatus(
+        engine_pb2.GetLiveStrategyStatusReq(token=token, run_id=run_id)
+    ).status.status == "RUNNING"

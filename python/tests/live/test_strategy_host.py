@@ -245,6 +245,33 @@ def test_pause_unknown_run_raises():
     assert ei.value.error_code == "UNKNOWN_RUN"
 
 
+def test_double_pause_is_structured_error_not_500():
+    """illegal transition は InvalidLiveStrategyTransition ではなく structured error。"""
+    host = _make_host(run_ids=("rundbl0000",))
+    host.start_run(_params())
+    host.pause_run("rundbl0000")
+    with pytest.raises(LiveStrategyHostError) as ei:
+        host.pause_run("rundbl0000")  # PAUSED → PAUSED は不正遷移
+    assert ei.value.error_code == "INVALID_LIVE_STRATEGY_STATE"
+
+
+def test_resume_while_running_is_structured_error():
+    host = _make_host(run_ids=("runres0000",))
+    host.start_run(_params())  # RUNNING
+    with pytest.raises(LiveStrategyHostError) as ei:
+        host.resume_run("runres0000")  # RUNNING → RUNNING は不正遷移
+    assert ei.value.error_code == "INVALID_LIVE_STRATEGY_STATE"
+
+
+def test_pause_after_stop_is_structured_error():
+    host = _make_host(run_ids=("runpas0000",))
+    host.start_run(_params())
+    host.stop_run("runpas0000")  # STOPPED (terminal)
+    with pytest.raises(LiveStrategyHostError) as ei:
+        host.pause_run("runpas0000")
+    assert ei.value.error_code == "INVALID_LIVE_STRATEGY_STATE"
+
+
 # ── stop ────────────────────────────────────────────────────────────────────
 
 
