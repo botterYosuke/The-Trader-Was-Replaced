@@ -109,9 +109,9 @@
 - [x] **D4 venue_logout** ★ be:`mock`
   - seam: `VenueLogout`
   - 観測: `→Disconnected`
-- [ ] **D5 venue_logout_detected** ★ be:`mock`（保留据え置き: `backend_event_drain_system` の `VenueLogoutDetected` アームは `info!` のみで resource を変えない。assert 可能にするには `VenueStatusRes` を Disconnected 相当へクリアする本番拡張が必要 = スコープ拡大。F3/F4/F5 と異なり Phase 9 マージでも reducer が入っていない）
-  - seam: `BackendEvent::VenueLogoutDetected`
-  - 観測: 外部ログアウトで状態クリア
+- [x] **D5 venue_logout_detected** ★ be:`mock`
+  - seam: `BackendEvent::VenueLogoutDetected{venue}`
+  - 観測: `ReloginPrompt.active == Some(venue)`（外部ログアウト検知で ReloginModal が開く）。Phase 9 Step 7（health watchdog）マージで `backend_event_drain_system` が `ReloginPrompt` をセットするようになった。モーダルは通知のみで自身は再ログインしないため `VenueStatusRes` は意図的に不変
 - [x] **D6 venue_reconnecting** ★★ be:`mock`
   - seam: `VenueChanged(Reconnecting)`
   - 観測: `Reconnecting` 表示（issue の network reconnect）
@@ -242,7 +242,12 @@
   `Update` に登録し、`arm_startup_timeout(id)` で startup window を開いて `started_at_elapsed` を採番、
   `advance_real_time(dur)` で headless `Time<Real>` を進めて駆動。59s で error なし→61s で
   `error` セット（phase 不変）→ `close_startup_window()` でクリアを観測。
-- ✅ **event seam 3 本 + 注文 RPC 5 本追加（`cargo test --test e2e_replay` で 34 passed）**: Phase 9
+- ✅ **D5 venue_logout_detected 追加（`cargo test --test e2e_replay` で 35 passed）**: Phase 9 Step 7
+  （health watchdog）マージで `backend_event_drain_system` が `VenueLogoutDetected` 受信時に新規
+  `ReloginPrompt.active = Some(venue)` をセットするようになり、保留中だった D5 が観測可能になった。
+  ハーネスに `ReloginPrompt` resource を insert し `relogin_prompt()` アクセサを追加。モーダルは通知に
+  徹し自身は再ログインしないため `VenueStatusRes` は意図的に不変（本番の drift note 参照）。
+- ✅ **event seam 3 本 + 注文 RPC 5 本追加（34 passed）**: Phase 9
   ライブ口座・発注 API のマージで `backend_event_drain_system` / `apply_status_update` に reducer が
   入り、event seam が観測可能になった。`tests/e2e/support/mod.rs` に `live_orders()` /
   `order_feedback()` / `secret_prompt()` アクセサを追加。
@@ -260,10 +265,6 @@
   - **A5 set_speed**: `BackendStatusUpdate` に speed ack variant が無い（Phase A-full 待ち）。
   - **C5 select_instrument**: `SelectedSymbol` は UI 駆動のみで backend→ECS seam を通らない。
   - **D8 prod_guard**: env 二重ガードは backend 側ロジック（be:`real` / backend 単体テスト向き）。
-  - **D5 venue_logout_detected（保留据え置き）**: F3/F4/F5 と違い Phase 9 マージでも
-    `backend_event_drain_system` の `VenueLogoutDetected` アームは `info!` のみで resource を変えない。
-    assert 可能にするには `VenueStatusRes` を Disconnected 相当へクリアする**本番拡張**が必要
-    （スコープ拡大 = 依頼者確認待ち）。本作業では本番コードを変えず保留のまま据え置いた。
 - 📌 **設計メモ**: 本 v1 は backend→ECS の片側（`BackendStatusUpdate` 注入）を駆動する。
   反対側（`TransportCommand`→gRPC→`BackendStatusUpdate`）は既に `tests/backend_integration.rs`
   が mock tonic サーバでカバー済み。**両者で end-to-end をカバー**する構図。完全な単一プロセス

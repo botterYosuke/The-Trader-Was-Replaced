@@ -128,6 +128,21 @@ fn <flow_id>_<snake_name>() {
 import は `tests/e2e_replay.rs` 冒頭の `use backcast::trading::{...}` / `use backcast::replay::{...}` に
 必要な型（`BackendStatusUpdate` の variant が使う enum 等）を足す。
 
+## wiki への引用元記載（必須）
+
+テストを追加・更新したら、対応する `docs/wiki/` のページに `[FlowID]` を書く。
+
+1. flow が説明する挙動が wiki のどのページに書かれているかを確認する。
+2. そのページの冒頭に引用元注記がなければ追加する（既存ページの書き方に倣う）:
+   ```
+   > 文中の `[A1]` などは、その挙動を保証する E2E flow の ID。一覧は [`tests/e2e/FLOWS.md`](../../tests/e2e/FLOWS.md) を参照。
+   ```
+3. 挙動の記述箇所（手順・表・説明文）に `[FlowID]` をインラインで付ける（例: `Run を開始 [A1]`）。
+4. 対応する wiki ページが存在しない場合は記載不要（FLOWS.md の flow 行にその旨をコメントする）。
+
+現時点で引用済みのページ: `replay.md` / `venues.md` / `orders.md` / `modes.md` / `getting-started.md`。
+未記載のページ: `backtest.md` / `strategy.md` / `troubleshooting.md` / `windows-and-panels.md` など。
+
 ## 完了基準
 
 - `cargo test --test e2e_replay` が全本数 green。
@@ -135,3 +150,4 @@ import は `tests/e2e_replay.rs` 冒頭の `use backcast::trading::{...}` / `use
 - A8（stale startup_id の相関）/ D7（Live universe が Replay fallback を上書き・prune しない不変条件）の
   ような**回帰の肝**を新規テストで壊していない。
 - FLOWS.md のチェックボックスと「実装状況」を更新済み。
+- 対応する wiki ページに `[FlowID]` の引用元を記載済み。

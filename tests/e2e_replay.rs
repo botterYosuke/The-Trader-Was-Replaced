@@ -676,6 +676,23 @@ fn f5_secret_required() {
     assert_eq!(req.purpose, "place_order");
 }
 
+/// D5 venue_logout_detected: a `BackendEvent::VenueLogoutDetected` opens the
+/// relogin prompt (`ReloginPrompt.active` becomes `Some(venue)`) so the user is
+/// told the venue dropped. Implemented in production by the Phase 9 Step 7
+/// health-watchdog merge; the modal only notifies (re-login goes through the
+/// Venue menu), so `VenueStatusRes` is intentionally left unchanged here.
+#[test]
+fn d5_venue_logout_detected() {
+    let mut h = Harness::new();
+    assert!(h.relogin_prompt().active.is_none());
+
+    h.send_event(BackendEvent::VenueLogoutDetected {
+        venue: "KABU".to_string(),
+    });
+
+    assert_eq!(h.relogin_prompt().active.as_deref(), Some("KABU"));
+}
+
 /// H1 order_seeded: `OrderSeeded` seeds the full `LiveOrders` record (including
 /// the static symbol/side/qty/price the OrderEvent lacks) and clears any prior
 /// `OrderFeedback` notice.
