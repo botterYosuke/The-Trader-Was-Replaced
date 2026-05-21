@@ -1,12 +1,13 @@
 # E2E Flow Catalog — The-Trader-Was-Replaced
 
-> issue #4「Add internal E2E test hooks for Bevy desktop UI」に対する、自動 E2E のテストケース一覧。
-> Bevy ネイティブ UI のため Playwright 等は使わず、**Bevy の resource/event/system を直接駆動**して
-> 観測可能な状態を assert する。OS のマウス座標クリックには一切依存しない。
+> リリース前の最後の砦として、ユーザーが取りうる行動を原則すべて列挙し、自動テストの対象にする。
+> 既存の Bevy resource/event/system 直接駆動ハーネスで観測できるものはこの方式で assert する。
+> 直接駆動だけでは忠実に検証できない操作（描画依存、OS ダイアログ、キーボード入力、実 backend/環境依存）は
+> 「対象外」にせず、代替方式（UI harness / smoke / integration / manual release gate）を明記する。
 
 ## このファイルの使い方（編集ルール）
 
-- 1 つの `- [ ]` 項目 = テストケース(flow)1 本。
+- 1 つの `- [ ]` 項目 = テストケース(flow)1 本、または代替方式で実行する release-gate item 1 本。
 - **チェックを入れた `- [x]` 項目を v1（ハーネスと同時に確立）に含める**。
 - 追加・削除・並べ替え自由。優先度やバックエンドを変えたいときは行を直接編集する。
 - 各 flow はいずれ `tests/e2e/flows/<id>.json` の宣言ファイルになる（このカタログはその索引）。
@@ -18,23 +19,29 @@
 - **`docs/wiki/` の操作挙動を変更・追加したら、必ずこのカタログを見直す**:
   新しい挙動 → flow 行を追加（実装可能なら `- [ ]`、観測不能なら「保留」注記）。
   挙動の削除・変更 → 対応 flow を削除・修正。
-- backend→ECS seam を通らない挙動（クライアント側 gating / 純 UI / 描画依存 / backend 内部ガード）は
-  flow にせず、末尾の「**E2E に*しない*もの**」節に理由付きで記録する。これも wiki との対応の一部。
+- backend→ECS seam を通らない挙動（クライアント側 gating / 純 UI / 描画依存 / backend 内部ガード）も
+  カタログから除外しない。直接駆動ハーネスで不可能な場合は、末尾の「**直接駆動では不可能な場合の代替方式**」
+  に方式と release gate を記録する。
 
 ### 凡例
 
 - **seam** … 入力する縫い目（`TransportCommand` 列挙子 / `BackendEvent` / resource 更新）
 - **観測** … assert 対象の resource とその状態遷移
 - **be** … 想定バックエンド: `mock`（決定論的・CI 向き） / `real`（python -m engine・忠実度確認） / `none`
+- **kind** … `state`（resource/event/system 直接駆動） / `ui`（Bevy UI harness: Interaction/Keyboard/MouseWheel/Pointer を注入） /
+  `render`（実ウィンドウまたは画像/ログ smoke） / `integration`（backend/CLI/環境依存） / `manual-gate`（自動化不能時のリリース手順）
 - **優先** … ★★★ 高 / ★★ 中 / ★ 低
 
 ### 駆動の縫い目（参照）
 
 - 入力: `TransportCommandSender`（`mpsc<TransportCommand>`）にコマンドを直接送る → UI ボタン描画をバイパス
 - 入力(イベント): backend → ECS の `BackendStatusUpdate` / `BackendEvent` をモックから注入
+- 入力(UI): Bevy の `Interaction` / `ButtonInput<KeyCode>` / `MouseWheel` / pointer event / focused entity を直接注入
 - 出力(観測): `LastRunResult.state`(RunState) / `PortfolioState` / `BackendStatus` /
   `VenueStatusRes` / `ExecutionModeRes` / `Tickers` / `TickersStatus` / `AvailableInstruments` /
   `LastPrices` / `SelectedSymbol` / `ReplaySpeed` / `TradingSession` / `ReplayStartupProgress`
+- 出力(UI/描画): window/panel entity 構造、`Visibility`/`Display`/`Text`/`Style`、layout JSON、strategy cache、
+  render/screenshot smoke、構造化ログ
 
 ---
 
@@ -118,7 +125,7 @@
 - [x] **D7 live_universe_overwrite** ★★ be:`mock`
   - seam: Connected で `ListInstruments(LiveVenue)`
   - 観測: Live universe が Replay fallback を**上書き**（prune しない不変条件）
-- [ ] **D8 prod_guard_blocks_login** ★ be:`real`（保留: 二重ガードは backend 側 = `TACHIBANA_ALLOW_PROD` / `KABU_ALLOW_PROD` 未設定で Prod 接続を遮断する挙動。backend→ECS には login 失敗として現れるが、env ガードの忠実度は backend 単体テスト向き）（wiki: venues.md「二重ガード」）
+- [ ] **D8 prod_guard_blocks_login** ★ be:`real`（保留: 二重ガードは backend 側 = `TACHIBANA_ALLOW_PROD` / `KABU_ALLOW_PROD` 未設定で Prod 接続を遮断する挙動。backend→ECS には login 失敗として現れるが、env ガードの忠実度は [L3] の backend integration / manual-gate で担保する）（wiki: venues.md「二重ガード」）
   - seam: env 未設定で Prod venue へ `VenueLogin`
   - 観測: 接続が拒否され `VenueState::Error`（または login が送られない）
 
@@ -178,25 +185,122 @@
 
 ---
 
-## E2E に**しない**もの（ユニットテスト / 既存の手動 e2e-testing 担当）
+## I. メニュー / モード / レイアウト（ユーザー操作）
 
-- `LiveAuto` が Phase 8 で選択不可（メニュー gating）→ UI ロジックの単体テスト
-- **モード切替の前提条件 gating**（wiki: modes.md）→ クライアント側で切替リクエストを抑止する純 UI ロジックで
-  backend→ECS seam を通らない。単体テスト向き:
-  - Manual / Auto への切替は venue 接続済み（Disconnected / Error 以外）でないとリクエストを送らない
-  - Replay への切替は戦略ロード済みでないと送らない
-- メニュー開閉 / Alt+F / レイアウト永続化 / cosmic_edit 入力 → 描画依存。ユニット + 既存の手動 E2E に残す
-- **Startup パネルの入力検証 gating**（wiki: replay.md / strategy.md）→ 空・不正な日付 / granularity 未選択 /
-  initial_cash ≤ 0 / `start > end` のとき Run を抑止し赤字エラーを出すのはクライアント側の純 UI 検証で、
-  backend→ECS seam を通らない。`scenario_startup_panel.rs` の単体テスト向き。
-- **`instruments_ref`（schema v3）の fail-closed**（wiki: strategy.md「instruments_ref」）→ 参照先 JSON が
-  欠落・破損・空のとき `ScenarioLoadedFromFile` を発火させず Run を半透明のままにする挙動。
-  file-watch 駆動（`scenario_parser.rs`）で backend→ECS seam を通らないため、`scenario_parser.rs` の
-  既存単体テスト（`parse_resolves_instruments_ref_to_instruments` 等）でカバー。
-- **銘柄ピッカー（`+ Add`）の挙動**（wiki: venues.md「銘柄ピッカー」）→ 検索絞り込み / 最大 15 行 /
-  プレースホルダ（`Set scenario.end first` / `Venue not connected` / `Loading...` / `Error:` / `No matches`）/
-  100ms デバウンス / `instruments_ref` 時の読み取り専用化は描画依存の純 UI（`instrument_picker.rs`）。
-  ユニットテスト向き。ピッカーが消費する銘柄ユニバース取得自体は [C1]〜[C4] でカバー済み。
+- [ ] **I1 file_menu_open_close_keyboard** ★★ kind:`ui` be:`none`
+  - seam: `Alt+F` / `Escape` / menu button `Interaction::Pressed`
+  - 観測: `OpenMenu` が File に遷移 → close、メニュー entity の `Display` / `Visibility` が同期
+- [ ] **I2 edit_menu_undo_redo_window_ops** ★★ kind:`ui` be:`none`
+  - seam: window move/close/spawn → `Ctrl+Z` / `Ctrl+Y` / Edit menu item
+  - 観測: `AppHistory` と `WindowRoot` の位置・存在が undo/redo で戻る
+- [ ] **I3 venue_menu_connect_disconnect_gating** ★★ kind:`ui` be:`mock`
+  - seam: Venue menu item click
+  - 観測: configured venue に応じた表示/非表示、接続中の Connect disabled、`VenueLogin` / `VenueLogout` command 発行
+- [ ] **I4 mode_toggle_precondition_gating** ★★★ kind:`ui` be:`mock`
+  - seam: Replay / Manual / Auto segment click
+  - 観測: Venue 未接続では Manual/Auto command を送らない、戦略未ロードでは Replay command を送らない、許可時のみ `SetExecutionMode` 発行
+- [ ] **I5 file_open_loads_sidecar_and_strategy** ★★★ kind:`integration` be:`none`
+  - seam: file dialog をバイパスして selected path event/resource を注入
+  - 観測: `.json` sidecar 読み込み、`strategy_path` 解決、Strategy Editor spawn、Scenario metadata 反映
+- [ ] **I6 file_new_resets_workspace** ★★ kind:`ui` be:`none`
+  - seam: File → New
+  - 観測: ロード済み strategy / scenario / panels が新規状態に戻る
+- [ ] **I7 layout_save_and_restore** ★★★ kind:`integration` be:`none`
+  - seam: window move/resize/close → Save → fresh app → load
+  - 観測: sidecar JSON の `viewport` / `windows[]` / `strategy_path` / `scenario` と復元後 entity が一致
+- [ ] **I8 layout_autosave_debounce** ★★ kind:`ui` be:`none`
+  - seam: window drag end + time advance
+  - 観測: 1s 未満では保存なし、1s 後に layout dirty が flush される
+
+## J. Strategy Editor / Startup / 銘柄ピッカー（ユーザー入力）
+
+- [ ] **J1 editor_keyboard_text_entry** ★★★ kind:`ui` be:`none`
+  - seam: focused cosmic editor に文字入力 / paste
+  - 観測: `StrategyFragment` と cache file が更新され、履歴に text edit が積まれる
+- [ ] **J2 editor_tab_enter_autoclose** ★★ kind:`ui` be:`none`
+  - seam: `Tab` / `Enter` / `(` `[` `{` `"` `'`
+  - 観測: 4-space indent、autoindent、bracket autoclose、closer 直前では補完しない
+- [ ] **J3 editor_find_replace_panel** ★★ kind:`ui` be:`none`
+  - seam: `Ctrl+F` / query 入力 / `F3` / `Shift+F3` / `Repl` / `Repl All` / `Esc`
+  - 観測: panel open/close、match count、current match、case toggle、replace 結果、history
+- [ ] **J4 editor_undo_redo_autosave** ★★ kind:`ui` be:`none`
+  - seam: edit → `Ctrl+Z` / `Ctrl+Y` → time advance
+  - 観測: buffer が戻る/進む、debounce 後の cache 内容が一致
+- [ ] **J5 startup_panel_validation_blocks_run** ★★★ kind:`ui` be:`mock`
+  - seam: Start / End / Granularity / Initial cash を空・不正値・`start > end` に編集して Run
+  - 観測: 赤字 error label、Run command 未送信、正常値に戻すと `RunStrategy` 発行
+- [ ] **J6 startup_panel_writeback_to_sidecar** ★★ kind:`integration` be:`none`
+  - seam: Startup fields edit + debounce
+  - 観測: cache sidecar の `scenario.start/end/granularity/initial_cash` が更新される
+- [ ] **J7 instruments_ref_fail_closed** ★★★ kind:`integration` be:`none`
+  - seam: `instruments_ref` が欠落・破損・空の sidecar を load
+  - 観測: `ScenarioLoadedFromFile` 不発、Run disabled、error 表示。正常 ref では instruments 解決
+- [ ] **J8 instrument_picker_search_add_remove** ★★★ kind:`ui` be:`mock`
+  - seam: `+ Add` → search 入力 → candidate click → row remove
+  - 観測: 100ms debounce、最大 15 行、`Tickers` / `AvailableInstruments` 由来候補、scenario instruments 更新、Chart spawn/despawn
+- [ ] **J9 instrument_picker_placeholders_and_readonly** ★★ kind:`ui` be:`mock`
+  - seam: Replay end 未設定 / Live venue 未接続 / loading / error / no matches / `instruments_ref`
+  - 観測: `Set scenario.end first` / `Venue not connected` / `Loading...` / `Error:` / `No matches`、readonly 時に追加削除不可
+
+## K. Chart / Panels / Orders UI（描画・フォーム操作）
+
+- [ ] **K1 panel_spawn_close_z_order_drag** ★★ kind:`ui` be:`none`
+  - seam: sidebar Panels buttons / close / drag / focus
+  - 観測: Strategy Editor / Buying Power / Run Result / Positions / Orders が spawn、close、z-order 更新、drag 位置反映
+- [ ] **K2 chart_zoom_pan_reset_autoscale** ★★★ kind:`ui` be:`mock`
+  - seam: wheel / Ctrl+wheel / left drag / right or middle drag / double click
+  - 観測: `ChartViewState` の time/price scale、camera pan/zoom、autoscale enabled が期待値に遷移
+- [ ] **K3 chart_ladder_live_mode_depth_render_state** ★★ kind:`state` be:`mock`
+  - seam: Live mode + `InstrumentTradingData.depth` 更新
+  - 観測: Ladder pane spawn、21 行固定、ask/bid/last/no-depth placeholder、Replay に戻すと despawn
+- [ ] **K4 order_panel_place_confirm_cancel_modify** ★★★ kind:`ui` be:`mock`
+  - seam: order form 入力 → submit → confirm → context menu cancel/modify
+  - 観測: `PlaceOrder` / `CancelOrder` / `ModifyOrder` command、confirm modal、modify modal、feedback line
+- [ ] **K5 secret_modal_submit_retry_timeout_escape** ★★★ kind:`ui` be:`mock`
+  - seam: `SecretRequired` → secret 入力 → submit / reject / timeout / Escape
+  - 観測: secret は resource/log に残らない、`SubmitSecret` 発行、`SecretSubmitFailed` は modal error、retry 可能
+- [ ] **K6 reconcile_modal_after_backend_restart** ★★ kind:`state` be:`mock`
+  - seam: working orders がある状態で backend crash→ready→`OrdersReconciled`
+  - 観測: `GetOrders` 発行、unknown orders が `ReconcilePrompt` に入り、dismiss で消える
+- [ ] **K7 run_result_positions_orders_buying_power_render_state** ★★ kind:`ui` be:`mock`
+  - seam: `PortfolioLoaded` / `AccountEvent` / `RunComplete`
+  - 観測: 各 panel text/table が resource と一致、空状態も崩れない
+
+## L. CLI / 実 backend / リリース smoke
+
+- [ ] **L1 cli_strategy_replay_outputs_run_buffer** ★★★ kind:`integration` be:`real`
+  - seam: `python -m engine.strategy_replay run` / `scripts/run_replay.ps1`
+  - 観測: stdout summary、`meta.json` / `fills.jsonl` / `equity.jsonl` / `summary.json` 生成
+- [ ] **L2 grpc_backend_real_startup_and_health** ★★★ kind:`integration` be:`real`
+  - seam: `.venv/bin/python -m engine` 起動 → Hello/GetState/ListInstruments
+  - 観測: Ready、schema version、health、shutdown
+- [ ] **L3 live_venue_prod_guard_release_gate** ★★★ kind:`integration` be:`real`
+  - seam: `TACHIBANA_ALLOW_PROD` / `KABU_ALLOW_PROD` 未設定で Prod login
+  - 観測: backend が接続拒否、UI は `VenueState::Error` または login command 抑止。CI では env isolated smoke、実口座接続は manual-gate
+- [ ] **L4 full_window_render_smoke** ★★ kind:`render` be:`mock`
+  - seam: `BACKCAST_E2E=1` で固定 fixture 起動
+  - 観測: 主要 panel、footer、menu、chart、modal のスクリーンショット/構造化ログが baseline と一致
+
+---
+
+## 直接駆動では不可能な場合の代替方式
+
+この節は「テストしないもの」ではない。既存の resource/event/system 直接駆動ハーネスだけではユーザー操作の忠実度が足りない場合に、採用する代替方式を定義する。
+
+| 対象 | 直接駆動だけで不足する理由 | 代替方式 | release gate |
+|---|---|---|---|
+| メニュー開閉 / Alt+F/E/V | backend seam を通らず、keyboard focus と UI entity 表示が本体 | `kind:ui`。`ButtonInput<KeyCode>` と `Interaction` を注入し `OpenMenu` / entity 表示を assert | I1/I3 必須 |
+| モード切替 gating | command を送らないことが仕様で、backend ack では観測できない | `kind:ui`。送信 channel を監視し「未送信」を assert | I4 必須 |
+| OS ファイルダイアログ | CI で OS native dialog を安定操作しにくい | dialog 自体はバイパスし、選択済み path event/resource を注入。別途 smoke で起動確認 | I5 + L4 |
+| レイアウト永続化 | ファイル I/O と debounce が主対象 | temp dir fixture で `Save/Load` を integration 実行し JSON と復元 entity を assert | I7/I8 必須 |
+| cosmic_edit 入力 | text editor plugin の focus/keyboard 処理が主対象 | `kind:ui`。focused entity と keyboard/text input を注入。必要なら最小実ウィンドウ smoke を追加 | J1-J4 必須 |
+| Startup パネル入力検証 | Run command を送らない UI gating が仕様 | `kind:ui`。field editor state、error label、transport channel 未送信/送信を assert | J5/J6 必須 |
+| `instruments_ref` fail-closed | file-watch / parser / writeback の連携 | temp sidecar/ref file を使う integration。破損・空・正常の fixture を固定 | J7 必須 |
+| 銘柄ピッカー | searchbox、debounce、候補表示、readonly が純 UI | `kind:ui`。time advance と text/entity assert。取得 seam は C1-C4 と組み合わせる | J8/J9 必須 |
+| Chart 操作 | wheel/drag/double click と render state が主対象 | `kind:ui` で `ChartViewState` / camera を assert。描画崩れは `kind:render` smoke | K2/K3 + L4 |
+| 注文フォーム / modal / context menu | 2 段階 confirm、focus、Escape 優先順位が主対象 | `kind:ui`。command channel、modal visibility、feedback resource を assert | K4/K5/K6 必須 |
+| Prod guard / 実 venue | CI で実口座・外部環境に依存 | env isolated backend integration で guard を確認。実接続はリリース時 manual-gate に残す | L3 必須 |
+| 画面全体の見た目 | headless resource assert では重なり・欠落を検出しづらい | `BACKCAST_E2E=1` 固定 fixture 起動、スクリーンショットまたは構造化 UI dump の smoke | L4 必須 |
 
 ---
 
@@ -261,13 +365,14 @@
     **H4 order_rejected**=`OrderRejected` → `OrderFeedback.message` に整形メッセージ。
     **H5 exec_mode_change_resets_portfolio**=実モード変更で `PortfolioState` を default リセット
     （同一モードは no-op）— Live/Replay 口座データ混線防止の回帰の肝。
-- ⬜ **保留（同ハーネスでは観測不能 / 本番拡張が必要）**:
-  - **A5 set_speed**: `BackendStatusUpdate` に speed ack variant が無い（Phase A-full 待ち）。
-  - **C5 select_instrument**: `SelectedSymbol` は UI 駆動のみで backend→ECS seam を通らない。
-  - **D8 prod_guard**: env 二重ガードは backend 側ロジック（be:`real` / backend 単体テスト向き）。
-- 📌 **設計メモ**: 本 v1 は backend→ECS の片側（`BackendStatusUpdate` 注入）を駆動する。
+- ⬜ **既存 state ハーネスでは未完（代替方式で release gate 化）**:
+  - **A5 set_speed**: `BackendStatusUpdate` に speed ack variant が無い。transport task の lib 抽出後に state flow、当面は footer UI の `SetSpeed` command 発行を UI harness で検証する。
+  - **C5 select_instrument**: `SelectedSymbol` は UI 駆動のみで backend→ECS seam を通らない。[J8]/[K2] の UI harness で銘柄選択から chart 更新まで検証する。
+  - **D8 prod_guard**: env 二重ガードは backend 側ロジック。[L3] の backend integration とリリース時 manual-gate で担保する。
+- 📌 **設計メモ**: 現行 v1 state harness は backend→ECS の片側（`BackendStatusUpdate` 注入）を駆動する。
   反対側（`TransportCommand`→gRPC→`BackendStatusUpdate`）は既に `tests/backend_integration.rs`
-  が mock tonic サーバでカバー済み。**両者で end-to-end をカバー**する構図。完全な単一プロセス
+  が mock tonic サーバでカバー済み。今後はこれに `kind:ui` / `kind:render` / `kind:integration`
+  を足し、ユーザー行動ベースの release gate として end-to-end を完成させる。完全な単一プロセス
   ループ（`TransportCommand` 注入→mock gRPC→`RunState` 観測）は transport task（`main.rs`
   `setup_backend_connection` の ~600 行）の lib 抽出が必要で、これは Phase A-full の別タスク。
 
