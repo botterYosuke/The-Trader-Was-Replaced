@@ -18,3 +18,5 @@ python.egg-info/
 target-codex-review/
 target-codex-review-parse/
 target-codex-review-single/
+# ad-hoc local CLI binaries (e.g. bin/gh dropped in for `gh` access) — never commit
+bin/

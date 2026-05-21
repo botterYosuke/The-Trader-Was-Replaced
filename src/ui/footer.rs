@@ -309,7 +309,11 @@ pub fn update_footer_system(
             Without<PauseResumeLabel>,
         ),
     >,
-    mut seg_q: Query<(&ExecutionModeToggleSegment, &mut BackgroundColor, &Interaction)>,
+    mut seg_q: Query<(
+        &ExecutionModeToggleSegment,
+        &mut BackgroundColor,
+        &Interaction,
+    )>,
 ) {
     let need_walltime_tick = !matches!(exec_mode.mode, ExecutionMode::Replay);
     if !need_walltime_tick
@@ -367,9 +371,7 @@ pub fn update_footer_system(
         }
         let new_color = match venue.state {
             VenueState::Disconnected => Color::srgb(0.55, 0.55, 0.55),
-            VenueState::Authenticating | VenueState::Reconnecting => {
-                Color::srgb(1.00, 0.85, 0.20)
-            }
+            VenueState::Authenticating | VenueState::Reconnecting => Color::srgb(1.00, 0.85, 0.20),
             VenueState::Connected => Color::srgb(0.30, 0.80, 1.00),
             VenueState::Subscribed => Color::srgb(0.20, 1.00, 0.45),
             VenueState::Error => Color::srgb(1.00, 0.28, 0.28),
@@ -653,10 +655,7 @@ pub fn footer_pause_resume_system(
 /// backend 側 `EXECUTION_MODE_PRECONDITION` reject は polling diff で吸収される。
 #[allow(clippy::type_complexity)]
 pub fn execution_mode_toggle_system(
-    query: Query<
-        (&Interaction, &ExecutionModeToggleSegment),
-        (Changed<Interaction>, With<Button>),
-    >,
+    query: Query<(&Interaction, &ExecutionModeToggleSegment), (Changed<Interaction>, With<Button>)>,
     exec_mode: Res<ExecutionModeRes>,
     venue: Res<VenueStatusRes>,
     buffer: Res<StrategyBuffer>,
@@ -735,8 +734,8 @@ pub fn apply_execution_mode_visibility_system(
 mod tests {
     use super::*;
     use crate::trading::{
-        ExecutionMode, ExecutionModeRes, LastRunResult, ReplaySpeed, TradingSession, TransportCommand,
-        TransportCommandSender,
+        ExecutionMode, ExecutionModeRes, LastRunResult, ReplaySpeed, TradingSession,
+        TransportCommand, TransportCommandSender,
     };
     use crate::ui::components::{
         PauseResumeButton, SpeedButton, StrategyBuffer, StrategyRunRequested, TransportButton,
@@ -786,7 +785,12 @@ mod tests {
 
     fn spawn_pressed_speed(app: &mut App, mult: u32) -> Entity {
         app.world_mut()
-            .spawn((Node::default(), Button, Interaction::Pressed, SpeedButton(mult)))
+            .spawn((
+                Node::default(),
+                Button,
+                Interaction::Pressed,
+                SpeedButton(mult),
+            ))
             .id()
     }
 
@@ -798,7 +802,9 @@ mod tests {
     fn transport_command_not_sent_in_manual() {
         let (mut app, mut rx) = make_input_app();
         set_mode(&mut app, ExecutionMode::LiveManual);
-        app.world_mut().resource_mut::<TradingSession>().replay_state = Some("RUNNING".into());
+        app.world_mut()
+            .resource_mut::<TradingSession>()
+            .replay_state = Some("RUNNING".into());
         let _ = spawn_pressed_transport(&mut app, TransportButton::JumpToStart);
         app.update();
         assert!(
@@ -811,7 +817,9 @@ mod tests {
     fn transport_command_not_sent_in_auto() {
         let (mut app, mut rx) = make_input_app();
         set_mode(&mut app, ExecutionMode::LiveAuto);
-        app.world_mut().resource_mut::<TradingSession>().replay_state = Some("RUNNING".into());
+        app.world_mut()
+            .resource_mut::<TradingSession>()
+            .replay_state = Some("RUNNING".into());
         let _ = spawn_pressed_transport(&mut app, TransportButton::JumpToStart);
         app.update();
         assert!(
@@ -824,7 +832,9 @@ mod tests {
     fn pause_resume_does_not_emit_run_event_in_manual() {
         let (mut app, _rx) = make_input_app();
         set_mode(&mut app, ExecutionMode::LiveManual);
-        app.world_mut().resource_mut::<TradingSession>().replay_state = Some("IDLE".into());
+        app.world_mut()
+            .resource_mut::<TradingSession>()
+            .replay_state = Some("IDLE".into());
         let tmp = tempfile::tempdir().expect("tempdir");
         let cache_path = tmp.path().join("strategy_cache.py");
         app.world_mut().resource_mut::<StrategyBuffer>().cache_path = Some(cache_path);
@@ -843,7 +853,9 @@ mod tests {
     fn pause_resume_does_not_emit_run_event_in_auto() {
         let (mut app, _rx) = make_input_app();
         set_mode(&mut app, ExecutionMode::LiveAuto);
-        app.world_mut().resource_mut::<TradingSession>().replay_state = Some("IDLE".into());
+        app.world_mut()
+            .resource_mut::<TradingSession>()
+            .replay_state = Some("IDLE".into());
         let tmp = tempfile::tempdir().expect("tempdir");
         let cache_path = tmp.path().join("strategy_cache.py");
         app.world_mut().resource_mut::<StrategyBuffer>().cache_path = Some(cache_path);
@@ -883,7 +895,9 @@ mod tests {
     fn transport_command_sent_in_replay_smoke() {
         let (mut app, mut rx) = make_input_app();
         set_mode(&mut app, ExecutionMode::Replay);
-        app.world_mut().resource_mut::<TradingSession>().replay_state = Some("RUNNING".into());
+        app.world_mut()
+            .resource_mut::<TradingSession>()
+            .replay_state = Some("RUNNING".into());
         let _ = spawn_pressed_transport(&mut app, TransportButton::JumpToStart);
         app.update();
         match rx.try_recv() {
@@ -904,7 +918,9 @@ mod tests {
     }
 
     fn spawn_speed(app: &mut App, mult: u32) -> Entity {
-        app.world_mut().spawn((Node::default(), SpeedButton(mult))).id()
+        app.world_mut()
+            .spawn((Node::default(), SpeedButton(mult)))
+            .id()
     }
 
     fn display_of(app: &App, e: Entity) -> Display {

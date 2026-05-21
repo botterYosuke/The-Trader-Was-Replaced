@@ -401,6 +401,8 @@ cargo test
 uv run pytest --cov=engine --cov-report=html
 ```
 
+> **Windows / uv の落とし穴**: editable build が再走った直後（proto regen で `python` パッケージが rebuild される等）に `uv run pytest ...` が `error: uv trampoline failed to canonicalize script path` で即死することがある（pytest の `.exe` shim が無効化されるため）。その場合は **`uv run python -m pytest ...`** に切り替えると通る（trampoline shim を経由しない）。`live/` 系テストは cwd=`python/` 前提（import が `from engine.live.X import ...`）なので `cd python; uv run python -m pytest tests/live/...` で回す。
+
 ---
 
 ## gRPC 契約変更時のルール

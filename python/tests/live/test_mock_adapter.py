@@ -9,6 +9,7 @@ import asyncio
 
 from engine.live.adapter import InstrumentRaw, LiveVenueAdapter, VenueCredentials
 from engine.live.mock_adapter import MockVenueAdapter
+from engine.live.order_types import OrderResult
 
 
 def test_mock_adapter_satisfies_protocol() -> None:
@@ -242,3 +243,246 @@ def test_mock_adapter_logout_clears_subscriptions() -> None:
 
     with pytest.raises(asyncio.TimeoutError):
         asyncio.run(scenario())
+
+
+def test_mock_adapter_submit_order_default_is_filled() -> None:
+    """S4-a RED: 仕込み無しの submit_order は FILLED 全約定を返す。
+
+    承認設計の既定挙動: set_next_order_outcome を呼ばなければ
+    status="FILLED", filled_qty == qty, avg_price 設定済み,
+    client_order_id 非空。submit_order は MockVenueAdapter 固有の
+    async メソッド（Protocol 外）で、返り値は engine.live.order_types.OrderResult。
+    """
+    adapter = MockVenueAdapter()
+
+    async def scenario() -> OrderResult:
+        creds = VenueCredentials(credentials_source="env", environment_hint="demo")
+        await adapter.login(creds)
+        return await adapter.submit_order(
+            venue="MOCK",
+            instrument_id="7203.TSE",
+            side="buy",
+            qty=100.0,
+            price=2500.0,
+            order_type="LIMIT",
+            time_in_force="GTC",
+        )
+
+    result = asyncio.run(scenario())
+    assert isinstance(result, OrderResult)
+    assert result.status == "FILLED"
+    assert result.filled_qty == 100.0
+    assert result.avg_price is not None
+    assert result.client_order_id  # 非空
+    assert result.reject_reason is None
+
+
+def test_mock_adapter_submit_order_rejected_outcome() -> None:
+    """S4-a RED: set_next_order_outcome(REJECTED) 注入時は REJECTED + reject_reason。
+
+    set_next_order_outcome は inject_tick 流の同期テスト補助メソッド。
+    REJECTED の場合 filled_qty=0、reject_reason が伝播する。
+    """
+    adapter = MockVenueAdapter()
+
+    async def scenario() -> OrderResult:
+        creds = VenueCredentials(credentials_source="env", environment_hint="demo")
+        await adapter.login(creds)
+        adapter.set_next_order_outcome(status="REJECTED", reject_reason="insufficient margin")
+        return await adapter.submit_order(
+            venue="MOCK",
+            instrument_id="7203.TSE",
+            side="buy",
+            qty=100.0,
+            price=2500.0,
+            order_type="LIMIT",
+            time_in_force="GTC",
+        )
+
+    result = asyncio.run(scenario())
+    assert result.status == "REJECTED"
+    assert result.reject_reason == "insufficient margin"
+    assert result.filled_qty == 0.0
+
+
+def test_mock_adapter_submit_order_partially_filled_outcome() -> None:
+    """S4-a RED: set_next_order_outcome(PARTIALLY_FILLED, filled_qty=...) で部分約定。
+
+    filled_qty < qty となり、avg_price は設定される。
+    """
+    adapter = MockVenueAdapter()
+
+    async def scenario() -> OrderResult:
+        creds = VenueCredentials(credentials_source="env", environment_hint="demo")
+        await adapter.login(creds)
+        adapter.set_next_order_outcome(status="PARTIALLY_FILLED", filled_qty=40.0)
+        return await adapter.submit_order(
+            venue="MOCK",
+            instrument_id="7203.TSE",
+            side="buy",
+            qty=100.0,
+            price=2500.0,
+            order_type="LIMIT",
+            time_in_force="GTC",
+        )
+
+    result = asyncio.run(scenario())
+    assert result.status == "PARTIALLY_FILLED"
+    assert result.filled_qty == 40.0
+    assert result.filled_qty < 100.0
+    assert result.avg_price is not None
+    assert result.reject_reason is None
+
+
+def test_mock_adapter_cancel_order_default_is_canceled() -> None:
+    """Phase 9 Step 2: 仕込み無しの cancel_order は CANCELED を返す。
+
+    client_order_id（= order_id 引数）がそのまま結果に反映される。
+    """
+    adapter = MockVenueAdapter()
+
+    async def scenario() -> OrderResult:
+        creds = VenueCredentials(credentials_source="env", environment_hint="demo")
+        await adapter.login(creds)
+        return await adapter.cancel_order(venue="MOCK", order_id="coid-123")
+
+    result = asyncio.run(scenario())
+    assert isinstance(result, OrderResult)
+    assert result.status == "CANCELED"
+    assert result.client_order_id == "coid-123"
+    assert result.filled_qty == 0.0
+    assert result.reject_reason is None
+
+
+def test_mock_adapter_cancel_order_rejected_outcome() -> None:
+    """Phase 9 Step 2: set_next_cancel_outcome(REJECTED) で取消拒否 + reject_reason。"""
+    adapter = MockVenueAdapter()
+
+    async def scenario() -> OrderResult:
+        creds = VenueCredentials(credentials_source="env", environment_hint="demo")
+        await adapter.login(creds)
+        adapter.set_next_cancel_outcome(status="REJECTED", reject_reason="already filled")
+        return await adapter.cancel_order(venue="MOCK", order_id="coid-123")
+
+    result = asyncio.run(scenario())
+    assert result.status == "REJECTED"
+    assert result.reject_reason == "already filled"
+
+
+def test_mock_adapter_cancel_order_without_login_raises() -> None:
+    """未ログインで cancel_order を呼ぶと RuntimeError（submit_order と同じ保護網）。"""
+    import pytest
+
+    adapter = MockVenueAdapter()
+    with pytest.raises(RuntimeError, match="not logged in"):
+        asyncio.run(adapter.cancel_order(venue="MOCK", order_id="coid-123"))
+
+
+# --- modify_order (Phase 9 Step 4) -----------------------------------------
+
+
+def test_mock_adapter_modify_order_default_is_accepted() -> None:
+    """仕込み無しの modify_order は ACCEPTED を返し client_order_id=order_id。"""
+    adapter = MockVenueAdapter()
+
+    async def scenario() -> OrderResult:
+        creds = VenueCredentials(credentials_source="env", environment_hint="demo")
+        await adapter.login(creds)
+        return await adapter.modify_order(
+            venue="MOCK", order_id="coid-123", new_price=2600.0
+        )
+
+    result = asyncio.run(scenario())
+    assert isinstance(result, OrderResult)
+    assert result.status == "ACCEPTED"
+    assert result.client_order_id == "coid-123"
+    assert result.filled_qty == 0.0
+    assert result.reject_reason is None
+
+
+def test_mock_adapter_modify_order_rejected_outcome() -> None:
+    """set_next_modify_outcome(REJECTED) で訂正拒否 + reject_reason。"""
+    adapter = MockVenueAdapter()
+
+    async def scenario() -> OrderResult:
+        creds = VenueCredentials(credentials_source="env", environment_hint="demo")
+        await adapter.login(creds)
+        adapter.set_next_modify_outcome(status="REJECTED", reject_reason="too late")
+        return await adapter.modify_order(
+            venue="MOCK", order_id="coid-123", new_qty=50.0
+        )
+
+    result = asyncio.run(scenario())
+    assert result.status == "REJECTED"
+    assert result.reject_reason == "too late"
+    assert result.filled_qty == 0.0
+
+
+def test_mock_adapter_modify_order_without_login_raises() -> None:
+    """未ログインで modify_order を呼ぶと RuntimeError。"""
+    import pytest
+
+    adapter = MockVenueAdapter()
+    with pytest.raises(RuntimeError, match="not logged in"):
+        asyncio.run(adapter.modify_order(venue="MOCK", order_id="coid-123", new_price=1.0))
+
+
+# --- fetch_account / set_account_snapshot (Phase 9 Step 4) -----------------
+
+
+def test_mock_adapter_fetch_account_default_is_empty() -> None:
+    """set_account_snapshot 未呼び出し時は既定（cash=0, buying_power=0, positions=()）。"""
+    from engine.live.order_types import AccountSnapshot
+
+    adapter = MockVenueAdapter()
+
+    async def scenario() -> AccountSnapshot:
+        creds = VenueCredentials(credentials_source="env", environment_hint="demo")
+        await adapter.login(creds)
+        return await adapter.fetch_account()
+
+    snap = asyncio.run(scenario())
+    assert isinstance(snap, AccountSnapshot)
+    assert snap.cash == 0.0
+    assert snap.buying_power == 0.0
+    assert snap.positions == ()
+
+
+def test_mock_adapter_set_account_snapshot_roundtrip_and_update() -> None:
+    """set_account_snapshot で仕込んだ値が fetch_account から返り、再設定で更新される。"""
+    from engine.live.order_types import AccountPositionData, AccountSnapshot
+
+    adapter = MockVenueAdapter()
+
+    async def scenario() -> tuple[AccountSnapshot, AccountSnapshot]:
+        creds = VenueCredentials(credentials_source="env", environment_hint="demo")
+        await adapter.login(creds)
+        adapter.set_account_snapshot(
+            cash=1000.0,
+            buying_power=2000.0,
+            positions=[
+                AccountPositionData(symbol="7203.TSE", qty=100, avg_price=2500.0, unrealized_pnl=5.0)
+            ],
+        )
+        first = await adapter.fetch_account()
+        adapter.set_account_snapshot(cash=1500.0, buying_power=2200.0, positions=[])
+        second = await adapter.fetch_account()
+        return first, second
+
+    first, second = asyncio.run(scenario())
+    assert first.cash == 1000.0
+    assert len(first.positions) == 1
+    assert first.positions[0].symbol == "7203.TSE"
+    assert second.cash == 1500.0
+    assert second.positions == ()
+    # frozen な異なる snapshot は != （差分 emit の前提）
+    assert first != second
+
+
+def test_mock_adapter_fetch_account_without_login_raises() -> None:
+    """未ログインで fetch_account を呼ぶと RuntimeError（read 系も既存流儀で require_login）。"""
+    import pytest
+
+    adapter = MockVenueAdapter()
+    with pytest.raises(RuntimeError, match="not logged in"):
+        asyncio.run(adapter.fetch_account())

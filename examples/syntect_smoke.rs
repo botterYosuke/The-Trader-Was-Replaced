@@ -27,7 +27,10 @@ fn main() {
     let ranges: Vec<(Style, &str)> = h.highlight_line(line, &ss).expect("highlight_line failed");
     for (style, text) in &ranges {
         let c = style.foreground;
-        println!("  fg=({:>3},{:>3},{:>3},{:>3}) {:?}", c.r, c.g, c.b, c.a, text);
+        println!(
+            "  fg=({:>3},{:>3},{:>3},{:>3}) {:?}",
+            c.r, c.g, c.b, c.a, text
+        );
     }
     println!("OK: {} spans", ranges.len());
 }

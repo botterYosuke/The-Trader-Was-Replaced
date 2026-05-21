@@ -311,13 +311,25 @@ pub fn ladder_render_system(
             Some(depth) => {
                 // Ask 行 (上半分)。10 段未満は `---` で埋め常に 10 行 (Caveat #37)。
                 for i in 0..LADDER_DEPTH {
-                    spawn_ladder_row(&mut commands, pane_entity, LadderRowKind::Ask, i, depth.asks.get(i));
+                    spawn_ladder_row(
+                        &mut commands,
+                        pane_entity,
+                        LadderRowKind::Ask,
+                        i,
+                        depth.asks.get(i),
+                    );
                 }
                 // LAST 行 (中央)。last は per-instrument の LastPrices から引く (上で取得済)。
                 spawn_ladder_last_row(&mut commands, pane_entity, last);
                 // Bid 行 (下半分)。
                 for i in 0..LADDER_DEPTH {
-                    spawn_ladder_row(&mut commands, pane_entity, LadderRowKind::Bid, i, depth.bids.get(i));
+                    spawn_ladder_row(
+                        &mut commands,
+                        pane_entity,
+                        LadderRowKind::Bid,
+                        i,
+                        depth.bids.get(i),
+                    );
                 }
             }
             None => {
@@ -435,9 +447,7 @@ fn spawn_ladder_placeholder(commands: &mut Commands, pane: Entity) {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::trading::{
-        DepthSnapshot, ExecutionMode, ExecutionModeRes, InstrumentTradingData,
-    };
+    use crate::trading::{DepthSnapshot, ExecutionMode, ExecutionModeRes, InstrumentTradingData};
     use crate::ui::chart_viewstate::{CHART_DRAW_SIZE, PRICE_GUTTER_WIDTH};
 
     fn level(price: f64, size: f64) -> DepthLevel {
@@ -445,7 +455,9 @@ mod tests {
     }
 
     fn ten_levels() -> Vec<DepthLevel> {
-        (0..10).map(|i| level(100.0 + i as f64, 10.0 * (i + 1) as f64)).collect()
+        (0..10)
+            .map(|i| level(100.0 + i as f64, 10.0 * (i + 1) as f64))
+            .collect()
     }
 
     /// ask は中央より上、bid は下、best (index 0) が中央に最も近い。
@@ -466,8 +478,16 @@ mod tests {
         assert!(worst_bid < best_bid, "worst bid (index 9) が best より下");
 
         // 全 21 行が ladder 高さ内に収まる (端の行中心が ±height/2 を超えない)。
-        assert!(worst_ask <= h / 2.0 + 1e-3, "worst ask {worst_ask} > {}", h / 2.0);
-        assert!(worst_bid >= -h / 2.0 - 1e-3, "worst bid {worst_bid} < {}", -h / 2.0);
+        assert!(
+            worst_ask <= h / 2.0 + 1e-3,
+            "worst ask {worst_ask} > {}",
+            h / 2.0
+        );
+        assert!(
+            worst_bid >= -h / 2.0 - 1e-3,
+            "worst bid {worst_bid} < {}",
+            -h / 2.0
+        );
     }
 
     /// Live レイアウト: chart draw / price gutter / Ladder が枠 [-240,240] に隙間なく収まる。
@@ -486,10 +506,23 @@ mod tests {
         let ladder_left = LADDER_PANE_LOCAL_X - LADDER_WIDTH / 2.0;
         let ladder_right = LADDER_PANE_LOCAL_X + LADDER_WIDTH / 2.0;
 
-        assert!((chart_left + frame_half).abs() < 1e-3, "chart 左端 {chart_left} が枠左端 {} に flush", -frame_half);
-        assert!((gutter_left - chart_right).abs() < 1e-3, "gutter は chart の右に隣接");
-        assert!((ladder_left - gutter_right).abs() < 1e-3, "ladder は gutter の右に隣接 (重なり無し)");
-        assert!((ladder_right - frame_half).abs() < 1e-3, "ladder 右端 {ladder_right} が枠右端 {frame_half} に flush");
+        assert!(
+            (chart_left + frame_half).abs() < 1e-3,
+            "chart 左端 {chart_left} が枠左端 {} に flush",
+            -frame_half
+        );
+        assert!(
+            (gutter_left - chart_right).abs() < 1e-3,
+            "gutter は chart の右に隣接"
+        );
+        assert!(
+            (ladder_left - gutter_right).abs() < 1e-3,
+            "ladder は gutter の右に隣接 (重なり無し)"
+        );
+        assert!(
+            (ladder_right - frame_half).abs() < 1e-3,
+            "ladder 右端 {ladder_right} が枠右端 {frame_half} に flush"
+        );
     }
 
     /// content_area の孫 (chart/price) を持つ最小階層を組み、mode_sync の spawn/despawn を検証。
@@ -521,9 +554,15 @@ mod tests {
             .id();
         let price = app
             .world_mut()
-            .spawn((PriceDisplay, Transform::from_xyz(CHART_CHILD_LOCAL_X_REPLAY, 0.0, 0.3)))
+            .spawn((
+                PriceDisplay,
+                Transform::from_xyz(CHART_CHILD_LOCAL_X_REPLAY, 0.0, 0.3),
+            ))
             .id();
-        app.world_mut().entity_mut(content_area).add_child(chart).add_child(price);
+        app.world_mut()
+            .entity_mut(content_area)
+            .add_child(chart)
+            .add_child(price);
         app.world_mut().entity_mut(root).add_child(content_area);
         (root, chart, price)
     }
@@ -550,10 +589,26 @@ mod tests {
             let sprite = world.entity(root).get::<Sprite>().unwrap();
             assert_eq!(sprite.custom_size, Some(LIVE_COMBINED_PANEL_SIZE));
 
-            let chart_x = world.entity(chart).get::<Transform>().unwrap().translation.x;
-            let price_x = world.entity(price).get::<Transform>().unwrap().translation.x;
-            assert!((chart_x - CHART_CHILD_LOCAL_X_LIVE).abs() < 1e-3, "chart 左シフト");
-            assert!((price_x - CHART_CHILD_LOCAL_X_LIVE).abs() < 1e-3, "price 左シフト");
+            let chart_x = world
+                .entity(chart)
+                .get::<Transform>()
+                .unwrap()
+                .translation
+                .x;
+            let price_x = world
+                .entity(price)
+                .get::<Transform>()
+                .unwrap()
+                .translation
+                .x;
+            assert!(
+                (chart_x - CHART_CHILD_LOCAL_X_LIVE).abs() < 1e-3,
+                "chart 左シフト"
+            );
+            assert!(
+                (price_x - CHART_CHILD_LOCAL_X_LIVE).abs() < 1e-3,
+                "price 左シフト"
+            );
         }
 
         // Replay に戻す: ladder despawn + 枠 Replay サイズ + chart/price 復帰。
@@ -562,13 +617,25 @@ mod tests {
         {
             let world = app.world_mut();
             let mut pq = world.query::<&LadderPane>();
-            assert_eq!(pq.iter(world).count(), 0, "Replay で Ladder が despawn される");
+            assert_eq!(
+                pq.iter(world).count(),
+                0,
+                "Replay で Ladder が despawn される"
+            );
 
             let sprite = world.entity(root).get::<Sprite>().unwrap();
             assert_eq!(sprite.custom_size, Some(CHART_PANEL_SIZE));
 
-            let chart_x = world.entity(chart).get::<Transform>().unwrap().translation.x;
-            assert!((chart_x - CHART_CHILD_LOCAL_X_REPLAY).abs() < 1e-3, "chart x 復帰");
+            let chart_x = world
+                .entity(chart)
+                .get::<Transform>()
+                .unwrap()
+                .translation
+                .x;
+            assert!(
+                (chart_x - CHART_CHILD_LOCAL_X_REPLAY).abs() < 1e-3,
+                "chart x 復帰"
+            );
         }
     }
 
@@ -588,7 +655,13 @@ mod tests {
             .id();
         let pane = app
             .world_mut()
-            .spawn((LadderPane { chart_root: root, last_depth_signature: 0 }, Transform::default()))
+            .spawn((
+                LadderPane {
+                    chart_root: root,
+                    last_depth_signature: 0,
+                },
+                Transform::default(),
+            ))
             .id();
 
         {
@@ -616,9 +689,24 @@ mod tests {
         let mut rq = world.query::<(&LadderRow, &Parent)>();
         let rows: Vec<_> = rq.iter(world).filter(|(_, p)| p.get() == pane).collect();
         assert_eq!(rows.len(), 21, "ask10 + last + bid10 = 21 行");
-        assert_eq!(rows.iter().filter(|(r, _)| r.kind == LadderRowKind::Ask).count(), 10);
-        assert_eq!(rows.iter().filter(|(r, _)| r.kind == LadderRowKind::Bid).count(), 10);
-        assert_eq!(rows.iter().filter(|(r, _)| r.kind == LadderRowKind::Last).count(), 1);
+        assert_eq!(
+            rows.iter()
+                .filter(|(r, _)| r.kind == LadderRowKind::Ask)
+                .count(),
+            10
+        );
+        assert_eq!(
+            rows.iter()
+                .filter(|(r, _)| r.kind == LadderRowKind::Bid)
+                .count(),
+            10
+        );
+        assert_eq!(
+            rows.iter()
+                .filter(|(r, _)| r.kind == LadderRowKind::Last)
+                .count(),
+            1
+        );
     }
 
     /// depth が None の pane はプレースホルダ 1 行のみ。
@@ -637,7 +725,13 @@ mod tests {
             .id();
         let pane = app
             .world_mut()
-            .spawn((LadderPane { chart_root: root, last_depth_signature: 0 }, Transform::default()))
+            .spawn((
+                LadderPane {
+                    chart_root: root,
+                    last_depth_signature: 0,
+                },
+                Transform::default(),
+            ))
             .id();
         {
             let mut map = app.world_mut().resource_mut::<InstrumentTradingDataMap>();
@@ -680,11 +774,23 @@ mod tests {
             .id();
         let pane_x = app
             .world_mut()
-            .spawn((LadderPane { chart_root: root_x, last_depth_signature: 0 }, Transform::default()))
+            .spawn((
+                LadderPane {
+                    chart_root: root_x,
+                    last_depth_signature: 0,
+                },
+                Transform::default(),
+            ))
             .id();
         let pane_y = app
             .world_mut()
-            .spawn((LadderPane { chart_root: root_y, last_depth_signature: 0 }, Transform::default()))
+            .spawn((
+                LadderPane {
+                    chart_root: root_y,
+                    last_depth_signature: 0,
+                },
+                Transform::default(),
+            ))
             .id();
 
         {
@@ -718,7 +824,10 @@ mod tests {
         let x_rows = all.iter().filter(|(_, p)| p.get() == pane_x).count();
         let y_rows = all.iter().filter(|(_, p)| p.get() == pane_y).count();
         assert_eq!(x_rows, 21, "depth ありの X は 21 行");
-        assert_eq!(y_rows, 1, "depth 無しの Y はプレースホルダ 1 行 (X の板を共有しない)");
+        assert_eq!(
+            y_rows, 1,
+            "depth 無しの Y はプレースホルダ 1 行 (X の板を共有しない)"
+        );
     }
 
     /// depth が変化したフレームで行が累積せず 21 行に置き換わる (signature guard 経由の rebuild)。
@@ -737,7 +846,13 @@ mod tests {
             .id();
         let pane = app
             .world_mut()
-            .spawn((LadderPane { chart_root: root, last_depth_signature: 0 }, Transform::default()))
+            .spawn((
+                LadderPane {
+                    chart_root: root,
+                    last_depth_signature: 0,
+                },
+                Transform::default(),
+            ))
             .id();
         {
             let mut map = app.world_mut().resource_mut::<InstrumentTradingDataMap>();
@@ -842,7 +957,10 @@ mod tests {
             .filter(|(_, _, p)| p.get() == pane)
             .map(|(e, _, _)| e)
             .collect();
-        assert_eq!(second_ids, first_ids, "depth 不変なら同じ行 entity が残る (rebuild skip)");
+        assert_eq!(
+            second_ids, first_ids,
+            "depth 不変なら同じ行 entity が残る (rebuild skip)"
+        );
     }
 
     /// LAST だけ更新されたフレーム (depth 不変、map は無変更) でも LAST 行が rebuild される。

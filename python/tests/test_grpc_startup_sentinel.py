@@ -8,11 +8,12 @@ C-5 (plans/backend-startup-sync.md) に基づき、Rust supervisor の stdout pa
 from __future__ import annotations
 
 import os
+import queue
 import re
-import selectors
 import socket
 import subprocess
 import sys
+import threading
 import time
 from pathlib import Path
 
@@ -51,44 +52,52 @@ def _spawn_engine(port: int) -> subprocess.Popen:
     )
 
 
+def _drain_stdout(proc: subprocess.Popen, line_q: "queue.Queue[str | None]") -> None:
+    """Background reader: push each stdout line onto the queue, then a None EOF marker.
+    A thread is used instead of selectors/select because select() does not work on
+    pipe handles on Windows (only sockets), which would raise WinError 10038."""
+    try:
+        assert proc.stdout is not None
+        for line in proc.stdout:
+            line_q.put(line.rstrip("\r\n"))
+    finally:
+        line_q.put(None)
+
+
 def _read_until_sentinel(
     proc: subprocess.Popen, port: int, timeout_sec: float
 ) -> tuple[str | None, list[str]]:
     """stdout を timeout まで line-stream で読み、sentinel 行と全行履歴を返す。
-    readline() の blocking で deadline を踏み外さないよう selectors で poll する。
+    blocking readline() で deadline を踏み外さないよう、別スレッドで読んで queue で poll する
+    (select() は Windows の pipe handle に使えないため selectors は使わない)。
     """
     deadline = time.monotonic() + timeout_sec
     seen: list[str] = []
     sentinel: str | None = None
     assert proc.stdout is not None
-    sel = selectors.DefaultSelector()
-    sel.register(proc.stdout, selectors.EVENT_READ)
-    try:
-        while True:
-            remaining = deadline - time.monotonic()
-            if remaining <= 0:
+    line_q: "queue.Queue[str | None]" = queue.Queue()
+    reader = threading.Thread(target=_drain_stdout, args=(proc, line_q), daemon=True)
+    reader.start()
+    while True:
+        remaining = deadline - time.monotonic()
+        if remaining <= 0:
+            break
+        try:
+            line = line_q.get(timeout=min(1.0, remaining))
+        except queue.Empty:
+            if proc.poll() is not None:
                 break
-            # 1s 単位で poll し、deadline と child 死活を定期的に再評価
-            events = sel.select(timeout=min(1.0, remaining))
-            if not events:
-                if proc.poll() is not None:
-                    break
-                continue
-            line = proc.stdout.readline()
-            if not line:
-                # EOF (child 終了)
-                if proc.poll() is not None:
-                    break
-                continue
-            line = line.rstrip("\r\n")
-            seen.append(line)
-            m = _SENTINEL_RE.fullmatch(line)
-            if m and int(m.group(1)) == port:
-                sentinel = line
+            continue
+        if line is None:
+            # EOF (child 終了)
+            if proc.poll() is not None:
                 break
-    finally:
-        sel.unregister(proc.stdout)
-        sel.close()
+            continue
+        seen.append(line)
+        m = _SENTINEL_RE.fullmatch(line)
+        if m and int(m.group(1)) == port:
+            sentinel = line
+            break
     return sentinel, seen
 
 

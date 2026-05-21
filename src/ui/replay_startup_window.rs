@@ -290,7 +290,9 @@ mod tests {
             progress.phase = ReplayStartupPhase::WaitingForFirstTick;
         }
         {
-            let mut trading = app.world_mut().resource_mut::<crate::trading::TradingSession>();
+            let mut trading = app
+                .world_mut()
+                .resource_mut::<crate::trading::TradingSession>();
             trading.replay_state = Some("RUNNING".to_string());
         }
 
@@ -317,7 +319,9 @@ mod tests {
             progress.phase = ReplayStartupPhase::WaitingForFirstTick;
         }
         {
-            let mut trading = app.world_mut().resource_mut::<crate::trading::TradingSession>();
+            let mut trading = app
+                .world_mut()
+                .resource_mut::<crate::trading::TradingSession>();
             trading.replay_state = Some("RUNNING".to_string());
         }
 
@@ -344,7 +348,9 @@ mod tests {
             progress.phase = ReplayStartupPhase::WaitingForFirstTick;
         }
         {
-            let mut trading = app.world_mut().resource_mut::<crate::trading::TradingSession>();
+            let mut trading = app
+                .world_mut()
+                .resource_mut::<crate::trading::TradingSession>();
             trading.replay_state = None;
             trading.timestamp_ms = 2000;
         }
@@ -372,7 +378,9 @@ mod tests {
             progress.phase = ReplayStartupPhase::WaitingForFirstTick;
         }
         {
-            let mut trading = app.world_mut().resource_mut::<crate::trading::TradingSession>();
+            let mut trading = app
+                .world_mut()
+                .resource_mut::<crate::trading::TradingSession>();
             trading.replay_state = None;
             trading.timestamp_ms = 1_000_000_000;
         }

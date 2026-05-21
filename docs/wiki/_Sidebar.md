@@ -1,0 +1,16 @@
+### The Trader Was Replaced
+
+- [ホーム](Home.md)
+- [はじめに](getting-started.md)
+- [画面構成](screen-layout.md)
+- [ウィンドウとパネル](windows-and-panels.md)
+- [チャート](chart.md)
+- [実行モード](modes.md)
+- [Replay 実行](replay.md)
+- [バックテスト](backtest.md)
+- [戦略](strategy.md)
+- [取引所接続](venues.md)
+- [注文](orders.md)
+- [File メニュー](file-menu.md)
+- [設定](settings.md)
+- [トラブルシューティング](troubleshooting.md)

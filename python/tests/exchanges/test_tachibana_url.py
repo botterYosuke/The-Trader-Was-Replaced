@@ -180,9 +180,20 @@ def test_build_event_url_keyvalue_form():
     assert url.startswith("https://example.invalid/v4r8/event/?")
     query = url.split("?", 1)[1]
     pairs = dict(p.split("=", 1) for p in query.split("&"))
-    assert pairs["p_evt_cmd"] == "FD%2CKP%2CST"
+    # Regression (e-station bug-postmortem 2026-05-01): commas in p_evt_cmd MUST
+    # stay raw. The server does not percent-decode EVENT params, so '%2C' silently
+    # drops the subscription. The REQUEST-style func_replace_urlecnode must NOT run.
+    assert pairs["p_evt_cmd"] == "FD,KP,ST"
     assert pairs["p_eno"] == "0"
     assert pairs["p_rid"] == "22"
+
+
+def test_build_event_url_evt_cmd_has_raw_commas():
+    """p_evt_cmd list separators are literal commas, never %2C (raw-comma guard)."""
+    base = EventUrl("https://example.invalid/v4r8/event/")
+    url = build_event_url(base, {"p_evt_cmd": "ST,KP,EC,SS,US"})
+    assert "p_evt_cmd=ST,KP,EC,SS,US" in url
+    assert "%2C" not in url
 
 
 def test_build_event_url_rejects_request_url_type():
@@ -196,3 +207,41 @@ def test_build_event_url_rejects_control_chars():
     for bad in ["\n", "\t", "\r", "\x01", "\x02", "\x03"]:
         with pytest.raises(ValueError):
             build_event_url(base, {"p_evt_cmd": f"FD{bad}KP"})
+
+
+def test_build_event_url_rejects_structure_injection_in_value():
+    """Raw values must not be able to smuggle URL-structure chars / extra params."""
+    base = EventUrl("https://example.invalid/v4r8/event/")
+    for bad in ["FD&p_x=1", "FD=KP", "FD?KP", "FD%2CKP", "FD KP", "7203.T"]:
+        with pytest.raises(ValueError):
+            build_event_url(base, {"p_evt_cmd": bad})
+
+
+def test_build_event_url_rejects_bad_param_name():
+    base = EventUrl("https://example.invalid/v4r8/event/")
+    with pytest.raises(ValueError):
+        build_event_url(base, {"p evt": "FD"})
+
+
+def test_build_event_url_rejects_degenerate_evt_cmd():
+    """Empty / comma-only / double-comma p_evt_cmd would silently subscribe to
+    nothing — the exact failure the raw-comma boundary exists to prevent. They
+    must fail loud, not pass (review M1)."""
+    base = EventUrl("https://example.invalid/v4r8/event/")
+    for bad in ["", ",", "ST,", ",KP", "ST,,KP"]:
+        with pytest.raises(ValueError):
+            build_event_url(base, {"p_evt_cmd": bad})
+
+
+def test_build_event_url_accepts_valid_token_lists():
+    """Single tokens and comma-joined non-empty tokens stay valid (regression
+    guard so the tightened pattern didn't over-reject real params)."""
+    base = EventUrl("https://example.invalid/v4r8/event/")
+    url = build_event_url(
+        base,
+        {"p_evt_cmd": "ST,KP,FD", "p_eno": "0", "p_mkt_code": "00",
+         "p_issue_code": "130A", "p_board_no": "1000"},
+    )
+    assert "p_evt_cmd=ST,KP,FD" in url
+    assert "p_mkt_code=00" in url
+    assert "p_issue_code=130A" in url

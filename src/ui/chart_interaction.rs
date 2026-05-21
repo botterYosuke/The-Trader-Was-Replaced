@@ -319,7 +319,11 @@ mod tests {
         for _ in 0..500 {
             apply_cursor_zoom(&mut s2, Vec2::ZERO, -5.0);
         }
-        assert!(s2.cell_width >= MIN_CELL_WIDTH - 1e-3, "w={}", s2.cell_width);
+        assert!(
+            s2.cell_width >= MIN_CELL_WIDTH - 1e-3,
+            "w={}",
+            s2.cell_width
+        );
         assert!(s2.cell_height >= min_h - 1e-9, "h={}", s2.cell_height);
     }
 
@@ -359,24 +363,32 @@ mod tests {
         app.init_resource::<ChartClickState>();
         app.add_systems(Update, chart_click_state_cleanup_system);
 
-        let chart = app
-            .world_mut()
-            .spawn(ChartViewState::default())
-            .id();
+        let chart = app.world_mut().spawn(ChartViewState::default()).id();
         {
             let mut cs = app.world_mut().resource_mut::<ChartClickState>();
             cs.last_click.insert(chart, 1.0);
             cs.dragged.insert(chart);
         }
         app.update(); // RemovedComponents は空、エントリ保持。
-        assert!(app.world().resource::<ChartClickState>().last_click.contains_key(&chart));
+        assert!(
+            app.world()
+                .resource::<ChartClickState>()
+                .last_click
+                .contains_key(&chart)
+        );
 
         app.world_mut().entity_mut(chart).despawn();
         app.update(); // despawn を検出して掃除。
 
         let cs = app.world().resource::<ChartClickState>();
-        assert!(!cs.last_click.contains_key(&chart), "last_click entry must be cleaned up");
-        assert!(!cs.dragged.contains(&chart), "dragged entry must be cleaned up");
+        assert!(
+            !cs.last_click.contains_key(&chart),
+            "last_click entry must be cleaned up"
+        );
+        assert!(
+            !cs.dragged.contains(&chart),
+            "dragged entry must be cleaned up"
+        );
     }
 
     /// double-click reset は pan/zoom を既定へ戻し autoscale を再有効化する。
@@ -403,7 +415,10 @@ mod tests {
         let mut s = state_for_zoom();
         let before = (s.cell_width, s.cell_height, s.translation);
         apply_cursor_zoom(&mut s, Vec2::new(10.0, 10.0), 0.0);
-        assert_eq!(s.cell_width, before.0, "factor==1 must not change cell_width");
+        assert_eq!(
+            s.cell_width, before.0,
+            "factor==1 must not change cell_width"
+        );
         assert_eq!(
             s.cell_height, before.1,
             "factor==1 must not change cell_height"

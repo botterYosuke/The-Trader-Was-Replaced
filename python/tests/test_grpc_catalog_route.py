@@ -89,17 +89,16 @@ def test_grpc_load_replay_data_with_catalog_path_then_step(catalog_grpc_server, 
     assert state.timestamp_ms == 5_000
     assert state.price == 100.5
 
-    assert stub.StartEngine(
-        engine_pb2.StartEngineRequest(request_id="r2", token=token)
-    ).current_state == engine_pb2.RUNNING
-
-    assert stub.PauseReplay(
-        engine_pb2.PauseReplayRequest(request_id="r3", token=token)
-    ).current_state == engine_pb2.PAUSED
+    # Manual stepping is an engine-level capability: the gRPC StartEngine RPC now
+    # requires a strategy_file and runs it to completion (see test_grpc_control.py),
+    # so step-able RUNNING is driven via the engine object directly (cf.
+    # test_jquants_to_catalog::test_ensure_jquants_catalog_replayed_via_engine).
+    engine.start_engine()
+    engine.pause_replay()
 
     # Two steps → third bar.
-    stub.StepReplay(engine_pb2.StepReplayRequest(request_id="r4", token=token))
-    stub.StepReplay(engine_pb2.StepReplayRequest(request_id="r5", token=token))
+    engine.step_replay()
+    engine.step_replay()
 
     state = engine.get_current_state()
     assert state.timestamp_ms == 15_000

@@ -11,11 +11,12 @@ C-6 (plans/backend-startup-sync.md):
 from __future__ import annotations
 
 import os
+import queue
 import re
-import selectors
 import socket
 import subprocess
 import sys
+import threading
 import time
 from pathlib import Path
 
@@ -58,44 +59,52 @@ def _spawn_engine(port: int) -> subprocess.Popen:
     )
 
 
+def _drain_stdout(proc: subprocess.Popen, line_q: "queue.Queue[str | None]") -> None:
+    """Background reader: push each stdout line onto the queue, then a None EOF marker.
+    A thread is used instead of selectors/select because select() does not work on
+    pipe handles on Windows (only sockets), which would raise WinError 10038."""
+    try:
+        assert proc.stdout is not None
+        for line in proc.stdout:
+            line_q.put(line.rstrip("\r\n"))
+    finally:
+        line_q.put(None)
+
+
 def _wait_for_sentinel(proc: subprocess.Popen, port: int, timeout_sec: float = 30.0) -> None:
     """sentinel を観測するまで stdout を line-stream する。観測できなければ fail。"""
     deadline = time.monotonic() + timeout_sec
     seen: list[str] = []
     assert proc.stdout is not None
-    sel = selectors.DefaultSelector()
-    sel.register(proc.stdout, selectors.EVENT_READ)
-    try:
-        while True:
-            remaining = deadline - time.monotonic()
-            if remaining <= 0:
+    line_q: "queue.Queue[str | None]" = queue.Queue()
+    reader = threading.Thread(target=_drain_stdout, args=(proc, line_q), daemon=True)
+    reader.start()
+    while True:
+        remaining = deadline - time.monotonic()
+        if remaining <= 0:
+            raise AssertionError(
+                f"sentinel for port={port} not observed within {timeout_sec}s. "
+                f"stdout tail: {seen[-20:]!r}"
+            )
+        try:
+            line = line_q.get(timeout=min(1.0, remaining))
+        except queue.Empty:
+            if proc.poll() is not None:
                 raise AssertionError(
-                    f"sentinel for port={port} not observed within {timeout_sec}s. "
-                    f"stdout tail: {seen[-20:]!r}"
+                    f"subprocess exited before sentinel (rc={proc.returncode}). "
+                    f"stdout: {seen!r}"
                 )
-            events = sel.select(timeout=min(1.0, remaining))
-            if not events:
-                if proc.poll() is not None:
-                    raise AssertionError(
-                        f"subprocess exited before sentinel (rc={proc.returncode}). "
-                        f"stdout: {seen!r}"
-                    )
-                continue
-            line = proc.stdout.readline()
-            if not line:
-                if proc.poll() is not None:
-                    raise AssertionError(
-                        f"EOF before sentinel (rc={proc.returncode}). stdout: {seen!r}"
-                    )
-                continue
-            line = line.rstrip("\r\n")
-            seen.append(line)
-            m = _SENTINEL_RE.fullmatch(line)
-            if m and int(m.group(1)) == port:
-                return
-    finally:
-        sel.unregister(proc.stdout)
-        sel.close()
+            continue
+        if line is None:
+            if proc.poll() is not None:
+                raise AssertionError(
+                    f"EOF before sentinel (rc={proc.returncode}). stdout: {seen!r}"
+                )
+            continue
+        seen.append(line)
+        m = _SENTINEL_RE.fullmatch(line)
+        if m and int(m.group(1)) == port:
+            return
 
 
 def _terminate(proc: subprocess.Popen) -> None:

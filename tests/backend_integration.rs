@@ -1,29 +1,31 @@
 use backcast::backend_supervisor::{
-    run_supervisor, BackendLifecycle, SupervisorCommand, SupervisorConfig,
+    BackendLifecycle, SupervisorCommand, SupervisorConfig, run_supervisor,
 };
 use backcast::trading::engine::{
-    data_engine_server::{DataEngine, DataEngineServer},
-    EngineState, ForceStopReplayRequest, GetPortfolioRequest, GetPortfolioResponse,
+    BackendEvent, CancelOrderReq, CancelOrderRes, EngineState, ForceStopReplayRequest,
+    GetOrderStatusReq, GetOrderStatusRes, GetPortfolioRequest, GetPortfolioResponse,
     GetStateRequest, GetStateResponse, ListAllListedSymbolsRequest, ListAllListedSymbolsResponse,
-    ListInstrumentsRequest, ListInstrumentsResponse, LoadReplayDataRequest, PauseReplayRequest,
-    ReplayControlResponse, ResumeReplayRequest, SetExecutionModeRequest, SetExecutionModeResponse,
-    SetReplaySpeedRequest, ShutdownRequest, ShutdownResponse, StartEngineRequest,
-    StartEngineResponse, StartResponse, StepReplayRequest, StopEngineRequest, StopReplayRequest,
-    StopRequest, StopResponse, SubscribeRequest, SubscribeResponse, UnsubscribeRequest,
-    BackendEvent, SubscribeBackendEventsReq, VenueControlResponse, VenueLoginRequest,
+    ListInstrumentsRequest, ListInstrumentsResponse, LoadReplayDataRequest, ModifyOrderReq,
+    ModifyOrderRes, PauseReplayRequest, PlaceOrderReq, PlaceOrderRes, ReplayControlResponse,
+    ResumeReplayRequest, SetExecutionModeRequest, SetExecutionModeResponse, SetReplaySpeedRequest,
+    ShutdownRequest, ShutdownResponse, StartEngineRequest, StartEngineResponse, StartResponse,
+    StepReplayRequest, StopEngineRequest, StopReplayRequest, StopRequest, StopResponse,
+    SubmitSecretReq, SubmitSecretRes, SubscribeBackendEventsReq, SubscribeRequest,
+    SubscribeResponse, UnsubscribeRequest, VenueControlResponse, VenueLoginRequest,
     VenueLoginResponse, VenueLogoutRequest,
+    data_engine_server::{DataEngine, DataEngineServer},
 };
 use backcast::trading::engine::{
+    HealthCheckRequest, HealthCheckResponse,
     health_check_response::ServingStatus,
     health_server::{Health, HealthServer},
-    HealthCheckRequest, HealthCheckResponse,
 };
 use backcast::trading::{BackendTradingState, StartRequest};
 use serde_json::json;
 use std::net::SocketAddr;
 use std::time::Duration;
 use tokio::sync::{mpsc, oneshot, watch};
-use tonic::{transport::Server, Request, Response, Status};
+use tonic::{Request, Response, Status, transport::Server};
 
 // Mock gRPC server implementation
 #[derive(Default)]
@@ -380,14 +382,89 @@ impl DataEngine for MyDataEngine {
         }))
     }
 
-    type SubscribeBackendEventsStream =
-        tokio_stream::Empty<Result<BackendEvent, Status>>;
+    async fn submit_secret(
+        &self,
+        request: Request<SubmitSecretReq>,
+    ) -> Result<Response<SubmitSecretRes>, Status> {
+        let req = request.into_inner();
+        if req.token != self.token {
+            return Err(Status::unauthenticated("Invalid token"));
+        }
+        let _ = req.request_id;
+        let _ = req.secret;
+        Ok(Response::new(SubmitSecretRes {
+            success: true,
+            error_code: "".to_string(),
+        }))
+    }
+
+    type SubscribeBackendEventsStream = tokio_stream::Empty<Result<BackendEvent, Status>>;
 
     async fn subscribe_backend_events(
         &self,
         _request: Request<SubscribeBackendEventsReq>,
     ) -> Result<Response<Self::SubscribeBackendEventsStream>, Status> {
         Ok(Response::new(tokio_stream::empty()))
+    }
+
+    async fn place_order(
+        &self,
+        request: Request<PlaceOrderReq>,
+    ) -> Result<Response<PlaceOrderRes>, Status> {
+        let req = request.into_inner();
+        if req.token != self.token {
+            return Err(Status::unauthenticated("Invalid token"));
+        }
+        Ok(Response::new(PlaceOrderRes {
+            success: true,
+            error_code: "".to_string(),
+            order_event: None,
+        }))
+    }
+
+    async fn cancel_order(
+        &self,
+        request: Request<CancelOrderReq>,
+    ) -> Result<Response<CancelOrderRes>, Status> {
+        let req = request.into_inner();
+        if req.token != self.token {
+            return Err(Status::unauthenticated("Invalid token"));
+        }
+        Ok(Response::new(CancelOrderRes {
+            success: true,
+            error_code: "".to_string(),
+            order_event: None,
+        }))
+    }
+
+    async fn modify_order(
+        &self,
+        request: Request<ModifyOrderReq>,
+    ) -> Result<Response<ModifyOrderRes>, Status> {
+        let req = request.into_inner();
+        if req.token != self.token {
+            return Err(Status::unauthenticated("Invalid token"));
+        }
+        Ok(Response::new(ModifyOrderRes {
+            success: true,
+            error_code: "".to_string(),
+            order_event: None,
+        }))
+    }
+
+    async fn get_order_status(
+        &self,
+        request: Request<GetOrderStatusReq>,
+    ) -> Result<Response<GetOrderStatusRes>, Status> {
+        let req = request.into_inner();
+        if req.token != self.token {
+            return Err(Status::unauthenticated("Invalid token"));
+        }
+        Ok(Response::new(GetOrderStatusRes {
+            success: false,
+            error_code: "UNKNOWN_ORDER_ID".to_string(),
+            order_event: None,
+        }))
     }
 }
 

@@ -1,4 +1,4 @@
-﻿//! Phase 7.5b — Instrument Picker module。
+//! Phase 7.5b — Instrument Picker module。
 //!
 //! 計画書 `docs/plan/Phase 7.5b - Instrument Picker.md` §2 / §3 に対応する
 //! scaffolding。Resource / Component / spawn helper の宣言のみ。
@@ -19,9 +19,7 @@ use crate::trading::{
     TickersStatus, TransportCommand, TransportCommandSender, VenueState, VenueStatusRes,
     is_live_mode, is_venue_live,
 };
-use crate::ui::components::{
-    InstrumentRegistry, ScenarioMetadata, SidebarAddInstrumentButton,
-};
+use crate::ui::components::{InstrumentRegistry, ScenarioMetadata, SidebarAddInstrumentButton};
 use std::collections::HashSet;
 
 // ---------------------------------------------------------------------------
@@ -196,13 +194,17 @@ pub fn add_instrument_button_system(
                 let end_date = parse_scenario_end(&scenario_meta);
                 picker.end_date = end_date;
 
-                let Some(d) = end_date else { continue; };
+                let Some(d) = end_date else {
+                    continue;
+                };
 
                 let time_ok = match *last_dispatch_at {
                     None => true,
                     Some(prev) => now.duration_since(prev) >= Duration::from_millis(100),
                 };
-                if !time_ok { continue; }
+                if !time_ok {
+                    continue;
+                }
 
                 let Some(available) = available.as_mut() else {
                     error!("add_instrument_button_system: AvailableInstruments resource missing");
@@ -211,7 +213,11 @@ pub fn add_instrument_button_system(
                 if available.by_end_date.contains_key(&d) || available.in_flight.contains(&d) {
                     continue;
                 }
-                if backend_status.as_ref().map(|s| !s.connected).unwrap_or(true) {
+                if backend_status
+                    .as_ref()
+                    .map(|s| !s.connected)
+                    .unwrap_or(true)
+                {
                     available.last_error = Some((d, "backend not connected".to_string()));
                     continue;
                 }
@@ -235,7 +241,10 @@ pub fn add_instrument_button_system(
                 let should_fetch = tickers
                     .as_ref()
                     .map(|t| {
-                        matches!(t.status, TickersStatus::NotFetched | TickersStatus::Failed(_))
+                        matches!(
+                            t.status,
+                            TickersStatus::NotFetched | TickersStatus::Failed(_)
+                        )
                     })
                     .unwrap_or(true);
                 if should_fetch {
@@ -285,13 +294,21 @@ pub fn sync_picker_dropdown_visibility_system(
 /// `spawn_picker_row_ui` で spawn された Button 群が対象。
 /// Bevy の `Changed<Interaction>` filter により Pressed エッジのみハンドル。
 pub fn picker_row_click_system(
-    interactions: Query<(&Interaction, &InstrumentPickerAddButton), (Changed<Interaction>, With<Button>)>,
+    interactions: Query<
+        (&Interaction, &InstrumentPickerAddButton),
+        (Changed<Interaction>, With<Button>),
+    >,
     mut registry: ResMut<InstrumentRegistry>,
     mut picker: ResMut<InstrumentPickerState>,
 ) {
     for (interaction, btn) in interactions.iter() {
         if matches!(interaction, Interaction::Pressed) {
-            handle_picker_row_click(&btn.instrument_id, &mut registry, &mut picker, Instant::now());
+            handle_picker_row_click(
+                &btn.instrument_id,
+                &mut registry,
+                &mut picker,
+                Instant::now(),
+            );
         }
     }
 }
@@ -622,10 +639,8 @@ pub fn auto_fetch_live_universe_on_connect_system(
     let cur_mode = exec_mode.mode;
     let was_mode = prev_mode.replace(cur_mode);
 
-    let became_connected = is_venue_live(cur_venue)
-        && !was_venue.is_some_and(is_venue_live);
-    let became_live = is_live_mode(cur_mode)
-        && !was_mode.is_some_and(is_live_mode);
+    let became_connected = is_venue_live(cur_venue) && !was_venue.is_some_and(is_venue_live);
+    let became_live = is_live_mode(cur_mode) && !was_mode.is_some_and(is_live_mode);
 
     // Trigger 1: VenueState が live になった瞬間（Live mode 前提）
     let trigger_by_venue = became_connected && is_live_mode(cur_mode);
@@ -636,7 +651,10 @@ pub fn auto_fetch_live_universe_on_connect_system(
         return;
     }
     // Tickers がすでに Loaded ならスキップ（重複 fetch 防止）。InFlight も race するので skip。
-    if matches!(tickers.status, TickersStatus::Loaded | TickersStatus::InFlight) {
+    if matches!(
+        tickers.status,
+        TickersStatus::Loaded | TickersStatus::InFlight
+    ) {
         return;
     }
     if let Some(tx) = sender.as_ref() {
@@ -677,7 +695,11 @@ pub fn auto_fetch_available_on_replay_entry_system(
     if available.by_end_date.contains_key(&end) || available.in_flight.contains(&end) {
         return;
     }
-    if backend_status.as_ref().map(|s| !s.connected).unwrap_or(true) {
+    if backend_status
+        .as_ref()
+        .map(|s| !s.connected)
+        .unwrap_or(true)
+    {
         available.last_error = Some((end, "backend not connected".to_string()));
         return;
     }
@@ -686,7 +708,9 @@ pub fn auto_fetch_available_on_replay_entry_system(
     };
     available.in_flight.insert(end);
     available.last_error = None;
-    let _ = tx.tx.send(TransportCommand::FetchAvailableInstruments { end_date: end });
+    let _ = tx
+        .tx
+        .send(TransportCommand::FetchAvailableInstruments { end_date: end });
 }
 
 /// §4.3.1 / D22: registry に追加された instrument を Live mode で自動 subscribe する。
@@ -722,26 +746,36 @@ pub fn subscribe_added_instruments_system(
             .collect();
         *prev_ids = current;
         for id in survivors {
-            let _ = tx.tx.send(TransportCommand::SubscribeMarketData { instrument_id: id });
+            let _ = tx
+                .tx
+                .send(TransportCommand::SubscribeMarketData { instrument_id: id });
         }
         return;
     }
     let added: Vec<String> = current.difference(&prev_ids).cloned().collect();
     *prev_ids = current;
     for id in added {
-        let _ = tx.tx.send(TransportCommand::SubscribeMarketData { instrument_id: id });
+        let _ = tx
+            .tx
+            .send(TransportCommand::SubscribeMarketData { instrument_id: id });
     }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::trading::{AvailableInstruments, ExecutionMode, ExecutionModeRes, Tickers, TickersSource, TickersStatus, VenueState, VenueStatusRes};
+    use crate::trading::{
+        AvailableInstruments, ExecutionMode, ExecutionModeRes, Tickers, TickersSource,
+        TickersStatus, VenueState, VenueStatusRes,
+    };
     use crate::ui::components::{InstrumentRegistry, ScenarioMetadata, SidebarAddInstrumentButton};
     use chrono::NaiveDate;
     use tokio::sync::mpsc as tokio_mpsc;
 
-    fn make_transport() -> (TransportCommandSender, tokio_mpsc::UnboundedReceiver<TransportCommand>) {
+    fn make_transport() -> (
+        TransportCommandSender,
+        tokio_mpsc::UnboundedReceiver<TransportCommand>,
+    ) {
         let (tx, rx) = tokio_mpsc::unbounded_channel();
         (TransportCommandSender { tx }, rx)
     }
@@ -762,7 +796,9 @@ mod tests {
             initial_cash: None,
         });
         app.insert_resource(AvailableInstruments::default());
-        app.insert_resource(ExecutionModeRes { mode: ExecutionMode::Replay });
+        app.insert_resource(ExecutionModeRes {
+            mode: ExecutionMode::Replay,
+        });
         app.insert_resource(Tickers::default());
         app
     }
@@ -930,15 +966,23 @@ mod tests {
     fn test_picker_sets_last_error_when_backend_disconnected() {
         use crate::trading::BackendStatus;
         let mut app = make_app();
-        app.insert_resource(BackendStatus { connected: false, running: false, last_error: None });
+        app.insert_resource(BackendStatus {
+            connected: false,
+            running: false,
+            last_error: None,
+        });
 
-        app.world_mut().spawn((SidebarAddInstrumentButton, Interaction::Pressed));
+        app.world_mut()
+            .spawn((SidebarAddInstrumentButton, Interaction::Pressed));
         app.add_systems(Update, add_instrument_button_system);
         app.update();
 
         let d = NaiveDate::from_ymd_opt(2024, 12, 31).unwrap();
         let av = app.world().resource::<AvailableInstruments>();
-        assert!(!av.in_flight.contains(&d), "disconnect 時は in_flight に入れない");
+        assert!(
+            !av.in_flight.contains(&d),
+            "disconnect 時は in_flight に入れない"
+        );
         assert_eq!(
             av.last_error.as_ref().map(|(date, _)| *date),
             Some(d),
@@ -1027,14 +1071,13 @@ mod tests {
         let mut app = make_app();
         app.add_systems(Update, picker_list_rebuild_system);
         // picker is visible
-        app.world_mut().resource_mut::<InstrumentPickerState>().visible = true;
+        app.world_mut()
+            .resource_mut::<InstrumentPickerState>()
+            .visible = true;
         // spawn a minimal InstrumentPickerListContainer
         let container = app
             .world_mut()
-            .spawn((
-                Node::default(),
-                InstrumentPickerListContainer,
-            ))
+            .spawn((Node::default(), InstrumentPickerListContainer))
             .id();
         (app, container)
     }
@@ -1064,11 +1107,21 @@ mod tests {
     #[test]
     fn picker_dropdown_uses_tickers_in_live_mode() {
         let (mut app, _container) = make_list_app_with_container();
-        app.insert_resource(ExecutionModeRes { mode: ExecutionMode::LiveManual });
+        app.insert_resource(ExecutionModeRes {
+            mode: ExecutionMode::LiveManual,
+        });
         app.insert_resource(Tickers {
             list: vec![
-                crate::trading::Ticker { id: "7203.T".to_string(), name: "".to_string(), market: "T".to_string() },
-                crate::trading::Ticker { id: "9984.T".to_string(), name: "".to_string(), market: "T".to_string() },
+                crate::trading::Ticker {
+                    id: "7203.T".to_string(),
+                    name: "".to_string(),
+                    market: "T".to_string(),
+                },
+                crate::trading::Ticker {
+                    id: "9984.T".to_string(),
+                    name: "".to_string(),
+                    market: "T".to_string(),
+                },
             ],
             source: TickersSource::LiveVenue,
             status: TickersStatus::Loaded,
@@ -1085,7 +1138,9 @@ mod tests {
     #[test]
     fn picker_dropdown_shows_not_fetched_placeholder_in_live() {
         let (mut app, container) = make_list_app_with_container();
-        app.insert_resource(ExecutionModeRes { mode: ExecutionMode::LiveManual });
+        app.insert_resource(ExecutionModeRes {
+            mode: ExecutionMode::LiveManual,
+        });
         app.insert_resource(Tickers {
             list: vec![],
             source: TickersSource::Unknown,
@@ -1100,14 +1155,20 @@ mod tests {
             .count();
         assert_eq!(row_count, 0, "NotFetched: no picker rows");
         // container should have a child (placeholder button)
-        let children_count = app.world().get::<Children>(container).map(|c| c.len()).unwrap_or(0);
+        let children_count = app
+            .world()
+            .get::<Children>(container)
+            .map(|c| c.len())
+            .unwrap_or(0);
         assert!(children_count > 0, "NotFetched: placeholder spawned");
     }
 
     #[test]
     fn picker_dropdown_shows_in_flight_placeholder_in_live() {
         let (mut app, container) = make_list_app_with_container();
-        app.insert_resource(ExecutionModeRes { mode: ExecutionMode::LiveManual });
+        app.insert_resource(ExecutionModeRes {
+            mode: ExecutionMode::LiveManual,
+        });
         app.insert_resource(Tickers {
             list: vec![],
             source: TickersSource::LiveVenue,
@@ -1120,14 +1181,20 @@ mod tests {
             .iter(app.world())
             .count();
         assert_eq!(row_count, 0, "InFlight: no picker rows");
-        let children_count = app.world().get::<Children>(container).map(|c| c.len()).unwrap_or(0);
+        let children_count = app
+            .world()
+            .get::<Children>(container)
+            .map(|c| c.len())
+            .unwrap_or(0);
         assert!(children_count > 0, "InFlight: loading placeholder spawned");
     }
 
     #[test]
     fn picker_dropdown_shows_failed_placeholder_in_live() {
         let (mut app, container) = make_list_app_with_container();
-        app.insert_resource(ExecutionModeRes { mode: ExecutionMode::LiveManual });
+        app.insert_resource(ExecutionModeRes {
+            mode: ExecutionMode::LiveManual,
+        });
         app.insert_resource(Tickers {
             list: vec![],
             source: TickersSource::LiveVenue,
@@ -1140,14 +1207,20 @@ mod tests {
             .iter(app.world())
             .count();
         assert_eq!(row_count, 0, "Failed: no picker rows");
-        let children_count = app.world().get::<Children>(container).map(|c| c.len()).unwrap_or(0);
+        let children_count = app
+            .world()
+            .get::<Children>(container)
+            .map(|c| c.len())
+            .unwrap_or(0);
         assert!(children_count > 0, "Failed: error placeholder spawned");
     }
 
     #[test]
     fn add_button_in_live_does_not_fetch_available_or_require_scenario_end() {
         let mut app = make_app();
-        app.insert_resource(ExecutionModeRes { mode: ExecutionMode::LiveManual });
+        app.insert_resource(ExecutionModeRes {
+            mode: ExecutionMode::LiveManual,
+        });
         // No scenario end
         app.insert_resource(ScenarioMetadata {
             schema_version: None,
@@ -1165,22 +1238,31 @@ mod tests {
         let (transport, _rx) = make_transport();
         app.insert_resource(transport);
 
-        app.world_mut().spawn((SidebarAddInstrumentButton, Interaction::Pressed));
+        app.world_mut()
+            .spawn((SidebarAddInstrumentButton, Interaction::Pressed));
         app.add_systems(Update, add_instrument_button_system);
         app.update();
 
         let picker = app.world().resource::<InstrumentPickerState>();
-        assert!(picker.visible, "Live mode: picker opens even without scenario end");
+        assert!(
+            picker.visible,
+            "Live mode: picker opens even without scenario end"
+        );
         assert_eq!(picker.end_date, None, "Live mode: end_date remains None");
         // AvailableInstruments should NOT have been touched
         let av = app.world().resource::<AvailableInstruments>();
-        assert!(av.in_flight.is_empty(), "Live mode: no FetchAvailableInstruments fired");
+        assert!(
+            av.in_flight.is_empty(),
+            "Live mode: no FetchAvailableInstruments fired"
+        );
     }
 
     #[test]
     fn add_button_in_live_triggers_list_instruments_live_when_not_fetched() {
         let mut app = make_app();
-        app.insert_resource(ExecutionModeRes { mode: ExecutionMode::LiveManual });
+        app.insert_resource(ExecutionModeRes {
+            mode: ExecutionMode::LiveManual,
+        });
         app.insert_resource(Tickers {
             list: vec![],
             source: TickersSource::Unknown,
@@ -1189,7 +1271,8 @@ mod tests {
         let (transport, mut rx) = make_transport();
         app.insert_resource(transport);
 
-        app.world_mut().spawn((SidebarAddInstrumentButton, Interaction::Pressed));
+        app.world_mut()
+            .spawn((SidebarAddInstrumentButton, Interaction::Pressed));
         app.add_systems(Update, add_instrument_button_system);
         app.update();
 
@@ -1198,7 +1281,12 @@ mod tests {
         // should have sent ListInstruments
         let cmd = rx.try_recv().expect("ListInstruments should be sent");
         assert!(
-            matches!(cmd, TransportCommand::ListInstruments { source: TickersSource::LiveVenue }),
+            matches!(
+                cmd,
+                TransportCommand::ListInstruments {
+                    source: TickersSource::LiveVenue
+                }
+            ),
             "should send ListInstruments with LiveVenue source, got {:?}",
             cmd
         );
@@ -1209,9 +1297,14 @@ mod tests {
     #[test]
     fn venue_connected_transition_auto_fetches_live_universe() {
         let mut app = make_app();
-        app.insert_resource(ExecutionModeRes { mode: ExecutionMode::LiveManual });
+        app.insert_resource(ExecutionModeRes {
+            mode: ExecutionMode::LiveManual,
+        });
         // Start disconnected
-        app.insert_resource(VenueStatusRes { state: VenueState::Disconnected, ..Default::default() });
+        app.insert_resource(VenueStatusRes {
+            state: VenueState::Disconnected,
+            ..Default::default()
+        });
         let (transport, mut rx) = make_transport();
         app.insert_resource(transport);
         app.add_systems(Update, auto_fetch_live_universe_on_connect_system);
@@ -1221,12 +1314,22 @@ mod tests {
         assert!(rx.try_recv().is_err(), "disconnected: no fetch");
 
         // Frame 2: transition to Connected
-        app.insert_resource(VenueStatusRes { state: VenueState::Connected, ..Default::default() });
+        app.insert_resource(VenueStatusRes {
+            state: VenueState::Connected,
+            ..Default::default()
+        });
         app.update();
 
-        let cmd = rx.try_recv().expect("Connected transition should trigger fetch");
+        let cmd = rx
+            .try_recv()
+            .expect("Connected transition should trigger fetch");
         assert!(
-            matches!(cmd, TransportCommand::ListInstruments { source: TickersSource::LiveVenue }),
+            matches!(
+                cmd,
+                TransportCommand::ListInstruments {
+                    source: TickersSource::LiveVenue
+                }
+            ),
             "should send ListInstruments LiveVenue"
         );
     }
@@ -1234,8 +1337,13 @@ mod tests {
     #[test]
     fn venue_connected_transition_does_not_double_fetch() {
         let mut app = make_app();
-        app.insert_resource(ExecutionModeRes { mode: ExecutionMode::LiveManual });
-        app.insert_resource(VenueStatusRes { state: VenueState::Disconnected, ..Default::default() });
+        app.insert_resource(ExecutionModeRes {
+            mode: ExecutionMode::LiveManual,
+        });
+        app.insert_resource(VenueStatusRes {
+            state: VenueState::Disconnected,
+            ..Default::default()
+        });
         let (transport, mut rx) = make_transport();
         app.insert_resource(transport);
         app.add_systems(Update, auto_fetch_live_universe_on_connect_system);
@@ -1244,7 +1352,10 @@ mod tests {
         app.update();
 
         // Frame 2: Connected → triggers fetch, mark Tickers as InFlight
-        app.insert_resource(VenueStatusRes { state: VenueState::Connected, ..Default::default() });
+        app.insert_resource(VenueStatusRes {
+            state: VenueState::Connected,
+            ..Default::default()
+        });
         app.insert_resource(Tickers {
             list: vec![],
             source: TickersSource::LiveVenue,
@@ -1255,15 +1366,23 @@ mod tests {
 
         // Frame 3: still Connected — no new fetch
         app.update();
-        assert!(rx.try_recv().is_err(), "should not double-fetch when already InFlight/Connected");
+        assert!(
+            rx.try_recv().is_err(),
+            "should not double-fetch when already InFlight/Connected"
+        );
     }
 
     #[test]
     fn mode_entered_live_with_venue_already_connected_fetches_live_universe() {
         let mut app = make_app();
         // Start in Replay with Connected venue
-        app.insert_resource(ExecutionModeRes { mode: ExecutionMode::Replay });
-        app.insert_resource(VenueStatusRes { state: VenueState::Connected, ..Default::default() });
+        app.insert_resource(ExecutionModeRes {
+            mode: ExecutionMode::Replay,
+        });
+        app.insert_resource(VenueStatusRes {
+            state: VenueState::Connected,
+            ..Default::default()
+        });
         let (transport, mut rx) = make_transport();
         app.insert_resource(transport);
         app.add_systems(Update, auto_fetch_live_universe_on_connect_system);
@@ -1273,12 +1392,21 @@ mod tests {
         assert!(rx.try_recv().is_err(), "Replay mode: no fetch");
 
         // Frame 2: switch to Live (venue already Connected)
-        app.insert_resource(ExecutionModeRes { mode: ExecutionMode::LiveManual });
+        app.insert_resource(ExecutionModeRes {
+            mode: ExecutionMode::LiveManual,
+        });
         app.update();
 
-        let cmd = rx.try_recv().expect("mode→Live with Connected venue should trigger fetch");
+        let cmd = rx
+            .try_recv()
+            .expect("mode→Live with Connected venue should trigger fetch");
         assert!(
-            matches!(cmd, TransportCommand::ListInstruments { source: TickersSource::LiveVenue }),
+            matches!(
+                cmd,
+                TransportCommand::ListInstruments {
+                    source: TickersSource::LiveVenue
+                }
+            ),
             "should send ListInstruments LiveVenue"
         );
     }
@@ -1286,10 +1414,19 @@ mod tests {
     #[test]
     fn mode_entered_live_skips_fetch_when_tickers_already_loaded() {
         let mut app = make_app();
-        app.insert_resource(ExecutionModeRes { mode: ExecutionMode::Replay });
-        app.insert_resource(VenueStatusRes { state: VenueState::Connected, ..Default::default() });
+        app.insert_resource(ExecutionModeRes {
+            mode: ExecutionMode::Replay,
+        });
+        app.insert_resource(VenueStatusRes {
+            state: VenueState::Connected,
+            ..Default::default()
+        });
         app.insert_resource(Tickers {
-            list: vec![crate::trading::Ticker { id: "7203.T".to_string(), name: "".to_string(), market: "T".to_string() }],
+            list: vec![crate::trading::Ticker {
+                id: "7203.T".to_string(),
+                name: "".to_string(),
+                market: "T".to_string(),
+            }],
             source: TickersSource::LiveVenue,
             status: TickersStatus::Loaded,
         });
@@ -1300,10 +1437,15 @@ mod tests {
         app.update(); // record initial
 
         // Switch to Live — but Tickers already Loaded, should skip
-        app.insert_resource(ExecutionModeRes { mode: ExecutionMode::LiveManual });
+        app.insert_resource(ExecutionModeRes {
+            mode: ExecutionMode::LiveManual,
+        });
         app.update();
 
-        assert!(rx.try_recv().is_err(), "Tickers Loaded: should not re-fetch");
+        assert!(
+            rx.try_recv().is_err(),
+            "Tickers Loaded: should not re-fetch"
+        );
     }
 
     // ─── Step 10: §4.6.2 auto_fetch_available_on_replay_entry_system ─────
@@ -1312,8 +1454,14 @@ mod tests {
     fn replay_entry_auto_fetches_available_instruments() {
         let mut app = make_app();
         // Start in Live mode
-        app.insert_resource(ExecutionModeRes { mode: ExecutionMode::LiveManual });
-        app.insert_resource(crate::trading::BackendStatus { connected: true, running: true, last_error: None });
+        app.insert_resource(ExecutionModeRes {
+            mode: ExecutionMode::LiveManual,
+        });
+        app.insert_resource(crate::trading::BackendStatus {
+            connected: true,
+            running: true,
+            last_error: None,
+        });
         let (transport, mut rx) = make_transport();
         app.insert_resource(transport);
         app.add_systems(Update, auto_fetch_available_on_replay_entry_system);
@@ -1322,10 +1470,14 @@ mod tests {
         assert!(rx.try_recv().is_err(), "Live mode: no fetch");
 
         // Switch to Replay
-        app.insert_resource(ExecutionModeRes { mode: ExecutionMode::Replay });
+        app.insert_resource(ExecutionModeRes {
+            mode: ExecutionMode::Replay,
+        });
         app.update();
 
-        let cmd = rx.try_recv().expect("Replay entry should trigger FetchAvailableInstruments");
+        let cmd = rx
+            .try_recv()
+            .expect("Replay entry should trigger FetchAvailableInstruments");
         let d = NaiveDate::from_ymd_opt(2024, 12, 31).unwrap();
         assert!(
             matches!(cmd, TransportCommand::FetchAvailableInstruments { end_date } if end_date == d),
@@ -1338,8 +1490,14 @@ mod tests {
     fn scenario_end_change_in_replay_refetches_available_instruments() {
         let mut app = make_app();
         // Start in Replay already (no mode transition, but end changes)
-        app.insert_resource(ExecutionModeRes { mode: ExecutionMode::Replay });
-        app.insert_resource(crate::trading::BackendStatus { connected: true, running: true, last_error: None });
+        app.insert_resource(ExecutionModeRes {
+            mode: ExecutionMode::Replay,
+        });
+        app.insert_resource(crate::trading::BackendStatus {
+            connected: true,
+            running: true,
+            last_error: None,
+        });
         let (transport, mut rx) = make_transport();
         app.insert_resource(transport);
         app.add_systems(Update, auto_fetch_available_on_replay_entry_system);
@@ -1365,15 +1523,23 @@ mod tests {
     fn replay_startup_fetches_local_universe() {
         // Regression pin: on first startup in Replay (prev_end=None → changed), fetch fires
         let mut app = make_app();
-        app.insert_resource(ExecutionModeRes { mode: ExecutionMode::Replay });
-        app.insert_resource(crate::trading::BackendStatus { connected: true, running: true, last_error: None });
+        app.insert_resource(ExecutionModeRes {
+            mode: ExecutionMode::Replay,
+        });
+        app.insert_resource(crate::trading::BackendStatus {
+            connected: true,
+            running: true,
+            last_error: None,
+        });
         let (transport, mut rx) = make_transport();
         app.insert_resource(transport);
         app.add_systems(Update, auto_fetch_available_on_replay_entry_system);
 
         app.update();
 
-        let cmd = rx.try_recv().expect("startup Replay should fetch available instruments");
+        let cmd = rx
+            .try_recv()
+            .expect("startup Replay should fetch available instruments");
         assert!(
             matches!(cmd, TransportCommand::FetchAvailableInstruments { .. }),
             "should be FetchAvailableInstruments, got {:?}",
@@ -1386,7 +1552,9 @@ mod tests {
     #[test]
     fn subscribe_sent_for_added_id_in_live() {
         let mut app = make_app();
-        app.insert_resource(ExecutionModeRes { mode: ExecutionMode::LiveManual });
+        app.insert_resource(ExecutionModeRes {
+            mode: ExecutionMode::LiveManual,
+        });
         let (transport, mut rx) = make_transport();
         app.insert_resource(transport);
         app.add_systems(Update, subscribe_added_instruments_system);
@@ -1396,10 +1564,15 @@ mod tests {
         let _ = rx.try_recv(); // discard any bulk subscribe on first frame
 
         // Frame 2: add an instrument
-        app.world_mut().resource_mut::<InstrumentRegistry>().ids.push("7203.T".to_string());
+        app.world_mut()
+            .resource_mut::<InstrumentRegistry>()
+            .ids
+            .push("7203.T".to_string());
         app.update();
 
-        let cmd = rx.try_recv().expect("added id in Live should send SubscribeMarketData");
+        let cmd = rx
+            .try_recv()
+            .expect("added id in Live should send SubscribeMarketData");
         assert!(
             matches!(&cmd, TransportCommand::SubscribeMarketData { instrument_id } if instrument_id == "7203.T"),
             "should subscribe 7203.T, got {:?}",
@@ -1416,17 +1589,26 @@ mod tests {
         app.add_systems(Update, subscribe_added_instruments_system);
 
         app.update();
-        app.world_mut().resource_mut::<InstrumentRegistry>().ids.push("7203.T".to_string());
+        app.world_mut()
+            .resource_mut::<InstrumentRegistry>()
+            .ids
+            .push("7203.T".to_string());
         app.update();
 
-        assert!(rx.try_recv().is_err(), "Replay mode: no SubscribeMarketData sent");
+        assert!(
+            rx.try_recv().is_err(),
+            "Replay mode: no SubscribeMarketData sent"
+        );
     }
 
     #[test]
     fn subscribe_not_sent_on_mode_change_frame() {
         let mut app = make_app();
         // Start Replay with an existing instrument
-        app.world_mut().resource_mut::<InstrumentRegistry>().ids.push("7203.T".to_string());
+        app.world_mut()
+            .resource_mut::<InstrumentRegistry>()
+            .ids
+            .push("7203.T".to_string());
         let (transport, mut rx) = make_transport();
         app.insert_resource(transport);
         app.add_systems(Update, subscribe_added_instruments_system);
@@ -1438,11 +1620,16 @@ mod tests {
         // Frame 2: switch to Live — mode_changed=true, goes to bulk path (survivors)
         // survivors = prev_for_bulk ∩ current = {"7203.T"} — bulk IS sent (that's correct per plan)
         // The test pin is that the NORMAL diff path does not fire a second time
-        app.insert_resource(ExecutionModeRes { mode: ExecutionMode::LiveManual });
+        app.insert_resource(ExecutionModeRes {
+            mode: ExecutionMode::LiveManual,
+        });
         app.update();
         // consume the bulk subscribe if any
         let _ = rx.try_recv();
         // no more commands
-        assert!(rx.try_recv().is_err(), "mode-change frame: only bulk (or nothing), no extra diff subscribe");
+        assert!(
+            rx.try_recv().is_err(),
+            "mode-change frame: only bulk (or nothing), no extra diff subscribe"
+        );
     }
 }
