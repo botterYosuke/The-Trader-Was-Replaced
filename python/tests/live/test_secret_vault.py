@@ -154,16 +154,28 @@ def test_submit_from_worker_thread_resolves_wait_for_on_loop():
 def test_double_submit_keeps_first_ttl_and_does_not_raise():
     """2 回目 submit は KeyError にならず（Future は pop 済み）、TTL は初回起点を維持。
     2 回目で新たな call_later を仕掛けて失効を遅らせないこと。
+
+    タイミング設計（フルスイート高負荷でも安定するよう全マージンを十分広く取る）:
+      ttl=0.4。初回 submit を t=0、2 回目 submit を t=0.2、最終 get を t=0.8 で行う。
+      正しい挙動 = 初回起点で失効: 失効時刻 t=0.4。最終 get(t=0.8) は失効後 0.4s 余裕。
+      もし 2 回目で TTL を再 arm したら失効時刻は t=0.2+0.4=0.6 にズレるが、それでも
+      最終 get(t=0.8) は失効後 0.2s なので "None" になり、バグを検出できない…という
+      退行を避けるため、最終 get を「初回起点失効(0.4)後・誤再 arm 失効(0.6)前」では
+      なく『誤再 arm でも失効する点(t=0.8 > 0.6)』に置く戦略は採らない。
+      代わりに get 時刻 t=0.55 を採用: 正しい初回起点失効(0.4)後だが、誤再 arm 失効
+      (0.6)より前。よって「初回 TTL 維持なら None / 誤って延長したら "second"」を
+      確実に判別でき、各間隔(0.2 / 0.15 / 0.15)が高負荷スリップにも耐える。
     """
     async def scenario():
-        vault = SecretVault(ttl=0.05)
+        vault = SecretVault(ttl=0.4)
         rid = vault.create_request("tachibana", "login")
-        vault.submit(rid, "first")
-        await asyncio.sleep(0.03)
-        vault.submit(rid, "second")  # 初回 TTL を延ばしてはいけない
-        await asyncio.sleep(0.04)    # 初回 submit から 0.07 > ttl
+        vault.submit(rid, "first")        # t=0   初回 submit → 失効予定 t=0.4
+        await asyncio.sleep(0.2)
+        vault.submit(rid, "second")       # t=0.2 初回 TTL を延ばしてはいけない（延ばすと失効 t=0.6）
+        await asyncio.sleep(0.35)         # t=0.55: 初回起点(0.4)後・誤再 arm(0.6)前
         return vault.get("tachibana", "login")
 
+    # 初回 TTL を維持していれば失効済み → None。誤って延長していれば "second" が残る。
     assert asyncio.run(scenario()) is None
 
 

@@ -47,8 +47,8 @@ def parse_args(argv=None):
         "--live-venue",
         type=str,
         default=None,
-        choices=["TACHIBANA", "KABU"],
-        help="Live venue adapter to wire (TACHIBANA or KABU). Default: None (Replay only).",
+        choices=["TACHIBANA", "KABU", "MOCK"],
+        help="Live venue adapter to wire (TACHIBANA, KABU, or MOCK). Default: None (Replay only).",
     )
 
     return parser.parse_args(argv)
