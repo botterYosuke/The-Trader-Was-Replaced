@@ -5,11 +5,14 @@
 //!
 //! Only `.rs` files directly under `tests/` form a test crate, so the shared
 //! harness and the per-flow files are pulled in via `#[path]` module
-//! declarations. Each flow file holds exactly one `#[test]` — the file count
-//! equals the test count (currently 39).
+//! declarations. Implemented flow files hold exactly one `#[test]`; planned
+//! flow files may exist under `tests/e2e/flows/` with only `//!` docs and are
+//! not registered here until implementation.
 
 #[path = "e2e/support/mod.rs"]
 mod support;
+#[path = "e2e/support/ui_dump.rs"]
+mod ui_dump;
 
 // A. Replay lifecycle
 #[path = "e2e/flows/a1_replay_runs_to_completion.rs"]

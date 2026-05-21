@@ -1060,7 +1060,8 @@ pub fn apply_layout_system(
     }
 }
 
-fn apply_pending_layout_system(
+// pub: headless integration test（i5_*）が strategy_path 経由の deferred spawn を駆動するため。
+pub fn apply_pending_layout_system(
     mut pending: ResMut<PendingLayoutApply>,
     mut panels: Query<
         (
@@ -1257,7 +1258,8 @@ fn debounced_autosave_system(
     auto_save.last_change = None;
 }
 
-fn layout_shortcut_system(
+// pub: headless integration test（i5_*）が Ctrl+O ジェスチャ→LayoutLoadDialogRequested を駆動するため。
+pub fn layout_shortcut_system(
     keys: Res<ButtonInput<KeyCode>>,
     time: Res<Time>,
     mut cooldown: Local<f32>,
