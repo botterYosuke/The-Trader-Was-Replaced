@@ -12,10 +12,10 @@ use backcast::replay::ReplayStartupProgress;
 use backcast::trading::{
     AvailableInstruments, BackendChannel, BackendStartupStage, BackendStatus, BackendStatusUpdate,
     ExecutionMode, ExecutionModeRes, LastPrices, LastRunResult, LiveOrders, OrderFeedback,
-    PortfolioOrder, PortfolioPosition, PortfolioState, ReconcilePrompt, ReloginPrompt, ReplaySpeed,
-    SecretPrompt, SelectedSymbol, Ticker, Tickers, TickersSource, TradingSettings,
-    TransportCommand, TransportCommandSender, VenueState, VenueStatusRes, backend_update_system,
-    engine, tickers_source_to_wire,
+    PortfolioOrder, PortfolioPosition, PortfolioState, PromoteFeedback, ReconcilePrompt,
+    ReloginPrompt, ReplaySpeed, SecretPrompt, SelectedSymbol, Ticker, Tickers, TickersSource,
+    TradingSettings, TransportCommand, TransportCommandSender, VenueState, VenueStatusRes,
+    backend_update_system, engine, tickers_source_to_wire,
 };
 use backcast::ui::UiPlugin;
 use backcast::ui::replay_startup_window::{
@@ -29,9 +29,10 @@ use engine::data_engine_client::DataEngineClient;
 use engine::{
     EngineKind, EngineStartConfig, ForceStopReplayRequest, GetPortfolioRequest, GetStateRequest,
     ListAllListedSymbolsRequest, ListInstrumentsRequest, LoadReplayDataRequest, PauseReplayRequest,
-    ReplayGranularity, ResumeReplayRequest, SetExecutionModeRequest, SetReplaySpeedRequest,
-    StartEngineRequest, StartEngineResponse, StepReplayRequest, SubscribeBackendEventsReq,
-    SubscribeRequest, VenueLoginRequest, VenueLogoutRequest,
+    RegisterLiveStrategyReq, ReplayGranularity, ResumeReplayRequest, SafetyLimits,
+    SetExecutionModeRequest, SetReplaySpeedRequest, StartEngineRequest, StartEngineResponse,
+    StartLiveStrategyReq, StepReplayRequest, SubscribeBackendEventsReq, SubscribeRequest,
+    VenueLoginRequest, VenueLogoutRequest,
 };
 use tokio::sync::mpsc;
 
@@ -39,6 +40,10 @@ use tokio::sync::mpsc;
 // so we capture the handle here (before App::run takes over) and pass it as a resource.
 #[derive(Resource, Clone)]
 struct TokioHandle(tokio::runtime::Handle);
+
+/// UI-synthesized error code for a `PromoteToLive` step that failed at the gRPC
+/// transport layer (vs. a structured backend reject, which carries its own code).
+const PROMOTE_TRANSPORT_ERROR: &str = "TRANSPORT_ERROR";
 
 fn parse_replay_granularity(s: &str) -> Result<i32, String> {
     match s {
@@ -203,6 +208,8 @@ async fn main() {
         .insert_resource(ReloginPrompt::default())
         .insert_resource(ReconcilePrompt::default())
         .insert_resource(OrderFeedback::default())
+        // Phase 10 §2.7: Promote-to-Live outcome notice (set by status_update_system).
+        .insert_resource(PromoteFeedback::default())
         .insert_resource(tokio_handle)
         .add_systems(
             Startup,
@@ -1104,6 +1111,128 @@ fn setup_backend_connection(
                             backend_client_order_ids,
                         });
                     }
+                    TransportCommand::PromoteToLive {
+                        strategy_file,
+                        expected_sha256,
+                        instrument_id,
+                        venue,
+                        params,
+                        safety_limits,
+                        ensure_live_auto,
+                    } => {
+                        // Phase 10 §2.7 / §1.3: chain RegisterLiveStrategy →
+                        // (SetExecutionMode(LiveAuto)) → StartLiveStrategy, awaited in
+                        // order so the backend's `ExecutionMode == LiveAuto` precondition
+                        // is met before Start. Spawned so the pump loop is not blocked.
+                        let mut promote_client = client.clone();
+                        let promote_token = token.clone();
+                        let promote_status_tx = status_tx.clone();
+                        tokio::spawn(async move {
+                            let reject = |status_tx: &mpsc::UnboundedSender<BackendStatusUpdate>,
+                                          error_code: &str| {
+                                let _ = status_tx.send(
+                                    BackendStatusUpdate::LiveStrategyPromoteResult {
+                                        success: false,
+                                        error_code: error_code.to_string(),
+                                        run_id: String::new(),
+                                    },
+                                );
+                            };
+                            // 1) Register: backend resolves + loads the saved .py and
+                            //    issues an opaque strategy_id (no raw path to Start, M9).
+                            let reg = tonic::Request::new(RegisterLiveStrategyReq {
+                                token: promote_token.clone(),
+                                request_id: String::new(),
+                                strategy_file: strategy_file.to_string_lossy().to_string(),
+                                expected_sha256,
+                            });
+                            let strategy_id = match promote_client.register_live_strategy(reg).await
+                            {
+                                Ok(r) => {
+                                    let inner = r.into_inner();
+                                    if !inner.success {
+                                        error!(
+                                            "RegisterLiveStrategy rejected: {}",
+                                            inner.error_code
+                                        );
+                                        reject(&promote_status_tx, &inner.error_code);
+                                        return;
+                                    }
+                                    inner.strategy_id
+                                }
+                                Err(e) => {
+                                    error!("RegisterLiveStrategy failed: {}", e);
+                                    reject(&promote_status_tx, PROMOTE_TRANSPORT_ERROR);
+                                    return;
+                                }
+                            };
+                            // 2) Ensure LiveAuto (Start requires it; §2.5 mode gate).
+                            if ensure_live_auto {
+                                let sem = tonic::Request::new(SetExecutionModeRequest {
+                                    mode: ExecutionMode::LiveAuto.as_wire_str().to_string(),
+                                    token: promote_token.clone(),
+                                });
+                                match promote_client.set_execution_mode(sem).await {
+                                    Ok(r) => {
+                                        let inner = r.into_inner();
+                                        if !inner.success {
+                                            error!(
+                                                "Promote: SetExecutionMode(LiveAuto) rejected: {}",
+                                                inner.error_code
+                                            );
+                                            reject(&promote_status_tx, &inner.error_code);
+                                            return;
+                                        }
+                                    }
+                                    Err(e) => {
+                                        error!("Promote: SetExecutionMode failed: {}", e);
+                                        reject(&promote_status_tx, PROMOTE_TRANSPORT_ERROR);
+                                        return;
+                                    }
+                                }
+                            }
+                            // 3) Start the Live Auto run.
+                            let start = tonic::Request::new(StartLiveStrategyReq {
+                                token: promote_token,
+                                request_id: String::new(),
+                                strategy_id,
+                                instrument_id,
+                                venue,
+                                params,
+                                safety_limits: Some(SafetyLimits {
+                                    max_position_size_jpy: safety_limits.max_position_size_jpy,
+                                    max_order_value_jpy: safety_limits.max_order_value_jpy,
+                                    max_daily_loss_jpy: safety_limits.max_daily_loss_jpy,
+                                    max_orders_per_minute: safety_limits.max_orders_per_minute,
+                                    allowed_instruments: safety_limits.allowed_instruments,
+                                }),
+                            });
+                            match promote_client.start_live_strategy(start).await {
+                                Ok(r) => {
+                                    let inner = r.into_inner();
+                                    if inner.success {
+                                        info!("StartLiveStrategy ok: run_id={}", inner.run_id);
+                                    } else {
+                                        error!(
+                                            "StartLiveStrategy rejected: {}",
+                                            inner.error_code
+                                        );
+                                    }
+                                    let _ = promote_status_tx.send(
+                                        BackendStatusUpdate::LiveStrategyPromoteResult {
+                                            success: inner.success,
+                                            error_code: inner.error_code,
+                                            run_id: inner.run_id,
+                                        },
+                                    );
+                                }
+                                Err(e) => {
+                                    error!("StartLiveStrategy failed: {}", e);
+                                    reject(&promote_status_tx, PROMOTE_TRANSPORT_ERROR);
+                                }
+                            }
+                        });
+                    }
                 }
             }
 
@@ -1340,8 +1469,8 @@ mod tests {
     use backcast::trading::{
         AccountPosition, AvailableInstruments, BackendStartupStage, BackendStatus,
         BackendStatusUpdate, ExecutionModeRes, LastPrices, LastRunResult, LiveOrders,
-        OrderFeedback, PortfolioState, ReconcilePrompt, RunState, SecretPrompt, Ticker, Tickers,
-        VenueStatusRes,
+        OrderFeedback, PortfolioState, PromoteFeedback, ReconcilePrompt, RunState, SecretPrompt,
+        Ticker, Tickers, VenueStatusRes,
     };
     use chrono::NaiveDate;
 
@@ -1481,6 +1610,7 @@ mod tests {
             &mut order_feedback,
             &mut reconcile_prompt,
             &mut SecretPrompt::default(),
+            &mut PromoteFeedback::default(),
         );
         last_run
     }
@@ -1517,6 +1647,7 @@ mod tests {
             &mut order_feedback,
             &mut reconcile_prompt,
             &mut SecretPrompt::default(),
+            &mut PromoteFeedback::default(),
         );
         order_feedback
     }
@@ -1648,6 +1779,7 @@ mod tests {
             &mut order_feedback,
             &mut reconcile_prompt,
             &mut SecretPrompt::default(),
+            &mut PromoteFeedback::default(),
         );
         assert!(
             !portfolio.loaded,
@@ -1690,6 +1822,7 @@ mod tests {
             &mut order_feedback,
             &mut reconcile_prompt,
             &mut SecretPrompt::default(),
+            &mut PromoteFeedback::default(),
         );
     }
 
@@ -2076,6 +2209,7 @@ mod tests {
             &mut order_feedback,
             &mut reconcile_prompt,
             &mut SecretPrompt::default(),
+            &mut PromoteFeedback::default(),
         );
     }
 

@@ -24,6 +24,7 @@ pub mod relogin_modal;
 pub mod replay_startup_window;
 pub mod restore;
 pub mod run_result_panel;
+pub mod safety_rails_modal;
 pub mod scenario_parser;
 pub mod scenario_startup_panel;
 pub mod secret_modal;
@@ -124,6 +125,12 @@ use crate::ui::relogin_modal::{
 };
 use crate::ui::restore::restore_fixed_registry_on_replay_entry_system;
 use crate::ui::run_result_panel::run_result_panel_system;
+use crate::ui::safety_rails_modal::{
+    PromotePrompt, SafetyRailsForm, promote_trigger_button_system, promote_trigger_visual_system,
+    safety_rails_modal_button_system, safety_rails_modal_sync_system,
+    safety_rails_modal_visibility_system, safety_rails_stepper_system, spawn_promote_trigger,
+    spawn_safety_rails_modal,
+};
 use crate::ui::scenario_parser::parse_scenario_system;
 use crate::ui::scenario_startup_panel::{
     ScenarioStartupParamCommit, commit_startup_params_to_scenario_system,
@@ -238,6 +245,11 @@ impl Plugin for UiPlugin {
         // Phase 9 §3.11 / §3.12 (Step 4): right-click context menu + Modify modal.
         .init_resource::<OrderContextMenu>()
         .init_resource::<ModifyForm>()
+        // Phase 10 §2.7: Promote-to-Live trigger + Safety Rails modal state.
+        // `PromoteFeedback` is inserted in the binary (main.rs) since the
+        // transport-facing `status_update_system` mutates it.
+        .init_resource::<PromotePrompt>()
+        .init_resource::<SafetyRailsForm>()
         .add_systems(
             Startup,
             (
@@ -261,6 +273,9 @@ impl Plugin for UiPlugin {
                 spawn_relogin_modal,
                 // Phase 9 Step 8 §3.8: backend 再起動後の注文 reconcile 通知モーダル
                 spawn_reconcile_modal,
+                // Phase 10 §2.7: Promote-to-Live トリガー + Safety Rails モーダル
+                spawn_promote_trigger,
+                spawn_safety_rails_modal,
             ),
         )
         .add_systems(
@@ -577,6 +592,20 @@ impl Plugin for UiPlugin {
                     .before(secret_modal_input_system)
                     .before(confirm_modal_button_system),
                 reconcile_modal_sync_system,
+            ),
+        )
+        // ── Phase 10 §2.7: Promote-to-Live トリガー + Safety Rails モーダル ──
+        .add_systems(
+            Update,
+            (
+                promote_trigger_visual_system,
+                promote_trigger_button_system,
+                safety_rails_modal_visibility_system,
+                safety_rails_stepper_system,
+                // §3.10 Escape determinism (see confirm_modal_button_system): yield Esc
+                // to an open SecretModal by reading its flag before the secret drain.
+                safety_rails_modal_button_system.before(secret_modal_input_system),
+                safety_rails_modal_sync_system,
             ),
         );
     }

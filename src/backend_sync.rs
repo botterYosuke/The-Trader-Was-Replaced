@@ -16,7 +16,8 @@ use crate::replay::{ReplayStartupPhase, ReplayStartupProgress};
 use crate::trading::{
     AccountPosition, AvailableInstruments, BackendEvent, BackendStartupStage, BackendStatus,
     BackendStatusUpdate, ExecutionModeRes, LastPrices, LastRunResult, LiveOrder, LiveOrders,
-    OrderFeedback, PortfolioPosition, PortfolioState, ReconcilePrompt, ReloginPrompt, RunState,
+    OrderFeedback, PortfolioPosition, PortfolioState, PromoteFeedback, ReconcilePrompt,
+    ReloginPrompt, RunState,
     SecretPrompt, SecretPromptRequest, Tickers, TickersStatus, TransportCommand,
     TransportCommandSender, VenueStatusRes, is_terminal_order_status, parse_summary_json,
     reconcile_unknown_orders,
@@ -49,6 +50,7 @@ pub fn status_update_system(
     mut order_feedback: ResMut<OrderFeedback>,
     mut reconcile_prompt: ResMut<ReconcilePrompt>,
     mut secret_prompt: ResMut<SecretPrompt>,
+    mut promote_feedback: ResMut<PromoteFeedback>,
 ) {
     while let Ok(update) = channel.rx.try_recv() {
         apply_status_update(
@@ -66,6 +68,7 @@ pub fn status_update_system(
             &mut order_feedback,
             &mut reconcile_prompt,
             &mut secret_prompt,
+            &mut promote_feedback,
         );
     }
 }
@@ -244,6 +247,7 @@ pub fn apply_status_update(
     order_feedback: &mut OrderFeedback,
     reconcile_prompt: &mut ReconcilePrompt,
     secret_prompt: &mut SecretPrompt,
+    promote_feedback: &mut PromoteFeedback,
 ) {
     match update {
         BackendStatusUpdate::Connected(c) => status.connected = c,
@@ -465,6 +469,22 @@ pub fn apply_status_update(
             reconcile_prompt.unknown =
                 reconcile_unknown_orders(live_orders, &backend_client_order_ids);
         }
+        BackendStatusUpdate::LiveStrategyPromoteResult {
+            success,
+            error_code,
+            run_id,
+        } => {
+            // Phase 10 §2.7: surface the unary outcome of a PromoteToLive RPC chain.
+            // Success also arrives as a pushed LiveStrategyEvent (Live Run Panel,
+            // Step 6); here we only set the user-facing notice so a structured
+            // reject is visible in LiveAuto (OrderFeedback would not be — its panel
+            // is LiveManual-only).
+            promote_feedback.message = Some(if success {
+                format!("Live 戦略を起動しました (run: {run_id})")
+            } else {
+                format!("Promote to Live が拒否されました ({error_code})")
+            });
+        }
     }
 }
 
@@ -579,6 +599,7 @@ mod tests {
         let mut order_feedback = OrderFeedback::default();
         let mut reconcile_prompt = ReconcilePrompt::default();
         let mut secret_prompt = SecretPrompt::default();
+        let mut promote_feedback = PromoteFeedback::default();
 
         apply_status_update(
             BackendStatusUpdate::SecretSubmitFailed {
@@ -597,6 +618,7 @@ mod tests {
             &mut order_feedback,
             &mut reconcile_prompt,
             &mut secret_prompt,
+            &mut promote_feedback,
         );
 
         assert!(
