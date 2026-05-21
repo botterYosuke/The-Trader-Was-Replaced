@@ -290,6 +290,13 @@ pub enum TransportCommand {
         request_id: String,
         secret: RedactedSecret,
     },
+    /// Phase 9 §3.8: list the backend's currently-tracked working orders to
+    /// reconcile against the UI's optimistic `LiveOrders` after an auto-restart.
+    /// `token` is injected by the transport task. The response drives
+    /// `OrdersReconciled`.
+    GetOrders {
+        venue: String,
+    },
 }
 
 /// Wrapper around a Tachibana second password that redacts itself in `Debug`
@@ -746,6 +753,13 @@ pub enum BackendStatusUpdate {
         action: String,
         error_code: String,
     },
+    /// Phase 9 §3.8: result of a post-restart `GetOrders` reconcile. Carries the
+    /// `client_order_id`s the backend still tracks as working; `apply_status_update`
+    /// diffs these against the UI's optimistic `LiveOrders` and populates
+    /// `ReconcilePrompt` with the orders whose state is now unknown.
+    OrdersReconciled {
+        backend_client_order_ids: Vec<String>,
+    },
 }
 
 /// Bevy 側に流す backend event。proto の `backend_event::Payload` (oneof) を
@@ -967,6 +981,59 @@ pub struct OrderFeedback {
     pub message: Option<String>,
 }
 
+/// Phase 9 §3.8: one UI order whose state became unknown after a backend restart
+/// (the optimistic record exists locally but the freshly-restarted backend does
+/// not track it as working). Shown in the reconcile modal.
+#[derive(Debug, Clone, PartialEq)]
+pub struct ReconcileUnknownOrder {
+    pub client_order_id: String,
+    pub symbol: String,
+    pub status: String,
+}
+
+/// Phase 9 §3.8: drives the post-restart reconcile modal. Populated by
+/// `apply_status_update` from an `OrdersReconciled` diff; the modal opens while
+/// `unknown` is non-empty and clears on user dismiss (it is a notification — the
+/// user re-checks orders via the venue after re-login).
+#[derive(Resource, Default, Debug, Clone)]
+pub struct ReconcilePrompt {
+    pub unknown: Vec<ReconcileUnknownOrder>,
+}
+
+/// Nautilus terminal `OrderStatus` names (mirrors the backend facade's
+/// `_TERMINAL_STATUSES`). A terminal order is settled, so it is never part of a
+/// reconcile diff.
+pub fn is_terminal_order_status(status: &str) -> bool {
+    matches!(
+        status,
+        "FILLED" | "CANCELED" | "REJECTED" | "EXPIRED" | "DENIED"
+    )
+}
+
+/// Phase 9 §3.8: orders the UI optimistically believes are still working but the
+/// backend (`backend_client_order_ids` from `GetOrders`) does not track. After an
+/// auto-restart the fresh backend has no session, so every working UI order is
+/// flagged "state unknown" until the user re-logs in and re-checks.
+pub fn reconcile_unknown_orders(
+    live: &LiveOrders,
+    backend_client_order_ids: &[String],
+) -> Vec<ReconcileUnknownOrder> {
+    live.orders
+        .iter()
+        .filter(|o| !is_terminal_order_status(&o.status))
+        .filter(|o| {
+            !backend_client_order_ids
+                .iter()
+                .any(|id| id == &o.client_order_id)
+        })
+        .map(|o| ReconcileUnknownOrder {
+            client_order_id: o.client_order_id.clone(),
+            symbol: o.symbol.clone(),
+            status: o.status.clone(),
+        })
+        .collect()
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -998,6 +1065,52 @@ mod tests {
             status: "SUBMITTED".to_string(),
             ..Default::default()
         }
+    }
+
+    fn make_live_order_with_status(client_order_id: &str, status: &str) -> LiveOrder {
+        let mut o = make_live_order(client_order_id);
+        o.status = status.to_string();
+        o
+    }
+
+    #[test]
+    fn reconcile_flags_working_orders_absent_from_backend() {
+        // c1 working + tracked by backend → ok; c2 working + NOT tracked → unknown.
+        let mut lo = LiveOrders::default();
+        lo.upsert_full(make_live_order_with_status("c1", "ACCEPTED"));
+        lo.upsert_full(make_live_order_with_status("c2", "ACCEPTED"));
+        let unknown = reconcile_unknown_orders(&lo, &["c1".to_string()]);
+        assert_eq!(unknown.len(), 1);
+        assert_eq!(unknown[0].client_order_id, "c2");
+        assert_eq!(unknown[0].symbol, "7203.T");
+    }
+
+    #[test]
+    fn reconcile_ignores_terminal_orders() {
+        // A FILLED/CANCELED order is settled; its absence from the backend is not a
+        // reconcile concern even though the backend doesn't list it.
+        let mut lo = LiveOrders::default();
+        lo.upsert_full(make_live_order_with_status("filled", "FILLED"));
+        lo.upsert_full(make_live_order_with_status("canceled", "CANCELED"));
+        assert!(reconcile_unknown_orders(&lo, &[]).is_empty());
+    }
+
+    #[test]
+    fn reconcile_empty_backend_flags_all_working() {
+        // Post-restart fresh backend tracks nothing → every working order unknown.
+        let mut lo = LiveOrders::default();
+        lo.upsert_full(make_live_order_with_status("c1", "ACCEPTED"));
+        lo.upsert_full(make_live_order_with_status("c2", "PARTIALLY_FILLED"));
+        let unknown = reconcile_unknown_orders(&lo, &[]);
+        assert_eq!(unknown.len(), 2);
+    }
+
+    #[test]
+    fn reconcile_all_known_is_empty() {
+        let mut lo = LiveOrders::default();
+        lo.upsert_full(make_live_order_with_status("c1", "ACCEPTED"));
+        let unknown = reconcile_unknown_orders(&lo, &["c1".to_string(), "extra".to_string()]);
+        assert!(unknown.is_empty());
     }
 
     #[test]

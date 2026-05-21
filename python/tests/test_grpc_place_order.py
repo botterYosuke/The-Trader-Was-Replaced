@@ -265,6 +265,64 @@ def test_get_order_status_no_live_session(order_server):
     assert res.error_code == "NO_LIVE_SESSION"
 
 
+# --- get orders (§3.8 reconcile) -------------------------------------------
+
+def test_get_orders_returns_working_orders(order_server):
+    """GetOrders は稼働中（非終端）注文を返す（再起動後の reconcile primitive）。"""
+    port, token, servicer = order_server
+    adapter = _arm_live(servicer)
+    stub = _stub(port)
+
+    adapter.set_next_order_outcome(status="ACCEPTED", filled_qty=0.0)
+    placed = stub.PlaceOrder(_place_req(token))
+    coid = placed.order_event.client_order_id
+
+    res = stub.GetOrders(engine_pb2.GetOrdersReq(token=token, venue="MOCK"))
+    assert res.success is True
+    assert [o.client_order_id for o in res.orders] == [coid]
+    assert res.orders[0].status == "ACCEPTED"
+
+
+def test_get_orders_excludes_terminal(order_server):
+    """終端注文（FILLED 等）は稼働中ではないので返さない。"""
+    port, token, servicer = order_server
+    _arm_live(servicer)  # default outcome is FILLED (terminal)
+    stub = _stub(port)
+
+    stub.PlaceOrder(_place_req(token))
+    res = stub.GetOrders(engine_pb2.GetOrdersReq(token=token, venue="MOCK"))
+    assert res.success is True
+    assert list(res.orders) == []
+
+
+def test_get_orders_empty_when_no_orders(order_server):
+    """live session はあるが注文ゼロ（= 再起動直後の fresh backend）→ success + 空。"""
+    port, token, servicer = order_server
+    _arm_live(servicer)
+    stub = _stub(port)
+    res = stub.GetOrders(engine_pb2.GetOrdersReq(token=token, venue="MOCK"))
+    assert res.success is True
+    assert list(res.orders) == []
+
+
+def test_get_orders_no_live_session(order_server):
+    """live session 無し（facade None）→ NO_LIVE_SESSION（read RPC は mode reject しない）。"""
+    port, token, _servicer = order_server
+    stub = _stub(port)
+    res = stub.GetOrders(engine_pb2.GetOrdersReq(token=token, venue="MOCK"))
+    assert res.success is False
+    assert res.error_code == "NO_LIVE_SESSION"
+
+
+def test_get_orders_bad_token(order_server):
+    port, _token, servicer = order_server
+    _arm_live(servicer)
+    stub = _stub(port)
+    with pytest.raises(grpc.RpcError) as exc:
+        stub.GetOrders(engine_pb2.GetOrdersReq(token="wrong", venue="MOCK"))
+    assert exc.value.code() == grpc.StatusCode.UNAUTHENTICATED
+
+
 # --- modify ----------------------------------------------------------------
 
 

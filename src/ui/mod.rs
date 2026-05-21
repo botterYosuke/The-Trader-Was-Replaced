@@ -24,6 +24,7 @@ pub mod restore;
 pub mod run_result_panel;
 pub mod scenario_parser;
 pub mod scenario_startup_panel;
+pub mod reconcile_modal;
 pub mod relogin_modal;
 pub mod secret_modal;
 pub mod sidebar;
@@ -123,6 +124,10 @@ use crate::ui::scenario_startup_panel::{
     spawn_scenario_startup_panel, sync_startup_param_editors_text_system,
     sync_startup_params_from_scenario_system, update_scenario_startup_param_ui_system,
     write_startup_params_to_cache_sidecar_system,
+};
+use crate::ui::reconcile_modal::{
+    reconcile_modal_button_system, reconcile_modal_sync_system, reconcile_modal_visibility_system,
+    spawn_reconcile_modal,
 };
 use crate::ui::relogin_modal::{
     relogin_modal_button_system, relogin_modal_sync_system, relogin_modal_visibility_system,
@@ -254,6 +259,8 @@ impl Plugin for UiPlugin {
                 spawn_modify_modal,
                 // Phase 9 Step 7: 再ログイン通知モーダル (venue 本体ログアウト検知)
                 spawn_relogin_modal,
+                // Phase 9 Step 8 §3.8: backend 再起動後の注文 reconcile 通知モーダル
+                spawn_reconcile_modal,
             ),
         )
         .add_systems(
@@ -545,6 +552,15 @@ impl Plugin for UiPlugin {
                 relogin_modal_visibility_system,
                 relogin_modal_button_system,
                 relogin_modal_sync_system,
+            ),
+        )
+        // ── Phase 9 Step 8 §3.8: backend 再起動後の注文 reconcile 通知モーダル ──
+        .add_systems(
+            Update,
+            (
+                reconcile_modal_visibility_system,
+                reconcile_modal_button_system,
+                reconcile_modal_sync_system,
             ),
         );
     }

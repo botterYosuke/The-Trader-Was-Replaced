@@ -3,7 +3,8 @@ use backcast::backend_supervisor::{
     SupervisorCommandSender, SupervisorTaskSeed, run_supervisor,
 };
 use backcast::backend_sync::{
-    BackendEventChannel, StatusUpdateChannel, backend_event_drain_system, status_update_system,
+    BackendEventChannel, StatusUpdateChannel, backend_event_drain_system,
+    backend_restart_resync_system, status_update_system,
 };
 use backcast::camera::{pancam_suppression_over_editor_system, setup_camera};
 use backcast::grid::GridPlugin;
@@ -11,8 +12,8 @@ use backcast::replay::ReplayStartupProgress;
 use backcast::trading::{
     AvailableInstruments, BackendChannel, BackendStartupStage, BackendStatus, BackendStatusUpdate,
     ExecutionMode, ExecutionModeRes, LastPrices, LastRunResult, LiveOrders, OrderFeedback,
-    PortfolioOrder, PortfolioPosition, PortfolioState, ReloginPrompt, ReplaySpeed, SecretPrompt,
-    SelectedSymbol,
+    PortfolioOrder, PortfolioPosition, PortfolioState, ReconcilePrompt, ReloginPrompt, ReplaySpeed,
+    SecretPrompt, SelectedSymbol,
     Ticker, Tickers, TickersSource, TradingSettings, TransportCommand, TransportCommandSender,
     VenueState, VenueStatusRes, backend_update_system, engine, tickers_source_to_wire,
 };
@@ -168,6 +169,7 @@ async fn main() {
         .insert_resource(LiveOrders::default())
         .insert_resource(SecretPrompt::default())
         .insert_resource(ReloginPrompt::default())
+        .insert_resource(ReconcilePrompt::default())
         .insert_resource(OrderFeedback::default())
         .insert_resource(tokio_handle)
         .add_systems(
@@ -190,6 +192,9 @@ async fn main() {
                 // consumes that frame's keystrokes (Round 1 bevy-ecs H1).
                 backend_event_drain_system
                     .before(backcast::ui::secret_modal::secret_modal_input_system),
+                // Phase 9 §3.8: after an auto-restart reaches Ready, fire GetOrders
+                // to reconcile the optimistic order list with the fresh backend.
+                backend_restart_resync_system,
                 update_replay_startup_window_system,
                 animate_replay_startup_bar_system,
                 auto_hide_replay_startup_window_system.after(status_update_system),
@@ -985,6 +990,39 @@ fn setup_backend_connection(
                             Err(e) => error!("SubmitSecret failed: request_id={} err={}", request_id, e),
                         }
                     }
+                    TransportCommand::GetOrders { venue } => {
+                        // §3.8 reconcile: ask the (possibly freshly-restarted) backend
+                        // which orders it still tracks. A failed/empty answer means the
+                        // backend knows of none → every optimistic working order is
+                        // flagged unknown by the diff in apply_status_update.
+                        let req = tonic::Request::new(engine::GetOrdersReq {
+                            token: token.clone(),
+                            venue: venue.clone(),
+                        });
+                        let backend_client_order_ids = match client.get_orders(req).await {
+                            Ok(r) => {
+                                let inner = r.into_inner();
+                                if !inner.success {
+                                    info!(
+                                        "GetOrders reconcile: backend reports none ({})",
+                                        inner.error_code
+                                    );
+                                }
+                                inner
+                                    .orders
+                                    .into_iter()
+                                    .map(|o| o.client_order_id)
+                                    .collect::<Vec<_>>()
+                            }
+                            Err(e) => {
+                                warn!("GetOrders failed during reconcile: {}", e);
+                                Vec::new()
+                            }
+                        };
+                        let _ = status_tx.send(BackendStatusUpdate::OrdersReconciled {
+                            backend_client_order_ids,
+                        });
+                    }
                 }
             }
 
@@ -1194,7 +1232,7 @@ mod tests {
     use backcast::trading::{
         AccountPosition, AvailableInstruments, BackendStartupStage, BackendStatus,
         BackendStatusUpdate, ExecutionModeRes, LastPrices, LastRunResult, LiveOrders,
-        OrderFeedback, PortfolioState, RunState, Ticker, Tickers, VenueStatusRes,
+        OrderFeedback, PortfolioState, ReconcilePrompt, RunState, Ticker, Tickers, VenueStatusRes,
     };
     use chrono::NaiveDate;
 
@@ -1266,6 +1304,7 @@ mod tests {
         let mut last_prices = LastPrices::default();
         let mut live_orders = LiveOrders::default();
         let mut order_feedback = OrderFeedback::default();
+        let mut reconcile_prompt = ReconcilePrompt::default();
         apply_status_update(
             update,
             &mut status,
@@ -1279,6 +1318,7 @@ mod tests {
             &mut last_prices,
             &mut live_orders,
             &mut order_feedback,
+            &mut reconcile_prompt,
         );
         last_run
     }
@@ -1299,6 +1339,7 @@ mod tests {
         let mut order_feedback = OrderFeedback {
             message: initial.map(str::to_string),
         };
+        let mut reconcile_prompt = ReconcilePrompt::default();
         apply_status_update(
             update,
             &mut status,
@@ -1312,6 +1353,7 @@ mod tests {
             &mut last_prices,
             &mut live_orders,
             &mut order_feedback,
+            &mut reconcile_prompt,
         );
         order_feedback
     }
@@ -1392,6 +1434,7 @@ mod tests {
         let mut last_prices = LastPrices::default();
         let mut live_orders = LiveOrders::default();
         let mut order_feedback = OrderFeedback::default();
+        let mut reconcile_prompt = ReconcilePrompt::default();
         apply_status_update(
             BackendStatusUpdate::ExecutionModeChanged {
                 mode: ExecutionMode::Replay,
@@ -1407,6 +1450,7 @@ mod tests {
             &mut last_prices,
             &mut live_orders,
             &mut order_feedback,
+            &mut reconcile_prompt,
         );
         assert!(
             !portfolio.loaded,
@@ -1433,6 +1477,7 @@ mod tests {
         let mut last_prices = LastPrices::default();
         let mut live_orders = LiveOrders::default();
         let mut order_feedback = OrderFeedback::default();
+        let mut reconcile_prompt = ReconcilePrompt::default();
         apply_status_update(
             update,
             &mut status,
@@ -1446,6 +1491,7 @@ mod tests {
             &mut last_prices,
             &mut live_orders,
             &mut order_feedback,
+            &mut reconcile_prompt,
         );
     }
 
@@ -1816,6 +1862,7 @@ mod tests {
         let mut tickers = Tickers::default();
         let mut live_orders = LiveOrders::default();
         let mut order_feedback = OrderFeedback::default();
+        let mut reconcile_prompt = ReconcilePrompt::default();
         apply_status_update(
             update,
             &mut status,
@@ -1829,6 +1876,7 @@ mod tests {
             last_prices,
             &mut live_orders,
             &mut order_feedback,
+            &mut reconcile_prompt,
         );
     }
 

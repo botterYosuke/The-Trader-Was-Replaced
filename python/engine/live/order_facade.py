@@ -237,3 +237,13 @@ class ManualOrderFacade:
         """同期参照（gRPC worker thread から呼ばれる）。"""
         with self._lock:
             return self._orders.get(order_id)
+
+    def list_orders(self) -> list[OrderEventData]:
+        """稼働中（非終端）注文の snapshot（GetOrders / §3.8 reconcile 用、同期参照）。
+
+        終端注文（FILLED/CANCELED/...）は「稼働中」ではないので除外する。再起動直後の
+        fresh backend はこの store が空なので [] を返す（= UI 楽観的状態との diff で
+        「状態不明」を炙り出す reconcile primitive）。
+        """
+        with self._lock:
+            return [e for e in self._orders.values() if e.status not in _TERMINAL_STATUSES]

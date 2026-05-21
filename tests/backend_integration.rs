@@ -3,7 +3,8 @@ use backcast::backend_supervisor::{
 };
 use backcast::trading::engine::{
     BackendEvent, CancelOrderReq, CancelOrderRes, EngineState, ForceStopReplayRequest,
-    GetOrderStatusReq, GetOrderStatusRes, GetPortfolioRequest, GetPortfolioResponse,
+    GetOrderStatusReq, GetOrderStatusRes, GetOrdersReq, GetOrdersRes, GetPortfolioRequest,
+    GetPortfolioResponse,
     GetStateRequest, GetStateResponse, ListAllListedSymbolsRequest, ListAllListedSymbolsResponse,
     ListInstrumentsRequest, ListInstrumentsResponse, LoadReplayDataRequest, ModifyOrderReq,
     ModifyOrderRes, PauseReplayRequest, PlaceOrderReq, PlaceOrderRes, ReplayControlResponse,
@@ -464,6 +465,21 @@ impl DataEngine for MyDataEngine {
             success: false,
             error_code: "UNKNOWN_ORDER_ID".to_string(),
             order_event: None,
+        }))
+    }
+
+    async fn get_orders(
+        &self,
+        request: Request<GetOrdersReq>,
+    ) -> Result<Response<GetOrdersRes>, Status> {
+        let req = request.into_inner();
+        if req.token != self.token {
+            return Err(Status::unauthenticated("Invalid token"));
+        }
+        Ok(Response::new(GetOrdersRes {
+            success: true,
+            error_code: String::new(),
+            orders: vec![],
         }))
     }
 }

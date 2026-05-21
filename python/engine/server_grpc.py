@@ -1903,6 +1903,22 @@ class GrpcDataEngineServer(
             order_event=self._order_event_to_proto(event),
         )
 
+    def GetOrders(self, request, context):
+        # 読み取り系: Replay でも reject しない（§3.2）。§3.8 reconcile primitive。
+        if request.token != self.token:
+            context.abort(grpc.StatusCode.UNAUTHENTICATED, "Invalid token")
+        # Snapshot once (see GetOrderStatus): a concurrent teardown nulling
+        # self._order_facade between the check and list_orders() would otherwise
+        # surface as gRPC INTERNAL instead of a clean NO_LIVE_SESSION.
+        facade = self._order_facade
+        if facade is None:
+            return engine_pb2.GetOrdersRes(success=False, error_code="NO_LIVE_SESSION")
+        return engine_pb2.GetOrdersRes(
+            success=True,
+            error_code="",
+            orders=[self._order_event_to_proto(e) for e in facade.list_orders()],
+        )
+
     def publish_backend_event(self, event):
         """Fan a BackendEvent out to all open SubscribeBackendEvents streams."""
         self._backend_event_bus.publish(event)
