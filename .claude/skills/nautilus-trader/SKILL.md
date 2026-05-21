@@ -206,6 +206,40 @@ adapter as a live client:
   store it privately, so an attribute-based cancel silently no-ops). `cancel_all_orders` requires
   an `InstrumentId` and also sweeps emulated/exec-algo orders if you use those.
 
+### Live data client + INTERNAL bar aggregation (feeding `on_bar` from venue ticks)
+
+Hit while building Phase 10 Step 8 (`python/engine/live/nautilus_data_client.py` +
+`bar_supply.py` + `engine_controller.py`). To make a strategy's `on_bar` fire in live mode you
+must supply ticks to the engine — there is **no** automatic feed:
+
+- **A strategy subscribing an `INTERNAL` `BarType` needs a registered `MarketDataClient` for that
+  venue, or `on_bar` never fires — silently.** When the strategy calls
+  `self.subscribe_bars(<...-INTERNAL>)`, `DataEngine._handle_subscribe_bars` →
+  `_start_bar_aggregator` creates a `TimeBarAggregator(handler=self.process)` **and** issues a
+  `SubscribeTradeTicks` (LAST price type) / `SubscribeQuoteTicks` to the venue's client
+  (`data/engine.pyx:_subscribe_bar_aggregator`). If no data client is registered for that venue,
+  the subscribe command is dropped with only a log line and the aggregator is never wired. So you
+  must `kernel.data_engine.register_client(your_client)` **before** `kernel.start()` (the strategy's
+  `on_start` runs during start and subscribes there).
+- **A minimal custom `LiveMarketDataClient` is almost all no-ops.** Implement `_connect`/`_disconnect`
+  (no-op if a sibling session already owns the venue connection), and the `_subscribe_trade_ticks` /
+  `_unsubscribe_trade_ticks` (and quote variants) **coroutines as no-ops** — the base `subscribe_*`
+  sync wrappers already record the subscription set, and INTERNAL aggregation is driven engine-side,
+  not by the client. The client only needs a way to push ticks in.
+- **Push ticks via `self._handle_data(tick)`.** `MarketDataClient._handle_data` is just
+  `self._msgbus.send("DataEngine.process", data)` (`data/client.pyx`) — it does **not** depend on
+  connection state or on the trade-tick subscription having been processed. As long as the kernel is
+  started and the strategy subscribed the bar (so the aggregator is on the trades topic), feeding a
+  `TradeTick` flows: `_handle_data` → engine routes to `data.trades.{id}` → `aggregator.handle_trade_tick`
+  → builds → `on_bar`. Call it on the live-loop thread.
+- **Time bars close on the `LiveClock` timer, not on tick `ts_event`.** Feeding ticks only updates the
+  in-progress builder; the bar is emitted when the aggregator's clock timer fires. So a deterministic
+  full-path unit test of a 1-MINUTE bar can't observe a close without waiting wall-clock — use a
+  `1-SECOND-...-INTERNAL` bar + a ~2s real settle, and assert on the bar with `volume>0` (the
+  `DataEngineConfig.time_bars_build_with_no_updates=True` default also emits empty carry-forward bars).
+  Pure OHLCV-aggregation correctness is better pinned with a standalone `TimeBarAggregator` + `TestClock`
+  (advance + `event.handle()`), independent of the engine.
+
 ## How to research an API question
 
 When the user asks "how do I do X with nautilus", follow this in order:

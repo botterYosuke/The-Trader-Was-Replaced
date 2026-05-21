@@ -120,6 +120,53 @@ def test_live_runner_aggregates_ticks_into_kline_via_bus() -> None:
     assert bar.volume        ==   2.0
 
 
+def test_live_runner_pushes_partial_bar_snapshot() -> None:
+    """Phase 10 Step 8: partial_push_interval_s>0 のとき、確定前でも進行中バーの
+    スナップショット（`build_now()`）を一定間隔で bus に publish する（UI 用 partial bar）。
+
+    シナリオ:
+      1. LiveRunner(partial_push_interval_s=0.2) を作り subscribe + start。
+      2. 同一分バケットに 2 本注入（バケット roll 無し → 確定バーは emit されない）。
+      3. それでも partial push タスクが in-progress バー（open=100/high=110/low=100/
+         close=110/volume=2、ts_ns=バケット開始）を KlineUpdate として publish する。
+    """
+    base_ns = 28333333 * INTERVAL_NS
+
+    async def scenario() -> KlineUpdate:
+        adapter = MockVenueAdapter()
+        runner = LiveRunner(
+            adapter=adapter, interval_ns=INTERVAL_NS, partial_push_interval_s=0.2
+        )
+        await adapter.login(
+            VenueCredentials(credentials_source="env", environment_hint="demo")
+        )
+        await runner.subscribe("7203.TSE")
+        consumer = runner.bus.subscribe()
+        await runner.start()
+
+        # 同一分に 2 本だけ（roll しないので on_tick は確定バーを emit しない）。
+        adapter.inject_tick(_tick(base_ns + 0, price=100.0, size=1.0))
+        adapter.inject_tick(_tick(base_ns + 10_000_000_000, price=110.0, size=1.0))
+
+        try:
+            it = consumer.__aiter__()
+            # 唯一来る KlineUpdate は partial push のスナップショット。
+            evt = await _next_kline(it, timeout=2.0)
+        finally:
+            await runner.stop()
+        return evt
+
+    bar = asyncio.run(scenario())
+
+    assert bar.instrument_id == "7203.TSE"
+    assert bar.ts_ns == 28333333 * INTERVAL_NS  # バケット開始時刻
+    assert bar.open == 100.0
+    assert bar.high == 110.0
+    assert bar.low == 100.0
+    assert bar.close == 110.0
+    assert bar.volume == 2.0
+
+
 def test_live_runner_passes_depth_update_through_bus() -> None:
     """RED (Step 2a): DepthUpdate は aggregation を経由せず bus に pass-through される。
 
