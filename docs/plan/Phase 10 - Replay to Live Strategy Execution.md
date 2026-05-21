@@ -602,7 +602,7 @@ Strategy 内 `self.log.info(...)` の出力先:
 | Step | 内容 | 状態 |
 | --- | --- | --- |
 | 1 | Strategy Portability 確認 + Live Bar 供給の設計確定 | ✅ 完了 (2026-05-21) |
-| 2 | LiveStrategyHost + RunRegistry | 🔶 進行中 (state machine + RunRegistry 完了 / LiveStrategyHost 未) |
+| 2 | LiveStrategyHost + RunRegistry | ✅ 完了 (2026-05-21) — host shell (lifecycle / 所有権 / RunRegistry 連携 / 戦略ロード)。Nautilus engine bridge は seam として Step 3+ に委譲 |
 | 3 | gRPC RPC + `BackendEvent` oneof 拡張 (M8) | ⬜ |
 | 4 | Safety Rails (ネイティブ config + 独自 hook) | ⬜ |
 | 5 | Bevy UI: Safety Rails Modal + Promote to Live | ⬜ |
@@ -632,7 +632,7 @@ Strategy 内 `self.log.info(...)` の出力先:
 - **TDD baseline**: Python `-m "not slow"` の pre-existing 失敗は 4 件
   (`test_grpc_shutdown`×3 / `test_grpc_startup_sentinel`×1、Windows pipe FD 由来)。Step 1 で増減なし。
 
-### Step 2 進行中サマリー (2026-05-21)
+### Step 2 完了サマリー (2026-05-21)
 
 - **完了した成果物**:
   - `python/engine/live/strategy_state_machine.py` [NEW] — `LiveStrategyStateMachine` (§1.2)。
@@ -641,9 +641,28 @@ Strategy 内 `self.log.info(...)` の出力先:
   - `python/engine/live/run_registry.py` [NEW] — `RunRegistry` (§2.6 / M4 / M6)。
     `max_active_live_auto_runs=1` の単一 run 制約、`(strategy_id, instrument_id)` 重複検出、
     `nautilus_strategy_id → run_id` 逆引き（発注主体識別）。in-memory・永続化なし。
-  - tests: `test_live_strategy_state_machine.py` (10) / `test_run_registry.py` (10)、全 green。
-- **未完（次の手）**: `python/engine/live/strategy_host.py`（`LiveStrategyHost`）。
-  Nautilus live engine（`Trader`+`LiveDataEngine`+`LiveExecutionEngine`+`LiveRiskEngine`）の
-  起動/停止 + `Trader.add_strategy()` + 既存 live session の**所有権モデル確定**（共有 or 明示 handoff、
-  §1.1 の ⚠️）。server_grpc の `_live_runner` / `_order_facade` / adapter と二重起動しないことが要件。
-  async 統合 + 既存 contended ファイル（server_grpc 周辺）との競合に注意。
+  - `python/engine/live/strategy_host.py` [NEW] — `LiveStrategyHost` の **host shell**。
+    `start_run` / `pause_run` / `resume_run` / `stop_run` / `fail_run` が state machine と
+    RunRegistry を駆動する。`LiveStrategyHostError(error_code)` で
+    `VENUE_LOGIN_REQUIRED` / `STRATEGY_LOAD_FAILED` / `LIVE_STRATEGY_ALREADY_RUNNING` /
+    `DUPLICATE_STRATEGY_INSTRUMENT` / `STRATEGY_ATTACH_FAILED` / `UNKNOWN_RUN` を構造化。
+  - tests: `test_live_strategy_state_machine.py` (10) / `test_run_registry.py` (10) /
+    `test_strategy_host.py` (17)、全 green（live スイート 279 passed、回帰なし）。
+- **設計確定**:
+  - **session 所有権 = 共有（採用）**: host は `session_provider()` で既存 Phase 9 live
+    session（`_live_runner` / adapter）を借用し、未ログインなら `VENUE_LOGIN_REQUIRED`。
+    新しい login / WebSocket / order client は作らない（§1.1 ⚠️ の二択を「共有」に固定）。
+    手動発注（`MANUAL-001`）と LiveAuto は同じ order stream に同居する（§2.2）。
+  - **engine attach は seam に委譲**: host は `LiveEngineController` Protocol
+    （`attach` / `detach` / `cancel_inflight_orders`）だけに依存。戦略インスタンス化と
+    EXTERNAL→INTERNAL `bar_type` 読み替えは controller の責務（engine_runner が backtest で
+    `strategy_cls(**kwargs); add_strategy()` するのと同じ分担）。`fail_run` / `stop_run` の
+    in-flight cancel は **当該 `StrategyId` のみ**（§1.3 / M6）。
+  - **transport 非依存**: proto を import しない。`token` / `ExecutionMode` 検証と
+    strategy_id↔file 解決・path 検証は gRPC layer（Step 3 / §2.5）の責務。
+- **未完（次の手 = Step 3 で結線）**: `LiveEngineController` の **実体**——既存
+  `OrderingVenueAdapter` を Nautilus `LiveExecutionClient` / `LiveDataClient` に bridge し、
+  `Trader` + `LiveDataEngine` + `LiveExecutionEngine` + `LiveRiskEngine` を `_live_runner` の
+  live loop 上で起動して `add_strategy()` する controller。これは Phase 10 最大の実装で、
+  Step 3（gRPC / RegisterLiveStrategy の strategy_id↔file レジストリ）・Step 4（RiskEngine /
+  safety_rails）・Step 8（bar 供給検証）に跨る。async 統合 + server_grpc 周辺の競合に注意。
