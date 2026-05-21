@@ -1,12 +1,14 @@
 # バックテスト（ヘッドレス CLI）
 
+> 文中の `[L1]` などは、その挙動を保証する E2E flow の ID。一覧は [`tests/e2e/FLOWS.md`](../../tests/e2e/FLOWS.md) を参照。
+
 GUI を起動せず、コマンドラインだけで戦略を過去データ上でリプレイし、結果（約定・エクイティ・サマリ）をファイルに書き出す方法。CI への組み込みやパラメータスイープに向く。
 
 GUI でチャートを見ながら再生したい場合は [replay.md](replay.md) を参照。
 
 ## 推奨: ラッパースクリプト
 
-`scripts/run_replay.ps1` は「シナリオ読取 → catalog 自動構築 → リプレイ実行」をワンショットで行う。
+`scripts/run_replay.ps1` は「シナリオ読取 → catalog 自動構築 → リプレイ実行」をワンショットで行う。 [L1]/[L6]
 
 ```powershell
 .\scripts\run_replay.ps1 -Strategy python\tests\data\test_strategy_daily.py
@@ -14,9 +16,9 @@ GUI でチャートを見ながら再生したい場合は [replay.md](replay.md
 
 動作の流れ:
 
-1. 戦略ファイルからシナリオを読み取る（サイドカー `<strategy>.json` の `scenario`、AST ベースで副作用なし）。
-2. catalog に必要な instrument / 期間 / 粒度の Bar が無ければ `ensure_jquants_catalog` で自動構築する（J-Quants CSV のソースは `DEV_J_QUANTS_CACHE`、既定 `S:/j-quants`）。
-3. `python -m engine.strategy_replay run` を実行する。
+1. 戦略ファイルからシナリオを読み取る（サイドカー `<strategy>.json` の `scenario`、AST ベースで副作用なし）。 [L1]
+2. catalog に必要な instrument / 期間 / 粒度の Bar が無ければ `ensure_jquants_catalog` で自動構築する（J-Quants CSV のソースは `DEV_J_QUANTS_CACHE`、既定 `S:/j-quants`）。 [L6]
+3. `python -m engine.strategy_replay run` を実行する。 [L1]/[L2]
 
 ### オプション
 
@@ -29,11 +31,11 @@ GUI でチャートを見ながら再生したい場合は [replay.md](replay.md
 | `-SkipCatalogBuild` | catalog 自動構築をスキップ |
 | `-VerboseRun` | DEBUG ログを有効化 |
 
-実行後、`run_id` / `run_dir` / `equity_points` / `fills_count` / `total_pnl` が表示される。
+実行後、`run_id` / `run_dir` / `equity_points` / `fills_count` / `total_pnl` が表示される。 [L1]
 
 ## 直接 CLI
 
-`python/` ディレクトリ直下で実行する。
+`python/` ディレクトリ直下で実行する。 [L2]
 
 ```powershell
 uv run python -m engine.strategy_replay run `
@@ -56,11 +58,11 @@ uv run python -m engine.strategy_replay run `
 | `--end DATE` | SCENARIO の終了日を上書き（スイープ用） |
 | `--verbose` / `-v` | DEBUG ログを有効化 |
 
-`--catalog` と `--bars-json` のいずれかが必須。
+`--catalog` と `--bars-json` のいずれかが必須。 [L2]
 
 ## 出力
 
-stdout に summary JSON が出力される。
+stdout に summary JSON が出力される。 [L2]
 
 ```json
 {
@@ -72,7 +74,7 @@ stdout に summary JSON が出力される。
 }
 ```
 
-run-buffer の既定出力先は `%APPDATA%\flowsurface\run-buffer\`（`--run-buffer-dir` / `-RunBufferDir` で変更可）。`run_dir` 以下に次のファイルが書かれる。
+run-buffer の既定出力先は `%APPDATA%\flowsurface\run-buffer\`（`--run-buffer-dir` / `-RunBufferDir` で変更可）。`run_dir` 以下に次のファイルが書かれる。 [L2]
 
 | ファイル | 内容 |
 |---|---|

@@ -445,6 +445,18 @@ egui の中で `state.buffer` のような大きい String を編集するとき
   **実行順を守ること**: `.clear()` を呼ぶ system を `bevy_cosmic_edit` の input system
   より `.before()` で前に走らせる（例: `.add_systems(Update, change_active_editor_sprite.after(menu_keyboard_system))`）。
   `src/ui/menu_bar.rs::menu_keyboard_system` が実装例。
+- **headless テストで Strategy Editor / cosmic パネルを spawn したい（`CosmicEditPlugin` を足さずに）**:
+  spawn 系（`panel_spawn_dispatcher_system` → `spawn_strategy_editor_panel`）が要求するのは
+  `ResMut<CosmicFontSystem>` resource だけ。**プラグイン全体を足すと render/asset 依存（`Assets<Image>` /
+  primary camera 要求）で MinimalPlugins 下では panic する**ので、`CosmicFontSystem(pub FontSystem)` を
+  手構築して `insert_resource` する: `CosmicFontSystem(cosmic_text::FontSystem::new())`。`FontSystem::new()`
+  は CPU のみ（fontdb の system font ロード）で headless OK、glyph は出ないが entity spawn には無関係。
+  ⚠️ **依存の罠**: `bevy_cosmic_edit` は backcast の normal dep なので統合テスト（`tests/`）から
+  `bevy_cosmic_edit::prelude::CosmicFontSystem` を引けるが、`cosmic_text` は transitive なので
+  **`cosmic-text` を `[dev-dependencies]` に明示追加**しないと `FontSystem` を名指せない
+  （バージョンは Cargo.lock の解決版＝現在 `0.12` に合わせる。型同一性のため）。
+  bare `App`（MinimalPlugins すら無し）＋必要 system だけでも spawn は走る（spawn は純 ECS）。
+  実例: `tests/e2e/flows/i5_file_open_spawns_editor_and_chart.rs`。
 
 ## ground truth ソースの引き方
 

@@ -1,291 +1,119 @@
-# E2E Flow Catalog — The-Trader-Was-Replaced
+# E2E Flow Conventions — The-Trader-Was-Replaced
 
-> issue #4「Add internal E2E test hooks for Bevy desktop UI」に対する、自動 E2E のテストケース一覧。
-> Bevy ネイティブ UI のため Playwright 等は使わず、**Bevy の resource/event/system を直接駆動**して
-> 観測可能な状態を assert する。OS のマウス座標クリックには一切依存しない。
+> リリース前の最後の砦として、ユーザーが取りうる行動を原則すべて列挙し、自動テストの対象にする。
+> 実装済み flow は `tests/e2e/flows/<id>.rs`（1 ファイル 1 テスト）に索引化されている。未実装の予定 flow も
+> 同じディレクトリに `//!` だけのプレースホルダーとして置き、「何の挙動か / seam / 観測」を先に固定する。
+> flow 一覧はこの markdown ではなく `.rs` 群が正本。
+> 既存の Bevy resource/event/system 直接駆動ハーネスで観測できるものはこの方式で assert する。
+> 直接駆動だけでは忠実に検証できない操作（描画依存、OS ダイアログ、キーボード入力、実 backend/環境依存）は
+> 「対象外」にせず、代替方式（UI harness / smoke / integration / manual release gate）を明記する。
 
 ## このファイルの使い方（編集ルール）
 
-- 1 つの `- [ ]` 項目 = テストケース(flow)1 本。
-- **チェックを入れた `- [x]` 項目を v1（ハーネスと同時に確立）に含める**。
-- 追加・削除・並べ替え自由。優先度やバックエンドを変えたいときは行を直接編集する。
-- 各 flow はいずれ `tests/e2e/flows/<id>.json` の宣言ファイルになる（このカタログはその索引）。
+- **実装済み flow の索引は `tests/e2e/flows/<id>.rs`（1 ファイル 1 テスト）に移行した**。実装する flow を1本足す
+  = `tests/e2e/flows/<id>.rs` に `#[test]` を追加し、`tests/e2e_replay.rs`（runner）に `#[path]` + `mod` を1行足す。
+  `//!` だけのファイルは予定 flow で、runner にはまだ登録しない。
+- このファイルは **flow 一覧そのものではなく**、(1) 駆動の縫い目と観測の凡例、(2) 直接駆動では headless
+  検証できない操作の代替方式と release gate、(3) ハーネス計画 を定義するメタ文書。
+- まだ `.rs` 化していない操作（UI / integration / render / manual-gate 系）は、末尾の「直接駆動では
+  不可能な場合の代替方式」テーブルに方式と release gate を記録する。予定 flow は `tests/e2e/flows/<id>.rs` の
+  `//!` コメントと wiki の `[FlowID]` 引用を先に作ってよい。
 
 ### wiki ↔ E2E 同期ルール（必須）
 
-- このカタログは `docs/wiki/`（実アプリの操作説明書）と**対**になっている。
-  wiki に書かれたユーザー可視の挙動は、原則ここに対応する flow を持つ。
-- **`docs/wiki/` の操作挙動を変更・追加したら、必ずこのカタログを見直す**:
-  新しい挙動 → flow 行を追加（実装可能なら `- [ ]`、観測不能なら「保留」注記）。
-  挙動の削除・変更 → 対応 flow を削除・修正。
-- backend→ECS seam を通らない挙動（クライアント側 gating / 純 UI / 描画依存 / backend 内部ガード）は
-  flow にせず、末尾の「**E2E に*しない*もの**」節に理由付きで記録する。これも wiki との対応の一部。
+- E2E flow 群（`tests/e2e/flows/*.rs` ＋ 下の代替方式テーブル）は `docs/wiki/`（実アプリの操作説明書）と
+  **対**になっている。wiki に書かれたユーザー可視の挙動は、原則対応する flow を持つ。
+- **`docs/wiki/` の操作挙動を変更・追加したら、必ず E2E flow を見直す**:
+  新しい挙動 → 実装可能なら `tests/e2e/flows/<id>.rs` を追加、headless 観測不能なら下のテーブルに行を追加。
+  挙動の削除・変更 → 対応する `.rs` flow / テーブル行を削除・修正。
+- backend→ECS seam を通らない挙動（クライアント側 gating / 純 UI / 描画依存 / backend 内部ガード）も
+  除外しない。直接駆動ハーネスで不可能な場合は、末尾の「**直接駆動では不可能な場合の代替方式**」に
+  方式と release gate を記録する。
 
 ### 凡例
 
 - **seam** … 入力する縫い目（`TransportCommand` 列挙子 / `BackendEvent` / resource 更新）
 - **観測** … assert 対象の resource とその状態遷移
 - **be** … 想定バックエンド: `mock`（決定論的・CI 向き） / `real`（python -m engine・忠実度確認） / `none`
+- **kind** … `state`（resource/event/system 直接駆動） / `ui`（Bevy UI harness: Interaction/Keyboard/MouseWheel/Pointer を注入） /
+  `render`（実ウィンドウまたは画像/ログ smoke） / `integration`（backend/CLI/環境依存） / `manual-gate`（自動化不能時のリリース手順）
 - **優先** … ★★★ 高 / ★★ 中 / ★ 低
 
 ### 駆動の縫い目（参照）
 
 - 入力: `TransportCommandSender`（`mpsc<TransportCommand>`）にコマンドを直接送る → UI ボタン描画をバイパス
 - 入力(イベント): backend → ECS の `BackendStatusUpdate` / `BackendEvent` をモックから注入
+- 入力(UI): Bevy の `Interaction` / `ButtonInput<KeyCode>` / `MouseWheel` / pointer event / focused entity を直接注入
 - 出力(観測): `LastRunResult.state`(RunState) / `PortfolioState` / `BackendStatus` /
   `VenueStatusRes` / `ExecutionModeRes` / `Tickers` / `TickersStatus` / `AvailableInstruments` /
   `LastPrices` / `SelectedSymbol` / `ReplaySpeed` / `TradingSession` / `ReplayStartupProgress`
+- 出力(UI/描画): window/panel entity 構造、`Visibility`/`Display`/`Text`/`Style`、layout JSON、strategy cache、
+  render/screenshot smoke、構造化ログ
 
 ---
 
-## A. リプレイ・ライフサイクル（issue #4 の suggested first workflow / コア）
+## 直接駆動では不可能な場合の代替方式
 
-- [x] **A1 replay_runs_to_completion** ★★★ be:`mock`  ← v1
-  - seam: `RunStrategy`
-  - 観測: `RunState: Idle→Running→Completed`、`LastRunResult.summary_json` 充填
-- [x] **A2 replay_pause_resume** ★★★ be:`mock`  ← v1
-  - seam: `RunStrategy` → `Pause` → `Resume`
-  - 観測: Running 中に `TradingSession.timestamp_ms` 停止 → 再進行 → `Completed`
-- [x] **A3 replay_step_forward** ★★ be:`mock`
-  - seam: `StepForward` × N
-  - 観測: step ごとに `TradingSession.timestamp_ms` が 1 単位進む
-- [x] **A4 replay_force_stop** ★★ be:`mock`
-  - seam: Running 中に `ForceStop`
-  - 観測: `RunState` が `Running` を抜ける
-- [ ] **A5 replay_set_speed** ★ be:`mock`（保留: `BackendStatusUpdate` に speed ack variant が無く、backend→ECS seam で観測できない。transport task の lib 抽出=Phase A-full 待ち）（wiki: フッター速度ボタン 1x〜50x に対応）
-  - seam: `SetSpeed(N)`
-  - 観測: `ReplaySpeed.current == N`（backend ack）
-- [x] **A6 replay_failed_strategy** ★★★ be:`mock`  ← v1
-  - seam: 壊れた strategy で `RunStrategy`
-  - 観測: `RunStarted` → `RunFailed` → `RunState::Failed{error}`、error 文字列が surface
-- [x] **A7 replay_startup_progress** ★★ be:`mock`
-  - seam: `RunStrategy`
-  - 観測: `ReplayStartup` 4 stage（Resetting→Loading→Starting→WaitingFirstTick）が `ReplayStartupProgress` に反映
-- [x] **A8 stale_startup_id_ignored** ★★ be:`mock`（回帰しやすい）
-  - seam: 旧 `startup_id` の status update を後追い注入
-  - 観測: 古い update が新しい startup window を閉じない（相関 ID ロジック）
-- [x] **A9 replay_startup_timeout** ★ be:`mock`（timer 駆動。本番 `replay_startup_timeout_system` をハーネスに登録し、`Time<Real>` を `advance_real_time` で進めて駆動）（wiki: replay.md「Replay Startup 進捗ウィンドウ」のタイムアウト）
-  - seam: startup 開始後（`arm_startup_timeout`）、first tick が来ないまま 60s 経過
-  - 観測: 59s では error なし → 61s で `ReplayStartupProgress.error` セット（phase 不変・window は開いたまま）→ `close_startup_window` で error クリア+hide
+この節は「テストしないもの」ではない。既存の resource/event/system 直接駆動ハーネスだけではユーザー操作の忠実度が足りない場合に、採用する代替方式を定義する。
 
-## B. ポートフォリオ / 実行結果
+release gate 列の ID（`I*` / `J*` / `K*` / `L*` 群、保留中の `A5` / `C5` / `D8` など）は **まだ `.rs` 化していない planned flow** の識別子。実装時に `tests/e2e/flows/<id>.rs`（または `kind:render` / `kind:integration` の専用ハーネス）として起こす。
 
-- [x] **B1 portfolio_populated_after_run** ★★★ be:`mock`  ← v1
-  - seam: RunComplete 後の `PortfolioLoaded`
-  - 観測: `PortfolioState.loaded == true`、positions/orders/equity 充填
-- [x] **B2 run_summary_parsed** ★★ be:`mock`
-  - seam: `RunComplete{summary_json}`
-  - 観測: `LastRunResult.parsed_summary`（fills_count, equity_points, total_pnl）が parse 済み
+実装済みの代替方式 flow（I/J/K/L/M 群は `tests/e2e/flows/<id>.rs` に実装済み・`cargo test --test e2e_replay` で green）:
 
-## C. 銘柄ユニバース / サイドバー
+- **I 群（メニュー / file / layout）✅** — i1 メニュー開閉, i2 Alt+F/E/V, i4 モード切替 gating（未送信 assert）, i5 file-open→Editor/Chart spawn, i6 File→New, i7 Save→sidecar, i9 Ctrl+S/Shift+S/O dispatch, i10 open→Auto, i11 Edit→Undo/Redo, i12 起動時 cache 復元, i13 scenario-only JSON。`i3`（Escape/outside-close）は本番未実装のため doc stub。`i8`（Save As）は rfd ダイアログ直呼びで headless 不可 → `#[test] #[ignore]`。
+- **J 群（editor / find / startup / scenario / picker）✅** — j1 autosave, j2 Tab indent, j3 Enter autoindent, j4 bracket autoclose, j5 find open/nav, j6 replace current/all, j7 startup 検証 block, j8 valid run command, j9 instruments_ref fail-closed, j10 readonly registry, j11 picker search/add/close, j12 placeholder, j13 sidebar select/remove, j14 schema 正規化, j15 file-watch reparse, j16 field commit→cache writeback。
+- **K 群（chart / order / modal）✅** — k2 wheel zoom gate, k3 drag/double-click reset（observer 駆動）, k4 Ctrl+wheel 抑制, k5 ladder live mode entity-tree, k6 reconcile diff, k7 order submit→confirm→PlaceOrder, k8 secret submit/retry, k9 context modify/cancel, k10 form controls/validation, k11 confirm Escape 優先, k12 modify modal, k13 relogin Escape 優先, k14 reconcile Escape 優先, k15 secret zeroize/empty-submit, k16 context menu open/close。`k1`（candle/crosshair 描画）は `kind:render`（ShapePainter+Text2d=GPU 必要）→ doc stub。
+- **L 群（CLI / guard / backend）✅** — l3 prod guard（env unset→backend disabled, `#[serial]`）, l5 supervisor→mock gRPC Ready。l2 strategy_replay CLI は `STRATEGY_REPLAY_CLI_INTEGRATION=1` gate、l6 catalog build は `DEV_J_QUANTS_CACHE` 依存で `#[ignore]`。`l1`（run_replay.ps1）は Windows 専用 PowerShell → doc stub。`l4`（実ウィンドウ全体 smoke）は `kind:render` → doc stub。
+- **M 群（window / sidebar）✅** — m1 sidebar Panels ボタン spawn, m2 drag→位置更新+autosave dirty, m3 close→despawn, m4 focus→z 前面, m5 duplicate policy（StrategyEditor のみ multi）。`m6`（settings sidebar）は固定文字列で BackendStatus 未接続 → doc stub。
 
-- [x] **C1 list_instruments_replay** ★★ be:`mock`
-  - seam: `ListInstruments(ReplayCatalogFallback)`
-  - 観測: `TickersStatus: InFlight→Loaded`、`Tickers` 充填、source 設定
-- [x] **C2 list_instruments_failed** ★★ be:`mock`
-  - seam: `ListInstruments` 失敗
-  - 観測: `TickersStatus::Failed`、旧 list 保持（stale 表示）
-- [x] **C3 fetch_available_instruments** ★ be:`mock`
-  - seam: `FetchAvailableInstruments(end_date)`
-  - 観測: `AvailableInstruments.by_end_date[end_date]` 充填、`in_flight` クリア
-- [x] **C4 fetch_available_failed** ★ be:`mock`
-  - seam: `FetchAvailableInstruments` 失敗
-  - 観測: `AvailableInstruments.last_error` セット
-- [ ] **C5 select_instrument** ★ be:`mock`（保留: UI 駆動のみ — `SelectedSymbol` は backend→ECS seam を通らない）
-  - seam: `SelectedSymbol` 更新
-  - 観測: 選択銘柄が反映
+残る doc stub（headless 不可 / 未実装の release gate）: `i3`(menu Escape 未実装), `k1`/`l4`(kind:render), `l1`(Windows PowerShell), `m6`(未接続)。
 
-## D. Venue ライフサイクル（Live）
-
-- [x] **D1 venue_login_success** ★★ be:`mock`
-  - seam: `VenueLogin`
-  - 観測: `VenueState: Disconnected→Authenticating→Connected`
-- [x] **D2 venue_subscribed** ★ be:`mock`
-  - seam: login 後
-  - 観測: `Connected→Subscribed`、`instruments_loaded` 反映
-- [x] **D3 venue_login_error** ★★ be:`mock`
-  - seam: login 失敗
-  - 観測: `VenueState::Error`
-- [x] **D4 venue_logout** ★ be:`mock`
-  - seam: `VenueLogout`
-  - 観測: `→Disconnected`
-- [x] **D5 venue_logout_detected** ★ be:`mock`
-  - seam: `BackendEvent::VenueLogoutDetected{venue}`
-  - 観測: `ReloginPrompt.active == Some(venue)`（外部ログアウト検知で ReloginModal が開く）。Phase 9 Step 7（health watchdog）マージで `backend_event_drain_system` が `ReloginPrompt` をセットするようになった。モーダルは通知のみで自身は再ログインしないため `VenueStatusRes` は意図的に不変
-- [x] **D6 venue_reconnecting** ★★ be:`mock`
-  - seam: `VenueChanged(Reconnecting)`
-  - 観測: `Reconnecting` 表示（issue の network reconnect）
-- [x] **D7 live_universe_overwrite** ★★ be:`mock`
-  - seam: Connected で `ListInstruments(LiveVenue)`
-  - 観測: Live universe が Replay fallback を**上書き**（prune しない不変条件）
-- [ ] **D8 prod_guard_blocks_login** ★ be:`real`（保留: 二重ガードは backend 側 = `TACHIBANA_ALLOW_PROD` / `KABU_ALLOW_PROD` 未設定で Prod 接続を遮断する挙動。backend→ECS には login 失敗として現れるが、env ガードの忠実度は backend 単体テスト向き）（wiki: venues.md「二重ガード」）
-  - seam: env 未設定で Prod venue へ `VenueLogin`
-  - 観測: 接続が拒否され `VenueState::Error`（または login が送られない）
-
-## E. 実行モード
-
-- [x] **E1 set_execution_mode** ★★ be:`mock`
-  - seam: `SetExecutionMode(LiveManual)`
-  - 観測: backend authoritative → `ExecutionModeChanged` → `ExecutionModeRes.mode == LiveManual`
-
-## F. ライブ市場データ / 注文・口座イベント（Phase 9/10）
-
-- [x] **F1 subscribe_market_data** ★ be:`mock`
-  - seam: `SubscribeMarketData(id)`
-  - 観測: `LastPricesUpdated` → `LastPrices` 充填
-- [x] **F2 unsubscribe_market_data** ★ be:`mock`
-  - seam: `UnsubscribeMarketData(id)`
-  - 観測: price 更新停止
-- [x] **F3 order_event** ★ be:`mock`
-  - seam: `BackendEvent::OrderEvent`
-  - 観測: `LiveOrders.orders` に `client_order_id` 一致レコードが現れ status/filled_qty/avg_price 反映。未知 id は static フィールド空で挿入され、同 id の後続イベントは in-place マージ
-- [x] **F4 account_event** ★ be:`mock`
-  - seam: `BackendEvent::AccountEvent`
-  - 観測: `PortfolioState` の cash/buying_power/positions 更新・`loaded==true`・`equity == cash + Σ(qty*avg_price + unrealized_pnl)`
-- [x] **F5 secret_required** ★ be:`mock`
-  - seam: `BackendEvent::SecretRequired`
-  - 観測: `SecretPrompt.active` が `Some` になり request_id/venue/kind/purpose 一致（第二暗証要求）
-
-## H. 注文 RPC（Phase 9 ライブ発注 / status seam）
-
-- [x] **H1 order_seeded** ★★ be:`mock`
-  - seam: `BackendStatusUpdate::OrderSeeded`
-  - 観測: `LiveOrders` に full レコード（symbol/side/qty/price 含む）を seed、`OrderFeedback.message` クリア
-- [x] **H2 order_status_updated** ★★ be:`mock`
-  - seam: seed 済みに `BackendStatusUpdate::OrderStatusUpdated`
-  - 観測: `client_order_id` 一致レコードに status/fill をマージ（static フィールドは保持・重複挿入しない）
-- [x] **H3 order_modified** ★★ be:`mock`
-  - seam: seed 済みに `BackendStatusUpdate::OrderModified`
-  - 観測: `apply_modify` で `Some` の qty/price のみ上書き・`None` は不変、status/fill 更新
-- [x] **H4 order_rejected** ★★ be:`mock`
-  - seam: `BackendStatusUpdate::OrderRejected{action,error_code}`
-  - 観測: `OrderFeedback.message == Some("{action}が拒否されました ({error_code})")`
-- [x] **H5 exec_mode_change_resets_portfolio** ★★ be:`mock`（回帰の肝）
-  - seam: `BackendStatusUpdate::ExecutionModeChanged`
-  - 観測: 実モード変更時に `PortfolioState` を default リセット（Live/Replay 口座データ混線防止）、同一モードは no-op
-
-## G. バックエンド接続 / 自己修復（既存 supervisor テストと一部重複）
-
-- [x] **G1 backend_connect_status** ★★ be:`mock`
-  - seam: supervisor Ready → connect
-  - 観測: `BackendStatus` Connected/Running true（footer `grpc: OK`）
-- [x] **G2 backend_reconnect_selfheal** ★★ be:`mock`
-  - seam: `Error` で接続断 → `Connected(true)` で復帰
-  - 観測: `Error` で `connected=false`+`last_error` 記録 → 再 `Connected(true)` で `connected` 復旧（self-heal commit の回帰防止）
-- [x] **G3 backend_disabled_sim** ★ be:`none`
-  - seam: `backend_enabled = false`（`Harness::new_backend_disabled()`）
-  - 観測: `backend_enabled == false`（footer `grpc: DISABLED`）、`backend_update_system` が early-return し replay clock push が no-op（`timestamp_ms` 不変）
-
----
-
-## E2E に**しない**もの（ユニットテスト / 既存の手動 e2e-testing 担当）
-
-- `LiveAuto` が Phase 8 で選択不可（メニュー gating）→ UI ロジックの単体テスト
-- **モード切替の前提条件 gating**（wiki: modes.md）→ クライアント側で切替リクエストを抑止する純 UI ロジックで
-  backend→ECS seam を通らない。単体テスト向き:
-  - Manual / Auto への切替は venue 接続済み（Disconnected / Error 以外）でないとリクエストを送らない
-  - Replay への切替は戦略ロード済みでないと送らない
-- メニュー開閉 / Alt+F / レイアウト永続化 / cosmic_edit 入力 → 描画依存。ユニット + 既存の手動 E2E に残す
-- **Startup パネルの入力検証 gating**（wiki: replay.md / strategy.md）→ 空・不正な日付 / granularity 未選択 /
-  initial_cash ≤ 0 / `start > end` のとき Run を抑止し赤字エラーを出すのはクライアント側の純 UI 検証で、
-  backend→ECS seam を通らない。`scenario_startup_panel.rs` の単体テスト向き。
-- **`instruments_ref`（schema v3）の fail-closed**（wiki: strategy.md「instruments_ref」）→ 参照先 JSON が
-  欠落・破損・空のとき `ScenarioLoadedFromFile` を発火させず Run を半透明のままにする挙動。
-  file-watch 駆動（`scenario_parser.rs`）で backend→ECS seam を通らないため、`scenario_parser.rs` の
-  既存単体テスト（`parse_resolves_instruments_ref_to_instruments` 等）でカバー。
-- **銘柄ピッカー（`+ Add`）の挙動**（wiki: venues.md「銘柄ピッカー」）→ 検索絞り込み / 最大 15 行 /
-  プレースホルダ（`Set scenario.end first` / `Venue not connected` / `Loading...` / `Error:` / `No matches`）/
-  100ms デバウンス / `instruments_ref` 時の読み取り専用化は描画依存の純 UI（`instrument_picker.rs`）。
-  ユニットテスト向き。ピッカーが消費する銘柄ユニバース取得自体は [C1]〜[C4] でカバー済み。
-
----
-
-## 実装状況（2026-05-21 時点 / branch: docs/wiki）
-
-- ✅ **ECS 同期層の lib 抽出済み**: `apply_status_update` / `status_update_system` /
-  `apply_available_loaded` / `apply_available_failed` / `BackendEventChannel` /
-  `backend_event_drain_system` / `StatusUpdateChannel`（`rx` を `pub` 化）を
-  `main.rs`（バイナリ）から `src/backend_sync.rs`（lib）へ移動。`main.rs` は
-  `backcast::backend_sync::*` を import する形に変更。`cargo check --tests` は通る
-  （残る warning は **既存のもの**: `instruments_universe_prune.rs:163/165`、
-  `restore.rs:41`、`main.rs:33 UnsubscribeRequest`。いずれも本作業と無関係）。
-- ✅ **v1 ハーネス + 4 本実装済み（A1/A2/A6/B1、`cargo test --test e2e_replay` で 4 passed）**:
-  1. `tests/e2e/support/mod.rs` に `Harness` を実装済み。`MinimalPlugins` の headless `App` に
-     `StatusUpdateChannel`/`BackendChannel`/`BackendEventChannel` + 全 trading resource +
-     `ReplayStartupProgress` を insert し、`backend_update_system`/`status_update_system`/
-     `backend_event_drain_system` を `Update` に登録。`status_tx`/`backend_tx`/`event_tx` を保持し、
-     `send_status()`/`send_event()`/`push_state(ts)`/`tick()`/`run_state()`/`last_run()`/
-     `portfolio()`/`timestamp_ms()` helper を提供。`TradingSettings` は `backend_enabled: true` で
-     明示構築（`from_env()` 不使用）。`push_state` は `BackendTradingState` を serde_json で最小構築。
-  2. テストバイナリ `tests/e2e_replay.rs` を作成済み（`#[path = "e2e/support/mod.rs"] mod support;`）。
-  3. v1 の 4 本実装済み: **A1**=RunStarted→Running→RunComplete→Completed+parsed_summary、
-     **A6**=RunStarted→RunFailed→Failed{error}、**B1**=PortfolioLoaded→loaded+equity/positions/orders、
-     **A2**=RunStarted→push_state(1000)→pause(tick 不変)→push_state(2000)→RunComplete。
-     ※ A2 の pause/resume は backend が押し出す replay clock のミラー検証に留める（gRPC 経由の
-     `Pause`/`Resume` は transport task 依存 = Phase A-full）。
-- ✅ **v2 で 19 本追加（`cargo test --test e2e_replay` で 23 passed）**: A3/A4/A7/A8、B2、
-  C1/C2/C3/C4、D1/D2/D3/D4/D6/D7、E1、F1/F2、G1。`tests/e2e/support/mod.rs` に観測アクセサ
-  （`venue()`/`exec_mode()`/`tickers()`/`available()`/`last_prices()`/`startup_progress()`/
-  `backend_connected()`/`backend_running()`）と、startup window を開く `begin_startup(id)` を追加。
-  A3 は A2 と同じく backend が押し出す replay clock のミラー検証。A4 は force-stop が
-  backend→ECS では `RunComplete` として現れる（`Running` を抜けることを観測）。A8 は古い
-  `startup_id` の `RunComplete` が startup window を閉じないことの回帰テスト。D7 は Live universe が
-  Replay fallback list を wholesale 上書きする不変条件。
-- ✅ **G2 backend_reconnect_selfheal 追加（24 passed）**: `Error` で `connected=false`+`last_error`
-  記録 → 再 `Connected(true)` で `connected` が復帰することを観測（連続断・復旧が status seam だけで
-  決定論的に書けるため、supervisor task に依存せず実装できた）。`backend_last_error()` アクセサを追加。
-- ✅ **G3 backend_disabled_sim 追加（25 passed）**: `Harness::with_backend_enabled(bool)` に切り出し、
-  `new_backend_disabled()` で `backend_enabled=false` のハーネスを構築。`backend_enabled()` アクセサで
-  footer `grpc: DISABLED` 条件を、`push_state` 後の `timestamp_ms` 不変で `backend_update_system` の
-  early-return（send no-op）を観測。
-- ✅ **A9 replay_startup_timeout 追加（26 passed）**: 本番 `replay_startup_timeout_system` をハーネスの
-  `Update` に登録し、`arm_startup_timeout(id)` で startup window を開いて `started_at_elapsed` を採番、
-  `advance_real_time(dur)` で headless `Time<Real>` を進めて駆動。59s で error なし→61s で
-  `error` セット（phase 不変）→ `close_startup_window()` でクリアを観測。
-- ✅ **D5 venue_logout_detected 追加（`cargo test --test e2e_replay` で 35 passed）**: Phase 9 Step 7
-  （health watchdog）マージで `backend_event_drain_system` が `VenueLogoutDetected` 受信時に新規
-  `ReloginPrompt.active = Some(venue)` をセットするようになり、保留中だった D5 が観測可能になった。
-  ハーネスに `ReloginPrompt` resource を insert し `relogin_prompt()` アクセサを追加。モーダルは通知に
-  徹し自身は再ログインしないため `VenueStatusRes` は意図的に不変（本番の drift note 参照）。
-- ✅ **event seam 3 本 + 注文 RPC 5 本追加（34 passed）**: Phase 9
-  ライブ口座・発注 API のマージで `backend_event_drain_system` / `apply_status_update` に reducer が
-  入り、event seam が観測可能になった。`tests/e2e/support/mod.rs` に `live_orders()` /
-  `order_feedback()` / `secret_prompt()` アクセサを追加。
-  - **F3 order_event**=`OrderEvent` → `LiveOrders.apply_event`（未知 id は static 空で挿入、同 id は
-    in-place マージ）。**F4 account_event**=`AccountEvent` → `apply_account_event`（cash/buying_power/
-    positions/loaded、`equity = cash + Σ(qty*avg_price + unrealized_pnl)`）。**F5 secret_required**=
-    `SecretRequired` → `SecretPrompt.active` が `Some`。
-  - **H1 order_seeded**=`OrderSeeded` → full レコード seed + `OrderFeedback` クリア。
-    **H2 order_status_updated**=`OrderStatusUpdated` → `apply_event` マージ（static 保持）。
-    **H3 order_modified**=`OrderModified` → `apply_modify`（`Some` のみ上書き・`None` 不変）。
-    **H4 order_rejected**=`OrderRejected` → `OrderFeedback.message` に整形メッセージ。
-    **H5 exec_mode_change_resets_portfolio**=実モード変更で `PortfolioState` を default リセット
-    （同一モードは no-op）— Live/Replay 口座データ混線防止の回帰の肝。
-- ⬜ **保留（同ハーネスでは観測不能 / 本番拡張が必要）**:
-  - **A5 set_speed**: `BackendStatusUpdate` に speed ack variant が無い（Phase A-full 待ち）。
-  - **C5 select_instrument**: `SelectedSymbol` は UI 駆動のみで backend→ECS seam を通らない。
-  - **D8 prod_guard**: env 二重ガードは backend 側ロジック（be:`real` / backend 単体テスト向き）。
-- 📌 **設計メモ**: 本 v1 は backend→ECS の片側（`BackendStatusUpdate` 注入）を駆動する。
-  反対側（`TransportCommand`→gRPC→`BackendStatusUpdate`）は既に `tests/backend_integration.rs`
-  が mock tonic サーバでカバー済み。**両者で end-to-end をカバー**する構図。完全な単一プロセス
-  ループ（`TransportCommand` 注入→mock gRPC→`RunState` 観測）は transport task（`main.rs`
-  `setup_backend_connection` の ~600 行）の lib 抽出が必要で、これは Phase A-full の別タスク。
+| 対象 | 直接駆動だけで不足する理由 | 代替方式 | release gate |
+|---|---|---|---|
+| メニュー開閉 / Alt+F/E/V | backend seam を通らず、keyboard focus と UI entity 表示が本体 | `kind:ui`。`ButtonInput<KeyCode>` と `Interaction` を注入し `OpenMenu` / entity 表示を assert | I1 ✅ / I2 ✅ / I3 stub（Escape 未実装） |
+| モード切替 gating | command を送らないことが仕様で、backend ack では観測できない | `kind:ui`。送信 channel を監視し「未送信」を assert | I4 ✅ |
+| OS ファイルダイアログ | CI で OS native dialog を安定操作しにくい | dialog 自体はバイパスし、選択済み path event/resource を注入。別途 smoke で起動確認 | I5 ✅ / I6 ✅ / I7 ✅ / I8 `#[ignore]`(rfd) / L4 stub |
+| レイアウト永続化 | ファイル I/O と debounce が主対象 | temp dir fixture で `Save/Load` を integration 実行し JSON と復元 entity を assert | I7 ✅ / I12 ✅ / M2 ✅（drag autosave） |
+| cosmic_edit 入力 | text editor plugin の focus/keyboard 処理が主対象 | `kind:ui`。focused entity と keyboard/text input を注入。必要なら最小実ウィンドウ smoke を追加 | J1-J4 ✅ |
+| find / replace | match span 計算と置換が主対象 | `kind:ui`。FindReplaceState と FindActionRequested を駆動 | J5/J6 ✅ |
+| Startup パネル入力検証 | Run command を送らない UI gating が仕様 | `kind:ui`。field editor state、error label、transport channel 未送信/送信を assert | J7/J8/J16 ✅ |
+| `instruments_ref` fail-closed | file-watch / parser / writeback の連携 | temp sidecar/ref file を使う integration。破損・空・正常の fixture を固定 | J9/J10/J14/J15 ✅ |
+| 銘柄ピッカー | searchbox、debounce、候補表示、readonly が純 UI | `kind:ui`。time advance と text/entity assert。取得 seam は C1-C4 と組み合わせる | J11/J12/J13 ✅ |
+| Chart 操作 | wheel/drag/double click と render state が主対象 | `kind:ui` で `ChartViewState` / camera を assert。描画崩れは `kind:render` smoke | K2/K3/K4/K5 ✅ / K1 stub(render) / L4 stub |
+| 注文フォーム / modal / context menu | 2 段階 confirm、focus、Escape 優先順位が主対象 | `kind:ui`。command channel、modal visibility、feedback resource を assert | K7-K16 ✅ |
+| Prod guard / 実 venue | CI で実口座・外部環境に依存 | env isolated backend integration で guard を確認。実接続はリリース時 manual-gate に残す | L3 ✅ / L5 ✅(mock gRPC) / 実接続は manual |
+| CLI replay / catalog | 外部データ・uv 依存 | `std::process::Command` で driver、env-gate / `#[ignore]` | L2 `#[ignore]`(env) / L6 `#[ignore]`(data) / L1 stub(Windows) |
+| window 操作 | drag/close/focus/duplicate が observer + ECS | `kind:ui`。observer trigger と Transform/WindowManager/AutoSaveState を assert | M1-M5 ✅ / M6 stub(未接続) |
+| 画面全体の見た目 | headless resource assert では重なり・欠落を検出しづらい | `BACKCAST_E2E=1` 固定 fixture 起動、スクリーンショットまたは構造化 UI dump の smoke | L4 stub(必須・kind:render) |
 
 ## ハーネス計画（参考・別途実装）
 
-- **Phase A**: App 組み立てとトランスポートタスクを `main.rs` から lib へ抽出 → `MinimalPlugins` の
-  ヘッドレス App を `tests/e2e/` から起動。flow JSON を読み、`TransportCommand` を注入し
-  `app.update()` ループで resource を assert。mock gRPC（`backend_integration.rs` の `MyDataEngine`
-  を `tests/e2e/support/` に共有抽出）を使用。CI 向き。
-- **Phase B**: `--e2e` / `BACKCAST_E2E=1` のウィンドウ実行モード（固定ウィンドウ・固定パス・
-  flow JSON 読み込み・構造化ログ）。同じ flow JSON を実描画で smoke 実行。
+- **済**: 各 flow を手書きの `tests/e2e/flows/<id>.rs` として実装し、`tests/e2e_replay.rs` が
+  `MinimalPlugins` の headless App に `BackendStatusUpdate` / `BackendEvent` / replay clock を注入して
+  resource を assert する（`tests/e2e/support/mod.rs` の `Harness`）。CI 向き。
+- **済（A–H の UI ジャーニー化）**: `Harness` は backend→ECS の注入だけでなく、本番 UI 入力 system も
+  載せ（footer の Run/Pause/Resume/Step/Stop・モードトグル・速度、サイドバー行クリック/× 削除、Venue メニュー
+  Connect/Disconnect、注文フォーム→確認モーダル、SecretModal、universe auto-fetch）、`TransportCommandSender`
+  の受信側を保持する。A–H 各 flow は **まず実 UI 操作を本番 system で駆動**（`click(marker)` で `Interaction::Pressed`
+  を注入 / `run_via_ui` / `place_order_via_ui` / `type_secret`）して発射された `TransportCommand` を `drain_commands`
+  で assert し、**その後 backend 応答を seam から注入**して resource 遷移を assert する。これで「ユーザー操作 →
+  コマンド」の前半が本番経路で保証される。G1–G3 は起動時の transport 自動接続が縫い目でクリック UI が無いため
+  backend-seam のみ（前置 UI 無し）。
+- **Phase A-full（未）**: App 組み立てとトランスポートタスクを `main.rs` から lib へ抽出し、
+  `TransportCommand` 注入 → mock gRPC（`backend_integration.rs` の `MyDataEngine` を `tests/e2e/support/`
+  へ共有抽出）→ `RunState` 観測 の単一プロセスループを閉じる。**UI→`TransportCommand` の前半は上記の本番 UI
+  system 駆動で既に閉じている**。残るのは発射コマンドを実 gRPC に通して `BackendStatusUpdate` として戻す往復のみ。
+- **Phase B（未）**: `--e2e` / `BACKCAST_E2E=1` のウィンドウ実行モード（固定ウィンドウ・固定パス・
+  構造化ログ）で、`.rs` flow と同じシナリオを実描画で smoke 実行（`kind:render` / `L4`）。
 
-### 想定ディレクトリ
+### ディレクトリ構成
 
 ```
-tests/e2e/
-├── FLOWS.md          ← このカタログ（索引）
-├── flows/            ← 宣言的 flow ファイル *.json（各 flow 本体）
-├── fixtures/         ← strategy .py / scenario sidecar JSON など素材
-└── support/          ← 共有 Rust ヘルパ（mock engine / headless app builder）
+tests/
+├── e2e_replay.rs     ← runner（#[path] で flows/ と support/ を取り込む単一テストバイナリ）
+└── e2e/
+    ├── FLOWS.md      ← このメタ文書（凡例 / 代替方式 / 計画）
+    ├── flows/        ← 各 flow の Rust テスト *.rs（1 ファイル 1 #[test]・先頭 //! が解説）
+    ├── fixtures/     ← strategy .py / scenario sidecar JSON など素材（未作成・将来用）
+    └── support/      ← 共有 Rust ヘルパ（headless app builder = Harness / mock engine）
 ```

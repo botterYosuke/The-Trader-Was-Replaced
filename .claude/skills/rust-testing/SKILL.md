@@ -1,6 +1,6 @@
 ---
 name: rust-testing
-description: Rust testing patterns including unit tests, integration tests, async testing, property-based testing, mocking, and coverage. Follows TDD methodology. Trigger: "cargo test", "Rust テスト", "テストブロック修正", "test fails", "#[test]", "テスト破損", "旧テストを新 API に合わせる", "init_resource が欠落", "Bevy App テスト", "app.add_systems テスト", "serial_test", "env var test", "RAII guard", "EnvGuard", "環境変数テスト", "std::env::set_var", "serial", "headless E2E ハーネス", "tests/e2e_replay", "tests/e2e/FLOWS.md", "FLOWS.md の flow 追加", "MinimalPlugins resource 駆動テスト", "backend→ECS seam テスト", "BackendStatusUpdate を注入して resource を assert". 注: ここでの「E2E」は **ヘッドレスな Rust テスト**（`cargo test --test e2e_replay`）であり、GUI 目視検証の `e2e-testing` スキルとは別物。 pair-relay の Navigator が Rust テストを書く前にこのスキルを参照すると、RAII guard パターン・serial_test 直列化・unsafe env var 操作の落とし穴を回避できる。
+description: Rust testing patterns including unit tests, integration tests, async testing, property-based testing, mocking, and coverage. Follows TDD methodology. Trigger: "cargo test", "Rust テスト", "テストブロック修正", "test fails", "#[test]", "テスト破損", "旧テストを新 API に合わせる", "init_resource が欠落", "Bevy App テスト", "app.add_systems テスト", "serial_test", "env var test", "RAII guard", "EnvGuard", "環境変数テスト", "std::env::set_var", "serial", "headless E2E ハーネス", "tests/e2e_replay", "tests/e2e/FLOWS.md", "FLOWS.md の flow 追加", "MinimalPlugins resource 駆動テスト", "backend→ECS seam テスト", "BackendStatusUpdate を注入して resource を assert", "テストごとにファイルを分けて", "1テスト1ファイル", "テストファイルを分割", "テストの数が分かりにくい", "#[path] mod でテストを分ける", "テストバイナリが遅い", "private function をテストから呼びたい", "pub(crate) が e2e から見えない", "テストバイナリから fn が見えない", "E0603 private function", "headless test から production system を呼ぶ", "fn を pub にする", "save system をテストから駆動したい", "cache restore をテストで検証したい", "menu_item_system を注入する", "FileNew ボタンをテストで押す", "undo_redo_system をテストで走らせる", "AppHistory をテストで操作する", "CacheDirGuard RAII", "BACKCAST_CACHE_DIR を隔離", "sidecar JSON を書いてテスト", "apply_cache_restore_system", "handle_save_layout_system", "restore_last_strategy_system チェーン", "scenario-only JSON を開く テスト". 注: ここでの「E2E」は **ヘッドレスな Rust テスト**（`cargo test --test e2e_replay`）であり、GUI 目視検証の `e2e-testing` スキルとは別物。 pair-relay の Navigator が Rust テストを書く前にこのスキルを参照すると、RAII guard パターン・serial_test 直列化・unsafe env var 操作の落とし穴を回避できる。
 origin: ECC
 ---
 
@@ -167,6 +167,31 @@ my_crate/
 │   └── common/         # Shared test utilities
 │       └── mod.rs
 ```
+
+### One file per test, single binary (`#[path] mod`)
+
+**落とし穴**: `tests/` 直下の `.rs` は1ファイル=1テストバイナリ。テストを「数が分かるよう」1テスト=1ファイルに割ると、ファイル数だけフルリンクが走り `cargo test` が極端に遅くなる。
+
+**解法**: ランナー1本 (`tests/foo.rs`) を残し、各テストを `tests/foo/flows/*.rs` に置いて `#[path]` で取り込む。単一バイナリのまま、ファイル数=テスト数にできる。
+
+```rust
+// tests/e2e_replay.rs — ランナー（#[path] mod 宣言だけ）
+#[path = "e2e/support/mod.rs"]
+mod support;                       // 共有ハーネス
+#[path = "e2e/flows/a1_runs.rs"]
+mod a1_runs;                       // 1ファイル1 #[test]
+// ... 1テスト1行
+
+// tests/e2e/flows/a1_runs.rs — フロー本体
+use crate::support::Harness;       // ランナーの兄弟モジュールを参照
+#[test]
+fn a1_runs() { /* ... */ }
+```
+
+- 各フローファイルは `use crate::support::...;` で兄弟モジュールを参照（`crate` = ランナーのクレートルート）。
+- `import` は各ファイルで使う型だけに絞る（`#![allow(unused)]` でごまかさない）。
+- 実行は従来通り `cargo test --test e2e_replay`、絞り込みは `cargo test --test e2e_replay a1` でモジュール名・テスト名前方一致。
+- `tests/e2e/FLOWS.md` カタログとファイル名 (`a1_...`) を揃えると索引↔実体が1対1で追える。
 
 ### Writing Integration Tests
 
@@ -494,11 +519,83 @@ When the code under test is a Tokio task that drives a `tonic` client through a 
 - **`tokio::time::pause()` does NOT work against a real `tonic` server** — paused time stalls the server's real TCP/HTTP-2 I/O and the test deadlocks. Use wall-clock sleeps for live-server tests; reserve `start_paused = true` for pure tick-loop unit tests that don't do real I/O.
 - **Prefer extracting pure predicates** (`classify_child_exit`, `should_send_graceful_shutdown`, `parse_sentinel_line`) and golden-testing those, rather than adding `#[cfg(test)] pub fn new_for_test` constructors to production resources just to build them in a Bevy App test. Don't pollute production APIs for test wiring.
 
+### Headless E2E: Exposing Private Production Systems
+
+`tests/e2e_replay.rs` は `backcast` crate への外部バイナリ。`pub(crate)` では見えない。
+外部 E2E テストから本番 Bevy system を呼ぶには **`pub`** が必要。
+
+**パターン: 必要なときだけ `fn` → `pub fn` に昇格する**
+
+```rust
+// src/ui/layout_persistence.rs（変更前）
+fn handle_save_layout_system(...) { ... }
+fn apply_cache_restore_system(...) { ... }
+
+// 変更後: E2E テストから呼べるように pub に昇格
+pub fn handle_save_layout_system(...) { ... }
+pub fn apply_cache_restore_system(...) { ... }
+```
+
+**落とし穴: `pub(crate)` は外部テストバイナリから見えない**
+
+```
+error[E0603]: function `handle_save_layout_system` is private
+```
+
+このエラーが出たら `pub(crate)` → `pub` に変える。
+
+**ガイドライン:**
+- production plugin 内で登録済みの system は `pub` に昇格してもインターフェースは変わらない
+- `// pub: headless integration test が seam を駆動するため` のコメントを添える（i5 の `apply_layout_system` 参照）
+- Save As (`handle_save_as_layout_system`) のように **常に rfd ダイアログを呼ぶ** system は headless 不可。`#[ignore]` stub として残し理由をコメントに書く
+
+**CacheDirGuard RAII パターン（cache 書き込みの隔離）:**
+
+```rust
+struct CacheDirGuard(Option<OsString>);
+
+impl Drop for CacheDirGuard {
+    fn drop(&mut self) {
+        unsafe {
+            match &self.0 {
+                Some(v) => std::env::set_var("BACKCAST_CACHE_DIR", v),
+                None => std::env::remove_var("BACKCAST_CACHE_DIR"),
+            }
+        }
+    }
+}
+
+// テスト内:
+let cache_dir = dir.path().join("cache");
+let _cache_guard = {
+    let prev = std::env::var_os("BACKCAST_CACHE_DIR");
+    unsafe { std::env::set_var("BACKCAST_CACHE_DIR", &cache_dir); }
+    CacheDirGuard(prev)
+};
+// Drop で自動復元される
+```
+
+**AppHistory を使った undo/redo テスト:**
+
+`undo_redo_system` は `UndoMenuRequested` / `RedoMenuRequested` イベントで駆動する。
+`AppHistory.record` に直接 `AppEdit::Text(...)` を push → undo/redo の pending 観測:
+
+```rust
+let mut history = app.world_mut().resource_mut::<AppHistory>();
+let edit = AppEdit::Text(TextEdit { before: "old".into(), after: "new".into(), .. });
+let AppHistory { record, pending, .. } = &mut *history;
+record.edit(pending, edit);
+history.pending.queue.clear(); // 通常入力時は push_text が clear する
+```
+
+undo 後は `history.pending.queue[0]` に `SetStrategySource { text: "old" }` が積まれる。
+
 ### What NOT to test in unit tests
 
 - Bevy rendering systems — these require a GPU context
 - Systems that depend on `Window` or `AssetServer` — use E2E instead
 - Full plugin chains — test the systems directly, not the plugin wiring
+- rfd ダイアログを**常に**呼ぶ system（Save As の `handle_save_as_layout_system`）— headless 不可
 
 ## Best Practices
 

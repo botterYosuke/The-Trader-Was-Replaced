@@ -2,59 +2,85 @@
 name: behavior-to-e2e
 description: >-
   The-Trader-Was-Replaced（Bevy + Python gRPC）で、ユーザーが「こう動いてほしい / こうなったら困る /
-  この挙動を保証して」と挙動を言葉で説明したとき、それを **ヘッドレス自動 E2E テスト** に変換するスキル。
-  既存ハーネス（`tests/e2e/support/mod.rs` の `Harness`）の上に `tests/e2e_replay.rs` へ `#[test]` を足し、
-  backend→ECS seam（`BackendStatusUpdate` / `BackendEvent` / replay clock を注入し resource を assert）で検証する。
+  この挙動を保証して」と挙動を言葉で説明したとき、それを **リリース前の E2E / release-gate 項目** に変換するスキル。
+  `tests/e2e/FLOWS.md` に flow を追加し、実装可能なものは `tests/e2e_replay.rs` や UI/integration/render harness に
+  自動テストを足す。backend→ECS seam（`BackendStatusUpdate` / `BackendEvent` / replay clock）だけでなく、
+  Bevy UI 入力、layout/file I/O、CLI/backend integration、実ウィンドウ smoke も対象にする。
   必ず起動する場面: 「この挙動をテストにして」「〜したら〜になることを保証したい」「〜が壊れてないか自動で確認したい」
   「リプレイが完走することをテスト」「Run が失敗したら error が出るのを担保」「ポートフォリオが反映されるか」
   「venue ログインの状態遷移をテスト」「銘柄リストの取得失敗をテスト」「回帰テストを追加」「E2E を1本足して」
-  「FLOWS.md の flow を実装」「backend からこのイベントが来たら UI がこうなる、をテスト」と言われたとき。
+  「FLOWS.md の flow を実装」「backend からこのイベントが来たら UI がこうなる、をテスト」
+  「メニュー/エディタ/チャート/モーダル/レイアウトの操作をリリース前に保証したい」と言われたとき。
   さらに **`e2e_replay` が全本落ちる / ハーネスが panic する / `could not access system parameter` が出た /
-  マージ後に E2E が壊れた**ときの**ハーネス修復**も本スキルの対象（必要 resource の insert 漏れが定番原因）。
-  **Phase ブランチ（`sasa/N-...`）を main にマージする / フェーズマージの健全性を確認する**ときも、E2E が
-  壊れてから直すのではなく着手時に本スキルを開く: マージ後に各 system の `Res`/`ResMut` 引数を grep し
-  （`awk '/pub fn xxx_system/{f=1}f{print}f&&/\) \{/{exit}'`）、新規 resource が `tests/e2e/support/mod.rs`
-  の `Harness` に insert 漏れしていないか先に確認する（例: Phase 10 で `LiveRuns` / `PromoteFeedback` 追加 →
-  入れ忘れて全 35 本 panic）。
-  GUI を実際に起動して目視する手動検証は本スキルではなく `e2e-testing` を使う。本スキルは描画に依存しない
-  resource レベルの自動テスト専用。Rust の一般的なユニットテスト作法は `rust-testing` を併用する。
+  マージ後に E2E が壊れた / `BackendEvent`・`BackendStatusUpdate` などの列挙子にフィールドが増えて
+  `e2e_replay` が `missing field` でコンパイルできない（テストドリフト）**ときの**ハーネス修復**も本スキルの対象
+  （必要 resource の insert 漏れ・列挙子フィールド追従漏れが定番原因）。
+  **Phase ブランチ（`sasa/N-...`）や E2E ブランチ（`docs/e2e`）を main にマージする / マージの健全性を
+  確認する**ときも、壊れてから直すのではなく着手時に本スキルを開く: まずマージが Rust
+  （`src/**`/`.proto`/`tests/*.rs`）を触るかを確認し、触るなら各 system の `Res`/`ResMut` 引数を grep して
+  新規 resource が `tests/e2e/support/mod.rs` の `Harness` に insert 漏れしていないか先に確認する
+  （例: Phase 10 で `LiveRuns` / `PromoteFeedback` 追加 → 入れ忘れて全本 panic）。
+  既存方式で不可能な場合も「対象外」にせず、代替方式（`kind:ui` / `kind:render` / `kind:integration` /
+  `kind:manual-gate`）を FLOWS.md に明記する。Rust の一般的なユニットテスト作法は `rust-testing` を併用する。
 ---
 
 # behavior-to-e2e — 挙動の言葉を E2E テストに変える
 
-ユーザーが日本語で語った「こうあってほしい挙動」を、`tests/e2e_replay.rs` の `#[test]` に落とす。
-このプロジェクトの E2E は **OS マウス操作にも描画にも依存しない**。`MinimalPlugins` のヘッドレス Bevy
-`App` に、backend が押し出すメッセージ（縫い目 = seam）を注入し、結果の **resource 状態を assert** する。
-これが issue #4「Add internal E2E test hooks」の核。`tests/e2e/FLOWS.md` が全 flow の索引。
+ユーザーが日本語で語った「こうあってほしい挙動」を、`tests/e2e/FLOWS.md` の flow と、対応する自動テストまたは
+release-gate 項目に落とす。既存の `tests/e2e_replay.rs` は backend→ECS seam を検証する state harness だが、
+リリース前の最後の砦としてはそれだけでは足りない。ユーザーが取りうる操作は原則すべてカタログ化し、
+可能な限り自動テストにする。採用中の方式で忠実に検証できない場合も除外せず、代替方式を明記する。
 
 ## なぜこの形なのか（先に理解する）
 
-本アプリの状態機械は「backend → ECS」の一方向で動く。backend（Python gRPC、replay/live runner）が
-状態を push し、Rust 側の 3 つの drain system がそれを resource に反映する。**ユーザーに見える状態遷移は
-ほぼ全てこの seam を通る**。だからウィンドウを開かなくても、seam にメッセージを流して resource を見れば
-「ユーザーが画面で見るはずの挙動」を決定論的に検証できる。逆に言うと、**seam を通らない挙動
-（純粋な UI クリック → 描画）は本スキルの対象外**で、`e2e-testing`（手動目視）に回す。
+本アプリには複数の検証面がある。backend（Python gRPC、replay/live runner）が push する状態は
+`BackendStatusUpdate` / `BackendEvent` / replay clock を注入すれば deterministic に検証できる。一方で、
+メニュー、モード切替 gating、Strategy Editor、Startup パネル、銘柄ピッカー、チャート操作、注文フォーム、
+モーダル、レイアウト保存は、ユーザー入力・Bevy UI entity・ファイル I/O・描画 state が本体であり、
+backend→ECS seam だけでは十分条件にならない。
+
+したがって flow には必ず `kind` を割り当てる:
+
+| kind | 使う場面 | 主な観測 |
+|---|---|---|
+| `state` | backend→ECS seam で十分に検証できる挙動 | resource 状態 |
+| `ui` | Bevy UI 操作、キーボード、focus、modal、gating | `Interaction` / `ButtonInput<KeyCode>` / text input 注入、entity `Text` / `Display` / command channel |
+| `render` | headless resource では画面崩れを検出しづらい挙動 | 実ウィンドウ smoke、スクリーンショット、構造化 UI dump |
+| `integration` | CLI、backend、file I/O、env guard、実プロセス | temp fixture、出力ファイル、gRPC 応答、exit status |
+| `manual-gate` | 実口座など自動化が危険または不可能なもの | 手順、期待結果、実施記録。必ず自動 smoke と組み合わせる |
 
 ## ワークフロー
 
 1. **挙動を 1 文の不変条件に言い換える**。「Run したら完了する」→「`RunStarted` の後 `RunComplete` を受けると
-   `RunState` が `Running`→`Completed` になり `parsed_summary` が埋まる」。ユーザーの言葉のままでなく、
-   観測可能な resource 遷移に翻訳する。曖昧なら何を観測すれば「動いた」と言えるかをユーザーに確認する。
+   `RunState` が `Running`→`Completed` になり `parsed_summary` が埋まる」。UI 操作なら
+   「クリック/入力後、どの entity/resource/file/command が変わればユーザー行動が保証されたと言えるか」まで落とす。
+   曖昧なら何を観測すれば「動いた」と言えるかをユーザーに確認する。
 2. **FLOWS.md に該当 flow があるか見る**。あれば ID（A1/B2/D3…）と seam・観測がそのまま設計。
-   なければ新規 flow として、近いセクション（A〜G）に `- [ ]` 行を追記してよい。
-3. **seam を特定する**（下表）。`src/backend_sync.rs` の `apply_status_update` が
-   「どの `BackendStatusUpdate` がどの resource をどう変えるか」の **唯一の正解**。推測せずここを読む。
-4. **`tests/e2e_replay.rs` に `#[test]` を足す**。既存 4 本（A1/A2/A6/B1）と追加分（A3/A4/A7/A8/B2/C/D/E/F1/F2/G1）が
-   そのままお手本。`Harness::new()` → seam を send → 観測を assert。
-5. **観測アクセサが無ければ `Harness` に足す**（`tests/e2e/support/mod.rs`）。既存の `portfolio()` と同形:
+   なければ新規 flow として、近いセクション（A〜L）に `- [ ]` 行を追記してよい。
+3. **kind を決める**。backend→ECS の resource 変化だけで十分なら `kind:state`。UI 操作・入力・未送信 gating は
+   `kind:ui`。ファイル/CLI/backend/env は `kind:integration`。見た目崩れや overlap は `kind:render`。
+   実口座など自動化が危険なら `kind:manual-gate` だが、必ず自動 smoke と組み合わせる。
+4. **state flow は seam を特定する**（下表）。`src/backend_sync.rs` の `apply_status_update` と
+   `backend_event_drain_system` が「どの `BackendStatusUpdate` / `BackendEvent` がどの resource をどう変えるか」の
+   正解。推測せずここを読む。
+5. **ui flow はユーザー入力 seam を特定する**。`Interaction::Pressed`、`ButtonInput<KeyCode>`、`MouseWheel`、
+   text input、focused entity、time advance、command channel のどれを注入し、どの entity/resource/file を assert するかを決める。
+   「command を送らない」ことが仕様なら、transport channel を監視して未送信を assert する。
+6. **integration/render/manual-gate flow は代替方式を書く**。OS file dialog は選択済み path event/resource を注入する。
+   実ウィンドウ smoke は `BACKCAST_E2E=1` の固定 fixture、スクリーンショットまたは構造化 UI dump で確認する。
+   実 venue は env isolated backend integration と手順付き manual gate に分ける。
+7. **実装する**。`kind:state` は `tests/e2e_replay.rs` に `#[test]` を足す。`Harness::new()` → seam を send →
+   観測を assert。`kind:ui` / `kind:integration` / `kind:render` は既存 harness が無ければ `tests/e2e/support/`
+   に薄い helper を足し、flow ごとに最小実装する。
+8. **観測アクセサが無ければ Harness に足す**（`tests/e2e/support/mod.rs`）。既存の `portfolio()` と同形:
    `self.app.world().resource::<T>().clone()`。`BackendStatus` は `Clone` 非実装なのでフラグを直接返す
    （`backend_connected()` 等の前例あり）。
-6. **走らせる**: `cargo test --test e2e_replay`。**初回コンパイルは Bevy 全体をリンクするため ~11 分**かかる
-   （バックグラウンド実行推奨）。2 回目以降は速い。green を確認。
-7. **FLOWS.md を更新**: 実装した flow を `- [x]` にし、末尾「実装状況」に 1 行追記。
-8. 完了したら `CLAUDE.md` 規約に従い `simplify` と `post-impl-skill-update` を発動。
+9. **走らせる**。state harness は `cargo test --test e2e_replay`。**初回コンパイルは Bevy 全体をリンクするため ~11 分**
+   かかる（バックグラウンド実行推奨）。integration/render は flow に書いた release gate command を実行する。green を確認。
+10. **FLOWS.md を更新**: 実装した flow を `- [x]` にし、末尾「実装状況」に 1 行追記。
+11. 完了したら `CLAUDE.md` 規約に従い `simplify` と `post-impl-skill-update` を発動。
 
-## seam → resource 早見表
+## state seam → resource 早見表
 
 | 検証したい挙動 | 送る seam | 観測する resource |
 |---|---|---|
@@ -68,6 +94,32 @@ description: >-
 | 実行モード | `ExecutionModeChanged{mode}` | `ExecutionModeRes.mode` |
 | ライブ価格 | `LastPricesUpdated{prices}` | `LastPrices.map` |
 | 接続状態 | `Connected(bool)` / `Running(bool)` / `Error(e)` | `BackendStatus`(`connected`/`running`/`last_error`) |
+
+## UI / integration flow 早見表
+
+| 検証したい挙動 | 入力 seam | 観測 |
+|---|---|---|
+| メニュー開閉 | `Alt+F/E/V`、menu button `Interaction::Pressed`、`Escape` | `OpenMenu`、menu entity の `Display` / `Visibility` |
+| モード切替 gating | Replay/Manual/Auto segment click | `TransportCommandSender` の受信有無、error/disabled 表示 |
+| File Open | OS dialog をバイパスし selected path event/resource を注入 | sidecar/strategy load、Strategy Editor spawn、scenario metadata |
+| レイアウト保存/復元 | window move/close/resize、Save/Load、time advance | temp sidecar JSON、復元後 `WindowRoot` / viewport |
+| Strategy Editor 入力 | focused editor + key/text input | `StrategyFragment`、cache file、history、find panel state |
+| Startup パネル検証 | field edit + Run button | error label、Run command 未送信/送信、sidecar writeback |
+| 銘柄ピッカー | `+ Add`、search text、candidate click、remove | candidate rows、placeholder text、scenario instruments、readonly |
+| Chart 操作 | wheel、Ctrl+wheel、drag、double click | `ChartViewState`、camera pan/zoom、autoscale |
+| 注文 UI / modal | form input、submit、confirm、context menu、Escape | command channel、modal visibility、feedback resource |
+| CLI/backend | process command、gRPC request、env guard | exit status、stdout、files、gRPC response |
+| render smoke | `BACKCAST_E2E=1` fixed fixture | screenshot or structured UI dump baseline |
+
+## kind:integration レシピ — File Open → パネル spawn を headless で駆動
+
+`tests/e2e/flows/i5_file_open_spawns_editor_and_chart.rs` が手本。state `Harness` は使わず、bare `App` に**必要な system だけ**を載せる（`UiPlugin` / `LayoutPersistencePlugin` 全体を足すと save/shortcut 系が `ButtonInput`/`Time` 等を要求し resource whack-a-mole になる）。要点:
+
+- **seam**: temp `.json`（`windows:[{kind:"StrategyEditor", region_key:"region_001", ...}]`・`strategy_path:null`）を書き、`LayoutLoadRequested{ path, mode: LayoutLoadMode::UserJsonOpen }` を `send_event`。`apply_layout_system` は **`strategy_path` 付きだと `.py` ロード待ちに defer** するが、`strategy_path:null` + `windows` だと同フレームで `PanelSpawnRequested` を直接送る（headless で素直なのはこちら）。
+- **載せる system（すべて pub）**: `apply_layout_system` → `panel_spawn_dispatcher_system`（Strategy Editor spawn）→ `instrument_chart_sync_system`（Chart spawn）を `.chain()` で順序固定。`instrument_chart_sync_system` は `registry.is_changed()` で early-return するので `InstrumentRegistry` を **insert してから**初回 `update()` で spawn される。`scenario` JSON → `InstrumentRegistry` の parse は `scenario_parser` 単体テスト持ちなので registry は直接 insert してよい。
+- **resource**: apply_layout=`WindowManager`/`PendingLayoutApply`/`PendingStrategyFragments`/`ScenarioReadTarget` + `Camera2d` entity（`get_single_mut`）。dispatcher=`CosmicFontSystem`/`RegionKeyAllocator`/`AppHistory`/`PendingStrategyFragments`/`StrategyBuffer`。chart sync=`InstrumentRegistry`/`InstrumentTradingDataMap`。event=`LayoutLoadRequested`/`PanelSpawnRequested`/`StrategyFileLoadRequested` を `add_event`。
+- **観測**: `query_filtered::<(), (With<StrategyEditorId>, With<WindowRoot>)>()` 件数 ≥ 1、`query_filtered::<&ChartInstrument, With<WindowRoot>>()` に対象 `instrument_id`。
+- **cosmic / 依存の罠は `bevy-engine` スキル参照**（`CosmicFontSystem(FontSystem::new())` の手構築、`cosmic-text` を dev-dep 追加、外部 tests/ は normal deps は引けるが transitive は引けない）。
 
 ## ハーネス API（`tests/e2e/support/mod.rs`）
 
@@ -114,10 +166,8 @@ description: >-
   trait 未実装(E0046)になる別件 — マージ後チェックリストは memory `phase-merge-breaks-test-doubles` 参照。
 - **event seam は一部だけ resource を変える（Phase 9 マージ以降）**。`backend_event_drain_system` は
   `OrderEvent` → `LiveOrders.apply_event`、`AccountEvent` → `apply_account_event`（`PortfolioState`）、
-  `SecretRequired` → `SecretPrompt.active` を反映する（= F3/F4/F5 は実装済み・観測可能）。**ただし
-  `VenueLogoutDetected` だけは今も `info!` のみで resource を変えない**ので D5 は assert 不可。
-  D5 を実装するには `VenueStatusRes` を Disconnected 相当へクリアする本番拡張（`src/backend_sync.rs`）が
-  必要 = スコープ拡大。着手前にユーザーへ確認すること。**重要: この欄も含め要約はドリフトしうるので、
+  `SecretRequired` → `SecretPrompt.active`、`VenueLogoutDetected` → `ReloginPrompt.active` を反映する
+  （= F3/F4/F5/D5 は実装済み・観測可能）。**重要: この欄も含め要約はドリフトしうるので、
   着手時は必ず `src/backend_sync.rs` の `backend_event_drain_system` / `apply_status_update` を実際に
   読んで「どの seam がどの resource を変えるか」を現物確認する**こと。
 - **注文 RPC（status seam, Phase 9）**: `OrderSeeded`/`OrderStatusUpdated`/`OrderModified`/`OrderRejected`
@@ -125,19 +175,49 @@ description: >-
   を更新する（FLOWS.md の H セクション=H1〜H5）。`ExecutionModeChanged` は実モード変更時に
   `PortfolioState` を default リセット（Live/Replay 口座データ混線防止）する点が回帰の肝。観測には
   ハーネスの `live_orders()` / `order_feedback()` / `secret_prompt()` アクセサを使う。
-- **`TransportCommand` 側（UI → gRPC）はハーネスでは駆動しない**。`SetSpeed`/`StepForward`/`SelectedSymbol`
-  のような「UI が backend に投げるコマンド」は seam の手前。v1 は「backend が押し返す ack/clock を UI が
-  忠実にミラーする」ことの検証に留める（A2/A3 がこの形）。backend ack の variant が無い挙動
-  （例: speed ack）は**保留**にし、FLOWS.md にその理由を明記する。完全な単一プロセスループ
-  （コマンド注入→mock gRPC→resource 観測）は transport task（`main.rs setup_backend_connection`）の
-  lib 抽出 = 別タスク「Phase A-full」。
+- **`TransportCommand` 側（UI → gRPC）は state harness だけでは駆動しない**。`SetSpeed`/`SelectedSymbol`
+  のような「UI が backend に投げるコマンド」は backend→ECS seam の手前。これを対象外にせず、
+  `kind:ui` で command channel への送信/未送信を assert する。backend ack の variant が無い挙動
+  （例: speed ack）は state flow だけで完結させず、UI command 発行テストと transport/integration テストに分ける。
+  完全な単一プロセスループ（コマンド注入→mock gRPC→resource 観測）は transport task
+  （`main.rs setup_backend_connection`）の lib 抽出 = 別タスク「Phase A-full」。
 - **反対側 seam（`TransportCommand`→gRPC→`BackendStatusUpdate`）は `tests/backend_integration.rs` が
-  mock tonic サーバで既にカバー済み**。両者で end-to-end を構成する。重複して書かない。
+  mock tonic サーバで既にカバーしている部分がある**。重複を避けつつ、ユーザー操作として未保証なら
+  `kind:ui` または `kind:integration` の flow を追加する。
 - **`BackendTradingState` は `Default` を持たない**。clock 以外で必要なら `h.push_state` と同様に
   `serde_json::from_value(json!({"price":0.0,"history":[],"timestamp":0.0, ...}))` で最小構築する
   （必須は `price`/`history`/`timestamp` のみ、他は `#[serde(default)]`）。
 - **文字列フィールドは wire フォーマットのまま**。`PortfolioOrder.side`/`.status` は `String`
   （`"BUY"`/`"FILLED"`）。enum 化されていないので文字列リテラルで正しい。
+- **bare `App`（UI flow）には input プラグインが無く `ButtonInput<KeyCode>` はフレーム境界で自動 clear されない**。
+  `just_pressed` が前フレームから sticky に残り、既に pressed のキーへの再 `press()` は no-op（just_pressed を作らない）。
+  各キー操作の前に `keys.reset_all()` してから `press(...)` し直すこと。Escape の連続押下・トグル系（メニュー Alt+F、
+  注文/モーダルの Escape 優先テスト）で「2 回目が効かない」のは大抵これ。同様に **`Time::<()>` の delta は最後の
+  `advance_by` 値で固定**（`update()` で 0 に戻らない）。cooldown 等を「時間未経過」で検証したいときは
+  `advance_by(Duration::ZERO)` で delta=0 にし、cooldown 解除には `advance_by(1s)` する。
+- **`tests/e2e/support/mod.rs` の `Harness` は UI 駆動メソッド（`run_via_ui`/`click<M>`/`drain_commands`/`set_replay_state`）
+  を持つ拡張版で、A/B/C 群の flow がこれらに依存する**。failing な 1 本を直すために `git checkout HEAD -- mod.rs`
+  したり mod.rs / 他 flow を安易に上書きしないこと（未コミットの拡張を消すと 10+ 本が `no method named run_via_ui`
+  で全落ちし、working-tree のみの内容は復元不能になりうる）。共有ファイル（mod.rs / runner / 別 flow）を触る前に
+  「その working-tree 版に依存する未コミット flow が無いか」を必ず確認する。詳細は memory `e2e-harness-extended-ui-driven`。
+- **`click<M>(marker)` の仕組み = `(marker, Button, Interaction::Pressed)` を spawn して `tick()` 1 回**。新規追加した
+  `Interaction` は `Changed<Interaction>` に必ずヒットするので、本番ハンドラ（`*_button_system`）が**ちょうど 1 回**発火する
+  （実マウス押下と同じ経路）。毎回新 entity なので同じボタンを連続クリックしても再発火する。producer→consumer
+  （例 `footer_pause_resume_system`→`handle_strategy_run_system`、remove→`unsubscribe_removed_instruments_system`）は
+  harness 側で `.chain()` 済みなので 1 tick で「クリック→`StrategyRunRequested`→`RunStrategy` コマンド」まで通る。
+  発射コマンドは `drain_commands()` で受ける。**「実 UI 操作で `TransportCommand` を assert → その後 backend 応答を
+  seam から注入」**が A–H の基本パターン。
+- **`push_state(ts)` は `TradingSession.replay_state` を `None` に上書きする**（fixture に replay_state が無いため）。
+  footer の Pause/Resume は `replay_state` で分岐するので、**`set_replay_state(Some("RUNNING"))` は必ず `push_state` の
+  「後」に呼ぶ**。順序を逆にすると clock push が RUNNING を消し、Pause クリックが Run 扱いになって command assert が落ちる
+  （A2 で踏んだ）。`unsubscribe_removed_instruments_system` は mode 切替 frame を skip するので、削除クリックの前に
+  `set_instruments` + 安定 tick を 1 回挟んで Local の prev 集合を整えてから × ボタンを押す（F2）。
+- **共有 runner（`tests/e2e_replay.rs`）の登録は orchestrator が一括で行う**。並行 subagent に書かせると重複登録・
+  順序衝突・cargo の target ロック競合が起きる。subagent には「flow ファイルだけ書く / cargo も runner も触らない」と
+  明示し、登録・コンパイル・修正は中央で回す。
+- **headless 不可 / 未実装の flow は fake せず doc stub（`//!` のみ・`#[test]` 無し）にして runner 未登録のまま残す**。
+  `kind:render`（ShapePainter+Text2d=GPU 必要）、Windows 専用 PowerShell、実ウィンドウ smoke、production 未実装機能が該当。
+  外部データ依存（catalog / J-Quants）や OS dialog（rfd 直呼び）は `#[test] #[ignore]` + 理由 doc にする。
 - **既存 warning は触らない**（`main.rs:33 UnsubscribeRequest` 等、本作業と無関係）。新規 warning は増やさない。
 - **コメントは「なぜ」だけ**。何をしているかの説明やタスク言及は書かない（プロジェクト規約）。
 
@@ -182,8 +262,11 @@ import は `tests/e2e_replay.rs` 冒頭の `use backcast::trading::{...}` / `use
 
 ## 完了基準
 
-- `cargo test --test e2e_replay` が全本数 green。
-- 観測が「ユーザーが語った挙動」と対応している（resource 遷移がその挙動の十分条件になっている）。
+- 追加・変更した flow の `kind` に対応する release gate が green。
+  `kind:state` は `cargo test --test e2e_replay`、`kind:ui` / `kind:integration` / `kind:render` は
+  flow に記載した command または harness、`kind:manual-gate` は手順・期待結果・実施条件が明記されている。
+- 観測が「ユーザーが語った挙動」と対応している。resource 遷移、UI entity、command channel、file output、
+  screenshot/structured dump のいずれかが、その挙動の十分条件になっている。
 - A8（stale startup_id の相関）/ D7（Live universe が Replay fallback を上書き・prune しない不変条件）の
   ような**回帰の肝**を新規テストで壊していない。
 - FLOWS.md のチェックボックスと「実装状況」を更新済み。

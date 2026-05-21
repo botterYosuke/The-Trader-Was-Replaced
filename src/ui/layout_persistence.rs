@@ -379,7 +379,7 @@ fn compute_cache_restore_fallback_spawns(
         .collect()
 }
 
-fn apply_cache_restore_system(
+pub fn apply_cache_restore_system(
     mut events: EventReader<CacheRestoreRequested>,
     mut buffer: ResMut<StrategyBuffer>,
     mut allocator: ResMut<RegionKeyAllocator>,
@@ -504,7 +504,7 @@ fn apply_cache_restore_system(
 }
 
 #[allow(clippy::type_complexity)]
-fn handle_save_layout_system(
+pub fn handle_save_layout_system(
     mut events: EventReader<LayoutSaveRequested>,
     panels: Query<
         (
@@ -799,7 +799,9 @@ fn handle_load_dialog_system(
 }
 
 #[allow(clippy::too_many_arguments, clippy::type_complexity)]
-fn apply_layout_system(
+// pub: headless integration test（tests/e2e/flows/i5_*）が file-open → spawn の
+// seam を駆動するため。本番の登録は LayoutPersistencePlugin 内のまま。
+pub fn apply_layout_system(
     mut commands: Commands,
     mut events: EventReader<LayoutLoadRequested>,
     mut panels: Query<
@@ -1058,7 +1060,8 @@ fn apply_layout_system(
     }
 }
 
-fn apply_pending_layout_system(
+// pub: headless integration test（i5_*）が strategy_path 経由の deferred spawn を駆動するため。
+pub fn apply_pending_layout_system(
     mut pending: ResMut<PendingLayoutApply>,
     mut panels: Query<
         (
@@ -1255,7 +1258,8 @@ fn debounced_autosave_system(
     auto_save.last_change = None;
 }
 
-fn layout_shortcut_system(
+// pub: headless integration test（i5_*）が Ctrl+O ジェスチャ→LayoutLoadDialogRequested を駆動するため。
+pub fn layout_shortcut_system(
     keys: Res<ButtonInput<KeyCode>>,
     time: Res<Time>,
     mut cooldown: Local<f32>,

@@ -644,7 +644,12 @@ pub fn log_strategy_file_load_requested_system(mut events: EventReader<StrategyF
 }
 
 pub(crate) fn cache_state_paths() -> Option<(std::path::PathBuf, std::path::PathBuf)> {
-    let dir = dirs::cache_dir()?.join("the-trader-was-replaced");
+    // BACKCAST_CACHE_DIR が設定されていればそれを使う（headless テストが実アプリ共有の
+    // cache を汚さず strategy ロードを検証するための隔離フック。未設定なら従来どおり OS cache dir）。
+    let dir = match std::env::var_os("BACKCAST_CACHE_DIR") {
+        Some(d) => std::path::PathBuf::from(d),
+        None => dirs::cache_dir()?.join("the-trader-was-replaced"),
+    };
     Some((dir.join("app_state.json"), dir.join("app_state.py")))
 }
 
