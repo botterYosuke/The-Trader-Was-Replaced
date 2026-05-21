@@ -6,7 +6,7 @@
 //! Only `.rs` files directly under `tests/` form a test crate, so the shared
 //! harness and the per-flow files are pulled in via `#[path]` module
 //! declarations. Each flow file holds exactly one `#[test]` — the file count
-//! equals the test count (currently 38).
+//! equals the test count (currently 39).
 
 #[path = "e2e/support/mod.rs"]
 mod support;
@@ -100,6 +100,10 @@ mod h5_exec_mode_change_resets_portfolio;
 mod h6_order_notice;
 #[path = "e2e/flows/h7_secret_submit_failed.rs"]
 mod h7_secret_submit_failed;
+
+// I. Menu / file-open / layout (UI / integration)
+#[path = "e2e/flows/i5_file_open_spawns_editor_and_chart.rs"]
+mod i5_file_open_spawns_editor_and_chart;
 
 // K. Reconcile
 #[path = "e2e/flows/k6_reconcile_modal_after_backend_restart.rs"]

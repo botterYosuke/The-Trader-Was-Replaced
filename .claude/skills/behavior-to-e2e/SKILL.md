@@ -106,6 +106,16 @@ backend→ECS seam だけでは十分条件にならない。
 | CLI/backend | process command、gRPC request、env guard | exit status、stdout、files、gRPC response |
 | render smoke | `BACKCAST_E2E=1` fixed fixture | screenshot or structured UI dump baseline |
 
+## kind:integration レシピ — File Open → パネル spawn を headless で駆動
+
+`tests/e2e/flows/i5_file_open_spawns_editor_and_chart.rs` が手本。state `Harness` は使わず、bare `App` に**必要な system だけ**を載せる（`UiPlugin` / `LayoutPersistencePlugin` 全体を足すと save/shortcut 系が `ButtonInput`/`Time` 等を要求し resource whack-a-mole になる）。要点:
+
+- **seam**: temp `.json`（`windows:[{kind:"StrategyEditor", region_key:"region_001", ...}]`・`strategy_path:null`）を書き、`LayoutLoadRequested{ path, mode: LayoutLoadMode::UserJsonOpen }` を `send_event`。`apply_layout_system` は **`strategy_path` 付きだと `.py` ロード待ちに defer** するが、`strategy_path:null` + `windows` だと同フレームで `PanelSpawnRequested` を直接送る（headless で素直なのはこちら）。
+- **載せる system（すべて pub）**: `apply_layout_system` → `panel_spawn_dispatcher_system`（Strategy Editor spawn）→ `instrument_chart_sync_system`（Chart spawn）を `.chain()` で順序固定。`instrument_chart_sync_system` は `registry.is_changed()` で early-return するので `InstrumentRegistry` を **insert してから**初回 `update()` で spawn される。`scenario` JSON → `InstrumentRegistry` の parse は `scenario_parser` 単体テスト持ちなので registry は直接 insert してよい。
+- **resource**: apply_layout=`WindowManager`/`PendingLayoutApply`/`PendingStrategyFragments`/`ScenarioReadTarget` + `Camera2d` entity（`get_single_mut`）。dispatcher=`CosmicFontSystem`/`RegionKeyAllocator`/`AppHistory`/`PendingStrategyFragments`/`StrategyBuffer`。chart sync=`InstrumentRegistry`/`InstrumentTradingDataMap`。event=`LayoutLoadRequested`/`PanelSpawnRequested`/`StrategyFileLoadRequested` を `add_event`。
+- **観測**: `query_filtered::<(), (With<StrategyEditorId>, With<WindowRoot>)>()` 件数 ≥ 1、`query_filtered::<&ChartInstrument, With<WindowRoot>>()` に対象 `instrument_id`。
+- **cosmic / 依存の罠は `bevy-engine` スキル参照**（`CosmicFontSystem(FontSystem::new())` の手構築、`cosmic-text` を dev-dep 追加、外部 tests/ は normal deps は引けるが transitive は引けない）。
+
 ## ハーネス API（`tests/e2e/support/mod.rs`）
 
 - 構築: `let mut h = Harness::new();`（`backend_enabled: true` で明示構築済み。env 非依存）

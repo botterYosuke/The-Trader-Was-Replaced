@@ -500,6 +500,7 @@ dependencies = [
  "bevy_pancam",
  "bevy_vector_shapes",
  "chrono",
+ "cosmic-text",
  "dirs",
  "prost",
  "protoc-bin-vendored",

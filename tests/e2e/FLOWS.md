@@ -55,11 +55,15 @@
 
 release gate 列の ID（`I*` / `J*` / `K*` / `L*` 群、保留中の `A5` / `C5` / `D8` など）は **まだ `.rs` 化していない planned flow** の識別子。実装時に `tests/e2e/flows/<id>.rs`（または `kind:render` / `kind:integration` の専用ハーネス）として起こす。
 
+実装済みの代替方式 flow:
+
+- **I5 ✅** `tests/e2e/flows/i5_file_open_spawns_editor_and_chart.rs`（`kind:integration`）— temp `.json` を `LayoutLoadRequested{UserJsonOpen}` で開き、本番の `apply_layout_system` → `panel_spawn_dispatcher_system` で Strategy Editor、`instrument_chart_sync_system` で Chart の entity spawn を assert（rfd ダイアログはバイパス、cosmic はフォント resource のみ headless 挿入）。残る画面 smoke は `L4`。
+
 | 対象 | 直接駆動だけで不足する理由 | 代替方式 | release gate |
 |---|---|---|---|
 | メニュー開閉 / Alt+F/E/V | backend seam を通らず、keyboard focus と UI entity 表示が本体 | `kind:ui`。`ButtonInput<KeyCode>` と `Interaction` を注入し `OpenMenu` / entity 表示を assert | I1/I3 必須 |
 | モード切替 gating | command を送らないことが仕様で、backend ack では観測できない | `kind:ui`。送信 channel を監視し「未送信」を assert | I4 必須 |
-| OS ファイルダイアログ | CI で OS native dialog を安定操作しにくい | dialog 自体はバイパスし、選択済み path event/resource を注入。別途 smoke で起動確認 | I5 + L4 |
+| OS ファイルダイアログ | CI で OS native dialog を安定操作しにくい | dialog 自体はバイパスし、選択済み path event/resource を注入。別途 smoke で起動確認 | I5 ✅ + L4 |
 | レイアウト永続化 | ファイル I/O と debounce が主対象 | temp dir fixture で `Save/Load` を integration 実行し JSON と復元 entity を assert | I7/I8 必須 |
 | cosmic_edit 入力 | text editor plugin の focus/keyboard 処理が主対象 | `kind:ui`。focused entity と keyboard/text input を注入。必要なら最小実ウィンドウ smoke を追加 | J1-J4 必須 |
 | Startup パネル入力検証 | Run command を送らない UI gating が仕様 | `kind:ui`。field editor state、error label、transport channel 未送信/送信を assert | J5/J6 必須 |

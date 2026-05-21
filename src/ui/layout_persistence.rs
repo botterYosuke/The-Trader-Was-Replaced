@@ -799,7 +799,9 @@ fn handle_load_dialog_system(
 }
 
 #[allow(clippy::too_many_arguments, clippy::type_complexity)]
-fn apply_layout_system(
+// pub: headless integration test（tests/e2e/flows/i5_*）が file-open → spawn の
+// seam を駆動するため。本番の登録は LayoutPersistencePlugin 内のまま。
+pub fn apply_layout_system(
     mut commands: Commands,
     mut events: EventReader<LayoutLoadRequested>,
     mut panels: Query<
