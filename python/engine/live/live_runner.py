@@ -92,6 +92,9 @@ class LiveRunner:
         # (再試行可能 / 状態の真実は adapter 側)。
         await self._adapter.unsubscribe(instrument_id)
         self._aggregators.pop(instrument_id, None)
+        # 進行中バーの変更検出キャッシュから当該銘柄の dead key を落とす。
+        for key in [k for k in self._last_partial if k[0] == instrument_id]:
+            self._last_partial.pop(key, None)
 
     def add_tick_listener(self, listener: Callable[[TradesUpdate], None]) -> None:
         """生 `TradesUpdate` を受け取る listener を登録する (Step 8)。
@@ -162,7 +165,9 @@ class LiveRunner:
         try:
             while True:
                 await asyncio.sleep(self._partial_push_interval_s)
-                for instrument_id, aggs in self._aggregators.items():
+                # items() のスナップショットで回す: publish の await 中に subscribe/
+                # unsubscribe が _aggregators を変えても "changed size" で死なせない。
+                for instrument_id, aggs in list(self._aggregators.items()):
                     for idx, agg in enumerate(aggs):
                         kline = agg.build_now()
                         if kline is None:
@@ -176,7 +181,7 @@ class LiveRunner:
         except asyncio.CancelledError:
             return
         except Exception:  # noqa: BLE001 — bus close 後など。push 経路の失敗で runner を壊さない
-            log.debug("partial bar push task stopped", exc_info=True)
+            log.warning("partial bar push task stopped on error", exc_info=True)
             return
 
     async def stop(self) -> None:
@@ -189,6 +194,8 @@ class LiveRunner:
             except asyncio.CancelledError:
                 pass
             self._partial_task = None
+        # 再 start 時に古い snapshot で初回 push を取りこぼさないようガードを空にする。
+        self._last_partial.clear()
         if self._task is not None:
             self._task.cancel()
             try:

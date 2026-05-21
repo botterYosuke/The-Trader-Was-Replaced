@@ -188,6 +188,22 @@ def test_start_unknown_strategy_id(live_strategy_server):
     assert not res.success and res.error_code == "UNKNOWN_STRATEGY_ID"
 
 
+def test_start_rejects_malformed_instrument_id(live_strategy_server):
+    # A malformed instrument_id (no SYMBOL.VENUE form) is rejected EARLY with a
+    # clear code, instead of failing opaquely inside attach after a kernel is built.
+    port, token, servicer = live_strategy_server
+    _arm_live_auto(servicer)
+    stub = _stub(port)
+    sid = _register(stub, token).strategy_id
+    for bad in ("7203", "7203.", ".TSE", ""):
+        res = _start(stub, token, sid, instrument_id=bad)
+        assert not res.success, f"{bad!r} should be rejected"
+        assert res.error_code == "INVALID_INSTRUMENT_ID", f"{bad!r} → {res.error_code}"
+    # The canonical SYMBOL.VENUE form passing the guard is already covered by the
+    # lifecycle tests (which start `7203.TSE` on a MOCK session — no venue-match
+    # needed, since the adapter echoes the subscribed instrument id).
+
+
 # --- lifecycle + events -----------------------------------------------------
 
 def test_start_pause_resume_stop_lifecycle(live_strategy_server):

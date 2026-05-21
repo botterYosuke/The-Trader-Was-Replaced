@@ -7,18 +7,23 @@
 //! which `backend_event_drain_system` fills from `LiveStrategyEvent` pushes.
 //!
 //! Phase 10 caps automated runs to 1, but the panel renders a small fixed set of
-//! rows (forward-compatible with Phase 11 multi-run). Run-level PnL / order / fill
-//! telemetry is NOT shown here yet — that needs a telemetry event (Step 7 / §2.9);
-//! Step 6 shows lifecycle status + start time + the controls.
+//! rows (forward-compatible with Phase 11 multi-run). Each row shows lifecycle
+//! status + start time + run-level PnL / order / fill telemetry (`LiveStrategyTelemetry`,
+//! Step 7) + the `[Pause]`/`[Resume]`/`[Stop]` controls. The panel also tails the
+//! most recent strategy log lines (`StrategyLogMessage`, log Open Question); the full
+//! ring buffer of 100 lives in `StrategyLogs` and a filterable viewer is Phase 11.
 
 use bevy::prelude::*;
 use chrono::{Local, TimeZone};
 
 use crate::trading::{
-    LiveRuns, TransportCommand, TransportCommandSender, is_terminal_run_status, short_id,
+    LiveRuns, StrategyLogs, TransportCommand, TransportCommandSender, is_terminal_run_status,
+    short_id,
 };
 
 const MAX_PANEL_ROWS: usize = 3;
+/// Strategy log lines tailed in the panel (the full 100 live in `StrategyLogs`).
+const MAX_LOG_ROWS: usize = 6;
 
 // ── 配色 ───────────────────────────────────────────────────────────────────
 const COLOR_PANEL_BG: Color = Color::srgba(0.07, 0.07, 0.12, 0.96);
@@ -33,6 +38,10 @@ const COLOR_BTN_STOP: Color = Color::srgba(0.30, 0.16, 0.20, 1.0);
 const COLOR_BTN_DISABLED: Color = Color::srgba(0.12, 0.12, 0.16, 1.0);
 const COLOR_PNL_POS: Color = Color::srgb(0.0, 1.0, 0.50);
 const COLOR_PNL_NEG: Color = Color::srgb(1.0, 0.20, 0.40);
+const COLOR_LOG_HEADER: Color = Color::srgb(0.55, 0.60, 0.70);
+const COLOR_LOG_INFO: Color = Color::srgb(0.72, 0.76, 0.82);
+const COLOR_LOG_WARN: Color = Color::srgb(1.0, 0.78, 0.0);
+const COLOR_LOG_ERROR: Color = Color::srgb(1.0, 0.30, 0.40);
 
 // ===========================================================================
 // Pure helpers (testable)
@@ -104,6 +113,20 @@ pub fn format_counts(order_count: i64, fill_count: i64) -> String {
     format!("o:{order_count} f:{fill_count}")
 }
 
+/// Display color for a strategy log line by `level` (case-insensitive).
+pub fn log_level_color(level: &str) -> Color {
+    match level.to_ascii_uppercase().as_str() {
+        "ERROR" | "CRITICAL" => COLOR_LOG_ERROR,
+        "WARN" | "WARNING" => COLOR_LOG_WARN,
+        _ => COLOR_LOG_INFO,
+    }
+}
+
+/// Compact one-line render of a strategy log line: `HH:MM:SS LVL message`.
+pub fn format_log_line(ts_ms: i64, level: &str, message: &str) -> String {
+    format!("{} {} {}", format_hms(ts_ms), level, message)
+}
+
 /// Group an unsigned integer with `,` thousands separators (e.g. 12345 → "12,345").
 fn group_thousands(n: u64) -> String {
     let digits = n.to_string();
@@ -172,6 +195,12 @@ impl LiveRunControlAction {
 pub struct LiveRunControlButton {
     pub row: usize,
     pub action: LiveRunControlAction,
+}
+
+/// One tailed strategy-log line cell. `index` 0 is the oldest of the shown window.
+#[derive(Component, Clone, Copy)]
+pub struct StrategyLogLineTag {
+    pub index: usize,
 }
 
 // ===========================================================================
@@ -315,6 +344,34 @@ pub fn spawn_live_run_panel(mut commands: Commands) {
                         });
                 });
             }
+            // Strategy log tail (log Open Question: 直近ログを Live Run Panel に表示).
+            p.spawn((
+                Node {
+                    margin: UiRect::vertical(Val::Px(4.0)),
+                    ..default()
+                },
+                Text::new("STRATEGY LOG"),
+                TextFont {
+                    font_size: 11.0,
+                    ..default()
+                },
+                TextColor(COLOR_LOG_HEADER),
+            ));
+            for index in 0..MAX_LOG_ROWS {
+                p.spawn((
+                    Node {
+                        width: Val::Percent(100.0),
+                        ..default()
+                    },
+                    Text::new(""),
+                    TextFont {
+                        font_size: 10.0,
+                        ..default()
+                    },
+                    TextColor(COLOR_LOG_INFO),
+                    StrategyLogLineTag { index },
+                ));
+            }
         });
 }
 
@@ -393,6 +450,33 @@ pub fn live_run_panel_sync_system(
                 pnl_color(run.realized_pnl, run.unrealized_pnl),
             ),
             LiveRunCell::Counts => (format_counts(run.order_count, run.fill_count), COLOR_VALUE),
+        };
+        if text.0 != new_text {
+            text.0 = new_text;
+        }
+        if color.0 != new_color {
+            color.0 = new_color;
+        }
+    }
+}
+
+/// 直近の strategy log 行を差分反映する（新しいものほど下）。`StrategyLogs` が
+/// 変わったときだけ走り、表示窓 (`MAX_LOG_ROWS`) を超える分は `StrategyLogs` に保持される。
+pub fn live_run_log_sync_system(
+    logs: Res<StrategyLogs>,
+    mut cells: Query<(&StrategyLogLineTag, &mut Text, &mut TextColor)>,
+) {
+    if !logs.is_changed() {
+        return;
+    }
+    let recent: Vec<_> = logs.recent(MAX_LOG_ROWS).collect();
+    for (tag, mut text, mut color) in &mut cells {
+        let (new_text, new_color) = match recent.get(tag.index) {
+            Some(line) => (
+                format_log_line(line.ts_ms, &line.level, &line.message),
+                log_level_color(&line.level),
+            ),
+            None => (String::new(), COLOR_LOG_INFO),
         };
         if text.0 != new_text {
             text.0 = new_text;
@@ -537,6 +621,57 @@ mod tests {
     fn format_counts_renders_both() {
         assert_eq!(format_counts(3, 1), "o:3 f:1");
         assert_eq!(format_counts(0, 0), "o:0 f:0");
+    }
+
+    #[test]
+    fn log_level_color_maps_case_insensitively() {
+        assert_eq!(log_level_color("ERROR"), COLOR_LOG_ERROR);
+        assert_eq!(log_level_color("warning"), COLOR_LOG_WARN);
+        assert_eq!(log_level_color("INFO"), COLOR_LOG_INFO);
+        assert_eq!(log_level_color("debug"), COLOR_LOG_INFO);
+    }
+
+    #[test]
+    fn log_tail_renders_most_recent_lines_oldest_first() {
+        use crate::trading::StrategyLogs;
+        let mut app = App::new();
+        let mut logs = StrategyLogs::default();
+        // Push more than MAX_LOG_ROWS so the window tails the newest.
+        for i in 0..(MAX_LOG_ROWS + 2) {
+            logs.push(
+                "run-abc123".to_string(),
+                "INFO".to_string(),
+                format!("msg{i}"),
+                1,
+            );
+        }
+        app.insert_resource(logs);
+        app.add_systems(Update, live_run_log_sync_system);
+        let cells: Vec<_> = (0..MAX_LOG_ROWS)
+            .map(|index| {
+                app.world_mut()
+                    .spawn((
+                        Text::new(""),
+                        StrategyLogLineTag { index },
+                        TextColor(COLOR_LOG_INFO),
+                    ))
+                    .id()
+            })
+            .collect();
+        app.update();
+        // Window of MAX_LOG_ROWS: oldest shown is msg2, newest is msg{MAX+1}.
+        assert!(
+            app.world().get::<Text>(cells[0]).unwrap().0.ends_with("msg2"),
+            "index 0 is the oldest line still in the window"
+        );
+        assert!(
+            app.world()
+                .get::<Text>(cells[MAX_LOG_ROWS - 1])
+                .unwrap()
+                .0
+                .ends_with(&format!("msg{}", MAX_LOG_ROWS + 1)),
+            "last cell is the newest line"
+        );
     }
 
     #[test]

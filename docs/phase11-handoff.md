@@ -57,7 +57,7 @@ Phase 10（[Replay-to-Live Strategy Execution](./plan/Phase%2010%20-%20Replay%20
 | 項目 | 内容 |
 | --- | --- |
 | **Step 9: Live E2E（Demo / Verify）** | Tachibana Demo + サンプル戦略を 1 営業日 Live 稼働 / kabu Verify でも E2E（約定 tick 無し前提の精度限界を確認）。**実 venue 認証情報と市場稼働時間が必要**で自動化不可 |
-| **GUI mock E2E** | Promote → Safety Rails モーダル → bar → on_bar → 発注 → OrdersPanel フィルタ / Live Run Panel telemetry を実アプリで目視（Step 5/6/7 で配線済み、目視 verify が未実施） |
+| **GUI mock E2E** | Promote → Safety Rails モーダル → bar → on_bar → 発注 → OrdersPanel フィルタ / Live Run Panel telemetry / **Safety Rail 違反トースト（Footer 右下）/ Strategy ログ tail** を実アプリで目視（Step 5/6/7 + Step 9 remediation で配線済み、目視 verify が未実施） |
 | **clippy / toolchain cleanup** | Rust `-D warnings` は workspace 全体で pre-existing 警告（rust-1.93 toolchain 由来、~30 ファイル）により失敗状態。Phase 10 の delta はクリーン。別途 toolchain cleanup タスクとして切り出す |
 
 ---

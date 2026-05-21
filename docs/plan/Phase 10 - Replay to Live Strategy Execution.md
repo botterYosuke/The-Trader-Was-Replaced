@@ -609,7 +609,7 @@ Strategy 内 `self.log.info(...)` の出力先:
 | 6 | Bevy UI: Live Run Panel | ✅ 完了 (2026-05-21) — `live_run_panel.rs` (UI-node、`LiveRuns` resource を `LiveStrategyEvent` から駆動、status/ids/起動時刻 + Pause/Resume/Stop、状態 gating)。3 制御コマンド + main.rs dispatch。telemetry(PnL/件数)は Step 7。lib 526 / bin 30 green。 |
 | 7 | OrdersPanel strategy_id フィルタ + LiveRun telemetry | ✅ 完了 (2026-05-21) — manual→`MANUAL-001` / auto→`LIVE-{run}` タグ（kernel msgbus bridge + `change_id`/`change_order_id_tag` で StrategyId 強制）、`LiveStrategyTelemetry`(oneof#8) 新設、orders.rs 循環フィルタ、live_run_panel に PnL/件数。parallel-agent-dev 2 並列（PY/RS）。workspace 全緑（lib547/bin30/integ10、backend_integration の pre-existing Step3 breakage も修復）。 |
 | 8 | Partial Bar Push + Live Bar 供給の検証 | ✅ 完了 (2026-05-21) — **本丸**: `NautilusVenueDataClient`(LiveMarketDataClient) を kernel に register し、`LiveRunner` の tick tap 経由で live 約定を `TradeTick` 化 → `LiveDataEngine` internal aggregation → `on_bar`。実 kernel full-path test で OHLCV 一致・spec=INTERNAL を確認。UI partial push は `LiveRunner` 1s `build_now()`→bus。live+strategy_runtime+grpc 489 passed。GUI/実 venue E2E は Step 9。 |
-| 9 | Live E2E (Demo / Verify) | ⬜ — 実 venue 認証情報 + 市場稼働時間が必要（自動化不可、要手動）。手順は [phase11-handoff.md](../phase11-handoff.md) §3 |
+| 9 | Live E2E (Demo / Verify) | 🟡 一部完了 (2026-05-22) — **コード配線をコードレベルで全検証** + 検証で見つかった UI 2 ギャップ（§2.10 トースト / ログ表示）を remediation（下記サマリー）。**実 venue E2E（Tachibana Demo / kabu Verify）と GUI mock E2E は未実施**（認証情報 + 市場稼働時間 + 目視が必要、自動化不可）。手順は [phase11-handoff.md](../phase11-handoff.md) §3 |
 | 10 | Polish (drawio / docs / Phase 11 引き継ぎ) | ✅ 完了 (2026-05-21) — `assets/phase10-architecture.drawio.svg`（drawio skill / 編集可能 native XML + dark theme 静的 SVG）、`docs/live-strategy.md`（戦略開発者向け: 移植性 / bar 供給 / Safety Rails / Promote・制御）、`docs/phase11-handoff.md`（§7 + Step 4/7/8 既知の限界を集約）。 |
 
 ### Step 1 完了サマリー (2026-05-21)
@@ -1022,3 +1022,32 @@ efficiency findings を修正した（reuse は「既存 bridge/converter パタ
     機能同等の `code-review` で代替した。CLAUDE.md の指示と実体が乖離（要 skill 新規作成 or CLAUDE.md 修正、別件）。
 - **Phase 10 全体の状態**: Step 1–8 + Step 10 完了。**Step 9（実 venue E2E）と GUI mock E2E のみ未実施**
   （いずれも認証情報・市場稼働時間・人手 verify を要するため自動化不可、引き継ぎ済み）。
+
+### Step 9 (一部) — 配線コードレベル検証 + UI ギャップ remediation (2026-05-22)
+
+> ユーザー決定: 実 venue E2E は認証情報 + 市場稼働時間が要り自動実行不可のため、まず
+> 「Promote→engine→bar→on_bar→発注→panels」の**配線をコードで検証**し、E2E 前のリスクを洗い出す。
+
+- **配線検証の結論（全結線・テスト緑）**: `StartLiveStrategy → LiveStrategyHost → NautilusLiveEngineController.attach`
+  （kernel + exec/data client register → INTERNAL bar_type + StrategyId 強制 → msgbus order 購読）→
+  `LiveRunner` tick tap → `feed_trades_update → TradeTick → on_bar → submit_order → rails → fill →
+  msgbus → _on_auto_order_event/_on_auto_telemetry`、account snapshot → `_evaluate_post_trade_loss`
+  まで、各 seam をコードで確認。Python live 486 / Rust lib547・bin30・integ10 緑（baseline）。
+- **検証で見つかった 2 ギャップ（stated success criteria 未達）を remediation**:
+  - **§2.10 / 成功条件「`SafetyRailViolation` トーストが Footer 右下に出る」が未実装**だった（transport→mirror
+    までで `backend_sync` は `warn!` ログのみ、UI 消費なし）。→ `src/ui/safety_toast.rs` [NEW]（Bevy
+    UI-node、bottom-right、kind 別色、6s auto-expire）+ `trading::SafetyToast` resource。`backend_event_drain_system`
+    が violation を `safety_toast.show()` する。
+  - **ログ Open Question「Strategy の `self.log.*` を Live Run Panel に直近 100 行表示」が未実装**だった
+    （`StrategyLogMessage` も `info!` ログのみ）。→ `trading::StrategyLogs`（ring buffer cap 100）+
+    `live_run_panel.rs` に "STRATEGY LOG" tail（直近 6 行、level 別色）。
+  - **instrument_id guard（当初リスク = 誤検知だった）**: 検証中の「instrument の venue サフィックス（`.TSE`）が
+    live session の `venue_id`（`TACHIBANA`）と食い違うと tick filter が全 drop して silent no-op」という
+    リスクは、`exchanges/tachibana.py:404` が**購読した InstrumentId をそのまま `TradesUpdate` に echo する**
+    ことを確認して**否定**された（mock も `7203.TSE` + `MOCK` セッションで正常動作）。venue 一致を強制する
+    guard は設計と既存 486 テストに反するため**入れない**。代わりに **malformed instrument_id（`SYMBOL.VENUE`
+    形でない）を `StartLiveStrategy` で早期 `INVALID_INSTRUMENT_ID` reject**（attach 後の不透明な失敗を
+    明示エラーに前倒し）。
+- **回帰**: Rust lib 552（+5）/ bin 30 / integ 10 緑。Python `test_grpc_live_strategy` 21 passed（+1 guard）。
+- **次の手（残 Step 9）**: 実 venue E2E（Tachibana Demo / kabu Verify、1 営業日）と GUI mock E2E は
+  認証情報・市場稼働時間・人手 verify が必要なため引き続き手動（[phase11-handoff.md](../phase11-handoff.md) §3）。

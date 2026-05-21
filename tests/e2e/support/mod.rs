@@ -28,7 +28,8 @@ use backcast::trading::{
     BackendStatusUpdate, BackendTradingState, ExecutionMode, ExecutionModeRes,
     InstrumentTradingDataMap, LastPrices, LastRunResult, LiveOrders, LiveRuns, OrderFeedback,
     PortfolioState, PromoteFeedback, ReconcilePrompt, ReloginPrompt, ReplaySpeed, RunState,
-    SecretPrompt, SelectedSymbol, Tickers, TradingSession, TradingSettings, TransportCommand,
+    SafetyToast, SecretPrompt, SelectedSymbol, StrategyLogs, Tickers, TradingSession,
+    TradingSettings, TransportCommand,
     TransportCommandSender, VenueState, VenueStatusRes,
 };
 
@@ -115,11 +116,13 @@ impl Harness {
             .insert_resource(TradingSession::default())
             .insert_resource(InstrumentTradingDataMap::default())
             .insert_resource(LiveOrders::default())
-            // Phase 10: backend_event_drain_system mutates LiveRuns and
-            // status_update_system mutates PromoteFeedback. Without these the
-            // headless schedule panics ("could not access system parameter").
+            // Phase 10: backend_event_drain_system mutates LiveRuns / SafetyToast /
+            // StrategyLogs and status_update_system mutates PromoteFeedback. Without
+            // these the headless schedule panics ("could not access system parameter").
             .insert_resource(LiveRuns::default())
             .insert_resource(PromoteFeedback::default())
+            .insert_resource(SafetyToast::default())
+            .insert_resource(StrategyLogs::default())
             .insert_resource(OrderFeedback::default())
             .insert_resource(ReconcilePrompt::default())
             .insert_resource(SecretPrompt::default())
