@@ -24,8 +24,8 @@ use backcast::ui::replay_startup_window::replay_startup_timeout_system;
 use backcast::trading::{
     backend_update_system, AvailableInstruments, BackendChannel, BackendEvent, BackendStatus,
     BackendStatusUpdate, BackendTradingState, ExecutionModeRes, InstrumentTradingDataMap,
-    LastPrices, LastRunResult, LiveOrders, OrderFeedback, PortfolioState, ReloginPrompt, RunState,
-    SecretPrompt, Tickers, TradingSession, TradingSettings, VenueStatusRes,
+    LastPrices, LastRunResult, LiveOrders, OrderFeedback, PortfolioState, ReconcilePrompt,
+    ReloginPrompt, RunState, SecretPrompt, Tickers, TradingSession, TradingSettings, VenueStatusRes,
 };
 
 pub struct Harness {
@@ -83,6 +83,7 @@ impl Harness {
             .insert_resource(InstrumentTradingDataMap::default())
             .insert_resource(LiveOrders::default())
             .insert_resource(OrderFeedback::default())
+            .insert_resource(ReconcilePrompt::default())
             .insert_resource(SecretPrompt::default())
             .insert_resource(ReloginPrompt::default());
 
