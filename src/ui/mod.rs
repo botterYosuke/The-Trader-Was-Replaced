@@ -26,6 +26,7 @@ pub mod replay_startup_window;
 pub mod restore;
 pub mod run_result_panel;
 pub mod safety_rails_modal;
+pub mod safety_toast;
 pub mod scenario_parser;
 pub mod scenario_startup_panel;
 pub mod secret_modal;
@@ -94,8 +95,9 @@ use crate::ui::instruments_universe_prune::{
     unsubscribe_removed_instruments_system,
 };
 use crate::ui::live_run_panel::{
-    live_run_control_button_system, live_run_control_visual_system, live_run_panel_sync_system,
-    live_run_panel_visibility_system, live_run_row_visibility_system, spawn_live_run_panel,
+    live_run_control_button_system, live_run_control_visual_system, live_run_log_sync_system,
+    live_run_panel_sync_system, live_run_panel_visibility_system, live_run_row_visibility_system,
+    spawn_live_run_panel,
 };
 use crate::ui::menu_bar::{
     gate_venue_menu_items_system, handle_strategy_file_load_system, handle_strategy_run_system,
@@ -136,6 +138,7 @@ use crate::ui::safety_rails_modal::{
     safety_rails_modal_sync_system, safety_rails_modal_visibility_system,
     safety_rails_stepper_system, spawn_promote_trigger, spawn_safety_rails_modal,
 };
+use crate::ui::safety_toast::{safety_toast_system, spawn_safety_toast};
 use crate::ui::scenario_parser::parse_scenario_system;
 use crate::ui::scenario_startup_panel::{
     ScenarioStartupParamCommit, commit_startup_params_to_scenario_system,
@@ -257,6 +260,9 @@ impl Plugin for UiPlugin {
         // transport-facing `status_update_system` mutates it.
         .init_resource::<PromotePrompt>()
         .init_resource::<SafetyRailsForm>()
+        // Phase 10 §2.10 / log Open Question: violation toast + strategy log buffer.
+        .init_resource::<crate::trading::SafetyToast>()
+        .init_resource::<crate::trading::StrategyLogs>()
         .add_systems(
             Startup,
             (
@@ -285,6 +291,8 @@ impl Plugin for UiPlugin {
                 spawn_safety_rails_modal,
                 // Phase 10 §2.8: Live Run Panel (アクティブ run + Pause/Resume/Stop)
                 spawn_live_run_panel,
+                // Phase 10 §2.10: Safety Rail violation toast (Footer 右下)
+                spawn_safety_toast,
             ),
         )
         .add_systems(
@@ -625,8 +633,11 @@ impl Plugin for UiPlugin {
                 live_run_panel_visibility_system,
                 live_run_row_visibility_system,
                 live_run_panel_sync_system,
+                live_run_log_sync_system,
                 live_run_control_visual_system,
                 live_run_control_button_system,
+                // Phase 10 §2.10: Safety Rail violation toast lifecycle.
+                safety_toast_system,
             ),
         );
     }

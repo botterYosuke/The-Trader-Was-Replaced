@@ -2266,6 +2266,29 @@ class GrpcDataEngineServer(
             return engine_pb2.StartLiveStrategyRes(
                 success=False, request_id=request.request_id, error_code=exc.error_code
             )
+        # instrument_id を **kernel 構築前** に well-formed 検証する。malformed（venue
+        # サフィックス欠落など）だと controller.attach の `InstrumentId.from_str` が
+        # kernel を live loop に撒いた **後** に落ち、STRATEGY_ATTACH_FAILED という不透明な
+        # エラーになる。同じ `from_str` をここで使うことで、guard の許容条件を attach の
+        # 実際の検証と完全一致させたまま明示エラーに前倒しする。
+        #
+        # 注意（設計確認、Step 9 検証）: instrument の venue サフィックス（例 `.TSE`）が
+        # live session の `venue_id`（例 `TACHIBANA` / `MOCK`）と一致する必要は **無い**。
+        # 実 adapter（`exchanges/tachibana.py`）は購読した InstrumentId をそのまま
+        # `TradesUpdate.instrument_id` に echo するため、instrument_id は
+        # subscribe → tick filter → exec の間で内部一貫していれば良く（`venue_id` は
+        # 別メタデータ）、現に mock 経路は `7203.TSE` + `MOCK` セッションで動作する。
+        # よって venue 一致を強制する guard は **入れない**（設計と既存テストに反する）。
+        from nautilus_trader.model.identifiers import InstrumentId
+
+        try:
+            InstrumentId.from_str(request.instrument_id)
+        except Exception:  # noqa: BLE001 — malformed instrument id（venue 欠落 / 空など）
+            return engine_pb2.StartLiveStrategyRes(
+                success=False,
+                request_id=request.request_id,
+                error_code="INVALID_INSTRUMENT_ID",
+            )
         # Safety Rails（§2.4）: proto SafetyLimits → SafetyRails。ネイティブ rail は
         # controller が LiveRiskEngineConfig に、独自 rail は exec client の pre-trade に渡す。
         rails = self._build_safety_rails(request.safety_limits)

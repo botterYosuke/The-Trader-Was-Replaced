@@ -1385,6 +1385,79 @@ pub struct PromoteFeedback {
     pub message: Option<String>,
 }
 
+/// Phase 10 §2.10: one safety-rail violation surfaced as a transient Footer toast.
+/// `backend_event_drain_system` sets `active` from a `SafetyRailViolation` push; the
+/// `safety_toast` UI system renders it and auto-expires it. This is the project's
+/// first toast — `OrderFeedback`/`PromoteFeedback` are persistent inline lines, not
+/// time-bounded overlays, so a violation needs its own channel (criterion line 484).
+#[derive(Resource, Default, Debug, Clone)]
+pub struct SafetyToast {
+    pub active: Option<SafetyToastEntry>,
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub struct SafetyToastEntry {
+    pub run_id: String,
+    pub kind: String,
+    pub detail: String,
+    pub ts_ms: i64,
+}
+
+impl SafetyToast {
+    /// Replace the active toast (a newer violation supersedes an older one).
+    pub fn show(&mut self, run_id: String, kind: String, detail: String, ts_ms: i64) {
+        self.active = Some(SafetyToastEntry {
+            run_id,
+            kind,
+            detail,
+            ts_ms,
+        });
+    }
+}
+
+/// One strategy log line relayed from the backend (`self.log.*()`), Phase 10
+/// log-output Open Question. Kept in a small ring buffer and shown in the Live Run
+/// Panel; a dedicated filterable viewer is Phase 11.
+#[derive(Debug, Clone, PartialEq)]
+pub struct StrategyLogLine {
+    pub run_id: String,
+    pub level: String,
+    pub message: String,
+    pub ts_ms: i64,
+}
+
+/// Phase 10 (Open Question: "Live Strategy のログ出力先"): the last `CAP` strategy
+/// log lines, oldest-first. `backend_event_drain_system` pushes from a
+/// `StrategyLogMessage`; the Live Run Panel renders the most recent few.
+#[derive(Resource, Default, Debug, Clone)]
+pub struct StrategyLogs {
+    pub lines: std::collections::VecDeque<StrategyLogLine>,
+}
+
+impl StrategyLogs {
+    /// Last 100 lines (plan: "直近 100 行").
+    pub const CAP: usize = 100;
+
+    pub fn push(&mut self, run_id: String, level: String, message: String, ts_ms: i64) {
+        self.lines.push_back(StrategyLogLine {
+            run_id,
+            level,
+            message,
+            ts_ms,
+        });
+        while self.lines.len() > Self::CAP {
+            self.lines.pop_front();
+        }
+    }
+
+    /// The most recent `n` lines, oldest-first (so callers render top→bottom in
+    /// chronological order). Fewer than `n` if the buffer is shorter.
+    pub fn recent(&self, n: usize) -> impl Iterator<Item = &StrategyLogLine> {
+        let skip = self.lines.len().saturating_sub(n);
+        self.lines.iter().skip(skip)
+    }
+}
+
 /// Phase 9 §3.8: one UI order whose state became unknown after a backend restart
 /// (the optimistic record exists locally but the freshly-restarted backend does
 /// not track it as working). Shown in the reconcile modal.

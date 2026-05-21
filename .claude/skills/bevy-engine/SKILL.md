@@ -215,7 +215,7 @@ despawn 時に entity key を除く（entity key leak 防止）。`chart_interac
 
 // System / Query
 fn move_things(time: Res<Time>, mut q: Query<&mut Transform, With<Player>>) {
-    for mut t in &mut q { t.translation.x += time.delta_seconds(); }
+    for mut t in &mut q { t.translation.x += time.delta_secs(); } // 0.15 は delta_secs（delta_seconds は ≤0.14 旧名）
 }
 
 // Plugin
@@ -253,7 +253,7 @@ commands.entity(parent).add_child(child);
 | `query.single()` | `query.get_single()` | `Result` を返す |
 | `Trigger::target()` | `Trigger::entity()` | observer の対象 entity |
 | Required components が前提 | tuple spawn でフル指定 | `Sprite` だけで足りる場合あり |
-| `time.delta_secs()` | `time.delta_seconds()` | 関数名変更 |
+| `time.delta_secs()` | `time.delta_secs()` | **改名は 0.15 で完了済**。`delta_seconds()` は ≤0.14 の旧名で 0.15 では存在せず E0599（`elapsed_seconds`→`elapsed_secs` も同様）。0.15/0.19 とも `delta_secs()` が正 |
 | `OrthographicProjection` 直接 | 同じ（経由が違う） | 0.19 は `Projection` enum 経由 |
 | `app.observe(system)` | `app.add_observer(system)` | **App グローバル observer の登録。`app.observe()` は 0.15 に存在しない。エンティティローカルは `.observe(...)` のまま** |
 

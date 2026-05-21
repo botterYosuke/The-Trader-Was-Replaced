@@ -17,9 +17,9 @@ use crate::trading::{
     AccountPosition, AvailableInstruments, BackendEvent, BackendStartupStage, BackendStatus,
     BackendStatusUpdate, ExecutionModeRes, LastPrices, LastRunResult, LiveOrder, LiveOrders,
     LiveRuns, OrderFeedback, PortfolioPosition, PortfolioState, PromoteFeedback, ReconcilePrompt,
-    ReloginPrompt, RunState, SecretPrompt, SecretPromptRequest, Tickers, TickersStatus,
-    TransportCommand, TransportCommandSender, VenueStatusRes, is_terminal_order_status,
-    parse_summary_json, reconcile_unknown_orders,
+    ReloginPrompt, RunState, SafetyToast, SecretPrompt, SecretPromptRequest, StrategyLogs, Tickers,
+    TickersStatus, TransportCommand, TransportCommandSender, VenueStatusRes,
+    is_terminal_order_status, parse_summary_json, reconcile_unknown_orders,
 };
 use bevy::prelude::*;
 use chrono::NaiveDate;
@@ -78,6 +78,7 @@ pub struct BackendEventChannel {
     pub rx: mpsc::UnboundedReceiver<BackendEvent>,
 }
 
+#[allow(clippy::too_many_arguments)]
 pub fn backend_event_drain_system(
     mut channel: ResMut<BackendEventChannel>,
     mut secret_prompt: ResMut<SecretPrompt>,
@@ -85,6 +86,8 @@ pub fn backend_event_drain_system(
     mut portfolio: ResMut<PortfolioState>,
     mut relogin_prompt: ResMut<ReloginPrompt>,
     mut live_runs: ResMut<LiveRuns>,
+    mut safety_toast: ResMut<SafetyToast>,
+    mut strategy_logs: ResMut<StrategyLogs>,
 ) {
     while let Ok(event) = channel.rx.try_recv() {
         match event {
@@ -184,6 +187,8 @@ pub fn backend_event_drain_system(
                 warn!(
                     "[backend-event] SafetyRailViolation run_id={run_id} kind={kind} detail={detail} ts_ms={ts_ms}"
                 );
+                // §2.10: surface the violation as a Footer toast (criterion line 484).
+                safety_toast.show(run_id, kind, detail, ts_ms);
             }
             BackendEvent::StrategyLogMessage {
                 run_id,
@@ -194,6 +199,8 @@ pub fn backend_event_drain_system(
                 info!(
                     "[backend-event] StrategyLogMessage run_id={run_id} level={level} message={message} ts_ms={ts_ms}"
                 );
+                // Log Open Question: keep the last 100 lines for the Live Run Panel.
+                strategy_logs.push(run_id, level, message, ts_ms);
             }
             // Phase 10 Step 7 (§2.8 / §2.9): run-scoped PnL / order / fill counters.
             BackendEvent::LiveStrategyTelemetry {
@@ -601,6 +608,8 @@ mod tests {
         app.init_resource::<PortfolioState>();
         app.init_resource::<ReloginPrompt>();
         app.init_resource::<LiveRuns>();
+        app.init_resource::<SafetyToast>();
+        app.init_resource::<StrategyLogs>();
         app.add_systems(Update, backend_event_drain_system);
 
         tx.send(BackendEvent::VenueLogoutDetected {
@@ -678,6 +687,8 @@ mod tests {
         app.init_resource::<PortfolioState>();
         app.init_resource::<ReloginPrompt>();
         app.init_resource::<LiveRuns>();
+        app.init_resource::<SafetyToast>();
+        app.init_resource::<StrategyLogs>();
         app.add_systems(Update, backend_event_drain_system);
         (app, tx)
     }
