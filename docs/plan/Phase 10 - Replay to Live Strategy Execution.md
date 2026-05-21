@@ -604,7 +604,7 @@ Strategy 内 `self.log.info(...)` の出力先:
 | 1 | Strategy Portability 確認 + Live Bar 供給の設計確定 | ✅ 完了 (2026-05-21) |
 | 2 | LiveStrategyHost + RunRegistry | ✅ 完了 (2026-05-21) — host shell (lifecycle / 所有権 / RunRegistry 連携 / 戦略ロード)。Nautilus engine bridge は seam として Step 3+ に委譲 |
 | 3 | gRPC RPC + `BackendEvent` oneof 拡張 (M8) | ✅ 完了 (2026-05-21) — 7 unary RPC + LiveStrategyEvent/SafetyRailViolation/StrategyLogMessage + OrderEvent.strategy_id。engine bridge は placeholder（実発注なし）で mock 疎通。 |
-| 4 | Safety Rails (ネイティブ config + 独自 hook) | ⬜ |
+| 4 | Safety Rails (ネイティブ config + 独自 hook) | ✅ 完了 (2026-05-21) — **Nautilus live engine bridge を実装**（NautilusKernel + 実 LiveExecutionClient over OrderingVenueAdapter）。ネイティブ rail = LiveRiskEngineConfig、独自 rail = safety_rails.py。mock で全 rail 検証。bar 供給は Step 8。 |
 | 5 | Bevy UI: Safety Rails Modal + Promote to Live | ⬜ |
 | 6 | Bevy UI: Live Run Panel | ⬜ |
 | 7 | OrdersPanel strategy_id フィルタ + LiveRun telemetry | ⬜ |
@@ -712,3 +712,53 @@ Strategy 内 `self.log.info(...)` の出力先:
   `max_orders_per_minute`→`max_order_submit_rate`）+ `live/safety_rails.py`(独自 pre/post-trade hook)。
   違反を `SafetyRailViolation` event で push（proto/transport は Step 3 で配線済み）。
   これは `LiveEngineController` 実体（Nautilus engine bridge）と一体で進む。
+
+### Step 4 完了サマリー (2026-05-21)
+
+> ユーザー決定: **Nautilus live engine bridge を Step 4 で着手**（Step 3 の placeholder を実体化）。
+> Step 3 完了サマリーの「次の手」で予告した「Phase 10 最大の実装」を本 Step で実装した。
+
+- **完了した成果物**:
+  - `python/engine/live/safety_rails.py` [NEW] — `SafetyRails` / `SafetyLimits`（transport 非依存）。
+    `to_live_risk_engine_config()`（ネイティブ rail）/ `check_pre_trade()`（max_position_size /
+    allowed_instruments）/ `check_post_trade()`（max_daily_loss）。`0 = その rail 無効`（数値ポリシーは
+    Bevy UI 由来、§0.6）。純粋ロジック（13 unit tests, green）。
+  - `python/engine/live/nautilus_exec_client.py` [NEW] — `NautilusVenueExecClient`（`LiveExecutionClient`
+    実体）。既存 `OrderingVenueAdapter`（submit/cancel/modify/fetch_account）を Nautilus 発注パイプラインに
+    bridge。`_submit_order` は **SUBMITTED 前**に独自 pre-trade rails を評価し、違反なら
+    `generate_order_denied` + `on_safety_violation`（venue に送らない）。約定は `OrderResult` →
+    `generate_order_submitted/accepted/filled/rejected` に正規化。`_connect` で `generate_account_state`
+    を seed（RiskEngine free-balance / Portfolio 用、account_id を採番）。
+  - `python/engine/live/engine_controller.py` — `NautilusLiveEngineController` [NEW] を追加（`NoopLiveEngineController`
+    は Step 3 plumbing テスト用に残置）。`attach()` で **run ごとに** `NautilusKernel`（Trader +
+    LiveExecutionEngine + LiveRiskEngine + LiveDataEngine + Cache + Portfolio + MessageBus + LiveClock）を
+    live loop 上に組み、exec client を `register_client`、instrument を cache 登録、`strategy_cls(**kwargs)`
+    を `add_strategy`、`kernel.start()`。`loop_provider` / `adapter_provider` で server_grpc の runtime
+    resource を共有借用（新規 login / WebSocket は作らない、§1.1）。`detach` は `kernel.stop_async()`。
+  - `server_grpc.py` — 既定 controller を `NautilusLiveEngineController` に切替（providers 注入）。
+    `StartLiveStrategy` が proto `SafetyLimits` → `SafetyRails` を組み `StartParams.safety_rails` で attach に
+    渡す。`_publish_safety_rail_violation`（pre-trade 違反 / post-trade 損失）。post-trade
+    `max_daily_loss` は `_publish_account_snapshot`（AccountSync callback, live loop thread）で評価し、
+    違反時は **別スレッド**で `fail_run`（同 loop への blocking round-trip 自己デッドロック回避）。
+  - `strategy_host.py` — `attach` seam に `safety_rails` を追加（`StartParams.safety_rails` を素通し）。
+  - tests: `test_safety_rails.py`（13）/ `test_nautilus_live_exec.py`（5: 実 kernel で within-limit fill /
+    native max_notional deny / 独自 position-size deny / allowed_instruments deny / controller lifecycle）/
+    `test_grpc_live_strategy.py` に post-trade max_daily_loss 2 件追加。
+- **設計確定 / 学び**:
+  - **最小 live stack = `NautilusKernel`**（`TradingNodeConfig` で直接構築、`TradingNode` は不要）。live は
+    `bypass_logging` 禁止 → `LoggingConfig(log_level="ERROR", log_level_file="OFF")` で cwd への
+    `*.log` 散布を防ぐ。
+  - **OrderDenied は INITIALIZED からのみ有効**: 独自 rail の deny は `generate_order_submitted` の**前**に
+    行う（後だと SUBMITTED→DENIED 不正遷移で注文が SUBMITTED 固着）。ネイティブ rail は RiskEngine が
+    submit 前に弾くので問題なし。
+  - **発注主体 StrategyId の正確なタグ付け（"LIVE-{run}"）と config= 形式戦略の StrategyConfig 構築は Step 7/8**。
+    現状 controller は kwargs 形式戦略（instrument_id / bar_type_str）で attach する。
+- **既知の限界 / seam**:
+  - market data / bar 供給は Step 8。MARKET 注文の参照価格が cache に無い場合 notional は 0 にフォールバックし
+    position-size チェックを保守的にスキップ（テストは LIMIT 注文で notional を確定）。
+  - 同一プロセスで live kernel（非 bypass logging）を先に初期化すると、後続の backtest（`bypass_logging=True`）の
+    dispose ログ（`InvalidStateTrigger RUNNING->DISPOSE`）が console に漏れる（Nautilus の global logging が
+    once 初期化のため）。production は replay / live が別プロセスなので無影響。test の console ノイズのみ。
+- **回帰**: live + grpc + strategy_runtime `-m "not slow"` 498 passed / 11 skipped。新規 20 tests green。
+- **次の手 (Step 5)**: Bevy UI（Safety Rails モーダル + Promote to Live ボタン）。`SafetyLimits` の入力 UI と
+  Replay KPI サマリー（既存 `summary.py` の項目のみ、§5 M3）。

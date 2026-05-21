@@ -33,7 +33,7 @@ from .live.account_sync import AccountSync
 from .live.run_registry import RunRegistry
 from .live.strategy_registry import StrategyRegistry, StrategyRegistryError
 from .live.strategy_host import LiveStrategyHost, LiveStrategyHostError, StartParams
-from .live.engine_controller import NoopLiveEngineController
+from .live.safety_rails import RailViolation, SafetyLimits, SafetyRails
 from .live.health_watchdog import VenueHealthWatchdog
 from .live.instruments_scheduler import InstrumentsScheduler
 from .live import instruments_store
@@ -217,6 +217,7 @@ class GrpcDataEngineServer(
         live_adapter_factory=None,
         live_venue_id: Optional[str] = None,
         idle_clock: Optional[LastRequestClock] = None,
+        engine_controller=None,
     ):
         self.token = token
         self.engine = engine
@@ -266,19 +267,31 @@ class GrpcDataEngineServer(
         # 更新, lifetime = live session). 営業日カレンダーは持たず venue の fetch_instruments
         # エラー/空に委ねる (ユーザー決定。詳細は instruments_scheduler のドキュメント参照)。
         self._instruments_scheduler: Optional[InstrumentsScheduler] = None
-        # Phase 10 Step 3: live auto strategy execution. servicer lifetime で 1 つ持つ
-        # (RunRegistry は単一 run 制約を強制する)。engine controller は Step 3 時点では
-        # placeholder (Nautilus engine 未接続、実発注なし、§engine_controller)。実 bridge は
-        # Step 3+/4/8 で差し替える。session は既存 Phase 9 live session を共有借用する。
+        # Phase 10: live auto strategy execution. servicer lifetime で 1 つ持つ
+        # (RunRegistry は単一 run 制約を強制する)。session は既存 Phase 9 live session を
+        # 共有借用する。controller の既定は Step 4 の実 Nautilus engine bridge
+        # (NautilusLiveEngineController)。テストは Noop を注入して gRPC plumbing だけを見る。
         self._run_registry: RunRegistry = RunRegistry()
         self._strategy_registry: StrategyRegistry = StrategyRegistry()
+        if engine_controller is None:
+            from .live.engine_controller import NautilusLiveEngineController
+
+            engine_controller = NautilusLiveEngineController(
+                loop_provider=self._ensure_live_loop,
+                adapter_provider=self._live_adapter,
+                on_safety_violation=self._on_pretrade_violation,
+            )
         self._strategy_host: LiveStrategyHost = LiveStrategyHost(
             run_registry=self._run_registry,
             session_provider=self._live_session_view,
-            engine_controller=NoopLiveEngineController(),
+            engine_controller=engine_controller,
         )
         # 単一 run スロットの TOCTOU を防ぐ (gRPC handler は threadpool で並行する)。
         self._live_strategy_lock = threading.Lock()
+        # run_id → SafetyRails（post-trade 評価 / pre-trade 違反の run 紐付けに使う）。
+        self._run_rails: dict = {}
+        # run_id → 起動時 equity baseline（daily P&L = 現在 equity - baseline）。
+        self._run_equity_baseline: dict = {}
 
     _KNOWN_VENUES = {"TACHIBANA", "KABU", "MOCK"}  # D26: MOCK added
     _KNOWN_CRED_SOURCES = {"prompt", "session_cache", "env", "prompt_result"}
@@ -1754,6 +1767,8 @@ class GrpcDataEngineServer(
             ts_ms=int(time.time() * 1000),
         )
         self.publish_backend_event(engine_pb2.BackendEvent(account_event=proto))
+        # Phase 10 §2.4: post-trade max_daily_loss を口座スナップショット毎に評価する。
+        self._evaluate_post_trade_loss(snapshot)
 
     def _publish_secret_required(self, request_id, venue, kind, purpose) -> None:
         """SecondSecretResolver callback: SecretRequired を UI に push する。
@@ -2015,6 +2030,105 @@ class GrpcDataEngineServer(
             )
         )
 
+    # ── Safety Rails (§2.4) ──────────────────────────────────────────────────
+
+    def _live_adapter(self):
+        """共有 live session の venue adapter（NautilusLiveEngineController に渡す）。"""
+        facade = self._order_facade
+        return getattr(facade, "_adapter", None) if facade is not None else None
+
+    @staticmethod
+    def _build_safety_rails(sl) -> SafetyRails:
+        """proto `SafetyLimits` → transport 非依存 `SafetyRails`。"""
+        return SafetyRails(
+            SafetyLimits(
+                max_position_size_jpy=sl.max_position_size_jpy,
+                max_order_value_jpy=sl.max_order_value_jpy,
+                max_daily_loss_jpy=sl.max_daily_loss_jpy,
+                max_orders_per_minute=sl.max_orders_per_minute,
+                allowed_instruments=tuple(sl.allowed_instruments),
+            )
+        )
+
+    def _publish_safety_rail_violation(self, run_id: str, violation: RailViolation) -> None:
+        """`SafetyRailViolation` を UI に push する（§2.10 トースト、M8）。"""
+        self.publish_backend_event(
+            engine_pb2.BackendEvent(
+                safety_rail_violation=engine_pb2.SafetyRailViolation(
+                    run_id=run_id,
+                    kind=violation.kind,
+                    detail=violation.detail,
+                    ts_ms=int(time.time() * 1000),
+                )
+            )
+        )
+
+    def _on_pretrade_violation(self, violation: RailViolation) -> None:
+        """exec client（live loop thread）からの独自 pre-trade 違反 callback。
+
+        単一 run MVP なので active run に紐付けて push する（複数 run は Phase 11）。
+        OrderDenied は exec client が既に発行済み（戦略は on_order_denied で受ける）。
+        """
+        active = self._run_registry.list_active()
+        run_id = active[0].run_id if active else ""
+        self._publish_safety_rail_violation(run_id, violation)
+
+    @staticmethod
+    def _equity_from_snapshot(snapshot) -> float:
+        """口座スナップショットの mark-to-market equity（cash + Σ unrealized_pnl）。
+
+        保守的近似（§8 Open Risk 2）: realized は cash に反映済み前提。建玉の含み損益のみ加算。
+        """
+        equity = float(getattr(snapshot, "cash", 0.0) or 0.0)
+        for p in getattr(snapshot, "positions", ()) or ():
+            equity += float(getattr(p, "unrealized_pnl", 0.0) or 0.0)
+        return equity
+
+    def _evaluate_post_trade_loss(self, snapshot) -> None:
+        """口座スナップショット毎に active run の max_daily_loss を評価する（post-trade）。
+
+        live loop thread（AccountSync callback）から呼ばれる。違反時の run 停止は
+        `fail_run`（controller teardown が同 loop へ blocking round-trip する）を **別スレッド**に
+        逃がす（同 loop 上での `future.result()` 自己待ちデッドロックを避ける）。
+        """
+        with self._live_strategy_lock:
+            active = self._run_registry.list_active()
+            if not active:
+                return
+            record = active[0]  # 単一 run MVP（§0.7）
+            rails = self._run_rails.get(record.run_id)
+            if rails is None:
+                return
+            equity = self._equity_from_snapshot(snapshot)
+            baseline = self._run_equity_baseline.get(record.run_id)
+            if baseline is None:
+                self._run_equity_baseline[record.run_id] = equity
+                return
+            violation = rails.check_post_trade(daily_pnl_jpy=equity - baseline)
+            if violation is None:
+                return
+            # 二重発火防止: 失敗確定でこの run の rails を外す（後続 snapshot はスキップ）。
+            self._run_rails.pop(record.run_id, None)
+            self._run_equity_baseline.pop(record.run_id, None)
+            run_id = record.run_id
+
+        threading.Thread(
+            target=self._fail_run_for_loss,
+            args=(run_id, violation),
+            name="phase10-daily-loss-stop",
+            daemon=True,
+        ).start()
+
+    def _fail_run_for_loss(self, run_id: str, violation: RailViolation) -> None:
+        """worker thread: run を ERROR→STOPPED に落とし、違反 + 状態遷移を push する。"""
+        try:
+            with self._live_strategy_lock:
+                record = self._strategy_host.fail_run(run_id, "MAX_DAILY_LOSS_EXCEEDED")
+        except LiveStrategyHostError:
+            return
+        self._publish_safety_rail_violation(run_id, violation)
+        self._publish_live_strategy_event(record)
+
     def RegisterLiveStrategy(self, request, context):
         # 検証系: saved .py をロードして strategy_id を発行する（mode gate なし、§2.5）。
         if not self._token_ok(request):
@@ -2054,14 +2168,16 @@ class GrpcDataEngineServer(
             return engine_pb2.StartLiveStrategyRes(
                 success=False, request_id=request.request_id, error_code=exc.error_code
             )
-        # safety_limits は Step 4（RiskEngine + safety_rails）で enforce する。Step 3 は
-        # transport を通すのみ（accept-and-defer）。
+        # Safety Rails（§2.4）: proto SafetyLimits → SafetyRails。ネイティブ rail は
+        # controller が LiveRiskEngineConfig に、独自 rail は exec client の pre-trade に渡す。
+        rails = self._build_safety_rails(request.safety_limits)
         start_params = StartParams(
             strategy_id=handle.strategy_id,
             strategy_file=handle.resolved_path,
             instrument_id=request.instrument_id,
             venue=request.venue,
             params=dict(request.params),
+            safety_rails=rails,
         )
         with self._live_strategy_lock:
             try:
@@ -2072,6 +2188,9 @@ class GrpcDataEngineServer(
                     request_id=request.request_id,
                     error_code=exc.error_code,
                 )
+            # post-trade（max_daily_loss）評価用に run の rails を記録する。
+            self._run_rails[record.run_id] = rails
+            self._run_equity_baseline.pop(record.run_id, None)
         self._publish_live_strategy_event(record)
         return engine_pb2.StartLiveStrategyRes(
             success=True,
@@ -2092,6 +2211,10 @@ class GrpcDataEngineServer(
                     request_id=request.request_id,
                     error_code=exc.error_code,
                 )
+            # 終端に達した run の Safety Rails 状態を解放する（post-trade 評価対象から外す）。
+            if record.state_machine.is_terminal:
+                self._run_rails.pop(record.run_id, None)
+                self._run_equity_baseline.pop(record.run_id, None)
         self._publish_live_strategy_event(record)
         return engine_pb2.LiveStrategyControlRes(
             success=True,

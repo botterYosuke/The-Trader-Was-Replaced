@@ -41,6 +41,7 @@ from engine.live.run_registry import (
 )
 from engine.live.strategy_state_machine import (
     ERROR,
+    InvalidLiveStrategyTransition,
     LiveStrategyStateMachine,
     PAUSED,
     READY,
@@ -56,7 +57,7 @@ class LiveStrategyHostError(Exception):
 
     error_code は構造的に意味が決まっている文字列（VENUE_LOGIN_REQUIRED /
     STRATEGY_LOAD_FAILED / LIVE_STRATEGY_ALREADY_RUNNING / DUPLICATE_STRATEGY_INSTRUMENT /
-    STRATEGY_ATTACH_FAILED / UNKNOWN_RUN）。
+    STRATEGY_ATTACH_FAILED / UNKNOWN_RUN / INVALID_LIVE_STRATEGY_STATE）。
     """
 
     def __init__(self, error_code: str) -> None:
@@ -94,11 +95,13 @@ class LiveEngineController(Protocol):
         params: dict[str, str],
         nautilus_strategy_id: str,
         session: LiveSessionView,
+        safety_rails: Any = None,
     ) -> None:
         """`strategy_cls` をインスタンス化し `Trader.add_strategy()` で attach する。
 
         EXTERNAL→INTERNAL の `bar_type` 読み替え（§2.3）と strategy ctor 形式
-        （config= / kwargs）の吸収はこの実装の責務。
+        （config= / kwargs）の吸収はこの実装の責務。`safety_rails`（§2.4）は
+        `LiveRiskEngineConfig`（ネイティブ rail）と exec client の独自 pre-trade フックに渡す。
         """
         ...
 
@@ -123,6 +126,9 @@ class StartParams:
     instrument_id: str
     venue: str
     params: dict[str, str] = field(default_factory=dict)
+    # §2.4 Safety Rails。engine controller の attach に素通しする（host は中身を見ない、
+    # transport 非依存）。None なら controller 側で「全 rail 無効」の既定にフォールバック。
+    safety_rails: Any = None
 
 
 def _new_run_id() -> str:
@@ -209,6 +215,7 @@ class LiveStrategyHost:
                 params=dict(params.params),
                 nautilus_strategy_id=nautilus_strategy_id,
                 session=session,
+                safety_rails=params.safety_rails,
             )
         except Exception as exc:  # noqa: BLE001
             self._registry.unregister(run_id)
@@ -222,13 +229,13 @@ class LiveStrategyHost:
     def pause_run(self, run_id: str) -> RunRecord:
         """RUNNING → PAUSED（新規発注ゲートを閉じる、§1.2）。callback は継続し得る。"""
         record = self._require_run(run_id)
-        record.state_machine.transition_to(PAUSED)
+        self._guarded_transition(record, PAUSED)
         return record
 
     def resume_run(self, run_id: str) -> RunRecord:
         """PAUSED → RUNNING。"""
         record = self._require_run(run_id)
-        record.state_machine.transition_to(RUNNING)
+        self._guarded_transition(record, RUNNING)
         return record
 
     def stop_run(self, run_id: str) -> RunRecord:
@@ -270,6 +277,19 @@ class LiveStrategyHost:
         if record is None:
             raise LiveStrategyHostError("UNKNOWN_RUN")
         return record
+
+    @staticmethod
+    def _guarded_transition(record: RunRecord, target: str) -> None:
+        """状態機械の不正遷移を構造化エラーに正規化する。
+
+        double-pause / resume-while-running / pause-after-stop 等の不正要求を
+        `InvalidLiveStrategyTransition`（→ gRPC 500）ではなく
+        `INVALID_LIVE_STRATEGY_STATE`（structured `error_code`）で返す。
+        """
+        try:
+            record.state_machine.transition_to(target)
+        except InvalidLiveStrategyTransition as exc:
+            raise LiveStrategyHostError("INVALID_LIVE_STRATEGY_STATE") from exc
 
     def _teardown(self, record: RunRecord) -> None:
         """in-flight cancel（当該 StrategyId のみ）→ detach。best-effort で両方試みる。

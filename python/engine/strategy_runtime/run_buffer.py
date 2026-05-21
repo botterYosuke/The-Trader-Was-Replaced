@@ -2,7 +2,6 @@
 from __future__ import annotations
 
 import atexit
-import hashlib
 import json
 import logging
 import os
@@ -15,6 +14,8 @@ import weakref
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import IO, Optional
+
+from engine.strategy_runtime import strategy_loader
 
 log = logging.getLogger(__name__)
 
@@ -60,9 +61,9 @@ def _get_git_rev(cwd: Optional[Path] = None) -> str:
 
 
 def _sha256_file(path: str) -> str:
+    # 算出本体は strategy_loader に集約。run メタは best-effort なので失敗は "unknown"。
     try:
-        with open(path, "rb") as f:
-            return hashlib.sha256(f.read()).hexdigest()
+        return strategy_loader.sha256_file(path)
     except Exception:
         return "unknown"
 
