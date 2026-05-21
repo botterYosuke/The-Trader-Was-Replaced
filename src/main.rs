@@ -359,6 +359,16 @@ fn setup_backend_connection(
     let interval = settings.poll_interval_ms;
     let catalog_path = settings.catalog_path.clone();
 
+    // Single-flight serialization for SetExecutionMode (issue #3). Mode-switch
+    // RPCs must reach the backend in click order, otherwise two switches within
+    // one poll interval can leave the backend on the *earlier* target. We spawn
+    // each switch (so the pump loop never head-of-line blocks on it) but gate
+    // the actual RPC behind `mode_gate` so only one is in flight at a time, and
+    // tag each click with a monotonic `mode_seq` so a switch superseded before
+    // it acquires the gate is dropped — structural last-click-wins.
+    let mode_seq = std::sync::Arc::new(std::sync::atomic::AtomicU64::new(0));
+    let mode_gate = std::sync::Arc::new(tokio::sync::Mutex::new(()));
+
     let handle = tokio_handle.0.clone();
     let mut lifecycle_rx = lifecycle_handle.subscribe();
     handle.spawn(async move {
@@ -676,13 +686,33 @@ fn setup_backend_connection(
                         });
                     }
                     TransportCommand::SetExecutionMode { mode } => {
-                        // Spawn so the pump loop is not blocked while the
-                        // backend processes the mode switch (sibling commands
-                        // like FetchAvailableInstruments / StartEngine follow
-                        // the same pattern).
+                        // Spawn so the pump loop is not blocked while the backend
+                        // processes the mode switch. Unlike the sibling spawns
+                        // (FetchAvailableInstruments / StartEngine), mode switches
+                        // must be *ordered*: serialize the RPC behind `mode_gate`
+                        // and drop any click superseded before it acquires the gate
+                        // (last-click-wins). See the `mode_seq` doc above (issue #3).
                         let mut sem_client = client.clone();
                         let sem_token = token.clone();
+                        let sem_seq = std::sync::Arc::clone(&mode_seq);
+                        let sem_gate = std::sync::Arc::clone(&mode_gate);
+                        let my_seq =
+                            sem_seq.fetch_add(1, std::sync::atomic::Ordering::SeqCst) + 1;
                         tokio::spawn(async move {
+                            // Serialize: only one mode RPC reaches the backend at a
+                            // time, so backend arrival order matches click order.
+                            let _guard = sem_gate.lock().await;
+                            // Coalesce: if a newer click was issued while we waited
+                            // for the gate, this one is stale — drop it so the last
+                            // click wins instead of the backend flapping back.
+                            if sem_seq.load(std::sync::atomic::Ordering::SeqCst) != my_seq {
+                                info!(
+                                    "SetExecutionMode({}) superseded by a newer switch; dropping (seq={})",
+                                    mode.as_wire_str(),
+                                    my_seq
+                                );
+                                return;
+                            }
                             let req = tonic::Request::new(SetExecutionModeRequest {
                                 mode: mode.as_wire_str().to_string(),
                                 token: sem_token,

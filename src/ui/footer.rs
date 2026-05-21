@@ -137,9 +137,11 @@ pub fn spawn_footer(mut commands: Commands, asset_server: Res<AssetServer>) {
                 ..default()
             });
 
-            // Transport buttons
+            // Transport buttons.
+            // No StepBack ("<") button: the backend has no replay-rewind path
+            // (`StepReplay` only advances), so a back button would be dead UI.
+            // See issue #7.
             spawn_transport_btn(p, "|<", TransportButton::JumpToStart);
-            spawn_transport_btn(p, "<", TransportButton::StepBack);
             // PauseResume: Button entity に PauseResumeButton marker、Text 子に PauseResumeLabel。
             // 初期表示は IDLE 起動を想定し "▶" (Run)。RUNNING 遷移時に "||" に切替。
             p.spawn((
@@ -497,7 +499,6 @@ pub fn transport_button_system(
                         }
                         other => info!("transport: jump_to_start ignored (state={})", other),
                     },
-                    TransportButton::StepBack => info!("transport: step_back (not yet wired)"),
                     TransportButton::ForceStop => match replay {
                         "RUNNING" | "PAUSED" | "LOADED" => {
                             let _ = sender.tx.send(TransportCommand::ForceStop);
@@ -932,7 +933,6 @@ mod tests {
         let mut app = make_visibility_app();
         let entities = [
             spawn_transport(&mut app, TransportButton::JumpToStart),
-            spawn_transport(&mut app, TransportButton::StepBack),
             spawn_transport(&mut app, TransportButton::PauseResume),
             spawn_transport(&mut app, TransportButton::StepForward),
             spawn_transport(&mut app, TransportButton::ForceStop),
@@ -964,7 +964,6 @@ mod tests {
         let mut app = make_visibility_app();
         let entities = [
             spawn_transport(&mut app, TransportButton::JumpToStart),
-            spawn_transport(&mut app, TransportButton::StepBack),
             spawn_transport(&mut app, TransportButton::PauseResume),
             spawn_transport(&mut app, TransportButton::StepForward),
             spawn_transport(&mut app, TransportButton::ForceStop),
@@ -981,7 +980,6 @@ mod tests {
         let mut app = make_visibility_app();
         let entities = [
             spawn_transport(&mut app, TransportButton::JumpToStart),
-            spawn_transport(&mut app, TransportButton::StepBack),
             spawn_transport(&mut app, TransportButton::PauseResume),
             spawn_transport(&mut app, TransportButton::StepForward),
             spawn_transport(&mut app, TransportButton::ForceStop),

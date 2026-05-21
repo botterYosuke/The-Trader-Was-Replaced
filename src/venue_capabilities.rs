@@ -1,8 +1,11 @@
-//! Venue capabilities (typed extraction of per-venue differences).
+//! Venue capabilities (typed source of per-venue differences).
 //!
-//! Phase 8 §3.5: skeleton with hardcoded values. Phase 9 will replace
-//! `for_venue` with extraction from `Ready.capabilities.venue_capabilities`
-//! once the Python side wires it in.
+//! Values are intentionally hardcoded from the venue audits (kabu skill ADR
+//! S4 / R7, Tachibana ADR) rather than read from the backend: the set of
+//! supported venues is fixed and these flags are stable contract facts, so a
+//! compile-time table is simpler and avoids a backend round-trip. If a future
+//! venue makes this dynamic, replace `for_venue` with a lookup into the
+//! backend `Ready.capabilities` payload.
 //!
 //! Centralising venue branching here prevents per-venue `if venue == "kabu"`
 //! checks from leaking across the Rust UI codebase.
@@ -25,8 +28,6 @@ pub struct VenueCapabilities {
 ///
 /// Returns `None` for unknown venues; callers should treat unknown venues
 /// as "no capabilities asserted" rather than defaulting silently.
-///
-/// Phase 9 TODO: replace body with lookup into `Ready.capabilities`.
 pub fn for_venue(venue_id: &str) -> Option<VenueCapabilities> {
     // Venue ids reach this fn in mixed case: the UI login command sends
     // lowercase ("tachibana"/"kabu", menu_bar.rs), but the backend reports

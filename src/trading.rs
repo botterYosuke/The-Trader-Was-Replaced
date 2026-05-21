@@ -526,8 +526,10 @@ pub enum VenueState {
     Error,
 }
 
-/// Execution mode selected in the UI. `LiveAuto` is a Phase 10 stub and
-/// must not be selectable in Phase 8 (see plan §3.6).
+/// Execution mode selected in the UI. All three variants are user-selectable:
+/// the footer renders a segment for each (`footer.rs`), `LiveAuto` drives the
+/// promote-to-live strategy chain (`main.rs`), and `is_live_mode` treats both
+/// `LiveManual` and `LiveAuto` as live.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
 pub enum ExecutionMode {
     #[default]

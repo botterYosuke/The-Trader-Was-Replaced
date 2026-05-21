@@ -44,7 +44,6 @@ pub struct PauseResumeButton;
 #[derive(Component, Clone, Copy, Debug)]
 pub enum TransportButton {
     JumpToStart,
-    StepBack,
     PauseResume,
     StepForward,
     ForceStop,

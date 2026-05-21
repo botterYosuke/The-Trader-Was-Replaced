@@ -141,13 +141,8 @@ pub fn spawn_picker_dropdown(parent: &mut ChildBuilder) {
 }
 
 // ---------------------------------------------------------------------------
-// Systems (stub — サブ C 以降で実装)
+// Systems
 // ---------------------------------------------------------------------------
-//
-// TODO(Phase 7.5b サブ C): search query update system
-// TODO(Phase 7.5b サブ D): list rebuild system
-// TODO(Phase 7.5b サブ D): row Add button click system
-// TODO(Phase 7.5b サブ E): UiPlugin への add_systems 配線
 
 /// `ScenarioMetadata.end` (Option<String>) を NaiveDate に parse する。
 /// 未設定 / parse 失敗時は None（picker は placeholder で open する想定）。
