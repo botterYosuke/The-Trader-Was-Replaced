@@ -205,10 +205,14 @@ class LiveRunner:
             self._task = None
 
     async def aclose(self) -> None:
-        """Explicit shutdown: stop background task and close the bus.
+        """Explicit shutdown: stop background task, close the bus, and logout adapter.
         Use this when the runner is truly being discarded (not re-armed)."""
         await self.stop()
         await self.bus.close()
+        try:
+            await self._adapter.logout()
+        except Exception:  # noqa: BLE001 — best-effort; orders-poll leak is the real risk (issue #16)
+            log.exception("adapter.logout() failed during aclose")
 
     @property
     def last_error(self) -> Optional[BaseException]:

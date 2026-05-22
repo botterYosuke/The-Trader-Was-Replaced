@@ -528,6 +528,12 @@ class NautilusLiveEngineController:
         if loop is None:
             return
         try:
-            asyncio.run_coroutine_threadsafe(kernel.stop_async(), loop).result(timeout=10.0)
+            # kernel.start()（sync）で起動したため、stop_async() との非対称を避けて
+            # 同期 kernel.stop() で対称化する。stop() は _await_engines_disconnected()
+            # を待たないのでハングしない（issue #15）。
+            async def _stop() -> None:
+                kernel.stop()
+
+            asyncio.run_coroutine_threadsafe(_stop(), loop).result(timeout=10.0)
         except Exception:  # noqa: BLE001 — 停止失敗でも run state は terminal にする
-            log.exception("kernel stop_async failed during detach")
+            log.exception("kernel stop failed during detach")
