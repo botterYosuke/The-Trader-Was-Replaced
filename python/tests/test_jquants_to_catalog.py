@@ -20,7 +20,8 @@ from engine.nautilus_catalog_loader import load_bars
 from engine.proto import engine_pb2, engine_pb2_grpc
 from engine.server_grpc import GrpcDataEngineServer
 
-DATA_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "data")
+_REPO_ROOT = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+DATA_DIR = os.path.join(_REPO_ROOT, "examples")
 
 
 # ---------------------------------------------------------------------------

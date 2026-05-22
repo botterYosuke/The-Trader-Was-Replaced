@@ -10,7 +10,8 @@ from engine.proto import engine_pb2, engine_pb2_grpc
 from engine.server_grpc import GrpcDataEngineServer
 from engine.jquants_loader import JQuantsLoader
 
-DATA_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "data")
+_REPO_ROOT = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+DATA_DIR = os.path.join(_REPO_ROOT, "examples")
 
 _STRATEGY_7203_DAILY = os.path.join(DATA_DIR, "test_strategy_7203_daily.py")
 _STRATEGY_7203_MINUTE = os.path.join(DATA_DIR, "test_strategy_7203_minute.py")

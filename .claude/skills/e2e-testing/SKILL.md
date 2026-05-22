@@ -146,7 +146,7 @@ $p = Start-Process -FilePath ".\target\debug\backcast.exe" -WorkingDirectory $PW
 | 1 | AI | port kill → backend 起動 → ログで `Starting gRPC server on port 19876` 確認 |
 | 2 | AI | Rust GUI 起動 |
 | 3 | AI → ユーザー | 「フッター `state: IDLE  grpc: OK` を確認してください」 |
-| 4 | ユーザー | `Load...` → `python/tests/data/test_strategy_daily.py` を選択 |
+| 4 | ユーザー | `Load...` → `examples/test_strategy_daily.py` を選択 |
 | 5 | ユーザー | Strategy Editor で `Run` をクリック |
 | 6 | ユーザー → AI | 「`state: RUNNING` → `IDLE` に戻り、Run Result Panel に `Completed` が出ました」と報告 |
 | 7 | AI | `cat $env:TEMP\backend_log.txt` で `StartEngine: run complete run_id=...` を確認 |
@@ -208,7 +208,7 @@ cargo test --test backend_integration
 ヘッドレスでリプレイだけ走らせたいなら `scripts/run_replay.ps1` ラッパーが最速。GUI は不要。
 
 ```powershell
-.\scripts\run_replay.ps1 -Strategy python\tests\data\test_strategy_daily.py
+.\scripts\run_replay.ps1 -Strategy examples\test_strategy_daily.py
 ```
 
 詳細は [docs/strategy-replay.md](../../../docs/strategy-replay.md)。

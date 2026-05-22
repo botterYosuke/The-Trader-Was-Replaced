@@ -18,7 +18,7 @@ _CATALOG_PATH = _jquants_catalog_path()
 # J-Quants データソース候補（先頭から順に試す）
 _JQUANTS_DATA_DIRS = [
     Path("S:/j-quants"),
-    _REPO_ROOT / "python" / "tests" / "data",
+    _REPO_ROOT / "examples",
 ]
 
 # slow テストが必要とする (instrument_id, granularity, start, end) の一覧

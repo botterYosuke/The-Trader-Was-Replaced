@@ -335,7 +335,7 @@ Phase 7.6 のスコープ外として放置。
 - re-spawn が複数フレームかかる StrategyEditor でも、pending が残り続けて消費されるため追加実装不要
 - `PathBuf` は serde の `Serialize/Deserialize` を持たないため JSON フィールドは `String` を使うこと
 
-**検証**: `cargo test --lib` pass + E2E pass（`python/tests/data/test_strategy_daily.json` に `strategy_path` が書き込まれ、Load 後に Strategy Editor に内容が復元されることを確認）
+**検証**: `cargo test --lib` pass + E2E pass（`examples/test_strategy_daily.json` に `strategy_path` が書き込まれ、Load 後に Strategy Editor に内容が復元されることを確認）
 
 **既存の知見・落とし穴**（上記「Bevy 0.15 API 確認事項」を必ず読むこと）:
 - `EventReader<WindowCloseRequested>` + `add_systems(Update, ...)` — 触らない
@@ -345,7 +345,7 @@ Phase 7.6 のスコープ外として放置。
 
 **保存先パス**:
 `buffer.original_path` が `Some(path)` のとき → `path.with_extension("json")`（同ディレクトリ・同名）
-例: `python/tests/data/foo.py` → `python/tests/data/foo.json`
+例: `examples/foo.py` → `examples/foo.json`
 
 ## 次フェーズ（**対象外** — すべて [Phase 7.7](Phase%207.7%20-%20UI%20Layout%20Persistence.md) で扱う）
 

@@ -971,7 +971,7 @@ cargo test --lib
 
 ### E2E 手動検証 (`e2e-testing` スキル併用)
 1. `cargo run --bin backcast` で起動
-2. Strategy Editor (Sidebar から spawn) → `python/tests/data/test_strategy_daily.py` を Ctrl+O でロード
+2. Strategy Editor (Sidebar から spawn) → `examples/test_strategy_daily.py` を Ctrl+O でロード
 3. **Phase A**: 
    - `def`, `class`, `import`, 文字列, コメントが色分け (syntect の base16-mocha.dark)
    - カーソル前の `(` に対応する `)` がハイライトされる

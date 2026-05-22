@@ -154,7 +154,7 @@ format / restore の判断も Navigator に任せます。
 - E2E Step 1-8: PASS
 - 旧保存経路 grep: 残骸なし
 - 本実装差分: Cargo.toml / Cargo.lock / src/ui/...
-- 検証副作用: python/tests/data/test_strategy_daily.* は戻す候補
+- 検証副作用: examples/test_strategy_daily.* は戻す候補
 ```
 
 ## 司令塔Agentの禁止事項（一覧）

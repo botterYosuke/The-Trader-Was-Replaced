@@ -8,8 +8,8 @@
 
 ## 1. やること（要旨）
 
-- `python/tests/data/*.py` などに書かれている `SCENARIO: Scenario = {...}` を、同名の `<strategy>.json` の中の `scenario` キーに移動する
-- 既存の layout サイドカー [`python/tests/data/test_strategy_daily.json`](../../python/tests/data/test_strategy_daily.json)（中身は `viewport` / `windows` / `strategy_path`）を**そのまま流用**して、`scenario` キーを足す
+- `examples/*.py` などに書かれている `SCENARIO: Scenario = {...}` を、同名の `<strategy>.json` の中の `scenario` キーに移動する
+- 既存の layout サイドカー [`examples/test_strategy_daily.json`](../../examples/test_strategy_daily.json)（中身は `viewport` / `windows` / `strategy_path`）を**そのまま流用**して、`scenario` キーを足す
 - `.py` 側からは `SCENARIO` と `class Scenario(TypedDict)` を削除する
 - Python CLI（`engine.strategy_replay`）と Rust GUI（`backcast.exe` Run ボタン）の両方で、サイドカー JSON 経由でリプレイが動作することを確認する
 
@@ -19,7 +19,7 @@
 
 既存 layout キーの**横**に `scenario` キーを追加する。トップレベル `schema_version` は layout 用としてそのまま残し、SCENARIO 側にも独自の `schema_version`(1/2/3) を入れる（既存 dict そのまま）。
 
-`python/tests/data/test_strategy_daily.json`（移行後）の例：
+`examples/test_strategy_daily.json`（移行後）の例：
 
 ```json
 {
@@ -78,12 +78,12 @@
 
 | `.py` ファイル                                                                                                        | 現状の SCENARIO 版 | 対応する JSON                                                            |
 | --------------------------------------------------------------------------------------------------------------------- | ------------------ | ------------------------------------------------------------------------ |
-| [`python/tests/data/test_strategy_daily.py`](../../python/tests/data/test_strategy_daily.py) (L37-53)                | v1                 | [`test_strategy_daily.json`](../../python/tests/data/test_strategy_daily.json)（**既存** layout に scenario を追記） |
-| [`python/tests/data/test_strategy_minute.py`](../../python/tests/data/test_strategy_minute.py) (L32-48)              | v2                 | `test_strategy_minute.json`（**新規**）                                  |
-| [`python/tests/data/test_strategy_trade.py`](../../python/tests/data/test_strategy_trade.py) (L33-49)                | v2                 | `test_strategy_trade.json`（新規）                                       |
-| [`python/tests/data/test_strategy_7203_daily.py`](../../python/tests/data/test_strategy_7203_daily.py) (L12-19)      | v1                 | `test_strategy_7203_daily.json`（新規）                                  |
-| [`python/tests/data/test_strategy_7203_minute.py`](../../python/tests/data/test_strategy_7203_minute.py) (L12-19)    | v1                 | `test_strategy_7203_minute.json`（新規）                                 |
-| [`python/tests/data/pair_trade_minute.py`](../../python/tests/data/pair_trade_minute.py) (L22-39)                    | v2                 | `pair_trade_minute.json`（新規）                                         |
+| [`examples/test_strategy_daily.py`](../../examples/test_strategy_daily.py) (L37-53)                | v1                 | [`test_strategy_daily.json`](../../examples/test_strategy_daily.json)（**既存** layout に scenario を追記） |
+| [`examples/test_strategy_minute.py`](../../examples/test_strategy_minute.py) (L32-48)              | v2                 | `test_strategy_minute.json`（**新規**）                                  |
+| [`examples/test_strategy_trade.py`](../../examples/test_strategy_trade.py) (L33-49)                | v2                 | `test_strategy_trade.json`（新規）                                       |
+| [`examples/test_strategy_7203_daily.py`](../../examples/test_strategy_7203_daily.py) (L12-19)      | v1                 | `test_strategy_7203_daily.json`（新規）                                  |
+| [`examples/test_strategy_7203_minute.py`](../../examples/test_strategy_7203_minute.py) (L12-19)    | v1                 | `test_strategy_7203_minute.json`（新規）                                 |
+| [`examples/pair_trade_minute.py`](../../examples/pair_trade_minute.py) (L22-39)                    | v2                 | `pair_trade_minute.json`（新規）                                         |
 | [`python/tests/fixtures/strategies/fake_market_buy_once.py`](../../python/tests/fixtures/strategies/fake_market_buy_once.py) (L15-22) | v1 | `fake_market_buy_once.json`（新規）                                      |
 | [`python/tests/fixtures/strategies/fake_buy_and_hold.py`](../../python/tests/fixtures/strategies/fake_buy_and_hold.py) (L13-20) | v1 | `fake_buy_and_hold.json`（新規）                                         |
 
@@ -225,7 +225,7 @@ Save As は「明示的に別ファイルへ書く」操作なので、`scenario
 
 ### F5: v2 のキー揺れ（`instrument` 単数 vs `instruments` 複数）
 
-[`test_strategy_minute.py:42-48`](../../python/tests/data/test_strategy_minute.py#L42-L48) は v2 だが `instrument` キー（リスト）。[`pair_trade_minute.py:32-39`](../../python/tests/data/pair_trade_minute.py#L32-L39) は v2 で `instruments` キー（リスト）。
+[`test_strategy_minute.py:42-48`](../../examples/test_strategy_minute.py#L42-L48) は v2 だが `instrument` キー（リスト）。[`pair_trade_minute.py:32-39`](../../examples/pair_trade_minute.py#L32-L39) は v2 で `instruments` キー（リスト）。
 
 [`scenario.py:271-273`](../../python/engine/strategy_runtime/scenario.py#L271-L273) の `validate` 内で正規化が走るので両方通る。**JSON 化時は v2/v3 ともに `instruments`（複数形）に統一**。Python 側 normalize ロジックは legacy `.py` fallback 用に残す。
 
@@ -603,7 +603,7 @@ enum StringOrList { One(String), Many(Vec<String>) }
 ### T1C — `test_strategy_daily.json` の修正（テストデータ）
 
 **Files**:
-- `python/tests/data/test_strategy_daily.json`（**既存ファイルを修正**）
+- `examples/test_strategy_daily.json`（**既存ファイルを修正**）
 
 **作業**:
 
@@ -747,11 +747,11 @@ if original_sidecar.exists() {
 **Files**:
 
 新規 `.json`（7 個）:
-- `python/tests/data/test_strategy_minute.json`
-- `python/tests/data/test_strategy_trade.json`
-- `python/tests/data/test_strategy_7203_daily.json`
-- `python/tests/data/test_strategy_7203_minute.json`
-- `python/tests/data/pair_trade_minute.json`
+- `examples/test_strategy_minute.json`
+- `examples/test_strategy_trade.json`
+- `examples/test_strategy_7203_daily.json`
+- `examples/test_strategy_7203_minute.json`
+- `examples/pair_trade_minute.json`
 - `python/tests/fixtures/strategies/fake_market_buy_once.json`
 - `python/tests/fixtures/strategies/fake_buy_and_hold.json`
 
@@ -784,7 +784,7 @@ if original_sidecar.exists() {
 **v2 のキー正規化**: `.json` 側は `instruments`（複数形・リスト）に統一する。`.py` 内に `instrument: ["1301.TSE"]`（v2 で単数キー）だったものも `instruments: ["1301.TSE"]` に直す。
 
 **AC**:
-- `grep -RE "^SCENARIO\s*[:=]|class Scenario\(TypedDict\)" python/tests/data/ python/tests/fixtures/` で 0 件
+- `grep -RE "^SCENARIO\s*[:=]|class Scenario\(TypedDict\)" examples/ python/tests/fixtures/` で 0 件
 - すべての `.py` に対応する `.json` が存在し、`load_scenario(.py)` で dict が取れる
 - pytest で legacy fallback の WARN ログが出ない（リポ内戦略は全て JSON ルートを通る）
 
@@ -827,19 +827,19 @@ if original_sidecar.exists() {
 - [`src/trading.rs:151`](../../src/trading.rs#L151): `Scenario fields extracted from SCENARIO dict in the strategy .py file` というコメントを「the strategy's `<strategy>.json` sidecar」に書き直し
 
 **AC**:
-- `.\scripts\run_replay.ps1 -Strategy python\tests\data\test_strategy_daily.py` exit 0
+- `.\scripts\run_replay.ps1 -Strategy examples\test_strategy_daily.py` exit 0
 - `uv run python -m engine.strategy_replay run --help` で新 help 文言が表示される
 
 ### T5 — E2E 検証
 
 **Steps**:
 
-1. CLI: `uv run python -m engine.strategy_replay run --strategy python/tests/data/test_strategy_daily.py --catalog artifacts/jquants-catalog --run-buffer-dir tmp/rb` exit 0、`equity_points > 0`
+1. CLI: `uv run python -m engine.strategy_replay run --strategy examples/test_strategy_daily.py --catalog artifacts/jquants-catalog --run-buffer-dir tmp/rb` exit 0、`equity_points > 0`
 2. CLI: 同じく `pair_trade_minute.py` で exit 0（v2 `instruments` 経路の確認）
 3. CLI: `--start 2025-02-01 --end 2025-02-28` 上書きで normalize 後の dict が正しく流れる（v2 戦略で `instruments` キーになっていることを log で確認）
 4. **GUI Run 経路**: backend + GUI 起動 → `Open Strategy` で `test_strategy_daily.py` → cache ディレクトリに `<hash>__test_strategy_daily.py` と `<hash>__test_strategy_daily.json` が両方できることを確認 → Strategy Editor の Run ボタン押下 → state RUNNING → IDLE、Run Result Panel に summary 表示
 5. **layout merge 不変性**: 戦略を Open した状態で window を動かして autosave 発火 → `test_strategy_daily.json` を再 read → `scenario` キーが（semantic に）残っていること
-   - PowerShell: `(Get-Content python\tests\data\test_strategy_daily.json | ConvertFrom-Json).scenario` が非 null
+   - PowerShell: `(Get-Content examples\test_strategy_daily.json | ConvertFrom-Json).scenario` が非 null
 6. **GUI Run の cache 不整合検知**: cache ディレクトリの `<hash>__test_strategy_daily.json` だけを手動削除して GUI Run → `STRATEGY_LOAD_ERROR` が backend ログに出る（StartEngine が落ちることを「正しく」検知できる）
 7. external blacksheep 戦略を CLI で動かす → WARN ログ「SCENARIO loaded from .py (legacy)」が出て exit 0
 8. **v3 instruments_ref GUI 非対応の確認**: `instruments_ref` のみの sidecar を作って GUI で開く → Run ボタンがグレーアウト（`ScenarioMetadata.instruments` 空でブロック）
@@ -858,16 +858,16 @@ if original_sidecar.exists() {
 - [ ] `cargo test --workspace` 全緑
 - [ ] `cargo clippy -- -D warnings` クリーン
 - [ ] **scope 限定 残骸チェック AC**（PowerShell / rg ベース）:
-  - `rg -n "^SCENARIO\s*[:=]|class Scenario\(TypedDict\)" python/tests/data python/tests/fixtures/strategies` → 0 件
-  - `rg -n "\bSCENARIO\b|TypedDict" python/tests/data python/tests/fixtures/strategies` の結果が **`LIVE_SCENARIO` を含む行のみ**であること（コメント / docstring / 未使用 import がないこと）
-  - `rg -n "from typing import TypedDict" python/tests/data python/tests/fixtures/strategies` → 0 件（移行で全削除）
+  - `rg -n "^SCENARIO\s*[:=]|class Scenario\(TypedDict\)" examples python/tests/fixtures/strategies` → 0 件
+  - `rg -n "\bSCENARIO\b|TypedDict" examples python/tests/fixtures/strategies` の結果が **`LIVE_SCENARIO` を含む行のみ**であること（コメント / docstring / 未使用 import がないこと）
+  - `rg -n "from typing import TypedDict" examples python/tests/fixtures/strategies` → 0 件（移行で全削除）
 - [ ] 8 個の `.py` それぞれに対応する `<strategy>.json`（`scenario` キーあり）が存在する
 - [ ] `test_strategy_daily.json` には layout キー（viewport / windows / strategy_path）と `scenario` キーが**共存**している
 - [ ] layout 自動保存後も `scenario` キーが破壊されない（T1D の round-trip テスト + T5 step 5）
 - [ ] **GUI Open Strategy 時に cache sidecar JSON が同梱コピーされる**（T1E）
 - [ ] **`<strategy>.json` 単独で読んだ scenario と、cache `<hash>__<strategy>.json` で読んだ scenario が一致**（F10）
 - [ ] `load_scenario` の戻り値が v2/v3 で必ず `instruments` キーを持つ（F9 normalize）
-- [ ] `.\scripts\run_replay.ps1 -Strategy python\tests\data\test_strategy_daily.py` exit 0
+- [ ] `.\scripts\run_replay.ps1 -Strategy examples\test_strategy_daily.py` exit 0
 - [ ] GUI で `test_strategy_daily.py` を Open → Run が完走
 - [ ] `docs/strategy-replay.md` が更新済み
 - [ ] `python/engine/strategy_replay/cli.py` の `--help` 文言と `src/trading.rs:151` コメントが更新済み

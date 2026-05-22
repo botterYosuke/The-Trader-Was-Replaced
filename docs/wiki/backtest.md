@@ -11,7 +11,7 @@ GUI でチャートを見ながら再生したい場合は [replay.md](replay.md
 `scripts/run_replay.ps1` は「シナリオ読取 → catalog 自動構築 → リプレイ実行」をワンショットで行う。 [L1]/[L6]
 
 ```powershell
-.\scripts\run_replay.ps1 -Strategy python\tests\data\test_strategy_daily.py
+.\scripts\run_replay.ps1 -Strategy examples\test_strategy_daily.py
 ```
 
 動作の流れ:
@@ -39,7 +39,7 @@ GUI でチャートを見ながら再生したい場合は [replay.md](replay.md
 
 ```powershell
 uv run python -m engine.strategy_replay run `
-    --strategy tests/data/test_strategy_daily.py `
+    --strategy ../examples/test_strategy_daily.py `
     --catalog ../artifacts/jquants-catalog `
     --run-buffer-dir ../tmp/run-buffer
 ```
@@ -99,10 +99,10 @@ run-buffer の既定出力先は `%APPDATA%\flowsurface\run-buffer\`（`--run-bu
 
 | ファイル | 内容 |
 |---|---|
-| `python/tests/data/test_strategy_daily.py` | 1301.TSE / Daily / バイアンドホールド |
-| `python/tests/data/test_strategy_minute.py` | Minute 版 |
-| `python/tests/data/test_strategy_7203_daily.py` | 7203.TSE / Daily |
-| `python/tests/data/pair_trade_minute.py` | 2 銘柄（schema v2）/ Minute |
+| `examples/test_strategy_daily.py` | 1301.TSE / Daily / バイアンドホールド |
+| `examples/test_strategy_minute.py` | Minute 版 |
+| `examples/test_strategy_7203_daily.py` | 7203.TSE / Daily |
+| `examples/pair_trade_minute.py` | 2 銘柄（schema v2）/ Minute |
 
 戦略の書き方・SCENARIO スキーマは [strategy.md](strategy.md) を参照。
 
