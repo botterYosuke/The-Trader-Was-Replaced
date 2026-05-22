@@ -61,7 +61,7 @@ release gate 列の ID（`I*` / `J*` / `K*` / `L*` 群、保留中の `A5` / `C5
 実装済みの代替方式 flow（I/J/K/L/M 群は `tests/e2e/flows/<id>.rs` に実装済み・`cargo test --test e2e_replay` で green）:
 
 - **I 群（メニュー / file / layout）✅** — i1 メニュー開閉, i2 Alt+F/E/V, i4 モード切替 gating（未送信 assert）, i5 file-open→Editor/Chart spawn, i6 File→New, i7 Save→sidecar, i9 Ctrl+S/Shift+S/O dispatch, i10 open→Auto, i11 Edit→Undo/Redo, i12 起動時 cache 復元, i13 scenario-only JSON。`i3`（Escape/outside-close）は本番未実装のため doc stub。`i8`（Save As）は rfd ダイアログ直呼びで headless 不可 → `#[test] #[ignore]`。
-- **J 群（editor / find / startup / scenario / picker）✅** — j1 autosave, j2 Tab indent, j3 Enter autoindent, j4 bracket autoclose, j5 find open/nav, j6 replace current/all, j7 startup 検証 block, j8 valid run command, j9 instruments_ref fail-closed, j10 readonly registry, j11 picker search/add/close, j12 placeholder, j13 sidebar select/remove, j14 schema 正規化, j15 file-watch reparse, j16 field commit→cache writeback。
+- **J 群（editor / find / startup / scenario / picker）✅** — j1 autosave, j2 Tab indent, j3 Enter autoindent, j4 bracket autoclose, j5 find open/nav, j6 replace current/all, j7 startup 検証 block, j8 valid run command, j9 instruments_ref fail-closed, j10 readonly registry, j11 picker search/add/close, j12 placeholder（空設定/取得中/失敗/未接続/No matches=検索一致なし、空 Universe→"No instruments for this date/venue"=ADR-0002 before_oldest 経路と区別）, j13 sidebar select/remove, j14 schema 正規化, j15 file-watch reparse, j16 field commit→cache writeback。
 - **K 群（chart / order / modal）✅** — k2 wheel zoom gate, k3 drag/double-click reset（observer 駆動）, k4 Ctrl+wheel 抑制, k5 ladder live mode entity-tree, k6 reconcile diff, k7 order submit→confirm→PlaceOrder, k8 secret submit/retry, k9 context modify/cancel, k10 form controls/validation, k11 confirm Escape 優先, k12 modify modal, k13 relogin Escape 優先, k14 reconcile Escape 優先, k15 secret zeroize/empty-submit, k16 context menu open/close。`k1`（candle/crosshair 描画）は `kind:render`（ShapePainter+Text2d=GPU 必要）→ doc stub。
 - **L 群（CLI / guard / backend）✅** — l3 prod guard（env unset→backend disabled, `#[serial]`）, l5 supervisor→mock gRPC Ready。l2 strategy_replay CLI は `STRATEGY_REPLAY_CLI_INTEGRATION=1` gate、l6 catalog build は `DEV_J_QUANTS_CACHE` 依存で `#[ignore]`。`l1`（run_replay.ps1）は Windows 専用 PowerShell → doc stub。`l4`（実ウィンドウ全体 smoke）は `kind:render` → doc stub。
 - **M 群（window / sidebar）✅** — m1 sidebar Panels ボタン spawn, m2 drag→位置更新+autosave dirty, m3 close→despawn, m4 focus→z 前面, m5 duplicate policy（StrategyEditor のみ multi）。`m6`（settings sidebar）は固定文字列で BackendStatus 未接続 → doc stub。
@@ -104,6 +104,10 @@ release gate 列の ID（`I*` / `J*` / `K*` / `L*` 群、保留中の `A5` / `C5
   `TransportCommand` 注入 → mock gRPC（`backend_integration.rs` の `MyDataEngine` を `tests/e2e/support/`
   へ共有抽出）→ `RunState` 観測 の単一プロセスループを閉じる。**UI→`TransportCommand` の前半は上記の本番 UI
   system 駆動で既に閉じている**。残るのは発射コマンドを実 gRPC に通して `BackendStatusUpdate` として戻す往復のみ。
+  - **ここで初めて pin できる未カバー挙動**: `ListAllListedSymbols` が end_date を clamp（未来日→Catalog 最新日, ADR-0002）した
+    とき、フロントは `AvailableInstrumentsLoaded` を **要求時の end_date** でキーする（`main.rs` transport task, *resolved* では
+    ない）。これが resolved 側に退行すると `in_flight[要求日]` が永久に消えずピッカーが無限 Loading になる。ロジックが
+    `main.rs` の tokio タスク内に inline で Harness の seam 注入経路を通らないため、現状は doc gap（fake テストは置かない）。
 - **Phase B（未）**: `--e2e` / `BACKCAST_E2E=1` のウィンドウ実行モード（固定ウィンドウ・固定パス・
   構造化ログ）で、`.rs` flow と同じシナリオを実描画で smoke 実行（`kind:render` / `L4`）。
 
