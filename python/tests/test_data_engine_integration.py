@@ -6,7 +6,7 @@ from engine.core import DataEngine
 from engine.jquants_loader import JQuantsLoader
 from engine.reducer import KlineUpdate, ReplayTimeUpdated
 
-DATA_DIR = Path(__file__).parent / "data"
+DATA_DIR = Path(__file__).parents[2] / "examples"
 
 
 @pytest.mark.slow

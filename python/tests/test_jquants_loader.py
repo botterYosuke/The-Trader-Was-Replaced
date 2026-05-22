@@ -9,7 +9,7 @@ from engine.jquants_loader import (
 
 from pathlib import Path
 
-SAMPLE_DATA = Path(__file__).parents[0] / "data"
+SAMPLE_DATA = Path(__file__).parents[2] / "examples"
 
 
 def test_check_data_exists_returns_true_when_monthly_trade_file_exists(tmp_path):

@@ -1,7 +1,7 @@
 # run_replay.ps1 — One-shot strategy replay launcher
 #
 # 使い方:
-#   .\scripts\run_replay.ps1 -Strategy python\tests\data\test_strategy_daily.py
+#   .\scripts\run_replay.ps1 -Strategy examples\test_strategy_daily.py
 #   .\scripts\run_replay.ps1 -Strategy <path> -StrategyParam window=10,lot_size=200
 #   .\scripts\run_replay.ps1 -Strategy <path> -Catalog D:\my\catalog -SkipCatalogBuild
 #

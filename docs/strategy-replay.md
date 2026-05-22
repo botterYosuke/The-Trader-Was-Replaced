@@ -7,7 +7,7 @@
 戦略ファイルを渡すだけで「scenario 読取 → catalog 自動構築 → リプレイ実行」をワンショットで行う。`.env` の `DEV_J_QUANTS_CACHE`（既定: `S:/j-quants`）を J-Quants CSV のソースとして使用する。
 
 ```powershell
-.\scripts\run_replay.ps1 -Strategy python\tests\data\test_strategy_daily.py
+.\scripts\run_replay.ps1 -Strategy examples\test_strategy_daily.py
 ```
 
 主なオプション：
@@ -38,7 +38,7 @@ uv run python -c "from engine.jquants_to_catalog import ensure_jquants_catalog; 
 
 ```powershell
 uv run python -m engine.strategy_replay run `
-    --strategy tests/data/test_strategy_daily.py `
+    --strategy ../examples/test_strategy_daily.py `
     --catalog ../artifacts/jquants-catalog `
     --run-buffer-dir ../tmp/run-buffer
 ```
@@ -60,9 +60,9 @@ stdout に `run_id` / `run_dir` / `equity_points` / `fills_count` などの summ
 
 ## サンプル戦略
 
-- [`python/tests/data/test_strategy_daily.py`](../python/tests/data/test_strategy_daily.py) — 1301.TSE / Daily / Buy-and-hold
-- [`python/tests/data/test_strategy_minute.py`](../python/tests/data/test_strategy_minute.py) — Minute 版
-- [`python/tests/data/test_strategy_trade.py`](../python/tests/data/test_strategy_trade.py) — Trade 版
+- [`examples/test_strategy_daily.py`](../examples/test_strategy_daily.py) — 1301.TSE / Daily / Buy-and-hold
+- [`examples/test_strategy_minute.py`](../examples/test_strategy_minute.py) — Minute 版
+- [`examples/test_strategy_trade.py`](../examples/test_strategy_trade.py) — Trade 版
 
 > **SCENARIO の書き方**: 各戦略の SCENARIO は `.py` 内ではなく、同名の `<strategy>.json` の `scenario` キーに書く。例:
 >

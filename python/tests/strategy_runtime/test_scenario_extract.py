@@ -459,7 +459,7 @@ def test_resolve_instruments_ref_raises_when_empty_list(tmp_path: Path):
 # load_scenario — instruments_ref integration tests
 # ---------------------------------------------------------------------------
 
-_DATA_DIR = Path(__file__).parent.parent / "data"
+_DATA_DIR = Path(__file__).parents[3] / "examples"
 _INSTRUMENTS_REF_FIXTURE = _DATA_DIR / "e2e_instruments_ref_locked.py"
 _INSTRUMENTS_REF_MIXED_FIXTURE = _DATA_DIR / "e2e_instruments_ref_mixed_locked.py"
 

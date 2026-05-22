@@ -28,7 +28,7 @@ uv run python -m engine --token your-secret-token
 
 ```powershell
 # 最速起動
-.\scripts\run_replay.ps1 -Strategy python\tests\data\test_strategy_daily.py
+.\scripts\run_replay.ps1 -Strategy examples\test_strategy_daily.py
 ```
 
 ## Testing
