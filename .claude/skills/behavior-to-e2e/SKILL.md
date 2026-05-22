@@ -11,6 +11,10 @@ description: >-
   「venue ログインの状態遷移をテスト」「銘柄リストの取得失敗をテスト」「回帰テストを追加」「E2E を1本足して」
   「FLOWS.md の flow を実装」「backend からこのイベントが来たら UI がこうなる、をテスト」
   「メニュー/エディタ/チャート/モーダル/レイアウトの操作をリリース前に保証したい」と言われたとき。
+  **「この挙動をテストするテストはあるか」「既にテストされているか」「テストでカバーされているか確認したい」
+  「FLOWS.md に該当 flow があるか」「カバレッジを確認」のような“テスト作成”でなく“カバレッジ照会”の問いでも必ず起動する**
+  （既存 flow / e2e_replay / Python テストを棚卸しし、足りない分だけ flow 化する。穴が headless 不可なら fake せず
+  doc gap として FLOWS.md に明記する）。
   さらに **`e2e_replay` が全本落ちる / ハーネスが panic する / `could not access system parameter` が出た /
   マージ後に E2E が壊れた / `BackendEvent`・`BackendStatusUpdate` などの列挙子にフィールドが増えて
   `e2e_replay` が `missing field` でコンパイルできない（テストドリフト）**ときの**ハーネス修復**も本スキルの対象

@@ -12,7 +12,9 @@
 //!   - NotFetched (Live): "Venue not connected"
 //!   - InFlight (Live): "Loading..."
 //!   - Failed (Live): "Error: ..."
-//!   - No matches (filter): "No matches"
+//!   - No matches (候補あり + 検索クエリ全除外): "No matches"
+//!   - 空 Universe (Replay, by_end_date[end]=[]): "No instruments for this date"（ADR-0001 before_oldest）
+//!   - 空 Universe (Live, Tickers Loaded + 空 list): "No instruments in venue"
 //! - `InstrumentPickerSearchText` の visible/hidden は `sync_picker_dropdown_visibility_system` が
 //!   `InstrumentPickerDropdown` を通して制御するため dropdown Node.display で観測する。
 
@@ -278,6 +280,65 @@ fn j12_instrument_picker_placeholders() {
             app.world().get::<Node>(dropdown).unwrap().display,
             Display::None,
             "ケース8: picker closed → dropdown は Display::None になるはず"
+        );
+    }
+
+    // ── ケース 9: Replay, by_end_date[end] が空 Universe → "No instruments for this date" ──
+    // backend が before_oldest で success=True/ids=[] を返した結果（ADR-0001）。
+    // 取得完了済みだが候補が 0 件。検索一致なし("No matches")とは別文言で表すこと。
+    {
+        let (mut app, _dropdown, container) = make_picker_app();
+        let end_date = NaiveDate::from_ymd_opt(1999, 1, 1).unwrap();
+        app.world_mut()
+            .resource_mut::<InstrumentPickerState>()
+            .end_date = Some(end_date);
+        app.world_mut()
+            .resource_mut::<AvailableInstruments>()
+            .by_end_date
+            .insert(end_date, vec![]);
+        app.update();
+
+        let row_count = app
+            .world_mut()
+            .query::<&InstrumentPickerRow>()
+            .iter(app.world())
+            .count();
+        assert_eq!(row_count, 0, "ケース9: 空 Universe → row なし");
+
+        let texts = collect_child_texts(&mut app, container);
+        assert!(
+            texts.iter().any(|t| t.contains("No instruments for this date")),
+            "ケース9: 空 Universe → 'No instruments for this date' はず (texts={texts:?})"
+        );
+        assert!(
+            !texts.iter().any(|t| t.contains("No matches")),
+            "ケース9: 空 Universe を 'No matches'（検索一致なし）と混同しないこと (texts={texts:?})"
+        );
+    }
+
+    // ── ケース 10: Replay, 候補あり + 検索クエリ全除外 → "No matches" ──────────
+    // ケース9（空 Universe）との対比で、(B)検索一致なしは依然 "No matches" であることを pin。
+    {
+        let (mut app, _dropdown, container) = make_picker_app();
+        let end_date = NaiveDate::from_ymd_opt(2024, 12, 31).unwrap();
+        app.world_mut()
+            .resource_mut::<InstrumentPickerState>()
+            .end_date = Some(end_date);
+        app.world_mut()
+            .resource_mut::<AvailableInstruments>()
+            .by_end_date
+            .insert(end_date, vec!["7203.TSE".to_string()]);
+        app.world_mut().resource_mut::<InstrumentPickerState>().query = "ZZZNOMATCH".to_string();
+        app.update();
+
+        let texts = collect_child_texts(&mut app, container);
+        assert!(
+            texts.iter().any(|t| t.contains("No matches")),
+            "ケース10: 候補あり+検索不一致 → 'No matches' はず (texts={texts:?})"
+        );
+        assert!(
+            !texts.iter().any(|t| t.contains("No instruments")),
+            "ケース10: 検索一致なしを空 Universe 文言と混同しないこと (texts={texts:?})"
         );
     }
 }
