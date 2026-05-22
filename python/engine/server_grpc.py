@@ -552,6 +552,10 @@ class GrpcDataEngineServer(
         if self._live_runner is None and self._live_bridge is None:
             return
         loop = self._live_loop
+        # Capture adapter before the finally block nulls self._live_runner.
+        # adapter.logout() is called after the fast teardown with its own budget
+        # so it does not consume the shared _live_timeout_s (issue #16 fix).
+        adapter = self._live_runner.adapter if self._live_runner is not None else None
         try:
             if loop is not None and loop.is_running():
                 future = asyncio.run_coroutine_threadsafe(
@@ -572,6 +576,15 @@ class GrpcDataEngineServer(
             # Arm clear-on-toggle: a prior lifecycle's last_error must not bleed
             # into the next Live session or stay visible after returning to Replay.
             self._suppress_live_last_error = True
+        # adapter.logout() gets its own budget: PUT /unregister/all can take several
+        # seconds and must not inflate _live_timeout_s (shared with start/subscribe).
+        if adapter is not None and loop is not None and loop.is_running():
+            try:
+                asyncio.run_coroutine_threadsafe(
+                    adapter.logout(), loop
+                ).result(timeout=12.0)
+            except Exception:
+                logging.exception("adapter.logout() failed during teardown")
         # v5.2 Claim 2: reset venue_sm to DISCONNECTED so next Live entry
         # requires VenueLogin again (ensures adapter.is_logged_in invariant).
         if self.venue_sm is not None and self.venue_sm.current != "DISCONNECTED":
