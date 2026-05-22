@@ -191,6 +191,7 @@ class NautilusVenueExecClient(LiveExecutionClient):
                 price=price,
                 order_type=order.order_type.name,
                 time_in_force=order.time_in_force.name,
+                client_order_id=order.client_order_id.value,
             )
         except Exception as exc:  # noqa: BLE001 — venue/adapter 失敗は REJECTED に正規化
             log.exception("submit_order adapter call failed")
