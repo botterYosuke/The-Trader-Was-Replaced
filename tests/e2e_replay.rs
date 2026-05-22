@@ -222,6 +222,12 @@ mod m4_window_focus_brings_to_front;
 #[path = "e2e/flows/m5_panel_duplicate_policy.rs"]
 mod m5_panel_duplicate_policy;
 // m6: stub のみ（settings sidebar は固定文字列で BackendStatus 等に未接続）
+#[path = "e2e/flows/m7_startup_window_has_no_close_button.rs"]
+mod m7_startup_window_has_no_close_button;
+#[path = "e2e/flows/m8_startup_window_visibility_owned_by_mode.rs"]
+mod m8_startup_window_visibility_owned_by_mode;
+#[path = "e2e/flows/m9_startup_window_position_persists_visible_not_authoritative.rs"]
+mod m9_startup_window_position_persists_visible_not_authoritative;
 
 // N. Live Auto strategy execution (Phase 10: lifecycle / telemetry / safety / log / promote)
 #[path = "e2e/flows/n1_live_strategy_event_lifecycle.rs"]

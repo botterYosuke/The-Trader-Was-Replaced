@@ -219,6 +219,7 @@ pub enum PanelKind {
     RunResult,
     Positions,
     Orders,
+    Startup,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -239,6 +240,7 @@ impl PanelKind {
             PanelKind::RunResult => "Run Result",
             PanelKind::Positions => "Positions",
             PanelKind::Orders => "Orders",
+            PanelKind::Startup => "Startup",
         }
     }
 
@@ -259,7 +261,8 @@ impl PanelKind {
             | PanelKind::BuyingPower
             | PanelKind::RunResult
             | PanelKind::Positions
-            | PanelKind::Orders => PanelRestoreDriver::WindowLayout,
+            | PanelKind::Orders
+            | PanelKind::Startup => PanelRestoreDriver::WindowLayout,
         }
     }
 }
@@ -3115,6 +3118,7 @@ mod tests {
             PanelKind::RunResult,
             PanelKind::Positions,
             PanelKind::Orders,
+            PanelKind::Startup,
         ] {
             assert_eq!(kind.restore_driver(), PanelRestoreDriver::WindowLayout);
         }

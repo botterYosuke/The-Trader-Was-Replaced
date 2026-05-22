@@ -22,6 +22,7 @@ pub mod orders;
 pub mod positions;
 pub mod reconcile_modal;
 pub mod relogin_modal;
+pub mod render_scale;
 pub mod replay_startup_window;
 pub mod restore;
 pub mod run_result_panel;
@@ -45,6 +46,7 @@ pub use components::{
     ChartInstrument, InstrumentRegistry, ScenarioFileWatchState, ScenarioInstrumentsWritebackState,
     ScenarioLoadedFromFile, ScenarioReadTarget, ScenarioWritebackPaths,
 };
+pub use render_scale::{RenderScaleResponsive, update_cosmic_render_scale_system};
 
 use crate::ui::buying_power::buying_power_panel_system;
 use crate::ui::chart_axes::{price_axis_labels_system, time_axis_labels_system};
@@ -142,9 +144,9 @@ use crate::ui::safety_toast::{safety_toast_system, spawn_safety_toast};
 use crate::ui::scenario_parser::parse_scenario_system;
 use crate::ui::scenario_startup_panel::{
     ScenarioStartupParamCommit, commit_startup_params_to_scenario_system,
-    enforce_scenario_startup_panel_readonly_system, scenario_startup_granularity_button_system,
+    enforce_scenario_startup_panel_readonly_system,
     scenario_startup_param_input_system, spawn_scenario_startup_input_fields,
-    spawn_scenario_startup_panel, sync_startup_param_editors_text_system,
+    spawn_scenario_startup_window_system, sync_startup_param_editors_text_system,
     sync_startup_params_from_scenario_system, update_scenario_startup_param_ui_system,
     write_startup_params_to_cache_sidecar_system,
 };
@@ -269,8 +271,8 @@ impl Plugin for UiPlugin {
                 spawn_footer,
                 spawn_menu_bar,
                 spawn_sidebar,
-                spawn_scenario_startup_panel.after(spawn_sidebar),
-                spawn_scenario_startup_input_fields.after(spawn_scenario_startup_panel),
+                spawn_scenario_startup_window_system,
+                spawn_scenario_startup_input_fields.after(spawn_scenario_startup_window_system),
                 // 起動時に固定 cache から復元する（CacheRestoreRequested 発火）
                 restore_last_strategy_system,
                 // highlight pipeline: syntect SyntaxSet/Theme を resource として用意
@@ -381,7 +383,6 @@ impl Plugin for UiPlugin {
             (
                 (
                     scenario_startup_param_input_system,
-                    scenario_startup_granularity_button_system,
                     parse_scenario_system,
                     sync_registry_from_scenario_loaded_system,
                     sync_registry_from_scenario_cleared_system,

@@ -163,6 +163,7 @@ pub fn spawn_strategy_editor_panel(
             size: PANEL_SIZE,
             position: PANEL_POSITION,
             accent: ACCENT,
+            closeable: true,
         },
     );
     commands.entity(root).insert((

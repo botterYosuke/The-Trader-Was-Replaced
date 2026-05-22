@@ -11,6 +11,7 @@ use crate::ui::menu_bar::cache_state_paths;
 use crate::ui::orders::spawn_orders_panel;
 use crate::ui::positions::spawn_positions_panel;
 use crate::ui::run_result_panel::spawn_run_result_panel;
+use crate::ui::scenario_startup_panel::spawn_scenario_startup_window;
 use crate::ui::strategy_editor::spawn_strategy_editor_panel;
 use bevy::prelude::*;
 use bevy_cosmic_edit::prelude::CosmicFontSystem;
@@ -30,6 +31,8 @@ pub struct FloatingWindowSpec {
     pub position: Vec2,
     /// rim light（外周の発光）の色
     pub accent: Color,
+    /// × クローズボタンを spawn するか。false の panel（Startup 等）は閉じられない
+    pub closeable: bool,
 }
 
 /// 戻り値: (root_entity, content_area_entity, title_bar_entity)
@@ -197,99 +200,103 @@ pub fn spawn_floating_window(
 
     // ─── 7. Close button (× — タイトルバー右端。root 直下に置くことで
     //        title_bar の Drag observer が伝播しないようにする) ───
-    const CLOSE_BTN_SIZE: f32 = 20.0;
-    const CLOSE_BTN_MARGIN: f32 = 8.0;
-    let close_btn_x = spec.size.x / 2.0 - CLOSE_BTN_SIZE / 2.0 - CLOSE_BTN_MARGIN;
-    let close_btn = commands
-        .spawn((
-            Sprite {
-                color: Color::srgba(0.6, 0.15, 0.15, 0.85),
-                custom_size: Some(Vec2::splat(CLOSE_BTN_SIZE)),
-                ..default()
-            },
-            Transform::from_xyz(close_btn_x, title_bar_y, 0.2),
-            CloseButton,
-        ))
-        .observe(
-            |trigger: Trigger<Pointer<Click>>,
-             parent_query: Query<&Parent>,
-             root_q: Query<
-                (
-                    &PanelKind,
-                    &Transform,
-                    &Sprite,
-                    Option<&StrategyEditorId>,
-                    Option<&StrategyFragment>,
-                    Option<&ChartInstrument>,
-                ),
-                With<WindowRoot>,
-            >,
-             mut history: ResMut<AppHistory>,
-             mut auto_save: ResMut<crate::ui::layout_persistence::AutoSaveState>,
-             mut registry: ResMut<InstrumentRegistry>,
-             mut map: ResMut<crate::trading::InstrumentTradingDataMap>,
-             mut commands: Commands| {
-                let Ok(parent) = parent_query.get(trigger.entity()) else {
-                    return;
-                };
-                let root_entity = parent.get();
-                let Ok((kind, tf, sprite, editor_id, fragment, chart_instrument)) =
-                    root_q.get(root_entity)
-                else {
-                    commands.entity(root_entity).despawn_recursive();
-                    return;
-                };
+    if spec.closeable {
+        const CLOSE_BTN_SIZE: f32 = 20.0;
+        const CLOSE_BTN_MARGIN: f32 = 8.0;
+        let close_btn_x = spec.size.x / 2.0 - CLOSE_BTN_SIZE / 2.0 - CLOSE_BTN_MARGIN;
+        let close_btn = commands
+            .spawn((
+                Sprite {
+                    color: Color::srgba(0.6, 0.15, 0.15, 0.85),
+                    custom_size: Some(Vec2::splat(CLOSE_BTN_SIZE)),
+                    ..default()
+                },
+                Transform::from_xyz(close_btn_x, title_bar_y, 0.2),
+                CloseButton,
+            ))
+            .observe(
+                |trigger: Trigger<Pointer<Click>>,
+                 parent_query: Query<&Parent>,
+                 root_q: Query<
+                    (
+                        &PanelKind,
+                        &Transform,
+                        &Sprite,
+                        Option<&StrategyEditorId>,
+                        Option<&StrategyFragment>,
+                        Option<&ChartInstrument>,
+                    ),
+                    With<WindowRoot>,
+                >,
+                 mut history: ResMut<AppHistory>,
+                 mut auto_save: ResMut<crate::ui::layout_persistence::AutoSaveState>,
+                 mut registry: ResMut<InstrumentRegistry>,
+                 mut map: ResMut<crate::trading::InstrumentTradingDataMap>,
+                 mut commands: Commands| {
+                    let Ok(parent) = parent_query.get(trigger.entity()) else {
+                        return;
+                    };
+                    let root_entity = parent.get();
+                    let Ok((kind, tf, sprite, editor_id, fragment, chart_instrument)) =
+                        root_q.get(root_entity)
+                    else {
+                        commands.entity(root_entity).despawn_recursive();
+                        return;
+                    };
 
-                // Chart window: editable=false なら何もしない
-                if let Some(ci) = chart_instrument {
-                    if !registry.editable {
+                    // Chart window: editable=false なら何もしない
+                    if let Some(ci) = chart_instrument {
+                        if !registry.editable {
+                            return;
+                        }
+                        registry.remove(&ci.instrument_id);
+                        map.map.remove(&ci.instrument_id);
+                        commands.entity(root_entity).despawn_recursive();
                         return;
                     }
-                    registry.remove(&ci.instrument_id);
-                    map.map.remove(&ci.instrument_id);
+
+                    // 既存ロジック（非 Chart）
+                    if !history.is_replaying() {
+                        let region_key = editor_id.map(|id| id.region_key.clone());
+                        let layout = WindowLayout {
+                            kind: *kind,
+                            region_key,
+                            visible: true,
+                            position: [tf.translation.x, tf.translation.y],
+                            size: sprite
+                                .custom_size
+                                .map(|s| s.to_array())
+                                .unwrap_or([0.0, 0.0]),
+                            z: tf.translation.z,
+                        };
+                        let snapshot = match (editor_id, fragment) {
+                            (Some(id), Some(f)) => {
+                                Some((id.region_key.clone(), f.source.clone()))
+                            }
+                            _ => None,
+                        };
+                        history.push_window_despawn(layout, snapshot);
+                        auto_save.mark_layout_changed(std::time::Instant::now());
+                    }
                     commands.entity(root_entity).despawn_recursive();
-                    return;
-                }
+                },
+            )
+            .id();
+        commands.entity(root).add_child(close_btn);
 
-                // 既存ロジック（非 Chart）
-                if !history.is_replaying() {
-                    let region_key = editor_id.map(|id| id.region_key.clone());
-                    let layout = WindowLayout {
-                        kind: *kind,
-                        region_key,
-                        visible: true,
-                        position: [tf.translation.x, tf.translation.y],
-                        size: sprite
-                            .custom_size
-                            .map(|s| s.to_array())
-                            .unwrap_or([0.0, 0.0]),
-                        z: tf.translation.z,
-                    };
-                    let snapshot = match (editor_id, fragment) {
-                        (Some(id), Some(f)) => Some((id.region_key.clone(), f.source.clone())),
-                        _ => None,
-                    };
-                    history.push_window_despawn(layout, snapshot);
-                    auto_save.mark_layout_changed(std::time::Instant::now());
-                }
-                commands.entity(root_entity).despawn_recursive();
-            },
-        )
-        .id();
-    commands.entity(root).add_child(close_btn);
-
-    // × テキスト（ボタンの子）
-    commands
-        .spawn((
-            Text2d::new("×"),
-            TextFont {
-                font_size: 14.0,
-                ..default()
-            },
-            TextColor(Color::WHITE),
-            Transform::from_xyz(0.0, 0.0, 0.1),
-        ))
-        .set_parent(close_btn);
+        // × テキスト（ボタンの子）
+        commands
+            .spawn((
+                Text2d::new("×"),
+                TextFont {
+                    font_size: 14.0,
+                    ..default()
+                },
+                TextColor(Color::WHITE),
+                Transform::from_xyz(0.0, 0.0, 0.1),
+            ))
+            .set_parent(close_btn);
+    }
 
     (root, content_area, title_bar)
 }
@@ -324,6 +331,7 @@ pub fn panel_spawn_dispatcher_system(
             PanelKind::RunResult => spawn_run_result_panel(&mut commands),
             PanelKind::Positions => spawn_positions_panel(&mut commands),
             PanelKind::Orders => spawn_orders_panel(&mut commands),
+            PanelKind::Startup => spawn_scenario_startup_window(&mut commands),
             PanelKind::Chart => {
                 warn!("PanelKind::Chart spawn requested but Chart is deprecated; ignored");
             }
@@ -383,5 +391,59 @@ pub fn panel_spawn_dispatcher_system(
             };
             history.push_window_spawn(event.kind, default_layout);
         }
+    }
+}
+
+#[cfg(test)]
+mod close_button_tests {
+    use super::*;
+    use crate::ui::components::{CloseButton, WindowManager};
+    use crate::ui::editor_history::{ActiveDrag, AppHistory};
+
+    fn spawn_test_window(closeable: bool) -> (App, Entity) {
+        let mut app = App::new();
+        app.init_resource::<WindowManager>();
+        app.init_resource::<ActiveDrag>();
+        app.init_resource::<AppHistory>();
+        let root = {
+            let world = app.world_mut();
+            let mut commands_queue = bevy::ecs::world::CommandQueue::default();
+            let mut commands = Commands::new(&mut commands_queue, world);
+            let (root, _content, _title) = spawn_floating_window(
+                &mut commands,
+                FloatingWindowSpec {
+                    title: "T".to_string(),
+                    size: Vec2::new(100.0, 100.0),
+                    position: Vec2::ZERO,
+                    accent: Color::WHITE,
+                    closeable,
+                },
+            );
+            commands_queue.apply(world);
+            root
+        };
+        (app, root)
+    }
+
+    #[test]
+    fn closeable_true_spawns_close_button() {
+        let (app, _root) = spawn_test_window(true);
+        let count = app
+            .world()
+            .iter_entities()
+            .filter(|e| e.contains::<CloseButton>())
+            .count();
+        assert_eq!(count, 1, "closeable:true は × ボタンを 1 個 spawn する");
+    }
+
+    #[test]
+    fn closeable_false_spawns_no_close_button() {
+        let (app, _root) = spawn_test_window(false);
+        let count = app
+            .world()
+            .iter_entities()
+            .filter(|e| e.contains::<CloseButton>())
+            .count();
+        assert_eq!(count, 0, "closeable:false は × ボタンを spawn しない");
     }
 }

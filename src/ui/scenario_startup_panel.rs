@@ -2,7 +2,8 @@ use bevy::prelude::*;
 use bevy_cosmic_edit::cosmic_text::{Attrs, AttrsOwned, Metrics};
 use bevy_cosmic_edit::prelude::*;
 use bevy_cosmic_edit::{
-    CosmicBackgroundColor, CosmicRenderScale, CosmicTextAlign, CursorColor, ReadOnly, ScrollEnabled,
+    CosmicBackgroundColor, CosmicRenderScale, CosmicTextAlign, CosmicWrap, CursorColor, ReadOnly,
+    ScrollEnabled,
 };
 use chrono::NaiveDate;
 
@@ -24,23 +25,18 @@ fn buffer_text(buffer: &CosmicEditBuffer) -> String {
 }
 
 use crate::ui::components::{
-    GranularityChoice, ScenarioMetadata, ScenarioStartupCashFieldHost, ScenarioStartupEndFieldHost,
-    ScenarioStartupErrorLabel, ScenarioStartupField, ScenarioStartupFieldEditor,
-    ScenarioStartupGranularityDailyButton, ScenarioStartupGranularityMinuteButton,
-    ScenarioStartupPanelRoot, ScenarioStartupParams, ScenarioStartupStartFieldHost,
-    ScenarioWritebackPaths, SidebarRoot, atomic_mutate_scenario_object,
+    GranularityChoice, PanelKind, ScenarioMetadata, ScenarioStartupCashFieldHost,
+    ScenarioStartupEndFieldHost, ScenarioStartupErrorLabel, ScenarioStartupField,
+    ScenarioStartupFieldEditor, ScenarioStartupGranularityDailyButton,
+    ScenarioStartupGranularityMinuteButton, ScenarioStartupPanelRoot, ScenarioStartupParams,
+    ScenarioStartupStartFieldHost, ScenarioWritebackPaths,
+    atomic_mutate_scenario_object,
 };
+use crate::ui::floating_window::{FloatingWindowSpec, spawn_floating_window};
 
 const DATE_FMT: &str = "%Y-%m-%d";
 
-const PANEL_BG: Color = Color::srgba(0.07, 0.07, 0.11, 1.0);
-const PANEL_BORDER: Color = Color::srgba(0.18, 0.18, 0.28, 1.0);
-const LABEL_COLOR: Color = Color::srgb(0.78, 0.82, 0.92);
-const HEADER_COLOR: Color = Color::srgb(0.50, 0.70, 1.00);
-const BTN_BG: Color = Color::srgba(0.10, 0.10, 0.16, 1.0);
-const BTN_TEXT: Color = Color::srgb(0.78, 0.82, 0.92);
 const ERROR_COLOR: Color = Color::srgb(0.95, 0.45, 0.45);
-const LABEL_WIDTH: f32 = 70.0;
 const FIELD_BG_ACTIVE: Color = Color::srgba(0.02, 0.02, 0.04, 1.0);
 const FIELD_BG_DISABLED: Color = Color::srgba(0.08, 0.08, 0.10, 1.0);
 
@@ -90,224 +86,207 @@ pub enum ScenarioStartupParamCommit {
     InitialCash(String),
 }
 
-fn spawn_text_field_row(
-    panel: &mut ChildBuilder,
-    label: &str,
-    host_marker: impl Bundle,
-    error_field: ScenarioStartupField,
-) {
-    panel
-        .spawn(Node {
-            width: Val::Percent(100.0),
-            flex_direction: FlexDirection::Row,
-            align_items: AlignItems::Center,
-            padding: UiRect::axes(Val::Px(2.0), Val::Px(2.0)),
-            ..default()
-        })
-        .with_children(|row| {
-            row.spawn((
-                Text::new(label),
+/// world-space (sprite) STARTUP floating window. step 4 で旧 sidebar flexbox panel
+/// を置き換える新経路。host marker / error-label
+/// marker / granularity-button marker を既存システムが期待する数・種類で再現する。
+/// Startup 時に sprite startup window を一度だけ spawn する system ラッパ。
+/// 本体は helper `spawn_scenario_startup_window(&mut Commands)`（4d の dispatcher 復元 arm も同 helper を呼ぶ）。
+pub fn spawn_scenario_startup_window_system(mut commands: Commands) {
+    spawn_scenario_startup_window(&mut commands);
+}
+
+pub fn spawn_scenario_startup_window(commands: &mut Commands) {
+    const WINDOW_SIZE: Vec2 = Vec2::new(260.0, 200.0);
+    const WINDOW_POSITION: Vec2 = Vec2::new(-450.0, -120.0);
+    const ACCENT: Color = Color::srgba(0.5, 0.7, 1.0, 0.4);
+
+    const LABEL_X: f32 = -110.0;
+    const FIELD_X: f32 = 0.0;
+    const FIELD_SIZE: Vec2 = Vec2::new(120.0, 22.0);
+    const ERROR_X: f32 = -40.0;
+    const STARTUP_LABEL_COLOR: Color = Color::srgb(0.78, 0.82, 0.92);
+    const FIELD_BG: Color = Color::srgba(0.02, 0.02, 0.04, 1.0);
+    const GRAN_BTN_BG: Color = Color::srgba(0.10, 0.10, 0.16, 1.0);
+    const GRAN_BTN_SIZE: Vec2 = Vec2::new(50.0, 16.0);
+
+    let (root, content_area, _title_bar) = spawn_floating_window(
+        commands,
+        FloatingWindowSpec {
+            title: "STARTUP".to_string(),
+            size: WINDOW_SIZE,
+            position: WINDOW_POSITION,
+            accent: ACCENT,
+            closeable: false,
+        },
+    );
+    commands
+        .entity(root)
+        .insert((PanelKind::Startup, ScenarioStartupPanelRoot));
+
+    // ── ラベル + フィールド host を 1 行 spawn する helper ──
+    fn spawn_field_row(
+        commands: &mut Commands,
+        parent: Entity,
+        y: f32,
+        label: &str,
+        host_marker: impl Bundle,
+    ) {
+        let lbl = commands
+            .spawn((
+                Text2d::new(label),
                 TextFont {
                     font_size: 11.0,
                     ..default()
                 },
-                TextColor(LABEL_COLOR),
-                Node {
-                    width: Val::Px(LABEL_WIDTH),
-                    ..default()
-                },
-            ));
-            row.spawn((
-                Node {
-                    flex_grow: 1.0,
-                    // Must be tall enough to hold one line of cosmic-edit
-                    // text after DPI scaling (set_initial_scale doubles the
-                    // initial Metrics on a 2x DPI display, so line_height
-                    // goes from 7 to 14). A row shorter than the scaled
-                    // line_height produces 0 layout runs and no glyphs.
-                    height: Val::Px(16.0),
-                    ..default()
-                },
-                host_marker,
-            ));
-        });
-    panel.spawn((
-        Text::new(""),
-        TextFont {
-            font_size: 10.0,
-            ..default()
-        },
-        TextColor(ERROR_COLOR),
-        Node {
-            padding: UiRect::left(Val::Px(LABEL_WIDTH)),
-            ..default()
-        },
-        ScenarioStartupErrorLabel { field: error_field },
-    ));
-}
+                TextColor(STARTUP_LABEL_COLOR),
+                Transform::from_xyz(LABEL_X, y, 0.1),
+            ))
+            .id();
+        commands.entity(parent).add_child(lbl);
 
-fn spawn_granularity_button(
-    row: &mut ChildBuilder,
-    label: &str,
-    marker: impl Bundle,
-    gap_right: bool,
-) {
-    let margin = if gap_right {
-        UiRect::right(Val::Px(2.0))
-    } else {
-        UiRect::default()
-    };
-    row.spawn((
-        Button,
-        Node {
-            padding: UiRect::axes(Val::Px(6.0), Val::Px(2.0)),
-            margin,
-            justify_content: JustifyContent::Center,
-            align_items: AlignItems::Center,
-            ..default()
-        },
-        BackgroundColor(BTN_BG),
-        marker,
-    ))
-    .with_children(|btn| {
-        btn.spawn((
-            Text::new(label),
+        let host = commands
+            .spawn((
+                Sprite {
+                    color: FIELD_BG,
+                    custom_size: Some(FIELD_SIZE),
+                    ..default()
+                },
+                Transform::from_xyz(FIELD_X, y, 0.1),
+                host_marker,
+            ))
+            .id();
+        commands.entity(parent).add_child(host);
+    }
+
+    // ── エラーラベル (空文字で spawn、update system が後で書く) helper ──
+    fn spawn_error_label(
+        commands: &mut Commands,
+        parent: Entity,
+        y: f32,
+        field: ScenarioStartupField,
+    ) {
+        let err = commands
+            .spawn((
+                Text2d::new(""),
+                TextFont {
+                    font_size: 10.0,
+                    ..default()
+                },
+                TextColor(ERROR_COLOR),
+                Transform::from_xyz(ERROR_X, y, 0.1),
+                ScenarioStartupErrorLabel { field },
+            ))
+            .id();
+        commands.entity(parent).add_child(err);
+    }
+
+    // ── granularity ボタン (sprite + Transform + marker、子に Text2d ラベル) helper ──
+    fn spawn_granularity_btn(
+        commands: &mut Commands,
+        parent: Entity,
+        x: f32,
+        y: f32,
+        label: &str,
+        marker: impl Bundle,
+        choice: GranularityChoice,
+    ) {
+        let btn = commands
+            .spawn((
+                Sprite {
+                    color: GRAN_BTN_BG,
+                    custom_size: Some(GRAN_BTN_SIZE),
+                    ..default()
+                },
+                Transform::from_xyz(x, y, 0.1),
+                marker,
+            ))
+            .observe(
+                move |_trigger: Trigger<Pointer<Click>>,
+                      mut commit_w: EventWriter<ScenarioStartupParamCommit>,
+                      mut params: ResMut<ScenarioStartupParams>,
+                      progress: Res<ReplayStartupProgress>,
+                      paths: Res<ScenarioWritebackPaths>| {
+                    if is_panel_disabled(&progress, &paths) {
+                        return;
+                    }
+                    commit_w.send(ScenarioStartupParamCommit::Granularity(choice));
+                    params.dirty = true;
+                },
+            )
+            .id();
+        commands.entity(parent).add_child(btn);
+
+        let txt = commands
+            .spawn((
+                Text2d::new(label),
+                TextFont {
+                    font_size: 10.0,
+                    ..default()
+                },
+                TextColor(STARTUP_LABEL_COLOR),
+                Transform::from_xyz(0.0, 0.0, 0.1),
+            ))
+            .id();
+        commands.entity(btn).add_child(txt);
+    }
+
+    // (a) Start 行 + (b) Start エラー
+    spawn_field_row(commands, content_area, 70.0, "Start", ScenarioStartupStartFieldHost);
+    spawn_error_label(commands, content_area, 56.0, ScenarioStartupField::Start);
+
+    // (c) End 行 + End エラー
+    spawn_field_row(commands, content_area, 38.0, "End", ScenarioStartupEndFieldHost);
+    spawn_error_label(commands, content_area, 24.0, ScenarioStartupField::End);
+
+    // (d) Granularity ラベル + 2 ボタン + Granularity エラー
+    let gran_label = commands
+        .spawn((
+            Text2d::new("Granularity"),
             TextFont {
-                font_size: 10.0,
+                font_size: 11.0,
                 ..default()
             },
-            TextColor(BTN_TEXT),
-        ));
-    });
-}
+            TextColor(STARTUP_LABEL_COLOR),
+            Transform::from_xyz(LABEL_X, 6.0, 0.1),
+        ))
+        .id();
+    commands.entity(content_area).add_child(gran_label);
+    spawn_granularity_btn(
+        commands,
+        content_area,
+        -30.0,
+        6.0,
+        "Daily",
+        ScenarioStartupGranularityDailyButton,
+        GranularityChoice::Daily,
+    );
+    spawn_granularity_btn(
+        commands,
+        content_area,
+        30.0,
+        6.0,
+        "Minute",
+        ScenarioStartupGranularityMinuteButton,
+        GranularityChoice::Minute,
+    );
+    spawn_error_label(commands, content_area, -8.0, ScenarioStartupField::Granularity);
 
-pub fn spawn_scenario_startup_panel(
-    mut commands: Commands,
-    sidebar_q: Query<Entity, With<SidebarRoot>>,
-) {
-    let Ok(sidebar) = sidebar_q.get_single() else {
-        return;
-    };
+    // (e) Initial cash 行 + エラー
+    spawn_field_row(
+        commands,
+        content_area,
+        -26.0,
+        "Initial cash",
+        ScenarioStartupCashFieldHost,
+    );
+    spawn_error_label(commands, content_area, -40.0, ScenarioStartupField::InitialCash);
 
-    commands.entity(sidebar).with_children(|parent| {
-        parent
-            .spawn((
-                Node {
-                    width: Val::Percent(100.0),
-                    flex_direction: FlexDirection::Column,
-                    padding: UiRect::all(Val::Px(4.0)),
-                    border: UiRect::top(Val::Px(1.0)),
-                    ..default()
-                },
-                BackgroundColor(PANEL_BG),
-                BorderColor(PANEL_BORDER),
-                ScenarioStartupPanelRoot,
-            ))
-            .with_children(|panel| {
-                panel.spawn((
-                    Text::new("Startup"),
-                    TextFont {
-                        font_size: 10.0,
-                        ..default()
-                    },
-                    TextColor(HEADER_COLOR),
-                    Node {
-                        padding: UiRect::axes(Val::Px(2.0), Val::Px(2.0)),
-                        ..default()
-                    },
-                ));
-
-                spawn_text_field_row(
-                    panel,
-                    "Start",
-                    ScenarioStartupStartFieldHost,
-                    ScenarioStartupField::Start,
-                );
-                spawn_text_field_row(
-                    panel,
-                    "End",
-                    ScenarioStartupEndFieldHost,
-                    ScenarioStartupField::End,
-                );
-
-                panel
-                    .spawn(Node {
-                        width: Val::Percent(100.0),
-                        flex_direction: FlexDirection::Row,
-                        align_items: AlignItems::Center,
-                        padding: UiRect::axes(Val::Px(2.0), Val::Px(2.0)),
-                        ..default()
-                    })
-                    .with_children(|row| {
-                        row.spawn((
-                            Text::new("Granularity"),
-                            TextFont {
-                                font_size: 11.0,
-                                ..default()
-                            },
-                            TextColor(LABEL_COLOR),
-                            Node {
-                                width: Val::Px(LABEL_WIDTH),
-                                ..default()
-                            },
-                        ));
-                        spawn_granularity_button(
-                            row,
-                            "Daily",
-                            ScenarioStartupGranularityDailyButton,
-                            true,
-                        );
-                        spawn_granularity_button(
-                            row,
-                            "Minute",
-                            ScenarioStartupGranularityMinuteButton,
-                            false,
-                        );
-                    });
-                panel.spawn((
-                    Text::new(""),
-                    TextFont {
-                        font_size: 10.0,
-                        ..default()
-                    },
-                    TextColor(ERROR_COLOR),
-                    Node {
-                        padding: UiRect::left(Val::Px(LABEL_WIDTH)),
-                        ..default()
-                    },
-                    ScenarioStartupErrorLabel {
-                        field: ScenarioStartupField::Granularity,
-                    },
-                ));
-
-                spawn_text_field_row(
-                    panel,
-                    "Initial cash",
-                    ScenarioStartupCashFieldHost,
-                    ScenarioStartupField::InitialCash,
-                );
-
-                panel.spawn((
-                    Text::new(""),
-                    TextFont {
-                        font_size: 10.0,
-                        ..default()
-                    },
-                    TextColor(ERROR_COLOR),
-                    Node {
-                        padding: UiRect::all(Val::Px(2.0)),
-                        ..default()
-                    },
-                    ScenarioStartupErrorLabel {
-                        field: ScenarioStartupField::CrossField,
-                    },
-                ));
-            });
-    });
+    // (f) CrossField エラー
+    spawn_error_label(commands, content_area, -58.0, ScenarioStartupField::CrossField);
 }
 
 /// Attach a cosmic-edit `TextEdit` to each field host. Focus is handled by
-/// `change_active_editor_ui` on click; `FocusedWidget` is intentionally untouched.
+/// `change_active_editor_sprite` on click; `FocusedWidget` is intentionally untouched.
 pub fn spawn_scenario_startup_input_fields(
     mut commands: Commands,
     mut font_system: ResMut<bevy_cosmic_edit::prelude::CosmicFontSystem>,
@@ -342,8 +321,8 @@ pub fn spawn_scenario_startup_input_fields(
         let text_attrs = Attrs::new().color(CosmicColor::rgb(220, 220, 220));
         let entity = commands
             .spawn((
-                TextEdit,
-                CosmicEditBuffer::new(font_system, Metrics::new(5.5, 7.0)).with_text(
+                TextEdit2d,
+                CosmicEditBuffer::new(font_system, Metrics::new(9.0, 11.0)).with_text(
                     font_system,
                     "",
                     text_attrs,
@@ -356,13 +335,15 @@ pub fn spawn_scenario_startup_input_fields(
                 CursorColor(Color::WHITE),
                 CosmicBackgroundColor(FIELD_BG_ACTIVE),
                 CosmicRenderScale(1.0),
-                CosmicTextAlign::TopLeft { padding: 4 },
+                CosmicTextAlign::TopLeft { padding: 1 },
                 ScrollEnabled::Disabled,
-                Node {
-                    width: Val::Percent(100.0),
-                    height: Val::Percent(100.0),
+                CosmicWrap::InfiniteLine,
+                Sprite {
+                    custom_size: Some(Vec2::new(120.0, 22.0)),
+                    color: FIELD_BG_ACTIVE,
                     ..default()
                 },
+                Transform::from_xyz(0.0, 0.0, 0.1),
                 ScenarioStartupFieldEditor { field },
             ))
             .id();
@@ -625,48 +606,6 @@ pub fn scenario_startup_param_input_system(
     }
 }
 
-pub fn scenario_startup_granularity_button_system(
-    daily_q: Query<
-        &Interaction,
-        (
-            Changed<Interaction>,
-            With<ScenarioStartupGranularityDailyButton>,
-        ),
-    >,
-    minute_q: Query<
-        &Interaction,
-        (
-            Changed<Interaction>,
-            With<ScenarioStartupGranularityMinuteButton>,
-        ),
-    >,
-    mut commit_w: EventWriter<ScenarioStartupParamCommit>,
-    mut params: ResMut<ScenarioStartupParams>,
-    progress: Res<ReplayStartupProgress>,
-    paths: Res<ScenarioWritebackPaths>,
-) {
-    if is_panel_disabled(&progress, &paths) {
-        return;
-    }
-
-    for interaction in daily_q.iter() {
-        if matches!(interaction, Interaction::Pressed) {
-            commit_w.send(ScenarioStartupParamCommit::Granularity(
-                GranularityChoice::Daily,
-            ));
-            params.dirty = true;
-        }
-    }
-    for interaction in minute_q.iter() {
-        if matches!(interaction, Interaction::Pressed) {
-            commit_w.send(ScenarioStartupParamCommit::Granularity(
-                GranularityChoice::Minute,
-            ));
-            params.dirty = true;
-        }
-    }
-}
-
 /// Toggle `ReadOnly` + dim the field background on the 3 CosmicEditor entities
 /// while `is_panel_disabled`. The commit / writeback / input systems already
 /// short-circuit on `is_panel_disabled`, but without this the editors still
@@ -706,27 +645,27 @@ pub fn enforce_scenario_startup_panel_readonly_system(
 
 /// Repaint granularity button highlight + error labels.
 ///
-/// Writes through `BackgroundColor`/`Text` are guarded with `!= new` to avoid
+/// Writes through `Sprite`/`Text2d` are guarded with `!= new` to avoid
 /// firing `Changed<T>` every frame.
 pub fn update_scenario_startup_param_ui_system(
     params: Res<ScenarioStartupParams>,
     progress: Res<ReplayStartupProgress>,
     paths: Res<ScenarioWritebackPaths>,
-    mut daily_bg_q: Query<
-        &mut BackgroundColor,
+    mut daily_sprite_q: Query<
+        &mut Sprite,
         (
             With<ScenarioStartupGranularityDailyButton>,
             Without<ScenarioStartupGranularityMinuteButton>,
         ),
     >,
-    mut minute_bg_q: Query<
-        &mut BackgroundColor,
+    mut minute_sprite_q: Query<
+        &mut Sprite,
         (
             With<ScenarioStartupGranularityMinuteButton>,
             Without<ScenarioStartupGranularityDailyButton>,
         ),
     >,
-    mut label_q: Query<(&ScenarioStartupErrorLabel, &mut Text)>,
+    mut label2d_q: Query<(&ScenarioStartupErrorLabel, &mut Text2d)>,
 ) {
     let alpha = if is_panel_disabled(&progress, &paths) {
         0.5
@@ -741,18 +680,18 @@ pub fn update_scenario_startup_param_ui_system(
         GranularityChoice::Minute => (inactive, active),
     };
 
-    for mut bg in daily_bg_q.iter_mut() {
-        if bg.0 != daily_color {
-            bg.0 = daily_color;
+    for mut sprite in daily_sprite_q.iter_mut() {
+        if sprite.color != daily_color {
+            sprite.color = daily_color;
         }
     }
-    for mut bg in minute_bg_q.iter_mut() {
-        if bg.0 != minute_color {
-            bg.0 = minute_color;
+    for mut sprite in minute_sprite_q.iter_mut() {
+        if sprite.color != minute_color {
+            sprite.color = minute_color;
         }
     }
 
-    for (label, mut text) in label_q.iter_mut() {
+    for (label, mut text) in label2d_q.iter_mut() {
         let msg = match label.field {
             ScenarioStartupField::Start => params.errors.start.as_deref(),
             ScenarioStartupField::End => params.errors.end.as_deref(),
@@ -804,19 +743,19 @@ fn rewrite_scenario_startup_params_atomic(
 /// Replay 以外のモードでは "Startup" パネル全体を非表示にする。
 pub fn apply_startup_panel_visibility_system(
     exec_mode: Res<crate::trading::ExecutionModeRes>,
-    mut panel_q: Query<&mut Node, With<ScenarioStartupPanelRoot>>,
+    mut panel_q: Query<&mut Visibility, With<ScenarioStartupPanelRoot>>,
 ) {
     if !exec_mode.is_changed() {
         return;
     }
     let target = if matches!(exec_mode.mode, crate::trading::ExecutionMode::Replay) {
-        Display::Flex
+        Visibility::Inherited
     } else {
-        Display::None
+        Visibility::Hidden
     };
-    for mut node in &mut panel_q {
-        if node.display != target {
-            node.display = target;
+    for mut vis in &mut panel_q {
+        if *vis != target {
+            *vis = target;
         }
     }
 }
@@ -1474,7 +1413,7 @@ mod tests {
 
     fn spawn_panel(app: &mut App) -> Entity {
         app.world_mut()
-            .spawn((Node::default(), ScenarioStartupPanelRoot))
+            .spawn((Visibility::Inherited, ScenarioStartupPanelRoot))
             .id()
     }
 
@@ -1484,20 +1423,23 @@ mod tests {
         let e = spawn_panel(&mut app);
         app.update();
         assert_eq!(
-            app.world().entity(e).get::<Node>().unwrap().display,
-            Display::Flex,
+            *app.world().entity(e).get::<Visibility>().unwrap(),
+            Visibility::Inherited,
         );
     }
 
     #[test]
     fn startup_panel_hidden_in_live_manual() {
         let mut app = make_visibility_app();
-        let e = spawn_panel(&mut app);
+        let e = app
+            .world_mut()
+            .spawn((Visibility::Inherited, ScenarioStartupPanelRoot))
+            .id();
         app.world_mut().resource_mut::<ExecutionModeRes>().mode = ExecutionMode::LiveManual;
         app.update();
         assert_eq!(
-            app.world().entity(e).get::<Node>().unwrap().display,
-            Display::None,
+            *app.world().entity(e).get::<Visibility>().unwrap(),
+            Visibility::Hidden,
         );
     }
 
@@ -1508,8 +1450,8 @@ mod tests {
         app.world_mut().resource_mut::<ExecutionModeRes>().mode = ExecutionMode::LiveAuto;
         app.update();
         assert_eq!(
-            app.world().entity(e).get::<Node>().unwrap().display,
-            Display::None,
+            *app.world().entity(e).get::<Visibility>().unwrap(),
+            Visibility::Hidden,
         );
     }
 
@@ -1520,22 +1462,22 @@ mod tests {
 
         app.update();
         assert_eq!(
-            app.world().entity(e).get::<Node>().unwrap().display,
-            Display::Flex,
+            *app.world().entity(e).get::<Visibility>().unwrap(),
+            Visibility::Inherited,
         );
 
         app.world_mut().resource_mut::<ExecutionModeRes>().mode = ExecutionMode::LiveManual;
         app.update();
         assert_eq!(
-            app.world().entity(e).get::<Node>().unwrap().display,
-            Display::None,
+            *app.world().entity(e).get::<Visibility>().unwrap(),
+            Visibility::Hidden,
         );
 
         app.world_mut().resource_mut::<ExecutionModeRes>().mode = ExecutionMode::Replay;
         app.update();
         assert_eq!(
-            app.world().entity(e).get::<Node>().unwrap().display,
-            Display::Flex,
+            *app.world().entity(e).get::<Visibility>().unwrap(),
+            Visibility::Inherited,
         );
     }
 }

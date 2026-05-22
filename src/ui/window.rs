@@ -23,6 +23,7 @@ pub fn spawn_chart_panel(commands: &mut Commands, instrument_id: &str) {
             size: CHART_PANEL_SIZE,
             position: PANEL_POSITION,
             accent: ACCENT,
+            closeable: true,
         },
     );
     commands.entity(root).insert(PanelKind::Chart);

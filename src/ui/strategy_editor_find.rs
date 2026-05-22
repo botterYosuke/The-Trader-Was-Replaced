@@ -270,6 +270,7 @@ pub fn manage_find_panel_lifecycle_system(
                 size: FIND_PANEL_SIZE,
                 position: FIND_PANEL_POSITION,
                 accent: FIND_ACCENT,
+                closeable: true,
             },
         );
 

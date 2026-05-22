@@ -58,6 +58,7 @@ fn m3_window_close_hides_or_despawns() {
                 size: Vec2::new(270.0, 130.0),
                 position: Vec2::ZERO,
                 accent: Color::srgba(0.0, 0.8, 1.0, 0.4),
+                closeable: true,
             },
         );
         r
