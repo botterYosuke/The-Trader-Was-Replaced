@@ -22,6 +22,10 @@ description: >-
   `docs/wiki/*.md` の該当機構記述（"サイドバー" / "パネル" 等）を grep して現行化する。例: Phase 10 Live Auto
   （LiveStrategyEvent / SafetyRailViolation / StrategyLogMessage / LiveStrategyTelemetry /
   LiveStrategyPromoteResult）は wiki が「未実装」と書く一方で flow 皆無 → N 群（`kind:state`）を新設。
+  **「この挙動をテストするテストはあるか」「既にテストされているか」「テストでカバーされているか確認したい」
+  「FLOWS.md に該当 flow があるか」「カバレッジを確認」のような“テスト作成”でなく“カバレッジ照会”の問いでも必ず起動する**
+  （既存 flow / e2e_replay / Python テストを棚卸しし、足りない分だけ flow 化する。穴が headless 不可なら fake せず
+  doc gap として FLOWS.md に明記する）。
   さらに **`e2e_replay` が全本落ちる / ハーネスが panic する / `could not access system parameter` が出た /
   マージ後に E2E が壊れた / `BackendEvent`・`BackendStatusUpdate` などの列挙子にフィールドが増えて
   `e2e_replay` が `missing field` でコンパイルできない（テストドリフト）**ときの**ハーネス修復**も本スキルの対象

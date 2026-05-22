@@ -489,7 +489,7 @@ class NautilusLiveEngineController:
         if loop is None:
             return
 
-        async def _cancel() -> None:
+        async def _cancel_and_wait() -> None:
             try:
                 # 当該戦略の order **のみ** cancel（§1.3 / M6）。手動・他戦略は巻き込まない。
                 # instrument 属性に依存せず cache を strategy.id で引く（戦略ごとに
@@ -501,9 +501,32 @@ class NautilusLiveEngineController:
                     strategy.cancel_order(order)
             except Exception:  # noqa: BLE001 — best-effort
                 log.exception("cancel_inflight_orders failed")
+                return
+
+            # cancel コマンドをキューに積んだだけでは exec client はまだ HTTP DELETE を送っていない。
+            # generate_order_pending_cancel が呼ばれると order は PENDING_CANCEL に遷移し
+            # orders_open / orders_inflight の両インデックスから外れる。それを確認してから
+            # 呼び出し元が kernel.stop() に進めるよう、ここでポーリングして待つ（issue #15）。
+            import asyncio as _aio
+
+            deadline = _aio.get_running_loop().time() + 3.0
+            while True:
+                remaining = list(kernel.cache.orders_open(strategy_id=strategy.id)) + list(
+                    kernel.cache.orders_inflight(strategy_id=strategy.id)
+                )
+                if not remaining:
+                    break
+                if _aio.get_running_loop().time() >= deadline:
+                    log.warning(
+                        "cancel_inflight_orders: %d order(s) still open/inflight after 3 s; "
+                        "proceeding with kernel stop",
+                        len(remaining),
+                    )
+                    break
+                await _aio.sleep(0.05)
 
         try:
-            asyncio.run_coroutine_threadsafe(_cancel(), loop).result(timeout=5.0)
+            asyncio.run_coroutine_threadsafe(_cancel_and_wait(), loop).result(timeout=6.0)
         except Exception:  # noqa: BLE001
             log.exception("cancel_inflight_orders scheduling failed")
 
@@ -528,6 +551,12 @@ class NautilusLiveEngineController:
         if loop is None:
             return
         try:
-            asyncio.run_coroutine_threadsafe(kernel.stop_async(), loop).result(timeout=10.0)
+            # kernel.start()（sync）で起動したため、stop_async() との非対称を避けて
+            # 同期 kernel.stop() で対称化する。stop() は _await_engines_disconnected()
+            # を待たないのでハングしない（issue #15）。
+            async def _stop() -> None:
+                kernel.stop()
+
+            asyncio.run_coroutine_threadsafe(_stop(), loop).result(timeout=10.0)
         except Exception:  # noqa: BLE001 — 停止失敗でも run state は terminal にする
-            log.exception("kernel stop_async failed during detach")
+            log.exception("kernel stop failed during detach")

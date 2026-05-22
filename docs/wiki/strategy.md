@@ -46,10 +46,10 @@ class BuyAndHoldStrategy(Strategy):
 
 | ファイル | 内容 |
 |---|---|
-| `python/tests/data/test_strategy_daily.py` | 1301.TSE / Daily / バイアンドホールド |
-| `python/tests/data/test_strategy_minute.py` | Minute 版 |
-| `python/tests/data/test_strategy_7203_daily.py` | 7203.TSE / Daily |
-| `python/tests/data/pair_trade_minute.py` | 2 銘柄（schema v2）/ Minute / ペアトレード |
+| `examples/test_strategy_daily.py` | 1301.TSE / Daily / バイアンドホールド |
+| `examples/test_strategy_minute.py` | Minute 版 |
+| `examples/test_strategy_7203_daily.py` | 7203.TSE / Daily |
+| `examples/pair_trade_minute.py` | 2 銘柄（schema v2）/ Minute / ペアトレード |
 
 ## SCENARIO（サイドカー JSON）
 

@@ -9,7 +9,7 @@ Nautilus Trader ベースの戦略リプレイ・評価エンジン。
 → **[docs/strategy-replay.md](docs/strategy-replay.md)**
 
 ```powershell
-.\scripts\run_replay.ps1 -Strategy python\tests\data\test_strategy_daily.py
+.\scripts\run_replay.ps1 -Strategy examples\test_strategy_daily.py
 ```
 
 ### Python バックエンド（gRPC）

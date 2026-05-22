@@ -593,6 +593,16 @@ pub fn picker_list_rebuild_system(
     };
 
     // 共通: filter + sort + spawn rows
+    // ユニバース自体が空（取得完了・0件）と、検索クエリで全除外を区別するため
+    // filter 前に ids.is_empty() を見る。混ぜると「検索してないのに No matches」になる。
+    if ids.is_empty() {
+        let msg = match exec_mode.mode {
+            ExecutionMode::Replay => "No instruments for this date",
+            ExecutionMode::LiveManual | ExecutionMode::LiveAuto => "No instruments in venue",
+        };
+        spawn_picker_row_ui(&mut commands, container, 0, msg, None, false);
+        return;
+    }
     let query_lc = picker.query.to_lowercase();
     let mut filtered: Vec<&String> = ids
         .iter()

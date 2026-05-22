@@ -206,7 +206,8 @@ class LiveRunner:
 
     async def aclose(self) -> None:
         """Explicit shutdown: stop background task and close the bus.
-        Use this when the runner is truly being discarded (not re-armed)."""
+        Use this when the runner is truly being discarded (not re-armed).
+        Caller is responsible for adapter.logout() — it has its own time budget."""
         await self.stop()
         await self.bus.close()
 
