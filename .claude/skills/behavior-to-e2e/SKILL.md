@@ -14,7 +14,12 @@ description: >-
   **`docs/wiki` 等のドキュメント/wiki レビューで「実装済みなのに『未実装』『開発中』『将来』扱い」の機能が
   見つかった**ときも本スキルを開く（「wiki を修正」「ドキュメントを実装に追従」と言われたら併発）: その機能は
   E2E 未カバーのことが多い（実装が先行し doc も flow も置き去り）。wiki を現行化しつつ、対応 flow が
-  `tests/e2e/flows/` に無ければ追加し、wiki 本文に `[FlowID]` を引く。例: Phase 10 Live Auto
+  `tests/e2e/flows/` に無ければ追加し、wiki 本文に `[FlowID]` を引く。
+  **「未実装扱い」だけでなく、UI 機構のリファクタで wiki が *旧機構* を記述したまま食い違っている**
+  ケースも同様に本スキルの対象（例: 「サイドバーの Startup パネル」→ floating window 化、`Node.display`→`Visibility`、
+  Bevy-UI → sprite 化、`×` ボタンの有無変更）。「サイドバーパネルを floating window に作り替える」「UI を
+  別ホストに移植する」「wiki が実装と食い違う / 旧 UI を記述している」作業に着手したら、コードと同時に
+  `docs/wiki/*.md` の該当機構記述（"サイドバー" / "パネル" 等）を grep して現行化する。例: Phase 10 Live Auto
   （LiveStrategyEvent / SafetyRailViolation / StrategyLogMessage / LiveStrategyTelemetry /
   LiveStrategyPromoteResult）は wiki が「未実装」と書く一方で flow 皆無 → N 群（`kind:state`）を新設。
   さらに **`e2e_replay` が全本落ちる / ハーネスが panic する / `could not access system parameter` が出た /

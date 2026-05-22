@@ -325,6 +325,28 @@ egui の中で `state.buffer` のような大きい String を編集するとき
   `InheritedVisibility=true` になり、描画も sprite picking も効く。floating_window の content_area が実例。
 - **テキストが更新されない**: marker component を貼り忘れ、または親子関係の貼り
   忘れ（`add_child` か `set_parent` のどちらかが必要）。
+- **world-space sprite パネルで `Text2d` ラベルが親ウィンドウ枠を黙ってはみ出す / フィールドと重なる**:
+  world-space sprite には Bevy-UI のような clip/overflow が無いので、`Text2d` は親ウィンドウ sprite の
+  枠を**自由に超えて描画される**（背後の別パネルに重なって見えるだけで、警告も clip も出ない）。さらに
+  `Text2d` の既定アンカーは中央なので、**長いラベルほど左右対称に伸びて枠を超える**（中心アンカー window は
+  左端 = `-size.x/2`。ラベル中心 `LABEL_X` + 文字列半幅がこれを下回るとはみ出す）。フォーム的に直すなら
+  `bevy::sprite::Anchor::CenterRight` を `Text2d` に **component として足し**（0.15 で有効。`floating_window.rs`
+  のタイトル文字が `Anchor::CenterLeft` を使うのが実証）、`Transform.x` をフィールド左端の少し手前に置く →
+  ラベルは右揃えで左へ伸び、**ラベル長に依存せずフィールドとの間隔が一定**になる。あわせてウィンドウ幅を
+  最長ラベルが収まるサイズに広げる。`scenario_startup_panel.rs` の Startup window のラベル列が実例。
+  ⚠️ ラベルのはみ出しは「DPI/tint バグ」と症状が混ざりやすい（暗い文字が読めない＝tint、文字が枠外＝anchor/幅）。
+  原因を分けて、ピクセル位置（zoom 倍率 × world 座標）で「どの要素同士が重なるか」を先に特定してから直す。
+- **パネルを Bevy-UI `Node` から world-space sprite に作り替えたら、可視性/表示制御が黙って効かなくなった**:
+  そのパネルの可視性 system が `Query<&mut Node, With<Marker>>` で `Node.display = Flex/None` を書く設計だと、
+  sprite 化後の root は `Node` を持たない（`Visibility` を持つ）ので **query が 0 件マッチ＝完全な no-op**。
+  例外も警告も出ず、モード連動の表示/非表示が黙って壊れる（Phase: Startup を sidebar flexbox → sprite 化した際、
+  Live モードで隠れなくなった実バグ）。host を sprite に変えたら、その entity を読む全 system の query 型を
+  `&mut Node`→`&mut Visibility`、`Node.display`→`Visibility::{Inherited,Hidden}` に揃える
+  （show=`Inherited`、hide=`Hidden`、layout_persistence の restore も同じ規約）。
+  ⚠️ **テストが「自前で `Node` entity を spawn して `Node.display` を assert」していると、host 切替後も
+  そのテストは通り続ける（実在しない構成＝fiction を検証している）**。本番 root が sprite なら、テストも
+  `(Visibility::Inherited, Marker)` を spawn して `Visibility` を assert する形に移植する。`scenario_startup_panel.rs`
+  の `apply_startup_panel_visibility_system` とその visibility テスト群が実例。
 - **`Changed<T>` 駆動の system が収束せず毎フレーム再発火し続ける**: ある system が
   `Changed<T>` を読んで反応し、別の（または同じ）system が `T` を毎フレーム書き戻すと
   無限に再発火する。典型は autoscale 等の派生値を `&mut T` で毎フレーム代入するケース。

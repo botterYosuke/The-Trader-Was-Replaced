@@ -11,6 +11,7 @@ use crate::ui::layout_persistence::{AutoSaveState, PendingLayoutApply};
 use crate::ui::strategy_editor_gutter::spawn_line_number_gutter;
 use crate::ui::strategy_editor_highlight::{BracketSpans, FindMatchSpans, SyntaxSpans};
 use crate::ui::strategy_editor_scrollbar::spawn_editor_scrollbar;
+use crate::ui::render_scale::RenderScaleResponsive;
 use bevy::prelude::*;
 use bevy_cosmic_edit::cosmic_text::{Attrs, AttrsOwned, Edit, Metrics, Shaping};
 use bevy_cosmic_edit::{
@@ -125,13 +126,6 @@ fn mark_fragment_dirty(
 #[derive(Component)]
 pub struct StrategyEditorContent;
 
-/// Tracks zoom state for the strategy editor to drive `CosmicRenderScale`.
-#[derive(Component)]
-pub struct ZoomResponsiveEditor {
-    max_supersample: f32,
-    last_supersample: f32,
-}
-
 /// dispatcher から呼ばれる spawn 関数。
 pub fn spawn_strategy_editor_panel(
     commands: &mut Commands,
@@ -211,10 +205,7 @@ pub fn spawn_strategy_editor_panel(
             StrategyEditorId {
                 region_key: region_key.clone(),
             },
-            ZoomResponsiveEditor {
-                max_supersample: EDITOR_MAX_SUPERSAMPLE,
-                last_supersample: 1.0,
-            },
+            RenderScaleResponsive::new(EDITOR_MAX_SUPERSAMPLE),
             CosmicRenderScale(1.0),
             CosmicTextAlign::TopLeft { padding: 8 },
             ScrollEnabled::Disabled,
@@ -245,37 +236,6 @@ pub const EDITOR_CONTENT_X: f32 = GROUP_LEFT_X + GUTTER_WIDTH + EDITOR_TEXT_SIZE
 /// scrollbar Sprite の中心 x。
 pub const SCROLLBAR_X: f32 =
     GROUP_LEFT_X + GUTTER_WIDTH + EDITOR_TEXT_SIZE.x + SCROLLBAR_WIDTH / 2.0;
-
-pub fn update_strategy_editor_zoom_system(
-    camera_q: Query<&OrthographicProjection, With<Camera2d>>,
-    mut editor_q: Query<(&mut ZoomResponsiveEditor, &mut CosmicRenderScale)>,
-    mut last_camera_scale: Local<f32>,
-) {
-    let Ok(projection) = camera_q.get_single() else {
-        return;
-    };
-
-    let camera_scale = projection.scale.max(0.01);
-
-    // Skip entirely when camera scale is stable and no editors exist.
-    // When editors exist we always iterate — the last_supersample guard inside the loop
-    // prevents redundant CosmicRenderScale mutations, which is important so newly-spawned
-    // editors (last_supersample = 1.0) get the correct scale on the very first frame
-    // even if the camera hasn't moved since the editor was added.
-    if editor_q.is_empty() && (*last_camera_scale - camera_scale).abs() < 0.001 {
-        return;
-    }
-    *last_camera_scale = camera_scale;
-
-    for (mut responsive, mut render_scale) in &mut editor_q {
-        let supersample = (1.0 / camera_scale).clamp(1.0, responsive.max_supersample);
-        if (responsive.last_supersample - supersample).abs() < 0.01 {
-            continue;
-        }
-        responsive.last_supersample = supersample;
-        render_scale.0 = supersample;
-    }
-}
 
 /// `OpenStrategyRequested` イベント（ファイル → buffer に丸ごとロード）の直後に、
 /// cosmic_edit エディタの内容を `buffer.source` で置き換える（片側同期: buffer → editor）。

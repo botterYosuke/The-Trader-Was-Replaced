@@ -162,7 +162,7 @@ use crate::ui::sidebar::{
 use crate::ui::strategy_editor::{
     StrategyAutoSaveState, apply_pending_app_edits_system, apply_strategy_snapshot_restore_system,
     debounced_strategy_autosave_system, sync_editor_to_strategy_buffer_system,
-    sync_strategy_buffer_to_editor_system, undo_redo_system, update_strategy_editor_zoom_system,
+    sync_strategy_buffer_to_editor_system, undo_redo_system,
 };
 use crate::ui::strategy_editor_compose::apply_highlight_layers_system;
 use crate::ui::strategy_editor_find::{
@@ -453,7 +453,7 @@ impl Plugin for UiPlugin {
                     .after(apply_pending_app_edits_system)
                     .after(apply_strategy_snapshot_restore_system),
                 debounced_strategy_autosave_system,
-                update_strategy_editor_zoom_system,
+                update_cosmic_render_scale_system,
             ),
         )
         .add_systems(

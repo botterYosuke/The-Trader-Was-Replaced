@@ -8,6 +8,7 @@ use bevy_cosmic_edit::{
 use chrono::NaiveDate;
 
 use crate::replay::startup_progress::ReplayStartupProgress;
+use crate::ui::render_scale::RenderScaleResponsive;
 use bevy_cosmic_edit::CosmicTextChanged;
 
 /// `BufferExtras::get_text` lives in a private cosmic-edit module, so we
@@ -96,11 +97,16 @@ pub fn spawn_scenario_startup_window_system(mut commands: Commands) {
 }
 
 pub fn spawn_scenario_startup_window(commands: &mut Commands) {
-    const WINDOW_SIZE: Vec2 = Vec2::new(260.0, 200.0);
+    const WINDOW_SIZE: Vec2 = Vec2::new(320.0, 200.0);
     const WINDOW_POSITION: Vec2 = Vec2::new(-450.0, -120.0);
     const ACCENT: Color = Color::srgba(0.5, 0.7, 1.0, 0.4);
 
-    const LABEL_X: f32 = -110.0;
+    // Labels are right-anchored, so LABEL_X is their RIGHT edge (10px left of
+    // the field's left edge at FIELD_X-60 = -60). Right-aligning keeps the
+    // label→field gap constant regardless of label length and stops long
+    // labels ("Initial cash" / "Granularity") from overrunning the window's
+    // left border into the panel behind it.
+    const LABEL_X: f32 = -70.0;
     const FIELD_X: f32 = 0.0;
     const FIELD_SIZE: Vec2 = Vec2::new(120.0, 22.0);
     const ERROR_X: f32 = -40.0;
@@ -139,6 +145,7 @@ pub fn spawn_scenario_startup_window(commands: &mut Commands) {
                     ..default()
                 },
                 TextColor(STARTUP_LABEL_COLOR),
+                bevy::sprite::Anchor::CenterRight,
                 Transform::from_xyz(LABEL_X, y, 0.1),
             ))
             .id();
@@ -247,6 +254,7 @@ pub fn spawn_scenario_startup_window(commands: &mut Commands) {
                 ..default()
             },
             TextColor(STARTUP_LABEL_COLOR),
+            bevy::sprite::Anchor::CenterRight,
             Transform::from_xyz(LABEL_X, 6.0, 0.1),
         ))
         .id();
@@ -335,12 +343,13 @@ pub fn spawn_scenario_startup_input_fields(
                 CursorColor(Color::WHITE),
                 CosmicBackgroundColor(FIELD_BG_ACTIVE),
                 CosmicRenderScale(1.0),
+                RenderScaleResponsive::new(4.0),
                 CosmicTextAlign::TopLeft { padding: 1 },
                 ScrollEnabled::Disabled,
                 CosmicWrap::InfiniteLine,
                 Sprite {
                     custom_size: Some(Vec2::new(120.0, 22.0)),
-                    color: FIELD_BG_ACTIVE,
+                    color: Color::WHITE,
                     ..default()
                 },
                 Transform::from_xyz(0.0, 0.0, 0.1),
@@ -763,6 +772,10 @@ pub fn apply_startup_panel_visibility_system(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use bevy::window::{PrimaryWindow, WindowResolution};
+    use bevy_cosmic_edit::prelude::CosmicFontSystem;
+    use bevy_cosmic_edit::cosmic_text::FontSystem;
+    use crate::ui::render_scale::update_cosmic_render_scale_system;
 
     /// Finding A (E2E §13 regression): the visible-flag short-circuit on the
     /// commit/input/writeback systems is necessary but not sufficient — without
@@ -1478,6 +1491,102 @@ mod tests {
         assert_eq!(
             *app.world().entity(e).get::<Visibility>().unwrap(),
             Visibility::Inherited,
+        );
+    }
+
+    /// Startup-field DPI regression: when the primary window reports
+    /// scale_factor 2.0, the field editor's CosmicRenderScale must be driven
+    /// up to >= 2.0 so the cosmic sprite is supersampled to match DPI.
+    /// Goes through the REAL spawn path (`spawn_scenario_startup_input_fields`)
+    /// so it stays RED until `spawn_field` adopts `RenderScaleResponsive`.
+    #[test]
+    fn startup_field_render_scale_follows_window_dpi() {
+        let mut app = App::new();
+        app.insert_resource(CosmicFontSystem(FontSystem::new()))
+            .add_systems(
+                Update,
+                (
+                    spawn_scenario_startup_input_fields,
+                    update_cosmic_render_scale_system,
+                )
+                    .chain(),
+            );
+
+        // Primary window at 2x DPI; no Camera2d (system's camera_q errs -> zoom 1.0).
+        app.world_mut().spawn((
+            Window {
+                resolution: WindowResolution::new(1280.0, 720.0)
+                    .with_scale_factor_override(2.0),
+                ..default()
+            },
+            PrimaryWindow,
+        ));
+
+        // Host that the real spawn system attaches a field editor to.
+        app.world_mut().spawn(ScenarioStartupStartFieldHost);
+
+        // First update spawns the field editor; second lets the render-scale
+        // system observe it (spawn commands apply at end of frame).
+        app.update();
+        app.update();
+
+        let mut q = app
+            .world_mut()
+            .query::<(&ScenarioStartupFieldEditor, &CosmicRenderScale)>();
+        let (_, scale) = q
+            .iter(app.world())
+            .next()
+            .expect("spawn_scenario_startup_input_fields should create a field editor");
+        assert!(
+            scale.0 >= 1.99,
+            "field CosmicRenderScale should follow 2x DPI, got {}",
+            scale.0
+        );
+    }
+
+    /// Tint regression: a `bevy_cosmic_edit` field renders light glyphs onto a
+    /// dark `CosmicBackgroundColor` texture, and the host `Sprite.color` is a
+    /// MULTIPLY tint over that texture. The dark color must live ONLY in
+    /// `CosmicBackgroundColor`; the `Sprite.color` must be `WHITE` (×1) or the
+    /// light glyphs collapse to near-black and the value is unreadable.
+    /// Drives the real spawn path so it stays honest about `spawn_field`.
+    #[test]
+    fn startup_field_sprite_tint_is_white_with_dark_cosmic_bg() {
+        let mut app = App::new();
+        app.insert_resource(CosmicFontSystem(FontSystem::new()))
+            .add_systems(Update, spawn_scenario_startup_input_fields);
+
+        // Host that the real spawn system attaches a field editor to.
+        app.world_mut().spawn(ScenarioStartupStartFieldHost);
+
+        // First update spawns the field editor; second lets the spawn commands
+        // apply (commands flush at end of frame).
+        app.update();
+        app.update();
+
+        let mut q = app
+            .world_mut()
+            .query_filtered::<(&Sprite, &CosmicBackgroundColor), With<ScenarioStartupFieldEditor>>(
+            );
+        let (sprite, bg) = q
+            .iter(app.world())
+            .next()
+            .expect("spawn_scenario_startup_input_fields should create a field editor");
+
+        assert_eq!(
+            sprite.color,
+            Color::WHITE,
+            "Sprite tint must be WHITE so the cosmic texture (light glyphs) shows true; \
+             a dark tint multiplies the glyphs to near-black"
+        );
+        assert_eq!(
+            bg.0, FIELD_BG_ACTIVE,
+            "the dark field background must come from CosmicBackgroundColor, not the Sprite tint"
+        );
+        assert_eq!(
+            sprite.custom_size,
+            Some(Vec2::new(120.0, 22.0)),
+            "field height must be 22.0 (the 32.0 bump overlapped neighbouring rows)"
         );
     }
 }
