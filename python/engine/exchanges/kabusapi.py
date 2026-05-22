@@ -571,7 +571,10 @@ class KabuStationAdapter:
             time_in_force=time_in_force,
         )
         ack = await self._send_order(payload)
-        client_order_id = uuid.uuid4().hex
+        # 呼び出し元（NautilusVenueExecClient）が Nautilus の client_order_id を **extra で渡す。
+        # それを _orders_ref のキーにすることで cancel_order 呼び出し時の ID 一致を保証する。
+        # 旧来の呼び出し元（tests / 非 Nautilus 経路）は extra に渡さないため UUID fallback。
+        client_order_id = str(extra.get("client_order_id") or uuid.uuid4().hex)
         if ack.rejected:
             if ack.reject_code == "-1":
                 # 異常終了コード (システムエラー): トーストで明示するため上層へ伝播 (§2.2)。
