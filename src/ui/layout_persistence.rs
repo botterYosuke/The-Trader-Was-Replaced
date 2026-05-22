@@ -996,6 +996,12 @@ pub fn apply_layout_system(
 
                 match found {
                     None => {
+                        // Startup は起動スケジュールで一度だけ spawn し、cosmic フィールドも
+                        // そこで attach する。layout 経由で再 spawn するとフィールド無しの
+                        // 壊れた窓になるため、layout からは spawn しない。
+                        if win_layout.kind == PanelKind::Startup {
+                            continue;
+                        }
                         let dedupe_key = (win_layout.kind, want_key.clone());
                         if pending.spawn_requested.insert(dedupe_key) {
                             let strategy_spec = if win_layout.kind == PanelKind::StrategyEditor {
@@ -1019,9 +1025,11 @@ pub fn apply_layout_system(
                         tf.translation.x = win_layout.position[0];
                         tf.translation.y = win_layout.position[1];
                         tf.translation.z = win_layout.z;
-                        sprite.custom_size = Some(Vec2::from_array(win_layout.size));
-                        // Startup の可視性は ExecutionMode が所有するため restore は書かない
+                        // Startup は position/z のみ復元する。size と可視性は復元しない
+                        // （可視性は ExecutionMode が所有し、size は窓側定数が正。古い
+                        // layout の size を当てると窓幅が巻き戻り、子要素とズレる）。
                         if *kind != PanelKind::Startup {
+                            sprite.custom_size = Some(Vec2::from_array(win_layout.size));
                             *vis = if win_layout.visible {
                                 Visibility::Inherited
                             } else {
@@ -1040,6 +1048,12 @@ pub fn apply_layout_system(
             let to_despawn: Vec<Entity> = panels
                 .iter()
                 .filter(|(_, kind, id, _, _, _)| {
+                    // Startup は layout の windows リストに依存しない（起動時に一度だけ
+                    // spawn・可視性は ExecutionMode が所有）。list に無くても despawn しない。
+                    // pre-#14 sidecar など Startup を含まない layout でも消えないように。
+                    if **kind == PanelKind::Startup {
+                        return false;
+                    }
                     !win_layouts.iter().any(|w| {
                         if w.kind != **kind {
                             return false;
@@ -1108,6 +1122,10 @@ pub fn apply_pending_layout_system(
         });
         match found {
             None => {
+                // Startup は layout から spawn しない（フィールド attach は起動スケジュールのみ）。
+                if win_layout.kind == PanelKind::Startup {
+                    continue;
+                }
                 let region_key = if win_layout.kind == PanelKind::StrategyEditor {
                     Some(
                         win_layout
@@ -1141,9 +1159,9 @@ pub fn apply_pending_layout_system(
                 tf.translation.x = win_layout.position[0];
                 tf.translation.y = win_layout.position[1];
                 tf.translation.z = win_layout.z;
-                sprite.custom_size = Some(Vec2::from_array(win_layout.size));
-                // Startup の可視性は ExecutionMode が所有するため restore は書かない
+                // Startup は position/z のみ復元（size・可視性は復元しない）。
                 if *kind != PanelKind::Startup {
+                    sprite.custom_size = Some(Vec2::from_array(win_layout.size));
                     *vis = if win_layout.visible {
                         Visibility::Inherited
                     } else {
@@ -2042,6 +2060,144 @@ mod tests {
         assert_eq!(tf.translation.x, 42.0, "Startup の位置 x は復元される");
         assert_eq!(tf.translation.y, 24.0, "Startup の位置 y は復元される");
         assert_eq!(tf.translation.z, 7.0, "Startup の z は復元される");
+    }
+
+    #[test]
+    fn apply_layout_keeps_startup_when_absent_from_windows() {
+        use bevy::prelude::*;
+
+        let mut app = App::new();
+        app.add_event::<LayoutLoadRequested>();
+        app.add_event::<PanelSpawnRequested>();
+        app.add_event::<StrategyFileLoadRequested>();
+        app.insert_resource(WindowManager::default());
+        app.insert_resource(PendingLayoutApply::default());
+        app.insert_resource(PendingStrategyFragments::default());
+
+        app.world_mut().spawn((
+            Camera2d,
+            Transform::default(),
+            OrthographicProjection::default_2d(),
+        ));
+
+        let startup = app
+            .world_mut()
+            .spawn((
+                WindowRoot,
+                PanelKind::Startup,
+                Transform::from_xyz(0.0, 0.0, 1.0),
+                Sprite {
+                    custom_size: Some(Vec2::new(260.0, 200.0)),
+                    ..default()
+                },
+                Visibility::Inherited,
+            ))
+            .id();
+
+        let tmp = std::env::temp_dir().join(format!(
+            "ttwr_test_startup_absent_{}.json",
+            std::process::id()
+        ));
+        // Startup を含まない windows リスト（pre-#14 sidecar 相当）。
+        // 「list に無い → despawn」対象から Startup は除外されるべき。
+        let layout_json = serde_json::json!({
+            "schema_version": SCHEMA_VERSION,
+            "viewport": null,
+            "strategy_path": null,
+            "windows": []
+        });
+        std::fs::write(&tmp, serde_json::to_string(&layout_json).unwrap()).unwrap();
+
+        app.world_mut().send_event(LayoutLoadRequested {
+            path: tmp.clone(),
+            mode: LayoutLoadMode::UserJsonOpen,
+        });
+        app.init_resource::<ScenarioReadTarget>();
+        app.add_systems(Update, apply_layout_system);
+        app.update();
+
+        let _ = std::fs::remove_file(&tmp);
+
+        assert!(
+            app.world().get_entity(startup).is_ok(),
+            "Startup は windows リストに無くても despawn されない \
+             (起動時 spawn・ExecutionMode 可視性が所有。再 spawn 経路はフィールド無し)"
+        );
+    }
+
+    #[test]
+    fn apply_layout_does_not_resize_startup() {
+        use bevy::prelude::*;
+
+        let mut app = App::new();
+        app.add_event::<LayoutLoadRequested>();
+        app.add_event::<PanelSpawnRequested>();
+        app.add_event::<StrategyFileLoadRequested>();
+        app.insert_resource(WindowManager::default());
+        app.insert_resource(PendingLayoutApply::default());
+        app.insert_resource(PendingStrategyFragments::default());
+
+        app.world_mut().spawn((
+            Camera2d,
+            Transform::default(),
+            OrthographicProjection::default_2d(),
+        ));
+
+        // 現行の窓サイズ 320×200 で spawn。
+        let startup = app
+            .world_mut()
+            .spawn((
+                WindowRoot,
+                PanelKind::Startup,
+                Transform::from_xyz(0.0, 0.0, 1.0),
+                Sprite {
+                    custom_size: Some(Vec2::new(320.0, 200.0)),
+                    ..default()
+                },
+                Visibility::Inherited,
+            ))
+            .id();
+
+        let tmp = std::env::temp_dir().join(format!(
+            "ttwr_test_startup_size_{}.json",
+            std::process::id()
+        ));
+        // 古い 260 幅を含む layout。pos/z は復元するが size は当てない。
+        let layout_json = serde_json::json!({
+            "schema_version": SCHEMA_VERSION,
+            "viewport": null,
+            "strategy_path": null,
+            "windows": [{
+                "kind": "Startup",
+                "position": [10.0, 20.0],
+                "size": [260.0, 200.0],
+                "z": 5.0,
+                "visible": true,
+                "region_key": null
+            }]
+        });
+        std::fs::write(&tmp, serde_json::to_string(&layout_json).unwrap()).unwrap();
+
+        app.world_mut().send_event(LayoutLoadRequested {
+            path: tmp.clone(),
+            mode: LayoutLoadMode::UserJsonOpen,
+        });
+        app.init_resource::<ScenarioReadTarget>();
+        app.add_systems(Update, apply_layout_system);
+        app.update();
+
+        let _ = std::fs::remove_file(&tmp);
+
+        let sprite = app.world().get::<Sprite>(startup).unwrap();
+        assert_eq!(
+            sprite.custom_size,
+            Some(Vec2::new(320.0, 200.0)),
+            "Startup の size は layout から復元しない（古い 260 幅に巻き戻らない）"
+        );
+        let tf = app.world().get::<Transform>(startup).unwrap();
+        assert_eq!(tf.translation.x, 10.0, "Startup の位置 x は復元される");
+        assert_eq!(tf.translation.y, 20.0, "Startup の位置 y は復元される");
+        assert_eq!(tf.translation.z, 5.0, "Startup の z は復元される");
     }
 
     #[test]

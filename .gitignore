@@ -20,3 +20,5 @@ target-codex-review-parse/
 target-codex-review-single/
 # ad-hoc local CLI binaries (e.g. bin/gh dropped in for `gh` access) — never commit
 bin/
+# stray stderr/diagnostic dumps from running the GUI (e.g. `backcast.exe 2> backcast_err.txt`)
+backcast_err.txt
