@@ -130,6 +130,8 @@ mod i11_edit_menu_undo_redo;
 mod i12_restore_last_strategy_cache_on_launch;
 #[path = "e2e/flows/i13_open_scenario_only_json.rs"]
 mod i13_open_scenario_only_json;
+#[path = "e2e/flows/i14_save_without_path_falls_back_to_dialog.rs"]
+mod i14_save_without_path_falls_back_to_dialog;
 
 // J. Strategy editor / startup panel / scenario / instrument picker (UI / integration)
 #[path = "e2e/flows/j1_strategy_editor_text_autosaves_cache.rs"]

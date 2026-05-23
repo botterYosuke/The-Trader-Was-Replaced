@@ -36,7 +36,16 @@ description: >-
   新規 resource が `tests/e2e/support/mod.rs` の `Harness` に insert 漏れしていないか先に確認する
   （例: Phase 10 で `LiveRuns` / `PromoteFeedback` 追加 → 入れ忘れて全本 panic）。
   既存方式で不可能な場合も「対象外」にせず、代替方式（`kind:ui` / `kind:render` / `kind:integration` /
-  `kind:manual-gate`）を FLOWS.md に明記する。Rust の一般的なユニットテスト作法は `rust-testing` を併用する。
+  `kind:manual-gate`）を FLOWS.md に明記する。
+  **さらに、headless 不可で `#[ignore]`/doc-stub のまま諦めていた flow を「実テスト化」する**ときも本スキルを開く
+  （「i8/i14 を headless テスト可能にする」「`#[test] #[ignore]` を外したい」「rfd / ファイルダイアログ /
+  `AsyncComputeTaskPool` / async task を seam でバイパスしてテスト」「ダイアログ要求と書き込みを分離してテスト可能に」
+  「Save As の書き込み結果を assert したい」と言われたとき）: production に最小の test seam を足して
+  （None 分岐を event 委譲に変える・`inject_resolved` 等の注入口を Resource に足す・private system を `pub` 化する）
+  `AsyncComputeTaskPool`/rfd を一切踏まずに書き込み側だけを駆動し、FLOWS.md の当該 flow を `#[ignore]`→✅ /
+  代替方式テーブルを更新する。production 経路は無変更に保つ（注入口は本番では誰も呼ばない）。`tdd`（RED→GREEN の
+  vertical slice）と `pair-relay`（Navigator/Driver 分業）を併用すると seam 設計と回帰防止が安定する。
+  Rust の一般的なユニットテスト作法は `rust-testing` を併用する。
 ---
 
 # behavior-to-e2e — 挙動の言葉を E2E テストに変える

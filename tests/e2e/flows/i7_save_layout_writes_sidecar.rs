@@ -22,8 +22,7 @@ use backcast::ui::components::{
     StrategyBuffer,
 };
 use backcast::ui::layout_persistence::{
-    handle_save_layout_system, LayoutSaveRequested, PendingFileDialog,
-    // LayoutSaveAsRequested だけは使わないが他の event が必要なシステムは無い
+    handle_save_layout_system, LayoutSaveAsRequested, LayoutSaveRequested, PendingFileDialog,
 };
 use backcast::ui::strategy_editor::StrategyAutoSaveState;
 
@@ -96,6 +95,7 @@ fn i7_save_layout_writes_sidecar() {
     app.init_resource::<PendingFileDialog>();
 
     app.add_event::<LayoutSaveRequested>();
+    app.add_event::<LayoutSaveAsRequested>();
 
     // Camera2d がないと build_layout 内の camera.get_single() が空を返すだけ（panic しない）。
     app.world_mut().spawn((

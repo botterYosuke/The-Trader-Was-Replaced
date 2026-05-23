@@ -151,12 +151,16 @@ pub enum FileDialogKind {
 pub struct PendingFileDialog {
     pub task: Option<Task<Option<PathBuf>>>,
     pub kind: Option<FileDialogKind>,
+    /// テスト用 seam（Issue #21）：ダイアログ結果を非同期 task を介さず直接注入する。
+    /// 外側 `Some` = 注入済みで未消費、内側 `Option<PathBuf>` = 選択パス or キャンセル。
+    /// production では誰も `inject_resolved` を呼ばないため常に `None`。
+    pub resolved: Option<Option<PathBuf>>,
 }
 
 impl PendingFileDialog {
     /// いずれかのダイアログが表示中か。新規ダイアログ起動の可否判定に使う。
     pub fn is_active(&self) -> bool {
-        self.task.is_some()
+        self.task.is_some() || self.resolved.is_some()
     }
 
     /// 新規ダイアログを開始する（呼び出し側で `is_active()` を確認済みの前提）。
@@ -173,11 +177,24 @@ impl PendingFileDialog {
         if self.kind != Some(kind) {
             return None;
         }
+        // テスト seam（Issue #21）：注入済み結果があれば task より優先して消費する。
+        if let Some(result) = self.resolved.take() {
+            self.kind = None;
+            return Some(result);
+        }
         let task = self.task.as_mut()?;
         let result = future::block_on(future::poll_once(task))?;
         self.task = None;
         self.kind = None;
         Some(result)
+    }
+
+    /// テスト用 seam（Issue #21）：非同期 task を回さずダイアログ結果を直接注入する。
+    /// `kind` をセットして `poll_take(kind)` が次フレームで `Some(path)` を返すようにする。
+    pub fn inject_resolved(&mut self, kind: FileDialogKind, path: Option<PathBuf>) {
+        self.task = None;
+        self.kind = Some(kind);
+        self.resolved = Some(path);
     }
 }
 
@@ -697,28 +714,19 @@ pub fn handle_save_layout_system(
     paths: Res<crate::ui::components::ScenarioWritebackPaths>,
     scenario: Res<crate::ui::components::ScenarioMetadata>,
     mut scenario_target: ResMut<ScenarioReadTarget>,
-    mut pending: ResMut<PendingFileDialog>,
+    mut save_as_writer: EventWriter<LayoutSaveAsRequested>,
 ) {
     for _ in events.read() {
         let was_new = buffer.original_path.is_none();
 
-        // 初回保存（original_path 無し）はファイルダイアログが必要。
-        // macOS deadlock 回避のため AsyncFileDialog をワーカーで回し、
-        // 保存後処理は poll_save_dialog_system に委譲する（Issue #17）。
-        let Some(orig) = &buffer.original_path else {
-            if pending.is_active() {
-                continue; // 多重起動防止: 何らかのダイアログ表示中（モーダル相当）
-            }
-            let task = AsyncComputeTaskPool::get().spawn(async move {
-                rfd::AsyncFileDialog::new()
-                    .add_filter("Layout JSON", &["json"])
-                    .save_file()
-                    .await
-                    .map(|h| h.path().to_path_buf())
-            });
-            pending.begin(FileDialogKind::Save, task);
+        // 初回保存（original_path 無し）は Save As 相当のダイアログが必要。
+        // ここでは直接 rfd を起動せず、Save As フローへ委譲する（案A, Issue #21）。
+        // 多重起動防止 guard は委譲先 handle_save_as_layout_system が持つため不要。
+        if buffer.original_path.is_none() {
+            save_as_writer.send(LayoutSaveAsRequested);
             continue;
-        };
+        }
+        let orig = buffer.original_path.as_ref().unwrap();
 
         // 既存パスあり = ダイアログ不要の同期保存。
         // pre-flush は finish_layout_save の冒頭（write 直前）で行う（Issue #17 finding #3）。
@@ -802,7 +810,7 @@ fn poll_load_dialog_system(
 }
 
 #[allow(clippy::type_complexity)]
-fn poll_save_as_dialog_system(
+pub fn poll_save_as_dialog_system(
     mut pending: ResMut<PendingFileDialog>,
     panels: Query<
         (
@@ -2430,6 +2438,7 @@ mod tests {
         app.init_resource::<ScenarioReadTarget>();
 
         app.add_event::<LayoutSaveRequested>();
+        app.add_event::<LayoutSaveAsRequested>();
         app.world_mut().spawn((
             Camera2d,
             Transform::default(),
@@ -2493,6 +2502,7 @@ mod tests {
         app.insert_resource(PendingStrategyFragments::default());
 
         app.add_event::<LayoutSaveRequested>();
+        app.add_event::<LayoutSaveAsRequested>();
         app.add_event::<LayoutLoadRequested>();
         app.add_event::<PanelSpawnRequested>();
         app.add_event::<StrategyFileLoadRequested>();
@@ -2605,6 +2615,7 @@ mod tests {
         app.init_resource::<ScenarioReadTarget>();
 
         app.add_event::<LayoutSaveRequested>();
+        app.add_event::<LayoutSaveAsRequested>();
         app.world_mut().spawn((
             Camera2d,
             Transform::default(),
@@ -2657,6 +2668,7 @@ mod tests {
         app.init_resource::<ScenarioReadTarget>();
 
         app.add_event::<LayoutSaveRequested>();
+        app.add_event::<LayoutSaveAsRequested>();
         app.world_mut().spawn((
             Camera2d,
             Transform::default(),
@@ -2728,6 +2740,7 @@ mod tests {
         app.init_resource::<ScenarioReadTarget>();
 
         app.add_event::<LayoutSaveRequested>();
+        app.add_event::<LayoutSaveAsRequested>();
         app.world_mut().spawn((
             Camera2d,
             Transform::default(),
@@ -2788,6 +2801,7 @@ mod tests {
         app.init_resource::<ScenarioReadTarget>();
 
         app.add_event::<LayoutSaveRequested>();
+        app.add_event::<LayoutSaveAsRequested>();
         app.world_mut().spawn((
             Camera2d,
             Transform::default(),
@@ -2859,6 +2873,7 @@ mod tests {
         app.insert_resource(ScenarioReadTarget(Some(cache_json_path.clone())));
 
         app.add_event::<LayoutSaveRequested>();
+        app.add_event::<LayoutSaveAsRequested>();
         app.world_mut().spawn((
             Camera2d,
             Transform::default(),
