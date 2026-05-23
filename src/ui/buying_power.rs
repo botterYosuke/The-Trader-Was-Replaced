@@ -34,6 +34,7 @@ pub fn spawn_buying_power_panel(commands: &mut Commands) {
             position: PANEL_POSITION,
             accent: ACCENT,
             closeable: true,
+            resizable: false,
         },
     );
     // 重複防止用に PanelKind を root に貼る

@@ -14,7 +14,9 @@ description: |
   ② "Bevy", "bevy_egui", "PanCam", "Camera2d", "Sprite", "Text2d", "Plugin", "ECS",
     "Resource", "Component", "Event", "System", "Query", "Commands", "World",
     "observer", "Trigger", "Pointer<Drag>", "Pointer<Down>", "floating window",
-    "パネル", "サイドバー", "フッター", "メニューバー" と言われたとき
+    "パネル", "サイドバー", "フッター", "メニューバー",
+    "リサイズ", "resize", "CursorIcon", "cursor icon", "カーソルアイコン",
+    "ハンドル", "drag handle", "drag-resize" と言われたとき
   ③ Bevy のバージョン差（0.15 と 0.19/0.16/0.17/0.18 の API 差）でハマっているとき
   ④ "Bundle is deprecated", "set_parent", "Parent", "ChildOf", "get_single", "single",
     "Trigger::entity", "Trigger::target", "required components" など破壊的変更語彙が出たとき
@@ -306,6 +308,21 @@ egui の中で `state.buffer` のような大きい String を編集するとき
 - **"no field `entity` on `Trigger`"**: 0.19 流。0.15 は `trigger.entity()` (method)。
 - **"unresolved import `bevy::ChildOf`"**: 0.19 流。0.15 は `Parent`。
 - **ウィンドウがドラッグでカーソルから逃げる**: 規約 5 の scale 倍を忘れている。
+- **マウスカーソルアイコンを変えたいが `window.cursor.icon` フィールドが無いと言われる**: Bevy 0.15 の
+  カーソルアイコン変更は **フィールドではなく Component 挿入** で行う。`window.cursor_options.icon` ではなく、
+  PrimaryWindow entity に `CursorIcon` Component を insert する方式。import が非 prelude なので明示が必要:
+  ```rust
+  use bevy::window::{PrimaryWindow, SystemCursorIcon};
+  use bevy::winit::cursor::CursorIcon;
+  // observer 内 (commands あり):
+  if let Ok(win) = window_q.get_single() {
+      commands.entity(win).insert(CursorIcon::from(SystemCursorIcon::EwResize));
+  }
+  // Pointer<Out> で元に戻す:
+  commands.entity(win).insert(CursorIcon::from(SystemCursorIcon::Default));
+  ```
+  `bevy::winit` は `bevy_internal` が `bevy_winit as winit` で re-export しているので
+  `bevy::winit::cursor::CursorIcon` でアクセスできる。`floating_window.rs` の resize handle observer が実例。
 - **透明 Sprite を hit-target にしたいが picking が効くか不安（`Color::NONE` / alpha≈0）**: 0.15 は
   **bounds ベース picking で alpha を見ない**（`bevy_sprite-0.15.1/src/picking_backend.rs` 冒頭
   "Picking is done based on sprite bounds, not visible pixels"）。よって `Color::srgba(_,_,_,0.0)` でも

@@ -6,7 +6,9 @@ use crate::ui::components::{
 use crate::ui::editor_history::{
     AppEditAction, AppHistory, PendingStrategySnapshotRestore, UndoRedoApplied,
 };
-use crate::ui::floating_window::{FloatingWindowSpec, spawn_floating_window};
+use crate::ui::floating_window::{
+    FloatingWindowSpec, TITLE_BAR_HEIGHT, spawn_floating_window,
+};
 use crate::ui::layout_persistence::{AutoSaveState, PendingLayoutApply};
 use crate::ui::strategy_editor_gutter::spawn_line_number_gutter;
 use crate::ui::strategy_editor_highlight::{BracketSpans, FindMatchSpans, SyntaxSpans};
@@ -126,6 +128,15 @@ fn mark_fragment_dirty(
 #[derive(Component)]
 pub struct StrategyEditorContent;
 
+/// リサイズ時にコンテンツ領域を追従させるため、root entity に挿入する子エンティティ参照。
+/// `strategy_editor_content_layout_system` がこれを読んで editor / gutter / scrollbar を更新する。
+#[derive(Component)]
+pub struct StrategyEditorLayoutChildren {
+    pub editor: Entity,
+    pub gutter: Entity,
+    pub scrollbar_track: Entity,
+}
+
 /// dispatcher から呼ばれる spawn 関数。
 pub fn spawn_strategy_editor_panel(
     commands: &mut Commands,
@@ -158,6 +169,7 @@ pub fn spawn_strategy_editor_panel(
             position: PANEL_POSITION,
             accent: ACCENT,
             closeable: true,
+            resizable: true,
         },
     );
     commands.entity(root).insert((
@@ -220,8 +232,15 @@ pub fn spawn_strategy_editor_panel(
     let gutter = spawn_line_number_gutter(commands, font_system, region_key.clone(), GUTTER_X);
     commands.entity(content_area).add_child(gutter);
 
-    let scrollbar = spawn_editor_scrollbar(commands, editor, SCROLLBAR_X);
-    commands.entity(content_area).add_child(scrollbar);
+    let scrollbar_track = spawn_editor_scrollbar(commands, editor, SCROLLBAR_X);
+    commands.entity(content_area).add_child(scrollbar_track);
+
+    // リサイズ時にコンテンツを追従させるため子エンティティ参照を root に保持する。
+    commands.entity(root).insert(StrategyEditorLayoutChildren {
+        editor,
+        gutter,
+        scrollbar_track,
+    });
 
     let _ = title_bar;
     let _ = spec.layout_source;
@@ -236,6 +255,73 @@ pub const EDITOR_CONTENT_X: f32 = GROUP_LEFT_X + GUTTER_WIDTH + EDITOR_TEXT_SIZE
 /// scrollbar Sprite の中心 x。
 pub const SCROLLBAR_X: f32 =
     GROUP_LEFT_X + GUTTER_WIDTH + EDITOR_TEXT_SIZE.x + SCROLLBAR_WIDTH / 2.0;
+
+/// Strategy Editor の root サイズが変わったとき（リサイズ）、editor / gutter / scrollbar を
+/// 新しいコンテンツ領域サイズに追従させる。差分書き込みで change detection の無駄発火を防ぐ。
+pub fn strategy_editor_content_layout_system(
+    roots: Query<
+        (&Sprite, &StrategyEditorLayoutChildren),
+        (With<WindowRoot>, Changed<Sprite>),
+    >,
+    mut sprites: Query<&mut Sprite, Without<WindowRoot>>,
+    mut transforms: Query<&mut Transform, Without<WindowRoot>>,
+) {
+    for (root_sprite, layout) in &roots {
+        let Some(root_size) = root_sprite.custom_size else {
+            continue;
+        };
+        let content_w = root_size.x;
+        let content_h = root_size.y - TITLE_BAR_HEIGHT;
+
+        let editor_text_w = (content_w - GUTTER_WIDTH - SCROLLBAR_WIDTH).max(10.0);
+        let editor_text_h = content_h.max(10.0);
+
+        let group_left_x = -content_w / 2.0;
+        let gutter_x = group_left_x + GUTTER_WIDTH / 2.0;
+        let editor_x = group_left_x + GUTTER_WIDTH + editor_text_w / 2.0;
+        let scrollbar_x = group_left_x + GUTTER_WIDTH + editor_text_w + SCROLLBAR_WIDTH / 2.0;
+
+        // editor sprite size + position
+        if let Ok(mut s) = sprites.get_mut(layout.editor) {
+            let target = Vec2::new(editor_text_w, editor_text_h);
+            if s.custom_size != Some(target) {
+                s.custom_size = Some(target);
+            }
+        }
+        if let Ok(mut t) = transforms.get_mut(layout.editor) {
+            if (t.translation.x - editor_x).abs() > 0.01 {
+                t.translation.x = editor_x;
+            }
+        }
+
+        // gutter sprite height + position
+        if let Ok(mut s) = sprites.get_mut(layout.gutter) {
+            let target = Vec2::new(GUTTER_WIDTH, editor_text_h);
+            if s.custom_size != Some(target) {
+                s.custom_size = Some(target);
+            }
+        }
+        if let Ok(mut t) = transforms.get_mut(layout.gutter) {
+            if (t.translation.x - gutter_x).abs() > 0.01 {
+                t.translation.x = gutter_x;
+            }
+        }
+
+        // scrollbar track height + position
+        if let Ok(mut s) = sprites.get_mut(layout.scrollbar_track) {
+            let target = Vec2::new(SCROLLBAR_WIDTH, editor_text_h);
+            if s.custom_size != Some(target) {
+                s.custom_size = Some(target);
+            }
+        }
+        if let Ok(mut t) = transforms.get_mut(layout.scrollbar_track) {
+            if (t.translation.x - scrollbar_x).abs() > 0.01 {
+                t.translation.x = scrollbar_x;
+            }
+        }
+
+    }
+}
 
 /// `OpenStrategyRequested` イベント（ファイル → buffer に丸ごとロード）の直後に、
 /// cosmic_edit エディタの内容を `buffer.source` で置き換える（片側同期: buffer → editor）。

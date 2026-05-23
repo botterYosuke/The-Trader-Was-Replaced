@@ -228,6 +228,8 @@ mod m7_startup_window_has_no_close_button;
 mod m8_startup_window_visibility_owned_by_mode;
 #[path = "e2e/flows/m9_startup_window_position_persists_visible_not_authoritative.rs"]
 mod m9_startup_window_position_persists_visible_not_authoritative;
+#[path = "e2e/flows/m10_window_resize_updates_size_and_autosave.rs"]
+mod m10_window_resize_updates_size_and_autosave;
 
 // N. Live Auto strategy execution (Phase 10: lifecycle / telemetry / safety / log / promote)
 #[path = "e2e/flows/n1_live_strategy_event_lifecycle.rs"]

@@ -123,6 +123,7 @@ pub fn spawn_scenario_startup_window(commands: &mut Commands) {
             position: WINDOW_POSITION,
             accent: ACCENT,
             closeable: false,
+            resizable: false,
         },
     );
     commands

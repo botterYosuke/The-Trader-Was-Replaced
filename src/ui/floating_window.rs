@@ -20,6 +20,21 @@ use bevy_cosmic_edit::prelude::CosmicFontSystem;
 /// (Caveat #33: 二重定義すると chart の draw 領域が枠を ~8px はみ出す)。
 pub const TITLE_BAR_HEIGHT: f32 = 40.0;
 
+/// リサイズハンドル sprite の太さ（px）。透明だが bounds picking が有効なので hitbox として機能する。
+const RESIZE_HANDLE_THICKNESS: f32 = 8.0;
+
+/// floating window の最小サイズ。ドラッグによるリサイズでこれより小さくならないようクランプする。
+pub const MIN_WINDOW_SIZE: Vec2 = Vec2::new(280.0, 180.0);
+
+/// タイトルテキストの左端 padding（root 左端からの距離）。layout_system でも参照する。
+const TITLE_PADDING_LEFT: f32 = 16.0;
+
+/// クローズボタンのサイズ（正方形）。layout_system でも参照する。
+const CLOSE_BTN_SIZE: f32 = 20.0;
+
+/// クローズボタンの右端 margin。layout_system でも参照する。
+const CLOSE_BTN_MARGIN: f32 = 8.0;
+
 /// floating window を生成するときに渡す設定。
 #[derive(Clone)]
 pub struct FloatingWindowSpec {
@@ -33,6 +48,128 @@ pub struct FloatingWindowSpec {
     pub accent: Color,
     /// × クローズボタンを spawn するか。false の panel（Startup 等）は閉じられない
     pub closeable: bool,
+    /// 右端・下端・右下コーナーのドラッグでリサイズ可能にするか
+    pub resizable: bool,
+}
+
+/// root に挿入する子エンティティのカタログ。layout_system がこれを参照してリサイズ追従する。
+#[derive(Component)]
+pub struct FloatingWindowChildren {
+    pub inner_glow: Entity,
+    pub rim_light: Entity,
+    pub title_bar: Entity,
+    pub title_text: Entity,
+    pub close_button: Option<Entity>,
+    pub resize_right: Option<Entity>,
+    pub resize_bottom: Option<Entity>,
+    pub resize_corner: Option<Entity>,
+}
+
+/// リサイズハンドルの軸方向。ドラッグ observer 内でクロージャキャプチャする。
+#[derive(Clone, Copy)]
+enum ResizeAxis {
+    Right,
+    Bottom,
+    Corner,
+}
+
+/// 透明なリサイズハンドル sprite を spawn し、Drag/DragEnd/Over/Out の 4 observer を付けて返す。
+/// caller が root の子として add_child する。
+fn spawn_resize_handle(commands: &mut Commands, axis: ResizeAxis, size: Vec2, pos: Vec2) -> Entity {
+    commands
+        .spawn((
+            Sprite {
+                color: Color::srgba(0.0, 0.0, 0.0, 0.0),
+                custom_size: Some(size),
+                ..default()
+            },
+            Transform::from_xyz(pos.x, pos.y, 0.5),
+        ))
+        // Drag → root の custom_size / translation を更新（左端・上端固定）
+        .observe(
+            move |drag: Trigger<Pointer<Drag>>,
+                  parent_q: Query<&Parent>,
+                  mut root_q: Query<(&mut Sprite, &mut Transform), With<WindowRoot>>,
+                  camera_q: Query<&OrthographicProjection, With<Camera2d>>| {
+                if drag.event().button != PointerButton::Primary {
+                    return;
+                }
+                let Ok(parent) = parent_q.get(drag.entity()) else {
+                    return;
+                };
+                let scale = camera_q.get_single().map(|p| p.scale).unwrap_or(1.0);
+                let dx = drag.event().delta.x * scale;
+                let dy = drag.event().delta.y * scale; // screen down (+) = height increase
+                let Ok((mut sprite, mut tf)) = root_q.get_mut(parent.get()) else {
+                    return;
+                };
+                let Some(cur) = sprite.custom_size else {
+                    return;
+                };
+                let (dw, dh) = match axis {
+                    ResizeAxis::Right => (dx, 0.0),
+                    ResizeAxis::Bottom => (0.0, dy),
+                    ResizeAxis::Corner => (dx, dy),
+                };
+                let new_w = (cur.x + dw).max(MIN_WINDOW_SIZE.x);
+                let new_h = (cur.y + dh).max(MIN_WINDOW_SIZE.y);
+                let adw = new_w - cur.x;
+                let adh = new_h - cur.y;
+                sprite.custom_size = Some(Vec2::new(new_w, new_h));
+                tf.translation.x += adw / 2.0;
+                tf.translation.y -= adh / 2.0; // world y は screen y の逆
+            },
+        )
+        // DragEnd → autosave をマーク
+        .observe(
+            |end: Trigger<Pointer<DragEnd>>,
+             parent_q: Query<&Parent>,
+             root_q: Query<Option<&ChartInstrument>, With<WindowRoot>>,
+             mut auto_save: ResMut<crate::ui::layout_persistence::AutoSaveState>| {
+                let Ok(parent) = parent_q.get(end.entity()) else {
+                    return;
+                };
+                let Ok(chart) = root_q.get(parent.get()) else {
+                    return;
+                };
+                if chart.is_some() {
+                    return;
+                }
+                auto_save.mark_layout_changed(std::time::Instant::now());
+            },
+        )
+        // Over → リサイズカーソルに変更（Window entity に CursorIcon component を insert）
+        .observe(
+            move |_: Trigger<Pointer<Over>>,
+                  mut commands: Commands,
+                  windows: Query<Entity, With<bevy::window::PrimaryWindow>>| {
+                use bevy::window::SystemCursorIcon;
+                use bevy::winit::cursor::CursorIcon;
+                if let Ok(entity) = windows.get_single() {
+                    let icon = match axis {
+                        ResizeAxis::Right => SystemCursorIcon::EwResize,
+                        ResizeAxis::Bottom => SystemCursorIcon::NsResize,
+                        ResizeAxis::Corner => SystemCursorIcon::SeResize,
+                    };
+                    commands.entity(entity).insert(CursorIcon::from(icon));
+                }
+            },
+        )
+        // Out → デフォルトカーソルに戻す
+        .observe(
+            |_: Trigger<Pointer<Out>>,
+             mut commands: Commands,
+             windows: Query<Entity, With<bevy::window::PrimaryWindow>>| {
+                use bevy::window::SystemCursorIcon;
+                use bevy::winit::cursor::CursorIcon;
+                if let Ok(entity) = windows.get_single() {
+                    commands
+                        .entity(entity)
+                        .insert(CursorIcon::from(SystemCursorIcon::Default));
+                }
+            },
+        )
+        .id()
 }
 
 /// 戻り値: (root_entity, content_area_entity, title_bar_entity)
@@ -43,7 +180,6 @@ pub fn spawn_floating_window(
     commands: &mut Commands,
     spec: FloatingWindowSpec,
 ) -> (Entity, Entity, Entity) {
-    const TITLE_PADDING_LEFT: f32 = 16.0;
     let title_bar_half = TITLE_BAR_HEIGHT / 2.0;
 
     // ─── 1. Window root (背景) ───
@@ -70,7 +206,7 @@ pub fn spawn_floating_window(
         .id();
 
     // ─── 2. Inner glow (内側のうっすら白い光) ───
-    commands
+    let inner_glow = commands
         .spawn((
             Sprite {
                 color: Color::srgba(1.0, 1.0, 1.0, 0.05),
@@ -79,10 +215,11 @@ pub fn spawn_floating_window(
             },
             Transform::from_xyz(0.0, 0.0, 0.01),
         ))
-        .set_parent(root);
+        .id();
+    commands.entity(root).add_child(inner_glow);
 
     // ─── 3. Rim light (外周の色付き発光、accent 色を使う) ───
-    commands
+    let rim_light = commands
         .spawn((
             Sprite {
                 color: spec.accent,
@@ -92,7 +229,8 @@ pub fn spawn_floating_window(
             },
             Transform::from_xyz(0.0, 0.0, -0.01),
         ))
-        .set_parent(root);
+        .id();
+    commands.entity(root).add_child(rim_light);
 
     // ─── 4. Title bar (上端のドラッグ可能なバー) ───
     let title_bar_y = spec.size.y / 2.0 - title_bar_half;
@@ -200,9 +338,8 @@ pub fn spawn_floating_window(
 
     // ─── 7. Close button (× — タイトルバー右端。root 直下に置くことで
     //        title_bar の Drag observer が伝播しないようにする) ───
+    let mut close_button_entity: Option<Entity> = None;
     if spec.closeable {
-        const CLOSE_BTN_SIZE: f32 = 20.0;
-        const CLOSE_BTN_MARGIN: f32 = 8.0;
         let close_btn_x = spec.size.x / 2.0 - CLOSE_BTN_SIZE / 2.0 - CLOSE_BTN_MARGIN;
         let close_btn = commands
             .spawn((
@@ -296,9 +433,171 @@ pub fn spawn_floating_window(
                 Transform::from_xyz(0.0, 0.0, 0.1),
             ))
             .set_parent(close_btn);
+
+        close_button_entity = Some(close_btn);
     }
 
+    // ─── 8. Resize handles (resizable が true のときのみ) ───
+    let (resize_right, resize_bottom, resize_corner) = if spec.resizable {
+        let w = spec.size.x;
+        let h = spec.size.y;
+
+        let right = spawn_resize_handle(
+            commands,
+            ResizeAxis::Right,
+            Vec2::new(RESIZE_HANDLE_THICKNESS, h),
+            Vec2::new(w / 2.0, 0.0),
+        );
+        commands.entity(root).add_child(right);
+
+        let bottom = spawn_resize_handle(
+            commands,
+            ResizeAxis::Bottom,
+            Vec2::new(w, RESIZE_HANDLE_THICKNESS),
+            Vec2::new(0.0, -h / 2.0),
+        );
+        commands.entity(root).add_child(bottom);
+
+        let corner = spawn_resize_handle(
+            commands,
+            ResizeAxis::Corner,
+            Vec2::new(RESIZE_HANDLE_THICKNESS, RESIZE_HANDLE_THICKNESS),
+            Vec2::new(w / 2.0, -h / 2.0),
+        );
+        commands.entity(root).add_child(corner);
+
+        (Some(right), Some(bottom), Some(corner))
+    } else {
+        (None, None, None)
+    };
+
+    // ─── 9. FloatingWindowChildren を root に挿入 ───
+    commands.entity(root).insert(FloatingWindowChildren {
+        inner_glow,
+        rim_light,
+        title_bar,
+        title_text,
+        close_button: close_button_entity,
+        resize_right,
+        resize_bottom,
+        resize_corner,
+    });
+
     (root, content_area, title_bar)
+}
+
+/// root の custom_size が変わったとき、FloatingWindowChildren が保持する子エンティティを
+/// 新しいサイズに追従させる。差分書き込み（規約 2）で change detection の無駄発火を防ぐ。
+pub fn floating_window_layout_system(
+    roots: Query<(&Sprite, &FloatingWindowChildren), (With<WindowRoot>, Changed<Sprite>)>,
+    mut sprites: Query<&mut Sprite, Without<WindowRoot>>,
+    mut transforms: Query<&mut Transform, Without<WindowRoot>>,
+) {
+    for (root_sprite, children) in &roots {
+        let Some(size) = root_sprite.custom_size else {
+            continue;
+        };
+        let w = size.x;
+        let h = size.y;
+        let title_bar_half = TITLE_BAR_HEIGHT / 2.0;
+        let title_bar_y = h / 2.0 - title_bar_half;
+
+        // inner_glow
+        if let Ok(mut s) = sprites.get_mut(children.inner_glow) {
+            let target = size - Vec2::splat(4.0);
+            if s.custom_size != Some(target) {
+                s.custom_size = Some(target);
+            }
+        }
+
+        // rim_light
+        if let Ok(mut s) = sprites.get_mut(children.rim_light) {
+            let target = size + Vec2::splat(2.0);
+            if s.custom_size != Some(target) {
+                s.custom_size = Some(target);
+            }
+        }
+
+        // title_bar: 幅を更新、y 位置も更新（高さが変わるとタイトルバーが上端に来るべき）
+        if let Ok(mut s) = sprites.get_mut(children.title_bar) {
+            let target = Vec2::new(w, TITLE_BAR_HEIGHT);
+            if s.custom_size != Some(target) {
+                s.custom_size = Some(target);
+            }
+        }
+        if let Ok(mut t) = transforms.get_mut(children.title_bar) {
+            if (t.translation.y - title_bar_y).abs() > 0.01 {
+                t.translation.y = title_bar_y;
+            }
+        }
+
+        // title_text: x 位置を更新
+        if let Ok(mut t) = transforms.get_mut(children.title_text) {
+            let target_x = -w / 2.0 + TITLE_PADDING_LEFT;
+            if (t.translation.x - target_x).abs() > 0.01 {
+                t.translation.x = target_x;
+            }
+        }
+
+        // close_button: x / y 位置を更新
+        if let Some(cb) = children.close_button {
+            if let Ok(mut t) = transforms.get_mut(cb) {
+                let target_x = w / 2.0 - CLOSE_BTN_SIZE / 2.0 - CLOSE_BTN_MARGIN;
+                if (t.translation.x - target_x).abs() > 0.01 {
+                    t.translation.x = target_x;
+                }
+                if (t.translation.y - title_bar_y).abs() > 0.01 {
+                    t.translation.y = title_bar_y;
+                }
+            }
+        }
+
+        // resize_right ハンドル: 高さと x 位置
+        if let Some(e) = children.resize_right {
+            if let Ok(mut s) = sprites.get_mut(e) {
+                let target = Vec2::new(RESIZE_HANDLE_THICKNESS, h);
+                if s.custom_size != Some(target) {
+                    s.custom_size = Some(target);
+                }
+            }
+            if let Ok(mut t) = transforms.get_mut(e) {
+                let target_x = w / 2.0;
+                if (t.translation.x - target_x).abs() > 0.01 {
+                    t.translation.x = target_x;
+                }
+            }
+        }
+
+        // resize_bottom ハンドル: 幅と y 位置
+        if let Some(e) = children.resize_bottom {
+            if let Ok(mut s) = sprites.get_mut(e) {
+                let target = Vec2::new(w, RESIZE_HANDLE_THICKNESS);
+                if s.custom_size != Some(target) {
+                    s.custom_size = Some(target);
+                }
+            }
+            if let Ok(mut t) = transforms.get_mut(e) {
+                let target_y = -h / 2.0;
+                if (t.translation.y - target_y).abs() > 0.01 {
+                    t.translation.y = target_y;
+                }
+            }
+        }
+
+        // resize_corner ハンドル: x / y 位置
+        if let Some(e) = children.resize_corner {
+            if let Ok(mut t) = transforms.get_mut(e) {
+                let target_x = w / 2.0;
+                let target_y = -h / 2.0;
+                if (t.translation.x - target_x).abs() > 0.01 {
+                    t.translation.x = target_x;
+                }
+                if (t.translation.y - target_y).abs() > 0.01 {
+                    t.translation.y = target_y;
+                }
+            }
+        }
+    }
 }
 
 fn fixed_strategy_cache_path() -> Option<std::path::PathBuf> {
@@ -417,6 +716,7 @@ mod close_button_tests {
                     position: Vec2::ZERO,
                     accent: Color::WHITE,
                     closeable,
+                    resizable: false,
                 },
             );
             commands_queue.apply(world);

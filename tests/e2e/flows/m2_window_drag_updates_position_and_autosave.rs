@@ -62,6 +62,7 @@ fn m2_window_drag_updates_position_and_autosave() {
                 position: Vec2::new(100.0, 200.0),
                 accent: Color::srgba(0.0, 0.8, 1.0, 0.4),
                 closeable: true,
+                resizable: false,
             },
         );
         result

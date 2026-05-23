@@ -24,6 +24,7 @@ pub fn spawn_chart_panel(commands: &mut Commands, instrument_id: &str) {
             position: PANEL_POSITION,
             accent: ACCENT,
             closeable: true,
+            resizable: false,
         },
     );
     commands.entity(root).insert(PanelKind::Chart);

@@ -81,7 +81,7 @@ use crate::ui::components::{
 use crate::ui::editor_history::{
     ActiveDrag, AppHistory, PendingStrategySnapshotRestore, UndoRedoApplied,
 };
-use crate::ui::floating_window::panel_spawn_dispatcher_system;
+use crate::ui::floating_window::{floating_window_layout_system, panel_spawn_dispatcher_system};
 use crate::ui::footer::{
     execution_mode_toggle_system, footer_pause_resume_system, spawn_footer, speed_button_system,
     transport_button_system, update_footer_system, update_speed_buttons_system,
@@ -161,8 +161,8 @@ use crate::ui::sidebar::{
 };
 use crate::ui::strategy_editor::{
     StrategyAutoSaveState, apply_pending_app_edits_system, apply_strategy_snapshot_restore_system,
-    debounced_strategy_autosave_system, sync_editor_to_strategy_buffer_system,
-    sync_strategy_buffer_to_editor_system, undo_redo_system,
+    debounced_strategy_autosave_system, strategy_editor_content_layout_system,
+    sync_editor_to_strategy_buffer_system, sync_strategy_buffer_to_editor_system, undo_redo_system,
 };
 use crate::ui::strategy_editor_compose::apply_highlight_layers_system;
 use crate::ui::strategy_editor_find::{
@@ -318,6 +318,8 @@ impl Plugin for UiPlugin {
                     .after(write_startup_params_to_cache_sidecar_system),
                 panel_button_system,
                 panel_spawn_dispatcher_system,
+                floating_window_layout_system,
+                strategy_editor_content_layout_system,
             ),
         )
         // ── Chart (Phase 7.3 A): ViewState 更新 / autoscale / 描画 ──

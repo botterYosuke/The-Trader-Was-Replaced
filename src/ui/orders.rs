@@ -92,6 +92,7 @@ pub fn spawn_orders_panel(commands: &mut Commands) {
             position: PANEL_POSITION,
             accent: ACCENT,
             closeable: true,
+            resizable: false,
         },
     );
     commands.entity(root).insert(PanelKind::Orders);

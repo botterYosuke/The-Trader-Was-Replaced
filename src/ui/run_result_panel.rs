@@ -37,6 +37,7 @@ pub fn spawn_run_result_panel(commands: &mut Commands) {
             position: PANEL_POSITION,
             accent: ACCENT,
             closeable: true,
+            resizable: false,
         },
     );
     commands.entity(root).insert(PanelKind::RunResult);

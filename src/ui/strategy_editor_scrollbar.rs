@@ -47,9 +47,12 @@ impl ThumbMetrics {
         }
     }
 
-    /// 現在の editor 状態から組み立てる (track 高は固定)。
-    fn from_editor(editor: Option<&CosmicEditor>, buffer: &CosmicEditBuffer) -> (Self, usize) {
-        let track_h = EDITOR_TEXT_SIZE.y;
+    /// 現在の editor 状態から組み立てる。track_h は実際の track sprite 高を渡す。
+    fn from_editor_with_height(
+        editor: Option<&CosmicEditor>,
+        buffer: &CosmicEditBuffer,
+        track_h: f32,
+    ) -> (Self, usize) {
         let viewport = viewport_lines(track_h, editor_metrics().line_height);
         let (total, scroll_line) =
             read_active_buffer(editor, buffer, |b| (b.lines.len().max(1), b.scroll().line));
@@ -115,21 +118,28 @@ pub fn spawn_editor_scrollbar(commands: &mut Commands, target_editor: Entity, x:
         ))
         .observe(
             |drag: Trigger<Pointer<Drag>>,
-             thumb_q: Query<&EditorScrollThumb>,
+             thumb_q: Query<(&EditorScrollThumb, &Parent)>,
+             track_q: Query<&Sprite, (With<EditorScrollbarTrack>, Without<EditorScrollThumb>)>,
              mut editor_q: Query<
                 (Option<&mut CosmicEditor>, &mut CosmicEditBuffer),
                 With<StrategyEditorContent>,
             >,
              camera_q: Query<&OrthographicProjection, With<Camera2d>>| {
-                let Ok(thumb) = thumb_q.get(drag.entity()) else {
+                let Ok((thumb, parent)) = thumb_q.get(drag.entity()) else {
                     return;
                 };
                 let Ok((mut editor_opt, mut buffer)) = editor_q.get_mut(thumb.target_editor) else {
                     return;
                 };
                 let scale = camera_q.get_single().map(|p| p.scale).unwrap_or(1.0);
+                let track_h = track_q
+                    .get(parent.get())
+                    .ok()
+                    .and_then(|s| s.custom_size)
+                    .map(|s| s.y)
+                    .unwrap_or(EDITOR_TEXT_SIZE.y);
                 let (metrics, current_line) =
-                    ThumbMetrics::from_editor(editor_opt.as_deref(), &buffer);
+                    ThumbMetrics::from_editor_with_height(editor_opt.as_deref(), &buffer, track_h);
                 let delta_world_y = drag.event().delta.y * scale;
                 let new_scroll = Scroll {
                     line: metrics.line_from_drag(current_line, delta_world_y),
@@ -169,13 +179,20 @@ fn thumb_height(total: usize, viewport: usize, track_h: f32) -> f32 {
 /// 差分書き込みで change detection の無駄発火を防ぐ (規約 2)。
 pub fn update_scrollbar_thumb_system(
     editor_q: Query<(Option<&CosmicEditor>, &CosmicEditBuffer), With<StrategyEditorContent>>,
-    mut thumb_q: Query<(&EditorScrollThumb, &mut Sprite, &mut Transform)>,
+    mut thumb_q: Query<(&EditorScrollThumb, &mut Sprite, &mut Transform, &Parent)>,
+    track_q: Query<&Sprite, (With<EditorScrollbarTrack>, Without<EditorScrollThumb>)>,
 ) {
-    for (thumb, mut sprite, mut tf) in thumb_q.iter_mut() {
+    for (thumb, mut sprite, mut tf, parent) in thumb_q.iter_mut() {
         let Ok((editor_opt, buffer)) = editor_q.get(thumb.target_editor) else {
             continue;
         };
-        let (metrics, scroll_line) = ThumbMetrics::from_editor(editor_opt, buffer);
+        let track_h = track_q
+            .get(parent.get())
+            .ok()
+            .and_then(|s| s.custom_size)
+            .map(|s| s.y)
+            .unwrap_or(EDITOR_TEXT_SIZE.y);
+        let (metrics, scroll_line) = ThumbMetrics::from_editor_with_height(editor_opt, buffer, track_h);
         let center_y = metrics.center_y(scroll_line);
 
         if sprite.custom_size.map(|s| s.y) != Some(metrics.thumb_h) {

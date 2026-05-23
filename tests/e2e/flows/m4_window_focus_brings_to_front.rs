@@ -57,6 +57,7 @@ fn m4_window_focus_brings_to_front() {
                 position: Vec2::new(-100.0, 0.0),
                 accent: Color::srgba(0.0, 0.5, 1.0, 0.4),
                 closeable: true,
+                resizable: false,
             },
         )
     };
@@ -74,6 +75,7 @@ fn m4_window_focus_brings_to_front() {
                 position: Vec2::new(100.0, 0.0),
                 accent: Color::srgba(1.0, 0.5, 0.0, 0.4),
                 closeable: true,
+                resizable: false,
             },
         )
     };
