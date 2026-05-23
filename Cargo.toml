@@ -38,3 +38,14 @@ protoc-bin-vendored = "3.0"
 
 [patch.crates-io]
 bevy_cosmic_edit = { path = "crates/bevy_cosmic_edit" }
+
+# dev ビルドの実行時パフォーマンス対策（Bevy 公式推奨）。
+# 自分のクレートは opt-level=1 に留めてインクリメンタルコンパイルを速く保ちつつ、
+# 依存（Bevy / bevy_cosmic_edit / cosmic_text 等）だけ opt-level=3 で最適化する。
+# 「debug ビルドが重くて使えない」問題に対する単一で最大の効果。初回のみ依存の
+# 再コンパイルで時間がかかるが、以降の自コード変更のビルドは速いまま。
+[profile.dev]
+opt-level = 1
+
+[profile.dev.package."*"]
+opt-level = 3

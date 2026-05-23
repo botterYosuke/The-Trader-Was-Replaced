@@ -1,10 +1,48 @@
 {
+  "schema_version": 1,
+  "viewport": {
+    "pan_x": 640.93604,
+    "pan_y": 217.46492,
+    "zoom": 2.7293382
+  },
+  "windows": [
+    {
+      "kind": "StrategyEditor",
+      "visible": true,
+      "position": [
+        1131.8528,
+        -866.3007
+      ],
+      "size": [
+        1218.4856,
+        3863.4849
+      ],
+      "z": 200.0,
+      "region_key": "region_001"
+    },
+    {
+      "kind": "Startup",
+      "visible": true,
+      "position": [
+        -567.15393,
+        67.31933
+      ],
+      "size": [
+        320.0,
+        200.0
+      ],
+      "z": 148.0
+    }
+  ],
+  "strategy_path": "/Users/sasac/_blacksheep/The-Trader-Was-Replaced/examples/test_strategy_minute.py",
   "scenario": {
-    "schema_version": 2,
-    "instruments": ["1301.TSE"],
-    "start": "2025-01-06",
     "end": "2025-05-21",
     "granularity": "Minute",
-    "initial_cash": 1000000
+    "initial_cash": 1000000,
+    "instruments": [
+      "1301.TSE"
+    ],
+    "schema_version": 2,
+    "start": "2025-01-06"
   }
 }
