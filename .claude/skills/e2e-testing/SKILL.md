@@ -135,6 +135,21 @@ $p = Start-Process -FilePath ".\target\debug\backcast.exe" -WorkingDirectory $PW
 - `grpc: DISABLED` → `BACKEND_ENABLED` が child に渡っていない。2.3 をやり直す
 - `state: RUNNING` で始まる → `python/engine/__main__.py` の `auto_start` が `True` になっている。`False` に直して backend を再起動
 
+### 2.5 VSCode `.vscode/launch.json` から起動（F5）
+
+手動で 2.2/2.3 を打たず、VSCode の Run & Debug（F5）で起動したいとき。`.vscode/launch.json` + `tasks.json` は既存（CodeLLDB 拡張 `vadimcn.vscode-lldb` 必須）。**env は launch.json の `env` で明示渡し**する（`.env` は `envFile` で別途読まれるが、`BACKEND_ENABLED` / `BEVY_ASSET_ROOT` は `.env` に無いので `env` に書く）。
+
+2 つの起動戦略があり、どちらも `env` に最低限 `BACKEND_ENABLED=true` / `BACKEND_TOKEN=testtoken` / `BEVY_ASSET_ROOT=${workspaceFolder}` / `ARTIFACTS_PATH=${workspaceFolder}/artifacts` が要る:
+
+- **autospawn（推奨・単一構成）**: `BACKEND_AUTOSPAWN=true` + `PYTHON_BIN=${workspaceFolder}/.venv/bin/python` を足すと、Rust の `backend_supervisor` が `python -m engine --token <t> --port <p>`（`PYTHONPATH=<cwd>/python`, `BACKEND_SUPERVISED=1`）を自前 spawn し、終了時に道連れで kill する。別タスク不要・port kill レース無し。`preLaunchTask` は `cargo build` だけでよい。
+- **external（別プロセス）**: backend を `tasks.json` の `start backend (replay)`（`uv run python -m engine ...`）で別ターミナルに起動し、`postDebugTask` で `stop backend` する。backend ログを独立して追いたいとき。
+
+> ⚠️ launch.json の `args` に `--mode replay` / `--engine-cmd` を書かない。**ソースに該当パーサが無く黙って無視される e-station 時代の遺物**（§8）。`args: []` でよい。
+>
+> ⚠️ `BEVY_ASSET_ROOT` を忘れるとフッターの ▶/■ シンボルフォント・`grid.wgsl` が読めず UI が崩れる（2.3 と同じ罠が F5 でも起きる）。
+>
+> 検証コマンド（headless smoke）: autospawn の env を前置きして `./target/debug/backcast` を起動 → 1〜2 秒で `lsof -ti tcp:19876` が listen、`backcast_err.txt` に `[backend] Starting gRPC server on port 19876` + `idle gRPC shutdown disabled (BACKEND_SUPERVISED=1)` が出れば供給経路 OK。
+
 ---
 
 ## 3. 検証フロー（典型）

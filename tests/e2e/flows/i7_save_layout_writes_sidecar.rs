@@ -22,7 +22,7 @@ use backcast::ui::components::{
     StrategyBuffer,
 };
 use backcast::ui::layout_persistence::{
-    handle_save_layout_system, LayoutSaveRequested,
+    handle_save_layout_system, LayoutSaveRequested, PendingFileDialog,
     // LayoutSaveAsRequested だけは使わないが他の event が必要なシステムは無い
 };
 use backcast::ui::strategy_editor::StrategyAutoSaveState;
@@ -93,6 +93,7 @@ fn i7_save_layout_writes_sidecar() {
     app.init_resource::<ScenarioMetadata>();
     app.init_resource::<StrategyAutoSaveState>();
     app.init_resource::<ScenarioReadTarget>();
+    app.init_resource::<PendingFileDialog>();
 
     app.add_event::<LayoutSaveRequested>();
 

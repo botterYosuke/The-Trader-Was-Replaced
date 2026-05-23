@@ -1,6 +1,6 @@
 ---
 name: diagnose
-description: Disciplined diagnosis loop for hard bugs and performance regressions. Reproduce → minimise → hypothesise → instrument → fix → regression-test. Use when user says "diagnose this" / "debug this", reports a bug, says something is broken/throwing/failing, or describes a performance regression.
+description: Disciplined diagnosis loop for hard bugs, hangs, and performance regressions. Reproduce → minimise → hypothesise → instrument → fix → regression-test. Use when user says "diagnose this" / "debug this", reports a bug, says something is broken/throwing/failing, or describes a performance regression. ALSO trigger on hang/freeze/deadlock symptoms: "フリーズする", "固まる", "応答しない", "ハングする", "デッドロック", "hangs", "freezes", "deadlock", "stuck", "unresponsive" — these are classic root-cause hunts (thread/lock/event-loop blocking) that need the reproduce→hypothesise→instrument loop just as much as crashes do. Especially platform-specific freezes ("macOS だけ固まる" 等) where a minimal repro / differential harness pins the cause.
 ---
 
 # Diagnose

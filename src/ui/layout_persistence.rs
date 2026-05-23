@@ -1,6 +1,7 @@
 use bevy::prelude::*;
+use bevy::tasks::futures_lite::future;
+use bevy::tasks::{AsyncComputeTaskPool, Task};
 use bevy::window::WindowCloseRequested;
-use rfd::FileDialog;
 use serde::{Deserialize, Serialize};
 use std::path::PathBuf;
 use std::time::Instant;
@@ -128,6 +129,56 @@ pub enum LayoutLoadMode {
 pub struct LayoutLoadRequested {
     pub path: PathBuf,
     pub mode: LayoutLoadMode,
+}
+
+/// 非同期ファイルダイアログ（rfd::AsyncFileDialog）の種別（Issue #17）。
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub enum FileDialogKind {
+    Load,
+    Save,
+    SaveAs,
+}
+
+/// 単一のファイルダイアログ pending task（Issue #17）。
+/// macOS でメインスレッドをブロックしないよう、ダイアログをワーカーで回し
+/// 毎フレーム poll する。
+///
+/// load / save / save-as を **1 本に統一**して相互排他にすることで、
+/// 旧同期 API のモーダル性（同時に 1 つしかダイアログが開けない）を復元する。
+/// これがないと、ダイアログ表示中に別種ダイアログを起動でき、完了順に
+/// `StrategyBuffer` / `ScenarioReadTarget` / cache / ファイルを競合して書き換えうる。
+#[derive(Resource, Default)]
+pub struct PendingFileDialog {
+    pub task: Option<Task<Option<PathBuf>>>,
+    pub kind: Option<FileDialogKind>,
+}
+
+impl PendingFileDialog {
+    /// いずれかのダイアログが表示中か。新規ダイアログ起動の可否判定に使う。
+    pub fn is_active(&self) -> bool {
+        self.task.is_some()
+    }
+
+    /// 新規ダイアログを開始する（呼び出し側で `is_active()` を確認済みの前提）。
+    fn begin(&mut self, kind: FileDialogKind, task: Task<Option<PathBuf>>) {
+        self.task = Some(task);
+        self.kind = Some(kind);
+    }
+
+    /// 指定 kind のダイアログを poll する。
+    /// - `kind` が一致しない（別種が走っている / 何も走っていない）→ `None`
+    /// - 一致して未完了 → `None`
+    /// - 一致して完了 → guard を解放し `Some(結果)`（内側は選択パス or キャンセル時 None）
+    fn poll_take(&mut self, kind: FileDialogKind) -> Option<Option<PathBuf>> {
+        if self.kind != Some(kind) {
+            return None;
+        }
+        let task = self.task.as_mut()?;
+        let result = future::block_on(future::poll_once(task))?;
+        self.task = None;
+        self.kind = None;
+        Some(result)
+    }
 }
 
 #[derive(Event, Debug, Clone)]
@@ -503,6 +554,128 @@ pub fn apply_cache_restore_system(
     }
 }
 
+/// 保存パス確定後の共通処理（build → JSON 保存 → .py 保存 → cache sync）。
+/// 同期 handler / 非同期 poll の両方から呼ぶため副作用のみのフリー関数として抽出。
+/// 戻り値: 保存を中断（呼び出し側で次イベントへ）すべきなら false。
+#[allow(clippy::too_many_arguments, clippy::type_complexity)]
+fn finish_layout_save(
+    json_path: &PathBuf,
+    py_path: &PathBuf,
+    was_new: bool,
+    panels: &Query<
+        (
+            &PanelKind,
+            Option<&StrategyEditorId>,
+            &Transform,
+            &Sprite,
+            &Visibility,
+        ),
+        (With<WindowRoot>, Without<LayoutExcluded>),
+    >,
+    camera: &Query<(&Transform, &OrthographicProjection), (With<Camera2d>, Without<WindowRoot>)>,
+    buffer: &mut StrategyBuffer,
+    fragments_q: &mut Query<(&StrategyEditorId, &mut StrategyFragment), With<WindowRoot>>,
+    strategy_auto_save: &mut StrategyAutoSaveState,
+    registry: &crate::ui::components::InstrumentRegistry,
+    paths: &crate::ui::components::ScenarioWritebackPaths,
+    scenario: &crate::ui::components::ScenarioMetadata,
+    scenario_target: &mut ScenarioReadTarget,
+) -> bool {
+    // 計画書 KC4: 明示 Save の前に cache 側だけ最新化する。
+    // registry.editable == false (instruments_ref) 時はスキップ。flush 失敗しても
+    // Save 自体は継続する（cache が壊れていても原本へは保存できるべき）。
+    // Issue #17 finding #3: 非同期ダイアログでは pre-flush と write の間にフレームが
+    // 挟まり state が drift しうるため、pre-flush は write 直前のここ（finish）で行う。
+    if registry.editable {
+        if let Err(e) = crate::ui::components::flush_sidecars_now(
+            registry.as_slice(),
+            None,
+            paths.cache_sidecar.as_deref(),
+        ) {
+            warn!("Save: pre-flush to cache failed (continuing save): {}", e);
+        }
+    }
+
+    let scenario_json = scenario_target.0.clone();
+    let fallback_json = buffer
+        .original_path
+        .as_ref()
+        .map(|p| p.with_extension("json"));
+    let layout = match build_layout_for_explicit_save(
+        panels,
+        camera,
+        &*buffer,
+        registry,
+        scenario,
+        scenario_json.as_deref(),
+        fallback_json.as_deref(),
+    ) {
+        Some(l) => l,
+        None => {
+            // helper が None を返した = required scenario fields 欠落。Save をスキップ。
+            if was_new {
+                buffer.original_path = None;
+                buffer.cache_path = None;
+                scenario_target.0 = None;
+            }
+            return false;
+        }
+    };
+    match save_layout_to(json_path, &layout) {
+        Ok(()) => {
+            info!("layout saved to {:?}", json_path);
+            scenario_target.0 = Some(json_path.clone());
+        }
+        Err(e) => {
+            error!("layout save failed: {e}");
+            // ロールバック: original_path を None に戻す（初回 save の場合）
+            if was_new {
+                buffer.original_path = None;
+                buffer.cache_path = None;
+                scenario_target.0 = None;
+            }
+            return false;
+        }
+    }
+
+    let mut items: Vec<(String, String)> = fragments_q
+        .iter()
+        .map(|(id, frag)| (id.region_key.clone(), frag.source.clone()))
+        .collect();
+    if !items.is_empty() {
+        items.sort_by(|a, b| a.0.cmp(&b.0));
+        let merged = merge_fragments(&items);
+        match std::fs::write(py_path, &merged) {
+            Ok(()) => {
+                info!("strategy .py saved to {:?}", py_path);
+                match sync_to_cache(py_path) {
+                    Ok(()) => {
+                        for (_, mut frag) in fragments_q.iter_mut() {
+                            frag.dirty = false;
+                        }
+                        strategy_auto_save.dirty = false;
+                        strategy_auto_save.last_change = None;
+                        buffer.cache_path = cache_state_paths().map(|(_, cache_py)| cache_py);
+                    }
+                    Err(e) => {
+                        error!("failed to sync saved strategy to cache: {e}");
+                        buffer.cache_path = None;
+                    }
+                }
+            }
+            Err(e) => {
+                error!("strategy .py save failed: {e}");
+                if was_new {
+                    buffer.original_path = None;
+                    buffer.cache_path = None;
+                    scenario_target.0 = None;
+                }
+            }
+        }
+    }
+    true
+}
+
 #[allow(clippy::type_complexity)]
 pub fn handle_save_layout_system(
     mut events: EventReader<LayoutSaveRequested>,
@@ -524,131 +697,113 @@ pub fn handle_save_layout_system(
     paths: Res<crate::ui::components::ScenarioWritebackPaths>,
     scenario: Res<crate::ui::components::ScenarioMetadata>,
     mut scenario_target: ResMut<ScenarioReadTarget>,
+    mut pending: ResMut<PendingFileDialog>,
 ) {
     for _ in events.read() {
-        // 計画書 KC4: 明示 Save の前に cache 側だけ最新化する。
-        // registry.editable == false (instruments_ref) 時はスキップ。
-        // flush 失敗しても Save 自体は継続する（cache が壊れていても原本へは保存できるべき）。
-        if registry.editable {
-            if let Err(e) = crate::ui::components::flush_sidecars_now(
-                registry.as_slice(),
-                None,
-                paths.cache_sidecar.as_deref(),
-            ) {
-                warn!("Save: pre-flush to cache failed (continuing save): {}", e);
-            }
-        }
-
         let was_new = buffer.original_path.is_none();
 
-        // ダイアログ（初回保存）の場合は先にパスを確定させる
-        let json_path = if let Some(orig) = &buffer.original_path {
-            orig.with_extension("json")
-        } else {
-            match FileDialog::new()
-                .add_filter("Layout JSON", &["json"])
-                .save_file()
-            {
-                Some(p) => p,
-                None => {
-                    info!("layout save cancelled: no path selected");
-                    continue;
-                }
+        // 初回保存（original_path 無し）はファイルダイアログが必要。
+        // macOS deadlock 回避のため AsyncFileDialog をワーカーで回し、
+        // 保存後処理は poll_save_dialog_system に委譲する（Issue #17）。
+        let Some(orig) = &buffer.original_path else {
+            if pending.is_active() {
+                continue; // 多重起動防止: 何らかのダイアログ表示中（モーダル相当）
             }
+            let task = AsyncComputeTaskPool::get().spawn(async move {
+                rfd::AsyncFileDialog::new()
+                    .add_filter("Layout JSON", &["json"])
+                    .save_file()
+                    .await
+                    .map(|h| h.path().to_path_buf())
+            });
+            pending.begin(FileDialogKind::Save, task);
+            continue;
         };
 
+        // 既存パスあり = ダイアログ不要の同期保存。
+        // pre-flush は finish_layout_save の冒頭（write 直前）で行う（Issue #17 finding #3）。
+        let json_path = orig.with_extension("json");
         let py_path = json_path.with_extension("py");
 
-        // Fix(High): build_layout の前に original_path を新パスへ更新しておく。
-        // これで JSON の strategy_path フィールドが正しい .py を指す。
-        if was_new {
-            buffer.original_path = Some(py_path.clone());
-            buffer.cache_path = cache_state_paths().map(|(_, cache_py)| cache_py);
-        }
-
-        let scenario_json = scenario_target.0.clone();
-        let fallback_json = buffer
-            .original_path
-            .as_ref()
-            .map(|p| p.with_extension("json"));
-        let layout = match build_layout_for_explicit_save(
+        if !finish_layout_save(
+            &json_path,
+            &py_path,
+            was_new,
             &panels,
             &camera,
-            &*buffer,
+            &mut buffer,
+            &mut fragments_q,
+            &mut strategy_auto_save,
             &registry,
+            &paths,
             &scenario,
-            scenario_json.as_deref(),
-            fallback_json.as_deref(),
+            &mut scenario_target,
         ) {
-            Some(l) => l,
-            None => {
-                // helper が None を返した = required scenario fields 欠落。Save をスキップ。
-                if was_new {
-                    buffer.original_path = None;
-                    buffer.cache_path = None;
-                    scenario_target.0 = None;
-                }
-                continue;
-            }
-        };
-        match save_layout_to(&json_path, &layout) {
-            Ok(()) => {
-                info!("layout saved to {:?}", json_path);
-                scenario_target.0 = Some(json_path.clone());
-            }
-            Err(e) => {
-                error!("layout save failed: {e}");
-                // ロールバック: original_path を None に戻す（初回 save の場合）
-                if was_new {
-                    buffer.original_path = None;
-                    buffer.cache_path = None;
-                    scenario_target.0 = None;
-                }
-                continue;
-            }
-        }
-
-        let mut items: Vec<(String, String)> = fragments_q
-            .iter()
-            .map(|(id, frag)| (id.region_key.clone(), frag.source.clone()))
-            .collect();
-        if !items.is_empty() {
-            items.sort_by(|a, b| a.0.cmp(&b.0));
-            let merged = merge_fragments(&items);
-            match std::fs::write(&py_path, &merged) {
-                Ok(()) => {
-                    info!("strategy .py saved to {:?}", py_path);
-                    match sync_to_cache(&py_path) {
-                        Ok(()) => {
-                            for (_, mut frag) in fragments_q.iter_mut() {
-                                frag.dirty = false;
-                            }
-                            strategy_auto_save.dirty = false;
-                            strategy_auto_save.last_change = None;
-                            buffer.cache_path = cache_state_paths().map(|(_, cache_py)| cache_py);
-                        }
-                        Err(e) => {
-                            error!("failed to sync saved strategy to cache: {e}");
-                            buffer.cache_path = None;
-                        }
-                    }
-                }
-                Err(e) => {
-                    error!("strategy .py save failed: {e}");
-                    if was_new {
-                        buffer.original_path = None;
-                        buffer.cache_path = None;
-                        scenario_target.0 = None;
-                    }
-                }
-            }
+            continue;
         }
     }
 }
 
-#[allow(clippy::type_complexity)]
 fn handle_save_as_layout_system(
     mut events: EventReader<LayoutSaveAsRequested>,
+    mut pending: ResMut<PendingFileDialog>,
+) {
+    for _ in events.read() {
+        if pending.is_active() {
+            continue; // 多重起動防止: 何らかのダイアログ表示中（モーダル相当）
+        }
+        // pre-flush は poll_save_as_dialog_system の write 直前で行う（Issue #17 finding #3）。
+        let task = AsyncComputeTaskPool::get().spawn(async move {
+            rfd::AsyncFileDialog::new()
+                .add_filter("Layout JSON", &["json"])
+                .save_file()
+                .await
+                .map(|h| h.path().to_path_buf())
+        });
+        pending.begin(FileDialogKind::SaveAs, task);
+    }
+}
+
+fn handle_load_dialog_system(
+    mut events: EventReader<LayoutLoadDialogRequested>,
+    mut pending: ResMut<PendingFileDialog>,
+) {
+    for _ in events.read() {
+        if pending.is_active() {
+            continue; // 多重起動防止: 何らかのダイアログ表示中（モーダル相当）
+        }
+        let task = AsyncComputeTaskPool::get().spawn(async move {
+            rfd::AsyncFileDialog::new()
+                .add_filter("Layout JSON", &["json"])
+                .pick_file()
+                .await
+                .map(|h| h.path().to_path_buf())
+        });
+        pending.begin(FileDialogKind::Load, task);
+    }
+}
+
+fn poll_load_dialog_system(
+    mut pending: ResMut<PendingFileDialog>,
+    mut writer: EventWriter<LayoutLoadRequested>,
+) {
+    let Some(result) = pending.poll_take(FileDialogKind::Load) else {
+        return; // 別種 / 未完了
+    };
+    match result {
+        Some(path) => {
+            writer.send(LayoutLoadRequested {
+                path,
+                mode: LayoutLoadMode::UserJsonOpen,
+            });
+        }
+        None => info!("layout load cancelled: no file selected"),
+    }
+}
+
+#[allow(clippy::type_complexity)]
+fn poll_save_as_dialog_system(
+    mut pending: ResMut<PendingFileDialog>,
     panels: Query<
         (
             &PanelKind,
@@ -669,132 +824,169 @@ fn handle_save_as_layout_system(
     mut writeback: ResMut<crate::ui::components::ScenarioInstrumentsWritebackState>,
     mut scenario_target: ResMut<crate::ui::components::ScenarioReadTarget>,
 ) {
-    for _ in events.read() {
-        // 計画書 KC4: 明示 Save As の前に cache 側だけ最新化する。
-        // registry.editable == false (instruments_ref) 時はスキップ。
-        // flush 失敗しても Save As 自体は継続する。
-        if registry.editable {
-            if let Err(e) = crate::ui::components::flush_sidecars_now(
-                registry.as_slice(),
-                None,
-                paths.cache_sidecar.as_deref(),
-            ) {
-                warn!(
-                    "Save As: pre-flush to cache failed (continuing save): {}",
-                    e
-                );
-            }
+    let Some(result) = pending.poll_take(FileDialogKind::SaveAs) else {
+        return; // 別種 / 未完了
+    };
+    let json_path = match result {
+        Some(p) => p,
+        None => {
+            info!("layout save-as cancelled: no path selected");
+            return;
         }
+    };
 
-        let json_path = match FileDialog::new()
-            .add_filter("Layout JSON", &["json"])
-            .save_file()
-        {
-            Some(p) => p,
-            None => {
-                info!("layout save-as cancelled: no path selected");
-                continue;
-            }
-        };
-
-        let py_path = json_path.with_extension("py");
-
-        // Fix(High): buffer を先に新パスへ更新 → build_layout の strategy_path が正しくなる
-        let old_original = buffer.original_path.clone();
-        let old_cache = buffer.cache_path.clone();
-        let old_scenario_target = scenario_target.0.clone();
-        buffer.original_path = Some(py_path.clone());
-        buffer.cache_path = cache_state_paths().map(|(_, cache_py)| cache_py);
-
-        // preserve_scenario_from: 現在 open 中の scenario_target を第一候補、
-        // 無ければ Save As 限定で old_original_path.with_extension("json") に fallback。
-        let scenario_json = old_scenario_target.clone();
-        let old_original_json = old_original.as_ref().map(|p| p.with_extension("json"));
-        let layout = match build_layout_for_explicit_save(
-            &panels,
-            &camera,
-            &*buffer,
-            &registry,
-            &scenario,
-            scenario_json.as_deref(),
-            old_original_json.as_deref(),
+    // pre-flush（write 直前に cache を最新化、Issue #17 finding #3）。
+    // registry.editable == false 時はスキップ。flush 失敗しても Save As 自体は継続。
+    if registry.editable {
+        if let Err(e) = crate::ui::components::flush_sidecars_now(
+            registry.as_slice(),
+            None,
+            paths.cache_sidecar.as_deref(),
         ) {
-            Some(l) => l,
-            None => {
-                // required scenario fields 欠落 → Save As skip + buffer ロールバック
-                buffer.original_path = old_original;
-                buffer.cache_path = old_cache;
-                continue;
-            }
-        };
-        match save_layout_to(&json_path, &layout) {
-            Ok(()) => {
-                info!("layout saved-as to {:?}", json_path);
-                scenario_target.0 = Some(json_path.clone());
-            }
-            Err(e) => {
-                error!("layout save-as failed: {e}");
-                // ロールバック
-                buffer.original_path = old_original;
-                buffer.cache_path = old_cache;
-                continue;
-            }
+            warn!("Save As: pre-flush to cache failed (continuing save): {}", e);
         }
+    }
 
-        let mut items: Vec<(String, String)> = fragments_q
-            .iter()
-            .map(|(id, frag)| (id.region_key.clone(), frag.source.clone()))
-            .collect();
-        if !items.is_empty() {
-            items.sort_by(|a, b| a.0.cmp(&b.0));
-            let merged = merge_fragments(&items);
-            match std::fs::write(&py_path, &merged) {
-                Ok(()) => {
-                    info!("strategy .py saved-as to {:?}", py_path);
-                    match sync_to_cache(&py_path) {
-                        Ok(()) => {
-                            crate::ui::components::bump_writeback_for_save_as(&mut writeback);
-                            for (_, mut frag) in fragments_q.iter_mut() {
-                                frag.dirty = false;
-                            }
-                            strategy_auto_save.dirty = false;
-                            strategy_auto_save.last_change = None;
-                            buffer.cache_path = cache_state_paths().map(|(_, cache_py)| cache_py);
+    let py_path = json_path.with_extension("py");
+
+    // Fix(High): buffer を先に新パスへ更新 → build_layout の strategy_path が正しくなる
+    let old_original = buffer.original_path.clone();
+    let old_cache = buffer.cache_path.clone();
+    let old_scenario_target = scenario_target.0.clone();
+    buffer.original_path = Some(py_path.clone());
+    buffer.cache_path = cache_state_paths().map(|(_, cache_py)| cache_py);
+
+    // preserve_scenario_from: 現在 open 中の scenario_target を第一候補、
+    // 無ければ Save As 限定で old_original_path.with_extension("json") に fallback。
+    let scenario_json = old_scenario_target.clone();
+    let old_original_json = old_original.as_ref().map(|p| p.with_extension("json"));
+    let layout = match build_layout_for_explicit_save(
+        &panels,
+        &camera,
+        &*buffer,
+        &registry,
+        &scenario,
+        scenario_json.as_deref(),
+        old_original_json.as_deref(),
+    ) {
+        Some(l) => l,
+        None => {
+            // required scenario fields 欠落 → Save As skip + buffer ロールバック
+            buffer.original_path = old_original;
+            buffer.cache_path = old_cache;
+            return;
+        }
+    };
+    match save_layout_to(&json_path, &layout) {
+        Ok(()) => {
+            info!("layout saved-as to {:?}", json_path);
+            scenario_target.0 = Some(json_path.clone());
+        }
+        Err(e) => {
+            error!("layout save-as failed: {e}");
+            // ロールバック
+            buffer.original_path = old_original;
+            buffer.cache_path = old_cache;
+            return;
+        }
+    }
+
+    let mut items: Vec<(String, String)> = fragments_q
+        .iter()
+        .map(|(id, frag)| (id.region_key.clone(), frag.source.clone()))
+        .collect();
+    if !items.is_empty() {
+        items.sort_by(|a, b| a.0.cmp(&b.0));
+        let merged = merge_fragments(&items);
+        match std::fs::write(&py_path, &merged) {
+            Ok(()) => {
+                info!("strategy .py saved-as to {:?}", py_path);
+                match sync_to_cache(&py_path) {
+                    Ok(()) => {
+                        crate::ui::components::bump_writeback_for_save_as(&mut writeback);
+                        for (_, mut frag) in fragments_q.iter_mut() {
+                            frag.dirty = false;
                         }
-                        Err(e) => {
-                            error!("failed to sync saved-as strategy to cache: {e}");
-                            buffer.cache_path = None;
-                        }
+                        strategy_auto_save.dirty = false;
+                        strategy_auto_save.last_change = None;
+                        buffer.cache_path = cache_state_paths().map(|(_, cache_py)| cache_py);
+                    }
+                    Err(e) => {
+                        error!("failed to sync saved-as strategy to cache: {e}");
+                        buffer.cache_path = None;
                     }
                 }
-                Err(e) => {
-                    // Fix(Medium): .py 保存失敗時は buffer を元に戻す
-                    error!("strategy .py save-as failed: {e}");
-                    buffer.original_path = old_original;
-                    buffer.cache_path = old_cache;
-                    scenario_target.0 = old_scenario_target.clone();
-                }
+            }
+            Err(e) => {
+                // Fix(Medium): .py 保存失敗時は buffer を元に戻す
+                error!("strategy .py save-as failed: {e}");
+                buffer.original_path = old_original;
+                buffer.cache_path = old_cache;
+                scenario_target.0 = old_scenario_target.clone();
             }
         }
     }
 }
 
-fn handle_load_dialog_system(
-    mut events: EventReader<LayoutLoadDialogRequested>,
-    mut writer: EventWriter<LayoutLoadRequested>,
+/// save（初回保存）ダイアログの非同期 poll（Issue #17）。
+/// None 経路は必ず初回保存なので was_new = true 固定で finish_layout_save に委譲する。
+#[allow(clippy::type_complexity)]
+fn poll_save_dialog_system(
+    mut pending: ResMut<PendingFileDialog>,
+    panels: Query<
+        (
+            &PanelKind,
+            Option<&StrategyEditorId>,
+            &Transform,
+            &Sprite,
+            &Visibility,
+        ),
+        (With<WindowRoot>, Without<LayoutExcluded>),
+    >,
+    camera: Query<(&Transform, &OrthographicProjection), (With<Camera2d>, Without<WindowRoot>)>,
+    mut buffer: ResMut<StrategyBuffer>,
+    mut fragments_q: Query<(&StrategyEditorId, &mut StrategyFragment), With<WindowRoot>>,
+    mut strategy_auto_save: ResMut<StrategyAutoSaveState>,
+    registry: Res<crate::ui::components::InstrumentRegistry>,
+    paths: Res<crate::ui::components::ScenarioWritebackPaths>,
+    scenario: Res<crate::ui::components::ScenarioMetadata>,
+    mut scenario_target: ResMut<ScenarioReadTarget>,
 ) {
-    for _ in events.read() {
-        if let Some(path) = FileDialog::new()
-            .add_filter("Layout JSON", &["json"])
-            .pick_file()
-        {
-            writer.send(LayoutLoadRequested {
-                path,
-                mode: LayoutLoadMode::UserJsonOpen,
-            });
-        } else {
-            info!("layout load cancelled: no file selected");
+    let Some(result) = pending.poll_take(FileDialogKind::Save) else {
+        return; // 別種 / 未完了
+    };
+    let json_path = match result {
+        Some(p) => p,
+        None => {
+            info!("layout save cancelled: no path selected");
+            return;
         }
+    };
+
+    let py_path = json_path.with_extension("py");
+
+    // Save ダイアログはユーザーがパスを明示選択した結果。常にこのパスへ保存する。
+    // 単一モーダル guard（PendingFileDialog）によりダイアログ表示中は他のダイアログを
+    // 起動できないため、original_path は None のまま完了する（was_new = true は有効）。
+    // build_layout の前に original_path を新パスへ更新する。
+    buffer.original_path = Some(py_path.clone());
+    buffer.cache_path = cache_state_paths().map(|(_, cache_py)| cache_py);
+
+    if !finish_layout_save(
+        &json_path,
+        &py_path,
+        true,
+        &panels,
+        &camera,
+        &mut buffer,
+        &mut fragments_q,
+        &mut strategy_auto_save,
+        &registry,
+        &paths,
+        &scenario,
+        &mut scenario_target,
+    ) {
+        return;
     }
 }
 
@@ -1325,6 +1517,7 @@ pub struct LayoutPersistencePlugin;
 impl Plugin for LayoutPersistencePlugin {
     fn build(&self, app: &mut App) {
         app.init_resource::<PendingLayoutApply>()
+            .init_resource::<PendingFileDialog>()
             .init_resource::<AutoSaveState>()
             .add_event::<LayoutSaveRequested>()
             .add_event::<LayoutSaveAsRequested>()
@@ -1336,7 +1529,10 @@ impl Plugin for LayoutPersistencePlugin {
                 (
                     handle_save_layout_system,
                     handle_save_as_layout_system,
+                    poll_save_as_dialog_system,
+                    poll_save_dialog_system,
                     handle_load_dialog_system,
+                    poll_load_dialog_system,
                     // デバウンス自動保存
                     debounced_autosave_system,
                     apply_cache_restore_system,
@@ -2240,6 +2436,7 @@ mod tests {
             OrthographicProjection::default_2d(),
         ));
 
+        app.init_resource::<PendingFileDialog>();
         app.add_systems(Update, handle_save_layout_system);
         app.world_mut().send_event(LayoutSaveRequested);
         app.update();
@@ -2331,6 +2528,7 @@ mod tests {
             LayoutExcluded,
         ));
 
+        app.init_resource::<PendingFileDialog>();
         app.add_systems(Update, (handle_save_layout_system, apply_layout_system));
 
         // --- Save ---
@@ -2413,6 +2611,7 @@ mod tests {
             OrthographicProjection::default_2d(),
         ));
 
+        app.init_resource::<PendingFileDialog>();
         app.add_systems(Update, handle_save_layout_system);
         app.world_mut().send_event(LayoutSaveRequested);
         app.update();
@@ -2464,6 +2663,7 @@ mod tests {
             OrthographicProjection::default_2d(),
         ));
 
+        app.init_resource::<PendingFileDialog>();
         app.add_systems(Update, handle_save_layout_system);
         app.world_mut().send_event(LayoutSaveRequested);
         app.update();
@@ -2534,6 +2734,7 @@ mod tests {
             OrthographicProjection::default_2d(),
         ));
 
+        app.init_resource::<PendingFileDialog>();
         app.add_systems(Update, handle_save_layout_system);
         app.world_mut().send_event(LayoutSaveRequested);
         app.update();
@@ -2593,6 +2794,7 @@ mod tests {
             OrthographicProjection::default_2d(),
         ));
 
+        app.init_resource::<PendingFileDialog>();
         app.add_systems(Update, handle_save_layout_system);
         app.world_mut().send_event(LayoutSaveRequested);
         app.update();
@@ -2663,6 +2865,7 @@ mod tests {
             OrthographicProjection::default_2d(),
         ));
 
+        app.init_resource::<PendingFileDialog>();
         app.add_systems(Update, handle_save_layout_system);
         app.world_mut().send_event(LayoutSaveRequested);
         app.update();

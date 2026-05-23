@@ -412,6 +412,29 @@ egui の中で `state.buffer` のような大きい String を編集するとき
   `tokio::sync::mpsc::UnboundedSender` でメッセージを送り、Bevy 側の system
   （`status_update_system` 参照）で `try_recv` → `ResMut` に反映する。
   `main.rs:80-127` がテンプレート。
+- **macOS だけアプリ全体がフリーズ（ファイルダイアログ等の blocking native API を Update system で呼んでいる）**:
+  `add_systems(Update, ...)` の system は **NonSend 引数が無ければ全 Send 扱い**で、Bevy 0.15 の
+  multi-threaded executor が**ワーカースレッドで実行し得る**。`rfd::FileDialog::pick_file()/save_file()`
+  のような **同期 blocking native API** はワーカーから呼ぶと macOS で NSOpenPanel をメインキューへ
+  `dispatch_sync` し、メインスレッドは executor 内でその system 完了を待ってブロック → **デッドロック**
+  （ダイアログ未表示・無クラッシュの完全フリーズ。Windows/Linux では出ない。Issue #17）。
+  **対策**: `NonSend` でメイン強制実行は描画も止まるので不採用。代わりに **非ブロッキング化**する:
+  ```rust
+  // 起動 system: ワーカーで future を spawn し Resource に保持
+  let task = bevy::tasks::AsyncComputeTaskPool::get()
+      .spawn(async move { rfd::AsyncFileDialog::new().save_file().await.map(|h| h.path().to_path_buf()) });
+  pending.task = Some(task);
+  // poll system: 毎フレーム poll_once（完了したら結果を取り出す）
+  use bevy::tasks::futures_lite::future;
+  if let Some(result) = future::block_on(future::poll_once(pending.task.as_mut()?)) { pending.task = None; /* use result */ }
+  ```
+  rfd が内部でメインスレッドへ正しく dispatch し（パネルは winit run loop が駆動）、メインを
+  ブロックしないのでデッドロックしない。⚠️ **async 化でダイアログは非モーダルになる**: 同期 API は
+  事実上モーダル（開いている間アプリが止まる）だったので、複数ダイアログの同時起動や、ダイアログ
+  表示中の state drift を防ぐ guard を自前で持つこと（**単一の `Pending{...}` Resource + `is_active()`
+  チェックで全ダイアログを相互排他**にしてモーダル性を復元する／pre-flush 等の「ダイアログ直前→直後」で
+  原子的だった処理は poll 完了側（write 直前）に寄せる）。`src/ui/layout_persistence.rs` の
+  `PendingFileDialog` / `poll_*_dialog_system` が実装例。
 - **マウスホイール / ドラッグが「カメラ操作」と「パネル操作」の両方に効く**:
   `bevy_pancam` の `do_camera_zoom` / `do_camera_movement` と、`bevy_cosmic_edit` の
   `input_mouse` 等は **同じ `MouseWheel` / マウスイベントを別 system が独立に読む**。
