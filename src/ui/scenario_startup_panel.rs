@@ -5,7 +5,7 @@ use bevy_cosmic_edit::{
     CosmicBackgroundColor, CosmicRenderScale, CosmicTextAlign, CosmicWrap, CursorColor, ReadOnly,
     ScrollEnabled,
 };
-use chrono::NaiveDate;
+use chrono::{Months, NaiveDate};
 
 use crate::replay::startup_progress::ReplayStartupProgress;
 use crate::ui::render_scale::RenderScaleResponsive;
@@ -67,6 +67,19 @@ impl GranularityChoice {
 /// in-memory `ScenarioMetadata` from disk.
 fn is_panel_disabled(progress: &ReplayStartupProgress, paths: &ScenarioWritebackPaths) -> bool {
     progress.visible || paths.cache_sidecar.is_none()
+}
+
+/// #20: sidecar に値が無い初回のデフォルト日付レンジを返す純関数。
+/// `(Start = today − 3 ヶ月, End = today)` を `DATE_FMT`(%Y-%m-%d) で文字列化する。
+/// 月末跨ぎは `checked_sub_months` 仕様で対象月の末日へクランプされる。
+fn default_date_range(today: NaiveDate) -> (String, String) {
+    let start = today
+        .checked_sub_months(Months::new(3))
+        .unwrap_or(today);
+    (
+        start.format(DATE_FMT).to_string(),
+        today.format(DATE_FMT).to_string(),
+    )
 }
 
 /// Validate one of the date input fields. `field_name` is used to build a
@@ -404,8 +417,10 @@ pub fn sync_startup_params_from_scenario_system(
         return;
     }
 
-    params.start = metadata.start.clone().unwrap_or_default();
-    params.end = metadata.end.clone().unwrap_or_default();
+    let today = chrono::Local::now().date_naive();
+    let (default_start, default_end) = default_date_range(today);
+    params.start = metadata.start.clone().unwrap_or(default_start);
+    params.end = metadata.end.clone().unwrap_or(default_end);
 
     match metadata.granularity.as_deref() {
         Some(s) => match GranularityChoice::parse_canonical(s) {
@@ -429,7 +444,7 @@ pub fn sync_startup_params_from_scenario_system(
 
     params.initial_cash = match metadata.initial_cash {
         Some(n) => n.to_string(),
-        None => String::new(),
+        None => "1000000".to_string(),
     };
 }
 
@@ -478,6 +493,9 @@ pub fn commit_startup_params_to_scenario_system(
                 params.errors.granularity = None;
                 metadata.granularity = Some(g.as_canonical_str().to_string());
                 any_committed = true;
+            }
+            ScenarioStartupParamCommit::InitialCash(s) if s.is_empty() => {
+                params.errors.initial_cash = Some("initial cash must not be empty".into());
             }
             ScenarioStartupParamCommit::InitialCash(s) => match s.parse::<i64>() {
                 Err(_) => {
@@ -598,17 +616,22 @@ pub fn scenario_startup_param_input_system(
         let Ok(editor) = editors_q.get(*entity) else {
             continue;
         };
+        // #19: strip surrounding whitespace before commit. NaiveDate / i64
+        // parsers reject leading/trailing spaces, so "  2024-01-01  " would
+        // otherwise fail validation; whitespace-only input collapses to "" and
+        // hits the existing "must not be empty" error.
+        let trimmed = new_text.trim();
         match editor.field {
             ScenarioStartupField::Start => {
-                commit_w.send(ScenarioStartupParamCommit::Start(new_text.clone()));
+                commit_w.send(ScenarioStartupParamCommit::Start(trimmed.to_string()));
                 params.dirty = true;
             }
             ScenarioStartupField::End => {
-                commit_w.send(ScenarioStartupParamCommit::End(new_text.clone()));
+                commit_w.send(ScenarioStartupParamCommit::End(trimmed.to_string()));
                 params.dirty = true;
             }
             ScenarioStartupField::InitialCash => {
-                commit_w.send(ScenarioStartupParamCommit::InitialCash(new_text.clone()));
+                commit_w.send(ScenarioStartupParamCommit::InitialCash(trimmed.to_string()));
                 params.dirty = true;
             }
             ScenarioStartupField::Granularity | ScenarioStartupField::CrossField => {}
@@ -1002,6 +1025,77 @@ mod tests {
         );
     }
 
+    /// #20: sidecar (metadata) の各項目が None の初回は、Start = 3ヶ月前 /
+    /// End = 今日 / initial_cash = "1000000" をデフォルトで params に入れる。
+    /// granularity は対象外。sidecar に値があれば従来どおりその値を優先する
+    /// （ここでは None ケースだけを検証する）。
+    #[test]
+    fn test_20_sync_fills_defaults_when_metadata_none() {
+        let mut app = make_app();
+        // metadata はすべて None のまま（init_resource の既定）。
+        // ただし sync は `metadata.is_changed()` のときだけ走るため、
+        // 何らかの mutate で change tick を立てる必要がある。
+        // 値は None のまま、granularity に None を再代入して is_changed を発火させる。
+        {
+            let mut meta = app.world_mut().resource_mut::<ScenarioMetadata>();
+            meta.granularity = None;
+        }
+        app.update();
+
+        // 期待値はテストと同じ「今日」から default_date_range で算出して比較
+        // （実行日依存を避けるための安定化）。
+        let (exp_start, exp_end) = default_date_range(chrono::Local::now().date_naive());
+
+        let params = app.world().resource::<ScenarioStartupParams>();
+        assert_eq!(
+            params.start, exp_start,
+            "first-run start must default to 3 months before today"
+        );
+        assert_eq!(
+            params.end, exp_end,
+            "first-run end must default to today"
+        );
+        assert_eq!(
+            params.initial_cash, "1000000",
+            "first-run initial_cash must default to 1000000"
+        );
+    }
+
+    /// #20 受け入れ条件: sidecar 無し初回のデフォルト値が投入された状態で、
+    /// granularity を選択すれば errors.any() == false となり Run が有効化される
+    /// こと。sync 直後は granularity 未選択で errors.granularity が立つため、
+    /// Granularity commit を 1 つ送って解消する経路までを検証する。
+    #[test]
+    fn test_20_defaults_enable_run_after_granularity_selected() {
+        let mut app = make_app();
+        // metadata 全 None。is_changed を立てるため granularity に None を再代入。
+        {
+            let mut meta = app.world_mut().resource_mut::<ScenarioMetadata>();
+            meta.granularity = None;
+        }
+        app.update();
+
+        // sync 直後: デフォルト日付/cash は入るが granularity 未選択でエラーが残る。
+        {
+            let params = app.world().resource::<ScenarioStartupParams>();
+            assert!(
+                params.errors.granularity.is_some(),
+                "precondition: granularity unselected error must block Run before selection"
+            );
+        }
+
+        // granularity を選択（commit）すると errors が解消し Run 有効化。
+        app.world_mut()
+            .send_event(ScenarioStartupParamCommit::Granularity(GranularityChoice::Daily));
+        app.update();
+
+        let params = app.world().resource::<ScenarioStartupParams>();
+        assert!(
+            !params.errors.any(),
+            "with default dates/cash + a selected granularity, no error must remain (Run enabled)"
+        );
+    }
+
     #[test]
     fn test_11_validation_failure() {
         let mut app = make_app();
@@ -1179,6 +1273,189 @@ mod tests {
             "writeback_pending must stay false"
         );
         assert!(params.errors.start.is_none(), "errors must stay untouched");
+    }
+
+    /// #19: the STARTUP input pipeline must strip whitespace before commit.
+    /// Typing "  2024-01-01  " (with surrounding spaces) into the Start field
+    /// must commit the trimmed "2024-01-01" — `NaiveDate::parse_from_str`
+    /// rejects surrounding spaces, so without stripping this would error out.
+    #[test]
+    fn test_19_input_strips_whitespace_before_commit() {
+        let mut app = make_app();
+        app.add_event::<CosmicTextChanged>().add_systems(
+            Update,
+            (
+                scenario_startup_param_input_system,
+                commit_startup_params_to_scenario_system,
+            )
+                .chain(),
+        );
+
+        let editor = app
+            .world_mut()
+            .spawn(ScenarioStartupFieldEditor {
+                field: ScenarioStartupField::Start,
+            })
+            .id();
+
+        app.world_mut()
+            .send_event(CosmicTextChanged((editor, "  2024-01-01  ".into())));
+        app.update();
+
+        let params = app.world().resource::<ScenarioStartupParams>();
+        assert_eq!(
+            params.start, "2024-01-01",
+            "surrounding whitespace must be stripped before commit/validation"
+        );
+        assert!(
+            params.errors.start.is_none(),
+            "trimmed valid date must pass validation"
+        );
+    }
+
+    /// #19: the whitespace-strip pipeline must also cover the InitialCash field.
+    /// InitialCash commits through the `i64::parse` path (separate from the date
+    /// fields), and `"  1000  ".parse::<i64>()` is an Err without stripping — so
+    /// "Start で検証済み＝全フィールド OK" does not hold. Typing "  1000  " must
+    /// commit the trimmed "1000" and leave no error.
+    #[test]
+    fn test_19_initial_cash_input_strips_whitespace_before_commit() {
+        let mut app = make_app();
+        app.add_event::<CosmicTextChanged>().add_systems(
+            Update,
+            (
+                scenario_startup_param_input_system,
+                commit_startup_params_to_scenario_system,
+            )
+                .chain(),
+        );
+
+        let editor = app
+            .world_mut()
+            .spawn(ScenarioStartupFieldEditor {
+                field: ScenarioStartupField::InitialCash,
+            })
+            .id();
+
+        app.world_mut()
+            .send_event(CosmicTextChanged((editor, "  1000  ".into())));
+        app.update();
+
+        let params = app.world().resource::<ScenarioStartupParams>();
+        assert_eq!(
+            params.initial_cash, "1000",
+            "surrounding whitespace must be stripped before the i64 parse/commit"
+        );
+        assert!(
+            params.errors.initial_cash.is_none(),
+            "trimmed valid integer must pass validation"
+        );
+    }
+
+    /// #19 受け入れ条件: 空白のみの入力は trim 後に空文字へ潰れ、既存の
+    /// "must not be empty" バリデーションに当たること。Start フィールドへ
+    /// "   " を入力 → commit は "" → `validate_date_field("start", "")` が
+    /// Err を返し、metadata は変更されず writeback も走らない。
+    #[test]
+    fn test_19_whitespace_only_input_collapses_to_empty_error() {
+        let mut app = make_app();
+        app.add_event::<CosmicTextChanged>().add_systems(
+            Update,
+            (
+                scenario_startup_param_input_system,
+                commit_startup_params_to_scenario_system,
+            )
+                .chain(),
+        );
+
+        let editor = app
+            .world_mut()
+            .spawn(ScenarioStartupFieldEditor {
+                field: ScenarioStartupField::Start,
+            })
+            .id();
+
+        app.world_mut()
+            .send_event(CosmicTextChanged((editor, "   ".into())));
+        app.update();
+
+        let params = app.world().resource::<ScenarioStartupParams>();
+        let meta = app.world().resource::<ScenarioMetadata>();
+        assert_eq!(
+            params.errors.start.as_deref(),
+            Some("start must not be empty"),
+            "whitespace-only input must collapse to empty and hit the must-not-be-empty error"
+        );
+        assert!(meta.start.is_none(), "metadata must not be mutated on empty input");
+        assert!(
+            !params.writeback_pending,
+            "invalid (empty) input must not schedule a writeback"
+        );
+    }
+
+    /// #20 review (Medium) 受け入れ条件: 空白のみの InitialCash 入力は trim 後に
+    /// 空文字へ潰れ、`s.parse::<i64>()` の "invalid integer" ではなく
+    /// "initial cash must not be empty" バリデーションに当たること。
+    /// metadata は変更されず writeback も走らない。
+    #[test]
+    fn test_19_initial_cash_whitespace_only_collapses_to_empty_error() {
+        let mut app = make_app();
+        app.add_event::<CosmicTextChanged>().add_systems(
+            Update,
+            (
+                scenario_startup_param_input_system,
+                commit_startup_params_to_scenario_system,
+            )
+                .chain(),
+        );
+
+        let editor = app
+            .world_mut()
+            .spawn(ScenarioStartupFieldEditor {
+                field: ScenarioStartupField::InitialCash,
+            })
+            .id();
+
+        app.world_mut()
+            .send_event(CosmicTextChanged((editor, "   ".into())));
+        app.update();
+
+        let params = app.world().resource::<ScenarioStartupParams>();
+        let meta = app.world().resource::<ScenarioMetadata>();
+        assert_eq!(
+            params.errors.initial_cash.as_deref(),
+            Some("initial cash must not be empty"),
+            "whitespace-only initial cash must collapse to empty and hit the must-not-be-empty error, not 'invalid integer'"
+        );
+        assert!(
+            meta.initial_cash.is_none(),
+            "metadata must not be mutated on empty input"
+        );
+        assert!(
+            !params.writeback_pending,
+            "invalid (empty) input must not schedule a writeback"
+        );
+    }
+
+    /// #20: sidecar に値が無い初回のデフォルト日付計算。`default_date_range(today)`
+    /// は (Start=today−3ヶ月, End=today) を `%Y-%m-%d` で返す純関数。月末跨ぎは
+    /// chrono の `checked_sub_months` 仕様どおり対象月の末日へクランプされること。
+    #[test]
+    fn test_20_default_date_range_clamps_month_end() {
+        // 通常ケース: 2024-08-15 − 3ヶ月 = 2024-05-15、End は当日。
+        let (start, end) = default_date_range(NaiveDate::from_ymd_opt(2024, 8, 15).unwrap());
+        assert_eq!(start, "2024-05-15", "start must be exactly 3 months before today");
+        assert_eq!(end, "2024-08-15", "end must be today");
+
+        // 月末跨ぎ: 2024-05-31 − 3ヶ月 = 2024-02 の末日 (閏年なので 02-29) へクランプ。
+        let (start, end) = default_date_range(NaiveDate::from_ymd_opt(2024, 5, 31).unwrap());
+        assert_eq!(start, "2024-02-29", "month-end must clamp to the target month's last valid day");
+        assert_eq!(end, "2024-05-31", "end must be today");
+
+        // 年跨ぎ: 2024-01-31 − 3ヶ月 = 2023-10-31。
+        let (start, end) = default_date_range(NaiveDate::from_ymd_opt(2024, 1, 31).unwrap());
+        assert_eq!(start, "2023-10-31", "subtraction must roll back across the year boundary");
+        assert_eq!(end, "2024-01-31", "end must be today");
     }
 
     /// Cross-field error must clear when one date becomes invalid (otherwise
