@@ -150,6 +150,40 @@ $p = Start-Process -FilePath ".\target\debug\backcast.exe" -WorkingDirectory $PW
 >
 > 検証コマンド（headless smoke）: autospawn の env を前置きして `./target/debug/backcast` を起動 → 1〜2 秒で `lsof -ti tcp:19876` が listen、`backcast_err.txt` に `[backend] Starting gRPC server on port 19876` + `idle gRPC shutdown disabled (BACKEND_SUPERVISED=1)` が出れば供給経路 OK。
 
+### 2.6 Zed `.zed/debug.json` から起動（F5）
+
+⚠️ **開発機が Zed のことがある（`base_keymap: VSCode` でも Zed は VSCode ではない）**。「F5 で起動したら `grpc: DISABLED`」と言われたら、まず **エディタが Zed か VSCode か** を確認する。Zed は VSCode と F5 の挙動が違う:
+
+- Zed は `.vscode/launch.json` を **読む** が、自前の `DebugScenario` に変換して **ピッカーの候補に並べるだけ**。VSCode のように「F5 = launch.json 先頭構成を起動」ではない。**F5 一発だと Zed が Cargo から自動生成した "Debug backcast" シナリオ（env 無し）を掴みがち** → `BACKEND_ENABLED` が渡らず `grpc: DISABLED` になる。これが Zed での典型症状。
+- 変換は `type: "lldb"`→`CodeLLDB`、`env`/`program`/`args`/`cwd` は引き継ぐが **`preLaunchTask` は未対応**（Zed ソース `crates/task/src/vscode_debug_format.rs` 冒頭に `// TODO support preLaunchTask linkage`）。`${workspaceFolder}`→`$ZED_WORKTREE_ROOT` に置換される。
+- **確実な解は `.zed/debug.json` を置く**（Zed ネイティブで一級市民・既存）。autospawn 構成を移植し、`preLaunchTask` の代わりに `build` フィールドで `cargo build` させる:
+
+```json
+[
+  {
+    "label": "backcast: autospawn backend (CodeLLDB)",
+    "adapter": "CodeLLDB",
+    "request": "launch",
+    "program": "$ZED_WORKTREE_ROOT/target/debug/backcast",
+    "args": [],
+    "cwd": "$ZED_WORKTREE_ROOT",
+    "env": {
+      "PATH": "$ZED_WORKTREE_ROOT/.venv/bin:$PATH",
+      "BACKEND_ENABLED": "true",
+      "BACKEND_AUTOSPAWN": "true",
+      "PYTHON_BIN": "$ZED_WORKTREE_ROOT/.venv/bin/python",
+      "BACKEND_TOKEN": "testtoken",
+      "ARTIFACTS_PATH": "$ZED_WORKTREE_ROOT/artifacts",
+      "BEVY_ASSET_ROOT": "$ZED_WORKTREE_ROOT",
+      "RUST_LOG": "info"
+    },
+    "build": { "command": "cargo", "args": ["build"] }
+  }
+]
+```
+
+> F5 → ピッカーで **"backcast: autospawn backend (CodeLLDB)"** を選択。一度選べば以降の F5 は同じシナリオを再実行。`grpc: DISABLED` のままなら Cargo 自動生成シナリオを掴んでいるので選び直す。CodeLLDB アダプタ拡張は Zed が自動取得する。
+
 ---
 
 ## 3. 検証フロー（典型）
@@ -235,7 +269,7 @@ cargo test --test backend_integration
 | 症状 | 原因 | 対処 |
 |---|---|---|
 | ExecutionMode トグルで Manual/Auto に切り替わらない・クリック無反応に見える | `execution_mode_toggle_system` (footer.rs) の既存 guard。`VenueState != Connected` のとき `WARN ExecutionMode→Live blocked: venue not connected (state=Disconnected)` を吐いて切替を拒否する | 立花/kabusapi など venue を接続するか、`apply_execution_mode_visibility_system` 系の挙動だけ確認したいなら `cargo test ui::` で代替（venue 接続なしでは Live モードに遷移できない） |
-| `grpc: DISABLED` のまま | `BACKEND_ENABLED` が GUI プロセスに渡っていない | `ProcessStartInfo.EnvironmentVariables` で明示渡し（§2.3） |
+| `grpc: DISABLED` のまま | `BACKEND_ENABLED` が GUI プロセスに渡っていない | `ProcessStartInfo.EnvironmentVariables` で明示渡し（§2.3）。**Zed の F5 なら §2.6**（launch.json が効かず Cargo 自動シナリオを掴んでいる → `.zed/debug.json`） |
 | 起動直後から `state: RUNNING` | backend 側 `auto_start=True` | `python/engine/__main__.py` を `auto_start=False` |
 | Run ボタン無反応 | `grpc: DISABLED` / dirty buffer（`cached *` 表示） | backend 起動状態確認 + Save Cache を押してから Run |
 | blank Strategy Editor を spawn 後に Run が `state: IDLE` のまま変わらない | `panel_spawn_dispatcher_system` が blank spawn 時に `buffer.original_path = None` を書き込み → `parse_scenario_system` が ScenarioMetadata をリセット → instruments 空になって Run blocked。ログに `Run blocked: SCENARIO has no instruments` が出る | `floating_window.rs` の blank spawn ハンドラで `original_path.is_none() && cache_path.is_none()` 条件チェックが入っているか確認。**Phase 7.x-sasa で修正済み**（2026-05-16） |
