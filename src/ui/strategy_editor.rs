@@ -35,7 +35,7 @@ pub const GUTTER_WIDTH: f32 = 36.0;
 pub const SCROLLBAR_WIDTH: f32 = 8.0;
 /// テキスト編集領域 (Sprite custom_size) の実サイズ。gutter / scrollbar を除いた分。
 pub const EDITOR_TEXT_SIZE: Vec2 = Vec2::new(
-    EDITOR_PANEL_SIZE.x - GUTTER_WIDTH - SCROLLBAR_WIDTH,
+    PANEL_SIZE.x - GUTTER_WIDTH - SCROLLBAR_WIDTH,
     EDITOR_PANEL_SIZE.y,
 );
 const EDITOR_FONT_SIZE: f32 = 14.0;
@@ -247,7 +247,7 @@ pub fn spawn_strategy_editor_panel(
 }
 
 /// content_area 内 (中央 x=0) における [gutter | editor | scrollbar] 群の左端 x。
-const GROUP_LEFT_X: f32 = -EDITOR_PANEL_SIZE.x / 2.0;
+const GROUP_LEFT_X: f32 = -PANEL_SIZE.x / 2.0;
 /// gutter Sprite の中心 x。
 pub const GUTTER_X: f32 = GROUP_LEFT_X + GUTTER_WIDTH / 2.0;
 /// editor Sprite の中心 x (gutter のぶん右にずらす)。
