@@ -480,6 +480,8 @@ fn update_system_processes_event() {
 }
 ```
 
+**⚠️ producer→consumer の system は 1 回の `app.update()` で貫通させるなら `.chain()` で順序固定する。** system A が `EventWriter` で event を送り、system B が `EventReader` で読んでようやく resource に反映する設計のとき、両方を順序指定なしで `add_systems(Update, (a, b))`（や別々の `add_systems`）で登録すると、同一 `Update` 内の実行順は **不定**。B が A より先に走ると、その tick では event がまだ無く、A が送った event は **次の `app.update()` まで読まれない**。テストが `app.update()` を 1 回しか呼ばないと、consumer 側の resource が初期値のままで「実装したのに RED が緑にならない」状態になる（実例: STARTUP の `scenario_startup_param_input_system`→`commit_startup_params_to_scenario_system` で `params.start` が `""` のまま落ち続けた）。対策は `.add_systems(Update, (producer, consumer).chain())`。`app.update()` を 2 回呼ぶ手もあるが、間に挟まる他 system（`metadata.is_changed()` 駆動の sync 等）が 2 tick 目に再走して読みにくいので `.chain()` 推奨。
+
 ### Mocking Time
 
 Bevy's `Time` resource can be advanced manually for deterministic timing tests:
