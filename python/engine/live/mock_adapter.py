@@ -257,15 +257,20 @@ class MockVenueAdapter:
         self,
         *,
         status: str,
+        filled_qty: float | None = None,
+        avg_price: float | None = None,
         reject_reason: str | None = None,
     ) -> None:
         """テスト専用: 次の modify_order の結果を仕込む（one-shot, set_next_*_outcome 流）。
 
         仕込み無しなら modify_order は既定 ACCEPTED。status="REJECTED" 時は
-        reject_reason を載せる。consume 後は None に戻る。
+        reject_reason を載せる。FILLED/PARTIALLY_FILLED 時は filled_qty/avg_price を
+        載せられる（submit 側 set_next_order_outcome と対称）。consume 後は None に戻る。
         """
         self._next_modify_outcome = {
             "status": status,
+            "filled_qty": filled_qty,
+            "avg_price": avg_price,
             "reject_reason": reject_reason,
         }
 
@@ -300,10 +305,12 @@ class MockVenueAdapter:
                 reject_reason=outcome["reject_reason"],
             )
         status = outcome["status"] if outcome is not None else "ACCEPTED"
+        filled_qty = outcome["filled_qty"] if outcome is not None and outcome["filled_qty"] is not None else 0.0
+        avg_price = outcome["avg_price"] if outcome is not None else None
         return OrderResult(
             status=status,
-            filled_qty=0.0,
-            avg_price=None,
+            filled_qty=filled_qty,
+            avg_price=avg_price,
             client_order_id=order_id,
             reject_reason=None,
         )

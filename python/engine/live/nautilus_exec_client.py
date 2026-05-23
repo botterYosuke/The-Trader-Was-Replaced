@@ -57,6 +57,9 @@ log = logging.getLogger(__name__)
 
 # adapter が返す Nautilus OrderStatus 名のうち「約定あり」を表す集合。
 _FILLED_STATUSES = {"FILLED", "PARTIALLY_FILLED"}
+# 終端 status 集合（order_facade._TERMINAL_STATUSES のローカル写し。cross-module 結合を
+# 増やさないため複製。両者は正規 OrderStatus 名の部分集合という不変条件で揃える）。
+_TERMINAL_STATUSES = {"FILLED", "CANCELED", "REJECTED", "EXPIRED", "DENIED"}
 
 
 class NautilusVenueExecClient(LiveExecutionClient):
@@ -246,16 +249,94 @@ class NautilusVenueExecClient(LiveExecutionClient):
         except Exception as exc:  # noqa: BLE001
             log.exception("modify_order adapter call failed")
             return
-        if res.status == "REJECTED":
-            return
         ts = self._clock.timestamp_ns()
+        venue_order_id = command.venue_order_id or self._synth_venue_order_id(
+            command.client_order_id
+        )
+        # Issue #12: modify が終端 status を返したら対応する終端イベントを emit する。
+        # generate_order_updated のままだと CANCELED/EXPIRED でも ACCEPTED 据え置きになり、
+        # 「約定済みのはずが Nautilus 上 live」という危険な乖離になる。
+        if res.status == "CANCELED":
+            self.generate_order_canceled(
+                command.strategy_id,
+                command.instrument_id,
+                command.client_order_id,
+                venue_order_id,
+                ts,
+            )
+            return
+        if res.status == "EXPIRED":
+            self.generate_order_expired(
+                command.strategy_id,
+                command.instrument_id,
+                command.client_order_id,
+                venue_order_id,
+                ts,
+            )
+            return
+        if res.status in _FILLED_STATUSES and res.filled_qty > 0:
+            order = self._cache.order(command.client_order_id)
+            instrument = self._cache.instrument(command.instrument_id)
+            if order is None or instrument is None:
+                # 防御: cache に無ければ filled を合成できない。live 据え置き。
+                log.warning("modify→FILLED but order/instrument missing in cache")
+                return
+            last_px = res.avg_price if res.avg_price else (
+                float(order.price) if order.has_price else 0.0
+            )
+            self.generate_order_filled(
+                command.strategy_id,
+                command.instrument_id,
+                command.client_order_id,
+                venue_order_id,
+                None,  # venue_position_id → NETTING なので engine が解決
+                TradeId(f"{command.client_order_id.value}-1"),
+                order.side,
+                order.order_type,
+                instrument.make_qty(res.filled_qty),
+                instrument.make_price(last_px),
+                instrument.quote_currency,
+                Money(0, instrument.quote_currency),  # commission（venue 手数料は Step 5/6）
+                LiquiditySide.TAKER,
+                self._clock.timestamp_ns(),
+            )
+            return
+        # Issue #12 案A: 拒否系 terminal（REJECTED / DENIED 等）は更新を適用せず、order を
+        # modify 前状態(ACCEPTED)へ戻す。generate_order_modify_rejected は FSM 上 order が
+        # PENDING_UPDATE のとき元状態へ復帰させる（終端化しない）。これで PENDING_UPDATE
+        # 固着も「終端を新価格適用 ACCEPTED で live 据え置き」も解消する。
+        # 注: ここに到達する terminal は上で return 済みの CANCELED/EXPIRED/約定 FILLED を
+        # 除いた REJECTED / DENIED と、約定情報の無い filled_qty==0 の FILLED 系。後者を
+        # modify_rejected 扱いにするのは「約定の無い終端 modify は更新拒否」で安全側に妥当。
+        if res.status in _TERMINAL_STATUSES:
+            self.generate_order_modify_rejected(
+                command.strategy_id,
+                command.instrument_id,
+                command.client_order_id,
+                venue_order_id,
+                res.reject_reason or res.status,
+                ts,
+            )
+            return
+        # Issue #12 付随バグ: price-only modify など command.quantity / command.price が
+        # None のとき、Quantity/Price 型を要求する generate_order_updated に None を渡すと
+        # TypeError で更新イベントが emit されず PENDING_UPDATE に固着する。
+        # cache の現値で据え置き埋めする（FILLED 分岐と同流儀の order None 防御を踏襲）。
+        order = self._cache.order(command.client_order_id)
+        if order is None:
+            log.warning("modify→UPDATED but order missing in cache; cannot fill defaults")
+            return
+        upd_qty = command.quantity if command.quantity is not None else order.quantity
+        upd_price = command.price if command.price is not None else (
+            order.price if order.has_price else None
+        )
         self.generate_order_updated(
             command.strategy_id,
             command.instrument_id,
             command.client_order_id,
-            command.venue_order_id or self._synth_venue_order_id(command.client_order_id),
-            command.quantity,  # None なら数量据え置き（Nautilus 側で許容）
-            command.price,
+            venue_order_id,
+            upd_qty,
+            upd_price,
             None,  # trigger_price
             ts,
         )
