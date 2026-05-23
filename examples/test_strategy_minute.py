@@ -1,3 +1,4 @@
+# region region_001
 """バイアンドホールド戦略サンプル（分足版・動作確認用）。
 
 `buy_and_hold.py` の Minute 足バリエーションです。granularity を ``"Minute"``
@@ -98,3 +99,4 @@ class BuyAndHoldMinuteStrategy(Strategy):
         self.submit_order(order)
         self._bought = True
         self.log.info(f"BUY: {self.lot_size} shares @ {bar.close}")
+# endregion region_001

@@ -292,6 +292,12 @@ import は `tests/e2e_replay.rs` 冒頭の `use backcast::trading::{...}` / `use
 - 追加・変更した flow の `kind` に対応する release gate が green。
   `kind:state` は `cargo test --test e2e_replay`、`kind:ui` / `kind:integration` / `kind:render` は
   flow に記載した command または harness、`kind:manual-gate` は手順・期待結果・実施条件が明記されている。
+- **例外: 既知バグの回帰ガードは「RED で確定」が完了**。ユーザーが「このバグをテストにして」と
+  挙動の **崩れ** を語り、fix を別 issue に委ねるとき（`/to-issues` 併発が典型）、テストは
+  わざと **RED**（バグを再現して fail）させて登録する。このとき完了基準は ①RED が**正しい理由で
+  落ちる**こと（wiring/compile エラーではなく assert で fail。`cargo test --test e2e_replay <id>` の
+  panic メッセージで確認）②他 flow を巻き込まない（`N passed; 1 failed`）③FLOWS.md に「RED＝回帰ガード・
+  fix は #issue 後に green」と明記し ✅ にしない、の 3 点。fix 実装時に green へ反転し FLOWS.md を ✅ に更新する。
 - 観測が「ユーザーが語った挙動」と対応している。resource 遷移、UI entity、command channel、file output、
   screenshot/structured dump のいずれかが、その挙動の十分条件になっている。
 - A8（stale startup_id の相関）/ D7（Live universe が Replay fallback を上書き・prune しない不変条件）の
