@@ -344,6 +344,12 @@ pub enum TransportCommand {
     StopLiveStrategy {
         run_id: String,
     },
+    /// Issue #29 Slice 2' (Step 5): execution mode が Live (LiveManual/LiveAuto) に
+    /// 実遷移した直後に backend へ口座スナップショット再取得を要求する。transport
+    /// task が `token` を注入して `ForceAccountSnapshot` RPC を撃ち、backend が
+    /// `force_resync()` で dedup を貫通して AccountEvent を既存 stream に再 push する。
+    /// これが無いと CONNECTED でも BUYING POWER/POSITIONS が空のまま残る。
+    ForceAccountSnapshot,
 }
 
 /// Wrapper around a Tachibana second password that redacts itself in `Debug`

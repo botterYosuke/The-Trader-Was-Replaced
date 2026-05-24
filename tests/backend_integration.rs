@@ -605,6 +605,21 @@ impl DataEngine for MyDataEngine {
             strategies: vec![],
         }))
     }
+
+    async fn force_account_snapshot(
+        &self,
+        request: Request<backcast::trading::engine::ForceAccountSnapshotRequest>,
+    ) -> Result<Response<backcast::trading::engine::ForceAccountSnapshotResponse>, Status> {
+        if request.into_inner().token != self.token {
+            return Err(Status::unauthenticated("Invalid token"));
+        }
+        Ok(Response::new(
+            backcast::trading::engine::ForceAccountSnapshotResponse {
+                success: true,
+                error_code: String::new(),
+            },
+        ))
+    }
 }
 
 #[tokio::test]

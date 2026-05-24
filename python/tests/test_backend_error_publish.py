@@ -148,3 +148,46 @@ def test_bg_component_start_failure_does_not_raise_when_bus_closed():
     # RuntimeError("BackendEventBus is closed") が伝播し、このテストは raise で fail（RED）。
     # GREEN 後は publish 失敗が握り潰され、何も raise せず返る。
     servicer._start_bg_component_after_login(_FailingComponent(), "account sync")
+
+
+def test_force_account_snapshot_handler_reemits_account_event():
+    """issue #29 Slice 2' Step 4: ForceAccountSnapshot ハンドラが live loop で
+    AccountSync.force_resync() を呼び、dedup を貫通して AccountEvent を backend event
+    stream に再 push することを確認する（BP/Positions refill 経路）。
+
+    RED 時点: GrpcDataEngineServer に ForceAccountSnapshot override が無いため、
+    継承された生成スタブが呼ばれて force_resync は走らず AccountEvent は出ない
+    → sub._queue.get(timeout=2.0) が queue.Empty で fail する。"""
+    servicer = _make_servicer()
+
+    loop = servicer._ensure_live_loop()
+
+    async def setup():
+        adapter = MockVenueAdapter()
+        await adapter.login(
+            VenueCredentials(credentials_source="env", environment_hint="demo")
+        )
+        sync = AccountSync(
+            adapter,
+            on_account_event=servicer._publish_account_snapshot,
+            on_error=servicer._publish_account_sync_error,
+            interval_s=3600.0,  # tick を実質止めて force_resync の 1 発だけを観測する
+        )
+        return adapter, sync
+
+    adapter, sync = asyncio.run_coroutine_threadsafe(setup(), loop).result(timeout=5.0)
+    servicer._account_sync = sync
+
+    # subscribe は force 呼び出しの「直前」に張る（初期 start の emit を拾わないため）。
+    sub = servicer._backend_event_bus.subscribe()
+
+    class _Req:
+        token = "test-token"
+
+    resp = servicer.ForceAccountSnapshot(_Req(), context=None)
+
+    assert resp.success is True
+    assert resp.error_code == ""
+
+    received = sub._queue.get(timeout=2.0)
+    assert received.WhichOneof("payload") == "account_event"

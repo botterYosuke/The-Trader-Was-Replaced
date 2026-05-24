@@ -15,7 +15,7 @@ use crate::backend_supervisor::{BackendLifecycle, BackendLifecycleHandle};
 use crate::replay::{ReplayStartupPhase, ReplayStartupProgress};
 use crate::trading::{
     AccountPosition, AvailableInstruments, BackendEvent, BackendStartupStage, BackendStatus,
-    BackendStatusUpdate, ExecutionModeRes, LastPrices, LastRunResult, LiveOrder, LiveOrders,
+    BackendStatusUpdate, ExecutionMode, ExecutionModeRes, LastPrices, LastRunResult, LiveOrder, LiveOrders,
     LiveRuns, OrderFeedback, PortfolioPosition, PortfolioState, PromoteFeedback, ReconcilePrompt,
     ReloginPrompt, RunState, SafetyToast, SecretPrompt, SecretPromptRequest, StrategyLogs, Tickers,
     ToastKind,
@@ -605,6 +605,37 @@ pub fn backend_restart_resync_system(
     let _ = tx.tx.send(TransportCommand::GetOrders { venue });
 }
 
+/// Issue #29 Slice 2' (Step 5): `status_update_system` が `ExecutionModeRes.mode` を
+/// 更新した後（同一 Update schedule）に Replay/未設定 → Live (LiveManual/LiveAuto) の
+/// 実遷移を検出し、`ForceAccountSnapshot` を 1 回だけ enqueue する。これにより
+/// Live entry の `PortfolioState` reset 直後に BP/Positions が backend 由来で refill
+/// される。race-free: reducer が先に mode を確定させるため observer は最新値を読む。
+/// `Local` で前回 mode を追跡し二重送信を防ぐ（`backend_restart_resync_system` と同型）。
+pub fn request_force_account_snapshot_on_live_entry(
+    exec_mode: Res<ExecutionModeRes>,
+    sender: Option<Res<TransportCommandSender>>,
+    mut prev: Local<Option<ExecutionMode>>,
+) {
+    let current = exec_mode.mode;
+    let was = prev.replace(current);
+
+    let is_live = matches!(current, ExecutionMode::LiveManual | ExecutionMode::LiveAuto);
+    let was_live = matches!(was, Some(ExecutionMode::LiveManual) | Some(ExecutionMode::LiveAuto));
+    // Replay/未設定 → Live の実遷移のときだけ送る。Live 内の遷移や Live 離脱では送らない。
+    if !(is_live && !was_live) {
+        return;
+    }
+
+    let Some(tx) = sender.as_ref() else {
+        warn!("[backend] Live entry account snapshot skipped: TransportCommandSender unavailable");
+        return;
+    };
+    info!("[backend] entered Live — requesting ForceAccountSnapshot to refill BP/Positions");
+    if tx.tx.send(TransportCommand::ForceAccountSnapshot).is_err() {
+        warn!("[backend] ForceAccountSnapshot send failed: transport receiver dropped");
+    }
+}
+
 pub fn apply_available_loaded(
     available: &mut AvailableInstruments,
     end_date: NaiveDate,
@@ -733,6 +764,45 @@ mod tests {
         );
     }
 
+    /// Issue #29 Slice 2' (Step 5): execution mode が Replay → LiveManual に実遷移した
+    /// 直後、PortfolioState reset の後で backend へ口座スナップショット再取得を要求する
+    /// (ForceAccountSnapshot)。これが無いと CONNECTED でも BUYING POWER/POSITIONS が空のまま。
+    /// race-free 設計: reducer が exec_mode を更新した後に observer が遷移を検出して送る。
+    #[test]
+    fn live_mode_entry_requests_force_account_snapshot() {
+        use bevy::prelude::*;
+        use crate::trading::{ExecutionMode, ExecutionModeRes, TransportCommand, TransportCommandSender};
+        use tokio::sync::mpsc;
+
+        let (tx, mut rx) = mpsc::unbounded_channel::<TransportCommand>();
+        let mut app = App::new();
+        app.insert_resource(TransportCommandSender { tx });
+        app.insert_resource(ExecutionModeRes { mode: ExecutionMode::Replay });
+        app.add_systems(Update, request_force_account_snapshot_on_live_entry);
+
+        // 1st tick: 前回 mode を Replay として記録するだけ。要求は出さない。
+        app.update();
+        assert!(rx.try_recv().is_err(), "no request before any Live transition");
+
+        // Replay → LiveManual の実遷移を起こす。
+        app.world_mut().resource_mut::<ExecutionModeRes>().mode = ExecutionMode::LiveManual;
+        app.update();
+
+        assert!(
+            matches!(rx.try_recv(), Ok(TransportCommand::ForceAccountSnapshot)),
+            "entering Live (LiveManual) must enqueue ForceAccountSnapshot so BP/Positions refill"
+        );
+
+        // 同一 mode のまま再 tick → 二重要求しない。
+        app.update();
+        assert!(rx.try_recv().is_err(), "no duplicate request while mode is unchanged");
+
+        // LiveManual → Replay は Live への entry ではないので要求しない。
+        app.world_mut().resource_mut::<ExecutionModeRes>().mode = ExecutionMode::Replay;
+        app.update();
+        assert!(rx.try_recv().is_err(), "leaving Live must not request a snapshot");
+    }
+
     /// §3.10 regression: a failed SubmitSecret must surface on the SecretPrompt
     /// (so the SecretModal can show it / let the user retry), NOT on OrderFeedback
     /// (which would pop the OrderPanel out of context).
@@ -839,6 +909,94 @@ mod tests {
             TickersStatus::Failed("instruments fetch timed out after 60s".to_string()),
             "その他の失敗は従来どおり赤エラー（Failed）"
         );
+    }
+
+    /// Issue #29 Slice 2' (Step 7): 方針 C の reset→refill 縫い目を固定する characterization。
+    /// (1) Live entry で `ExecutionModeChanged{→LiveManual}` を reduce すると PortfolioState が
+    ///     default(empty, loaded=false) に reset され（Replay の建玉が Live にブリードしない）、
+    /// (2) その後 `apply_account_event`（ForceAccountSnapshot 応答の AccountEvent 経路）で
+    ///     cash/buying_power/positions が refill され loaded=true に戻る。
+    /// この 2 段が C 設計の race-free な空バグ修正の本体。
+    #[test]
+    fn live_entry_resets_then_account_event_refills_portfolio() {
+        // 既存の全引数組み立て helper（他テストと同形）。
+        fn reduce_exec_mode_changed(portfolio: &mut PortfolioState, mode: ExecutionMode) {
+            let mut status = BackendStatus::default();
+            let mut last_run = LastRunResult::default();
+            let mut available = AvailableInstruments::default();
+            let mut progress = ReplayStartupProgress::default();
+            let mut venue_status = VenueStatusRes::default();
+            // 実遷移を起こすため prev mode を Replay にしておく。
+            let mut exec_mode = ExecutionModeRes { mode: ExecutionMode::Replay };
+            let mut tickers = Tickers::default();
+            let mut last_prices = LastPrices::default();
+            let mut live_orders = LiveOrders::default();
+            let mut order_feedback = OrderFeedback::default();
+            let mut reconcile_prompt = ReconcilePrompt::default();
+            let mut secret_prompt = SecretPrompt::default();
+            let mut promote_feedback = PromoteFeedback::default();
+            apply_status_update(
+                BackendStatusUpdate::ExecutionModeChanged { mode },
+                &mut status,
+                &mut last_run,
+                portfolio,
+                &mut available,
+                &mut progress,
+                &mut venue_status,
+                &mut exec_mode,
+                &mut tickers,
+                &mut last_prices,
+                &mut live_orders,
+                &mut order_feedback,
+                &mut reconcile_prompt,
+                &mut secret_prompt,
+                &mut promote_feedback,
+            );
+        }
+
+        // 事前状態: Replay の run でロード済みの portfolio（建玉あり）。
+        let mut portfolio = PortfolioState {
+            buying_power: 111.0,
+            cash: 222.0,
+            equity: 333.0,
+            positions: vec![PortfolioPosition {
+                symbol: "OLD".to_string(),
+                qty: 5,
+                avg_price: 10.0,
+                unrealized_pnl: 1.0,
+            }],
+            orders: vec![],
+            loaded: true,
+        };
+
+        // (1) Replay → LiveManual の実遷移で reset される。
+        reduce_exec_mode_changed(&mut portfolio, ExecutionMode::LiveManual);
+        assert!(
+            !portfolio.loaded,
+            "Live entry must reset PortfolioState so stale Replay holdings don't bleed in"
+        );
+        assert!(
+            portfolio.positions.is_empty() && portfolio.buying_power == 0.0 && portfolio.cash == 0.0,
+            "reset must clear cash/buying_power/positions to default"
+        );
+
+        // (2) ForceAccountSnapshot 応答相当の AccountEvent で refill される。
+        apply_account_event(
+            &mut portfolio,
+            5_000.0,
+            12_345.0,
+            vec![AccountPosition {
+                symbol: "7203".to_string(),
+                qty: 100,
+                avg_price: 2_000.0,
+                unrealized_pnl: 1_500.0,
+            }],
+        );
+        assert!(portfolio.loaded, "AccountEvent must refill and mark loaded=true");
+        assert_eq!(portfolio.cash, 5_000.0, "cash must reflect the Live snapshot");
+        assert_eq!(portfolio.buying_power, 12_345.0, "buying_power must reflect the Live snapshot");
+        assert_eq!(portfolio.positions.len(), 1, "Live positions must populate");
+        assert_eq!(portfolio.positions[0].symbol, "7203");
     }
 
     fn drain_app() -> (App, mpsc::UnboundedSender<BackendEvent>) {

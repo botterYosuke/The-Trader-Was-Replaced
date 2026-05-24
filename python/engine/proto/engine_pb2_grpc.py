@@ -206,6 +206,11 @@ class DataEngineStub(object):
                 request_serializer=engine__pb2.SetExecutionModeRequest.SerializeToString,
                 response_deserializer=engine__pb2.SetExecutionModeResponse.FromString,
                 _registered_method=True)
+        self.ForceAccountSnapshot = channel.unary_unary(
+                '/engine.DataEngine/ForceAccountSnapshot',
+                request_serializer=engine__pb2.ForceAccountSnapshotRequest.SerializeToString,
+                response_deserializer=engine__pb2.ForceAccountSnapshotResponse.FromString,
+                _registered_method=True)
         self.SubscribeBackendEvents = channel.unary_stream(
                 '/engine.DataEngine/SubscribeBackendEvents',
                 request_serializer=engine__pb2.SubscribeBackendEventsReq.SerializeToString,
@@ -407,6 +412,16 @@ class DataEngineServicer(object):
 
     def SetExecutionMode(self, request, context):
         """Missing associated documentation comment in .proto file."""
+        context.set_code(grpc.StatusCode.UNIMPLEMENTED)
+        context.set_details('Method not implemented!')
+        raise NotImplementedError('Method not implemented!')
+
+    def ForceAccountSnapshot(self, request, context):
+        """issue #29 Slice 2': force the backend to re-emit the current account snapshot
+        (dedup-bypassing) on SubscribeBackendEvents. Fire-and-forget ack — the snapshot
+        itself returns via the existing AccountEvent stream, NOT inline. Rust calls this
+        right after applying the ExecutionModeChanged→Live reset that clears PortfolioState.
+        """
         context.set_code(grpc.StatusCode.UNIMPLEMENTED)
         context.set_details('Method not implemented!')
         raise NotImplementedError('Method not implemented!')
@@ -622,6 +637,11 @@ def add_DataEngineServicer_to_server(servicer, server):
                     servicer.SetExecutionMode,
                     request_deserializer=engine__pb2.SetExecutionModeRequest.FromString,
                     response_serializer=engine__pb2.SetExecutionModeResponse.SerializeToString,
+            ),
+            'ForceAccountSnapshot': grpc.unary_unary_rpc_method_handler(
+                    servicer.ForceAccountSnapshot,
+                    request_deserializer=engine__pb2.ForceAccountSnapshotRequest.FromString,
+                    response_serializer=engine__pb2.ForceAccountSnapshotResponse.SerializeToString,
             ),
             'SubscribeBackendEvents': grpc.unary_stream_rpc_method_handler(
                     servicer.SubscribeBackendEvents,
@@ -1239,6 +1259,33 @@ class DataEngine(object):
             '/engine.DataEngine/SetExecutionMode',
             engine__pb2.SetExecutionModeRequest.SerializeToString,
             engine__pb2.SetExecutionModeResponse.FromString,
+            options,
+            channel_credentials,
+            insecure,
+            call_credentials,
+            compression,
+            wait_for_ready,
+            timeout,
+            metadata,
+            _registered_method=True)
+
+    @staticmethod
+    def ForceAccountSnapshot(request,
+            target,
+            options=(),
+            channel_credentials=None,
+            call_credentials=None,
+            insecure=False,
+            compression=None,
+            wait_for_ready=None,
+            timeout=None,
+            metadata=None):
+        return grpc.experimental.unary_unary(
+            request,
+            target,
+            '/engine.DataEngine/ForceAccountSnapshot',
+            engine__pb2.ForceAccountSnapshotRequest.SerializeToString,
+            engine__pb2.ForceAccountSnapshotResponse.FromString,
             options,
             channel_credentials,
             insecure,

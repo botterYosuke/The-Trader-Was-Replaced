@@ -1799,6 +1799,36 @@ class GrpcDataEngineServer(
         self.engine.forget_instrument(request.instrument_id)
         return engine_pb2.SubscribeResponse(success=True, error_code="")
 
+    def ForceAccountSnapshot(self, request, context):
+        """issue #29 Slice 2': ExecutionModeChanged→Live reset 直後に Rust が呼ぶ。
+        AccountSync.force_resync() を live loop で 1 発回し、dedup を貫通して
+        AccountEvent を既存 backend event stream に再 push させる（BP/Positions refill）。
+        snapshot 自体はインライン返却しない（既存 stream 経由で戻る）。
+        """
+        if not self._token_ok(request):
+            context.abort(grpc.StatusCode.UNAUTHENTICATED, "Invalid token")
+        if self._account_sync is None:
+            return engine_pb2.ForceAccountSnapshotResponse(
+                success=False,
+                error_code="VENUE_LOGIN_REQUIRED",
+            )
+        loop = self._ensure_live_loop()
+        try:
+            future = asyncio.run_coroutine_threadsafe(
+                self._account_sync.force_resync(), loop
+            )
+            future.result(timeout=self._live_timeout_s)
+        except Exception as exc:
+            logging.exception("ForceAccountSnapshot failed: %s", exc)
+            return engine_pb2.ForceAccountSnapshotResponse(
+                success=False,
+                error_code="FORCE_RESYNC_FAILED",
+            )
+        return engine_pb2.ForceAccountSnapshotResponse(
+            success=True,
+            error_code="",
+        )
+
     def SubmitSecret(self, request, context):
         if not self._token_ok(request):
             context.abort(grpc.StatusCode.UNAUTHENTICATED, "Invalid token")

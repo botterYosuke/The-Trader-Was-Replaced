@@ -71,6 +71,12 @@ service DataEngine {
   rpc UnsubscribeMarketData (UnsubscribeRequest) returns (SubscribeResponse);
   rpc SetExecutionMode (SetExecutionModeRequest) returns (SetExecutionModeResponse);
 
+  // issue #29 Slice 2': force the backend to re-emit the current account snapshot
+  // (dedup-bypassing) on SubscribeBackendEvents. Fire-and-forget ack — the snapshot
+  // itself returns via the existing AccountEvent stream, NOT inline. Rust calls this
+  // right after applying the ExecutionModeChanged→Live reset that clears PortfolioState.
+  rpc ForceAccountSnapshot (ForceAccountSnapshotRequest) returns (ForceAccountSnapshotResponse);
+
   // Phase 9 Step 0: Backend Event Transport (server-streaming).
   // Reverse-direction control-plane channel: server pushes BackendEvent to the UI.
   // Must be added before other Phase 9 RPCs (everything depends on this transport).
@@ -338,6 +344,15 @@ message SetExecutionModeResponse {
   bool success = 1;
   string error_code = 2;
   string execution_mode = 3;
+}
+
+message ForceAccountSnapshotRequest {
+  string token = 1;
+}
+
+message ForceAccountSnapshotResponse {
+  bool success = 1;
+  string error_code = 2;
 }
 
 message ShutdownRequest {

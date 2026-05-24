@@ -69,6 +69,15 @@ class AccountSync:
         self._last_error = None
         self._task = asyncio.create_task(self._run())
 
+    async def force_resync(self) -> None:
+        """dedup を貫通して即座に 1 回 fetch + emit する（issue #29 Slice 2'）。
+
+        Replay→Live 切替直後に Rust が PortfolioState を reset するため、backend は
+        値不変でも強制的に AccountEvent を再 push する必要がある。`_tick(force_emit=True)`
+        は snapshot が `_last_emitted` と同一でも emit する。fetch 失敗時は `_tick` 内の
+        on_error 経路（既存）で surface され、例外を握り潰さず継続する。"""
+        await self._tick(force_emit=True)
+
     async def _run(self) -> None:
         # 初期ロード: interval を待たず即 fetch + emit（必ず 1 回出す）。
         await self._tick(force_emit=True)
