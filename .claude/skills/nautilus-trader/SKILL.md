@@ -10,6 +10,16 @@ description: |
   `python/engine/nautilus_*.py`. Also trigger on related vocabulary: "msgbus", "ts_event",
   "ts_init", "InstrumentId", "ClientId", "Venue", "BarSpec", "OrderFactory", "ExecAlgorithm",
   "PositionEvent", "OrderEvent", "cache" in a trading sense, "Cython .pyx", "PyO3".
+  Also trigger on the **execution-client / order-event seam** (common to live venue adapters
+  in `python/engine/live/*.py`): `LiveExecutionClient`, `_submit_order` / `_modify_order` /
+  `_cancel_order`, `generate_order_accepted` / `generate_order_canceled` /
+  `generate_order_expired` / `generate_order_filled` / `generate_order_updated` /
+  `generate_order_rejected` / `generate_order_modify_rejected`, the `OrderStatus` FSM and its
+  allowed transitions (e.g. PENDING_UPDATE → ACCEPTED/CANCELED/EXPIRED/FILLED),
+  `OrderModifyRejected`, `ModifyOrder` / `CancelOrder` commands, `TradeId`, `LiquiditySide`,
+  `VenueOrderId`. These signatures are wide (e.g. `generate_order_filled` ~14 args) and easy to
+  misorder — read the mirror / `.venv/.../nautilus_trader/execution/client.pyx` and
+  `model/orders/base.pyx` for ground truth rather than guessing.
   The full upstream source tree is mirrored at `.claude/skills/nautilus_trader/src/` — use it
   as ground truth instead of guessing API shapes from memory. The current branch
   (`sasa/Phase-6---Nautilus-Replay-Integration`) is actively wiring nautilus data types into

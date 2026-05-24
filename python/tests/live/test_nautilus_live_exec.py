@@ -617,3 +617,419 @@ def test_telemetry_callback_after_fill(logged_in_adapter):
     finally:
         controller.detach(nautilus_strategy_id="LIVE-telem001")
         _stop_bg_loop(loop, t)
+
+
+# --- Issue #12: modify が CANCELED を返したら order は CANCELED に遷移する ---
+
+
+class _SubmitThenModify(Strategy):
+    """on_start で resting LIMIT BUY を 1 回出し、ACCEPTED になったら一度だけ modify する
+    最小戦略（Issue #12 検証用）。modify には quantity を明示指定し、別件の quantity=None
+    バグ（後続サイクルで扱う）を切り離して CANCELED 遷移だけを観測する。"""
+
+    def __init__(self, instrument_id: str, qty: int, price: float) -> None:
+        super().__init__()
+        self._iid = InstrumentId.from_str(instrument_id)
+        self._qty = qty
+        self._price = price
+        self._order = None
+        self._modified = False
+
+    def on_start(self) -> None:
+        order = self.order_factory.limit(
+            self._iid,
+            OrderSide.BUY,
+            Quantity.from_int(self._qty),
+            Price(self._price, precision=1),
+        )
+        self._order = order
+        self.submit_order(order)
+
+    def on_event(self, event) -> None:
+        if self._modified or self._order is None:
+            return
+        o = self.cache.order(self._order.client_order_id)
+        if o is not None and o.status.name == "ACCEPTED":
+            self._modified = True
+            self.modify_order(
+                o,
+                quantity=Quantity.from_int(self._qty),
+                price=Price(self._price + 1.0, precision=1),
+            )
+
+
+def test_modify_returning_canceled_transitions_order_to_canceled(logged_in_adapter):
+    """Issue #12: modify が終端 status CANCELED を返したら、cache の order は CANCELED に
+    遷移しなければならない。現状は generate_order_updated で ACCEPTED のまま固着し、
+    「取消済みのはずが Nautilus 上 live」という危険な乖離になる。"""
+    logged_in_adapter.set_next_order_outcome(status="ACCEPTED", filled_qty=0)  # resting
+    logged_in_adapter.set_next_modify_outcome(status="CANCELED")
+    # rails では弾かれない十分大きな cap（gate/rail ではなく modify 経路だけを観測）。
+    rails = SafetyRails(SafetyLimits(max_order_value_jpy=10_000_000, max_position_size_jpy=10_000_000))
+
+    loop = asyncio.new_event_loop()
+    asyncio.set_event_loop(loop)
+    cfg = TradingNodeConfig(
+        trader_id="LIVEHOST-001",
+        logging=LoggingConfig(log_level="ERROR", log_level_file="OFF", print_config=False),
+        exec_engine=LiveExecEngineConfig(),
+        risk_engine=rails.to_live_risk_engine_config([_IID]),
+        data_engine=LiveDataEngineConfig(),
+    )
+    kernel = NautilusKernel(name="LiveHost", config=cfg, loop=loop)
+    kernel.cache.add_instrument(make_equity_instrument("7203", "TSE"))
+    client = NautilusVenueExecClient(
+        loop=loop,
+        venue=Venue("TSE"),
+        msgbus=kernel.msgbus,
+        cache=kernel.cache,
+        clock=kernel.clock,
+        adapter=logged_in_adapter,
+        safety_rails=rails,
+        instrument_provider=InstrumentProvider(),
+    )
+    kernel.exec_engine.register_client(client)
+    kernel.trader.add_strategy(_SubmitThenModify(_IID, 100, 2500.0))
+
+    async def _run():
+        kernel.start()
+        await asyncio.sleep(0.5)
+        await kernel.stop_async()
+
+    try:
+        loop.run_until_complete(_run())
+        statuses = [o.status.name for o in kernel.cache.orders()]
+        # observable behavior: CANCELED を返した modify の後、order は CANCELED であること。
+        assert "CANCELED" in statuses, f"order must be CANCELED after modify→CANCELED, got {statuses}"
+        # 固着していないこと（ACCEPTED のまま live でない）。
+        assert "ACCEPTED" not in statuses, f"order must not stay ACCEPTED (live) after cancel, got {statuses}"
+    finally:
+        if not loop.is_closed():
+            loop.close()
+
+
+def test_modify_returning_filled_transitions_order_to_filled(logged_in_adapter):
+    """Issue #12: modify が終端 status FILLED を返したら、cache の order は FILLED に
+    遷移しなければならない。現状は「それ以外」分岐で generate_order_updated になり ACCEPTED
+    のまま固着する（約定済みのはずが Nautilus 上 live）。"""
+    logged_in_adapter.set_next_order_outcome(status="ACCEPTED", filled_qty=0)  # resting
+    logged_in_adapter.set_next_modify_outcome(status="FILLED", filled_qty=100, avg_price=2500.0)
+    # rails では弾かれない十分大きな cap（gate/rail ではなく modify 経路だけを観測）。
+    rails = SafetyRails(SafetyLimits(max_order_value_jpy=10_000_000, max_position_size_jpy=10_000_000))
+
+    loop = asyncio.new_event_loop()
+    asyncio.set_event_loop(loop)
+    cfg = TradingNodeConfig(
+        trader_id="LIVEHOST-001",
+        logging=LoggingConfig(log_level="ERROR", log_level_file="OFF", print_config=False),
+        exec_engine=LiveExecEngineConfig(),
+        risk_engine=rails.to_live_risk_engine_config([_IID]),
+        data_engine=LiveDataEngineConfig(),
+    )
+    kernel = NautilusKernel(name="LiveHost", config=cfg, loop=loop)
+    kernel.cache.add_instrument(make_equity_instrument("7203", "TSE"))
+    client = NautilusVenueExecClient(
+        loop=loop,
+        venue=Venue("TSE"),
+        msgbus=kernel.msgbus,
+        cache=kernel.cache,
+        clock=kernel.clock,
+        adapter=logged_in_adapter,
+        safety_rails=rails,
+        instrument_provider=InstrumentProvider(),
+    )
+    kernel.exec_engine.register_client(client)
+    kernel.trader.add_strategy(_SubmitThenModify(_IID, 100, 2500.0))
+
+    async def _run():
+        kernel.start()
+        await asyncio.sleep(0.5)
+        await kernel.stop_async()
+
+    try:
+        loop.run_until_complete(_run())
+        statuses = [o.status.name for o in kernel.cache.orders()]
+        # observable behavior: FILLED を返した modify の後、order は FILLED であること。
+        assert "FILLED" in statuses, f"order must be FILLED after modify→FILLED, got {statuses}"
+        # 固着していないこと（ACCEPTED のまま live でない）。
+        assert "ACCEPTED" not in statuses, f"order must not stay ACCEPTED (live) after fill, got {statuses}"
+    finally:
+        if not loop.is_closed():
+            loop.close()
+
+
+# --- quantity=None modify (price-only): order must not stick at PENDING_UPDATE ---
+
+
+class _SubmitThenModifyPriceOnly(Strategy):
+    """on_start で resting LIMIT BUY を 1 回出し、ACCEPTED になったら一度だけ
+    **price だけ**変更する modify を出す（quantity は渡さない）。
+
+    Nautilus の Strategy.modify_order は quantity 省略時に order の現数量で埋めず
+    ModifyOrder.quantity=None のまま exec client に届ける（_create_modify_order で
+    quantity=quantity をそのまま使う）。よってこの戦略は quantity=None が
+    _modify_order に届く経路を再現する（quantity=None バグ検証用）。"""
+
+    def __init__(self, instrument_id: str, qty: int, price: float) -> None:
+        super().__init__()
+        self._iid = InstrumentId.from_str(instrument_id)
+        self._qty = qty
+        self._price = price
+        self._order = None
+        self._modified = False
+
+    def on_start(self) -> None:
+        order = self.order_factory.limit(
+            self._iid,
+            OrderSide.BUY,
+            Quantity.from_int(self._qty),
+            Price(self._price, precision=1),
+        )
+        self._order = order
+        self.submit_order(order)
+
+    def on_event(self, event) -> None:
+        if self._modified or self._order is None:
+            return
+        o = self.cache.order(self._order.client_order_id)
+        if o is not None and o.status.name == "ACCEPTED":
+            self._modified = True
+            # quantity は渡さない（price だけ変更）→ ModifyOrder.quantity is None
+            self.modify_order(o, price=Price(self._price + 1.0, precision=1))
+
+
+def test_modify_price_only_keeps_order_live_not_stuck_pending_update(logged_in_adapter):
+    """quantity=None バグ: price だけ変更する modify（quantity 未指定）の後、order は
+    更新が反映され live（ACCEPTED）を維持しなければならない。
+
+    現状は _modify_order が終端でない status のフォールバックで command.quantity(=None)
+    を generate_order_updated にそのまま渡し、Nautilus 側の型付き Quantity 要求に反して
+    OrderUpdated が emit されず、order が PENDING_UPDATE で固着する。"""
+    logged_in_adapter.set_next_order_outcome(status="ACCEPTED", filled_qty=0)  # resting
+    # modify は仕込まず素の ACCEPTED（バグは generate_order_updated の None 渡し側）。
+    rails = SafetyRails(SafetyLimits(max_order_value_jpy=10_000_000, max_position_size_jpy=10_000_000))
+
+    loop = asyncio.new_event_loop()
+    asyncio.set_event_loop(loop)
+    cfg = TradingNodeConfig(
+        trader_id="LIVEHOST-001",
+        logging=LoggingConfig(log_level="ERROR", log_level_file="OFF", print_config=False),
+        exec_engine=LiveExecEngineConfig(),
+        risk_engine=rails.to_live_risk_engine_config([_IID]),
+        data_engine=LiveDataEngineConfig(),
+    )
+    kernel = NautilusKernel(name="LiveHost", config=cfg, loop=loop)
+    kernel.cache.add_instrument(make_equity_instrument("7203", "TSE"))
+    client = NautilusVenueExecClient(
+        loop=loop,
+        venue=Venue("TSE"),
+        msgbus=kernel.msgbus,
+        cache=kernel.cache,
+        clock=kernel.clock,
+        adapter=logged_in_adapter,
+        safety_rails=rails,
+        instrument_provider=InstrumentProvider(),
+    )
+    kernel.exec_engine.register_client(client)
+    kernel.trader.add_strategy(_SubmitThenModifyPriceOnly(_IID, 100, 2500.0))
+
+    async def _run():
+        kernel.start()
+        await asyncio.sleep(0.5)
+        await kernel.stop_async()
+
+    try:
+        loop.run_until_complete(_run())
+        orders = list(kernel.cache.orders())
+        statuses = [o.status.name for o in orders]
+        # observable behavior: price-only modify の後、PENDING_UPDATE で固着しないこと。
+        assert "PENDING_UPDATE" not in statuses, (
+            f"price-only modify must not leave order stuck at PENDING_UPDATE, got {statuses}"
+        )
+        # live を維持していること（終端化もしていない）。
+        assert "ACCEPTED" in statuses, f"order must stay live (ACCEPTED) after price-only modify, got {statuses}"
+        # 新価格が反映されていること（modify の意味）。
+        assert any(o.has_price and float(o.price) == 2501.0 for o in orders), (
+            f"order price must reflect the price-only modify (2501.0), got "
+            f"{[float(o.price) for o in orders if o.has_price]}"
+        )
+    finally:
+        if not loop.is_closed():
+            loop.close()
+
+
+def test_modify_returning_expired_transitions_order_to_expired(logged_in_adapter):
+    """Issue #12: modify が終端 status EXPIRED を返したら、cache の order は EXPIRED に
+    遷移しなければならない。generate_order_updated のままだと ACCEPTED 据え置きで固着し、
+    「失効済みのはずが Nautilus 上 live」という危険な乖離になる（実装分岐ありの回帰証跡）。"""
+    logged_in_adapter.set_next_order_outcome(status="ACCEPTED", filled_qty=0)  # resting
+    logged_in_adapter.set_next_modify_outcome(status="EXPIRED")
+    # rails では弾かれない十分大きな cap（gate/rail ではなく modify 経路だけを観測）。
+    rails = SafetyRails(SafetyLimits(max_order_value_jpy=10_000_000, max_position_size_jpy=10_000_000))
+
+    loop = asyncio.new_event_loop()
+    asyncio.set_event_loop(loop)
+    cfg = TradingNodeConfig(
+        trader_id="LIVEHOST-001",
+        logging=LoggingConfig(log_level="ERROR", log_level_file="OFF", print_config=False),
+        exec_engine=LiveExecEngineConfig(),
+        risk_engine=rails.to_live_risk_engine_config([_IID]),
+        data_engine=LiveDataEngineConfig(),
+    )
+    kernel = NautilusKernel(name="LiveHost", config=cfg, loop=loop)
+    kernel.cache.add_instrument(make_equity_instrument("7203", "TSE"))
+    client = NautilusVenueExecClient(
+        loop=loop,
+        venue=Venue("TSE"),
+        msgbus=kernel.msgbus,
+        cache=kernel.cache,
+        clock=kernel.clock,
+        adapter=logged_in_adapter,
+        safety_rails=rails,
+        instrument_provider=InstrumentProvider(),
+    )
+    kernel.exec_engine.register_client(client)
+    kernel.trader.add_strategy(_SubmitThenModify(_IID, 100, 2500.0))
+
+    async def _run():
+        kernel.start()
+        await asyncio.sleep(0.5)
+        await kernel.stop_async()
+
+    try:
+        loop.run_until_complete(_run())
+        statuses = [o.status.name for o in kernel.cache.orders()]
+        # observable behavior: EXPIRED を返した modify の後、order は EXPIRED であること。
+        assert "EXPIRED" in statuses, f"order must be EXPIRED after modify→EXPIRED, got {statuses}"
+        # 固着していないこと（ACCEPTED のまま live でない）。
+        assert "ACCEPTED" not in statuses, f"order must not stay ACCEPTED (live) after expire, got {statuses}"
+    finally:
+        if not loop.is_closed():
+            loop.close()
+
+
+def test_modify_returning_rejected_reverts_order_to_accepted(logged_in_adapter):
+    """Issue #12 案A: modify が拒否系 status REJECTED を返したら、order は PENDING_UPDATE で
+    固着せず modify 前状態(ACCEPTED)に戻り、新価格は適用されない（元の 2500.0 のまま）。
+
+    現状は _modify_order が REJECTED で早期 return するだけで、PENDING_UPDATE のまま固着する
+    （実機 ['PENDING_UPDATE']）。observable behavior を status と price の両方で観測する。"""
+    logged_in_adapter.set_next_order_outcome(status="ACCEPTED", filled_qty=0)  # resting
+    logged_in_adapter.set_next_modify_outcome(status="REJECTED", reject_reason="too late")
+    # rails では弾かれない十分大きな cap（gate/rail ではなく modify 経路だけを観測）。
+    rails = SafetyRails(SafetyLimits(max_order_value_jpy=10_000_000, max_position_size_jpy=10_000_000))
+
+    loop = asyncio.new_event_loop()
+    asyncio.set_event_loop(loop)
+    cfg = TradingNodeConfig(
+        trader_id="LIVEHOST-001",
+        logging=LoggingConfig(log_level="ERROR", log_level_file="OFF", print_config=False),
+        exec_engine=LiveExecEngineConfig(),
+        risk_engine=rails.to_live_risk_engine_config([_IID]),
+        data_engine=LiveDataEngineConfig(),
+    )
+    kernel = NautilusKernel(name="LiveHost", config=cfg, loop=loop)
+    kernel.cache.add_instrument(make_equity_instrument("7203", "TSE"))
+    client = NautilusVenueExecClient(
+        loop=loop,
+        venue=Venue("TSE"),
+        msgbus=kernel.msgbus,
+        cache=kernel.cache,
+        clock=kernel.clock,
+        adapter=logged_in_adapter,
+        safety_rails=rails,
+        instrument_provider=InstrumentProvider(),
+    )
+    kernel.exec_engine.register_client(client)
+    # 既存 _SubmitThenModify は price+1.0 で modify する → 2500.0 → 2501.0 を試みる。
+    kernel.trader.add_strategy(_SubmitThenModify(_IID, 100, 2500.0))
+
+    async def _run():
+        kernel.start()
+        await asyncio.sleep(0.5)
+        await kernel.stop_async()
+
+    try:
+        loop.run_until_complete(_run())
+        orders = list(kernel.cache.orders())
+        statuses = [o.status.name for o in orders]
+        # 固着していないこと（PENDING_UPDATE のまま放置されない）。
+        assert "PENDING_UPDATE" not in statuses, (
+            f"order must not stay stuck at PENDING_UPDATE after modify→REJECTED, got {statuses}"
+        )
+        # 拒否なので modify 前状態(ACCEPTED)に戻ること。
+        assert "ACCEPTED" in statuses, (
+            f"order must revert to ACCEPTED after modify→REJECTED, got {statuses}"
+        )
+        # 新価格 2501.0 は適用されず元の 2500.0 のままであること。
+        assert any(o.has_price and float(o.price) == 2500.0 for o in orders), (
+            f"rejected modify must not apply the new price; expected 2500.0, got "
+            f"{[float(o.price) for o in orders if o.has_price]}"
+        )
+    finally:
+        if not loop.is_closed():
+            loop.close()
+
+
+def test_modify_returning_denied_reverts_order_to_accepted_without_new_price(logged_in_adapter):
+    """Issue #12 案A: modify が拒否系 status DENIED を返したら、order は modify 前状態(ACCEPTED)
+    に戻り、新価格は適用されない（元の 2500.0 のまま）。
+
+    現状は DENIED が「それ以外」分岐で generate_order_updated 化され、新価格 2501.0 が適用された
+    ACCEPTED で live 据え置きになる。DENIED では ACCEPTED 自体は現状でも真なので、価格で判別する
+    のが要点（現状 RED: float(order.price) == 2500.0 が 2501.0 になり fail）。"""
+    logged_in_adapter.set_next_order_outcome(status="ACCEPTED", filled_qty=0)  # resting
+    logged_in_adapter.set_next_modify_outcome(status="DENIED", reject_reason="risk")
+    # rails では弾かれない十分大きな cap（gate/rail ではなく modify 経路だけを観測）。
+    rails = SafetyRails(SafetyLimits(max_order_value_jpy=10_000_000, max_position_size_jpy=10_000_000))
+
+    loop = asyncio.new_event_loop()
+    asyncio.set_event_loop(loop)
+    cfg = TradingNodeConfig(
+        trader_id="LIVEHOST-001",
+        logging=LoggingConfig(log_level="ERROR", log_level_file="OFF", print_config=False),
+        exec_engine=LiveExecEngineConfig(),
+        risk_engine=rails.to_live_risk_engine_config([_IID]),
+        data_engine=LiveDataEngineConfig(),
+    )
+    kernel = NautilusKernel(name="LiveHost", config=cfg, loop=loop)
+    kernel.cache.add_instrument(make_equity_instrument("7203", "TSE"))
+    client = NautilusVenueExecClient(
+        loop=loop,
+        venue=Venue("TSE"),
+        msgbus=kernel.msgbus,
+        cache=kernel.cache,
+        clock=kernel.clock,
+        adapter=logged_in_adapter,
+        safety_rails=rails,
+        instrument_provider=InstrumentProvider(),
+    )
+    kernel.exec_engine.register_client(client)
+    # 既存 _SubmitThenModify は price+1.0 で modify する → 2500.0 → 2501.0 を試みる。
+    kernel.trader.add_strategy(_SubmitThenModify(_IID, 100, 2500.0))
+
+    async def _run():
+        kernel.start()
+        await asyncio.sleep(0.5)
+        await kernel.stop_async()
+
+    try:
+        loop.run_until_complete(_run())
+        orders = list(kernel.cache.orders())
+        statuses = [o.status.name for o in orders]
+        # 固着していないこと。
+        assert "PENDING_UPDATE" not in statuses, (
+            f"order must not stay stuck at PENDING_UPDATE after modify→DENIED, got {statuses}"
+        )
+        # 拒否なので modify 前状態(ACCEPTED)に戻ること。
+        assert "ACCEPTED" in statuses, (
+            f"order must revert to ACCEPTED after modify→DENIED, got {statuses}"
+        )
+        # 新価格 2501.0 は適用されず元の 2500.0 のままであること（DENIED 判別の要点）。
+        assert any(o.has_price and float(o.price) == 2500.0 for o in orders), (
+            f"denied modify must not apply the new price; expected 2500.0, got "
+            f"{[float(o.price) for o in orders if o.has_price]}"
+        )
+    finally:
+        if not loop.is_closed():
+            loop.close()
