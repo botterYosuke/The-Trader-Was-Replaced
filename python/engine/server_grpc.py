@@ -1761,9 +1761,12 @@ class GrpcDataEngineServer(
                     error_code="VENUE_LOGIN_REQUIRED",
                     execution_mode="",
                 )
-        elif applied == "Replay" and (self._live_runner is not None or self._live_bridge is not None):
-            self._teardown_live_components()
-
+        if applied == "Replay":
+            # Clear-on-toggle: runner._last_error must not bleed into Replay.
+            # Directly clear the attribute so GetState sees None immediately,
+            # even when the runner instance is still alive (no teardown path).
+            if self._live_runner is not None:
+                self._live_runner._last_error = None
         return engine_pb2.SetExecutionModeResponse(
             success=True,
             error_code="",

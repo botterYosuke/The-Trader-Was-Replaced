@@ -294,20 +294,21 @@ def test_set_execution_mode_live_manual_spawns_live_runner(
     assert servicer._live_bridge is not None
 
 
-def test_set_execution_mode_replay_teardown_live_runner(
+def test_set_execution_mode_replay_does_not_teardown_live_session(
     phase8_grpc_server_with_live,
 ):
+    """Issue #39: Replay 切替は live session を teardown しない。
+    LiveManual → Replay に戻しても _live_runner / _live_bridge が生き続ける。
+    (旧挙動: teardown_live_components を呼んでいた。fix: その 2 行を削除。)"""
     port, token, engine, venue_sm, mm, servicer = (
         phase8_grpc_server_with_live
     )
     stub = _stub(port)
-    # Replay 戻しは replay_engine.replay_state in {LOADED,RUNNING,PAUSED} が precondition (mode_manager.py L24-29)
-    engine._replay_state = "LOADED"
 
-    # D21: VenueLogin must precede SetExecutionMode for Live modes
+    # 1. Venue login → runner 起動
     _do_venue_login(stub, token)
 
-    # LiveManual で runner/bridge が立ち上がることを前提として確認
+    # 2. LiveManual に切り替えて runner/bridge が生きていることを確認
     resp_live = stub.SetExecutionMode(
         engine_pb2.SetExecutionModeRequest(mode="LiveManual", token=token)
     )
@@ -315,14 +316,21 @@ def test_set_execution_mode_replay_teardown_live_runner(
     assert servicer._live_runner is not None
     assert servicer._live_bridge is not None
 
-    # Replay に戻したとき teardown が走り、参照が解放されることを期待 (RED)
+    # 3. Replay に戻す precondition: engine._replay_state が LOADED/RUNNING/PAUSED
+    engine._replay_state = "LOADED"
+
+    # 4. Replay に切り替えても runner/bridge は解放されない (issue #39 fix)
     resp_replay = stub.SetExecutionMode(
         engine_pb2.SetExecutionModeRequest(mode="Replay", token=token)
     )
     assert resp_replay.success is True
     assert resp_replay.execution_mode == "Replay"
-    assert servicer._live_runner is None, "Replay 切替時に live runner が teardown されるべき"
-    assert servicer._live_bridge is None, "Replay 切替時に live bridge が teardown されるべき"
+    assert servicer._live_runner is not None, (
+        "Replay 切替は live runner を teardown しない (issue #39)"
+    )
+    assert servicer._live_bridge is not None, (
+        "Replay 切替は live bridge を teardown しない (issue #39)"
+    )
 
 
 # --- Step 3.3 RED: live_adapter_factory 未設定時の LiveManual 拒否 ---------
@@ -1468,3 +1476,53 @@ def test_list_instruments_live_warming_returns_pending(monkeypatch):
     resp = svc._list_instruments_live(None)
     assert resp.success is False
     assert resp.error_message == "LIVE_UNIVERSE_PENDING"
+
+
+# --- Issue #39: Live → Replay → Live 往復 / VenueLogout 回帰ガード -----------
+
+def test_live_replay_live_roundtrip_without_relogin(phase8_grpc_server_with_live):
+    """Live→Replay→Live 往復で再ログイン不要（adapter.is_logged_in が維持される）。"""
+    port, token, engine, venue_sm, mm, servicer = phase8_grpc_server_with_live
+    stub = _stub(port)
+
+    engine._replay_state = "LOADED"
+
+    _do_venue_login(stub, token)
+    assert venue_sm.current == "CONNECTED"
+
+    # 1. LiveManual
+    resp_live = stub.SetExecutionMode(
+        engine_pb2.SetExecutionModeRequest(mode="LiveManual", token=token)
+    )
+    assert resp_live.success is True
+
+    # 2. Replay
+    resp_replay = stub.SetExecutionMode(
+        engine_pb2.SetExecutionModeRequest(mode="Replay", token=token)
+    )
+    assert resp_replay.success is True
+    adapter = servicer._live_runner.adapter
+    assert adapter.is_logged_in is True, "Replay 切替で logout してはいけない"
+
+    # 3. LiveManual に再切替（再ログインなし）
+    resp_live2 = stub.SetExecutionMode(
+        engine_pb2.SetExecutionModeRequest(mode="LiveManual", token=token)
+    )
+    assert resp_live2.success is True, "再ログインなしで LiveManual に戻れるべき"
+    assert servicer._live_runner is not None
+    assert venue_sm.current == "CONNECTED"
+
+
+def test_venue_logout_still_teardowns_and_disconnects(phase8_grpc_server_with_live):
+    """VenueLogout（Disconnect ボタン）は従来どおり teardown して DISCONNECTED に戻る。"""
+    port, token, engine, venue_sm, mm, servicer = phase8_grpc_server_with_live
+    stub = _stub(port)
+
+    _do_venue_login(stub, token)
+    assert venue_sm.current == "CONNECTED"
+
+    resp = stub.VenueLogout(engine_pb2.VenueLogoutRequest(token=token))
+    assert resp.success is True
+
+    assert servicer._live_runner is None, "VenueLogout 後は live runner が解放されるべき"
+    assert venue_sm.current == "DISCONNECTED", "VenueLogout 後は DISCONNECTED"
