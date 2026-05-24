@@ -1,6 +1,6 @@
 use crate::ui::buying_power::spawn_buying_power_panel;
 use crate::ui::components::{
-    ChartInstrument, CloseButton, InstrumentRegistry, PanelKind, PanelSpawnRequested,
+    ChartInstrument, CloseButton, InstrumentRegistry, LayoutExcluded, PanelKind, PanelSpawnRequested,
     PanelSpawnSource, PendingStrategyFragments, RegionKeyAllocator, StrategyBuffer,
     StrategyEditorId, StrategyEditorSpawnSpec, StrategyFragment, TitleBar, WindowManager,
     WindowRoot,
@@ -698,7 +698,7 @@ pub fn panel_spawn_dispatcher_system(
                         resizable: false,
                     },
                 );
-                commands.entity(root).insert(PanelKind::Order);
+                commands.entity(root).insert((PanelKind::Order, LayoutExcluded));
             }
         }
         if event.source == PanelSpawnSource::User && !history.is_replaying() {

@@ -7,7 +7,8 @@ use std::path::PathBuf;
 use std::time::Instant;
 
 use crate::ui::components::{
-    LayoutExcluded, PanelKind, PanelSpawnRequested, PanelSpawnSource, PendingStrategyFragments,
+    LayoutExcluded, PanelKind, PanelRestoreDriver, PanelSpawnRequested, PanelSpawnSource,
+    PendingStrategyFragments,
     RegionKeyAllocator, ScenarioReadTarget, StrategyBuffer, StrategyEditorId,
     StrategyEditorSpawnSpec, StrategyFileLoadRequested, StrategyFragment, StrategyLoadMode,
     WindowManager, WindowRoot,
@@ -203,15 +204,16 @@ pub struct CacheRestoreRequested {
     pub layout: SidecarLayout,
 }
 
-/// Phase 7.5: legacy `PanelKind::Chart` entry を含む旧 layout JSON を読み込んだとき、
-/// 当該 WindowLayout を spawn/pending 投入する前に弾く。
+/// issue #25 / Phase 7.5: restore 時に layout JSON 由来の WindowLayout を spawn/pending
+/// 投入する前に弾く。`restore_driver()==ScenarioInstruments`（Chart / Order）は
+/// scenario 所有で layout-persist 対象外なので skip する。
 #[inline]
-fn is_legacy_chart_entry(win_layout: &WindowLayout) -> bool {
-    if win_layout.kind == PanelKind::Chart {
+fn is_non_persisted_layout_entry(win_layout: &WindowLayout) -> bool {
+    if win_layout.kind.restore_driver() == PanelRestoreDriver::ScenarioInstruments {
         warn!(
-            "layout: skipping deprecated PanelKind::Chart entry (pos={:?}, size={:?}); \
-             Chart panel is removed in Phase 7.5",
-            win_layout.position, win_layout.size
+            "layout: skipping scenario-owned PanelKind::{:?} entry (pos={:?}, size={:?}); \
+             not layout-persisted (issue #25)",
+            win_layout.kind, win_layout.position, win_layout.size
         );
         true
     } else {
@@ -251,6 +253,7 @@ fn build_layout(
 
     let windows: Vec<WindowLayout> = panels
         .iter()
+        .filter(|(kind, ..)| kind.restore_driver() != PanelRestoreDriver::ScenarioInstruments)
         .map(|(kind, id, tf, sprite, vis)| {
             let visible = !matches!(vis, Visibility::Hidden);
             WindowLayout {
@@ -417,7 +420,7 @@ fn cache_restore_has_strategy_editor_window(windows: Option<&Vec<WindowLayout>>)
         return false;
     };
     list.iter()
-        .any(|w| w.kind == PanelKind::StrategyEditor && !is_legacy_chart_entry(w))
+        .any(|w| w.kind == PanelKind::StrategyEditor && !is_non_persisted_layout_entry(w))
 }
 
 /// cache restore fallback: `windows` 内に non-legacy StrategyEditor が無いとき、
@@ -503,7 +506,7 @@ pub fn apply_cache_restore_system(
 
         if let Some(win_layouts) = &event.layout.windows {
             for win_layout in win_layouts {
-                if is_legacy_chart_entry(win_layout) {
+                if is_non_persisted_layout_entry(win_layout) {
                     continue;
                 }
                 pending.windows.push(win_layout.clone());
@@ -1170,7 +1173,7 @@ pub fn apply_layout_system(
         if let Some(win_layouts) = &layout.windows {
             let mut new_max_z = wm.max_z;
             for win_layout in win_layouts {
-                if is_legacy_chart_entry(win_layout) {
+                if is_non_persisted_layout_entry(win_layout) {
                     continue;
                 }
                 let want_key: Option<String> = if win_layout.kind == PanelKind::StrategyEditor {
@@ -1306,7 +1309,7 @@ pub fn apply_pending_layout_system(
     let mut still_pending = vec![];
     let windows = std::mem::take(&mut pending.windows);
     for win_layout in windows {
-        if is_legacy_chart_entry(&win_layout) {
+        if is_non_persisted_layout_entry(&win_layout) {
             continue;
         }
         let found = panels.iter_mut().find(|(kind, id, ..)| {
@@ -1860,10 +1863,26 @@ mod tests {
             z: 1.0,
             region_key: None,
         };
-        assert!(is_legacy_chart_entry(&chart), "Chart entry must be skipped");
+        assert!(is_non_persisted_layout_entry(&chart), "Chart entry must be skipped");
         assert!(
-            !is_legacy_chart_entry(&orders),
+            !is_non_persisted_layout_entry(&orders),
             "non-Chart entries must pass through"
+        );
+    }
+
+    #[test]
+    fn legacy_order_window_layout_is_skipped() {
+        let order = WindowLayout {
+            kind: PanelKind::Order,
+            visible: true,
+            position: [10.0, 20.0],
+            size: [400.0, 300.0],
+            z: 1.0,
+            region_key: None,
+        };
+        assert!(
+            is_non_persisted_layout_entry(&order),
+            "Order entry must be skipped on restore (issue #25 Slice 3)"
         );
     }
 
@@ -2122,6 +2141,72 @@ mod tests {
     }
 
     #[test]
+    fn live_order_window_is_excluded_from_layout_save() {
+        use bevy::ecs::system::SystemState;
+        use bevy::prelude::*;
+
+        let mut app = App::new();
+        app.insert_resource(StrategyBuffer::default());
+
+        app.world_mut().spawn((
+            Camera2d,
+            Transform::default(),
+            OrthographicProjection::default_2d(),
+        ));
+
+        // LIVE Order window: no LayoutExcluded. scenario 所有 (restore_driver==ScenarioInstruments)
+        // なので save 経路で弾かれるべき (issue #25)。
+        app.world_mut().spawn((
+            WindowRoot,
+            PanelKind::Order,
+            Transform::from_xyz(10.0, 20.0, 3.0),
+            Sprite {
+                custom_size: Some(Vec2::new(300.0, 200.0)),
+                ..default()
+            },
+            Visibility::Visible,
+        ));
+
+        // 通常 panel: 残るべき。
+        app.world_mut().spawn((
+            WindowRoot,
+            PanelKind::Orders,
+            Transform::from_xyz(0.0, 0.0, 1.0),
+            Sprite {
+                custom_size: Some(Vec2::new(200.0, 150.0)),
+                ..default()
+            },
+            Visibility::Visible,
+        ));
+
+        let mut state: SystemState<(
+            Query<
+                (
+                    &PanelKind,
+                    Option<&StrategyEditorId>,
+                    &Transform,
+                    &Sprite,
+                    &Visibility,
+                ),
+                (With<WindowRoot>, Without<LayoutExcluded>),
+            >,
+            Query<(&Transform, &OrthographicProjection), (With<Camera2d>, Without<WindowRoot>)>,
+            Res<StrategyBuffer>,
+        )> = SystemState::new(app.world_mut());
+
+        let (panels, camera, buffer) = state.get(app.world());
+        let layout = build_layout(&panels, &camera, &*buffer, None);
+
+        let windows = layout.windows.expect("windows must be Some");
+        assert!(
+            !windows.iter().any(|w| w.kind == PanelKind::Order),
+            "PanelKind::Order は scenario 所有なので save の windows[] に混入してはならない (issue #25)"
+        );
+        assert_eq!(windows.len(), 1, "Orders 1 件だけが残る");
+        assert_eq!(windows[0].kind, PanelKind::Orders);
+    }
+
+    #[test]
     fn layout_restore_does_not_spawn_picker_window() {
         use crate::ui::instrument_picker::InstrumentPickerWindow;
         use bevy::prelude::*;
@@ -2188,6 +2273,69 @@ mod tests {
         assert!(
             app.world().get_entity(picker).is_ok(),
             "InstrumentPickerWindow root は layout に含まれなくても despawn されない"
+        );
+    }
+
+    #[test]
+    fn layout_restore_does_not_spawn_order_window() {
+        use bevy::prelude::*;
+
+        let mut app = App::new();
+        app.add_event::<LayoutLoadRequested>();
+        app.add_event::<PanelSpawnRequested>();
+        app.add_event::<StrategyFileLoadRequested>();
+        app.insert_resource(WindowManager::default());
+        app.insert_resource(PendingLayoutApply::default());
+        app.insert_resource(PendingStrategyFragments::default());
+
+        app.world_mut().spawn((
+            Camera2d,
+            Transform::default(),
+            OrthographicProjection::default_2d(),
+        ));
+
+        let tmp = std::env::temp_dir().join(format!(
+            "ttwr_test_apply_no_order_{}.json",
+            std::process::id()
+        ));
+        // JSON に Order window が混入していても restore-skip により再 spawn されない。
+        let layout_json = serde_json::json!({
+            "schema_version": SCHEMA_VERSION,
+            "viewport": null,
+            "strategy_path": null,
+            "windows": [{
+                "kind": "Order",
+                "position": [0.0, 0.0],
+                "size": [320.0, 360.0],
+                "z": 1.0,
+                "visible": true,
+                "region_key": null
+            }]
+        });
+        std::fs::write(&tmp, serde_json::to_string(&layout_json).unwrap()).unwrap();
+
+        app.world_mut().send_event(LayoutLoadRequested {
+            path: tmp.clone(),
+            mode: LayoutLoadMode::UserJsonOpen,
+        });
+        app.init_resource::<ScenarioReadTarget>();
+        app.add_systems(Update, apply_layout_system);
+        app.update();
+
+        let _ = std::fs::remove_file(&tmp);
+
+        let mut spawn_events = app
+            .world_mut()
+            .resource_mut::<Events<PanelSpawnRequested>>();
+        let order_spawns: Vec<PanelKind> = spawn_events
+            .update_drain()
+            .map(|ev| ev.kind)
+            .filter(|k| *k == PanelKind::Order)
+            .collect();
+        assert!(
+            order_spawns.is_empty(),
+            "Order は restore_driver==ScenarioInstruments のため layout restore で再 spawn されない。got = {:?}",
+            order_spawns
         );
     }
 
