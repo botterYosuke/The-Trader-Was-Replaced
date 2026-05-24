@@ -144,6 +144,109 @@ def test_grpc_load_replay_data_precision_mismatch_surfaces_typed_error(
     assert "PRECISION_BYTES=16" in resp.error_message
 
 
+def test_load_replay_data_missing_symbol_does_not_write_into_shared_catalog(monkeypatch):
+    """GH #34 High: a 16-byte build pointed at an existing 8-byte shared catalog,
+    requesting a symbol that has NO parquet dir, must NOT call ensure_jquants_catalog.
+
+    The identifier-scoped read-guard no-ops on a missing symbol (files == []),
+    the provider then raises "No bars" ValueError, and core.py's fallback writes
+    16-byte bars into the 8-byte shared catalog — corrupting it for Windows.
+    """
+    import engine.nautilus_catalog_loader as loader
+    import engine.core as core_mod
+
+    # Force a 16-byte running build so the mismatch reproduces on any wheel.
+    monkeypatch.setattr(loader, "_running_precision_bytes", lambda: 16)
+
+    # Spy: the corrupting write must never be reached.
+    called = {"n": 0}
+    def _spy_ensure(*a, **k):
+        called["n"] += 1
+        raise AssertionError(
+            "ensure_jquants_catalog must NOT be called: it would write 16-byte "
+            "bars into the 8-byte shared catalog (GH #34)"
+        )
+    monkeypatch.setattr(core_mod, "ensure_jquants_catalog", _spy_ensure)
+
+    # The jquants fallback branch requires jquants_loader_base_dir + start/end.
+    # jquants_loader_base_dir is a property over self._jquants_loader.base_dir,
+    # so inject a tiny fake loader carrying a truthy base_dir.
+    class _FakeLoader:
+        base_dir = "/tmp/jquants-unused"
+    engine = DataEngine(
+        nautilus_catalog_path=str(FIXTURE_STD_CATALOG),
+        jquants_loader=_FakeLoader(),
+    )
+
+    # Request a symbol that does NOT exist in the 8-byte fixture
+    # (so the read-guard no-ops and the fallback write path is exercised).
+    with pytest.raises(loader.CatalogPrecisionMismatchError) as excinfo:
+        engine.load_replay_data(
+            instrument_ids=["9999.TSE"],
+            granularity="Minute",
+            start_date="2024-01-01",
+            end_date="2024-01-31",
+            catalog_path=str(FIXTURE_STD_CATALOG),
+        )
+
+    # The corrupting write was never reached, and the typed error propagated
+    # so the gRPC layer can map it to CATALOG_PRECISION_MISMATCH.
+    assert called["n"] == 0
+    assert "precision" in str(excinfo.value).lower()
+
+
+def test_load_replay_data_direct_jquants_route_does_not_write_into_shared_catalog(monkeypatch):
+    """GH #34 (codex round-2 High): the DIRECT J-Quants route — where
+    load_replay_data is called with NO catalog_path arg and the engine has a
+    configured jquants_catalog_path — must also guard the catalog-wide precision
+    BEFORE writing.
+
+    A 16-byte build pointed at an existing 8-byte shared jquants_catalog_path must
+    raise CatalogPrecisionMismatchError and must NOT call ensure_jquants_catalog
+    (which would corrupt the 8-byte catalog for Windows). The typed error must
+    propagate so gRPC maps it to CATALOG_PRECISION_MISMATCH.
+    """
+    import engine.nautilus_catalog_loader as loader
+    import engine.core as core_mod
+
+    # Force a 16-byte running build so the mismatch reproduces on any wheel.
+    monkeypatch.setattr(loader, "_running_precision_bytes", lambda: 16)
+
+    # Spy: the corrupting write must never be reached.
+    called = {"n": 0}
+    def _spy_ensure(*a, **k):
+        called["n"] += 1
+        raise AssertionError(
+            "ensure_jquants_catalog must NOT be called on the direct J-Quants "
+            "route: it would write 16-byte bars into the 8-byte shared catalog "
+            "(GH #34 codex round-2)"
+        )
+    monkeypatch.setattr(core_mod, "ensure_jquants_catalog", _spy_ensure)
+
+    # Enter the DIRECT jquants branch: NO nautilus_catalog_path, NO catalog_path
+    # arg → effective_catalog_path is None → falls through to the
+    # `self._jquants_loader is not None` block, which writes to
+    # self._jquants_catalog_path. The fixture is the real 8-byte catalog.
+    class _FakeLoader:
+        base_dir = "/tmp/jquants-unused"
+    engine = DataEngine(
+        jquants_loader=_FakeLoader(),
+        jquants_catalog_path=str(FIXTURE_STD_CATALOG),
+    )
+
+    with pytest.raises(loader.CatalogPrecisionMismatchError) as excinfo:
+        engine.load_replay_data(
+            instrument_ids=["9999.TSE"],
+            granularity="Minute",
+            start_date="2024-01-01",
+            end_date="2024-01-31",
+            # catalog_path intentionally omitted → routes to the direct jquants branch
+        )
+
+    assert called["n"] == 0
+    assert "precision" in str(excinfo.value).lower()
+
+
 def test_grpc_load_replay_data_without_catalog_path_field(catalog_grpc_server):
     """When catalog_path is not set, the request should not route to the catalog provider."""
     port, token, _ = catalog_grpc_server

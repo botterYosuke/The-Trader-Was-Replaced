@@ -117,6 +117,39 @@ def _assert_catalog_precision_compatible(
                     )
 
 
+def _assert_catalog_writable_for_precision(
+    catalog_root: str | Path,
+    expected_bytes: Optional[int] = None,
+) -> None:
+    """Hard gate run *before* writing new bars into a (possibly shared) catalog.
+
+    Unlike :func:`_assert_catalog_precision_compatible` (which is identifier-scoped
+    and no-ops on a missing symbol), this is catalog-WIDE: it inspects every existing
+    parquet already in the catalog and refuses the write if any of them was written
+    by a different nautilus precision build than the one currently running.
+
+    A 16-byte (high-precision) build must NEVER append 16-byte bars to the shared
+    8-byte (standard) catalog: it would corrupt the catalog for the standard-build
+    machines that read it (GH #34). Mixed widths in one identifier dir also abort
+    ``query()`` later (SIGABRT).
+
+    No-op when the catalog has no existing parquet yet (a fresh write is fine — the
+    new files define the width). ``expected_bytes`` is injectable for testing.
+    """
+    if expected_bytes is None:
+        expected_bytes = _running_precision_bytes()
+    # Scan every data class dir catalog-wide (identifiers=None => all id dirs).
+    # _assert_catalog_precision_compatible already no-ops per-subdir when the dir
+    # is absent, so a brand-new catalog path passes cleanly.
+    for subdir in ("bar", "trade_tick"):
+        _assert_catalog_precision_compatible(
+            catalog_root,
+            subdir,
+            identifiers=None,
+            expected_bytes=expected_bytes,
+        )
+
+
 def _resolve_catalog_path(catalog_path: str | Path) -> str:
     raw = os.fspath(catalog_path)
     # UNC paths become file://host/... in DataFusion, which has no ObjectStore

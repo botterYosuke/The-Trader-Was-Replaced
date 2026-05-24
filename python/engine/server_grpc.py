@@ -50,7 +50,10 @@ from .replay import BaseReplayProvider
 from .jquants_loader import JQuantsLoader
 from .paths import listed_symbols_artifact_path
 from engine.strategy_runtime.catalog_data_loader import load_bars_for_scenario, normalize_granularity
-from engine.nautilus_catalog_loader import CatalogPrecisionMismatchError
+from engine.nautilus_catalog_loader import (
+    CatalogPrecisionMismatchError,
+    _assert_catalog_writable_for_precision,
+)
 from engine.jquants_to_catalog import ensure_jquants_catalog
 
 
@@ -841,6 +844,12 @@ class GrpcDataEngineServer(
                 missing = [str(k) for k, v in bars_by_instrument.items() if not v]
                 if missing:
                     gran = normalize_granularity(scenario["granularity"])
+                    # GH #34: missing symbol を書き込む前に catalog 全体の
+                    # precision を検査。typed error は外側 try の
+                    # except CatalogPrecisionMismatchError が拾い
+                    # CATALOG_PRECISION_MISMATCH を返す（ループ内 except では
+                    # 飲み込まれない位置）。
+                    _assert_catalog_writable_for_precision(catalog_path)
                     for symbol in missing:
                         try:
                             ensure_jquants_catalog(
