@@ -193,3 +193,71 @@ def test_callback_exception_does_not_kill_loop() -> None:
 
     n = asyncio.run(scenario())
     assert n >= 2  # 初回例外後も 2 回目 emit が来た
+
+
+def test_fetch_exception_records_source_aware_error() -> None:
+    """fetch 例外が source 付き error record として観測できる。"""
+
+    class _FlakyAdapter(MockVenueAdapter):
+        def __init__(self) -> None:
+            super().__init__()
+            self._boom_calls = 0
+
+        async def fetch_account(self) -> AccountSnapshot:  # type: ignore[override]
+            self._boom_calls += 1
+            if self._boom_calls == 2:
+                raise RuntimeError("transient venue error")
+            return await super().fetch_account()
+
+    async def scenario() -> "AccountSync":
+        adapter = _FlakyAdapter()
+        await adapter.login(
+            VenueCredentials(credentials_source="env", environment_hint="demo")
+        )
+        adapter.set_account_snapshot(cash=10.0, buying_power=20.0, positions=[])
+        seen: list[AccountSnapshot] = []
+        sync = AccountSync(adapter, on_account_event=seen.append, interval_s=0.01)
+        await sync.start()
+        for _ in range(40):
+            if sync.last_error is not None:
+                break
+            await asyncio.sleep(0.005)
+        await sync.stop()
+        return sync
+
+    sync = asyncio.run(scenario())
+    rec = sync.last_error_record
+    assert rec is not None
+    assert rec.source == "account_sync"
+    assert "transient venue error" in rec.detail
+
+
+def test_force_resync_emits_even_for_unchanged_snapshot() -> None:
+    """force-resync は dedup を貫通し、前回 emit と同一 snapshot でも再 emit する。
+
+    issue #29 Slice 2': Replay→Live 切替直後に Rust が PortfolioState を reset した後、
+    backend へ強制 snapshot を要求する経路の土台。値不変の demo 口座でも必ず再 push する。
+    """
+
+    async def scenario() -> list[AccountSnapshot]:
+        adapter = await _logged_in_adapter()
+        adapter.set_account_snapshot(cash=100.0, buying_power=200.0, positions=[])
+        seen: list[AccountSnapshot] = []
+        # interval を長くして「初期 emit のみ」の状態を作る（tick による再 emit を排除）。
+        sync = AccountSync(adapter, on_account_event=seen.append, interval_s=1000.0)
+        await sync.start()
+        # 初回 emit を待つ
+        for _ in range(40):
+            if len(seen) >= 1:
+                break
+            await asyncio.sleep(0.005)
+        assert len(seen) == 1
+        # snapshot は不変のまま force-resync を要求 → dedup を貫通して再 emit されるはず
+        await sync.force_resync()
+        await sync.stop()
+        return seen
+
+    seen = asyncio.run(scenario())
+    assert len(seen) == 2, "force-resync は同一 snapshot でも再 emit しなければならない"
+    assert seen[0] == seen[1]
+    assert seen[1].cash == 100.0

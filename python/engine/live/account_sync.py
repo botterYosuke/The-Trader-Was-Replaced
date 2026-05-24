@@ -24,11 +24,19 @@ from __future__ import annotations
 
 import asyncio
 import logging
+from dataclasses import dataclass
 from typing import Callable, Optional, Protocol
 
 from engine.live.order_types import AccountSnapshot
 
 _LOG = logging.getLogger(__name__)
+
+
+@dataclass(frozen=True)
+class LiveErrorRecord:
+    """source 付きの live エラー観測点（D2 で server_grpc が読み、BackendError event へ寄せる布石）。"""
+    source: str
+    detail: str
 
 
 class _AccountSource(Protocol):
@@ -43,13 +51,16 @@ class AccountSync:
         adapter: _AccountSource,
         on_account_event: Callable[[AccountSnapshot], None],
         interval_s: float = 30.0,
+        on_error: Optional[Callable[[LiveErrorRecord], None]] = None,
     ) -> None:
         self._adapter = adapter
         self._on_account_event = on_account_event
         self._interval_s = interval_s
+        self._on_error = on_error
         self._task: Optional[asyncio.Task[None]] = None
         self._last_emitted: Optional[AccountSnapshot] = None
         self._last_error: Optional[BaseException] = None
+        self._last_error_record: Optional[LiveErrorRecord] = None
 
     async def start(self) -> None:
         # 既に走っていれば no-op。die 済み task は再起動を許可（reducer_bridge と同 semantics）。
@@ -57,6 +68,18 @@ class AccountSync:
             return
         self._last_error = None
         self._task = asyncio.create_task(self._run())
+
+    async def force_resync(self) -> bool:
+        """dedup を貫通して即座に 1 回 fetch + emit する（issue #29 Slice 2'）。
+
+        Replay→Live 切替直後に Rust が PortfolioState を reset するため、backend は
+        値不変でも強制的に AccountEvent を再 push する必要がある。`_tick(force_emit=True)`
+        は snapshot が `_last_emitted` と同一でも emit する。fetch 失敗時は `_tick` 内の
+        on_error 経路（既存）で surface され、例外を握り潰さず継続する。
+
+        戻り値: emit に成功したら True、fetch 失敗等で emit できなければ False
+        （handler が success/error_code を判定するのに使う）。"""
+        return await self._tick(force_emit=True)
 
     async def _run(self) -> None:
         # 初期ロード: interval を待たず即 fetch + emit（必ず 1 回出す）。
@@ -68,18 +91,30 @@ class AccountSync:
                 return
             await self._tick(force_emit=False)
 
-    async def _tick(self, *, force_emit: bool) -> None:
+    async def _tick(self, *, force_emit: bool) -> bool:
+        """1 回 fetch + emit を試みる。emit に成功したら True、fetch 失敗や
+        callback 失敗で emit できなかった場合は False を返す（dedup skip も False）。"""
         try:
             snapshot = await self._adapter.fetch_account()
         except asyncio.CancelledError:
             raise
         except BaseException as exc:  # noqa: BLE001 — best-effort: 1 回失敗で停止させない
             self._last_error = exc
+            detail = f"{type(exc).__name__}: {exc}" if str(exc) else repr(exc)
+            record = LiveErrorRecord(source="account_sync", detail=detail)
+            self._last_error_record = record
             _LOG.warning("AccountSync: fetch_account failed, continuing", exc_info=exc)
-            return
+            if self._on_error is not None:
+                try:
+                    self._on_error(record)
+                except asyncio.CancelledError:
+                    raise
+                except BaseException:  # noqa: BLE001 — on_error の失敗でループを止めない
+                    _LOG.warning("AccountSync: on_error callback failed", exc_info=True)
+            return False
 
         if not force_emit and snapshot == self._last_emitted:
-            return  # 不変なら emit しない（差分 push）
+            return False  # 不変なら emit しない（差分 push）
 
         try:
             self._on_account_event(snapshot)
@@ -90,8 +125,9 @@ class AccountSync:
             # 配信に失敗した snapshot を「emit 済み」と誤記録し、値が変わるまで二度と
             # 再送されない（特に force_emit=True の初回ロードが永久に欠落しうる）。
             _LOG.warning("AccountSync: on_account_event callback failed", exc_info=exc)
-            return
+            return False
         self._last_emitted = snapshot
+        return True
 
     async def stop(self) -> None:
         if self._task is None:
@@ -106,3 +142,7 @@ class AccountSync:
     @property
     def last_error(self) -> Optional[BaseException]:
         return self._last_error
+
+    @property
+    def last_error_record(self) -> Optional[LiveErrorRecord]:
+        return self._last_error_record

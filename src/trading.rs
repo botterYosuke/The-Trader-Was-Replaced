@@ -344,6 +344,12 @@ pub enum TransportCommand {
     StopLiveStrategy {
         run_id: String,
     },
+    /// Issue #29 Slice 2' (Step 5): execution mode が Live (LiveManual/LiveAuto) に
+    /// 実遷移した直後に backend へ口座スナップショット再取得を要求する。transport
+    /// task が `token` を注入して `ForceAccountSnapshot` RPC を撃ち、backend が
+    /// `force_resync()` で dedup を貫通して AccountEvent を既存 stream に再 push する。
+    /// これが無いと CONNECTED でも BUYING POWER/POSITIONS が空のまま残る。
+    ForceAccountSnapshot,
 }
 
 /// Wrapper around a Tachibana second password that redacts itself in `Debug`
@@ -912,6 +918,13 @@ pub enum BackendEvent {
         fill_count: i64,
         ts_ms: i64,
     },
+    /// Issue #29 Slice1: backend 側の継続的エラー (account_sync / server_grpc) を
+    /// Footer toast に出すための汎用エラーイベント。proto BackendError のミラー。
+    BackendError {
+        source: String,
+        detail: String,
+        ts_ms: i64,
+    },
 }
 
 /// AccountEvent.positions の 1 要素。proto AccountPosition のミラー。
@@ -1400,8 +1413,17 @@ pub struct SafetyToast {
     pub active: Option<SafetyToastEntry>,
 }
 
+/// どの種類のトーストか。header の文言・ラベル分岐に使う（issue #29 Slice1 ①）。
+/// SafetyRail = 安全レール違反、BackendError = バックエンド内部エラー。
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ToastKind {
+    SafetyRail,
+    BackendError,
+}
+
 #[derive(Debug, Clone, PartialEq)]
 pub struct SafetyToastEntry {
+    pub toast_kind: ToastKind,
     pub run_id: String,
     pub kind: String,
     pub detail: String,
@@ -1410,8 +1432,16 @@ pub struct SafetyToastEntry {
 
 impl SafetyToast {
     /// Replace the active toast (a newer violation supersedes an older one).
-    pub fn show(&mut self, run_id: String, kind: String, detail: String, ts_ms: i64) {
+    pub fn show(
+        &mut self,
+        toast_kind: ToastKind,
+        run_id: String,
+        kind: String,
+        detail: String,
+        ts_ms: i64,
+    ) {
         self.active = Some(SafetyToastEntry {
+            toast_kind,
             run_id,
             kind,
             detail,

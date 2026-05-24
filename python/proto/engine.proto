@@ -71,6 +71,12 @@ service DataEngine {
   rpc UnsubscribeMarketData (UnsubscribeRequest) returns (SubscribeResponse);
   rpc SetExecutionMode (SetExecutionModeRequest) returns (SetExecutionModeResponse);
 
+  // issue #29 Slice 2': force the backend to re-emit the current account snapshot
+  // (dedup-bypassing) on SubscribeBackendEvents. Fire-and-forget ack — the snapshot
+  // itself returns via the existing AccountEvent stream, NOT inline. Rust calls this
+  // right after applying the ExecutionModeChanged→Live reset that clears PortfolioState.
+  rpc ForceAccountSnapshot (ForceAccountSnapshotRequest) returns (ForceAccountSnapshotResponse);
+
   // Phase 9 Step 0: Backend Event Transport (server-streaming).
   // Reverse-direction control-plane channel: server pushes BackendEvent to the UI.
   // Must be added before other Phase 9 RPCs (everything depends on this transport).
@@ -340,6 +346,15 @@ message SetExecutionModeResponse {
   string execution_mode = 3;
 }
 
+message ForceAccountSnapshotRequest {
+  string token = 1;
+}
+
+message ForceAccountSnapshotResponse {
+  bool success = 1;
+  string error_code = 2;
+}
+
 message ShutdownRequest {
   string token = 1;
   uint32 grace_seconds = 2;
@@ -432,6 +447,15 @@ message SafetyRailViolation {
   int64 ts_ms = 4;
 }
 
+// BackendError: a backend-side error surfaced to the UI as a toast (issue #29).
+// `source` distinguishes the producer ("account_sync" tick / "server_grpc" start
+// failure, etc.); `detail` is a short human-readable explanation for the toast.
+message BackendError {
+  string source = 1;
+  string detail = 2;
+  int64 ts_ms = 3;
+}
+
 // StrategyLogMessage: relays a strategy's own `self.log.*` line to the UI's
 // Live Run Panel (last ~100 lines). `level` is the Python log level name.
 message StrategyLogMessage {
@@ -471,6 +495,7 @@ message BackendEvent {
     SafetyRailViolation safety_rail_violation = 6;
     StrategyLogMessage strategy_log_message = 7;
     LiveStrategyTelemetry live_strategy_telemetry = 8;
+    BackendError backend_error = 9;
   }
 }
 
