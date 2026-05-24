@@ -300,3 +300,75 @@ def test_parse_ec_frame_bad_datetime_is_zero():
 )
 def test_ec_status_mapping(nt, leaves, expected):
     assert to.ec_status(nt, leaves) == expected
+
+
+# ---------------------------------------------------------------------------
+# CLMOrderList — build_order_list_payload / parse_order_list_response (Slice 3b)
+# ---------------------------------------------------------------------------
+
+
+def _order_list_item(**overrides) -> dict:
+    """CLMOrderList aOrderList の最小レコード (BUY LIMIT 7203.TSE, sOrderSyoukaiStatus=5)。"""
+    base = {
+        "sOrderOrderNumber": "12345",
+        "sOrderIssueCode": "7203",
+        "sOrderSizyouC": "00",
+        "sOrderBaibaiKubun": "3",  # 買
+        "sOrderOrderSuryou": "100",
+        "sOrderCurrentSuryou": "100",
+        "sOrderOrderPrice": "2430",
+        "sOrderOrderPriceKubun": "2",  # 指値
+        "sOrderStatusCode": "0",
+    }
+    base.update(overrides)
+    return base
+
+
+def test_build_order_list_payload_targets_working_orders():
+    payload = to.build_order_list_payload()
+    assert payload["sCLMID"] == "CLMOrderList"
+    assert payload["sOrderSyoukaiStatus"] == "5"  # 未約定+一部約定
+
+
+def test_parse_order_list_response_buy_limit():
+    resp = {"aOrderList": [_order_list_item()], "p_errno": "0", "sResultCode": "0"}
+    rows = to.parse_order_list_response(resp)
+    assert len(rows) == 1
+    row = rows[0]
+    assert row.venue_order_id == "12345"
+    assert row.issue_code == "7203"
+    assert row.sizyou_c == "00"
+    assert row.side == "BUY"
+    assert row.qty == 100.0
+    assert row.price == 2430.0
+
+
+def test_parse_order_list_response_sell_market():
+    item = _order_list_item(
+        sOrderBaibaiKubun="1",   # 売
+        sOrderOrderPrice="0",
+        sOrderOrderPriceKubun="1",  # 成行
+    )
+    resp = {"aOrderList": [item], "p_errno": "0", "sResultCode": "0"}
+    rows = to.parse_order_list_response(resp)
+    assert len(rows) == 1
+    row = rows[0]
+    assert row.side == "SELL"
+    assert row.price is None
+
+
+def test_parse_order_list_response_empty_list():
+    resp = {"aOrderList": "", "p_errno": "0", "sResultCode": "0"}
+    assert to.parse_order_list_response(resp) == []
+
+
+def test_parse_order_list_response_multiple_orders():
+    items = [
+        _order_list_item(sOrderOrderNumber="1001"),
+        _order_list_item(sOrderOrderNumber="1002", sOrderBaibaiKubun="1"),
+    ]
+    resp = {"aOrderList": items, "p_errno": "0", "sResultCode": "0"}
+    rows = to.parse_order_list_response(resp)
+    assert len(rows) == 2
+    assert rows[0].venue_order_id == "1001"
+    assert rows[1].side == "SELL"

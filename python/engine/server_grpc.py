@@ -2154,12 +2154,35 @@ class GrpcDataEngineServer(
         facade = self._order_facade
         if facade is None:
             return engine_pb2.GetOrdersRes(success=False, error_code="NO_LIVE_SESSION")
+
+        facade_orders = facade.list_orders()
+
+        # Slice 3b: venue 側の working-orders を取得してマージする。
+        # facade 側に既知の venue_order_id はスキップ（facade が正（client_order_id あり））。
+        venue_orders = []
+        adapter = self._live_adapter()
+        if adapter is not None and hasattr(adapter, "fetch_working_orders"):
+            loop = self._ensure_live_loop()
+            try:
+                future = asyncio.run_coroutine_threadsafe(
+                    adapter.fetch_working_orders(), loop
+                )
+                venue_orders = future.result(timeout=self._live_timeout_s)
+            except Exception as exc:
+                logging.warning("GetOrders: fetch_working_orders failed: %s", exc)
+
+        known_venue_ids = {o.venue_order_id for o in facade_orders if o.venue_order_id}
+        merged = list(facade_orders)
+        for vo in venue_orders:
+            if vo.venue_order_id not in known_venue_ids:
+                merged.append(vo)
+
         return engine_pb2.GetOrdersRes(
             success=True,
             error_code="",
             orders=[
                 self._order_event_to_proto(e, strategy_id=MANUAL_STRATEGY_ID)
-                for e in facade.list_orders()
+                for e in merged
             ],
         )
 

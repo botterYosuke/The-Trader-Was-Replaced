@@ -5,6 +5,7 @@ use backcast::backend_supervisor::{
 use backcast::backend_sync::{
     BackendEventChannel, StatusUpdateChannel, backend_event_drain_system,
     backend_restart_resync_system, request_force_account_snapshot_on_live_entry,
+    request_get_orders_on_venue_connected,
     status_update_system,
 };
 use backcast::camera::{pancam_suppression_over_editor_system, setup_camera};
@@ -242,6 +243,9 @@ async fn main() {
                 // Issue #29 Slice 2' (Step 5): Live entry 検出で ForceAccountSnapshot を撃つ。
                 // status_update_system が exec_mode を確定させた後に読む（race-free）。
                 request_force_account_snapshot_on_live_entry.after(status_update_system),
+                // Issue #29 Slice 3b: venue CONNECTED 時に GetOrders を撃って接続前の
+                // working-orders を seed する（status_update_system が venue_state を確定後）。
+                request_get_orders_on_venue_connected.after(status_update_system),
                 update_replay_startup_window_system,
                 animate_replay_startup_bar_system,
                 auto_hide_replay_startup_window_system.after(status_update_system),

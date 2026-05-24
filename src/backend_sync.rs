@@ -19,7 +19,7 @@ use crate::trading::{
     LiveRuns, OrderFeedback, PortfolioPosition, PortfolioState, PromoteFeedback, ReconcilePrompt,
     ReloginPrompt, RunState, SafetyToast, SecretPrompt, SecretPromptRequest, StrategyLogs, Tickers,
     ToastKind,
-    TickersStatus, TransportCommand, TransportCommandSender, VenueStatusRes,
+    TickersStatus, TransportCommand, TransportCommandSender, VenueState, VenueStatusRes,
     is_terminal_order_status, parse_summary_json, reconcile_unknown_orders,
 };
 use bevy::prelude::*;
@@ -645,6 +645,33 @@ pub fn request_force_account_snapshot_on_live_entry(
     }
 }
 
+/// Issue #29 Slice 3b: venue が CONNECTED（または SUBSCRIBED）に実遷移したとき、
+/// `GetOrders` を 1 回だけ撃って接続前から venue 側に存在する working-orders を seed
+/// する。`Local` で前回状態を追跡し二重送信を防ぐ（`request_force_account_snapshot_on_live_entry` と同型）。
+pub fn request_get_orders_on_venue_connected(
+    venue_status: Res<VenueStatusRes>,
+    sender: Option<Res<TransportCommandSender>>,
+    mut prev: Local<Option<VenueState>>,
+) {
+    let current = venue_status.state;
+    let was = prev.replace(current);
+
+    let is_connected = matches!(current, VenueState::Connected | VenueState::Subscribed);
+    let was_connected = matches!(was, Some(VenueState::Connected) | Some(VenueState::Subscribed));
+    // Disconnected/Authenticating → Connected の実遷移のみ。Connected 内の遷移や離脱では送らない。
+    if !(is_connected && !was_connected) {
+        return;
+    }
+
+    let Some(tx) = sender.as_ref() else {
+        warn!("[backend] venue connect seed skipped: TransportCommandSender unavailable");
+        return;
+    };
+    let venue = venue_status.venue_id.clone().unwrap_or_default();
+    info!("[backend] venue CONNECTED — requesting GetOrders to seed working orders");
+    let _ = tx.tx.send(TransportCommand::GetOrders { venue });
+}
+
 pub fn apply_available_loaded(
     available: &mut AvailableInstruments,
     end_date: NaiveDate,
@@ -1088,5 +1115,42 @@ mod tests {
             "empty EC-stream strategy_id must not clear the tagged row"
         );
         assert_eq!(orders.orders[0].status, "FILLED");
+    }
+
+    /// Issue #29 Slice 3b: venue CONNECTED 遷移で GetOrders を 1 回だけ発火する。
+    #[test]
+    fn venue_connected_requests_get_orders() {
+        use bevy::prelude::*;
+        use crate::trading::{TransportCommand, TransportCommandSender, VenueState, VenueStatusRes};
+        use tokio::sync::mpsc;
+
+        let (tx, mut rx) = mpsc::unbounded_channel::<TransportCommand>();
+        let mut app = App::new();
+        app.insert_resource(TransportCommandSender { tx });
+        let mut vs = VenueStatusRes::default();
+        vs.venue_id = Some("TACHIBANA".to_string());
+        app.insert_resource(vs);
+        app.add_systems(Update, request_get_orders_on_venue_connected);
+
+        // 1st tick: Disconnected として記録するだけ。
+        app.update();
+        assert!(rx.try_recv().is_err(), "no request while still disconnected");
+
+        // Disconnected → Connected の実遷移。
+        app.world_mut().resource_mut::<VenueStatusRes>().state = VenueState::Connected;
+        app.update();
+        assert!(
+            matches!(rx.try_recv(), Ok(TransportCommand::GetOrders { ref venue }) if venue == "TACHIBANA"),
+            "venue CONNECTED must enqueue GetOrders to seed working orders"
+        );
+
+        // 同一 state のまま再 tick → 二重要求しない。
+        app.update();
+        assert!(rx.try_recv().is_err(), "no duplicate while still CONNECTED");
+
+        // Connected → Disconnected は entry ではないので要求しない。
+        app.world_mut().resource_mut::<VenueStatusRes>().state = VenueState::Disconnected;
+        app.update();
+        assert!(rx.try_recv().is_err(), "leaving CONNECTED must not re-request");
     }
 }

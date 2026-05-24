@@ -341,3 +341,8 @@ class MockVenueAdapter:
         """
         self._require_login()
         return self._account_snapshot
+
+    async def fetch_working_orders(self) -> list:
+        """Mock: 接続時 seed 対象の working-orders を返す（既定は空リスト）。"""
+        self._require_login()
+        return []

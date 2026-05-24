@@ -374,6 +374,47 @@ def test_get_orders_bad_token(order_server):
     assert exc.value.code() == grpc.StatusCode.UNAUTHENTICATED
 
 
+def test_get_orders_merges_venue_working_orders(order_server):
+    """Slice 3b: GetOrders は facade 注文に加え venue.fetch_working_orders() もマージする。
+
+    facade に存在しない venue_order_id を持つ order は GetOrders に含まれる。
+    """
+    from engine.live.order_types import OrderEventData
+
+    port, token, servicer = order_server
+    adapter = _arm_live(servicer)
+    stub = _stub(port)
+
+    # facade に 1 件（ACCEPTED、venue_order_id は空 = mock 既定）
+    adapter.set_next_order_outcome(status="ACCEPTED", filled_qty=0.0)
+    placed = stub.PlaceOrder(_place_req(token, instrument_id="7203.TSE", side="BUY",
+                                        qty=100.0, order_type="LIMIT", price=2500.0))
+    facade_coid = placed.order_event.client_order_id
+
+    # venue から 1 件（facade には存在しない venue_order_id）
+    venue_seed = [
+        OrderEventData(
+            order_id="v999", venue_order_id="v999", client_order_id="",
+            status="ACCEPTED", filled_qty=0.0, avg_price=0.0, ts_ms=0,
+            symbol="6758.TSE", side="SELL", qty=50.0, price=None,
+        ),
+    ]
+
+    async def _fake_fetch_working_orders():
+        return venue_seed
+
+    adapter.fetch_working_orders = _fake_fetch_working_orders
+
+    res = stub.GetOrders(engine_pb2.GetOrdersReq(token=token, venue="MOCK"))
+    assert res.success is True
+    assert len(res.orders) == 2, "facade 1件 + venue 1件"
+    coids = {o.client_order_id for o in res.orders}
+    assert facade_coid in coids, "facade 注文は含まれる"
+    v999 = next(o for o in res.orders if o.venue_order_id == "v999")
+    assert v999.symbol == "6758.TSE"
+    assert v999.side == "SELL"
+
+
 # --- modify ----------------------------------------------------------------
 
 

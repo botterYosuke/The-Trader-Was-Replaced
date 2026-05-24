@@ -851,6 +851,14 @@ class KabuStationAdapter:
             cash=buying_power, buying_power=buying_power, positions=positions
         )
 
+    async def fetch_working_orders(self) -> list:
+        """kabu: 接続時 seed 用 working-orders 取得（Slice 3b stub）。
+
+        kabuステーション API は CLMOrderList 相当の一括照会 API を持つが、
+        Phase 9 現在は立花のみが対象のため空リストを返す。
+        """
+        return []
+
     # ------------------------------------------------------------------
     # Venue Health Watchdog (Phase 9 §3.5 / Step 7)
     # ------------------------------------------------------------------

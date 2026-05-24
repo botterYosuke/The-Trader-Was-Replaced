@@ -327,6 +327,77 @@ def ec_status(notification_type: str, leaves_qty: float | None) -> str:
     return "ACCEPTED"  # _NT_RECEIVED または未知種別
 
 
+# ---------------------------------------------------------------------------
+# CLMOrderList — working-orders 取得 (Issue #29 Slice 3b)
+# ---------------------------------------------------------------------------
+#
+# sOrderSyoukaiStatus="5" で「未約定+一部約定」を絞り込む。
+# sOrderBaibaiKubun: 1=売(SELL) / 3=買(BUY)。5=現渡 / 7=現引は無視。
+# sOrderOrderPriceKubun: 1=成行(MARKET→price=None) / 2=指値(LIMIT→price!=None)。
+# ---------------------------------------------------------------------------
+
+_BAIBAI_TO_SIDE: dict[str, str] = {"1": "SELL", "3": "BUY"}
+
+
+@dataclass(frozen=True)
+class WorkingOrderRow:
+    """CLMOrderList の 1 行を正規化した working-order レコード。"""
+
+    venue_order_id: str  # sOrderOrderNumber
+    issue_code: str      # sOrderIssueCode（例: "7203"）
+    sizyou_c: str        # sOrderSizyouC（例: "00" = 東証）
+    side: str            # "BUY" or "SELL"
+    qty: float           # sOrderOrderSuryou
+    price: float | None  # None = 成行（MARKET）
+
+
+def build_order_list_payload() -> dict[str, str]:
+    """CLMOrderList リクエスト dict（未約定+一部約定のみ）。"""
+    return {
+        "sCLMID": "CLMOrderList",
+        "sIssueCode": "",          # 全銘柄
+        "sOrderSyoukaiStatus": "5",  # 未約定 + 一部約定
+    }
+
+
+def parse_order_list_response(payload: dict) -> list[WorkingOrderRow]:
+    """CLMOrderList 応答の aOrderList を WorkingOrderRow のリストに正規化する。
+
+    ``aOrderList`` が空文字（注文ゼロ件の立花仕様 R8）の場合は [] を返す。
+    売買区分が BUY/SELL 以外の行（現渡/現引）はスキップする。
+    """
+    from engine.exchanges.tachibana_codec import deserialize_tachibana_list
+
+    raw: list = deserialize_tachibana_list(payload.get("aOrderList", ""))
+    rows: list[WorkingOrderRow] = []
+    for item in raw:
+        if not isinstance(item, dict):
+            continue
+        venue_order_id = str(item.get("sOrderOrderNumber", ""))
+        if not venue_order_id:
+            continue
+        baibai = str(item.get("sOrderBaibaiKubun", ""))
+        side = _BAIBAI_TO_SIDE.get(baibai)
+        if side is None:
+            continue  # 現渡(5)/現引(7) は Phase 9 対象外
+        price_kubun = str(item.get("sOrderOrderPriceKubun", "2"))
+        price: float | None
+        if price_kubun == "1":  # 成行
+            price = None
+        else:
+            raw_price = parse_float(item.get("sOrderOrderPrice"))
+            price = raw_price if raw_price > 0.0 else None
+        rows.append(WorkingOrderRow(
+            venue_order_id=venue_order_id,
+            issue_code=str(item.get("sOrderIssueCode", "")),
+            sizyou_c=str(item.get("sOrderSizyouC", "")),
+            side=side,
+            qty=parse_float(item.get("sOrderOrderSuryou")),
+            price=price,
+        ))
+    return rows
+
+
 def parse_ec_frame(fields: dict[str, str]) -> ExecutionReport | None:
     """EC (注文約定通知) フレームの (key→value) dict を正規化する。
 

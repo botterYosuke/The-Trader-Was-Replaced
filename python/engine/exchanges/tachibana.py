@@ -64,6 +64,10 @@ log = logging.getLogger(__name__)
 # REQUEST I/F (発注・余力・保有) は master DL より軽量。read 30s で十分。
 _REQUEST_TIMEOUT = httpx.Timeout(connect=10.0, read=30.0, write=10.0, pool=5.0)
 
+# Tachibana sSizyouC → Nautilus InstrumentId suffix (order_params.md: "00"=東証)。
+# 名証/福証/札証は Phase 9 非対象。未知コードは suffix 無しでフォールバック。
+_SIZYOU_TO_SUFFIX: dict[str, str] = {"00": "TSE"}
+
 
 class _SecretResolver(Protocol):
     async def resolve(self, venue: str, purpose: str) -> str: ...
@@ -672,6 +676,38 @@ class TachibanaAdapter:
         return AccountSnapshot(
             cash=buying_power, buying_power=buying_power, positions=positions
         )
+
+    async def fetch_working_orders(self) -> list[OrderEventData]:
+        """CLMOrderList で venue 側の working-orders を取得する (Issue #29 Slice 3b)。
+
+        sOrderSyoukaiStatus="5"（未約定+一部約定）で絞り込み、OrderEventData のリスト
+        として返す。venue_order_id / symbol / side / qty / price のみ有効で、
+        client_order_id は "" のまま（facade が採番した ID は venue 側にない）。
+        接続時に GetOrders ハンドラから呼ばれ、facade 由来の注文とマージされる。
+        """
+        if self._session is None:
+            raise RuntimeError("fetch_working_orders requires an active session; call login() first")
+        resp = await self._request(_orders.build_order_list_payload())
+        _auth_check_response(resp)
+        rows = _orders.parse_order_list_response(resp)
+        result: list[OrderEventData] = []
+        for row in rows:
+            suffix = _SIZYOU_TO_SUFFIX.get(row.sizyou_c)
+            symbol = f"{row.issue_code}.{suffix}" if suffix else row.issue_code
+            result.append(OrderEventData(
+                order_id=row.venue_order_id,
+                venue_order_id=row.venue_order_id,
+                client_order_id="",
+                status="ACCEPTED",
+                filled_qty=0.0,
+                avg_price=0.0,
+                ts_ms=0,
+                symbol=symbol,
+                side=row.side,
+                qty=row.qty,
+                price=row.price,
+            ))
+        return result
 
     # ------------------------------------------------------------------
     # 口座レベル EC (注文約定通知) ストリーム
