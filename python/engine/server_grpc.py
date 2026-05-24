@@ -1828,8 +1828,10 @@ class GrpcDataEngineServer(
                 error_code="FORCE_RESYNC_FAILED",
             )
         if not emitted:
-            # fetch 失敗等で AccountEvent を再 push できなかった。on_error 経路で
-            # BackendError は既に publish 済み。RPC は success=True を返してはならない。
+            # fetch 失敗・callback 失敗のいずれかで AccountEvent を再 push できなかった。
+            # どちらの経路も AccountSync が on_error を呼ぶので BackendError は既に publish
+            # 済み（issue #29 review残: callback 失敗も on_error で surface するよう修正）。
+            # RPC は success=True を返してはならない。
             return engine_pb2.ForceAccountSnapshotResponse(
                 success=False,
                 error_code="FORCE_RESYNC_NO_EMIT",
