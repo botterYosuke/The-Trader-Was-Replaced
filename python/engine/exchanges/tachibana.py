@@ -150,6 +150,9 @@ class TachibanaAdapter:
         self._ec_ws: TachibanaEventWs | None = None
         self._ec_task: asyncio.Task | None = None
         self._ec_stop: asyncio.Event | None = None
+        # Issue #32: master download (CLMEventDownload) の singleflight。並走する
+        # fetch_instruments() を 1 本に集約し二重 DL を防ぐ。
+        self._instruments_inflight: asyncio.Future | None = None
 
     @property
     def is_logged_in(self) -> bool:
@@ -270,6 +273,27 @@ class TachibanaAdapter:
         self._queue.put_nowait(None)  # type: ignore[arg-type]
 
     async def fetch_instruments(self) -> list[InstrumentRaw]:
+        """Issue #32: singleflight wrapper。並走する fetch_instruments() 呼び出し
+        （picker の [+ Add] と InstrumentsScheduler の初回 refresh が race する等）が
+        同一の in-flight な CLMEventDownload を共有し、master download が二重に走らない
+        ようにする。in-flight task を `asyncio.shield` で包むので、待ち手側がキャンセル
+        （blocking fetch の timeout 等）されても下層 DL は走り続け、scheduler / store
+        永続化のために結果を残す。完了は done callback で検出し、待ち手のキャンセルでは
+        in-flight 参照を消さない（消すと並走呼び出しが新 DL を起こすため）。"""
+        inflight = self._instruments_inflight
+        if inflight is not None and not inflight.done():
+            return await asyncio.shield(inflight)
+        task = asyncio.ensure_future(self._fetch_instruments_impl())
+        self._instruments_inflight = task
+
+        def _clear(done: asyncio.Future) -> None:
+            if self._instruments_inflight is done:
+                self._instruments_inflight = None
+
+        task.add_done_callback(_clear)
+        return await asyncio.shield(task)
+
+    async def _fetch_instruments_impl(self) -> list[InstrumentRaw]:
         """CLMEventDownload で master record を一括取得し InstrumentRaw に集約する。
 
         Phase 8 §3.2 A2.3b: MVP 実装。

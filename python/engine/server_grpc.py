@@ -253,6 +253,12 @@ class GrpcDataEngineServer(
         # orphan order を生むため、secret 待ち (30s) + venue 往復に十分な余裕を持つ
         # 専用 timeout を使う。mock/kabu は secret を待たず即応答するため無影響。
         self._order_timeout_s = 40.0
+        # Issue #32: live universe の同期フェッチ (store miss 時の fallback) 専用 timeout。
+        # Tachibana の master download (CLMEventDownload) は adapter 側で 600s を予算化して
+        # いるため、共有 5s (_live_timeout_s, login/account/subscribe 用) を流用すると
+        # cold store の [+ Add] が必ず TimeoutError になり、空の "fetch_instruments failed:"
+        # を返してしまう。mock/kabu は即応答するため無影響。
+        self._instruments_timeout_s = 60.0
         # When True, suppress live_last_error on the next GetState. Armed on
         # Live re-enter / VenueLogin success / Replay toggle, cleared lazily by
         # the next observed error from runner/bridge.
@@ -1111,7 +1117,21 @@ class GrpcDataEngineServer(
                 raws = None
         if not raws:
             try:
-                raws = runner.fetch_instruments_blocking(timeout=self._live_timeout_s)
+                raws = runner.fetch_instruments_blocking(
+                    timeout=self._instruments_timeout_s
+                )
+            except futures.TimeoutError:
+                # Issue #32: concurrent.futures.TimeoutError.__str__() は '' なので
+                # f"...: {exc}" だと空メッセージ ("fetch_instruments failed: ") になる。
+                # 原因の分かる文言を返す。
+                return engine_pb2.ListInstrumentsResponse(
+                    success=False,
+                    error_message=(
+                        f"instruments fetch timed out after "
+                        f"{self._instruments_timeout_s:.0f}s "
+                        "(venue still loading universe; retry shortly)"
+                    ),
+                )
             except Exception as exc:
                 return engine_pb2.ListInstrumentsResponse(
                     success=False,
