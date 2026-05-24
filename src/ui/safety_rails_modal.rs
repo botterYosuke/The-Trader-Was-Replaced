@@ -271,7 +271,7 @@ pub fn spawn_promote_trigger(mut commands: Commands) {
     ));
 }
 
-fn spawn_stepper(parent: &mut ChildBuilder, action: SafetyRailsStepper, label: &str) {
+fn spawn_stepper(parent: &mut ChildSpawnerCommands, action: SafetyRailsStepper, label: &str) {
     parent
         .spawn((
             Button,
@@ -300,7 +300,7 @@ fn spawn_stepper(parent: &mut ChildBuilder, action: SafetyRailsStepper, label: &
 
 /// `Label  [-] value [+]` の 1 レール行を組む。
 fn spawn_rail_row(
-    parent: &mut ChildBuilder,
+    parent: &mut ChildSpawnerCommands,
     label: &str,
     field: SafetyRailsField,
     dec: SafetyRailsStepper,

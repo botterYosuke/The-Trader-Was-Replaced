@@ -67,7 +67,7 @@ pub struct OrdersFilterLabel;
 /// cycles `OrdersFilter` (All → Manual → each strategy → All). Same world-space
 /// click-sprite flavor as `OrdersRowHit` (the panel is a Text2d world-space panel,
 /// so per the bevy-engine skill the operable affordance is a pickable sprite +
-/// Pointer<Down> observer, not a UI-node Button).
+/// Pointer<Pressed> observer, not a UI-node Button).
 #[derive(Component)]
 pub struct OrdersFilterHit;
 
@@ -160,14 +160,14 @@ pub fn spawn_orders_panel(commands: &mut Commands) {
                 OrdersRowHit { row },
             ))
             .observe(
-                |down: Trigger<Pointer<Down>>,
+                |down: Trigger<Pointer<Pressed>>,
                  hit_q: Query<&OrdersRowHit>,
                  live_orders: Res<LiveOrders>,
                  filter: Res<OrdersFilter>,
                  exec_mode: Res<ExecutionModeRes>,
                  venue: Res<crate::trading::VenueStatusRes>,
                  mut menu: ResMut<OrderContextMenu>| {
-                    // Pointer<Down> は全ボタンで発火する → Secondary (右) のみ反応 (規約)。
+                    // Pointer<Pressed> は全ボタンで発火する → Secondary (右) のみ反応 (規約)。
                     if down.event().button != PointerButton::Secondary {
                         return;
                     }
@@ -175,7 +175,7 @@ pub fn spawn_orders_panel(commands: &mut Commands) {
                     if !is_live_mode(exec_mode.mode) {
                         return;
                     }
-                    let Ok(hit) = hit_q.get(down.entity()) else {
+                    let Ok(hit) = hit_q.get(down.target()) else {
                         return;
                     };
                     // §2.9: index into the SAME filtered view the panel renders, so
@@ -221,11 +221,11 @@ pub fn spawn_orders_panel(commands: &mut Commands) {
             OrdersFilterHit,
         ))
         .observe(
-            |down: Trigger<Pointer<Down>>,
+            |down: Trigger<Pointer<Pressed>>,
              exec_mode: Res<ExecutionModeRes>,
              live_orders: Res<LiveOrders>,
              mut filter: ResMut<OrdersFilter>| {
-                // Pointer<Down> は全ボタンで発火する → Primary (左) のみ反応 (規約)。
+                // Pointer<Pressed> は全ボタンで発火する → Primary (左) のみ反応 (規約)。
                 if down.event().button != PointerButton::Primary {
                     return;
                 }

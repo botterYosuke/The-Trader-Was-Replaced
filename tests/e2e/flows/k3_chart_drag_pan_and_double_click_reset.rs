@@ -21,7 +21,6 @@
 
 use std::time::Duration;
 
-use bevy::image::Image;
 use bevy::picking::backend::HitData;
 use bevy::picking::events::{Click, Drag, Pointer};
 use bevy::picking::pointer::{Location, PointerId, PointerButton};
@@ -37,7 +36,7 @@ use backcast::ui::components::ChartInstrument;
 /// headless テスト用の dummy `Location`。viewport 計算には使われない。
 fn dummy_location() -> Location {
     Location {
-        target: NormalizedRenderTarget::Image(Handle::<Image>::default()),
+        target: NormalizedRenderTarget::Image(bevy::render::camera::ImageRenderTarget { handle: Handle::default(), scale_factor: bevy::math::FloatOrd(1.0) }),
         position: Vec2::ZERO,
     }
 }
@@ -50,7 +49,7 @@ fn dummy_hit() -> HitData {
 #[test]
 fn k3_chart_drag_pan_and_double_click_reset() {
     let mut app = App::new();
-    app.add_plugins(bevy::core::TaskPoolPlugin::default());
+    app.add_plugins(bevy::app::TaskPoolPlugin::default());
     app.add_plugins(bevy::app::ScheduleRunnerPlugin::default());
     app.add_plugins(bevy::time::TimePlugin);
 
@@ -87,9 +86,9 @@ fn k3_chart_drag_pan_and_double_click_reset() {
     // delta = (10, 5): translation.x += 10, translation.y -= 5 (Bevy Y は上が正)。
     app.world_mut().trigger_targets(
         Pointer::<Drag>::new(
-            chart,
             PointerId::Mouse,
             dummy_location(),
+            chart,
             Drag {
                 button: PointerButton::Primary,
                 distance: Vec2::new(10.0, 5.0),
@@ -130,9 +129,9 @@ fn k3_chart_drag_pan_and_double_click_reset() {
 
     app.world_mut().trigger_targets(
         Pointer::<Drag>::new(
-            chart,
             PointerId::Mouse,
             dummy_location(),
+            chart,
             Drag {
                 button: PointerButton::Secondary, // 右ボタン: 早期 return
                 distance: Vec2::new(20.0, 20.0),
@@ -169,9 +168,9 @@ fn k3_chart_drag_pan_and_double_click_reset() {
     // (ChartClickState のフィールドは非公開なのでテストから直接 clear できない。)
     app.world_mut().trigger_targets(
         Pointer::<Click>::new(
-            chart,
             PointerId::Mouse,
             dummy_location(),
+            chart,
             Click {
                 button: PointerButton::Primary,
                 hit: dummy_hit(),
@@ -187,9 +186,9 @@ fn k3_chart_drag_pan_and_double_click_reset() {
     // 2 click の時刻差 ≤ DOUBLE_CLICK_SECS (0.4s) が自然に成立する。
     app.world_mut().trigger_targets(
         Pointer::<Click>::new(
-            chart,
             PointerId::Mouse,
             dummy_location(),
+            chart,
             Click {
                 button: PointerButton::Primary,
                 hit: dummy_hit(),
@@ -213,9 +212,9 @@ fn k3_chart_drag_pan_and_double_click_reset() {
     // 2 click 目: 前の click から delta_t ≈ 0 なので double-click 成立 → reset_view()。
     app.world_mut().trigger_targets(
         Pointer::<Click>::new(
-            chart,
             PointerId::Mouse,
             dummy_location(),
+            chart,
             Click {
                 button: PointerButton::Primary,
                 hit: dummy_hit(),
@@ -259,9 +258,9 @@ fn k3_chart_drag_pan_and_double_click_reset() {
     // 左ドラッグ → dragged 印が ChartClickState に入る。
     app.world_mut().trigger_targets(
         Pointer::<Drag>::new(
-            chart,
             PointerId::Mouse,
             dummy_location(),
+            chart,
             Drag {
                 button: PointerButton::Primary,
                 distance: Vec2::ZERO,
@@ -274,9 +273,9 @@ fn k3_chart_drag_pan_and_double_click_reset() {
     // drag 由来の click 1 回目 → dragged フラグを除去して last_click もクリア。
     app.world_mut().trigger_targets(
         Pointer::<Click>::new(
-            chart,
             PointerId::Mouse,
             dummy_location(),
+            chart,
             Click {
                 button: PointerButton::Primary,
                 hit: dummy_hit(),
@@ -308,9 +307,9 @@ fn k3_chart_drag_pan_and_double_click_reset() {
     // genuine click 1 回のみ（last_click は空なので double-click 未成立）。
     app.world_mut().trigger_targets(
         Pointer::<Click>::new(
-            chart,
             PointerId::Mouse,
             dummy_location(),
+            chart,
             Click {
                 button: PointerButton::Primary,
                 hit: dummy_hit(),

@@ -45,7 +45,7 @@ fn i14_save_without_path_falls_back_to_dialog() {
     app.world_mut().spawn((
         Camera2d,
         Transform::default(),
-        OrthographicProjection::default_2d(),
+        Projection::Orthographic(OrthographicProjection::default_2d()),
     ));
 
     app.add_systems(Update, handle_save_layout_system);

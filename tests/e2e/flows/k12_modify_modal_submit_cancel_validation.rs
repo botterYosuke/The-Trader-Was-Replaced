@@ -131,6 +131,7 @@ fn k12_modify_modal_submit_cancel_validation() {
             .send(KeyboardInput {
                 key_code: KeyCode::Escape,
                 logical_key: Key::Escape,
+                text: None,
                 state: ButtonState::Pressed,
                 repeat: false,
                 window: Entity::PLACEHOLDER,
@@ -157,6 +158,7 @@ fn k12_modify_modal_submit_cancel_validation() {
             .send(KeyboardInput {
                 key_code: KeyCode::Enter,
                 logical_key: Key::Enter,
+                text: None,
                 state: ButtonState::Pressed,
                 repeat: false,
                 window: Entity::PLACEHOLDER,

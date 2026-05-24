@@ -17,7 +17,7 @@
 //! 単体テストが担っている（`cargo test -p backcast chart_interaction`）。
 
 use bevy::input::mouse::{MouseScrollUnit, MouseWheel};
-use bevy::picking::focus::HoverMap;
+use bevy::picking::hover::HoverMap;
 use bevy::prelude::*;
 
 use backcast::ui::chart_interaction::chart_scroll_zoom_system;
@@ -28,7 +28,7 @@ use backcast::ui::components::ChartInstrument;
 fn k2_chart_wheel_zoom_clamps() {
     let mut app = App::new();
     // MinimalPlugins: タイマー・スケジュール等の最小セット。render / window は不要。
-    app.add_plugins(bevy::core::TaskPoolPlugin::default());
+    app.add_plugins(bevy::app::TaskPoolPlugin::default());
     app.add_plugins(bevy::app::ScheduleRunnerPlugin::default());
     app.add_plugins(bevy::time::TimePlugin);
 

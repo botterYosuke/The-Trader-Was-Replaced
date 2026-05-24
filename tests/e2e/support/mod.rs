@@ -492,6 +492,8 @@ impl Harness {
                 kb.send(KeyboardInput {
                     key_code: KeyCode::KeyA,
                     logical_key: Key::Character(ch.to_string().into()),
+                    // 0.16: KeyboardInput gained a `text` field.
+                    text: Some(ch.to_string().into()),
                     state: ButtonState::Pressed,
                     repeat: false,
                     window: Entity::PLACEHOLDER,

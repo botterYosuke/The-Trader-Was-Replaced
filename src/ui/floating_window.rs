@@ -15,7 +15,15 @@ use crate::ui::scenario_startup_panel::spawn_scenario_startup_window;
 use crate::ui::order_panel::spawn_order_form_in_window;
 use crate::ui::strategy_editor::spawn_strategy_editor_panel;
 use bevy::prelude::*;
-use bevy_cosmic_edit::prelude::CosmicFontSystem;
+
+/// camera のズーム scale（screen→world の drag/resize 補正係数）を読む。
+/// 0.16 で camera projection は `Projection` enum になったので ortho arm から scale を取り出す。
+fn camera_scale(camera_q: &Query<&Projection, With<Camera2d>>) -> f32 {
+    match camera_q.single() {
+        Ok(Projection::Orthographic(ortho)) => ortho.scale,
+        _ => 1.0,
+    }
+}
 
 /// floating window の title bar 高さ。chart レイアウト定数 (`chart_viewstate.rs`) もこれを参照する
 /// (Caveat #33: 二重定義すると chart の draw 領域が枠を ~8px はみ出す)。
@@ -89,19 +97,19 @@ fn spawn_resize_handle(commands: &mut Commands, axis: ResizeAxis, size: Vec2, po
         // Drag → root の custom_size / translation を更新（左端・上端固定）
         .observe(
             move |drag: Trigger<Pointer<Drag>>,
-                  parent_q: Query<&Parent>,
+                  parent_q: Query<&ChildOf>,
                   mut root_q: Query<(&mut Sprite, &mut Transform), With<WindowRoot>>,
-                  camera_q: Query<&OrthographicProjection, With<Camera2d>>| {
+                  camera_q: Query<&Projection, With<Camera2d>>| {
                 if drag.event().button != PointerButton::Primary {
                     return;
                 }
-                let Ok(parent) = parent_q.get(drag.entity()) else {
+                let Ok(parent) = parent_q.get(drag.target()) else {
                     return;
                 };
-                let scale = camera_q.get_single().map(|p| p.scale).unwrap_or(1.0);
+                let scale = camera_scale(&camera_q);
                 let dx = drag.event().delta.x * scale;
                 let dy = drag.event().delta.y * scale; // screen down (+) = height increase
-                let Ok((mut sprite, mut tf)) = root_q.get_mut(parent.get()) else {
+                let Ok((mut sprite, mut tf)) = root_q.get_mut(parent.parent()) else {
                     return;
                 };
                 let Some(cur) = sprite.custom_size else {
@@ -124,13 +132,13 @@ fn spawn_resize_handle(commands: &mut Commands, axis: ResizeAxis, size: Vec2, po
         // DragEnd → autosave をマーク
         .observe(
             |end: Trigger<Pointer<DragEnd>>,
-             parent_q: Query<&Parent>,
+             parent_q: Query<&ChildOf>,
              root_q: Query<Option<&ChartInstrument>, With<WindowRoot>>,
              mut auto_save: ResMut<crate::ui::layout_persistence::AutoSaveState>| {
-                let Ok(parent) = parent_q.get(end.entity()) else {
+                let Ok(parent) = parent_q.get(end.target()) else {
                     return;
                 };
-                let Ok(chart) = root_q.get(parent.get()) else {
+                let Ok(chart) = root_q.get(parent.parent()) else {
                     return;
                 };
                 if chart.is_some() {
@@ -146,7 +154,7 @@ fn spawn_resize_handle(commands: &mut Commands, axis: ResizeAxis, size: Vec2, po
                   windows: Query<Entity, With<bevy::window::PrimaryWindow>>| {
                 use bevy::window::SystemCursorIcon;
                 use bevy::winit::cursor::CursorIcon;
-                if let Ok(entity) = windows.get_single() {
+                if let Ok(entity) = windows.single() {
                     let icon = match axis {
                         ResizeAxis::Right => SystemCursorIcon::EwResize,
                         ResizeAxis::Bottom => SystemCursorIcon::NsResize,
@@ -163,7 +171,7 @@ fn spawn_resize_handle(commands: &mut Commands, axis: ResizeAxis, size: Vec2, po
              windows: Query<Entity, With<bevy::window::PrimaryWindow>>| {
                 use bevy::window::SystemCursorIcon;
                 use bevy::winit::cursor::CursorIcon;
-                if let Ok(entity) = windows.get_single() {
+                if let Ok(entity) = windows.single() {
                     commands
                         .entity(entity)
                         .insert(CursorIcon::from(SystemCursorIcon::Default));
@@ -195,11 +203,11 @@ pub fn spawn_floating_window(
             WindowRoot,
         ))
         .observe(
-            |trigger: Trigger<Pointer<Down>>,
+            |trigger: Trigger<Pointer<Pressed>>,
              mut query: Query<&mut Transform, With<WindowRoot>>,
              mut wm: ResMut<WindowManager>| {
                 wm.max_z += 2.0;
-                if let Ok(mut transform) = query.get_mut(trigger.entity()) {
+                if let Ok(mut transform) = query.get_mut(trigger.target()) {
                     transform.translation.z = 10.0 + wm.max_z;
                 }
             },
@@ -248,28 +256,28 @@ pub fn spawn_floating_window(
         .observe(
             |drag: Trigger<Pointer<Drag>>,
              mut query: Query<&mut Transform, With<WindowRoot>>,
-             parent_query: Query<&Parent>,
-             camera_query: Query<&OrthographicProjection, With<Camera2d>>| {
-                let Ok(parent) = parent_query.get(drag.entity()) else {
+             parent_query: Query<&ChildOf>,
+             camera_query: Query<&Projection, With<Camera2d>>| {
+                let Ok(parent) = parent_query.get(drag.target()) else {
                     return;
                 };
-                let Ok(mut transform) = query.get_mut(parent.get()) else {
+                let Ok(mut transform) = query.get_mut(parent.parent()) else {
                     return;
                 };
-                let scale = camera_query.get_single().map(|p| p.scale).unwrap_or(1.0);
+                let scale = camera_scale(&camera_query);
                 transform.translation.x += drag.event().delta.x * scale;
                 transform.translation.y -= drag.event().delta.y * scale;
             },
         )
         .observe(
             |drag_start: Trigger<Pointer<DragStart>>,
-             parent_query: Query<&Parent>,
+             parent_query: Query<&ChildOf>,
              root_q: Query<&Transform, With<WindowRoot>>,
              mut active_drag: ResMut<ActiveDrag>| {
-                let Ok(parent) = parent_query.get(drag_start.entity()) else {
+                let Ok(parent) = parent_query.get(drag_start.target()) else {
                     return;
                 };
-                let root_entity = parent.get();
+                let root_entity = parent.parent();
                 let Ok(tf) = root_q.get(root_entity) else {
                     return;
                 };
@@ -280,7 +288,7 @@ pub fn spawn_floating_window(
         )
         .observe(
             |drag_end: Trigger<Pointer<DragEnd>>,
-             parent_query: Query<&Parent>,
+             parent_query: Query<&ChildOf>,
              root_q: Query<
                 (
                     &Transform,
@@ -293,10 +301,10 @@ pub fn spawn_floating_window(
              mut active_drag: ResMut<ActiveDrag>,
              mut history: ResMut<AppHistory>,
              mut auto_save: ResMut<crate::ui::layout_persistence::AutoSaveState>| {
-                let Ok(parent) = parent_query.get(drag_end.entity()) else {
+                let Ok(parent) = parent_query.get(drag_end.target()) else {
                     return;
                 };
-                let root_entity = parent.get();
+                let root_entity = parent.parent();
                 let Some(before) = active_drag.starts.remove(&root_entity) else {
                     return;
                 };
@@ -362,7 +370,7 @@ pub fn spawn_floating_window(
             ))
             .observe(
                 |trigger: Trigger<Pointer<Click>>,
-                 parent_query: Query<&Parent>,
+                 parent_query: Query<&ChildOf>,
                  root_q: Query<
                     (
                         &PanelKind,
@@ -379,14 +387,14 @@ pub fn spawn_floating_window(
                  mut registry: ResMut<InstrumentRegistry>,
                  mut map: ResMut<crate::trading::InstrumentTradingDataMap>,
                  mut commands: Commands| {
-                    let Ok(parent) = parent_query.get(trigger.entity()) else {
+                    let Ok(parent) = parent_query.get(trigger.target()) else {
                         return;
                     };
-                    let root_entity = parent.get();
+                    let root_entity = parent.parent();
                     let Ok((kind, tf, sprite, editor_id, fragment, chart_instrument)) =
                         root_q.get(root_entity)
                     else {
-                        commands.entity(root_entity).despawn_recursive();
+                        commands.entity(root_entity).despawn();
                         return;
                     };
 
@@ -397,7 +405,7 @@ pub fn spawn_floating_window(
                         }
                         registry.remove(&ci.instrument_id);
                         map.map.remove(&ci.instrument_id);
-                        commands.entity(root_entity).despawn_recursive();
+                        commands.entity(root_entity).despawn();
                         return;
                     }
 
@@ -424,7 +432,7 @@ pub fn spawn_floating_window(
                         history.push_window_despawn(layout, snapshot);
                         auto_save.mark_layout_changed(std::time::Instant::now());
                     }
-                    commands.entity(root_entity).despawn_recursive();
+                    commands.entity(root_entity).despawn();
                 },
             )
             .id();
@@ -621,7 +629,6 @@ pub fn panel_spawn_dispatcher_system(
     mut events: EventReader<PanelSpawnRequested>,
     existing: Query<&PanelKind, With<WindowRoot>>,
     mut commands: Commands,
-    mut font_system: ResMut<CosmicFontSystem>,
     mut allocator: ResMut<RegionKeyAllocator>,
     mut history: ResMut<AppHistory>,
     mut pending_fragments: ResMut<PendingStrategyFragments>,
@@ -685,7 +692,7 @@ pub fn panel_spawn_dispatcher_system(
                     spec
                 };
                 spawned_region_key = spec.region_key.clone();
-                spawn_strategy_editor_panel(&mut commands, &mut font_system, &mut allocator, spec);
+                spawn_strategy_editor_panel(&mut commands, &mut allocator, spec);
             }
             PanelKind::Order => {
                 let (root, content_area, _title_bar) = spawn_floating_window(
@@ -780,12 +787,9 @@ mod order_dispatcher_tests {
         StrategyBuffer,
     };
     use crate::ui::editor_history::AppHistory;
-    use bevy_cosmic_edit::cosmic_text::FontSystem;
-    use bevy_cosmic_edit::prelude::CosmicFontSystem;
 
     fn order_dispatch_app() -> App {
         let mut app = App::new();
-        app.insert_resource(CosmicFontSystem(FontSystem::new()));
         app.init_resource::<WindowManager>();
         app.init_resource::<ActiveDrag>();
         app.init_resource::<RegionKeyAllocator>();

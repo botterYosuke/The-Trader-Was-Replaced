@@ -6,61 +6,42 @@ use crate::ui::components::{
 use crate::ui::editor_history::{
     AppEditAction, AppHistory, PendingStrategySnapshotRestore, UndoRedoApplied,
 };
-use crate::ui::floating_window::{
-    FloatingWindowSpec, TITLE_BAR_HEIGHT, spawn_floating_window,
-};
 use crate::ui::layout_persistence::{AutoSaveState, PendingLayoutApply};
-use crate::ui::strategy_editor_gutter::spawn_line_number_gutter;
-use crate::ui::strategy_editor_scrollbar::spawn_editor_scrollbar;
-use crate::ui::render_scale::RenderScaleResponsive;
+use crate::ui::screen_window::{ScreenWindowSpec, spawn_screen_window};
+use bevy::input_focus::InputFocus;
 use bevy::prelude::*;
-use bevy_cosmic_edit::cosmic_text::{Attrs, AttrsOwned, Edit, Metrics, Shaping};
-use bevy_cosmic_edit::{
-    CosmicBackgroundColor, CosmicFontSystem, CosmicRenderScale, CosmicTextAlign, CosmicWrap,
-    CursorColor, ScrollEnabled,
-};
-use bevy_cosmic_edit::{CosmicTextChanged, prelude::*};
+use bevy_ui_text_input::actions::{TextInputAction, TextInputEdit};
+use bevy_ui_text_input::{TextInputContents, TextInputNode, TextInputQueue};
 
-// ── Bevy native 版 Strategy Editor ─────────────
+// ── Strategy Editor on bevy_ui_text_input（screen-space Bevy UI, ADR 0003）─────
 
+/// エディタウィンドウ全体のサイズ（px）。
 const PANEL_SIZE: Vec2 = Vec2::new(500.0, 400.0);
-const PANEL_POSITION: Vec2 = Vec2::new(-300.0, 50.0);
-/// content_area 内でエディタ周辺 (gutter + text + scrollbar) が占める領域。
-/// 旧 `EDITOR_SIZE` のリネーム (Caveat #14)。
-pub const EDITOR_PANEL_SIZE: Vec2 = Vec2::new(440.0, 320.0);
-/// 行番号 gutter の幅。
-pub const GUTTER_WIDTH: f32 = 36.0;
-/// scrollbar の幅。
-pub const SCROLLBAR_WIDTH: f32 = 8.0;
-/// テキスト編集領域 (Sprite custom_size) の実サイズ。gutter / scrollbar を除いた分。
-pub const EDITOR_TEXT_SIZE: Vec2 = Vec2::new(
-    PANEL_SIZE.x - GUTTER_WIDTH - SCROLLBAR_WIDTH,
-    EDITOR_PANEL_SIZE.y,
-);
+/// 画面左上原点からの初期位置（left, top）px。world-space 時代の
+/// `Vec2::new(-300.0, 50.0)` を screen-space へ re-point。
+const PANEL_POSITION: Vec2 = Vec2::new(60.0, 80.0);
 const EDITOR_FONT_SIZE: f32 = 14.0;
-const EDITOR_LINE_HEIGHT: f32 = 18.0;
-
-/// gutter / editor 共通の cosmic_text Metrics。行高をぴったり一致させて
-/// gutter の行番号がエディタの行とズレないようにする (Caveat #4)。
-pub fn editor_metrics() -> Metrics {
-    Metrics::new(EDITOR_FONT_SIZE, EDITOR_LINE_HEIGHT)
-}
-
-/// focused なら CosmicEditor 内部 buffer、unfocused なら CosmicEditBuffer を読む (Caveat #2)。
-/// scroll / 行数を読む gutter・scrollbar 系がこの分岐を共有する。
-pub fn read_active_buffer<T>(
-    editor: Option<&CosmicEditor>,
-    buffer: &CosmicEditBuffer,
-    f: impl FnOnce(&bevy_cosmic_edit::cosmic_text::Buffer) -> T,
-) -> T {
-    match editor {
-        Some(editor) => editor.with_buffer(f),
-        None => f(&buffer.0),
-    }
-}
-const EDITOR_MAX_SUPERSAMPLE: f32 = 4.0;
 const ACCENT: Color = Color::srgba(0.63, 0.44, 1.0, 0.4); // SVG #a070ff (purple)
 const EDITOR_BG: Color = Color::srgba(0.02, 0.02, 0.04, 1.0);
+const EDITOR_TEXT_COLOR: Color = Color::srgb(0.86, 0.86, 0.86);
+
+/// `TextInputBuffer` の全文を `src` で置き換えるための action 列を queue に積む。
+/// `SelectAll` で全選択してから `Paste` すると、`insert_string` が選択範囲を置換するので
+/// 「全文セット」になる（空 buffer でも no-op の SelectAll → Paste で成立）。
+/// cosmic 時代の `CosmicEditBuffer::set_text` 相当。
+fn queue_full_text(queue: &mut TextInputQueue, src: &str) {
+    queue.add(TextInputAction::Edit(TextInputEdit::SelectAll));
+    queue.add(TextInputAction::Edit(TextInputEdit::Paste(src.to_string())));
+}
+
+/// seed テキストを初期表示する `TextInputQueue` を作る（spawn 時に component として挿入）。
+fn seed_queue(src: &str) -> TextInputQueue {
+    let mut queue = TextInputQueue::default();
+    if !src.is_empty() {
+        queue_full_text(&mut queue, src);
+    }
+    queue
+}
 
 /// debounce 自動保存の進行状況を追跡する resource。
 /// `mark_strategy_dirty` で `last_change` を記録し、`debounced_strategy_autosave_system`
@@ -122,19 +103,11 @@ fn mark_fragment_dirty(
     auto_save.last_change = Some(std::time::Instant::now());
 }
 
-/// エディタ本体（TextEdit2d 付き sprite）を識別するマーカー。
-/// Sub-step 1.8c で `Query<&mut CosmicEditBuffer, With<StrategyEditorContent>>` で取りに行く。
+/// エディタ本体（`TextInputNode`）を識別するマーカー。
+/// 同期 system は `Query<&TextInputContents, With<StrategyEditorContent>>`（editor→buffer）と
+/// `Query<&mut TextInputQueue, With<StrategyEditorContent>>`（buffer→editor）で取りに行く。
 #[derive(Component)]
 pub struct StrategyEditorContent;
-
-/// リサイズ時にコンテンツ領域を追従させるため、root entity に挿入する子エンティティ参照。
-/// `strategy_editor_content_layout_system` がこれを読んで editor / gutter / scrollbar を更新する。
-#[derive(Component)]
-pub struct StrategyEditorLayoutChildren {
-    pub editor: Entity,
-    pub gutter: Entity,
-    pub scrollbar_track: Entity,
-}
 
 /// LiveManual 中に Strategy Editor ウィンドウを隠す際、隠す直前の `Visibility` を退避する marker。
 /// Manual を抜けたら保存値へ復元して marker を除去する (issue #31: save/restore 方式)。
@@ -211,9 +184,9 @@ pub fn apply_strategy_editor_mode_visibility_system(
 }
 
 /// dispatcher から呼ばれる spawn 関数。
+/// screen-space の draggable window（`spawn_screen_window`）に `TextInputNode`(MultiLine) を載せる。
 pub fn spawn_strategy_editor_panel(
     commands: &mut Commands,
-    font_system: &mut CosmicFontSystem,
     allocator: &mut RegionKeyAllocator,
     spec: StrategyEditorSpawnSpec,
 ) {
@@ -234,15 +207,14 @@ pub fn spawn_strategy_editor_panel(
     // spec.source を確定する責務。本関数は受け取った spec.source をそのまま採用する。
     let seed = spec.source.unwrap_or_default();
 
-    let (root, content_area, title_bar) = spawn_floating_window(
+    let (root, content_area, title_bar) = spawn_screen_window(
         commands,
-        FloatingWindowSpec {
+        ScreenWindowSpec {
             title: "STRATEGY EDITOR".to_string(),
             size: PANEL_SIZE,
             position: PANEL_POSITION,
             accent: ACCENT,
             closeable: true,
-            resizable: true,
         },
     );
     commands.entity(root).insert((
@@ -258,136 +230,41 @@ pub fn spawn_strategy_editor_panel(
 
     let editor = commands
         .spawn((
-            TextEdit2d,
-            Sprite {
-                custom_size: Some(EDITOR_TEXT_SIZE),
-                color: Color::WHITE,
+            // 既定 mode は MultiLine{WordOrGlyph}。コード編集なので submit で clear/unfocus しない。
+            TextInputNode {
+                clear_on_submit: false,
+                unfocus_on_submit: false,
                 ..default()
             },
-            CosmicEditBuffer::new(font_system, editor_metrics()).with_text(
-                font_system,
-                &seed,
-                Attrs::new().color(CosmicColor::rgb(220, 220, 220)),
-            ),
-            DefaultAttrs(AttrsOwned::new(
-                Attrs::new().color(CosmicColor::rgb(220, 220, 220)),
-            )),
-            CursorColor(Color::WHITE),
-            CosmicBackgroundColor(EDITOR_BG),
-            Transform::from_xyz(EDITOR_CONTENT_X, 0.0, 0.1),
+            // content_area を埋める（flex 配下で 100%）。
+            Node {
+                width: Val::Percent(100.0),
+                height: Val::Percent(100.0),
+                ..default()
+            },
+            TextFont {
+                font_size: EDITOR_FONT_SIZE,
+                ..default()
+            },
+            TextColor(EDITOR_TEXT_COLOR),
+            BackgroundColor(EDITOR_BG),
+            // 初期テキストを buffer に流し込む（SelectAll+Paste）。
+            seed_queue(&seed),
             StrategyEditorContent,
-            // CosmicWrap::InfiniteLine: source 行 == layout 行にして gutter 行番号と一致させる。
-            // (highlight/find の span コンポーネントは ADR 0003 で撤去済み。)
-            CosmicWrap::InfiniteLine,
-            // editor child にも StrategyEditorId を貼ることで、CosmicTextChanged から
-            // region_key を即引きできる (root への親辿りが不要)。
+            // editor entity にも StrategyEditorId を貼ることで、Changed<TextInputContents> から
+            // region_key を即引きできる（root への親辿りが不要）。
             StrategyEditorId {
                 region_key: region_key.clone(),
             },
-            RenderScaleResponsive::new(EDITOR_MAX_SUPERSAMPLE),
-            CosmicRenderScale(1.0),
-            CosmicTextAlign::TopLeft { padding: 8 },
-            ScrollEnabled::Disabled,
         ))
         .id();
 
     commands.entity(content_area).add_child(editor);
-    commands.insert_resource(FocusedWidget(Some(editor)));
-
-    // ── Phase B: gutter (左) + scrollbar (右) を editor と横並びに配置 ──
-    // content_area 内で [gutter | editor | scrollbar] の幅 EDITOR_PANEL_SIZE.x を中央寄せ。
-    let gutter = spawn_line_number_gutter(commands, font_system, region_key.clone(), GUTTER_X);
-    commands.entity(content_area).add_child(gutter);
-
-    let scrollbar_track = spawn_editor_scrollbar(commands, editor, SCROLLBAR_X);
-    commands.entity(content_area).add_child(scrollbar_track);
-
-    // リサイズ時にコンテンツを追従させるため子エンティティ参照を root に保持する。
-    commands.entity(root).insert(StrategyEditorLayoutChildren {
-        editor,
-        gutter,
-        scrollbar_track,
-    });
+    // 新規エディタを focus する（cosmic 時代の FocusedWidget(Some(editor)) 相当）。
+    commands.insert_resource(InputFocus(Some(editor)));
 
     let _ = title_bar;
     let _ = spec.layout_source;
-}
-
-/// content_area 内 (中央 x=0) における [gutter | editor | scrollbar] 群の左端 x。
-const GROUP_LEFT_X: f32 = -PANEL_SIZE.x / 2.0;
-/// gutter Sprite の中心 x。
-pub const GUTTER_X: f32 = GROUP_LEFT_X + GUTTER_WIDTH / 2.0;
-/// editor Sprite の中心 x (gutter のぶん右にずらす)。
-pub const EDITOR_CONTENT_X: f32 = GROUP_LEFT_X + GUTTER_WIDTH + EDITOR_TEXT_SIZE.x / 2.0;
-/// scrollbar Sprite の中心 x。
-pub const SCROLLBAR_X: f32 =
-    GROUP_LEFT_X + GUTTER_WIDTH + EDITOR_TEXT_SIZE.x + SCROLLBAR_WIDTH / 2.0;
-
-/// Strategy Editor の root サイズが変わったとき（リサイズ）、editor / gutter / scrollbar を
-/// 新しいコンテンツ領域サイズに追従させる。差分書き込みで change detection の無駄発火を防ぐ。
-pub fn strategy_editor_content_layout_system(
-    roots: Query<
-        (&Sprite, &StrategyEditorLayoutChildren),
-        (With<WindowRoot>, Changed<Sprite>),
-    >,
-    mut sprites: Query<&mut Sprite, Without<WindowRoot>>,
-    mut transforms: Query<&mut Transform, Without<WindowRoot>>,
-) {
-    for (root_sprite, layout) in &roots {
-        let Some(root_size) = root_sprite.custom_size else {
-            continue;
-        };
-        let content_w = root_size.x;
-        let content_h = root_size.y - TITLE_BAR_HEIGHT;
-
-        let editor_text_w = (content_w - GUTTER_WIDTH - SCROLLBAR_WIDTH).max(10.0);
-        let editor_text_h = content_h.max(10.0);
-
-        let group_left_x = -content_w / 2.0;
-        let gutter_x = group_left_x + GUTTER_WIDTH / 2.0;
-        let editor_x = group_left_x + GUTTER_WIDTH + editor_text_w / 2.0;
-        let scrollbar_x = group_left_x + GUTTER_WIDTH + editor_text_w + SCROLLBAR_WIDTH / 2.0;
-
-        // editor sprite size + position
-        if let Ok(mut s) = sprites.get_mut(layout.editor) {
-            let target = Vec2::new(editor_text_w, editor_text_h);
-            if s.custom_size != Some(target) {
-                s.custom_size = Some(target);
-            }
-        }
-        if let Ok(mut t) = transforms.get_mut(layout.editor) {
-            if (t.translation.x - editor_x).abs() > 0.01 {
-                t.translation.x = editor_x;
-            }
-        }
-
-        // gutter sprite height + position
-        if let Ok(mut s) = sprites.get_mut(layout.gutter) {
-            let target = Vec2::new(GUTTER_WIDTH, editor_text_h);
-            if s.custom_size != Some(target) {
-                s.custom_size = Some(target);
-            }
-        }
-        if let Ok(mut t) = transforms.get_mut(layout.gutter) {
-            if (t.translation.x - gutter_x).abs() > 0.01 {
-                t.translation.x = gutter_x;
-            }
-        }
-
-        // scrollbar track height + position
-        if let Ok(mut s) = sprites.get_mut(layout.scrollbar_track) {
-            let target = Vec2::new(SCROLLBAR_WIDTH, editor_text_h);
-            if s.custom_size != Some(target) {
-                s.custom_size = Some(target);
-            }
-        }
-        if let Ok(mut t) = transforms.get_mut(layout.scrollbar_track) {
-            if (t.translation.x - scrollbar_x).abs() > 0.01 {
-                t.translation.x = scrollbar_x;
-            }
-        }
-
-    }
 }
 
 /// `OpenStrategyRequested` イベント（ファイル → buffer に丸ごとロード）の直後に、
@@ -405,15 +282,7 @@ pub fn sync_strategy_buffer_to_editor_system(
     mut open_events: EventReader<StrategyFileLoadRequested>,
     mut undo_events: EventReader<UndoRedoApplied>,
     fragments_q: Query<(&StrategyEditorId, &StrategyFragment), With<WindowRoot>>,
-    mut editor_q: Query<
-        (
-            &StrategyEditorId,
-            &mut CosmicEditBuffer,
-            Option<&mut CosmicEditor>,
-        ),
-        With<StrategyEditorContent>,
-    >,
-    mut font_system: ResMut<CosmicFontSystem>,
+    mut editor_q: Query<(&StrategyEditorId, &mut TextInputQueue), With<StrategyEditorContent>>,
 ) {
     open_events.clear();
 
@@ -421,46 +290,42 @@ pub fn sync_strategy_buffer_to_editor_system(
         return;
     }
 
-    for (editor_id, mut edit_buffer, editor_opt) in editor_q.iter_mut() {
+    for (editor_id, mut queue) in editor_q.iter_mut() {
         let Some((_, fragment)) = fragments_q
             .iter()
             .find(|(frag_id, _)| frag_id.region_key == editor_id.region_key)
         else {
             continue;
         };
-        let source = fragment.source.as_str();
-        edit_buffer.set_text(&mut font_system, source, Attrs::new());
-        if let Some(mut editor) = editor_opt {
-            editor.with_buffer_mut(|b| {
-                b.set_text(&mut font_system, source, Attrs::new(), Shaping::Advanced);
-                b.set_redraw(true);
-            });
-        }
+        // 全選択 → Paste で全文置換（cosmic 時代の set_text 相当）。結果として
+        // `TextInputContents` が変わり editor→buffer 同期が走るが、`suppress_echo_target`
+        // が一致 echo を消費するので history への二重 push にはならない。
+        queue_full_text(&mut queue, &fragment.source);
     }
 }
 
-/// cosmic_edit エディタでユーザーが編集した内容を `StrategyBuffer.source` に書き戻し、
+/// `bevy_ui_text_input` エディタでユーザーが編集した内容を `StrategyBuffer.source` に書き戻し、
 /// `dirty = true` を立てる（片側同期: editor → buffer）。
 ///
-/// `CosmicTextChanged` イベントは bevy_cosmic_edit の input system
-/// （キーボード入力 / paste / drop）で発火する。`CosmicEditBuffer::set_text`
-/// からは発火しないので、buffer → editor 同期（`sync_strategy_buffer_to_editor_system`）
-/// とのループは発生しない（exact version 0.26.0 の input.rs / buffer.rs で確認済）。
+/// `Changed<TextInputContents>` で「全文が変わったエディタ」を拾う。`TextInputContents` は
+/// `update_text_input_contents`（TextInputPlugin の PostUpdate）が buffer 変更時に更新する。
+/// buffer → editor 同期（`sync_strategy_buffer_to_editor_system`）が `Paste` で全文を入れた
+/// 場合もここに echo として現れるが、`suppress_echo_target` 一致 or `fragment.source == new_text`
+/// のガードで history への二重 push を防ぐ。
 ///
-/// イベント本体は `CosmicTextChanged(pub (Entity, String))` というタプル struct。
-/// 第 1 要素が編集されたエディタ entity、第 2 要素が新しい全文。
-/// Strategy Editor 以外のエディタ entity からのイベントは無視する。
+/// editor entity に貼った `StrategyEditorId` で region_key を引き、対応する `WindowRoot` 側の
+/// `StrategyFragment` に書き戻す。
 pub fn sync_editor_to_strategy_buffer_system(
-    mut events: EventReader<CosmicTextChanged>,
-    editor_q: Query<&StrategyEditorId, With<StrategyEditorContent>>,
+    editor_q: Query<
+        (&StrategyEditorId, &TextInputContents),
+        (With<StrategyEditorContent>, Changed<TextInputContents>),
+    >,
     mut fragments_q: Query<(&StrategyEditorId, &mut StrategyFragment), With<WindowRoot>>,
     mut history: ResMut<AppHistory>,
     mut auto_save: ResMut<StrategyAutoSaveState>,
 ) {
-    for CosmicTextChanged((entity, new_text)) in events.read() {
-        let Ok(editor_id) = editor_q.get(*entity) else {
-            continue;
-        };
+    for (editor_id, contents) in editor_q.iter() {
+        let new_text = contents.get();
         let region_key = editor_id.region_key.clone();
 
         let Some((_, mut fragment)) = fragments_q
@@ -468,32 +333,32 @@ pub fn sync_editor_to_strategy_buffer_system(
             .find(|(id, _)| id.region_key == region_key)
         else {
             warn!(
-                "CosmicTextChanged for region '{}' but no matching WindowRoot",
+                "TextInputContents changed for region '{}' but no matching WindowRoot",
                 region_key
             );
             continue;
         };
 
         if let Some((target_key, target_text)) = history.suppress_echo_target.clone() {
-            if target_key == region_key && target_text.as_str() == new_text.as_str() {
+            if target_key == region_key && target_text.as_str() == new_text {
                 history.suppress_echo_target = None;
-                fragment.source = new_text.clone();
+                fragment.source = new_text.to_string();
                 continue;
             } else {
                 history.suppress_echo_target = None;
             }
         }
-        if fragment.source == *new_text {
+        if fragment.source == new_text {
             continue;
         }
         if !history.is_replaying() {
             history.push_text(
                 region_key.clone(),
                 fragment.source.clone(),
-                new_text.clone(),
+                new_text.to_string(),
             );
         }
-        mark_fragment_dirty(&mut fragment, &mut auto_save, new_text.clone());
+        mark_fragment_dirty(&mut fragment, &mut auto_save, new_text.to_string());
     }
 }
 
@@ -632,7 +497,7 @@ pub fn apply_pending_app_edits_system(
                 } else {
                     None
                 };
-                spawn_ev.send(PanelSpawnRequested {
+                spawn_ev.write(PanelSpawnRequested {
                     kind: layout.kind,
                     source: PanelSpawnSource::UndoRedo,
                     strategy_spec,
@@ -658,7 +523,7 @@ pub fn apply_pending_app_edits_system(
                         .map(|(e, _, _)| e)
                 };
                 if let Some(entity) = target_entity {
-                    commands.entity(entity).despawn_recursive();
+                    commands.entity(entity).despawn();
                     layout_auto_save.dirty = true;
                 }
             }
@@ -666,7 +531,7 @@ pub fn apply_pending_app_edits_system(
     }
 
     if any_text && history.is_replaying() {
-        undo_applied.send(UndoRedoApplied);
+        undo_applied.write(UndoRedoApplied);
     }
 
     if history.replaying_depth > 0 {
@@ -698,7 +563,7 @@ pub fn apply_strategy_snapshot_restore_system(
             .find(|(id, _)| id.region_key == region_key)
         {
             mark_fragment_dirty(&mut fragment, &mut auto_save, source);
-            undo_applied.send(UndoRedoApplied);
+            undo_applied.write(UndoRedoApplied);
         } else {
             warn!(
                 "snapshot restore for region '{}' but no matching root yet",

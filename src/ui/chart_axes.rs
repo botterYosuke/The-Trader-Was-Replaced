@@ -500,25 +500,25 @@ mod tests {
         app.update();
 
         let world = app.world_mut();
-        let mut pq = world.query::<(&PriceLabel, &Parent)>();
+        let mut pq = world.query::<(&PriceLabel, &ChildOf)>();
         let price_labels: Vec<_> = pq.iter(world).collect();
         assert!(!price_labels.is_empty(), "price labels should be generated");
         for (label, parent) in &price_labels {
             assert_eq!(label.target_chart, chart);
             assert_eq!(
-                parent.get(),
+                parent.parent(),
                 price_gutter,
                 "price label must child of price gutter"
             );
         }
 
-        let mut tq = world.query::<(&TimeLabel, &Parent, &Transform)>();
+        let mut tq = world.query::<(&TimeLabel, &ChildOf, &Transform)>();
         let mut time_labels: Vec<_> = tq.iter(world).collect();
         assert!(!time_labels.is_empty(), "time labels should be generated");
         for (label, parent, _) in &time_labels {
             assert_eq!(label.target_chart, chart);
             assert_eq!(
-                parent.get(),
+                parent.parent(),
                 time_gutter,
                 "time label must child of time gutter"
             );

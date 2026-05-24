@@ -368,7 +368,7 @@ pub struct PendingStrategySnapshotRestore {
 /// DragEnd 時に before/after を比較して WindowMove を push する。
 #[derive(Resource, Default, Debug)]
 pub struct ActiveDrag {
-    pub starts: bevy::utils::HashMap<Entity, Vec2>,
+    pub starts: bevy::platform::collections::HashMap<Entity, Vec2>,
 }
 
 // ─────────────────────────────────────────────────────────────────────────────

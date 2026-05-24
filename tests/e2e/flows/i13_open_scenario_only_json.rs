@@ -49,7 +49,7 @@ fn build_app() -> App {
     app.world_mut().spawn((
         Camera2d,
         Transform::default(),
-        OrthographicProjection::default_2d(),
+        Projection::Orthographic(OrthographicProjection::default_2d()),
     ));
 
     app.add_systems(Update, apply_layout_system);

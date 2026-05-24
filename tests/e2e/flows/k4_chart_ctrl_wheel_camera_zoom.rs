@@ -24,7 +24,7 @@
 //! PanCam の動作検証が必要な場合は kind:render の smoke test（L4）で行う。
 
 use bevy::input::mouse::{MouseScrollUnit, MouseWheel};
-use bevy::picking::focus::HoverMap;
+use bevy::picking::hover::HoverMap;
 use bevy::prelude::*;
 
 use backcast::ui::chart_interaction::chart_scroll_zoom_system;
@@ -34,7 +34,7 @@ use backcast::ui::components::ChartInstrument;
 #[test]
 fn k4_chart_ctrl_wheel_camera_zoom() {
     let mut app = App::new();
-    app.add_plugins(bevy::core::TaskPoolPlugin::default());
+    app.add_plugins(bevy::app::TaskPoolPlugin::default());
     app.add_plugins(bevy::app::ScheduleRunnerPlugin::default());
     app.add_plugins(bevy::time::TimePlugin);
 

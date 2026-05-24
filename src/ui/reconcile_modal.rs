@@ -344,6 +344,7 @@ mod tests {
             .send(KeyboardInput {
                 key_code: KeyCode::Escape,
                 logical_key: Key::Escape,
+                text: None,
                 state: ButtonState::Pressed,
                 repeat: false,
                 window: Entity::PLACEHOLDER,

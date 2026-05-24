@@ -61,6 +61,7 @@ fn type_into_modal(app: &mut App, s: &str) {
                 // key_code は secret_modal_input_system が参照しない。logical_key のみ使用。
                 key_code: KeyCode::F35,
                 logical_key: Key::Character(cs.as_str().into()),
+                text: None,
                 state: ButtonState::Pressed,
                 repeat: false,
                 window: Entity::PLACEHOLDER,
@@ -74,6 +75,7 @@ fn send_escape(app: &mut App) {
         .send(KeyboardInput {
             key_code: KeyCode::Escape,
             logical_key: Key::Escape,
+                text: None,
             state: ButtonState::Pressed,
             repeat: false,
             window: Entity::PLACEHOLDER,
@@ -86,6 +88,7 @@ fn send_enter(app: &mut App) {
         .send(KeyboardInput {
             key_code: KeyCode::Enter,
             logical_key: Key::Enter,
+                text: None,
             state: ButtonState::Pressed,
             repeat: false,
             window: Entity::PLACEHOLDER,

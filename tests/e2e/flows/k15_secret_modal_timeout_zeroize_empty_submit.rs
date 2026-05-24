@@ -60,6 +60,7 @@ fn queue_chars(app: &mut App, s: &str) {
                 // key_code は secret_modal_input_system が参照しない。logical_key のみ使用。
                 key_code: KeyCode::F35,
                 logical_key: Key::Character(cs.as_str().into()),
+                text: None,
                 state: ButtonState::Pressed,
                 repeat: false,
                 window: Entity::PLACEHOLDER,
@@ -73,6 +74,7 @@ fn queue_escape(app: &mut App) {
         .send(KeyboardInput {
             key_code: KeyCode::Escape,
             logical_key: Key::Escape,
+                text: None,
             state: ButtonState::Pressed,
             repeat: false,
             window: Entity::PLACEHOLDER,
@@ -232,6 +234,7 @@ fn k15_secret_modal_timeout_zeroize_empty_submit() {
             .send(KeyboardInput {
                 key_code: KeyCode::Backspace,
                 logical_key: Key::Backspace,
+                text: None,
                 state: ButtonState::Pressed,
                 repeat: false,
                 window: Entity::PLACEHOLDER,

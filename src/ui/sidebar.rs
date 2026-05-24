@@ -100,7 +100,7 @@ pub fn spawn_sidebar(mut commands: Commands) {
         });
 }
 
-fn spawn_section_header(parent: &mut ChildBuilder, title: &str) {
+fn spawn_section_header(parent: &mut ChildSpawnerCommands, title: &str) {
     parent
         .spawn((
             Node {
@@ -143,7 +143,7 @@ pub fn apply_order_button_visibility_system(
     }
 }
 
-fn spawn_panel_btn(parent: &mut ChildBuilder, kind: PanelKind) {
+fn spawn_panel_btn(parent: &mut ChildSpawnerCommands, kind: PanelKind) {
     parent
         .spawn((
             Button,
@@ -181,11 +181,11 @@ pub fn update_sidebar_system(
         return;
     }
 
-    let Ok(list_entity) = list_q.get_single() else {
+    let Ok(list_entity) = list_q.single() else {
         return;
     };
 
-    commands.entity(list_entity).despawn_descendants();
+    commands.entity(list_entity).despawn_related::<Children>();
 
     let editable = registry.editable;
     let row_btn_bg = if editable {

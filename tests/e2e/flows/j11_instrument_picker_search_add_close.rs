@@ -159,6 +159,7 @@ fn j11_instrument_picker_search_add_close() {
                 // key_code は picker_searchbox_input_system が読まない。logical_key のみ使用。
                 key_code: KeyCode::F35,
                 logical_key: Key::Character(s.as_str().into()),
+                text: None,
                 state: ButtonState::Pressed,
                 repeat: false,
                 window: Entity::PLACEHOLDER,
@@ -216,6 +217,7 @@ fn j11_instrument_picker_search_add_close() {
         .send(KeyboardInput {
             key_code: KeyCode::Escape,
             logical_key: Key::Escape,
+                text: None,
             state: ButtonState::Pressed,
             repeat: false,
             window: Entity::PLACEHOLDER,

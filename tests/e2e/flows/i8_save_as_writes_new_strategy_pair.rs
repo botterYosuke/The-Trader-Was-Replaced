@@ -106,7 +106,7 @@ fn i8_save_as_writes_new_strategy_pair() {
     app.world_mut().spawn((
         Camera2d,
         Transform::default(),
-        OrthographicProjection::default_2d(),
+        Projection::Orthographic(OrthographicProjection::default_2d()),
     ));
 
     // .py を書かせるため StrategyFragment を持つ WindowRoot を 1 つ spawn。

@@ -28,7 +28,7 @@ use crate::ui_dump::{dump_panels, panels_of};
 /// observer 内では pointer_location を参照しないため、image target で代替する。
 fn dummy_location() -> Location {
     Location {
-        target: NormalizedRenderTarget::Image(Handle::<bevy::image::Image>::default()),
+        target: NormalizedRenderTarget::Image(bevy::render::camera::ImageRenderTarget { handle: Handle::default(), scale_factor: bevy::math::FloatOrd(1.0) }),
         position: Vec2::ZERO,
     }
 }
@@ -91,9 +91,9 @@ fn m3_window_close_hides_or_despawns() {
     // CloseButton の Pointer<Click> observer を発火する。
     app.world_mut().trigger_targets(
         Pointer::<Click>::new(
-            close_btn,
             PointerId::Mouse,
             dummy_location(),
+            close_btn,
             Click {
                 button: PointerButton::Primary,
                 hit: bevy::picking::backend::HitData::new(Entity::from_raw(0), 0.0, None, None),

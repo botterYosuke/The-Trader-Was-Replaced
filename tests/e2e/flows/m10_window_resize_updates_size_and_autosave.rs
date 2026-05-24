@@ -21,7 +21,7 @@ use backcast::ui::layout_persistence::AutoSaveState;
 
 fn dummy_location() -> Location {
     Location {
-        target: NormalizedRenderTarget::Image(Handle::<bevy::image::Image>::default()),
+        target: NormalizedRenderTarget::Image(bevy::render::camera::ImageRenderTarget { handle: Handle::default(), scale_factor: bevy::math::FloatOrd(1.0) }),
         position: Vec2::ZERO,
     }
 }
@@ -42,7 +42,7 @@ fn m10_window_resize_updates_size_and_autosave() {
 
     // OrthographicProjection.scale = 1.0 (drag delta の scale 補正に使う)
     app.world_mut()
-        .spawn((Camera2d, Transform::default(), OrthographicProjection::default_2d()));
+        .spawn((Camera2d, Transform::default(), Projection::Orthographic(OrthographicProjection::default_2d())));
 
     let initial_size = Vec2::new(360.0, 260.0);
 
@@ -76,9 +76,9 @@ fn m10_window_resize_updates_size_and_autosave() {
     // ── Phase A: 右端を +80px 右にドラッグ ──
     app.world_mut().trigger_targets(
         Pointer::<Drag>::new(
-            resize_right,
             PointerId::Mouse,
             loc.clone(),
+            resize_right,
             Drag {
                 button: PointerButton::Primary,
                 distance: Vec2::new(80.0, 0.0),
@@ -110,9 +110,9 @@ fn m10_window_resize_updates_size_and_autosave() {
     // 現在の幅から -9999 px 左へ drag（left edge 固定なので幅が負になろうとする）
     app.world_mut().trigger_targets(
         Pointer::<Drag>::new(
-            resize_right,
             PointerId::Mouse,
             loc.clone(),
+            resize_right,
             Drag {
                 button: PointerButton::Primary,
                 distance: Vec2::new(-9999.0, 0.0),
@@ -138,9 +138,9 @@ fn m10_window_resize_updates_size_and_autosave() {
     // ── Phase C: DragEnd で AutoSaveState.dirty = true になること ──
     app.world_mut().trigger_targets(
         Pointer::<DragEnd>::new(
-            resize_right,
             PointerId::Mouse,
             loc.clone(),
+            resize_right,
             DragEnd {
                 button: PointerButton::Primary,
                 distance: Vec2::new(80.0, 0.0),

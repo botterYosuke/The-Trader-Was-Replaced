@@ -101,7 +101,7 @@ fn i7_save_layout_writes_sidecar() {
     app.world_mut().spawn((
         Camera2d,
         Transform::default(),
-        OrthographicProjection::default_2d(),
+        Projection::Orthographic(OrthographicProjection::default_2d()),
     ));
 
     app.add_systems(Update, handle_save_layout_system);

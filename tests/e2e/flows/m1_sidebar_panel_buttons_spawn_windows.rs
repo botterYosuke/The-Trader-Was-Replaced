@@ -10,8 +10,6 @@
 
 use bevy::prelude::*;
 use bevy::transform::TransformPlugin;
-use bevy_cosmic_edit::prelude::CosmicFontSystem;
-use cosmic_text::FontSystem;
 
 use backcast::ui::components::{
     InstrumentRegistry, PanelKind, PanelSpawnRequested, PendingStrategyFragments,
@@ -31,7 +29,6 @@ fn m1_sidebar_panel_buttons_spawn_windows() {
 
     // panel_spawn_dispatcher_system が必要とする resource 群
     app.insert_resource(WindowManager::default())
-        .insert_resource(CosmicFontSystem(FontSystem::new()))
         .insert_resource(RegionKeyAllocator::default())
         .insert_resource(AppHistory::default())
         .insert_resource(PendingStrategyFragments::default())

@@ -15,32 +15,32 @@
 //!   どちらか一方でも欠けると early-return し、枠だけ消えて中身が残る（M11 と同型の構造バグ）。
 //!   `InheritedVisibility` の有無だけ見ると「Visibility が無い中間ノード」を取りこぼすため
 //!   伝播ゲートそのものを検証する。レンダ依存なしにこの構造条件を固定する。
+//!
+//! ADR 0003 で editor は screen-space Bevy UI（`TextInputNode` を content_area にホストする
+//! draggable window）になった。world-space の gutter/scrollbar 子は撤去されたので、伝播ゲートは
+//! 「editor(`StrategyEditorContent`) → content_area → root」の Node 連鎖で検証する。
 
 use bevy::prelude::*;
 use bevy::transform::TransformPlugin;
-use bevy_cosmic_edit::prelude::CosmicFontSystem;
-use cosmic_text::FontSystem;
 
 use backcast::trading::{ExecutionMode, ExecutionModeRes};
 use backcast::ui::components::{
-    PanelKind, PanelSpawnSource, RegionKeyAllocator, StrategyEditorSpawnSpec, WindowRoot,
+    PanelKind, PanelSpawnSource, RegionKeyAllocator, StrategyEditorId, StrategyEditorSpawnSpec,
+    WindowRoot,
 };
 use backcast::ui::strategy_editor::{
     apply_strategy_editor_mode_visibility_system, spawn_strategy_editor_panel,
-    StrategyEditorLayoutChildren, StrategyEditorModeHidden,
+    StrategyEditorContent, StrategyEditorModeHidden,
 };
 
 /// 実 Strategy Editor を 1 回だけ spawn するテストローカル startup system。
-/// 引数注入により `Commands` / `CosmicFontSystem` / `RegionKeyAllocator` の借用が分離され、
-/// world から手で取り出す際の二重借用を避ける（production dispatcher と同じ注入形）。
+/// `bevy_ui_text_input` 化で `CosmicFontSystem` は不要になった（screen_window + TextInputNode）。
 fn spawn_real_editor_system(
     mut commands: Commands,
-    mut font_system: ResMut<CosmicFontSystem>,
     mut allocator: ResMut<RegionKeyAllocator>,
 ) {
     spawn_strategy_editor_panel(
         &mut commands,
-        &mut font_system,
         &mut allocator,
         StrategyEditorSpawnSpec {
             region_key: None,
@@ -55,9 +55,7 @@ fn m12_strategy_editor_hidden_in_manual() {
     let mut app = App::new();
     app.add_plugins(TransformPlugin);
     app.init_resource::<ExecutionModeRes>(); // 既定 = Replay
-    // 実 spawn に必要な resource（描画はしない: CPU フォントのみ headless 挿入）。
-    // CosmicEditPlugin 全体は MinimalPlugins 下で render/asset 依存で panic するため足さない。
-    app.insert_resource(CosmicFontSystem(FontSystem::new()));
+    // screen-space TextInputNode は font system 不要（描画はしない）。
     app.insert_resource(RegionKeyAllocator::default());
 
     // ── 実 Strategy Editor ウィンドウを spawn（editor/gutter/scrollbar を本物にする）──
@@ -68,10 +66,10 @@ fn m12_strategy_editor_hidden_in_manual() {
     // この update で Startup が走り、本体の visibility system も以降登録する。
     app.add_systems(Update, apply_strategy_editor_mode_visibility_system);
 
-    // spawn した root（WindowRoot かつ子参照あり）を取得。
+    // spawn した root（WindowRoot かつ StrategyEditorId 付き）を取得。
     let window = app
         .world_mut()
-        .query_filtered::<Entity, (With<WindowRoot>, With<StrategyEditorLayoutChildren>)>()
+        .query_filtered::<Entity, (With<WindowRoot>, With<StrategyEditorId>)>()
         .iter(app.world())
         .next()
         .expect("実 Strategy Editor の root が spawn されているはず");
@@ -99,18 +97,17 @@ fn m12_strategy_editor_hidden_in_manual() {
         has_propagation_gate(app.world(), window),
         "root は Visibility と InheritedVisibility を持つはず（可視性伝播の起点）"
     );
-    let children = app
-        .world()
-        .get::<StrategyEditorLayoutChildren>(window)
-        .expect("root は StrategyEditorLayoutChildren を持つはず");
-    let child_entities = [
-        ("editor", children.editor),
-        ("gutter", children.gutter),
-        ("scrollbar_track", children.scrollbar_track),
-    ];
-    // editor / gutter / scrollbar_track のいずれの子からも、Parent 連鎖で root へ到達でき、
-    // 経路上の全 entity が Visibility と InheritedVisibility の **両方** を持つ
-    // （content_area で連鎖が切れていない＝伝播ゲートが全ノードで成立している）。
+    // editor 本体（`StrategyEditorContent` = content_area 内の TextInputNode）を起点にする。
+    let editor = app
+        .world_mut()
+        .query_filtered::<Entity, With<StrategyEditorContent>>()
+        .iter(app.world())
+        .next()
+        .expect("editor (StrategyEditorContent) が spawn されているはず");
+    let child_entities = [("editor", editor)];
+    // editor から Parent(ChildOf) 連鎖で root へ到達でき、経路上の全 entity が
+    // Visibility と InheritedVisibility の **両方** を持つ（editor → content_area → root の
+    // Node 連鎖が切れていない＝伝播ゲートが全ノードで成立している）。
     for (label, child) in child_entities {
         let mut cursor = child;
         let mut reached_root = false;
@@ -125,8 +122,8 @@ fn m12_strategy_editor_hidden_in_manual() {
                 reached_root = true;
                 break;
             }
-            match app.world().get::<Parent>(cursor) {
-                Some(parent) => cursor = parent.get(),
+            match app.world().get::<ChildOf>(cursor) {
+                Some(parent) => cursor = parent.parent(),
                 None => break,
             }
         }

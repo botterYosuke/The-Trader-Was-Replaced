@@ -325,7 +325,7 @@ pub fn spawn_modify_modal(mut commands: Commands) {
 
 /// ラベル + クリックでフォーカスする入力欄 (背景に focus 色) を 1 行 spawn する。
 fn spawn_input_row(
-    parent: &mut ChildBuilder,
+    parent: &mut ChildSpawnerCommands,
     label: &str,
     field: ModifyField,
     focus: ModifyButton,

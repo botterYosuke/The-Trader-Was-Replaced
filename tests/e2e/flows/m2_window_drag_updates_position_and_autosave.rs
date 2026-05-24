@@ -28,7 +28,7 @@ use crate::ui_dump::dump_panels;
 /// observer 内では pointer_location を参照しないため、image target で代替する。
 fn dummy_location() -> Location {
     Location {
-        target: NormalizedRenderTarget::Image(Handle::<bevy::image::Image>::default()),
+        target: NormalizedRenderTarget::Image(bevy::render::camera::ImageRenderTarget { handle: Handle::default(), scale_factor: bevy::math::FloatOrd(1.0) }),
         position: Vec2::ZERO,
     }
 }
@@ -49,7 +49,7 @@ fn m2_window_drag_updates_position_and_autosave() {
 
     // Camera2d を 1 体置く（title bar drag observer が get_single() するため）。
     app.world_mut()
-        .spawn((Camera2d, Transform::default(), OrthographicProjection::default_2d()));
+        .spawn((Camera2d, Transform::default(), Projection::Orthographic(OrthographicProjection::default_2d())));
 
     // 本番 spawn_floating_window で BuyingPower window を生成する。
     let (root, _content, title_bar) = {
@@ -87,9 +87,9 @@ fn m2_window_drag_updates_position_and_autosave() {
     // DragStart: ActiveDrag.starts に元位置を登録する。
     app.world_mut().trigger_targets(
         Pointer::<DragStart>::new(
-            title_bar,
             PointerId::Mouse,
             loc.clone(),
+            title_bar,
             DragStart {
                 button: bevy::picking::pointer::PointerButton::Primary,
                 hit: bevy::picking::backend::HitData::new(Entity::from_raw(0), 0.0, None, None),
@@ -102,9 +102,9 @@ fn m2_window_drag_updates_position_and_autosave() {
     // delta は world-space で (+50, +30) 移動。
     app.world_mut().trigger_targets(
         Pointer::<Drag>::new(
-            title_bar,
             PointerId::Mouse,
             loc.clone(),
+            title_bar,
             Drag {
                 button: bevy::picking::pointer::PointerButton::Primary,
                 distance: Vec2::new(50.0, 30.0),
@@ -130,9 +130,9 @@ fn m2_window_drag_updates_position_and_autosave() {
     // ── Phase C: DragEnd で auto_save.dirty が true になること ──
     app.world_mut().trigger_targets(
         Pointer::<DragEnd>::new(
-            title_bar,
             PointerId::Mouse,
             loc.clone(),
+            title_bar,
             DragEnd {
                 button: bevy::picking::pointer::PointerButton::Primary,
                 distance: Vec2::new(50.0, 30.0),

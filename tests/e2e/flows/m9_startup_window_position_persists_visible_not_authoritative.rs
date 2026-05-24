@@ -30,7 +30,7 @@ fn m9_startup_window_position_persists_visible_not_authoritative() {
     app.world_mut().spawn((
         Camera2d,
         Transform::default(),
-        OrthographicProjection::default_2d(),
+        Projection::Orthographic(OrthographicProjection::default_2d()),
     ));
 
     // Startup root は ExecutionMode が可視性を所有する。restore 前は Inherited。

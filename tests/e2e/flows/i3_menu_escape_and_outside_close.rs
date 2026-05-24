@@ -10,5 +10,5 @@
 //! 将来 production 側に実装が入ったら、以下の seam を使って E2E test を追加する:
 //! - Escape: `ButtonInput<KeyCode>::just_pressed(KeyCode::Escape)` を検出する system を追加し、
 //!   `OpenMenu(None)` をセットする。
-//! - Outside click: `Pointer<Down>` on non-menu entities を観測し `OpenMenu(None)` をセットする。
+//! - Outside click: `Pointer<Pressed>` on non-menu entities を観測し `OpenMenu(None)` をセットする。
 //! どちらも headless で `ButtonInput` または `Pointer` イベント注入で駆動できる。

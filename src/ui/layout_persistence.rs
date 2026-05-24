@@ -6,6 +6,19 @@ use serde::{Deserialize, Serialize};
 use std::path::PathBuf;
 use std::time::Instant;
 
+/// 0.16: camera projection は `Projection` enum。viewport zoom（ortho scale）を読み書きする helper。
+fn viewport_zoom(projection: &Projection) -> f32 {
+    match projection {
+        Projection::Orthographic(ortho) => ortho.scale,
+        _ => 1.0,
+    }
+}
+fn set_viewport_zoom(projection: &mut Projection, zoom: f32) {
+    if let Projection::Orthographic(ortho) = projection {
+        ortho.scale = zoom;
+    }
+}
+
 use crate::ui::components::{
     LayoutExcluded, PanelKind, PanelRestoreDriver, PanelSpawnRequested, PanelSpawnSource,
     PendingStrategyFragments,
@@ -240,16 +253,16 @@ fn build_layout(
         ),
         (With<WindowRoot>, Without<LayoutExcluded>),
     >,
-    camera: &Query<(&Transform, &OrthographicProjection), (With<Camera2d>, Without<WindowRoot>)>,
+    camera: &Query<(&Transform, &Projection), (With<Camera2d>, Without<WindowRoot>)>,
     buffer: &StrategyBuffer,
     preserve_scenario_json: Option<&std::path::Path>,
 ) -> SidecarLayout {
     let viewport = camera
-        .get_single()
+        .single()
         .map(|(cam_tf, proj)| ViewportState {
             pan_x: cam_tf.translation.x,
             pan_y: cam_tf.translation.y,
-            zoom: proj.scale,
+            zoom: viewport_zoom(proj),
         })
         .unwrap_or_default();
 
@@ -322,7 +335,7 @@ fn build_layout_for_explicit_save(
         ),
         (With<WindowRoot>, Without<LayoutExcluded>),
     >,
-    camera: &Query<(&Transform, &OrthographicProjection), (With<Camera2d>, Without<WindowRoot>)>,
+    camera: &Query<(&Transform, &Projection), (With<Camera2d>, Without<WindowRoot>)>,
     buffer: &StrategyBuffer,
     registry: &crate::ui::components::InstrumentRegistry,
     scenario_meta: &crate::ui::components::ScenarioMetadata,
@@ -467,7 +480,7 @@ pub fn apply_cache_restore_system(
     mut allocator: ResMut<RegionKeyAllocator>,
     mut pending_fragments: ResMut<PendingStrategyFragments>,
     mut camera: Query<
-        (&mut Transform, &mut OrthographicProjection),
+        (&mut Transform, &mut Projection),
         (With<Camera2d>, Without<WindowRoot>),
     >,
     mut pending: ResMut<PendingLayoutApply>,
@@ -508,11 +521,11 @@ pub fn apply_cache_restore_system(
         }
 
         if let (Some(vp), Ok((mut cam_tf, mut proj))) =
-            (&event.layout.viewport, camera.get_single_mut())
+            (&event.layout.viewport, camera.single_mut())
         {
             cam_tf.translation.x = vp.pan_x;
             cam_tf.translation.y = vp.pan_y;
-            proj.scale = vp.zoom;
+            set_viewport_zoom(&mut proj, vp.zoom);
         }
 
         if let Some(win_layouts) = &event.layout.windows {
@@ -604,7 +617,7 @@ fn finish_layout_save(
         ),
         (With<WindowRoot>, Without<LayoutExcluded>),
     >,
-    camera: &Query<(&Transform, &OrthographicProjection), (With<Camera2d>, Without<WindowRoot>)>,
+    camera: &Query<(&Transform, &Projection), (With<Camera2d>, Without<WindowRoot>)>,
     buffer: &mut StrategyBuffer,
     fragments_q: &mut Query<(&StrategyEditorId, &mut StrategyFragment), With<WindowRoot>>,
     strategy_auto_save: &mut StrategyAutoSaveState,
@@ -722,7 +735,7 @@ pub fn handle_save_layout_system(
         ),
         (With<WindowRoot>, Without<LayoutExcluded>),
     >,
-    camera: Query<(&Transform, &OrthographicProjection), (With<Camera2d>, Without<WindowRoot>)>,
+    camera: Query<(&Transform, &Projection), (With<Camera2d>, Without<WindowRoot>)>,
     mut buffer: ResMut<StrategyBuffer>,
     mut fragments_q: Query<(&StrategyEditorId, &mut StrategyFragment), With<WindowRoot>>,
     mut strategy_auto_save: ResMut<StrategyAutoSaveState>,
@@ -839,7 +852,7 @@ pub fn poll_save_as_dialog_system(
         ),
         (With<WindowRoot>, Without<LayoutExcluded>),
     >,
-    camera: Query<(&Transform, &OrthographicProjection), (With<Camera2d>, Without<WindowRoot>)>,
+    camera: Query<(&Transform, &Projection), (With<Camera2d>, Without<WindowRoot>)>,
     mut buffer: ResMut<StrategyBuffer>,
     mut fragments_q: Query<(&StrategyEditorId, &mut StrategyFragment), With<WindowRoot>>,
     mut strategy_auto_save: ResMut<StrategyAutoSaveState>,
@@ -969,7 +982,7 @@ fn poll_save_dialog_system(
         ),
         (With<WindowRoot>, Without<LayoutExcluded>),
     >,
-    camera: Query<(&Transform, &OrthographicProjection), (With<Camera2d>, Without<WindowRoot>)>,
+    camera: Query<(&Transform, &Projection), (With<Camera2d>, Without<WindowRoot>)>,
     mut buffer: ResMut<StrategyBuffer>,
     mut fragments_q: Query<(&StrategyEditorId, &mut StrategyFragment), With<WindowRoot>>,
     mut strategy_auto_save: ResMut<StrategyAutoSaveState>,
@@ -1035,7 +1048,7 @@ pub fn apply_layout_system(
         (With<WindowRoot>, Without<LayoutExcluded>),
     >,
     mut camera: Query<
-        (&mut Transform, &mut OrthographicProjection),
+        (&mut Transform, &mut Projection),
         (With<Camera2d>, Without<WindowRoot>),
     >,
     mut wm: ResMut<WindowManager>,
@@ -1159,11 +1172,11 @@ pub fn apply_layout_system(
                     }
                     // カメラは同フレーム内で適用可能
                     if let (Some(vp), Ok((mut cam_tf, mut proj))) =
-                        (&layout.viewport, camera.get_single_mut())
+                        (&layout.viewport, camera.single_mut())
                     {
                         cam_tf.translation.x = vp.pan_x;
                         cam_tf.translation.y = vp.pan_y;
-                        proj.scale = vp.zoom;
+                        set_viewport_zoom(&mut proj, vp.zoom);
                     }
                     info!(
                         "layout apply deferred (waiting for strategy fragments): {:?}",
@@ -1183,11 +1196,11 @@ pub fn apply_layout_system(
         }
 
         // viewport: None → カメラを触らない（F10: scenario-only JSON で camera reset を防ぐ）
-        if let (Some(vp), Ok((mut cam_tf, mut proj))) = (&layout.viewport, camera.get_single_mut())
+        if let (Some(vp), Ok((mut cam_tf, mut proj))) = (&layout.viewport, camera.single_mut())
         {
             cam_tf.translation.x = vp.pan_x;
             cam_tf.translation.y = vp.pan_y;
-            proj.scale = vp.zoom;
+            set_viewport_zoom(&mut proj, vp.zoom);
         }
 
         // windows: None → despawn/spawn を一切しない（F10: 既存パネルを消さない）
@@ -1303,7 +1316,7 @@ pub fn apply_layout_system(
                 .map(|(entity, _, _, _, _, _, _)| entity)
                 .collect();
             for entity in to_despawn {
-                commands.entity(entity).despawn_recursive();
+                commands.entity(entity).despawn();
             }
         }
 
@@ -1436,7 +1449,7 @@ fn save_layout_on_window_close(
         ),
         (With<WindowRoot>, Without<LayoutExcluded>),
     >,
-    camera: Query<(&Transform, &OrthographicProjection), (With<Camera2d>, Without<WindowRoot>)>,
+    camera: Query<(&Transform, &Projection), (With<Camera2d>, Without<WindowRoot>)>,
     mut buffer: ResMut<StrategyBuffer>,
     mut fragments_q: Query<(&StrategyEditorId, &mut StrategyFragment), With<WindowRoot>>,
     mut strategy_auto_save: ResMut<StrategyAutoSaveState>,
@@ -1496,7 +1509,7 @@ fn debounced_autosave_system(
         ),
         (With<WindowRoot>, Without<LayoutExcluded>),
     >,
-    camera: Query<(&Transform, &OrthographicProjection), (With<Camera2d>, Without<WindowRoot>)>,
+    camera: Query<(&Transform, &Projection), (With<Camera2d>, Without<WindowRoot>)>,
     buffer: Res<StrategyBuffer>,
     paths: Res<crate::ui::components::ScenarioWritebackPaths>,
 ) {
@@ -1957,7 +1970,7 @@ mod tests {
         app.world_mut().spawn((
             Camera2d,
             Transform::default(),
-            OrthographicProjection::default_2d(),
+            Projection::Orthographic(OrthographicProjection::default_2d()),
         ));
 
         app.world_mut().spawn((
@@ -1998,7 +2011,7 @@ mod tests {
                 ),
                 (With<WindowRoot>, Without<LayoutExcluded>),
             >,
-            Query<(&Transform, &OrthographicProjection), (With<Camera2d>, Without<WindowRoot>)>,
+            Query<(&Transform, &Projection), (With<Camera2d>, Without<WindowRoot>)>,
             Res<StrategyBuffer>,
         )> = SystemState::new(app.world_mut());
 
@@ -2024,7 +2037,7 @@ mod tests {
         app.world_mut().spawn((
             Camera2d,
             Transform::default(),
-            OrthographicProjection::default_2d(),
+            Projection::Orthographic(OrthographicProjection::default_2d()),
         ));
 
         // (a) Manual で強制 Hidden だが本来は可視（marker=Inherited）→ visible:true で保存される。
@@ -2070,7 +2083,7 @@ mod tests {
                 ),
                 (With<WindowRoot>, Without<LayoutExcluded>),
             >,
-            Query<(&Transform, &OrthographicProjection), (With<Camera2d>, Without<WindowRoot>)>,
+            Query<(&Transform, &Projection), (With<Camera2d>, Without<WindowRoot>)>,
             Res<StrategyBuffer>,
         )> = SystemState::new(app.world_mut());
 
@@ -2110,7 +2123,7 @@ mod tests {
         app.world_mut().spawn((
             Camera2d,
             Transform::default(),
-            OrthographicProjection::default_2d(),
+            Projection::Orthographic(OrthographicProjection::default_2d()),
         ));
 
         let chart = app
@@ -2189,7 +2202,7 @@ mod tests {
         app.world_mut().spawn((
             Camera2d,
             Transform::default(),
-            OrthographicProjection::default_2d(),
+            Projection::Orthographic(OrthographicProjection::default_2d()),
         ));
 
         // 既存の Strategy Editor 窓（region_001、最初は可視）。
@@ -2382,7 +2395,7 @@ mod tests {
                 (With<WindowRoot>, Without<LayoutExcluded>),
             >,
             camera: Query<
-                (&Transform, &OrthographicProjection),
+                (&Transform, &Projection),
                 (With<Camera2d>, Without<WindowRoot>),
             >,
             buffer: Res<StrategyBuffer>,
@@ -2404,7 +2417,7 @@ mod tests {
         app.world_mut().spawn((
             Camera2d,
             Transform::default(),
-            OrthographicProjection::default_2d(),
+            Projection::Orthographic(OrthographicProjection::default_2d()),
         ));
         let editor = app
             .world_mut()
@@ -2469,7 +2482,7 @@ mod tests {
         app.world_mut().spawn((
             Camera2d,
             Transform::default(),
-            OrthographicProjection::default_2d(),
+            Projection::Orthographic(OrthographicProjection::default_2d()),
         ));
 
         // scenario-only JSON: schema_version / windows / strategy_path いずれも無し。
@@ -2512,7 +2525,7 @@ mod tests {
         app.world_mut().spawn((
             Camera2d,
             Transform::default(),
-            OrthographicProjection::default_2d(),
+            Projection::Orthographic(OrthographicProjection::default_2d()),
         ));
 
         app.world_mut().spawn((
@@ -2551,7 +2564,7 @@ mod tests {
                 ),
                 (With<WindowRoot>, Without<LayoutExcluded>),
             >,
-            Query<(&Transform, &OrthographicProjection), (With<Camera2d>, Without<WindowRoot>)>,
+            Query<(&Transform, &Projection), (With<Camera2d>, Without<WindowRoot>)>,
             Res<StrategyBuffer>,
         )> = SystemState::new(app.world_mut());
 
@@ -2578,7 +2591,7 @@ mod tests {
         app.world_mut().spawn((
             Camera2d,
             Transform::default(),
-            OrthographicProjection::default_2d(),
+            Projection::Orthographic(OrthographicProjection::default_2d()),
         ));
 
         // LIVE Order window: no LayoutExcluded. scenario 所有 (restore_driver==ScenarioInstruments)
@@ -2618,7 +2631,7 @@ mod tests {
                 ),
                 (With<WindowRoot>, Without<LayoutExcluded>),
             >,
-            Query<(&Transform, &OrthographicProjection), (With<Camera2d>, Without<WindowRoot>)>,
+            Query<(&Transform, &Projection), (With<Camera2d>, Without<WindowRoot>)>,
             Res<StrategyBuffer>,
         )> = SystemState::new(app.world_mut());
 
@@ -2650,7 +2663,7 @@ mod tests {
         app.world_mut().spawn((
             Camera2d,
             Transform::default(),
-            OrthographicProjection::default_2d(),
+            Projection::Orthographic(OrthographicProjection::default_2d()),
         ));
 
         let picker = app
@@ -2719,7 +2732,7 @@ mod tests {
         app.world_mut().spawn((
             Camera2d,
             Transform::default(),
-            OrthographicProjection::default_2d(),
+            Projection::Orthographic(OrthographicProjection::default_2d()),
         ));
 
         let tmp = std::env::temp_dir().join(format!(
@@ -2782,7 +2795,7 @@ mod tests {
         app.world_mut().spawn((
             Camera2d,
             Transform::default(),
-            OrthographicProjection::default_2d(),
+            Projection::Orthographic(OrthographicProjection::default_2d()),
         ));
 
         // Startup root は ExecutionMode が可視性を所有する。restore 前は Inherited。
@@ -2857,7 +2870,7 @@ mod tests {
         app.world_mut().spawn((
             Camera2d,
             Transform::default(),
-            OrthographicProjection::default_2d(),
+            Projection::Orthographic(OrthographicProjection::default_2d()),
         ));
 
         let startup = app
@@ -2920,7 +2933,7 @@ mod tests {
         app.world_mut().spawn((
             Camera2d,
             Transform::default(),
-            OrthographicProjection::default_2d(),
+            Projection::Orthographic(OrthographicProjection::default_2d()),
         ));
 
         // 現行の窓サイズ 320×200 で spawn。
@@ -3018,7 +3031,7 @@ mod tests {
         app.world_mut().spawn((
             Camera2d,
             Transform::default(),
-            OrthographicProjection::default_2d(),
+            Projection::Orthographic(OrthographicProjection::default_2d()),
         ));
 
         app.init_resource::<PendingFileDialog>();
@@ -3086,7 +3099,7 @@ mod tests {
         app.world_mut().spawn((
             Camera2d,
             Transform::default(),
-            OrthographicProjection::default_2d(),
+            Projection::Orthographic(OrthographicProjection::default_2d()),
         ));
 
         // Orders panel: save 経路の query (With<WindowRoot>, Without<LayoutExcluded>) に拾われる。
@@ -3195,7 +3208,7 @@ mod tests {
         app.world_mut().spawn((
             Camera2d,
             Transform::default(),
-            OrthographicProjection::default_2d(),
+            Projection::Orthographic(OrthographicProjection::default_2d()),
         ));
 
         app.init_resource::<PendingFileDialog>();
@@ -3248,7 +3261,7 @@ mod tests {
         app.world_mut().spawn((
             Camera2d,
             Transform::default(),
-            OrthographicProjection::default_2d(),
+            Projection::Orthographic(OrthographicProjection::default_2d()),
         ));
 
         app.init_resource::<PendingFileDialog>();
@@ -3320,7 +3333,7 @@ mod tests {
         app.world_mut().spawn((
             Camera2d,
             Transform::default(),
-            OrthographicProjection::default_2d(),
+            Projection::Orthographic(OrthographicProjection::default_2d()),
         ));
 
         app.init_resource::<PendingFileDialog>();
@@ -3381,7 +3394,7 @@ mod tests {
         app.world_mut().spawn((
             Camera2d,
             Transform::default(),
-            OrthographicProjection::default_2d(),
+            Projection::Orthographic(OrthographicProjection::default_2d()),
         ));
 
         app.init_resource::<PendingFileDialog>();
@@ -3453,7 +3466,7 @@ mod tests {
         app.world_mut().spawn((
             Camera2d,
             Transform::default(),
-            OrthographicProjection::default_2d(),
+            Projection::Orthographic(OrthographicProjection::default_2d()),
         ));
 
         app.init_resource::<PendingFileDialog>();
@@ -3535,7 +3548,7 @@ mod tests {
         app.world_mut().spawn((
             Camera2d,
             Transform::default(),
-            OrthographicProjection::default_2d(),
+            Projection::Orthographic(OrthographicProjection::default_2d()),
         ));
 
         let dir = tempfile::tempdir().unwrap();
@@ -3603,7 +3616,7 @@ mod tests {
         app.world_mut().spawn((
             Camera2d,
             Transform::default(),
-            OrthographicProjection::default_2d(),
+            Projection::Orthographic(OrthographicProjection::default_2d()),
         ));
 
         let dir = tempfile::tempdir().unwrap();
@@ -3664,7 +3677,7 @@ mod tests {
         app.world_mut().spawn((
             Camera2d,
             Transform::default(),
-            OrthographicProjection::default_2d(),
+            Projection::Orthographic(OrthographicProjection::default_2d()),
         ));
 
         let dir = tempfile::tempdir().unwrap();

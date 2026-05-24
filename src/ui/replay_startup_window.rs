@@ -266,11 +266,11 @@ mod tests {
         let world = app.world_mut();
 
         let mut label_q = world.query_filtered::<&Text, With<ReplayStartupStageLabel>>();
-        let label_text = label_q.single(world);
+        let label_text = label_q.single(world).unwrap();
         assert_eq!(label_text.0, "Loading replay data...");
 
         let mut win_q = world.query_filtered::<&Visibility, With<ReplayStartupWindow>>();
-        let vis = win_q.single(world);
+        let vis = win_q.single(world).unwrap();
         assert!(matches!(vis, Visibility::Visible));
     }
 

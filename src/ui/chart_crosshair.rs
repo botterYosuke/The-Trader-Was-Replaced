@@ -88,8 +88,8 @@ pub fn install_chart_crosshair_observer(
         commands.entity(entity).observe(
             |trigger: Trigger<Pointer<Move>>,
              mut chart_q: Query<(&GlobalTransform, &mut CrosshairState)>| {
-                // Bevy 0.15: trigger.entity() (Caveat #3)。
-                let Ok((gt, mut crosshair)) = chart_q.get_mut(trigger.entity()) else {
+                // 0.16: trigger.entity() → target()。
+                let Ok((gt, mut crosshair)) = chart_q.get_mut(trigger.target()) else {
                     return;
                 };
                 // `hit.position` は world space (bevy_sprite_picking_backend 前提 — Caveat #12/#24)。
@@ -107,7 +107,7 @@ pub fn install_chart_crosshair_observer(
         );
         commands.entity(entity).observe(
             |trigger: Trigger<Pointer<Out>>, mut chart_q: Query<&mut CrosshairState>| {
-                if let Ok(mut crosshair) = chart_q.get_mut(trigger.entity()) {
+                if let Ok(mut crosshair) = chart_q.get_mut(trigger.target()) {
                     crosshair.cursor_world = None;
                     crosshair.hovered_price = None;
                     crosshair.hovered_time_ms = None;
@@ -618,13 +618,13 @@ mod tests {
         app.update();
 
         let world = app.world_mut();
-        let mut bq = world.query::<(&CrosshairBadge, &Parent)>();
+        let mut bq = world.query::<(&CrosshairBadge, &ChildOf)>();
         let badges: Vec<_> = bq.iter(world).collect();
         // price badge + time badge = 2 (どちらも gutter 子)。
         assert_eq!(badges.len(), 2, "expected price + time badge");
         for (badge, parent) in &badges {
             assert_eq!(badge.target_chart, chart);
-            let p = parent.get();
+            let p = parent.parent();
             assert!(
                 p == price_gutter || p == time_gutter,
                 "badge must be child of a gutter"
@@ -731,7 +731,7 @@ mod tests {
         app.update();
 
         let world = app.world_mut();
-        let mut bq = world.query::<(&CrosshairBadge, &Parent)>();
+        let mut bq = world.query::<(&CrosshairBadge, &ChildOf)>();
         let badges: Vec<_> = bq.iter(world).collect();
         assert_eq!(
             badges.len(),
@@ -740,7 +740,7 @@ mod tests {
         );
         for (badge, parent) in &badges {
             assert_eq!(badge.target_chart, chart);
-            let p = parent.get();
+            let p = parent.parent();
             assert!(p == price_gutter || p == time_gutter);
         }
     }

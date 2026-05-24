@@ -9,22 +9,29 @@ Bevy デスクトップ UI と Python gRPC バックエンドからなる、リ�
 The trader dashboard renders an infinite canvas of windows over a Bevy app. これらはオンキャンバスのウィンドウと Startup パラメータフォームの語彙。
 
 **Floating window**:
-A world-space *sprite* window built by `spawn_floating_window` — draggable by its
-title bar, z-ordered among other floating windows. Chart, Strategy Editor,
-Buying Power, Run Result, Positions, and Orders are all floating windows, and
-the Startup window is built the same way. Editable text lives in world space too
-(the Strategy Editor hosts a `cosmic-edit` buffer this way).
+A draggable, z-ordered window over the canvas. Two hosting flavours coexist
+(ADR 0003):
+- **world-space *sprite* window** built by `spawn_floating_window` — Chart,
+  Buying Power, Run Result, Positions, Orders. Drag/zoom follow the PanCam camera.
+- **screen-space *Bevy UI Node* window** built by `spawn_screen_window` — the
+  **Strategy Editor** and the **Startup** window, because their editable text uses
+  `bevy_ui_text_input` (`TextInputNode`), which is screen-space only. Position is a
+  `Node` `left`/`top` in logical pixels; the title bar drag moves those.
+Editable text is hosted in screen space (the Strategy Editor and Startup fields
+use `TextInputNode`); display-only panels stay world-space sprites.
 _Avoid_: panel, dialog.
 
 **Startup window**:
 The form for configuring a replay run — Start date, End date, Granularity, and
-Initial cash. A floating window with two deliberate departures from the others:
+Initial cash. A screen-space `spawn_screen_window` floating window (its date/cash
+fields are `TextInputNode`s) with two deliberate departures from the others:
 it has **no close button**, and it is **shown only in Replay mode** (its
 visibility is owned by `ExecutionMode`, not by the user or a sidebar button).
 _Avoid_: Startup panel, scenario panel, run config dialog.
 
 **Title bar**:
-The sprite drag region every floating window shares via `spawn_floating_window`;
+The drag region every floating window shares — a sprite for world-space windows
+(`spawn_floating_window`) or a `Node` for screen-space windows (`spawn_screen_window`);
 also the host for the × close button on windows that have one.
 _Avoid_: header.
 
@@ -83,8 +90,9 @@ Live モードで venue から取得した銘柄一覧（`Tickers`）。Live に
 > when it shows; the user drags it but can't dismiss it. Closing it would strand
 > the only way to configure a replay run.
 > **Dev:** But it's built the same way as Buying Power?
-> **Expert:** Yes — same `spawn_floating_window`, same title bar. The fields are
-> hosted in world space exactly like the Strategy Editor's editable text.
+> **Expert:** Almost — it's a *screen-space* window (`spawn_screen_window`) rather
+> than a world-space sprite, because its date/cash fields are `TextInputNode`s,
+> hosted in screen space exactly like the Strategy Editor's editable text (ADR 0003).
 
 ### 銘柄ユニバース
 

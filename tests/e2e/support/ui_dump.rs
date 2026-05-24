@@ -56,6 +56,12 @@ impl PanelSnapshot {
     }
 }
 
+/// `Node` の width/height(Px) を `Vec2` にする（screen-space window のサイズ読み取り用）。
+fn node_px_size(node: &Node) -> Vec2 {
+    let px = |v: Val| if let Val::Px(p) = v { p } else { 0.0 };
+    Vec2::new(px(node.width), px(node.height))
+}
+
 /// すべての `WindowRoot` パネルを位置 / 大きさ / 表示 / キャプション付きでダンプする。
 pub fn dump_panels(world: &mut World) -> Vec<PanelSnapshot> {
     // children / Text2d を 1 度ずつ収集してマップ化（root ごとのネスト query を避ける）。
@@ -63,14 +69,22 @@ pub fn dump_panels(world: &mut World) -> Vec<PanelSnapshot> {
     {
         let mut q = world.query::<(Entity, &Children)>();
         for (e, ch) in q.iter(world) {
-            children_map.insert(e, ch.iter().copied().collect());
+            children_map.insert(e, ch.iter().collect());
         }
     }
+    // world-space は `Text2d`、screen-space（ADR 0003 の draggable window）は UI `Text`。
+    // 両方を集めてキャプション化する。
     let mut text_map: HashMap<Entity, String> = HashMap::new();
     {
         let mut q = world.query::<(Entity, &Text2d)>();
         for (e, t) in q.iter(world) {
             text_map.insert(e, t.0.clone());
+        }
+    }
+    {
+        let mut q = world.query::<(Entity, &Text)>();
+        for (e, t) in q.iter(world) {
+            text_map.entry(e).or_insert_with(|| t.0.clone());
         }
     }
 
@@ -82,20 +96,26 @@ pub fn dump_panels(world: &mut World) -> Vec<PanelSnapshot> {
                 &PanelKind,
                 &Transform,
                 Option<&Sprite>,
+                Option<&Node>,
                 &Visibility,
                 Option<&StrategyEditorId>,
                 Option<&ChartInstrument>,
             ),
             With<WindowRoot>,
         >();
-        for (e, kind, tf, sprite, vis, sid, chart) in q.iter(world) {
+        for (e, kind, tf, sprite, node, vis, sid, chart) in q.iter(world) {
+            // world-space window は Sprite.custom_size、screen-space window は Node の width/height(Px)。
+            let size = sprite
+                .and_then(|s| s.custom_size)
+                .or_else(|| node.map(node_px_size))
+                .unwrap_or(Vec2::ZERO);
             out.push((
                 e,
                 PanelSnapshot {
                     kind: kind.label(),
                     position: tf.translation.truncate(),
                     z: tf.translation.z,
-                    size: sprite.and_then(|s| s.custom_size).unwrap_or(Vec2::ZERO),
+                    size,
                     visible: !matches!(vis, Visibility::Hidden),
                     captions: Vec::new(),
                     region_key: sid.map(|s| s.region_key.clone()),

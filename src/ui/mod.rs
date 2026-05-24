@@ -22,7 +22,6 @@ pub mod orders;
 pub mod positions;
 pub mod reconcile_modal;
 pub mod relogin_modal;
-pub mod render_scale;
 pub mod replay_startup_window;
 pub mod restore;
 pub mod run_result_panel;
@@ -30,11 +29,10 @@ pub mod safety_rails_modal;
 pub mod safety_toast;
 pub mod scenario_parser;
 pub mod scenario_startup_panel;
+pub mod screen_window;
 pub mod secret_modal;
 pub mod sidebar;
 pub mod strategy_editor;
-pub mod strategy_editor_gutter;
-pub mod strategy_editor_scrollbar;
 pub mod systems;
 pub mod window;
 
@@ -42,7 +40,6 @@ pub use components::{
     ChartInstrument, InstrumentRegistry, ScenarioFileWatchState, ScenarioInstrumentsWritebackState,
     ScenarioLoadedFromFile, ScenarioReadTarget, ScenarioWritebackPaths,
 };
-pub use render_scale::{RenderScaleResponsive, update_cosmic_render_scale_system};
 
 use crate::ui::buying_power::buying_power_panel_system;
 use crate::ui::chart_axes::{price_axis_labels_system, time_axis_labels_system};
@@ -158,18 +155,13 @@ use crate::ui::sidebar::{
 };
 use crate::ui::strategy_editor::{
     StrategyAutoSaveState, apply_pending_app_edits_system, apply_strategy_snapshot_restore_system,
-    debounced_strategy_autosave_system, strategy_editor_content_layout_system,
-    sync_editor_to_strategy_buffer_system, sync_strategy_buffer_to_editor_system, undo_redo_system,
+    debounced_strategy_autosave_system, sync_editor_to_strategy_buffer_system,
+    sync_strategy_buffer_to_editor_system, undo_redo_system,
 };
-use crate::ui::strategy_editor_gutter::{sync_gutter_scroll_system, update_gutter_text_system};
-use crate::ui::strategy_editor_scrollbar::update_scrollbar_thumb_system;
 use crate::ui::systems::{update_price_display, update_status_indicator};
 use crate::ui::window::instrument_chart_sync_system;
 use bevy::prelude::*;
-use bevy_cosmic_edit::{
-    CosmicEditPlugin, CosmicFontConfig,
-    prelude::{change_active_editor_sprite, change_active_editor_ui},
-};
+use bevy_ui_text_input::TextInputPlugin;
 use bevy_vector_shapes::Shape2dPlugin;
 
 pub struct UiPlugin;
@@ -178,9 +170,7 @@ impl Plugin for UiPlugin {
     fn build(&self, app: &mut App) {
         app.add_plugins((
             Shape2dPlugin::default(),
-            CosmicEditPlugin {
-                font_config: CosmicFontConfig::default(),
-            },
+            TextInputPlugin,
             crate::ui::layout_persistence::LayoutPersistencePlugin,
         ))
         .init_resource::<WindowManager>()
@@ -300,7 +290,6 @@ impl Plugin for UiPlugin {
                 panel_button_system,
                 panel_spawn_dispatcher_system,
                 floating_window_layout_system,
-                strategy_editor_content_layout_system,
             ),
         )
         // ── Chart (Phase 7.3 A): ViewState 更新 / autoscale / 描画 ──
@@ -438,15 +427,10 @@ impl Plugin for UiPlugin {
                     .after(apply_pending_app_edits_system)
                     .after(apply_strategy_snapshot_restore_system),
                 debounced_strategy_autosave_system,
-                update_cosmic_render_scale_system,
             ),
         )
-        .add_systems(
-            Update,
-            (change_active_editor_sprite, change_active_editor_ui)
-                .after(menu_keyboard_system)
-                .after(picker_searchbox_input_system),
-        )
+        // bevy_ui_text_input は TextInputNode 自身の on_add observer で
+        // pointer-down focus を張る（cosmic 時代の change_active_editor_* は不要）。
         .add_systems(
             Update,
             (
@@ -462,17 +446,6 @@ impl Plugin for UiPlugin {
                     .after(crate::ui::layout_persistence::apply_pending_layout_system)
                     .after(panel_spawn_dispatcher_system),
                 crate::ui::sidebar::apply_order_button_visibility_system,
-            ),
-        )
-        // ── gutter + scrollbar (Phase B) ──
-        // gutter テキストは Changed<StrategyFragment> 駆動。scroll 追従とサムは
-        // エディタの scroll を読むだけなので毎フレーム回す (1 フレーム遅延は不可視)。
-        .add_systems(
-            Update,
-            (
-                update_gutter_text_system,
-                sync_gutter_scroll_system,
-                update_scrollbar_thumb_system,
             ),
         )
         // ── Phase 9: OrderPanel (LiveManual 手動発注) + 2 段階確認 + SecretModal ──
@@ -497,7 +470,6 @@ impl Plugin for UiPlugin {
                 secret_modal_lifecycle_system,
                 secret_modal_visibility_system,
                 secret_modal_input_system
-                    .before(bevy_cosmic_edit::InputSet)
                     .before(picker_searchbox_input_system)
                     .before(menu_keyboard_system),
                 secret_modal_button_system,
@@ -527,7 +499,6 @@ impl Plugin for UiPlugin {
                 modify_modal_visibility_system,
                 modify_modal_input_system
                     .after(secret_modal_input_system)
-                    .before(bevy_cosmic_edit::InputSet)
                     .before(picker_searchbox_input_system)
                     .before(menu_keyboard_system),
                 modify_modal_button_system,

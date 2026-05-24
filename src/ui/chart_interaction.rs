@@ -20,10 +20,19 @@
 use crate::ui::chart_viewstate::ChartViewState;
 use crate::ui::components::ChartInstrument;
 use bevy::input::mouse::{MouseScrollUnit, MouseWheel};
-use bevy::picking::focus::HoverMap;
+use bevy::picking::hover::HoverMap;
 use bevy::picking::pointer::{PointerId, PointerLocation};
 use bevy::prelude::*;
 use std::collections::{HashMap, HashSet};
+
+/// camera のズーム scale（pan 量を screen→world に補正するための係数）を読む。
+/// 0.16 で camera projection は `Projection` enum になったので ortho arm から scale を取り出す。
+fn camera_scale(camera_q: &Query<&Projection, With<Camera2d>>) -> f32 {
+    match camera_q.single() {
+        Ok(Projection::Orthographic(ortho)) => ortho.scale,
+        _ => 1.0,
+    }
+}
 
 /// double-click とみなす連続クリックの最大間隔 (秒)。OS 標準の ~0.5s に合わせる。
 const DOUBLE_CLICK_SECS: f32 = 0.4;
@@ -82,7 +91,7 @@ pub fn install_chart_drag_observer(
              mut click_state: ResMut<ChartClickState>,
              // camera scale 補正 (規約 5 / floating_window.rs:117): bevy_pancam のズーム状態でも
              // world-space の pan 量が screen-space の drag 距離と一致するように scale を掛ける。
-             camera_q: Query<&OrthographicProjection, With<Camera2d>>| {
+             camera_q: Query<&Projection, With<Camera2d>>| {
                 // ⚠️ Pointer<Drag> は全ボタンで発火する (bevy_picking 0.15 `pointer_events` が
                 //    `for button in PointerButton::iter()`)。右/中ボタンドラッグは camera.rs の
                 //    suppression が「PanCam でキャンバスをパン」と定義しているので、ここで処理すると
@@ -90,14 +99,14 @@ pub fn install_chart_drag_observer(
                 if drag.event().button != PointerButton::Primary {
                     return;
                 }
-                // Bevy 0.15: trigger.entity() (0.16+ で target() に rename — Caveat #3)。
-                let entity = drag.entity();
+                // 0.16: trigger.entity() → target()。
+                let entity = drag.target();
                 let Ok(mut state) = chart_q.get_mut(entity) else {
                     return;
                 };
                 // Trigger は inner event を Deref しないので .event() 経由 (Caveat #23)。
                 let delta = drag.event().delta;
-                let scale = camera_q.get_single().map(|p| p.scale).unwrap_or(1.0);
+                let scale = camera_scale(&camera_q);
                 state.translation.x += delta.x * scale;
                 state.translation.y -= delta.y * scale; // Bevy Y は上が正、Pointer delta は下が正
                 state.auto_scale = false; // pan 開始で autoscale off
@@ -127,7 +136,7 @@ pub fn install_chart_autoscale_reset_observer(
                 if click.event().button != PointerButton::Primary {
                     return;
                 }
-                let entity = click.entity();
+                let entity = click.target();
                 click.propagate(false); // window 移動/他パネルに bubble させない (Caveat #2)
                 // drag 由来の click は genuine click ではない (Bevy 0.15 は drag 後も Click 発火)。
                 // 印を消し、double-click 列もリセットして「pan 2 連発 = reset」の誤検出を断つ。
@@ -189,7 +198,7 @@ pub fn chart_scroll_zoom_system(
     mut wheel: EventReader<MouseWheel>,
     // Ctrl 押下中は「キャンバス全体ズーム」意図 (camera.rs の suppression と対称)。chart ズームは skip。
     keys: Res<ButtonInput<KeyCode>>,
-    // Bevy 0.15.1: HoverMap は bevy::picking::focus (0.16+ で hover に rename)。
+    // 0.16: HoverMap は bevy::picking::hover（0.15 は picking::focus）。
     hover_map: Res<HoverMap>,
     // hover_map で得た PointerId に対応する cursor 座標を引く。
     pointers: Query<(&PointerId, &PointerLocation)>,

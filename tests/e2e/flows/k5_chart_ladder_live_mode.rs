@@ -178,7 +178,7 @@ fn k5_chart_ladder_live_mode() {
 
     {
         let world = app.world_mut();
-        let mut rq = world.query::<(&LadderRow, &Parent)>();
+        let mut rq = world.query::<(&LadderRow, &ChildOf)>();
         let rows: Vec<_> = rq
             .iter(world)
             .filter(|(_, p)| p.get() == pane_entity)
@@ -209,7 +209,7 @@ fn k5_chart_ladder_live_mode() {
 
     {
         let world = app.world_mut();
-        let mut rq = world.query::<(&LadderRow, &Parent)>();
+        let mut rq = world.query::<(&LadderRow, &ChildOf)>();
         let rows: Vec<_> = rq
             .iter(world)
             .filter(|(_, p)| p.get() == pane_entity)

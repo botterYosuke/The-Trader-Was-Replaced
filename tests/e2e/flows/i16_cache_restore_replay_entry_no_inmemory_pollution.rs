@@ -130,7 +130,7 @@ fn i16_cache_restore_replay_entry_no_inmemory_pollution() {
     app.world_mut().spawn((
         Camera2d,
         Transform::default(),
-        OrthographicProjection::default_2d(),
+        Projection::Orthographic(OrthographicProjection::default_2d()),
     ));
 
     app.add_systems(

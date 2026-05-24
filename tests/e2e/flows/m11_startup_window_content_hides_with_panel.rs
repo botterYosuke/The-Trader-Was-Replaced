@@ -67,8 +67,8 @@ fn m11_startup_window_content_hides_with_panel() {
             reached_root = true;
             break;
         }
-        match world.get::<Parent>(cursor) {
-            Some(parent) => cursor = parent.get(),
+        match world.get::<ChildOf>(cursor) {
+            Some(parent) => cursor = parent.parent(),
             None => break,
         }
     }

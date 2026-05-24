@@ -1,28 +1,15 @@
 use bevy::prelude::*;
-use bevy_cosmic_edit::cosmic_text::{Attrs, AttrsOwned, Metrics};
-use bevy_cosmic_edit::prelude::*;
-use bevy_cosmic_edit::{
-    CosmicBackgroundColor, CosmicRenderScale, CosmicTextAlign, CosmicWrap, CursorColor, ReadOnly,
-    ScrollEnabled,
-};
+use bevy_ui_text_input::actions::{TextInputAction, TextInputEdit};
+use bevy_ui_text_input::{TextInputContents, TextInputFilter, TextInputMode, TextInputNode, TextInputQueue};
 use chrono::{Months, NaiveDate};
 
 use crate::replay::startup_progress::ReplayStartupProgress;
-use crate::ui::render_scale::RenderScaleResponsive;
-use bevy_cosmic_edit::CosmicTextChanged;
+use crate::ui::screen_window::{ScreenWindowSpec, spawn_screen_window};
 
-/// `BufferExtras::get_text` lives in a private cosmic-edit module, so we
-/// re-join `Buffer.lines` manually.
-fn buffer_text(buffer: &CosmicEditBuffer) -> String {
-    let mut out = String::new();
-    let n = buffer.lines.len();
-    for (i, line) in buffer.lines.iter().enumerate() {
-        out.push_str(line.text());
-        if i + 1 < n {
-            out.push('\n');
-        }
-    }
-    out
+/// `TextInputBuffer` の全文を `src` で置き換える action 列を queue に積む（SelectAll→Paste）。
+fn queue_full_text(queue: &mut TextInputQueue, src: &str) {
+    queue.add(TextInputAction::Edit(TextInputEdit::SelectAll));
+    queue.add(TextInputAction::Edit(TextInputEdit::Paste(src.to_string())));
 }
 
 use crate::ui::components::{
@@ -33,8 +20,6 @@ use crate::ui::components::{
     ScenarioStartupStartFieldHost, ScenarioWritebackPaths,
     atomic_mutate_scenario_object,
 };
-use crate::ui::floating_window::{FloatingWindowSpec, spawn_floating_window};
-
 const DATE_FMT: &str = "%Y-%m-%d";
 
 const ERROR_COLOR: Color = Color::srgb(0.95, 0.45, 0.45);
@@ -100,125 +85,138 @@ pub enum ScenarioStartupParamCommit {
     InitialCash(String),
 }
 
-/// world-space (sprite) STARTUP floating window. step 4 で旧 sidebar flexbox panel
-/// を置き換える新経路。host marker / error-label
+/// screen-space (Bevy UI Node) STARTUP window（ADR 0003）。host marker / error-label
 /// marker / granularity-button marker を既存システムが期待する数・種類で再現する。
-/// Startup 時に sprite startup window を一度だけ spawn する system ラッパ。
+/// 不変条件: × クローズボタン無し（`closeable: false`）・Replay 限定表示。
+/// Startup 時に startup window を一度だけ spawn する system ラッパ。
 /// 本体は helper `spawn_scenario_startup_window(&mut Commands)`（4d の dispatcher 復元 arm も同 helper を呼ぶ）。
 pub fn spawn_scenario_startup_window_system(mut commands: Commands) {
     spawn_scenario_startup_window(&mut commands);
 }
 
+const STARTUP_LABEL_COLOR: Color = Color::srgb(0.78, 0.82, 0.92);
+const GRAN_BTN_BG: Color = Color::srgba(0.10, 0.10, 0.16, 1.0);
+/// フィールド host Node のサイズ（編集領域）。
+const FIELD_W: f32 = 130.0;
+const FIELD_H: f32 = 22.0;
+/// ラベル列の幅（右寄せでフィールドとの間隔を一定に保つ）。
+const LABEL_W: f32 = 90.0;
+
 pub fn spawn_scenario_startup_window(commands: &mut Commands) {
-    const WINDOW_SIZE: Vec2 = Vec2::new(320.0, 200.0);
-    const WINDOW_POSITION: Vec2 = Vec2::new(-450.0, -120.0);
+    const WINDOW_SIZE: Vec2 = Vec2::new(300.0, 250.0);
+    const WINDOW_POSITION: Vec2 = Vec2::new(60.0, 500.0);
     const ACCENT: Color = Color::srgba(0.5, 0.7, 1.0, 0.4);
 
-    // Labels are right-anchored, so LABEL_X is their RIGHT edge (10px left of
-    // the field's left edge at FIELD_X-60 = -60). Right-aligning keeps the
-    // label→field gap constant regardless of label length and stops long
-    // labels ("Initial cash" / "Granularity") from overrunning the window's
-    // left border into the panel behind it.
-    const LABEL_X: f32 = -70.0;
-    const FIELD_X: f32 = 0.0;
-    const FIELD_SIZE: Vec2 = Vec2::new(120.0, 22.0);
-    const ERROR_X: f32 = -40.0;
-    const STARTUP_LABEL_COLOR: Color = Color::srgb(0.78, 0.82, 0.92);
-    const FIELD_BG: Color = Color::srgba(0.02, 0.02, 0.04, 1.0);
-    const GRAN_BTN_BG: Color = Color::srgba(0.10, 0.10, 0.16, 1.0);
-    const GRAN_BTN_SIZE: Vec2 = Vec2::new(50.0, 16.0);
-
-    let (root, content_area, _title_bar) = spawn_floating_window(
+    let (root, content_area, _title_bar) = spawn_screen_window(
         commands,
-        FloatingWindowSpec {
+        ScreenWindowSpec {
             title: "STARTUP".to_string(),
             size: WINDOW_SIZE,
             position: WINDOW_POSITION,
             accent: ACCENT,
+            // Startup の不変条件: × クローズボタンは出さない。
             closeable: false,
-            resizable: false,
         },
     );
     commands
         .entity(root)
         .insert((PanelKind::Startup, ScenarioStartupPanelRoot));
+    // content_area に内側 padding を足す（行が枠に張り付かないように）。
+    // spawn_screen_window が付けた Node を上書きして padding/row_gap を加える。
+    commands.entity(content_area).insert(Node {
+        width: Val::Percent(100.0),
+        flex_grow: 1.0,
+        flex_direction: FlexDirection::Column,
+        padding: UiRect::all(Val::Px(8.0)),
+        row_gap: Val::Px(2.0),
+        ..default()
+    });
 
-    // ── ラベル + フィールド host を 1 行 spawn する helper ──
+    // ── ラベル + フィールド host を 1 行 spawn する helper（Row Node）──
     fn spawn_field_row(
         commands: &mut Commands,
         parent: Entity,
-        y: f32,
         label: &str,
         host_marker: impl Bundle,
     ) {
+        let row = commands
+            .spawn(Node {
+                width: Val::Percent(100.0),
+                height: Val::Px(FIELD_H),
+                flex_direction: FlexDirection::Row,
+                align_items: AlignItems::Center,
+                column_gap: Val::Px(10.0),
+                ..default()
+            })
+            .id();
+        commands.entity(parent).add_child(row);
+
         let lbl = commands
             .spawn((
-                Text2d::new(label),
+                Node {
+                    width: Val::Px(LABEL_W),
+                    justify_content: JustifyContent::FlexEnd,
+                    ..default()
+                },
+                Text::new(label),
                 TextFont {
                     font_size: 11.0,
                     ..default()
                 },
                 TextColor(STARTUP_LABEL_COLOR),
-                bevy::sprite::Anchor::CenterRight,
-                Transform::from_xyz(LABEL_X, y, 0.1),
+                TextLayout::new_with_justify(JustifyText::Right),
             ))
             .id();
-        commands.entity(parent).add_child(lbl);
+        commands.entity(row).add_child(lbl);
 
         let host = commands
             .spawn((
-                Sprite {
-                    color: FIELD_BG,
-                    custom_size: Some(FIELD_SIZE),
+                Node {
+                    width: Val::Px(FIELD_W),
+                    height: Val::Px(FIELD_H),
                     ..default()
                 },
-                Transform::from_xyz(FIELD_X, y, 0.1),
                 host_marker,
             ))
             .id();
-        commands.entity(parent).add_child(host);
+        commands.entity(row).add_child(host);
     }
 
     // ── エラーラベル (空文字で spawn、update system が後で書く) helper ──
-    fn spawn_error_label(
-        commands: &mut Commands,
-        parent: Entity,
-        y: f32,
-        field: ScenarioStartupField,
-    ) {
+    fn spawn_error_label(commands: &mut Commands, parent: Entity, field: ScenarioStartupField) {
         let err = commands
             .spawn((
-                Text2d::new(""),
+                Text::new(""),
                 TextFont {
                     font_size: 10.0,
                     ..default()
                 },
                 TextColor(ERROR_COLOR),
-                Transform::from_xyz(ERROR_X, y, 0.1),
                 ScenarioStartupErrorLabel { field },
             ))
             .id();
         commands.entity(parent).add_child(err);
     }
 
-    // ── granularity ボタン (sprite + Transform + marker、子に Text2d ラベル) helper ──
+    // ── granularity ボタン (Node + Button + marker、子に Text ラベル) helper ──
     fn spawn_granularity_btn(
         commands: &mut Commands,
         parent: Entity,
-        x: f32,
-        y: f32,
         label: &str,
         marker: impl Bundle,
         choice: GranularityChoice,
     ) {
         let btn = commands
             .spawn((
-                Sprite {
-                    color: GRAN_BTN_BG,
-                    custom_size: Some(GRAN_BTN_SIZE),
+                Node {
+                    width: Val::Px(54.0),
+                    height: Val::Px(18.0),
+                    align_items: AlignItems::Center,
+                    justify_content: JustifyContent::Center,
                     ..default()
                 },
-                Transform::from_xyz(x, y, 0.1),
+                BackgroundColor(GRAN_BTN_BG),
+                Button,
                 marker,
             ))
             .observe(
@@ -230,7 +228,7 @@ pub fn spawn_scenario_startup_window(commands: &mut Commands) {
                     if is_panel_disabled(&progress, &paths) {
                         return;
                     }
-                    commit_w.send(ScenarioStartupParamCommit::Granularity(choice));
+                    commit_w.write(ScenarioStartupParamCommit::Granularity(choice));
                     params.dirty = true;
                 },
             )
@@ -239,79 +237,83 @@ pub fn spawn_scenario_startup_window(commands: &mut Commands) {
 
         let txt = commands
             .spawn((
-                Text2d::new(label),
+                Text::new(label),
                 TextFont {
                     font_size: 10.0,
                     ..default()
                 },
                 TextColor(STARTUP_LABEL_COLOR),
-                Transform::from_xyz(0.0, 0.0, 0.1),
             ))
             .id();
         commands.entity(btn).add_child(txt);
     }
 
     // (a) Start 行 + (b) Start エラー
-    spawn_field_row(commands, content_area, 70.0, "Start", ScenarioStartupStartFieldHost);
-    spawn_error_label(commands, content_area, 56.0, ScenarioStartupField::Start);
+    spawn_field_row(commands, content_area, "Start", ScenarioStartupStartFieldHost);
+    spawn_error_label(commands, content_area, ScenarioStartupField::Start);
 
     // (c) End 行 + End エラー
-    spawn_field_row(commands, content_area, 38.0, "End", ScenarioStartupEndFieldHost);
-    spawn_error_label(commands, content_area, 24.0, ScenarioStartupField::End);
+    spawn_field_row(commands, content_area, "End", ScenarioStartupEndFieldHost);
+    spawn_error_label(commands, content_area, ScenarioStartupField::End);
 
     // (d) Granularity ラベル + 2 ボタン + Granularity エラー
+    let gran_row = commands
+        .spawn(Node {
+            width: Val::Percent(100.0),
+            height: Val::Px(FIELD_H),
+            flex_direction: FlexDirection::Row,
+            align_items: AlignItems::Center,
+            column_gap: Val::Px(8.0),
+            ..default()
+        })
+        .id();
+    commands.entity(content_area).add_child(gran_row);
     let gran_label = commands
         .spawn((
-            Text2d::new("Granularity"),
+            Node {
+                width: Val::Px(LABEL_W),
+                justify_content: JustifyContent::FlexEnd,
+                ..default()
+            },
+            Text::new("Granularity"),
             TextFont {
                 font_size: 11.0,
                 ..default()
             },
             TextColor(STARTUP_LABEL_COLOR),
-            bevy::sprite::Anchor::CenterRight,
-            Transform::from_xyz(LABEL_X, 6.0, 0.1),
+            TextLayout::new_with_justify(JustifyText::Right),
         ))
         .id();
-    commands.entity(content_area).add_child(gran_label);
+    commands.entity(gran_row).add_child(gran_label);
     spawn_granularity_btn(
         commands,
-        content_area,
-        -30.0,
-        6.0,
+        gran_row,
         "Daily",
         ScenarioStartupGranularityDailyButton,
         GranularityChoice::Daily,
     );
     spawn_granularity_btn(
         commands,
-        content_area,
-        30.0,
-        6.0,
+        gran_row,
         "Minute",
         ScenarioStartupGranularityMinuteButton,
         GranularityChoice::Minute,
     );
-    spawn_error_label(commands, content_area, -8.0, ScenarioStartupField::Granularity);
+    spawn_error_label(commands, content_area, ScenarioStartupField::Granularity);
 
     // (e) Initial cash 行 + エラー
-    spawn_field_row(
-        commands,
-        content_area,
-        -26.0,
-        "Initial cash",
-        ScenarioStartupCashFieldHost,
-    );
-    spawn_error_label(commands, content_area, -40.0, ScenarioStartupField::InitialCash);
+    spawn_field_row(commands, content_area, "Initial cash", ScenarioStartupCashFieldHost);
+    spawn_error_label(commands, content_area, ScenarioStartupField::InitialCash);
 
     // (f) CrossField エラー
-    spawn_error_label(commands, content_area, -58.0, ScenarioStartupField::CrossField);
+    spawn_error_label(commands, content_area, ScenarioStartupField::CrossField);
 }
 
-/// Attach a cosmic-edit `TextEdit` to each field host. Focus is handled by
-/// `change_active_editor_sprite` on click; `FocusedWidget` is intentionally untouched.
+/// Attach a `bevy_ui_text_input` `TextInputNode` to each field host. Focus is handled
+/// by the `TextInputNode` on_add observer (pointer-down). Date fields are `SingleLine`
+/// (no filter); the cash field uses an `Integer` filter so only digits/sign are accepted.
 pub fn spawn_scenario_startup_input_fields(
     mut commands: Commands,
-    mut font_system: ResMut<bevy_cosmic_edit::prelude::CosmicFontSystem>,
     start_host_q: Query<
         Entity,
         (
@@ -334,68 +336,47 @@ pub fn spawn_scenario_startup_input_fields(
         ),
     >,
 ) {
-    fn spawn_field(
-        commands: &mut Commands,
-        font_system: &mut CosmicFontSystem,
-        host: Entity,
-        field: ScenarioStartupField,
-    ) {
-        let text_attrs = Attrs::new().color(CosmicColor::rgb(220, 220, 220));
+    fn spawn_field(commands: &mut Commands, host: Entity, field: ScenarioStartupField) {
+        // 初期残高は整数のみ受け付ける（Integer filter）。日付は自由入力で validate 側に任せる。
+        let filter = match field {
+            ScenarioStartupField::InitialCash => Some(TextInputFilter::Integer),
+            _ => None,
+        };
         let entity = commands
             .spawn((
-                TextEdit2d,
-                CosmicEditBuffer::new(font_system, Metrics::new(9.0, 11.0)).with_text(
-                    font_system,
-                    "",
-                    text_attrs,
-                ),
-                // render_texture reads font_color from DefaultAttrs (not from
-                // the Attrs passed to set_text). Without this, font_color
-                // falls back to rgb(0,0,0) and the text becomes invisible on
-                // the dark background even though the buffer holds the value.
-                DefaultAttrs(AttrsOwned::new(text_attrs)),
-                CursorColor(Color::WHITE),
-                CosmicBackgroundColor(FIELD_BG_ACTIVE),
-                CosmicRenderScale(1.0),
-                RenderScaleResponsive::new(4.0),
-                CosmicTextAlign::TopLeft { padding: 1 },
-                ScrollEnabled::Disabled,
-                CosmicWrap::InfiniteLine,
-                Sprite {
-                    custom_size: Some(Vec2::new(120.0, 22.0)),
-                    color: Color::WHITE,
+                TextInputNode {
+                    mode: TextInputMode::SingleLine,
+                    filter,
+                    // submit（Enter）で内容を消さない／フォーカスを外さない。
+                    clear_on_submit: false,
+                    unfocus_on_submit: false,
                     ..default()
                 },
-                Transform::from_xyz(0.0, 0.0, 0.1),
+                Node {
+                    width: Val::Percent(100.0),
+                    height: Val::Percent(100.0),
+                    ..default()
+                },
+                TextFont {
+                    font_size: 11.0,
+                    ..default()
+                },
+                TextColor(Color::srgb(0.86, 0.86, 0.86)),
+                BackgroundColor(FIELD_BG_ACTIVE),
                 ScenarioStartupFieldEditor { field },
             ))
             .id();
         commands.entity(host).add_child(entity);
     }
 
-    if let Ok(host) = start_host_q.get_single() {
-        spawn_field(
-            &mut commands,
-            &mut font_system,
-            host,
-            ScenarioStartupField::Start,
-        );
+    if let Ok(host) = start_host_q.single() {
+        spawn_field(&mut commands, host, ScenarioStartupField::Start);
     }
-    if let Ok(host) = end_host_q.get_single() {
-        spawn_field(
-            &mut commands,
-            &mut font_system,
-            host,
-            ScenarioStartupField::End,
-        );
+    if let Ok(host) = end_host_q.single() {
+        spawn_field(&mut commands, host, ScenarioStartupField::End);
     }
-    if let Ok(host) = cash_host_q.get_single() {
-        spawn_field(
-            &mut commands,
-            &mut font_system,
-            host,
-            ScenarioStartupField::InitialCash,
-        );
+    if let Ok(host) = cash_host_q.single() {
+        spawn_field(&mut commands, host, ScenarioStartupField::InitialCash);
     }
 }
 
@@ -569,90 +550,93 @@ pub fn write_startup_params_to_cache_sidecar_system(
     }
 }
 
-/// Propagate `params.{start,end,initial_cash}` strings into each cosmic-edit
-/// buffer. Gated on `params.is_changed()` to avoid resetting the user's cursor.
+/// Propagate `params.{start,end,initial_cash}` strings into each `bevy_ui_text_input`
+/// buffer. Gated on `params.is_changed()` to avoid resetting the user's cursor; per-field
+/// we also skip when the current contents already match (no-op Paste avoidance).
 pub fn sync_startup_param_editors_text_system(
     params: Res<ScenarioStartupParams>,
-    mut font_system: ResMut<CosmicFontSystem>,
-    mut editors_q: Query<(&ScenarioStartupFieldEditor, &mut CosmicEditBuffer)>,
+    mut editors_q: Query<(
+        &ScenarioStartupFieldEditor,
+        &TextInputContents,
+        &mut TextInputQueue,
+    )>,
 ) {
     if !params.is_changed() {
         return;
     }
 
-    for (editor, mut buffer) in editors_q.iter_mut() {
+    for (editor, contents, mut queue) in editors_q.iter_mut() {
         let expected: &str = match editor.field {
             ScenarioStartupField::Start => &params.start,
             ScenarioStartupField::End => &params.end,
             ScenarioStartupField::InitialCash => &params.initial_cash,
             ScenarioStartupField::Granularity | ScenarioStartupField::CrossField => continue,
         };
-        if buffer_text(&buffer) == expected {
+        if contents.get() == expected {
             continue;
         }
-        buffer.set_text(
-            &mut font_system,
-            expected,
-            Attrs::new().color(CosmicColor::rgb(220, 220, 220)),
-        );
+        queue_full_text(&mut queue, expected);
+    }
+}
+
+/// editor → params 同期。`Changed<TextInputContents>` で変更されたフィールドを拾い、
+/// commit イベントを送る。`sync_startup_param_editors_text_system` の Paste で起きる
+/// echo（contents == params の現在値）はユーザー入力ではないので skip し、フィードバック
+/// ループ（不要な writeback / dirty 振動）を防ぐ。
+/// editor 生テキスト → commit イベント（#19: 前後空白を strip してフィールド別に振り分ける）。
+/// `Granularity` / `CrossField` は editor を持たないので `None`。
+/// whitespace-strip の単体テストはこの純関数を直接叩く（`TextInputContents` は private field で
+/// テストから構築できないため）。
+fn commit_for_field(field: ScenarioStartupField, raw: &str) -> Option<ScenarioStartupParamCommit> {
+    let trimmed = raw.trim().to_string();
+    match field {
+        ScenarioStartupField::Start => Some(ScenarioStartupParamCommit::Start(trimmed)),
+        ScenarioStartupField::End => Some(ScenarioStartupParamCommit::End(trimmed)),
+        ScenarioStartupField::InitialCash => Some(ScenarioStartupParamCommit::InitialCash(trimmed)),
+        ScenarioStartupField::Granularity | ScenarioStartupField::CrossField => None,
     }
 }
 
 pub fn scenario_startup_param_input_system(
-    mut events: EventReader<CosmicTextChanged>,
-    editors_q: Query<&ScenarioStartupFieldEditor>,
+    editors_q: Query<(&ScenarioStartupFieldEditor, &TextInputContents), Changed<TextInputContents>>,
     mut commit_w: EventWriter<ScenarioStartupParamCommit>,
     mut params: ResMut<ScenarioStartupParams>,
     progress: Res<ReplayStartupProgress>,
     paths: Res<ScenarioWritebackPaths>,
 ) {
     if is_panel_disabled(&progress, &paths) {
-        for _ in events.read() {}
         return;
     }
 
-    for ev in events.read() {
-        let (entity, new_text) = &ev.0;
-        let Ok(editor) = editors_q.get(*entity) else {
-            continue;
+    for (editor, contents) in editors_q.iter() {
+        let raw = contents.get();
+        // echo ガード: params の現在値と一致するなら params→editor 同期の反射なので無視。
+        let current: &str = match editor.field {
+            ScenarioStartupField::Start => &params.start,
+            ScenarioStartupField::End => &params.end,
+            ScenarioStartupField::InitialCash => &params.initial_cash,
+            ScenarioStartupField::Granularity | ScenarioStartupField::CrossField => continue,
         };
-        // #19: strip surrounding whitespace before commit. NaiveDate / i64
-        // parsers reject leading/trailing spaces, so "  2024-01-01  " would
-        // otherwise fail validation; whitespace-only input collapses to "" and
-        // hits the existing "must not be empty" error.
-        let trimmed = new_text.trim();
-        match editor.field {
-            ScenarioStartupField::Start => {
-                commit_w.send(ScenarioStartupParamCommit::Start(trimmed.to_string()));
-                params.dirty = true;
-            }
-            ScenarioStartupField::End => {
-                commit_w.send(ScenarioStartupParamCommit::End(trimmed.to_string()));
-                params.dirty = true;
-            }
-            ScenarioStartupField::InitialCash => {
-                commit_w.send(ScenarioStartupParamCommit::InitialCash(trimmed.to_string()));
-                params.dirty = true;
-            }
-            ScenarioStartupField::Granularity | ScenarioStartupField::CrossField => {}
+        if raw.trim() == current {
+            continue;
+        }
+        if let Some(ev) = commit_for_field(editor.field, raw) {
+            commit_w.write(ev);
+            params.dirty = true;
         }
     }
 }
 
-/// Toggle `ReadOnly` + dim the field background on the 3 CosmicEditor entities
-/// while `is_panel_disabled`. The commit / writeback / input systems already
-/// short-circuit on `is_panel_disabled`, but without this the editors still
-/// accept clicks and key input visually, letting the user mutate the buffer
-/// during a Run; the trailing `CosmicTextChanged` event then races with the
-/// `progress.visible` flip and can leak through after auto-hide.
+/// Disable input + dim the field background on the 3 `TextInputNode` entities
+/// while `is_panel_disabled`. `bevy_ui_text_input` has no separate `ReadOnly`
+/// component; `TextInputNode.is_enabled = false` blocks focus / clicks / keystrokes.
+/// The commit / writeback / input systems already short-circuit on
+/// `is_panel_disabled`, but disabling the node prevents the user from mutating the
+/// buffer during a Run (whose trailing change could leak through after auto-hide).
 pub fn enforce_scenario_startup_panel_readonly_system(
-    mut commands: Commands,
     progress: Res<ReplayStartupProgress>,
     paths: Res<ScenarioWritebackPaths>,
-    mut q: Query<
-        (Entity, Option<&ReadOnly>, &mut CosmicBackgroundColor),
-        With<ScenarioStartupFieldEditor>,
-    >,
+    mut q: Query<(&mut TextInputNode, &mut BackgroundColor), With<ScenarioStartupFieldEditor>>,
 ) {
     let disabled = is_panel_disabled(&progress, &paths);
     let target_bg = if disabled {
@@ -660,15 +644,10 @@ pub fn enforce_scenario_startup_panel_readonly_system(
     } else {
         FIELD_BG_ACTIVE
     };
-    for (entity, ro, mut bg) in q.iter_mut() {
-        match (disabled, ro.is_some()) {
-            (true, false) => {
-                commands.entity(entity).insert(ReadOnly);
-            }
-            (false, true) => {
-                commands.entity(entity).remove::<ReadOnly>();
-            }
-            _ => {}
+    for (mut node, mut bg) in q.iter_mut() {
+        let want_enabled = !disabled;
+        if node.is_enabled != want_enabled {
+            node.is_enabled = want_enabled;
         }
         if bg.0 != target_bg {
             bg.0 = target_bg;
@@ -678,27 +657,27 @@ pub fn enforce_scenario_startup_panel_readonly_system(
 
 /// Repaint granularity button highlight + error labels.
 ///
-/// Writes through `Sprite`/`Text2d` are guarded with `!= new` to avoid
+/// Writes through `BackgroundColor`/`Text` are guarded with `!= new` to avoid
 /// firing `Changed<T>` every frame.
 pub fn update_scenario_startup_param_ui_system(
     params: Res<ScenarioStartupParams>,
     progress: Res<ReplayStartupProgress>,
     paths: Res<ScenarioWritebackPaths>,
-    mut daily_sprite_q: Query<
-        &mut Sprite,
+    mut daily_btn_q: Query<
+        &mut BackgroundColor,
         (
             With<ScenarioStartupGranularityDailyButton>,
             Without<ScenarioStartupGranularityMinuteButton>,
         ),
     >,
-    mut minute_sprite_q: Query<
-        &mut Sprite,
+    mut minute_btn_q: Query<
+        &mut BackgroundColor,
         (
             With<ScenarioStartupGranularityMinuteButton>,
             Without<ScenarioStartupGranularityDailyButton>,
         ),
     >,
-    mut label2d_q: Query<(&ScenarioStartupErrorLabel, &mut Text2d)>,
+    mut label_q: Query<(&ScenarioStartupErrorLabel, &mut Text)>,
 ) {
     let alpha = if is_panel_disabled(&progress, &paths) {
         0.5
@@ -713,18 +692,18 @@ pub fn update_scenario_startup_param_ui_system(
         GranularityChoice::Minute => (inactive, active),
     };
 
-    for mut sprite in daily_sprite_q.iter_mut() {
-        if sprite.color != daily_color {
-            sprite.color = daily_color;
+    for mut bg in daily_btn_q.iter_mut() {
+        if bg.0 != daily_color {
+            bg.0 = daily_color;
         }
     }
-    for mut sprite in minute_sprite_q.iter_mut() {
-        if sprite.color != minute_color {
-            sprite.color = minute_color;
+    for mut bg in minute_btn_q.iter_mut() {
+        if bg.0 != minute_color {
+            bg.0 = minute_color;
         }
     }
 
-    for (label, mut text) in label2d_q.iter_mut() {
+    for (label, mut text) in label_q.iter_mut() {
         let msg = match label.field {
             ScenarioStartupField::Start => params.errors.start.as_deref(),
             ScenarioStartupField::End => params.errors.end.as_deref(),
@@ -796,16 +775,12 @@ pub fn apply_startup_panel_visibility_system(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use bevy::window::{PrimaryWindow, WindowResolution};
-    use bevy_cosmic_edit::prelude::CosmicFontSystem;
-    use bevy_cosmic_edit::cosmic_text::FontSystem;
-    use crate::ui::render_scale::update_cosmic_render_scale_system;
 
     /// Finding A (E2E §13 regression): the visible-flag short-circuit on the
     /// commit/input/writeback systems is necessary but not sufficient — without
-    /// also flipping the editors to ReadOnly the user can still mutate the
-    /// CosmicEditor buffer during a Run, and the trailing CosmicTextChanged
-    /// event can leak through after `progress.visible` returns to false.
+    /// also disabling the editors the user can still mutate the buffer during a
+    /// Run. `bevy_ui_text_input` has no `ReadOnly` component; the gate is
+    /// `TextInputNode.is_enabled` + a dimmed `BackgroundColor`.
     #[test]
     fn enforce_readonly_toggles_with_progress_visible() {
         let mut app = App::new();
@@ -821,37 +796,38 @@ mod tests {
                 ScenarioStartupFieldEditor {
                     field: ScenarioStartupField::InitialCash,
                 },
-                CosmicBackgroundColor(FIELD_BG_ACTIVE),
+                TextInputNode::default(),
+                BackgroundColor(FIELD_BG_ACTIVE),
             ))
             .id();
 
-        // Run while progress hidden — editor must be editable.
+        // Run while progress hidden — editor must be enabled.
         app.update();
-        assert!(app.world().get::<ReadOnly>(e).is_none());
+        assert!(app.world().get::<TextInputNode>(e).unwrap().is_enabled);
         assert_eq!(
-            app.world().get::<CosmicBackgroundColor>(e).unwrap().0,
+            app.world().get::<BackgroundColor>(e).unwrap().0,
             FIELD_BG_ACTIVE
         );
 
-        // Flip to visible — editor must become ReadOnly + dimmed.
+        // Flip to visible — editor must become disabled + dimmed.
         app.world_mut()
             .resource_mut::<ReplayStartupProgress>()
             .visible = true;
         app.update();
-        assert!(app.world().get::<ReadOnly>(e).is_some());
+        assert!(!app.world().get::<TextInputNode>(e).unwrap().is_enabled);
         assert_eq!(
-            app.world().get::<CosmicBackgroundColor>(e).unwrap().0,
+            app.world().get::<BackgroundColor>(e).unwrap().0,
             FIELD_BG_DISABLED
         );
 
-        // Flip back — marker must be removed and bg restored.
+        // Flip back — editor re-enabled and bg restored.
         app.world_mut()
             .resource_mut::<ReplayStartupProgress>()
             .visible = false;
         app.update();
-        assert!(app.world().get::<ReadOnly>(e).is_none());
+        assert!(app.world().get::<TextInputNode>(e).unwrap().is_enabled);
         assert_eq!(
-            app.world().get::<CosmicBackgroundColor>(e).unwrap().0,
+            app.world().get::<BackgroundColor>(e).unwrap().0,
             FIELD_BG_ACTIVE
         );
     }
@@ -874,14 +850,15 @@ mod tests {
                 ScenarioStartupFieldEditor {
                     field: ScenarioStartupField::Start,
                 },
-                CosmicBackgroundColor(FIELD_BG_ACTIVE),
+                TextInputNode::default(),
+                BackgroundColor(FIELD_BG_ACTIVE),
             ))
             .id();
 
         app.update();
-        assert!(app.world().get::<ReadOnly>(e).is_some());
+        assert!(!app.world().get::<TextInputNode>(e).unwrap().is_enabled);
         assert_eq!(
-            app.world().get::<CosmicBackgroundColor>(e).unwrap().0,
+            app.world().get::<BackgroundColor>(e).unwrap().0,
             FIELD_BG_DISABLED
         );
     }
@@ -1281,25 +1258,12 @@ mod tests {
     /// rejects surrounding spaces, so without stripping this would error out.
     #[test]
     fn test_19_input_strips_whitespace_before_commit() {
+        // 入力経路の whitespace-strip は `commit_for_field` が担う（旧 CosmicTextChanged 経路の
+        // 代替: `TextInputContents` は private field でテストから構築できないので純関数を直接叩く）。
         let mut app = make_app();
-        app.add_event::<CosmicTextChanged>().add_systems(
-            Update,
-            (
-                scenario_startup_param_input_system,
-                commit_startup_params_to_scenario_system,
-            )
-                .chain(),
-        );
-
-        let editor = app
-            .world_mut()
-            .spawn(ScenarioStartupFieldEditor {
-                field: ScenarioStartupField::Start,
-            })
-            .id();
-
-        app.world_mut()
-            .send_event(CosmicTextChanged((editor, "  2024-01-01  ".into())));
+        let ev = commit_for_field(ScenarioStartupField::Start, "  2024-01-01  ")
+            .expect("Start field yields a commit event");
+        app.world_mut().send_event(ev);
         app.update();
 
         let params = app.world().resource::<ScenarioStartupParams>();
@@ -1321,24 +1285,9 @@ mod tests {
     #[test]
     fn test_19_initial_cash_input_strips_whitespace_before_commit() {
         let mut app = make_app();
-        app.add_event::<CosmicTextChanged>().add_systems(
-            Update,
-            (
-                scenario_startup_param_input_system,
-                commit_startup_params_to_scenario_system,
-            )
-                .chain(),
-        );
-
-        let editor = app
-            .world_mut()
-            .spawn(ScenarioStartupFieldEditor {
-                field: ScenarioStartupField::InitialCash,
-            })
-            .id();
-
-        app.world_mut()
-            .send_event(CosmicTextChanged((editor, "  1000  ".into())));
+        let ev = commit_for_field(ScenarioStartupField::InitialCash, "  1000  ")
+            .expect("InitialCash field yields a commit event");
+        app.world_mut().send_event(ev);
         app.update();
 
         let params = app.world().resource::<ScenarioStartupParams>();
@@ -1359,24 +1308,9 @@ mod tests {
     #[test]
     fn test_19_whitespace_only_input_collapses_to_empty_error() {
         let mut app = make_app();
-        app.add_event::<CosmicTextChanged>().add_systems(
-            Update,
-            (
-                scenario_startup_param_input_system,
-                commit_startup_params_to_scenario_system,
-            )
-                .chain(),
-        );
-
-        let editor = app
-            .world_mut()
-            .spawn(ScenarioStartupFieldEditor {
-                field: ScenarioStartupField::Start,
-            })
-            .id();
-
-        app.world_mut()
-            .send_event(CosmicTextChanged((editor, "   ".into())));
+        let ev = commit_for_field(ScenarioStartupField::Start, "   ")
+            .expect("Start field yields a commit event");
+        app.world_mut().send_event(ev);
         app.update();
 
         let params = app.world().resource::<ScenarioStartupParams>();
@@ -1400,24 +1334,9 @@ mod tests {
     #[test]
     fn test_19_initial_cash_whitespace_only_collapses_to_empty_error() {
         let mut app = make_app();
-        app.add_event::<CosmicTextChanged>().add_systems(
-            Update,
-            (
-                scenario_startup_param_input_system,
-                commit_startup_params_to_scenario_system,
-            )
-                .chain(),
-        );
-
-        let editor = app
-            .world_mut()
-            .spawn(ScenarioStartupFieldEditor {
-                field: ScenarioStartupField::InitialCash,
-            })
-            .id();
-
-        app.world_mut()
-            .send_event(CosmicTextChanged((editor, "   ".into())));
+        let ev = commit_for_field(ScenarioStartupField::InitialCash, "   ")
+            .expect("InitialCash field yields a commit event");
+        app.world_mut().send_event(ev);
         app.update();
 
         let params = app.world().resource::<ScenarioStartupParams>();
@@ -1772,99 +1691,8 @@ mod tests {
         );
     }
 
-    /// Startup-field DPI regression: when the primary window reports
-    /// scale_factor 2.0, the field editor's CosmicRenderScale must be driven
-    /// up to >= 2.0 so the cosmic sprite is supersampled to match DPI.
-    /// Goes through the REAL spawn path (`spawn_scenario_startup_input_fields`)
-    /// so it stays RED until `spawn_field` adopts `RenderScaleResponsive`.
-    #[test]
-    fn startup_field_render_scale_follows_window_dpi() {
-        let mut app = App::new();
-        app.insert_resource(CosmicFontSystem(FontSystem::new()))
-            .add_systems(
-                Update,
-                (
-                    spawn_scenario_startup_input_fields,
-                    update_cosmic_render_scale_system,
-                )
-                    .chain(),
-            );
-
-        // Primary window at 2x DPI; no Camera2d (system's camera_q errs -> zoom 1.0).
-        app.world_mut().spawn((
-            Window {
-                resolution: WindowResolution::new(1280.0, 720.0)
-                    .with_scale_factor_override(2.0),
-                ..default()
-            },
-            PrimaryWindow,
-        ));
-
-        // Host that the real spawn system attaches a field editor to.
-        app.world_mut().spawn(ScenarioStartupStartFieldHost);
-
-        // First update spawns the field editor; second lets the render-scale
-        // system observe it (spawn commands apply at end of frame).
-        app.update();
-        app.update();
-
-        let mut q = app
-            .world_mut()
-            .query::<(&ScenarioStartupFieldEditor, &CosmicRenderScale)>();
-        let (_, scale) = q
-            .iter(app.world())
-            .next()
-            .expect("spawn_scenario_startup_input_fields should create a field editor");
-        assert!(
-            scale.0 >= 1.99,
-            "field CosmicRenderScale should follow 2x DPI, got {}",
-            scale.0
-        );
-    }
-
-    /// Tint regression: a `bevy_cosmic_edit` field renders light glyphs onto a
-    /// dark `CosmicBackgroundColor` texture, and the host `Sprite.color` is a
-    /// MULTIPLY tint over that texture. The dark color must live ONLY in
-    /// `CosmicBackgroundColor`; the `Sprite.color` must be `WHITE` (×1) or the
-    /// light glyphs collapse to near-black and the value is unreadable.
-    /// Drives the real spawn path so it stays honest about `spawn_field`.
-    #[test]
-    fn startup_field_sprite_tint_is_white_with_dark_cosmic_bg() {
-        let mut app = App::new();
-        app.insert_resource(CosmicFontSystem(FontSystem::new()))
-            .add_systems(Update, spawn_scenario_startup_input_fields);
-
-        // Host that the real spawn system attaches a field editor to.
-        app.world_mut().spawn(ScenarioStartupStartFieldHost);
-
-        // First update spawns the field editor; second lets the spawn commands
-        // apply (commands flush at end of frame).
-        app.update();
-        app.update();
-
-        let mut q = app
-            .world_mut()
-            .query_filtered::<(&Sprite, &CosmicBackgroundColor), With<ScenarioStartupFieldEditor>>(
-            );
-        let (sprite, bg) = q
-            .iter(app.world())
-            .next()
-            .expect("spawn_scenario_startup_input_fields should create a field editor");
-
-        assert_eq!(
-            sprite.color,
-            Color::WHITE,
-            "Sprite tint must be WHITE so the cosmic texture (light glyphs) shows true; \
-             a dark tint multiplies the glyphs to near-black"
-        );
-        assert_eq!(
-            bg.0, FIELD_BG_ACTIVE,
-            "the dark field background must come from CosmicBackgroundColor, not the Sprite tint"
-        );
-        assert_eq!(
-            sprite.custom_size,
-            Some(Vec2::new(120.0, 22.0)),
-            "field height must be 22.0 (the 32.0 bump overlapped neighbouring rows)"
-        );
-    }
+    // NOTE: cosmic 固有の DPI/render-scale テスト（`startup_field_render_scale_follows_window_dpi`）
+    // と sprite-tint テスト（`startup_field_sprite_tint_is_white_with_dark_cosmic_bg`）は、
+    // screen-space `bevy_ui_text_input` 化で前提（CosmicRenderScale / CosmicBackgroundColor /
+    // Sprite tint）が消えたため撤去（ADR 0003 の受容済み機能後退）。
 }

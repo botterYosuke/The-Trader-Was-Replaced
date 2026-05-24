@@ -129,7 +129,7 @@ pub fn spawn_order_context_menu(mut commands: Commands) {
         });
 }
 
-fn spawn_item(parent: &mut ChildBuilder, item: ContextMenuItem, label: &str) {
+fn spawn_item(parent: &mut ChildSpawnerCommands, item: ContextMenuItem, label: &str) {
     parent
         .spawn((
             Button,

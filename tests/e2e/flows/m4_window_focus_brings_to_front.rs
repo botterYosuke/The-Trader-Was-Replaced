@@ -1,5 +1,5 @@
 //! M4 window_focus_brings_to_front — floating window の本体（root sprite）に
-//! `Pointer<Down>` を発火すると `WindowManager.max_z += 2` されて
+//! `Pointer<Pressed>` を発火すると `WindowManager.max_z += 2` されて
 //! その window の z が他の window より高くなることを保証する（kind:ui）。
 //!
 //! `spawn_floating_window` の WindowRoot に貼られた observer:
@@ -12,7 +12,7 @@
 use bevy::prelude::*;
 use bevy::transform::TransformPlugin;
 use bevy::picking::pointer::{Location, PointerId, PointerButton};
-use bevy::picking::events::{Down, Pointer};
+use bevy::picking::events::{Pressed, Pointer};
 use bevy::render::camera::NormalizedRenderTarget;
 
 use backcast::ui::components::{
@@ -27,7 +27,7 @@ use backcast::ui::layout_persistence::AutoSaveState;
 /// observer 内では pointer_location を参照しないため、image target で代替する。
 fn dummy_location() -> Location {
     Location {
-        target: NormalizedRenderTarget::Image(Handle::<bevy::image::Image>::default()),
+        target: NormalizedRenderTarget::Image(bevy::render::camera::ImageRenderTarget { handle: Handle::default(), scale_factor: bevy::math::FloatOrd(1.0) }),
         position: Vec2::ZERO,
     }
 }
@@ -91,13 +91,13 @@ fn m4_window_focus_brings_to_front() {
         .map(|t| t.translation.z)
         .expect("root_a は Transform を持つはず");
 
-    // ── Window A に Pointer<Down> を発火して前面化 ──
+    // ── Window A に Pointer<Pressed> を発火して前面化 ──
     app.world_mut().trigger_targets(
-        Pointer::<Down>::new(
-            root_a,
+        Pointer::<Pressed>::new(
             PointerId::Mouse,
             dummy_location(),
-            Down {
+            root_a,
+            Pressed {
                 button: PointerButton::Primary,
                 hit: bevy::picking::backend::HitData::new(Entity::from_raw(0), 0.0, None, None),
             },
@@ -120,7 +120,7 @@ fn m4_window_focus_brings_to_front() {
     // クリック後、Window A の z が上がっていること。
     assert!(
         z_a_after > z_a_before,
-        "Pointer<Down> 後に z が上がるはず (before={z_a_before}, after={z_a_after})"
+        "Pointer<Pressed> 後に z が上がるはず (before={z_a_before}, after={z_a_after})"
     );
 
     // Window A の z が Window B より高くなっていること（前面化）。
