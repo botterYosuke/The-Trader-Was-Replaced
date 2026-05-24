@@ -542,6 +542,15 @@ pub fn apply_status_update(
             reconcile_prompt.unknown =
                 reconcile_unknown_orders(live_orders, &backend_client_order_ids);
         }
+        BackendStatusUpdate::OrdersSeeded { orders } => {
+            // §3a: seed full working-order rows (symbol/side/qty/price) from a
+            // GetOrders snapshot. Merge-safe (see LiveOrders::seed_working): unknown
+            // ids insert, known ids gap-fill without regressing a recorded fill. Does
+            // NOT touch order_feedback (a background sync is not an order-flow event).
+            for order in orders {
+                live_orders.seed_working(order);
+            }
+        }
         BackendStatusUpdate::LiveStrategyPromoteResult {
             success,
             error_code,

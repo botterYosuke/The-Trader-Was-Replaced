@@ -1866,7 +1866,7 @@ class GrpcDataEngineServer(
         subject; the UI merge rule "non-empty wins, empty does not clear a known value"
         keeps the earlier MANUAL/LIVE tag). Default "" is the safe EC-stream value.
         """
-        return engine_pb2.OrderEvent(
+        proto = engine_pb2.OrderEvent(
             order_id=ev.order_id,
             venue_order_id=ev.venue_order_id,
             client_order_id=ev.client_order_id,
@@ -1875,7 +1875,16 @@ class GrpcDataEngineServer(
             avg_price=ev.avg_price,
             ts_ms=ev.ts_ms,
             strategy_id=strategy_id,
+            # issue #29 Slice 3a: carry the static attrs so GetOrders can seed full
+            # UI rows. `price` is proto3 optional — only set it for limit orders so
+            # a market order stays "unset" (UI shows MKT) rather than 0.0.
+            symbol=ev.symbol,
+            side=ev.side,
+            qty=ev.qty,
         )
+        if ev.price is not None:
+            proto.price = ev.price
+        return proto
 
     def _is_live_ordering_mode(self) -> bool:
         """Write order RPCs are allowed only in Live modes (Replay is rejected)."""

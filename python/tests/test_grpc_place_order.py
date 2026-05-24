@@ -283,6 +283,57 @@ def test_get_orders_returns_working_orders(order_server):
     assert res.orders[0].status == "ACCEPTED"
 
 
+def test_get_orders_returns_full_order_rows(order_server):
+    """issue #29 Slice3a: GetOrders の OrderEvent は symbol/side/qty/price を載せる。
+
+    UI が接続/再起動後に完全な注文行（銘柄・売買・数量・指値）を seed できるよう、
+    稼働中注文の proto OrderEvent に静的属性が含まれること。LIMIT は price が set、
+    MARKET は price 未設定（HasField=False）。
+    """
+    port, token, servicer = order_server
+    adapter = _arm_live(servicer)
+    stub = _stub(port)
+
+    adapter.set_next_order_outcome(status="ACCEPTED", filled_qty=0.0)
+    stub.PlaceOrder(
+        _place_req(
+            token,
+            instrument_id="7203.TSE",
+            side="BUY",
+            qty=100.0,
+            order_type="LIMIT",
+            price=2500.0,
+        )
+    )
+
+    res = stub.GetOrders(engine_pb2.GetOrdersReq(token=token, venue="MOCK"))
+    assert res.success is True
+    assert len(res.orders) == 1
+    row = res.orders[0]
+    assert row.symbol == "7203.TSE"
+    assert row.side == "BUY"
+    assert row.qty == 100.0
+    assert row.HasField("price") is True
+    assert row.price == 2500.0
+
+
+def test_get_orders_market_row_has_no_price(order_server):
+    """issue #29 Slice3a: MARKET の稼働中注文行は price 未設定（UI は MKT 表示）。"""
+    port, token, servicer = order_server
+    adapter = _arm_live(servicer)
+    stub = _stub(port)
+
+    adapter.set_next_order_outcome(status="ACCEPTED", filled_qty=0.0)
+    stub.PlaceOrder(_place_req(token, side="SELL", qty=300.0, order_type="MARKET"))
+
+    res = stub.GetOrders(engine_pb2.GetOrdersReq(token=token, venue="MOCK"))
+    assert res.success is True
+    row = res.orders[0]
+    assert row.side == "SELL"
+    assert row.qty == 300.0
+    assert row.HasField("price") is False
+
+
 def test_get_orders_excludes_terminal(order_server):
     """終端注文（FILLED 等）は稼働中ではないので返さない。"""
     port, token, servicer = order_server

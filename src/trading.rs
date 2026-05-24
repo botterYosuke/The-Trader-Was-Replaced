@@ -840,6 +840,16 @@ pub enum BackendStatusUpdate {
     OrdersReconciled {
         backend_client_order_ids: Vec<String>,
     },
+    /// Issue #29 Slice 3a: full working-order rows from a `GetOrders` snapshot, used
+    /// to **seed** the OrdersPanel with complete records (symbol/side/qty/price), not
+    /// just the id-diff that `OrdersReconciled` carries. The transport task builds
+    /// these from the proto `OrderEvent`'s static attributes (now populated by the
+    /// backend's order facade). Applied via `LiveOrders::seed_working`, which inserts
+    /// unknown orders and gap-fills known ones without clobbering a recorded
+    /// monotonic fill or known static fields.
+    OrdersSeeded {
+        orders: Vec<LiveOrder>,
+    },
     /// Phase 10 §2.7: structured outcome of a `PromoteToLive` RPC chain. Success
     /// also arrives as a pushed `LiveStrategyEvent{status:"RUNNING"}`, so this is
     /// primarily for surfacing a structured reject (`EXECUTION_MODE_PRECONDITION` /
@@ -1135,6 +1145,53 @@ impl LiveOrders {
             existing.ts_ms = ts_ms;
         }
         // Unknown id: no-op (modify always targets a known order).
+    }
+
+    /// Seed a working order from a `GetOrders` snapshot (issue #29 Slice 3a). Unlike
+    /// `upsert_full` (which wholesale-replaces and is correct for the originating
+    /// `PlaceOrder` response), this is a **merge** safe for reconcile/connect seeds:
+    /// an unknown `client_order_id` is inserted as a full row; a known one keeps its
+    /// recorded static fields and monotonic fill, only gap-filling empties and
+    /// refreshing status. This protects a real-money partial fill / known
+    /// symbol-side-qty-price from being regressed by a lagging snapshot.
+    pub fn seed_working(&mut self, seed: LiveOrder) {
+        if let Some(existing) = self
+            .orders
+            .iter_mut()
+            .find(|o| o.client_order_id == seed.client_order_id)
+        {
+            // Dynamic state refreshes from the snapshot; the fill advances
+            // monotonically (real-money under-report guard, §3.12).
+            existing.status = seed.status;
+            existing.advance_fill(seed.filled_qty, seed.avg_price);
+            existing.ts_ms = seed.ts_ms;
+            // Non-empty wins for ids/strategy (same rule as apply_event): a snapshot
+            // that omits them must not clear a value the UI already tagged.
+            if !seed.venue_order_id.is_empty() {
+                existing.venue_order_id = seed.venue_order_id;
+            }
+            if !seed.strategy_id.is_empty() {
+                existing.strategy_id = seed.strategy_id;
+            }
+            // Static attrs only gap-fill: a row that already knows its
+            // symbol/side/qty/price keeps them (e.g. seeded from the PlaceOrder
+            // response). An empty/zero field is filled from the snapshot.
+            if existing.symbol.is_empty() {
+                existing.symbol = seed.symbol;
+            }
+            if existing.side.is_empty() {
+                existing.side = seed.side;
+            }
+            if existing.qty == 0.0 {
+                existing.qty = seed.qty;
+            }
+            if existing.price.is_none() {
+                existing.price = seed.price;
+            }
+        } else {
+            self.orders.insert(0, seed);
+            self.orders.truncate(MAX_LIVE_ORDERS);
+        }
     }
 }
 
@@ -1644,6 +1701,74 @@ mod tests {
         lo.upsert_full(updated);
         assert_eq!(lo.orders.len(), 1, "same client_order_id replaces, no dup");
         assert_eq!(lo.orders[0].qty, 200.0);
+    }
+
+    #[test]
+    fn seed_working_inserts_unknown_order_as_full_row() {
+        // Slice 3a: a GetOrders snapshot of an order the UI never saw (e.g. placed in
+        // a prior session) seeds a complete row — symbol/side/qty/price all present.
+        let mut lo = LiveOrders::default();
+        let mut seed = make_live_order_with_status("c-new", "ACCEPTED");
+        seed.venue_order_id = "V42".to_string();
+        seed.filled_qty = 30.0;
+        seed.avg_price = 2499.0;
+        lo.seed_working(seed);
+        assert_eq!(lo.orders.len(), 1);
+        let o = &lo.orders[0];
+        assert_eq!(o.client_order_id, "c-new");
+        assert_eq!(o.symbol, "7203.T");
+        assert_eq!(o.side, "BUY");
+        assert_eq!(o.qty, 100.0);
+        assert_eq!(o.price, Some(2500.0));
+        assert_eq!(o.status, "ACCEPTED");
+        assert_eq!(o.venue_order_id, "V42");
+        assert_eq!(o.filled_qty, 30.0);
+    }
+
+    #[test]
+    fn seed_working_does_not_regress_a_recorded_partial_fill() {
+        // A known order already has a 60-share partial from the EC stream; a lagging
+        // GetOrders snapshot reporting 30 must NOT lower the cumulative fill
+        // (real-money under-report guard, mirrors apply_event's monotonic rule).
+        let mut lo = LiveOrders::default();
+        let mut known = make_live_order_with_status("c1", "PARTIALLY_FILLED");
+        known.filled_qty = 60.0;
+        known.avg_price = 2502.0;
+        lo.upsert_full(known);
+        let mut stale = make_live_order_with_status("c1", "PARTIALLY_FILLED");
+        stale.filled_qty = 30.0;
+        stale.avg_price = 2400.0;
+        lo.seed_working(stale);
+        let o = &lo.orders[0];
+        assert_eq!(o.filled_qty, 60.0, "fill must not decrease");
+        assert_eq!(o.avg_price, 2502.0, "avg_price stays with the larger fill");
+    }
+
+    #[test]
+    fn seed_working_gap_fills_static_fields_without_clobbering_known() {
+        // An unknown-id order inserted by an EC-stream event (empty static fields) is
+        // later completed by a GetOrders seed; but a row that already knows its
+        // static fields is not overwritten by the seed.
+        let mut lo = LiveOrders::default();
+        // EC-stream first saw "c1" with no static attrs:
+        lo.apply_event("c1", "V1", "ACCEPTED", 0.0, 0.0, 1, "");
+        let mut seed = make_live_order_with_status("c1", "ACCEPTED");
+        seed.qty = 999.0; // would-be clobber if seed overwrote a known qty
+        // c1 currently has empty symbol/side and qty 0 → gap-fill from the seed.
+        lo.seed_working(seed);
+        let o = &lo.orders[0];
+        assert_eq!(o.symbol, "7203.T", "empty symbol gap-filled");
+        assert_eq!(o.side, "BUY", "empty side gap-filled");
+        assert_eq!(o.qty, 999.0, "qty was 0 → taken from seed");
+
+        // Now seed again with different static fields: the known values must win.
+        let mut seed2 = make_live_order_with_status("c1", "ACCEPTED");
+        seed2.symbol = "6758.T".to_string();
+        seed2.qty = 1.0;
+        lo.seed_working(seed2);
+        let o = &lo.orders[0];
+        assert_eq!(o.symbol, "7203.T", "known symbol not clobbered");
+        assert_eq!(o.qty, 999.0, "known qty not clobbered");
     }
 
     #[test]

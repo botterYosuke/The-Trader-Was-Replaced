@@ -12,7 +12,7 @@ use backcast::grid::GridPlugin;
 use backcast::replay::ReplayStartupProgress;
 use backcast::trading::{
     AvailableInstruments, BackendChannel, BackendStartupStage, BackendStatus, BackendStatusUpdate,
-    ExecutionMode, ExecutionModeRes, LastPrices, LastRunResult, LiveOrders, LiveRuns,
+    ExecutionMode, ExecutionModeRes, LastPrices, LastRunResult, LiveOrder, LiveOrders, LiveRuns,
     OrderFeedback, PortfolioOrder, PortfolioPosition, PortfolioState, PromoteFeedback,
     ReconcilePrompt, ReloginPrompt, ReplaySpeed, SecretPrompt, SelectedSymbol, Ticker, Tickers,
     TickersSource, TradingSettings, TransportCommand, TransportCommandSender, VenueState,
@@ -1164,7 +1164,7 @@ fn setup_backend_connection(
                             token: token.clone(),
                             venue: venue.clone(),
                         });
-                        let backend_client_order_ids = match client.get_orders(req).await {
+                        let seeded = match client.get_orders(req).await {
                             Ok(r) => {
                                 let inner = r.into_inner();
                                 if !inner.success {
@@ -1173,10 +1173,25 @@ fn setup_backend_connection(
                                         inner.error_code
                                     );
                                 }
+                                // §3a: the proto OrderEvent now carries the static
+                                // attrs, so rebuild full LiveOrder rows to seed the
+                                // panel (symbol/side/qty/price), not just ids.
                                 inner
                                     .orders
                                     .into_iter()
-                                    .map(|o| o.client_order_id)
+                                    .map(|o| LiveOrder {
+                                        client_order_id: o.client_order_id,
+                                        venue_order_id: o.venue_order_id,
+                                        symbol: o.symbol,
+                                        side: o.side,
+                                        qty: o.qty,
+                                        price: o.price,
+                                        status: o.status,
+                                        filled_qty: o.filled_qty,
+                                        avg_price: o.avg_price,
+                                        ts_ms: o.ts_ms,
+                                        strategy_id: o.strategy_id.unwrap_or_default(),
+                                    })
                                     .collect::<Vec<_>>()
                             }
                             Err(e) => {
@@ -1184,6 +1199,15 @@ fn setup_backend_connection(
                                 Vec::new()
                             }
                         };
+                        // Seed full rows first, then run the id-diff reconcile against
+                        // the same backend truth (an order the backend no longer tracks
+                        // is flagged unknown by OrdersReconciled).
+                        let backend_client_order_ids = seeded
+                            .iter()
+                            .map(|o| o.client_order_id.clone())
+                            .collect::<Vec<_>>();
+                        let _ = status_tx
+                            .send(BackendStatusUpdate::OrdersSeeded { orders: seeded });
                         let _ = status_tx.send(BackendStatusUpdate::OrdersReconciled {
                             backend_client_order_ids,
                         });
