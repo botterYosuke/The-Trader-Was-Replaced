@@ -14,7 +14,8 @@ use crate::ui::components::{
 };
 use crate::ui::menu_bar::{cache_state_paths, sync_to_cache};
 use crate::ui::strategy_editor::{
-    StrategyAutoSaveState, flush_strategy_cache, merge_fragments, split_py_into_fragments,
+    StrategyAutoSaveState, StrategyEditorModeHidden, flush_strategy_cache, merge_fragments,
+    split_py_into_fragments,
 };
 
 pub const SCHEMA_VERSION: u32 = 1;
@@ -230,6 +231,7 @@ fn build_layout(
         (
             &PanelKind,
             Option<&StrategyEditorId>,
+            Option<&StrategyEditorModeHidden>,
             &Transform,
             &Sprite,
             &Visibility,
@@ -251,8 +253,16 @@ fn build_layout(
 
     let windows: Vec<WindowLayout> = panels
         .iter()
-        .map(|(kind, id, tf, sprite, vis)| {
-            let visible = !matches!(vis, Visibility::Hidden);
+        .map(|(kind, id, mode_hidden, tf, sprite, vis)| {
+            // issue #31: LiveManual 中の Strategy Editor は `apply_strategy_editor_mode_visibility_system`
+            // が live `Visibility` を一時的に `Hidden` へ固定している。そのまま保存すると
+            // 「layout の visible は権威」という不変条件を破り、Manual 中の autosave / 明示 Save が
+            // editor を `visible:false` に焼き込んで Replay でも消えたままになる。退避マーカーが
+            // あれば、その退避値（＝本来の意図）を保存する。
+            let visible = match mode_hidden {
+                Some(StrategyEditorModeHidden(saved)) => !matches!(saved, Visibility::Hidden),
+                None => !matches!(vis, Visibility::Hidden),
+            };
             WindowLayout {
                 kind: *kind,
                 visible,
@@ -302,6 +312,7 @@ fn build_layout_for_explicit_save(
         (
             &PanelKind,
             Option<&StrategyEditorId>,
+            Option<&StrategyEditorModeHidden>,
             &Transform,
             &Sprite,
             &Visibility,
@@ -583,6 +594,7 @@ fn finish_layout_save(
         (
             &PanelKind,
             Option<&StrategyEditorId>,
+            Option<&StrategyEditorModeHidden>,
             &Transform,
             &Sprite,
             &Visibility,
@@ -700,6 +712,7 @@ pub fn handle_save_layout_system(
         (
             &PanelKind,
             Option<&StrategyEditorId>,
+            Option<&StrategyEditorModeHidden>,
             &Transform,
             &Sprite,
             &Visibility,
@@ -816,6 +829,7 @@ pub fn poll_save_as_dialog_system(
         (
             &PanelKind,
             Option<&StrategyEditorId>,
+            Option<&StrategyEditorModeHidden>,
             &Transform,
             &Sprite,
             &Visibility,
@@ -945,6 +959,7 @@ fn poll_save_dialog_system(
         (
             &PanelKind,
             Option<&StrategyEditorId>,
+            Option<&StrategyEditorModeHidden>,
             &Transform,
             &Sprite,
             &Visibility,
@@ -1012,6 +1027,7 @@ pub fn apply_layout_system(
             &mut Transform,
             &mut Sprite,
             &mut Visibility,
+            Option<&mut StrategyEditorModeHidden>,
         ),
         (With<WindowRoot>, Without<LayoutExcluded>),
     >,
@@ -1183,7 +1199,7 @@ pub fn apply_layout_system(
                 } else {
                     None
                 };
-                let found = panels.iter_mut().find(|(_, kind, id, _, _, _)| {
+                let found = panels.iter_mut().find(|(_, kind, id, _, _, _, _)| {
                     if **kind != win_layout.kind {
                         return false;
                     }
@@ -1221,7 +1237,7 @@ pub fn apply_layout_system(
                         }
                         pending.windows.push(win_layout.clone());
                     }
-                    Some((_, kind, _, mut tf, mut sprite, mut vis)) => {
+                    Some((_, kind, _, mut tf, mut sprite, mut vis, mode_hidden)) => {
                         tf.translation.x = win_layout.position[0];
                         tf.translation.y = win_layout.position[1];
                         tf.translation.z = win_layout.z;
@@ -1230,11 +1246,20 @@ pub fn apply_layout_system(
                         // layout の size を当てると窓幅が巻き戻り、子要素とズレる）。
                         if *kind != PanelKind::Startup {
                             sprite.custom_size = Some(Vec2::from_array(win_layout.size));
-                            *vis = if win_layout.visible {
+                            let intended = if win_layout.visible {
                                 Visibility::Inherited
                             } else {
                                 Visibility::Hidden
                             };
+                            // issue #31: Manual 中の Strategy Editor は mode system が live
+                            // Visibility を Hidden に固定している。layout が指定する本来の可視性は
+                            // 退避マーカーへ書き、Manual を抜けたとき mode system がこの最新 intent へ
+                            // 復元する（Manual 中の layout load でマーカーが陳腐化するのを防ぐ）。
+                            if let Some(mut marker) = mode_hidden {
+                                marker.0 = intended;
+                            } else {
+                                *vis = intended;
+                            }
                         }
                         if win_layout.z > new_max_z {
                             new_max_z = win_layout.z;
@@ -1247,7 +1272,7 @@ pub fn apply_layout_system(
             // windows リストに含まれないパネルを despawn（Some([]) で全 despawn も含む）
             let to_despawn: Vec<Entity> = panels
                 .iter()
-                .filter(|(_, kind, id, _, _, _)| {
+                .filter(|(_, kind, id, _, _, _, _)| {
                     // Startup は layout の windows リストに依存しない（起動時に一度だけ
                     // spawn・可視性は ExecutionMode が所有）。list に無くても despawn しない。
                     // pre-#14 sidecar など Startup を含まない layout でも消えないように。
@@ -1266,7 +1291,7 @@ pub fn apply_layout_system(
                         }
                     })
                 })
-                .map(|(entity, _, _, _, _, _)| entity)
+                .map(|(entity, _, _, _, _, _, _)| entity)
                 .collect();
             for entity in to_despawn {
                 commands.entity(entity).despawn_recursive();
@@ -1287,6 +1312,7 @@ pub fn apply_pending_layout_system(
             &mut Transform,
             &mut Sprite,
             &mut Visibility,
+            Option<&mut StrategyEditorModeHidden>,
         ),
         (With<WindowRoot>, Without<LayoutExcluded>),
     >,
@@ -1355,18 +1381,25 @@ pub fn apply_pending_layout_system(
                 }
                 still_pending.push(win_layout);
             }
-            Some((kind, _, mut tf, mut sprite, mut vis)) => {
+            Some((kind, _, mut tf, mut sprite, mut vis, mode_hidden)) => {
                 tf.translation.x = win_layout.position[0];
                 tf.translation.y = win_layout.position[1];
                 tf.translation.z = win_layout.z;
                 // Startup は position/z のみ復元（size・可視性は復元しない）。
                 if *kind != PanelKind::Startup {
                     sprite.custom_size = Some(Vec2::from_array(win_layout.size));
-                    *vis = if win_layout.visible {
+                    let intended = if win_layout.visible {
                         Visibility::Inherited
                     } else {
                         Visibility::Hidden
                     };
+                    // issue #31: Manual 中の Strategy Editor は退避マーカーへ intent を書く
+                    // （mode system が live Visibility を Hidden に固定しているため）。
+                    if let Some(mut marker) = mode_hidden {
+                        marker.0 = intended;
+                    } else {
+                        *vis = intended;
+                    }
                 }
                 if win_layout.z > wm.max_z {
                     wm.max_z = win_layout.z;
@@ -1387,6 +1420,7 @@ fn save_layout_on_window_close(
         (
             &PanelKind,
             Option<&StrategyEditorId>,
+            Option<&StrategyEditorModeHidden>,
             &Transform,
             &Sprite,
             &Visibility,
@@ -1446,6 +1480,7 @@ fn debounced_autosave_system(
         (
             &PanelKind,
             Option<&StrategyEditorId>,
+            Option<&StrategyEditorModeHidden>,
             &Transform,
             &Sprite,
             &Visibility,
@@ -1535,21 +1570,39 @@ impl Plugin for LayoutPersistencePlugin {
             .add_systems(
                 Update,
                 (
-                    handle_save_layout_system,
-                    handle_save_as_layout_system,
-                    poll_save_as_dialog_system,
-                    poll_save_dialog_system,
+                    // issue #31: layout を直列化する save 系は mode system の前に走らせる。
+                    // mode system は Manual 突入/新規 spawn 時に live Visibility を Hidden へ
+                    // 強制しつつ退避マーカーを deferred Commands で insert するため、その後に
+                    // save が走るとマーカー未反映の forced-Hidden を `visible:false` として焼き込む。
+                    // 前に置けば「強制前の可視性（=本来の意図）」を読むので焼き込みを防げる。
+                    (
+                        handle_save_layout_system,
+                        handle_save_as_layout_system,
+                        poll_save_as_dialog_system,
+                        poll_save_dialog_system,
+                        debounced_autosave_system, // デバウンス自動保存
+                    )
+                        .before(
+                            crate::ui::strategy_editor::apply_strategy_editor_mode_visibility_system,
+                        ),
                     handle_load_dialog_system,
                     poll_load_dialog_system,
-                    // デバウンス自動保存
-                    debounced_autosave_system,
                     apply_cache_restore_system,
                     apply_layout_system,
-                    apply_pending_layout_system.after(apply_layout_system),
+                    // spawn dispatcher の後にも順序付け: Manual 中に layout が新規 spawn した
+                    // StrategyEditor を同フレームで見つけ intended 可視性を確定させ、mode system が
+                    // それを正しくマーカーへ捕捉できるようにする (マーカー陳腐化の解消)。
+                    apply_pending_layout_system
+                        .after(apply_layout_system)
+                        .after(crate::ui::floating_window::panel_spawn_dispatcher_system),
                     layout_shortcut_system,
                 ),
             )
-            .add_systems(Update, save_layout_on_window_close);
+            .add_systems(
+                Update,
+                save_layout_on_window_close
+                    .before(crate::ui::strategy_editor::apply_strategy_editor_mode_visibility_system),
+            );
     }
 }
 
@@ -1913,6 +1966,7 @@ mod tests {
                 (
                     &PanelKind,
                     Option<&StrategyEditorId>,
+                    Option<&StrategyEditorModeHidden>,
                     &Transform,
                     &Sprite,
                     &Visibility,
@@ -1929,6 +1983,90 @@ mod tests {
         let windows = layout.windows.expect("windows must be Some");
         assert_eq!(windows.len(), 1, "ChartInstrument 付き root は除外される");
         assert_eq!(windows[0].kind, PanelKind::Orders);
+    }
+
+    /// issue #31 回帰: LiveManual 中に強制 `Hidden` された Strategy Editor を保存しても、
+    /// 退避マーカーの「本来の可視性」が `visible` として書かれる（forced-Hidden を焼き込まない）。
+    /// これが壊れると Manual 中の autosave / 明示 Save が editor を `visible:false` にし、
+    /// Replay でも editor が消えたままになる（「layout visible は権威」不変条件の破壊）。
+    #[test]
+    fn build_layout_uses_mode_hidden_marker_visibility_for_strategy_editor() {
+        use bevy::ecs::system::SystemState;
+        use bevy::prelude::*;
+
+        let mut app = App::new();
+        app.insert_resource(StrategyBuffer::default());
+        app.world_mut().spawn((
+            Camera2d,
+            Transform::default(),
+            OrthographicProjection::default_2d(),
+        ));
+
+        // (a) Manual で強制 Hidden だが本来は可視（marker=Inherited）→ visible:true で保存される。
+        app.world_mut().spawn((
+            WindowRoot,
+            PanelKind::StrategyEditor,
+            StrategyEditorId {
+                region_key: "region_001".to_string(),
+            },
+            Transform::from_xyz(0.0, 0.0, 1.0),
+            Sprite {
+                custom_size: Some(Vec2::new(500.0, 400.0)),
+                ..default()
+            },
+            Visibility::Hidden, // mode system による一時的な強制 Hidden
+            StrategyEditorModeHidden(Visibility::Inherited),
+        ));
+        // (b) layout が権威的に隠した editor（marker=Hidden）→ visible:false のまま。
+        app.world_mut().spawn((
+            WindowRoot,
+            PanelKind::StrategyEditor,
+            StrategyEditorId {
+                region_key: "region_002".to_string(),
+            },
+            Transform::from_xyz(0.0, 0.0, 1.0),
+            Sprite {
+                custom_size: Some(Vec2::new(500.0, 400.0)),
+                ..default()
+            },
+            Visibility::Hidden,
+            StrategyEditorModeHidden(Visibility::Hidden),
+        ));
+
+        let mut state: SystemState<(
+            Query<
+                (
+                    &PanelKind,
+                    Option<&StrategyEditorId>,
+                    Option<&StrategyEditorModeHidden>,
+                    &Transform,
+                    &Sprite,
+                    &Visibility,
+                ),
+                (With<WindowRoot>, Without<LayoutExcluded>),
+            >,
+            Query<(&Transform, &OrthographicProjection), (With<Camera2d>, Without<WindowRoot>)>,
+            Res<StrategyBuffer>,
+        )> = SystemState::new(app.world_mut());
+
+        let (panels, camera, buffer) = state.get(app.world());
+        let layout = build_layout(&panels, &camera, &*buffer, None);
+
+        let windows = layout.windows.expect("windows must be Some");
+        let by_region = |key: &str| {
+            windows
+                .iter()
+                .find(|w| w.region_key.as_deref() == Some(key))
+                .unwrap_or_else(|| panic!("region {key} missing"))
+        };
+        assert!(
+            by_region("region_001").visible,
+            "forced-Hidden でもマーカーが Inherited なら visible:true で保存される"
+        );
+        assert!(
+            !by_region("region_002").visible,
+            "マーカーが Hidden（layout 権威で隠す意図）なら visible:false のまま"
+        );
     }
 
     #[test]
@@ -2000,6 +2138,288 @@ mod tests {
         assert!(
             app.world().get_entity(chart).is_ok(),
             "ChartInstrument 付き root は layout に含まれなくても despawn されない"
+        );
+    }
+
+    /// issue #31 M1 回帰: Manual 中に layout load で Strategy Editor の可視性意図が変わったら、
+    /// 退避マーカーが最新意図へ更新され、Manual 退出時に古い退避値で巻き戻さない。
+    /// （mode system は live Visibility を Hidden に固定するので、apply_layout は本来の可視性を
+    /// マーカーへ書く必要がある。これが無いとマーカーが陳腐化して退出時に意図と食い違う。）
+    #[test]
+    fn manual_layout_load_updates_mode_hidden_marker_intent() {
+        use crate::trading::{ExecutionMode, ExecutionModeRes};
+        use crate::ui::strategy_editor::apply_strategy_editor_mode_visibility_system;
+        use bevy::prelude::*;
+
+        let mut app = App::new();
+        app.add_event::<LayoutLoadRequested>();
+        app.add_event::<PanelSpawnRequested>();
+        app.add_event::<StrategyFileLoadRequested>();
+        app.insert_resource(WindowManager::default());
+        app.insert_resource(PendingLayoutApply::default());
+        app.insert_resource(PendingStrategyFragments::default());
+        app.init_resource::<ScenarioReadTarget>();
+        app.init_resource::<ExecutionModeRes>(); // 既定 Replay
+
+        app.world_mut().spawn((
+            Camera2d,
+            Transform::default(),
+            OrthographicProjection::default_2d(),
+        ));
+
+        // 既存の Strategy Editor 窓（region_001、最初は可視）。
+        let editor = app
+            .world_mut()
+            .spawn((
+                WindowRoot,
+                PanelKind::StrategyEditor,
+                StrategyEditorId {
+                    region_key: "region_001".to_string(),
+                },
+                Transform::from_xyz(0.0, 0.0, 1.0),
+                Sprite {
+                    custom_size: Some(Vec2::new(500.0, 400.0)),
+                    ..default()
+                },
+                Visibility::Inherited,
+            ))
+            .id();
+
+        // apply_layout → mode system の順に走らせる（mode が毎フレーム Hidden を維持する）。
+        app.add_systems(
+            Update,
+            (
+                apply_layout_system,
+                apply_strategy_editor_mode_visibility_system,
+            )
+                .chain(),
+        );
+
+        // ── Manual 突入 → marker(Inherited) を退避し Hidden 化 ──
+        app.world_mut().resource_mut::<ExecutionModeRes>().mode = ExecutionMode::LiveManual;
+        app.update();
+        assert_eq!(
+            app.world().get::<StrategyEditorModeHidden>(editor).unwrap().0,
+            Visibility::Inherited,
+            "Manual 突入時のマーカーは突入前の可視性（Inherited）"
+        );
+
+        // ── Manual 中に layout load: region_001 を visible:false（隠す意図）に変更 ──
+        let tmp =
+            std::env::temp_dir().join(format!("ttwr_m1_marker_{}.json", std::process::id()));
+        let layout_json = serde_json::json!({
+            "schema_version": SCHEMA_VERSION,
+            "viewport": null,
+            "strategy_path": null,
+            "windows": [{
+                "kind": "StrategyEditor",
+                "position": [0.0, 0.0],
+                "size": [500.0, 400.0],
+                "z": 1.0,
+                "visible": false,
+                "region_key": "region_001"
+            }]
+        });
+        std::fs::write(&tmp, serde_json::to_string(&layout_json).unwrap()).unwrap();
+        app.world_mut().send_event(LayoutLoadRequested {
+            path: tmp.clone(),
+            mode: LayoutLoadMode::UserJsonOpen,
+        });
+        app.update();
+        let _ = std::fs::remove_file(&tmp);
+
+        assert_eq!(
+            app.world().get::<StrategyEditorModeHidden>(editor).unwrap().0,
+            Visibility::Hidden,
+            "Manual 中の layout load でマーカーが最新意図（Hidden）へ更新される（陳腐化しない）"
+        );
+        assert_eq!(
+            *app.world().get::<Visibility>(editor).unwrap(),
+            Visibility::Hidden,
+            "Manual 中は live Visibility は Hidden のまま"
+        );
+
+        // ── Manual 退出 → 最新意図 Hidden に復元（古い Inherited で巻き戻さない）──
+        app.world_mut().resource_mut::<ExecutionModeRes>().mode = ExecutionMode::Replay;
+        app.update();
+        assert_eq!(
+            *app.world().get::<Visibility>(editor).unwrap(),
+            Visibility::Hidden,
+            "layout が Hidden を意図したので Manual 退出後も Hidden（M1 回帰）"
+        );
+        assert!(
+            app.world().get::<StrategyEditorModeHidden>(editor).is_none(),
+            "Manual を抜けたらマーカーは除去される"
+        );
+    }
+
+    /// issue #31 順序回帰: Manual 中に layout が `visible:false` で**新規 spawn** した
+    /// Strategy Editor も、apply 系 → mode system の順序で正しいマーカーを捕捉し、
+    /// Manual 退出時に layout 意図（Hidden）どおり Hidden のままになる。
+    /// （production schedule の `apply_strategy_editor_mode_visibility_system.after(apply_*)` が
+    /// 保証する不変条件。順序が逆だと spawn 既定値 Inherited を捕捉してマーカーが陳腐化する。）
+    #[test]
+    fn manual_late_spawned_hidden_editor_restores_hidden_on_exit() {
+        use crate::trading::{ExecutionMode, ExecutionModeRes};
+        use crate::ui::strategy_editor::apply_strategy_editor_mode_visibility_system;
+        use bevy::prelude::*;
+
+        let mut app = App::new();
+        app.add_event::<PanelSpawnRequested>();
+        app.insert_resource(WindowManager::default());
+        app.insert_resource(PendingStrategyFragments::default());
+        app.init_resource::<ExecutionModeRes>();
+        app.world_mut().resource_mut::<ExecutionModeRes>().mode = ExecutionMode::LiveManual;
+
+        // production と同じ順序: mode は apply_pending の後。
+        app.add_systems(
+            Update,
+            (
+                apply_pending_layout_system,
+                apply_strategy_editor_mode_visibility_system.after(apply_pending_layout_system),
+            ),
+        );
+
+        // 「新規 spawn 済みだが mode 未マーク」の StrategyEditor 窓（region_003, 既定 Inherited）。
+        let late = app
+            .world_mut()
+            .spawn((
+                WindowRoot,
+                PanelKind::StrategyEditor,
+                StrategyEditorId {
+                    region_key: "region_003".to_string(),
+                },
+                Transform::from_xyz(0.0, 0.0, 1.0),
+                Sprite {
+                    custom_size: Some(Vec2::new(500.0, 400.0)),
+                    ..default()
+                },
+                Visibility::Inherited,
+            ))
+            .id();
+
+        // apply_pending が処理する pending エントリ: region_003 を visible:false で意図。
+        let mut pending = PendingLayoutApply::default();
+        pending.windows.push(WindowLayout {
+            kind: PanelKind::StrategyEditor,
+            visible: false,
+            position: [0.0, 0.0],
+            size: [500.0, 400.0],
+            z: 1.0,
+            region_key: Some("region_003".to_string()),
+        });
+        app.insert_resource(pending);
+
+        // 1 フレーム: apply_pending が intended(Hidden) を *vis に確定 → mode が Hidden を捕捉。
+        app.update();
+        assert_eq!(
+            app.world().get::<StrategyEditorModeHidden>(late).unwrap().0,
+            Visibility::Hidden,
+            "Manual 中に処理された hidden 意図の新規窓はマーカーが Hidden を捕捉する"
+        );
+
+        // Manual 退出 → Hidden に復元（陳腐化した Inherited で巻き戻さない）。
+        app.world_mut().resource_mut::<ExecutionModeRes>().mode = ExecutionMode::Replay;
+        app.update();
+        assert_eq!(
+            *app.world().get::<Visibility>(late).unwrap(),
+            Visibility::Hidden,
+            "新規 spawn 窓も layout 意図(Hidden)どおり Manual 退出後に Hidden のまま"
+        );
+    }
+
+    /// issue #31 順序回帰: save 系は mode system の前に走るので、Manual 突入「フレーム」で
+    /// save が走っても、mode が live を Hidden に強制する前の値（＝本来の意図 = visible）を
+    /// 読む。よって退避マーカーが deferred Commands でまだ反映されていなくても、
+    /// forced-Hidden を `visible:false` として永続 layout に焼き込まない。
+    #[test]
+    fn save_before_mode_does_not_bake_forced_hidden_on_manual_entry_frame() {
+        use crate::trading::{ExecutionMode, ExecutionModeRes};
+        use crate::ui::strategy_editor::apply_strategy_editor_mode_visibility_system;
+        use bevy::prelude::*;
+
+        #[derive(Resource, Default)]
+        struct CapturedVisible(Option<bool>);
+
+        // "save" を模した system: build_layout を呼び StrategyEditor の visible を捕捉する。
+        // production の save 系と同様に mode system の前に走らせる。
+        #[allow(clippy::type_complexity)]
+        fn capture_sys(
+            panels: Query<
+                (
+                    &PanelKind,
+                    Option<&StrategyEditorId>,
+                    Option<&StrategyEditorModeHidden>,
+                    &Transform,
+                    &Sprite,
+                    &Visibility,
+                ),
+                (With<WindowRoot>, Without<LayoutExcluded>),
+            >,
+            camera: Query<
+                (&Transform, &OrthographicProjection),
+                (With<Camera2d>, Without<WindowRoot>),
+            >,
+            buffer: Res<StrategyBuffer>,
+            mut out: ResMut<CapturedVisible>,
+        ) {
+            let layout = build_layout(&panels, &camera, &*buffer, None);
+            out.0 = layout
+                .windows
+                .unwrap()
+                .iter()
+                .find(|w| w.kind == PanelKind::StrategyEditor)
+                .map(|w| w.visible);
+        }
+
+        let mut app = App::new();
+        app.insert_resource(StrategyBuffer::default());
+        app.init_resource::<ExecutionModeRes>();
+        app.init_resource::<CapturedVisible>();
+        app.world_mut().spawn((
+            Camera2d,
+            Transform::default(),
+            OrthographicProjection::default_2d(),
+        ));
+        let editor = app
+            .world_mut()
+            .spawn((
+                WindowRoot,
+                PanelKind::StrategyEditor,
+                StrategyEditorId {
+                    region_key: "region_001".to_string(),
+                },
+                Transform::from_xyz(0.0, 0.0, 1.0),
+                Sprite {
+                    custom_size: Some(Vec2::new(500.0, 400.0)),
+                    ..default()
+                },
+                Visibility::Inherited,
+            ))
+            .id();
+
+        app.add_systems(
+            Update,
+            (
+                capture_sys.before(apply_strategy_editor_mode_visibility_system),
+                apply_strategy_editor_mode_visibility_system,
+            ),
+        );
+
+        // Manual 突入フレームで capture(save 相当) が走る。
+        app.world_mut().resource_mut::<ExecutionModeRes>().mode = ExecutionMode::LiveManual;
+        app.update();
+
+        assert_eq!(
+            app.world().resource::<CapturedVisible>().0,
+            Some(true),
+            "Manual 突入フレームでも save は mode 強制前に読むので visible:true を保存する（forced-Hidden を焼き込まない）"
+        );
+        // 一方 editor 自体は mode により Hidden になっている。
+        assert_eq!(
+            *app.world().get::<Visibility>(editor).unwrap(),
+            Visibility::Hidden,
+            "save 後に走る mode system が live を Hidden に強制している"
         );
     }
 
@@ -2099,6 +2519,7 @@ mod tests {
                 (
                     &PanelKind,
                     Option<&StrategyEditorId>,
+                    Option<&StrategyEditorModeHidden>,
                     &Transform,
                     &Sprite,
                     &Visibility,

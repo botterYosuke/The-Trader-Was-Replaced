@@ -10,7 +10,10 @@ description: |
   （Text2d/TextFont/TextColor）を扱う。
 
   ALWAYS use this skill when:
-  ① ユーザが `src/ui/*.rs` や `src/camera.rs` を編集しようとしている
+  ① ユーザが `src/ui/*.rs` や `src/camera.rs` を編集しようとしている（新規実装だけでなく、
+    「issue #N をレビューして修正して」「codex / Navigator のレビューで src/ui の bug を直す」
+    などレビュー駆動の修正で src/ui を触るときも含む。**レビュー task でも src/ui を編集するなら
+    本スキルを先に invoke する**）
   ② "Bevy", "bevy_egui", "PanCam", "Camera2d", "Sprite", "Text2d", "Plugin", "ECS",
     "Resource", "Component", "Event", "System", "Query", "Commands", "World",
     "observer", "Trigger", "Pointer<Drag>", "Pointer<Down>", "floating window",
@@ -52,6 +55,17 @@ description: |
     1 コア 60% 食ってた (2026-05-18 計測)。`WinitSettings::reactive(200ms)` 化で 4.7% まで落ちる。
     ただし `WinitSettings::desktop_app()` (5s/60s) は **mpsc backend push が最大 5 秒遅延** する
     ので trading UI では使わない。詳細: `references/winit-update-mode.md`。
+  ⑪ システム実行順序・スケジューリング・deferred Commands 関連: "add_systems", ".after",
+    ".before", ".chain", "ApplyDeferred", "sync point", "システム順序", "スケジュール",
+    "schedule cycle", "サイクル", "Commands が反映されない", "marker が反映されない",
+    "deferred", "Visibility 競合", "query 競合", "毎フレーム diff-write", "is_changed" と
+    言われたとき、または **複数 system が同じ Component（特に `Visibility` / marker）を
+    読み書きする順序が絡む bug を直すとき**。Bevy の `Commands`（insert/remove/spawn）は
+    sync point まで反映されないため、同フレームの後続 system は未反映の状態を見る。可視性 /
+    マーカーの save/restore やパネル spawn のタイミングはこの遅延と system 順序に依存し、
+    順序を `.before/.after` で固定しないと「保存側が一時状態を焼き込む」「marker が陳腐化する」
+    「新規 spawn が 1 フレーム可視で出る」race になる（issue #31 で実際に踏んだ。読者・
+    save 系を mode system の前に、spawn dispatcher を後続 apply/可視性 system の前に置いて解消）。
 
   本プロジェクトは **Bevy 0.15** をピン留めしている（`Cargo.toml` の `bevy = "0.15"`）。
   一方 `.claude/skills/bevy-engine/src/` にミラーされている upstream は **0.19.0-dev** で、
