@@ -74,6 +74,57 @@ def test_place_market_does_not_forward_price() -> None:
     assert ev.avg_price == 0.0
 
 
+def test_place_event_carries_static_order_attributes() -> None:
+    """issue #29 Slice3a: place の event は symbol/side/qty/price を保持する。
+
+    `OrderEvent` (proto) は元来 ids+status+fill のみで symbol/side/qty/price を
+    持たなかった。GetOrders による接続/再起動後の seed で完全な注文行を復元するには
+    facade が発注時の静的属性を OrderEventData に載せる必要がある（symbol=instrument_id）。
+    """
+
+    async def scenario() -> OrderEventData:
+        adapter = await _logged_in_adapter()
+        facade = ManualOrderFacade(adapter)
+        return await facade.place(
+            venue="MOCK",
+            instrument_id="7203.TSE",
+            side="BUY",
+            qty=100.0,
+            order_type="LIMIT",
+            time_in_force="DAY",
+            price=2500.0,
+        )
+
+    ev = asyncio.run(scenario())
+    assert ev.symbol == "7203.TSE"
+    assert ev.side == "BUY"
+    assert ev.qty == 100.0
+    assert ev.price == 2500.0
+
+
+def test_place_market_event_has_no_price() -> None:
+    """MARKET 発注の event は price=None（指値なし）。symbol/side/qty は保持。"""
+
+    async def scenario() -> OrderEventData:
+        adapter = await _logged_in_adapter()
+        facade = ManualOrderFacade(adapter)
+        return await facade.place(
+            venue="MOCK",
+            instrument_id="6758.TSE",
+            side="SELL",
+            qty=300.0,
+            order_type="MARKET",
+            time_in_force="DAY",
+            price=2500.0,  # MARKET なので注文行の price には載らない
+        )
+
+    ev = asyncio.run(scenario())
+    assert ev.symbol == "6758.TSE"
+    assert ev.side == "SELL"
+    assert ev.qty == 300.0
+    assert ev.price is None
+
+
 def test_place_rejected_outcome_is_event_not_exception() -> None:
     """venue REJECTED は例外ではなく status=REJECTED の event として返る。"""
 
@@ -146,6 +197,65 @@ def test_cancel_known_order_returns_canceled_preserving_fills() -> None:
     assert canceled.filled_qty == placed.filled_qty == 40.0
     # store 上も終端状態へ更新
     assert facade.get_status(placed.order_id).status == "CANCELED"
+
+
+def test_cancel_event_carries_static_attributes() -> None:
+    """issue #29 Slice3a: cancel の CANCELED event も元注文の symbol/side/qty/price を保持。"""
+
+    async def scenario() -> OrderEventData:
+        adapter = await _logged_in_adapter()
+        adapter.set_next_order_outcome(status="ACCEPTED", filled_qty=0.0)
+        facade = ManualOrderFacade(adapter)
+        placed = await facade.place(
+            venue="MOCK",
+            instrument_id="7203.TSE",
+            side="BUY",
+            qty=100.0,
+            order_type="LIMIT",
+            time_in_force="DAY",
+            price=2500.0,
+        )
+        return await facade.cancel(venue="MOCK", order_id=placed.order_id)
+
+    canceled = asyncio.run(scenario())
+    assert canceled.status == "CANCELED"
+    assert canceled.symbol == "7203.TSE"
+    assert canceled.side == "BUY"
+    assert canceled.qty == 100.0
+    assert canceled.price == 2500.0
+
+
+def test_modify_event_preserves_symbol_side_and_applies_new_price() -> None:
+    """issue #29 Slice3a: modify の event は symbol/side/qty を保持し新 price を反映。"""
+
+    async def scenario() -> tuple[OrderEventData, OrderEventData]:
+        adapter = await _logged_in_adapter()
+        facade = ManualOrderFacade(adapter)
+        placed = await _placed_working_order(facade, adapter)
+        modified = await facade.modify(
+            venue="MOCK", order_id=placed.order_id, new_price=2600.0
+        )
+        return placed, modified
+
+    placed, modified = asyncio.run(scenario())
+    assert modified.symbol == placed.symbol == "7203.TSE"
+    assert modified.side == placed.side == "BUY"
+    assert modified.qty == placed.qty == 100.0  # 未指定なので据え置き
+    assert modified.price == 2600.0  # 新指値を反映
+
+
+def test_modify_new_qty_updates_qty_keeps_price() -> None:
+    """issue #29 Slice3a: new_qty のみの modify は qty を更新し price は据え置く。"""
+
+    async def scenario() -> OrderEventData:
+        adapter = await _logged_in_adapter()
+        facade = ManualOrderFacade(adapter)
+        placed = await _placed_working_order(facade, adapter)  # LIMIT 2500, qty 100
+        return await facade.modify(venue="MOCK", order_id=placed.order_id, new_qty=50.0)
+
+    modified = asyncio.run(scenario())
+    assert modified.qty == 50.0
+    assert modified.price == 2500.0  # 未指定なので据え置き
 
 
 def test_cancel_unknown_order_raises() -> None:

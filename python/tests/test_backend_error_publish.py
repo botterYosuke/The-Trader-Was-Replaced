@@ -243,3 +243,51 @@ def test_force_account_snapshot_returns_failure_when_fetch_fails():
     assert received.WhichOneof("payload") == "backend_error"
     assert received.backend_error.source == "account_sync"
     assert "force fetch boom" in received.backend_error.detail
+
+
+def test_force_account_snapshot_publishes_backend_error_on_callback_failure():
+    """issue #29 review残: fetch は成功したが on_account_event が raise した場合も、
+    ForceAccountSnapshot ハンドラは FORCE_RESYNC_NO_EMIT を返し、かつ BackendError を
+    publish する（トースト無しのサイレント失敗にしない）。
+
+    fetch-fail と異なり callback-fail 経路はかつて on_error を呼ばずに False を返したため、
+    ハンドラの「on_error 経路で BackendError は既に publish 済み」が成立せずトーストが
+    出なかった。修正後は callback-fail も on_error で surface する。"""
+    servicer = _make_servicer()
+    loop = servicer._ensure_live_loop()
+
+    def _raising_publish(_snapshot):
+        # 実シナリオ: AccountEvent は配信済みだが _evaluate_post_trade_loss が raise。
+        raise RuntimeError("post-trade eval boom")
+
+    async def setup():
+        adapter = MockVenueAdapter()
+        await adapter.login(
+            VenueCredentials(credentials_source="env", environment_hint="demo")
+        )
+        adapter.set_account_snapshot(cash=1.0, buying_power=1.0, positions=[])
+        sync = AccountSync(
+            adapter,
+            on_account_event=_raising_publish,
+            on_error=servicer._publish_account_sync_error,
+            interval_s=3600.0,
+        )
+        return adapter, sync
+
+    _adapter, sync = asyncio.run_coroutine_threadsafe(setup(), loop).result(timeout=5.0)
+    servicer._account_sync = sync
+    sub = servicer._backend_event_bus.subscribe()
+
+    class _Req:
+        token = "test-token"
+
+    resp = servicer.ForceAccountSnapshot(_Req(), context=None)
+
+    assert resp.success is False
+    assert resp.error_code == "FORCE_RESYNC_NO_EMIT"
+
+    # callback 失敗も on_error → BackendError(source="account_sync") として surface される。
+    received = sub._queue.get(timeout=2.0)
+    assert received.WhichOneof("payload") == "backend_error"
+    assert received.backend_error.source == "account_sync"
+    assert "post-trade eval boom" in received.backend_error.detail

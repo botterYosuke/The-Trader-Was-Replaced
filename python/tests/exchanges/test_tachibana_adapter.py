@@ -1054,9 +1054,10 @@ async def test_subscribe_passes_processor_reset_as_on_connect(
 # Phase 9 Step 5: OrderingVenueAdapter — 発注 / 取消 / 訂正 / 口座 / EC
 # ---------------------------------------------------------------------------
 
-from engine.live.order_types import AccountSnapshot, OrderResult  # noqa: E402
+from engine.live.order_types import AccountSnapshot, OrderEventData, OrderResult  # noqa: E402
 
 _REQUEST_URL_RE = re.compile(rf"^{re.escape(_DEMO_BASE)}request/")
+_ORDER_LIST_RE = re.compile(rf"^{re.escape(_DEMO_BASE)}request/.*CLMOrderList")
 _ZANKAI_RE = re.compile(rf"^{re.escape(_DEMO_BASE)}request/.*CLMZanKaiKanougaku")
 _GENBUTU_RE = re.compile(rf"^{re.escape(_DEMO_BASE)}request/.*CLMGenbutuKabuList")
 
@@ -1712,3 +1713,88 @@ async def test_ss_suspended_status2_does_not_fire():
         "SS", {"sSystemStatus": "2", "sLoginKyokaKubun": "1"}, 1,
     )
     assert fired == []
+
+
+# ---------------------------------------------------------------------------
+# fetch_working_orders (Issue #29 Slice 3b)
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.anyio
+async def test_fetch_working_orders_returns_full_rows(monkeypatch, httpx_mock: HTTPXMock):
+    """CLMOrderList BUY LIMIT 注文が OrderEventData として返る。"""
+    adapter, _, _ = await _login_with_hooks(monkeypatch, httpx_mock)
+    httpx_mock.add_response(
+        url=_ORDER_LIST_RE, method="GET",
+        content=json.dumps({
+            "p_errno": "0", "sResultCode": "0",
+            "aOrderList": [{
+                "sOrderOrderNumber": "77001",
+                "sOrderIssueCode": "7203",
+                "sOrderSizyouC": "00",
+                "sOrderBaibaiKubun": "3",   # 買
+                "sOrderOrderSuryou": "100",
+                "sOrderCurrentSuryou": "100",
+                "sOrderOrderPrice": "2430",
+                "sOrderOrderPriceKubun": "2",  # 指値
+                "sOrderStatusCode": "0",
+            }],
+        }, ensure_ascii=False).encode("shift_jis"),
+    )
+    orders = await adapter.fetch_working_orders()
+    assert len(orders) == 1
+    o = orders[0]
+    assert isinstance(o, OrderEventData)
+    assert o.venue_order_id == "77001"
+    assert o.symbol == "7203.TSE"
+    assert o.side == "BUY"
+    assert o.qty == 100.0
+    assert o.price == 2430.0
+    await adapter.logout()
+
+
+@pytest.mark.anyio
+async def test_fetch_working_orders_carries_fill_progress(monkeypatch, httpx_mock: HTTPXMock):
+    """一部約定注文の filled_qty / avg_price が OrderEventData に載る（High-2）。"""
+    adapter, _, _ = await _login_with_hooks(monkeypatch, httpx_mock)
+    httpx_mock.add_response(
+        url=_ORDER_LIST_RE, method="GET",
+        content=json.dumps({
+            "p_errno": "0", "sResultCode": "0",
+            "aOrderList": [{
+                "sOrderOrderNumber": "77002",
+                "sOrderIssueCode": "7203",
+                "sOrderSizyouC": "00",
+                "sOrderBaibaiKubun": "3",   # 買
+                "sOrderOrderSuryou": "100",
+                "sOrderCurrentSuryou": "100",
+                "sOrderOrderPrice": "2430",
+                "sOrderOrderPriceKubun": "2",  # 指値
+                "sOrderStatusCode": "0",
+                "sOrderYakuzyouSuryo": "40",
+                "sOrderYakuzyouPrice": "2425",
+            }],
+        }, ensure_ascii=False).encode("shift_jis"),
+    )
+    orders = await adapter.fetch_working_orders()
+    assert len(orders) == 1
+    o = orders[0]
+    assert o.filled_qty == 40.0
+    assert o.avg_price == 2425.0
+    await adapter.logout()
+
+
+@pytest.mark.anyio
+async def test_fetch_working_orders_empty_returns_empty(monkeypatch, httpx_mock: HTTPXMock):
+    """注文ゼロ件（aOrderList=''）は [] を返す（R8 空配列仕様）。"""
+    adapter, _, _ = await _login_with_hooks(monkeypatch, httpx_mock)
+    httpx_mock.add_response(
+        url=_ORDER_LIST_RE, method="GET",
+        content=json.dumps(
+            {"p_errno": "0", "sResultCode": "0", "aOrderList": ""},
+            ensure_ascii=False,
+        ).encode("shift_jis"),
+    )
+    orders = await adapter.fetch_working_orders()
+    assert orders == []
+    await adapter.logout()

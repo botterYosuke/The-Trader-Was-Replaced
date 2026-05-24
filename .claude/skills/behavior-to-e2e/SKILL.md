@@ -57,6 +57,12 @@ description: >-
   代替方式テーブルを更新する。production 経路は無変更に保つ（注入口は本番では誰も呼ばない）。`tdd`（RED→GREEN の
   vertical slice）と `pair-relay`（Navigator/Driver 分業）を併用すると seam 設計と回帰防止が安定する。
   Rust の一般的なユニットテスト作法は `rust-testing` を併用する。
+  **Python gRPC backend の挙動を保証したい**ときも本スキルを開く（「EC stream イベントで account が更新されることをテスト」
+  「account_sync の dedup をテスト」「server_grpc の挙動をテスト」「Python の backend 挙動を E2E で保証したい」
+  「Slice N の Python 側テストを書く」）: Rust ECS seam だけでなく `kind:integration`（Python pytest）の flow として
+  FLOWS.md に追加し `python/tests/` に自動テストを足す。EC stream → force_resync トリガー、mode 遷移 →
+  account_sync 存続、dedup 保証など「Python サービス内の状態機械」は pytest でカバーできる（Rust seam は不要）。
+  **この場合も FLOWS.md への flow 追加・wiki の [FlowID] 引用は必須**（Rust E2E に限らない）。
 ---
 
 # behavior-to-e2e — 挙動の言葉を E2E テストに変える

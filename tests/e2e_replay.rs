@@ -107,6 +107,10 @@ mod h5_exec_mode_change_resets_portfolio;
 mod h6_order_notice;
 #[path = "e2e/flows/h7_secret_submit_failed.rs"]
 mod h7_secret_submit_failed;
+#[path = "e2e/flows/h9_orders_seeded_full_rows.rs"]
+mod h9_orders_seeded_full_rows;
+#[path = "e2e/flows/h11_venue_orders_timeout_notice.rs"]
+mod h11_venue_orders_timeout_notice;
 
 // I. Menu / file-open / layout (UI / integration)
 #[path = "e2e/flows/i1_menu_click_open_close.rs"]

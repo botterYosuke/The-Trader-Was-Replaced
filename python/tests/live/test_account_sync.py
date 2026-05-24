@@ -195,6 +195,39 @@ def test_callback_exception_does_not_kill_loop() -> None:
     assert n >= 2  # 初回例外後も 2 回目 emit が来た
 
 
+def test_callback_exception_surfaces_via_on_error() -> None:
+    """issue #29 review残: on_account_event が raise したとき on_error が呼ばれ、
+    source 付き error record が記録される。
+
+    callback-fail 経路は fetch 成功後に発生する（例: AccountEvent は配信済みだが
+    `_evaluate_post_trade_loss` が raise）。この経路が on_error を呼ばないと、
+    `force_resync` が False を返して handler が `FORCE_RESYNC_NO_EMIT` を返すのに
+    BackendError トーストが出ず、失敗がサイレントになる。
+    """
+
+    async def scenario() -> tuple[bool, list, "AccountSync"]:
+        adapter = await _logged_in_adapter()
+        adapter.set_account_snapshot(cash=1.0, buying_power=1.0, positions=[])
+
+        def cb(_s: AccountSnapshot) -> None:
+            raise RuntimeError("post-trade eval boom")
+
+        errors: list = []
+        sync = AccountSync(
+            adapter, on_account_event=cb, interval_s=1000.0, on_error=errors.append
+        )
+        emitted = await sync.force_resync()
+        return emitted, errors, sync
+
+    emitted, errors, sync = asyncio.run(scenario())
+    assert emitted is False  # callback 失敗で emit できていない
+    assert len(errors) == 1, "callback 失敗も on_error で surface されるべき"
+    assert errors[0].source == "account_sync"
+    assert "post-trade eval boom" in errors[0].detail
+    assert sync.last_error_record is not None
+    assert sync.last_error_record.source == "account_sync"
+
+
 def test_fetch_exception_records_source_aware_error() -> None:
     """fetch 例外が source 付き error record として観測できる。"""
 

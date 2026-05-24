@@ -124,7 +124,21 @@ class AccountSync:
             # `_last_emitted` は **成功時のみ** 更新する。ここで先に更新してしまうと、
             # 配信に失敗した snapshot を「emit 済み」と誤記録し、値が変わるまで二度と
             # 再送されない（特に force_emit=True の初回ロードが永久に欠落しうる）。
+            # fetch 失敗と同様に on_error で surface する（issue #29 review残）: ここで
+            # 握り潰すと force_resync が False を返して handler が FORCE_RESYNC_NO_EMIT
+            # を返すのに BackendError トーストが出ず、失敗がサイレントになる。
+            self._last_error = exc
+            detail = f"{type(exc).__name__}: {exc}" if str(exc) else repr(exc)
+            record = LiveErrorRecord(source="account_sync", detail=detail)
+            self._last_error_record = record
             _LOG.warning("AccountSync: on_account_event callback failed", exc_info=exc)
+            if self._on_error is not None:
+                try:
+                    self._on_error(record)
+                except asyncio.CancelledError:
+                    raise
+                except BaseException:  # noqa: BLE001 — on_error の失敗でループを止めない
+                    _LOG.warning("AccountSync: on_error callback failed", exc_info=True)
             return False
         self._last_emitted = snapshot
         return True

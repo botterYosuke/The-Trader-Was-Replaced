@@ -69,6 +69,13 @@ def engine_run(*args, **kwargs):
 #   できないため。UI 側のマージ規則「非空が勝つ・空は既知値を消さない」に委ねる）。
 MANUAL_STRATEGY_ID = "MANUAL-001"
 
+# Statuses that change BP or Positions; EC stream events with these trigger
+# an immediate account_sync.force_resync() so the panel reflects the new state
+# without waiting for the next 30s poll (#29 Slice 4).
+_ACCOUNT_REFETCH_STATUSES: frozenset[str] = frozenset(
+    {"ACCEPTED", "PARTIALLY_FILLED", "FILLED", "CANCELED", "EXPIRED"}
+)
+
 
 class _LiveSessionView:
     """`LiveStrategyHost` が借用する live session の read-only ビュー (Phase 10 §1.1)。
@@ -1863,8 +1870,10 @@ class GrpcDataEngineServer(
                 error_code="FORCE_RESYNC_FAILED",
             )
         if not emitted:
-            # fetch 失敗等で AccountEvent を再 push できなかった。on_error 経路で
-            # BackendError は既に publish 済み。RPC は success=True を返してはならない。
+            # fetch 失敗・callback 失敗のいずれかで AccountEvent を再 push できなかった。
+            # どちらの経路も AccountSync が on_error を呼ぶので BackendError は既に publish
+            # 済み（issue #29 review残: callback 失敗も on_error で surface するよう修正）。
+            # RPC は success=True を返してはならない。
             return engine_pb2.ForceAccountSnapshotResponse(
                 success=False,
                 error_code="FORCE_RESYNC_NO_EMIT",
@@ -1901,7 +1910,7 @@ class GrpcDataEngineServer(
         subject; the UI merge rule "non-empty wins, empty does not clear a known value"
         keeps the earlier MANUAL/LIVE tag). Default "" is the safe EC-stream value.
         """
-        return engine_pb2.OrderEvent(
+        proto = engine_pb2.OrderEvent(
             order_id=ev.order_id,
             venue_order_id=ev.venue_order_id,
             client_order_id=ev.client_order_id,
@@ -1910,7 +1919,16 @@ class GrpcDataEngineServer(
             avg_price=ev.avg_price,
             ts_ms=ev.ts_ms,
             strategy_id=strategy_id,
+            # issue #29 Slice 3a: carry the static attrs so GetOrders can seed full
+            # UI rows. `price` is proto3 optional — only set it for limit orders so
+            # a market order stays "unset" (UI shows MKT) rather than 0.0.
+            symbol=ev.symbol,
+            side=ev.side,
+            qty=ev.qty,
         )
+        if ev.price is not None:
+            proto.price = ev.price
+        return proto
 
     def _is_live_ordering_mode(self) -> bool:
         """Write order RPCs are allowed only in Live modes (Replay is rejected)."""
@@ -1991,6 +2009,10 @@ class GrpcDataEngineServer(
         self.publish_backend_event(
             engine_pb2.BackendEvent(order_event=self._order_event_to_proto(ev))
         )
+        if ev.status in _ACCOUNT_REFETCH_STATUSES:
+            account_sync = self._account_sync
+            if account_sync is not None and self._live_loop is not None and self._live_loop.is_running():
+                asyncio.ensure_future(account_sync.force_resync())
 
     def PlaceOrder(self, request, context):
         if not self._token_ok(request):
@@ -2178,12 +2200,43 @@ class GrpcDataEngineServer(
         facade = self._order_facade
         if facade is None:
             return engine_pb2.GetOrdersRes(success=False, error_code="NO_LIVE_SESSION")
+
+        facade_orders = facade.list_orders()
+
+        # Slice 3b: venue 側の working-orders を取得してマージする。
+        # facade 側に既知の venue_order_id はスキップ（facade が正（client_order_id あり））。
+        venue_orders = []
+        error_code = ""
+        adapter = self._live_adapter()
+        if adapter is not None and hasattr(adapter, "fetch_working_orders"):
+            loop = self._ensure_live_loop()
+            try:
+                future = asyncio.run_coroutine_threadsafe(
+                    adapter.fetch_working_orders(), loop
+                )
+                venue_orders = future.result(timeout=self._live_timeout_s)
+            except futures.TimeoutError:
+                logging.warning(
+                    "GetOrders: fetch_working_orders timed out after %ss",
+                    self._live_timeout_s,
+                )
+                error_code = "VENUE_ORDERS_TIMEOUT"
+            except Exception as exc:
+                logging.warning("GetOrders: fetch_working_orders failed: %s", exc)
+                error_code = "VENUE_ORDERS_FETCH_FAILED"
+
+        known_venue_ids = {o.venue_order_id for o in facade_orders if o.venue_order_id}
+        merged = list(facade_orders)
+        for vo in venue_orders:
+            if vo.venue_order_id not in known_venue_ids:
+                merged.append(vo)
+
         return engine_pb2.GetOrdersRes(
             success=True,
-            error_code="",
+            error_code=error_code,
             orders=[
                 self._order_event_to_proto(e, strategy_id=MANUAL_STRATEGY_ID)
-                for e in facade.list_orders()
+                for e in merged
             ],
         )
 
