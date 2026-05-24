@@ -30,12 +30,14 @@ use std::net::SocketAddr;
 use std::time::Duration;
 use tokio::sync::{mpsc, oneshot, watch};
 use tonic::{Request, Response, Status, transport::Server};
+use serial_test::serial;
 
 // Mock gRPC server implementation
 #[derive(Default)]
 pub struct MyDataEngine {
     pub token: String,
     pub running: std::sync::Arc<std::sync::atomic::AtomicBool>,
+    pub configured_venue: Option<String>,
 }
 
 /// Minimal Health servicer for supervisor attach-path tests. Always returns the
@@ -229,7 +231,8 @@ impl DataEngine for MyDataEngine {
             "history_points": [
                 {"timestamp_ms": 1599999999000i64, "price": 120.0},
                 {"timestamp_ms": 1600000000000i64, "price": 123.45}
-            ]
+            ],
+            "configured_venue": self.configured_venue.clone()
         });
 
         Ok(Response::new(GetStateResponse {
@@ -605,6 +608,7 @@ impl DataEngine for MyDataEngine {
 }
 
 #[tokio::test]
+#[serial]
 async fn test_backend_connection_flow() {
     let addr: SocketAddr = "[::1]:50053".parse().unwrap();
     let token = "test-token".to_string();
@@ -615,6 +619,7 @@ async fn test_backend_connection_flow() {
     let engine = MyDataEngine {
         token: token.clone(),
         running: running.clone(),
+        configured_venue: None,
     };
 
     let server_handle = tokio::spawn(async move {
@@ -661,6 +666,7 @@ async fn test_backend_connection_flow() {
 }
 
 #[tokio::test]
+#[serial]
 async fn test_reconnect_logic() {
     let addr: SocketAddr = "[::1]:50054".parse().unwrap();
     let token = "test-token".to_string();
@@ -811,6 +817,7 @@ async fn run_attach_and_await_terminal(config: SupervisorConfig) -> BackendLifec
 }
 
 #[tokio::test]
+#[serial]
 async fn attach_serving_then_getstate_ok_reaches_ready() {
     let addr: SocketAddr = "127.0.0.1:50061".parse().unwrap();
     let token = "good-token".to_string();
@@ -851,7 +858,110 @@ async fn attach_serving_then_getstate_ok_reaches_ready() {
     server_handle.await.unwrap();
 }
 
+// Port allocation note (live-venue attach tests)
+// ------------------------------------------------
+// Each test in this block binds a fixed, unique port (50071, 50072) so that
+// `cargo test` parallel execution causes no conflicts.
+// The `sleep(100 ms)` after spawning the gRPC server is a conservative bind
+// wait; the actual bind typically completes in <10 ms. The 100 ms margin is
+// sufficient even on a loaded CI runner.
+//
+// If dynamic ports become desirable in the future, replace the fixed address
+// with `127.0.0.1:0`, retrieve the actual port via `listener.local_addr()`,
+// and gate the supervisor start on a readiness channel instead of a sleep.
 #[tokio::test]
+#[serial]
+async fn attach_live_venue_mismatch_reaches_venue_mismatch() {
+    let addr: SocketAddr = "127.0.0.1:50071".parse().unwrap();
+    let token = "good-token".to_string();
+    let (tx_close, rx_close) = oneshot::channel::<()>();
+
+    let health = MockHealth {
+        status: ServingStatus::Serving as i32,
+    };
+    // Orphan backend: serving + token OK but no live venue configured.
+    let engine = MyDataEngine {
+        token: token.clone(),
+        configured_venue: None,
+        ..Default::default()
+    };
+    let server_handle = tokio::spawn(async move {
+        Server::builder()
+            .add_service(HealthServer::new(health))
+            .add_service(DataEngineServer::new(engine))
+            .serve_with_shutdown(addr, async {
+                rx_close.await.ok();
+            })
+            .await
+            .unwrap();
+    });
+    tokio::time::sleep(Duration::from_millis(100)).await;
+
+    let config = SupervisorConfig {
+        enabled: true,
+        url: format!("http://{}", addr),
+        token: token.clone(),
+        autospawn: false,
+        cwd: None,
+        python_bin: None,
+        live_venue: Some("TACHIBANA".to_string()),
+    };
+    let outcome = run_attach_and_await_terminal(config).await;
+    assert_eq!(
+        outcome,
+        BackendLifecycle::StartupFailed("BACKEND_VENUE_MISMATCH")
+    );
+
+    let _ = tx_close.send(());
+    server_handle.await.unwrap();
+}
+
+#[tokio::test]
+#[serial]
+async fn attach_live_venue_match_reaches_ready() {
+    let addr: SocketAddr = "127.0.0.1:50072".parse().unwrap();
+    let token = "good-token".to_string();
+    let (tx_close, rx_close) = oneshot::channel::<()>();
+
+    let health = MockHealth {
+        status: ServingStatus::Serving as i32,
+    };
+    // Live backend whose configured venue matches the requested live_venue.
+    let engine = MyDataEngine {
+        token: token.clone(),
+        configured_venue: Some("TACHIBANA".to_string()),
+        ..Default::default()
+    };
+    let server_handle = tokio::spawn(async move {
+        Server::builder()
+            .add_service(HealthServer::new(health))
+            .add_service(DataEngineServer::new(engine))
+            .serve_with_shutdown(addr, async {
+                rx_close.await.ok();
+            })
+            .await
+            .unwrap();
+    });
+    tokio::time::sleep(Duration::from_millis(100)).await;
+
+    let config = SupervisorConfig {
+        enabled: true,
+        url: format!("http://{}", addr),
+        token: token.clone(),
+        autospawn: false,
+        cwd: None,
+        python_bin: None,
+        live_venue: Some("TACHIBANA".to_string()),
+    };
+    let outcome = run_attach_and_await_terminal(config).await;
+    assert_eq!(outcome, BackendLifecycle::Ready);
+
+    let _ = tx_close.send(());
+    server_handle.await.unwrap();
+}
+
+#[tokio::test]
+#[serial]
 async fn attach_service_unknown_reaches_identity_mismatch() {
     let addr: SocketAddr = "127.0.0.1:50062".parse().unwrap();
     let (tx_close, rx_close) = oneshot::channel::<()>();
@@ -895,6 +1005,7 @@ async fn attach_service_unknown_reaches_identity_mismatch() {
 }
 
 #[tokio::test]
+#[serial]
 async fn attach_getstate_unauthenticated_reaches_token_mismatch() {
     let addr: SocketAddr = "127.0.0.1:50063".parse().unwrap();
     let (tx_close, rx_close) = oneshot::channel::<()>();
@@ -939,6 +1050,7 @@ async fn attach_getstate_unauthenticated_reaches_token_mismatch() {
 }
 
 #[tokio::test]
+#[serial]
 async fn attach_delayed_serving_within_budget_reaches_ready() {
     let addr: SocketAddr = "127.0.0.1:50064".parse().unwrap();
     let token = "good-token".to_string();
@@ -981,8 +1093,9 @@ async fn attach_delayed_serving_within_budget_reaches_ready() {
 }
 
 #[tokio::test]
+#[serial]
 async fn post_ready_health_failures_reach_crashed() {
-    let addr: SocketAddr = "127.0.0.1:50071".parse().unwrap();
+    let addr: SocketAddr = "127.0.0.1:50075".parse().unwrap();
     let token = "good-token".to_string();
     let (tx_close, rx_close) = oneshot::channel::<()>();
 
@@ -1048,8 +1161,9 @@ async fn post_ready_health_failures_reach_crashed() {
 }
 
 #[tokio::test]
+#[serial]
 async fn post_ready_not_serving_reaches_stopped() {
-    let addr: SocketAddr = "127.0.0.1:50072".parse().unwrap();
+    let addr: SocketAddr = "127.0.0.1:50076".parse().unwrap();
     let token = "good-token".to_string();
     let (tx_close, rx_close) = oneshot::channel::<()>();
 
@@ -1126,6 +1240,7 @@ async fn post_ready_not_serving_reaches_stopped() {
 }
 
 #[tokio::test]
+#[serial]
 async fn post_ready_not_serving_recovers_to_ready() {
     let addr: SocketAddr = "127.0.0.1:50073".parse().unwrap();
     let token = "good-token".to_string();
@@ -1207,6 +1322,7 @@ async fn post_ready_not_serving_recovers_to_ready() {
 }
 
 #[tokio::test]
+#[serial]
 async fn shutdown_command_attach_reaches_stopped() {
     let addr: SocketAddr = "127.0.0.1:50074".parse().unwrap();
     let token = "good-token".to_string();

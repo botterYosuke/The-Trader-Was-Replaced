@@ -31,6 +31,7 @@ pub mod error_code {
     pub const IDENTITY_MISMATCH: &str = "BACKEND_IDENTITY_MISMATCH";
     pub const VENV_NOT_FOUND: &str = "BACKEND_VENV_NOT_FOUND";
     pub const CWD_NOT_FOUND: &str = "BACKEND_CWD_NOT_FOUND";
+    pub const VENUE_MISMATCH: &str = "BACKEND_VENUE_MISMATCH";
 }
 
 /// Lifecycle phases of the Python backend process / connection.
@@ -623,8 +624,14 @@ async fn spawn_and_handshake(
 
     // `child` is held alive here so the pipes stay open; the post-Ready monitor
     // takes ownership of it for crash / shutdown handling.
-    if run_health_and_getstate_handshake(config, lifecycle_tx, 75, error_code::SERVICER_MISSING)
-        .await
+    if run_health_and_getstate_handshake(
+        config,
+        lifecycle_tx,
+        75,
+        error_code::SERVICER_MISSING,
+        None,
+    )
+    .await
     {
         SpawnOutcome::Ready(child)
     } else {
@@ -705,7 +712,14 @@ async fn run_attach_handshake(
     config: &SupervisorConfig,
     lifecycle_tx: &watch::Sender<BackendLifecycle>,
 ) -> bool {
-    run_health_and_getstate_handshake(config, lifecycle_tx, 10, error_code::HANDSHAKE_FAILED).await
+    run_health_and_getstate_handshake(
+        config,
+        lifecycle_tx,
+        10,
+        error_code::HANDSHAKE_FAILED,
+        config.live_venue.as_deref(),
+    )
+    .await
 }
 
 /// Shared Health.Check -> GetState handshake body for both attach and spawn
@@ -719,6 +733,7 @@ async fn run_health_and_getstate_handshake(
     lifecycle_tx: &watch::Sender<BackendLifecycle>,
     max_health_ticks: u32,
     getstate_unimplemented_code: &'static str,
+    expected_venue: Option<&str>,
 ) -> bool {
     let mut health = match HealthClient::connect(config.url.clone()).await {
         Ok(c) => c,
@@ -771,15 +786,31 @@ async fn run_health_and_getstate_handshake(
         return false;
     }
 
+    // INVARIANT: `SERVING` implies the backend has completed its startup sequence,
+    // including loading `configured_venue` from config. A one-shot `GetState`
+    // immediately after is therefore safe. If the Python backend ever adopts async
+    // venue initialisation, this should become a poll/retry.
     match data
         .get_state(GetStateRequest {
             token: config.token.clone(),
         })
         .await
     {
-        Ok(_) => {
-            let _ = lifecycle_tx.send(BackendLifecycle::Ready);
-            true
+        Ok(resp) => {
+            let configured = parse_configured_venue(&resp.into_inner().json_data);
+            if !venue_config_matches(expected_venue, configured.as_deref()) {
+                bevy::log::error!(
+                    "[backend] attach venue mismatch: expected {:?}, backend configured_venue={:?}",
+                    expected_venue,
+                    configured
+                );
+                let _ = lifecycle_tx
+                    .send(BackendLifecycle::StartupFailed(error_code::VENUE_MISMATCH));
+                false
+            } else {
+                let _ = lifecycle_tx.send(BackendLifecycle::Ready);
+                true
+            }
         }
         Err(e) if e.code() == tonic::Code::Unauthenticated => {
             let _ = lifecycle_tx.send(BackendLifecycle::StartupFailed(error_code::TOKEN_MISMATCH));
@@ -796,6 +827,27 @@ async fn run_health_and_getstate_handshake(
             false
         }
     }
+}
+
+/// `expected=None` accepts any backend venue; otherwise the backend's
+/// `configured_venue` must be present and case-insensitively equal.
+fn venue_config_matches(expected: Option<&str>, actual: Option<&str>) -> bool {
+    match expected {
+        None => true,
+        Some(e) => actual.map(|a| a.eq_ignore_ascii_case(e)).unwrap_or(false),
+    }
+}
+
+/// Extract `configured_venue` from the GetState `json_data` payload; any parse
+/// failure or absent field yields `None`.
+fn parse_configured_venue(json: &str) -> Option<String> {
+    serde_json::from_str::<serde_json::Value>(json)
+        .ok()
+        .and_then(|v| {
+            v.get("configured_venue")?
+                .as_str()
+                .map(str::to_string)
+        })
 }
 
 /// Post-Ready monitor (Step 5-1). Polls `Health.Check(service="DataEngine")`
@@ -1093,6 +1145,39 @@ impl Plugin for BackendSupervisorPlugin {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn venue_config_matches_expected_none_accepts_any() {
+        assert!(venue_config_matches(None, Some("TACHIBANA")));
+        assert!(venue_config_matches(None, None));
+    }
+
+    #[test]
+    fn venue_config_matches_case_insensitive_equal() {
+        assert!(venue_config_matches(Some("TACHIBANA"), Some("TACHIBANA")));
+        assert!(venue_config_matches(Some("TACHIBANA"), Some("tachibana")));
+    }
+
+    #[test]
+    fn venue_config_matches_orphan_or_mismatch_is_false() {
+        // issue #24 core: live requested but backend has no configured venue.
+        assert!(!venue_config_matches(Some("TACHIBANA"), None));
+        assert!(!venue_config_matches(Some("TACHIBANA"), Some("KABU")));
+    }
+
+    #[test]
+    fn parse_configured_venue_extracts_field() {
+        assert_eq!(
+            parse_configured_venue(r#"{"configured_venue":"TACHIBANA"}"#),
+            Some("TACHIBANA".to_string())
+        );
+    }
+
+    #[test]
+    fn parse_configured_venue_absent_or_invalid_is_none() {
+        assert_eq!(parse_configured_venue(r#"{"price":1.0}"#), None);
+        assert_eq!(parse_configured_venue(r#""not json""#), None);
+    }
 
     #[test]
     fn lifecycle_is_ready_only_for_ready() {
