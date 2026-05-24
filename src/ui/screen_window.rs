@@ -13,8 +13,13 @@
 //! - タイトルバーのドラッグで root の `left`/`top` を px 単位で更新（screen-space なので
 //!   camera scale は掛けない）。
 //! - 前面化は `GlobalZIndex` を `Pointer<Pressed>` で `WindowManager.max_z` から採番して上げる。
-//! - 位置永続化は `layout_persistence` 側が `ScreenWindowRoot` を分岐して Node の
-//!   left/top/width/height を読む（world の Transform/Sprite ではなく）。
+//!
+//! ⚠️ **既知の未実装（#35 follow-up）**: layout 永続化（`layout_persistence`）は現状 world-space の
+//! `&Sprite`+`&Transform` window しか save/restore しない。`ScreenWindowRoot`（Node・left/top）は
+//! まだ分岐対象外なので、**editor / Startup の位置・サイズ・可視性はサイドカーに永続化されない**
+//! （A-2 の回帰。ADR 0003 の「位置永続化は world xy → UI node の left/top」は未実装）。
+//! `build_layout` / `apply_layout_system` に `ScreenWindowRoot` 分岐（Node geometry の read/write）を
+//! 足すのが残作業。m9 flow はテストが Sprite 偽装 root を使うため production gap を捕捉していない。
 
 use crate::ui::components::{TitleBar, WindowManager, WindowRoot};
 use crate::ui::layout_persistence::AutoSaveState;
@@ -56,6 +61,28 @@ pub fn px_of(val: Val) -> f32 {
     }
 }
 
+/// `start`（Pointer イベントの `target()`）から `ChildOf` 連鎖を上にたどり、最初の
+/// `ScreenWindowRoot` を返す。
+///
+/// ⚠️ Bevy 0.16 の `Pointer<E>` は bubble するが `trigger.target()` は **最深の被 pick ノード**
+/// （タイトル `Text` や `×` glyph など pickable な子）を返す。固定段数の `.parent()` だと
+/// 子をクリックした位置で despawn 対象や drag 対象がズレる（title_bar を誤 despawn 等）。
+/// root マーカーが見つかるまで上る方式にして depth 非依存にする。
+fn find_screen_root(
+    start: Entity,
+    child_of_q: &Query<&ChildOf>,
+    root_q: &Query<(), With<ScreenWindowRoot>>,
+) -> Option<Entity> {
+    let mut cursor = start;
+    for _ in 0..16 {
+        if root_q.get(cursor).is_ok() {
+            return Some(cursor);
+        }
+        cursor = child_of_q.get(cursor).ok()?.parent();
+    }
+    None
+}
+
 /// 戻り値: (root, content_area, title_bar)。
 /// - root: ウィンドウ全体（Absolute Node）。位置は `left`/`top` を動かす。
 /// - content_area: タイトルバー下の `flex_grow:1` 領域。`TextInputNode` 等をここの子にする。
@@ -83,13 +110,20 @@ pub fn spawn_screen_window(
             WindowRoot,
             ScreenWindowRoot,
         ))
-        // クリックで前面化（GlobalZIndex を採番して上げる）。
+        // クリックで前面化（GlobalZIndex を採番して上げる）。target は子ノードのことがあるので
+        // ScreenWindowRoot 祖先までたどる。
         .observe(
             |trigger: Trigger<Pointer<Pressed>>,
-             mut q: Query<&mut GlobalZIndex, With<ScreenWindowRoot>>,
+             child_of_q: Query<&ChildOf>,
+             root_marker_q: Query<(), With<ScreenWindowRoot>>,
+             mut z_q: Query<&mut GlobalZIndex, With<ScreenWindowRoot>>,
              mut wm: ResMut<WindowManager>| {
+                let Some(root) = find_screen_root(trigger.target(), &child_of_q, &root_marker_q)
+                else {
+                    return;
+                };
                 wm.max_z += 2.0;
-                if let Ok(mut z) = q.get_mut(trigger.target()) {
+                if let Ok(mut z) = z_q.get_mut(root) {
                     z.0 = 10 + wm.max_z as i32;
                 }
             },
@@ -111,17 +145,20 @@ pub fn spawn_screen_window(
             TitleBar,
         ))
         // ドラッグで root の left/top を更新（screen px、camera scale なし）。
+        // target はタイトル Text のことがあるので ScreenWindowRoot 祖先までたどる。
         .observe(
             |drag: Trigger<Pointer<Drag>>,
              child_of_q: Query<&ChildOf>,
+             root_marker_q: Query<(), With<ScreenWindowRoot>>,
              mut root_q: Query<&mut Node, With<ScreenWindowRoot>>| {
                 if drag.event().button != PointerButton::Primary {
                     return;
                 }
-                let Ok(child_of) = child_of_q.get(drag.target()) else {
+                let Some(root) = find_screen_root(drag.target(), &child_of_q, &root_marker_q)
+                else {
                     return;
                 };
-                let Ok(mut node) = root_q.get_mut(child_of.parent()) else {
+                let Ok(mut node) = root_q.get_mut(root) else {
                     return;
                 };
                 node.left = Val::Px(px_of(node.left) + drag.event().delta.x);
@@ -170,16 +207,16 @@ pub fn spawn_screen_window(
             .observe(
                 |trigger: Trigger<Pointer<Click>>,
                  child_of_q: Query<&ChildOf>,
+                 root_marker_q: Query<(), With<ScreenWindowRoot>>,
                  mut commands: Commands,
                  mut auto_save: ResMut<AutoSaveState>| {
-                    // close ボタン → title_bar → root の 2 段で親を辿る。
-                    let Ok(btn_parent) = child_of_q.get(trigger.target()) else {
+                    // target が `×` glyph (Text 子) のこともあるので ScreenWindowRoot 祖先までたどる
+                    // （固定段数だと title_bar を誤 despawn する）。
+                    let Some(root) = find_screen_root(trigger.target(), &child_of_q, &root_marker_q)
+                    else {
                         return;
                     };
-                    let Ok(root_parent) = child_of_q.get(btn_parent.parent()) else {
-                        return;
-                    };
-                    commands.entity(root_parent.parent()).despawn();
+                    commands.entity(root).despawn();
                     auto_save.mark_layout_changed(std::time::Instant::now());
                 },
             )

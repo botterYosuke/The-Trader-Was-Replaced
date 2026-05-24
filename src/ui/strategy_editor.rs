@@ -248,6 +248,10 @@ pub fn spawn_strategy_editor_panel(
             },
             TextColor(EDITOR_TEXT_COLOR),
             BackgroundColor(EDITOR_BG),
+            // ⚠️ TextInputNode は TextInputContents を require しない。これが無いと
+            // `update_text_input_contents` が走らず Changed<TextInputContents> が一切発火せず、
+            // editor→buffer 同期が丸ごと死ぬ（編集が保存されない）。明示挿入が必須。
+            TextInputContents::default(),
             // 初期テキストを buffer に流し込む（SelectAll+Paste）。
             seed_queue(&seed),
             StrategyEditorContent,

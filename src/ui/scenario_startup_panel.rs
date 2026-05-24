@@ -1,3 +1,4 @@
+use bevy::input_focus::InputFocus;
 use bevy::prelude::*;
 use bevy_ui_text_input::actions::{TextInputAction, TextInputEdit};
 use bevy_ui_text_input::{TextInputContents, TextInputFilter, TextInputMode, TextInputNode, TextInputQueue};
@@ -363,6 +364,9 @@ pub fn spawn_scenario_startup_input_fields(
                 },
                 TextColor(Color::srgb(0.86, 0.86, 0.86)),
                 BackgroundColor(FIELD_BG_ACTIVE),
+                // TextInputNode は TextInputContents を require しないので明示挿入（無いと
+                // Changed<TextInputContents> が発火せず editor→params 同期が死ぬ）。
+                TextInputContents::default(),
                 ScenarioStartupFieldEditor { field },
             ))
             .id();
@@ -398,35 +402,49 @@ pub fn sync_startup_params_from_scenario_system(
         return;
     }
 
+    // diff-write: 同値の再代入で ResMut の Changed を立てると、commit→metadata→
+    // sync の毎フレーム ringing で editor が再 Paste されカーソルが飛ぶ。値が変わるときだけ書く。
     let today = chrono::Local::now().date_naive();
     let (default_start, default_end) = default_date_range(today);
-    params.start = metadata.start.clone().unwrap_or(default_start);
-    params.end = metadata.end.clone().unwrap_or(default_end);
-
-    match metadata.granularity.as_deref() {
-        Some(s) => match GranularityChoice::parse_canonical(s) {
-            Some(choice) => {
-                params.granularity = choice;
-                params.errors.granularity = None;
-            }
-            None => {
-                params.granularity = GranularityChoice::default();
-                params.errors.granularity = Some(format!(
-                    "unknown granularity '{}'; please select Daily or Minute to enable Run",
-                    s
-                ));
-            }
-        },
-        None => {
-            params.granularity = GranularityChoice::default();
-            params.errors.granularity = Some("Please select a granularity to enable Run".into());
-        }
+    let new_start = metadata.start.clone().unwrap_or(default_start);
+    let new_end = metadata.end.clone().unwrap_or(default_end);
+    if params.start != new_start {
+        params.start = new_start;
+    }
+    if params.end != new_end {
+        params.end = new_end;
     }
 
-    params.initial_cash = match metadata.initial_cash {
+    let (new_gran, new_gran_err) = match metadata.granularity.as_deref() {
+        Some(s) => match GranularityChoice::parse_canonical(s) {
+            Some(choice) => (choice, None),
+            None => (
+                GranularityChoice::default(),
+                Some(format!(
+                    "unknown granularity '{}'; please select Daily or Minute to enable Run",
+                    s
+                )),
+            ),
+        },
+        None => (
+            GranularityChoice::default(),
+            Some("Please select a granularity to enable Run".to_string()),
+        ),
+    };
+    if params.granularity != new_gran {
+        params.granularity = new_gran;
+    }
+    if params.errors.granularity != new_gran_err {
+        params.errors.granularity = new_gran_err;
+    }
+
+    let new_cash = match metadata.initial_cash {
         Some(n) => n.to_string(),
         None => "1000000".to_string(),
     };
+    if params.initial_cash != new_cash {
+        params.initial_cash = new_cash;
+    }
 }
 
 pub fn commit_startup_params_to_scenario_system(
@@ -572,7 +590,9 @@ pub fn sync_startup_param_editors_text_system(
             ScenarioStartupField::InitialCash => &params.initial_cash,
             ScenarioStartupField::Granularity | ScenarioStartupField::CrossField => continue,
         };
-        if contents.get() == expected {
+        // trim 比較: ユーザーが入力途中の前後空白（commit は trim 済みで params に入る）を
+        // 反射 Paste で消してカーソルを飛ばさないようにする。意味的に一致するなら触らない。
+        if contents.get().trim() == expected {
             continue;
         }
         queue_full_text(&mut queue, expected);
@@ -636,7 +656,12 @@ pub fn scenario_startup_param_input_system(
 pub fn enforce_scenario_startup_panel_readonly_system(
     progress: Res<ReplayStartupProgress>,
     paths: Res<ScenarioWritebackPaths>,
-    mut q: Query<(&mut TextInputNode, &mut BackgroundColor), With<ScenarioStartupFieldEditor>>,
+    // Option: enforce 単体テストは InputFocus を持たない App で走るため tolerant に。
+    mut input_focus: Option<ResMut<InputFocus>>,
+    mut q: Query<
+        (Entity, &mut TextInputNode, &mut BackgroundColor),
+        With<ScenarioStartupFieldEditor>,
+    >,
 ) {
     let disabled = is_panel_disabled(&progress, &paths);
     let target_bg = if disabled {
@@ -644,10 +669,19 @@ pub fn enforce_scenario_startup_panel_readonly_system(
     } else {
         FIELD_BG_ACTIVE
     };
-    for (mut node, mut bg) in q.iter_mut() {
+    for (entity, mut node, mut bg) in q.iter_mut() {
         let want_enabled = !disabled;
         if node.is_enabled != want_enabled {
             node.is_enabled = want_enabled;
+        }
+        // is_enabled=false は focus 中のキーボード経路を止めない（bevy_ui_text_input の
+        // on_focused_keyboard_input は is_enabled を見ない）。Run 中の buffer 改変を防ぐため
+        // フォーカスを明示的に外す。
+        if disabled
+            && let Some(focus) = input_focus.as_mut()
+            && focus.0 == Some(entity)
+        {
+            focus.0 = None;
         }
         if bg.0 != target_bg {
             bg.0 = target_bg;
