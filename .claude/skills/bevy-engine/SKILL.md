@@ -340,7 +340,23 @@ egui の中で `state.buffer` のような大きい String を編集するとき
   コンポーネントを欠く場合 **`true` にフォールバックする**（`bevy_render-0.15.1/.../visibility/mod.rs:404-407`
   "fall back to true if no parent is found or parent lacks components"）。よって `Transform` のみの
   content_area の下に `Sprite`（required components で Visibility 自動付与）を吊るしても
-  `InheritedVisibility=true` になり、描画も sprite picking も効く。floating_window の content_area が実例。
+  `InheritedVisibility=true` になり、描画も sprite picking も効く。
+  ⚠️ **ただしこの「fallback true」は逆方向＝隠す側で黙って壊れる**: 親 root を `Visibility::Hidden`
+  にしても、間に `Visibility` を欠く中間 entity（Transform だけの content_area 等）があると
+  `propagate_recursive` が `(&Visibility, &mut InheritedVisibility)` の `get_mut` に失敗して
+  **early-return し、そこで伝播の連鎖が切れる**（`bevy_render-0.15.x/.../visibility/mod.rs` の
+  `propagate_recursive` 冒頭）。結果、root 枠（Sprite なので Visibility あり）と兄弟の inner_glow/
+  rim_light/title_bar は隠れるが、**content_area の子（ラベル/フィールド）は `InheritedVisibility`
+  が default の `true` のまま残り続ける**（枠だけ消えて中身が表示されたままになる実バグ。Startup パネルを
+  Manual/Auto で隠す経路で顕在化）。**対策**: 隠す可能性のある world-space ツリーでは、root と
+  葉の間の全中間 entity に `Visibility::default()` を明示付与する（required components で
+  `InheritedVisibility` も付き、連鎖が繋がる）。`spawn_floating_window` の content_area は
+  この理由で `(Transform, Visibility::default())` で spawn 済（floating window 全種に効く）。
+  ⚠️ **回帰テストの落とし穴**: 「root の `Visibility` が `Hidden` になる」だけを assert するテスト
+  （m8）は、中身が残るこのバグを取りこぼす（root はちゃんと Hidden になっているため）。中身まで
+  隠れることを保証するには、**content の葉から root まで Parent を辿り、経路上の全 entity が
+  `InheritedVisibility` を持つ（＝伝播が中身まで届く構造）ことを assert** する（render プラグイン
+  不要で root-cause を固定できる）。`tests/e2e/flows/m11_startup_window_content_hides_with_panel.rs` が実例。
 - **テキストが更新されない**: marker component を貼り忘れ、または親子関係の貼り
   忘れ（`add_child` か `set_parent` のどちらかが必要）。
 - **world-space sprite パネルで `Text2d` ラベルが親ウィンドウ枠を黙ってはみ出す / フィールドと重なる**:

@@ -842,6 +842,7 @@ async fn attach_serving_then_getstate_ok_reaches_ready() {
         autospawn: false,
         cwd: None,
         python_bin: None,
+        live_venue: None,
     };
     let outcome = run_attach_and_await_terminal(config).await;
     assert_eq!(outcome, BackendLifecycle::Ready);
@@ -881,6 +882,7 @@ async fn attach_service_unknown_reaches_identity_mismatch() {
         autospawn: false,
         cwd: None,
         python_bin: None,
+        live_venue: None,
     };
     let outcome = run_attach_and_await_terminal(config).await;
     assert_eq!(
@@ -924,6 +926,7 @@ async fn attach_getstate_unauthenticated_reaches_token_mismatch() {
         autospawn: false,
         cwd: None,
         python_bin: None,
+        live_venue: None,
     };
     let outcome = run_attach_and_await_terminal(config).await;
     assert_eq!(
@@ -968,6 +971,7 @@ async fn attach_delayed_serving_within_budget_reaches_ready() {
         autospawn: false,
         cwd: None,
         python_bin: None,
+        live_venue: None,
     };
     let outcome = run_attach_and_await_terminal(config).await;
     assert_eq!(outcome, BackendLifecycle::Ready);
@@ -1013,6 +1017,7 @@ async fn post_ready_health_failures_reach_crashed() {
         autospawn: false,
         cwd: None,
         python_bin: None,
+        live_venue: None,
     };
     let (lt, mut lr) = watch::channel(BackendLifecycle::Disabled);
     let (_ct, cr) = mpsc::unbounded_channel();
@@ -1079,6 +1084,7 @@ async fn post_ready_not_serving_reaches_stopped() {
         autospawn: false,
         cwd: None,
         python_bin: None,
+        live_venue: None,
     };
     let (lt, mut lr) = watch::channel(BackendLifecycle::Disabled);
     let (_ct, cr) = mpsc::unbounded_channel();
@@ -1156,6 +1162,7 @@ async fn post_ready_not_serving_recovers_to_ready() {
         autospawn: false,
         cwd: None,
         python_bin: None,
+        live_venue: None,
     };
     let (lt, mut lr) = watch::channel(BackendLifecycle::Disabled);
     let (_ct, cr) = mpsc::unbounded_channel();
@@ -1236,6 +1243,7 @@ async fn shutdown_command_attach_reaches_stopped() {
         autospawn: false,
         cwd: None,
         python_bin: None,
+        live_venue: None,
     };
     let (lt, mut lr) = watch::channel(BackendLifecycle::Disabled);
     let (ct, cr) = mpsc::unbounded_channel();

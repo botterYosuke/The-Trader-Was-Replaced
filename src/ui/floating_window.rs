@@ -331,8 +331,16 @@ pub fn spawn_floating_window(
     commands.entity(title_bar).add_child(title_text);
 
     // ─── 6. Content area (中身を載せる場所。タイトルバーの下) ───
+    // `Visibility` を明示付与する（→ required components で `InheritedVisibility` も付く）。
+    // これが無いと content_area は可視性伝播の連鎖を断ち切り、root を `Visibility::Hidden`
+    // にしても子（ラベル/フィールド）が隠れない（`propagate_recursive` が
+    // `(&Visibility, &mut InheritedVisibility)` の get に失敗して early-return するため）。
+    // Startup パネルを Manual/Auto で隠すケースで顕在化した（root 枠は消えるが中身が残る）。
     let content_area = commands
-        .spawn(Transform::from_xyz(0.0, -title_bar_half, 0.1))
+        .spawn((
+            Transform::from_xyz(0.0, -title_bar_half, 0.1),
+            Visibility::default(),
+        ))
         .id();
     commands.entity(root).add_child(content_area);
 
