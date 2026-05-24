@@ -472,6 +472,7 @@ impl Plugin for UiPlugin {
             (
                 crate::ui::footer::apply_execution_mode_visibility_system,
                 crate::ui::scenario_startup_panel::apply_startup_panel_visibility_system,
+                crate::ui::sidebar::apply_order_button_visibility_system,
             ),
         )
         // ── highlight pipeline (Phase A) ──

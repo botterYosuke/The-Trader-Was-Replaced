@@ -72,6 +72,7 @@ pub fn spawn_sidebar(mut commands: Commands) {
                 PanelKind::RunResult,
                 PanelKind::Positions,
                 PanelKind::Orders,
+                PanelKind::Order,
             ] {
                 spawn_panel_btn(parent, kind);
             }
@@ -119,6 +120,27 @@ fn spawn_section_header(parent: &mut ChildBuilder, title: &str) {
                 TextColor(Color::srgb(0.50, 0.70, 1.00)),
             ));
         });
+}
+
+/// issue #25 Slice 1: Order サイドバーボタンは LiveManual 以外で非表示。
+/// startup パネルの apply_startup_panel_visibility_system をミラー。
+pub fn apply_order_button_visibility_system(
+    exec_mode: Res<ExecutionModeRes>,
+    mut button_q: Query<(&PanelKind, &mut Visibility), With<Button>>,
+) {
+    if !exec_mode.is_changed() {
+        return;
+    }
+    let target = if matches!(exec_mode.mode, ExecutionMode::LiveManual) {
+        Visibility::Inherited
+    } else {
+        Visibility::Hidden
+    };
+    for (kind, mut vis) in &mut button_q {
+        if matches!(kind, PanelKind::Order) && *vis != target {
+            *vis = target;
+        }
+    }
 }
 
 fn spawn_panel_btn(parent: &mut ChildBuilder, kind: PanelKind) {
@@ -702,5 +724,47 @@ mod tests {
         assert_eq!(format_price(Some(1234.5)), "1234.50");
         assert_eq!(format_price(Some(0.001)), "0.00");
         assert_eq!(format_price(Some(101.567)), "101.57");
+    }
+
+    // ── issue #25 Slice 1: Order button gated to LiveManual ───────────────────
+    #[test]
+    fn order_button_hidden_outside_livemanual() {
+        // The sidebar Order button must be Hidden in any non-LiveManual mode.
+        // RED until apply_order_button_visibility_system exists & is registered.
+        let mut app = App::new();
+        app.insert_resource(ExecutionModeRes {
+            mode: ExecutionMode::Replay,
+        });
+
+        let btn = app
+            .world_mut()
+            .spawn((Button, PanelKind::Order, Visibility::default()))
+            .id();
+
+        app.add_systems(Update, apply_order_button_visibility_system);
+        app.update();
+
+        let vis = app.world().get::<Visibility>(btn).unwrap();
+        assert_eq!(
+            *vis,
+            Visibility::Hidden,
+            "Order button must be Hidden outside LiveManual"
+        );
+    }
+
+    #[test]
+    fn order_button_visible_in_livemanual() {
+        let mut app = App::new();
+        app.insert_resource(ExecutionModeRes {
+            mode: ExecutionMode::LiveManual,
+        });
+        let btn = app
+            .world_mut()
+            .spawn((Button, PanelKind::Order, Visibility::Hidden))
+            .id();
+        app.add_systems(Update, apply_order_button_visibility_system);
+        app.update();
+        let vis = app.world().get::<Visibility>(btn).unwrap();
+        assert_eq!(*vis, Visibility::Inherited, "Order button must show in LiveManual");
     }
 }

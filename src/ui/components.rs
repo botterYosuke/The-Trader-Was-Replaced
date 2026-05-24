@@ -219,6 +219,7 @@ pub enum PanelKind {
     RunResult,
     Positions,
     Orders,
+    Order,
     Startup,
 }
 
@@ -240,6 +241,7 @@ impl PanelKind {
             PanelKind::RunResult => "Run Result",
             PanelKind::Positions => "Positions",
             PanelKind::Orders => "Orders",
+            PanelKind::Order => "Order",
             PanelKind::Startup => "Startup",
         }
     }
@@ -256,7 +258,7 @@ impl PanelKind {
     /// restore owner explicitly.
     pub fn restore_driver(self) -> PanelRestoreDriver {
         match self {
-            PanelKind::Chart => PanelRestoreDriver::ScenarioInstruments,
+            PanelKind::Chart | PanelKind::Order => PanelRestoreDriver::ScenarioInstruments,
             PanelKind::StrategyEditor
             | PanelKind::BuyingPower
             | PanelKind::RunResult
@@ -3122,6 +3124,21 @@ mod tests {
         ] {
             assert_eq!(kind.restore_driver(), PanelRestoreDriver::WindowLayout);
         }
+    }
+
+    #[test]
+    fn order_panel_label_is_order() {
+        assert_eq!(PanelKind::Order.label(), "Order");
+    }
+
+    #[test]
+    fn order_panel_is_scenario_owned_not_layout_persisted() {
+        // Slice 3: the manual-order window is NOT layout-persisted, so it is
+        // scenario/state-owned like Chart, never restored from windows list.
+        assert_eq!(
+            PanelKind::Order.restore_driver(),
+            PanelRestoreDriver::ScenarioInstruments
+        );
     }
 
     #[test]

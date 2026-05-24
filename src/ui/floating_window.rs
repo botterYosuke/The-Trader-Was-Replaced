@@ -686,6 +686,20 @@ pub fn panel_spawn_dispatcher_system(
                 spawned_region_key = spec.region_key.clone();
                 spawn_strategy_editor_panel(&mut commands, &mut font_system, &mut allocator, spec);
             }
+            PanelKind::Order => {
+                let (root, _content_area, _title_bar) = spawn_floating_window(
+                    &mut commands,
+                    FloatingWindowSpec {
+                        title: "ORDER".to_string(),
+                        size: Vec2::new(320.0, 360.0),
+                        position: Vec2::new(0.0, 0.0),
+                        accent: Color::srgb(0.20, 0.80, 1.0),
+                        closeable: true,
+                        resizable: false,
+                    },
+                );
+                commands.entity(root).insert(PanelKind::Order);
+            }
         }
         if event.source == PanelSpawnSource::User && !history.is_replaying() {
             let default_layout = WindowLayout {
@@ -753,5 +767,67 @@ mod close_button_tests {
             .filter(|e| e.contains::<CloseButton>())
             .count();
         assert_eq!(count, 0, "closeable:false は × ボタンを spawn しない");
+    }
+}
+
+#[cfg(test)]
+mod order_dispatcher_tests {
+    use super::*;
+    use crate::ui::components::{
+        PanelSpawnRequested, PanelSpawnSource, PendingStrategyFragments, RegionKeyAllocator,
+        StrategyBuffer,
+    };
+    use crate::ui::editor_history::AppHistory;
+    use bevy_cosmic_edit::cosmic_text::FontSystem;
+    use bevy_cosmic_edit::prelude::CosmicFontSystem;
+
+    fn order_dispatch_app() -> App {
+        let mut app = App::new();
+        app.insert_resource(CosmicFontSystem(FontSystem::new()));
+        app.init_resource::<WindowManager>();
+        app.init_resource::<ActiveDrag>();
+        app.init_resource::<RegionKeyAllocator>();
+        app.init_resource::<AppHistory>();
+        app.init_resource::<PendingStrategyFragments>();
+        app.init_resource::<StrategyBuffer>();
+        app.add_event::<PanelSpawnRequested>();
+        app.add_systems(Update, panel_spawn_dispatcher_system);
+        app
+    }
+
+    fn order_panel_count(app: &App) -> usize {
+        app.world()
+            .iter_entities()
+            .filter(|e| {
+                e.contains::<WindowRoot>()
+                    && e.get::<PanelKind>() == Some(&PanelKind::Order)
+            })
+            .count()
+    }
+
+    #[test]
+    fn order_request_spawns_exactly_one_window() {
+        let mut app = order_dispatch_app();
+        app.world_mut().send_event(PanelSpawnRequested {
+            kind: PanelKind::Order,
+            source: PanelSpawnSource::User,
+            strategy_spec: None,
+        });
+        app.update();
+        assert_eq!(order_panel_count(&app), 1, "Order request spawns exactly 1 window");
+    }
+
+    #[test]
+    fn duplicate_order_request_does_not_spawn_second_window() {
+        let mut app = order_dispatch_app();
+        for _ in 0..2 {
+            app.world_mut().send_event(PanelSpawnRequested {
+                kind: PanelKind::Order,
+                source: PanelSpawnSource::User,
+                strategy_spec: None,
+            });
+            app.update();
+        }
+        assert_eq!(order_panel_count(&app), 1, "dedup guard holds: still exactly 1 Order window");
     }
 }
