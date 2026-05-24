@@ -77,7 +77,7 @@ fn parse_replay_granularity(s: &str) -> Result<i32, String> {
 ///     already being shown the relogin/reconcile modals. If a future command should
 ///     survive a restart, add it to `is_reconcile_command` (and document why).
 fn is_reconcile_command(cmd: &TransportCommand) -> bool {
-    matches!(cmd, TransportCommand::GetOrders { .. })
+    matches!(cmd, TransportCommand::GetOrdersAndReconcile { .. })
 }
 
 /// Partition a batch of drained transport commands across the reconnect edge: keep
@@ -163,6 +163,74 @@ fn fire_list_instruments(
             }
         }
     });
+}
+
+/// §3.8 / S6: GetOrders RPC を撃って full LiveOrder 行で OrderPanel を seed する
+/// 共通処理。`reconcile == true`（auto-restart 経路）のときのみ、seed 後に
+/// id-diff 用の OrdersReconciled を送る。connect-seed（`reconcile == false`）は
+/// seed だけ行い reconcile は撃たない（codex Med-A）。
+async fn seed_orders_from_backend(
+    client: &mut DataEngineClient<tonic::transport::Channel>,
+    token: &str,
+    venue: String,
+    status_tx: &mpsc::UnboundedSender<BackendStatusUpdate>,
+    reconcile: bool,
+) {
+    // §3.8 reconcile: ask the (possibly freshly-restarted) backend
+    // which orders it still tracks. A failed/empty answer means the
+    // backend knows of none → every optimistic working order is
+    // flagged unknown by the diff in apply_status_update.
+    let req = tonic::Request::new(engine::GetOrdersReq {
+        token: token.to_owned(),
+        venue,
+    });
+    let seeded = match client.get_orders(req).await {
+        Ok(r) => {
+            let inner = r.into_inner();
+            if !inner.success {
+                info!(
+                    "GetOrders reconcile: backend reports none ({})",
+                    inner.error_code
+                );
+            }
+            if let Some(notice) = backcast::trading::get_orders_notice(&inner.error_code) {
+                let _ = status_tx.send(notice);
+            }
+            // §3a: the proto OrderEvent now carries the static
+            // attrs, so rebuild full LiveOrder rows to seed the
+            // panel (symbol/side/qty/price), not just ids.
+            inner
+                .orders
+                .into_iter()
+                .map(|o| LiveOrder {
+                    client_order_id: o.client_order_id,
+                    venue_order_id: o.venue_order_id,
+                    symbol: o.symbol,
+                    side: o.side,
+                    qty: o.qty,
+                    price: o.price,
+                    status: o.status,
+                    filled_qty: o.filled_qty,
+                    avg_price: o.avg_price,
+                    ts_ms: o.ts_ms,
+                    strategy_id: o.strategy_id.unwrap_or_default(),
+                })
+                .collect::<Vec<_>>()
+        }
+        Err(e) => {
+            warn!("GetOrders failed during reconcile: {}", e);
+            Vec::new()
+        }
+    };
+    // Seed full rows first, then (reconcile 経路のみ) run the id-diff reconcile
+    // against the same backend truth. reconcile_ids は seeded を move する前に取る。
+    let reconcile_ids = backcast::trading::reconcile_ids_for_seed(&seeded, reconcile);
+    let _ = status_tx.send(BackendStatusUpdate::OrdersSeeded { orders: seeded });
+    if let Some(backend_client_order_ids) = reconcile_ids {
+        let _ = status_tx.send(BackendStatusUpdate::OrdersReconciled {
+            backend_client_order_ids,
+        });
+    }
 }
 
 #[tokio::main]
@@ -1160,61 +1228,8 @@ fn setup_backend_connection(
                         }
                     }
                     TransportCommand::GetOrders { venue } => {
-                        // §3.8 reconcile: ask the (possibly freshly-restarted) backend
-                        // which orders it still tracks. A failed/empty answer means the
-                        // backend knows of none → every optimistic working order is
-                        // flagged unknown by the diff in apply_status_update.
-                        let req = tonic::Request::new(engine::GetOrdersReq {
-                            token: token.clone(),
-                            venue: venue.clone(),
-                        });
-                        let seeded = match client.get_orders(req).await {
-                            Ok(r) => {
-                                let inner = r.into_inner();
-                                if !inner.success {
-                                    info!(
-                                        "GetOrders reconcile: backend reports none ({})",
-                                        inner.error_code
-                                    );
-                                }
-                                // §3a: the proto OrderEvent now carries the static
-                                // attrs, so rebuild full LiveOrder rows to seed the
-                                // panel (symbol/side/qty/price), not just ids.
-                                inner
-                                    .orders
-                                    .into_iter()
-                                    .map(|o| LiveOrder {
-                                        client_order_id: o.client_order_id,
-                                        venue_order_id: o.venue_order_id,
-                                        symbol: o.symbol,
-                                        side: o.side,
-                                        qty: o.qty,
-                                        price: o.price,
-                                        status: o.status,
-                                        filled_qty: o.filled_qty,
-                                        avg_price: o.avg_price,
-                                        ts_ms: o.ts_ms,
-                                        strategy_id: o.strategy_id.unwrap_or_default(),
-                                    })
-                                    .collect::<Vec<_>>()
-                            }
-                            Err(e) => {
-                                warn!("GetOrders failed during reconcile: {}", e);
-                                Vec::new()
-                            }
-                        };
-                        // Seed full rows first, then run the id-diff reconcile against
-                        // the same backend truth (an order the backend no longer tracks
-                        // is flagged unknown by OrdersReconciled).
-                        let backend_client_order_ids = seeded
-                            .iter()
-                            .map(|o| o.client_order_id.clone())
-                            .collect::<Vec<_>>();
-                        let _ = status_tx
-                            .send(BackendStatusUpdate::OrdersSeeded { orders: seeded });
-                        let _ = status_tx.send(BackendStatusUpdate::OrdersReconciled {
-                            backend_client_order_ids,
-                        });
+                        // connect-seed: full 行で seed のみ。reconcile はしない（Med-A）。
+                        seed_orders_from_backend(&mut client, &token, venue, &status_tx, false).await;
                     }
                     TransportCommand::PromoteToLive {
                         strategy_file,
@@ -1413,6 +1428,10 @@ fn setup_backend_connection(
                                 Err(e) => error!("StopLiveStrategy failed: run_id={run_id} err={e}"),
                             }
                         });
+                    }
+                    TransportCommand::GetOrdersAndReconcile { venue } => {
+                        // auto-restart: seed + id-diff reconcile。
+                        seed_orders_from_backend(&mut client, &token, venue, &status_tx, true).await;
                     }
                 }
             }
@@ -1674,16 +1693,18 @@ mod tests {
     use chrono::NaiveDate;
 
     /// §3.8 regression: the reconnect (Crashed→Ready) flush must PRESERVE only the
-    /// post-restart reconcile `GetOrders` and DROP everything else — replay-control,
-    /// optimistic order commands (stale real-money intents against a dead session,
-    /// §3.8 ADR), and `SubmitSecret` (a pre-crash plaintext secret bound to the OLD
-    /// session's request_id, §3.10). The old `while try_recv {}` flush ate everything
-    /// (silently defeating the reconcile); the first fix over-preserved order/secret
-    /// commands.
+    /// post-restart reconcile primitive `GetOrdersAndReconcile` (the auto-restart
+    /// trigger) and DROP everything else — including a plain `GetOrders` (connect-seed
+    /// only, no reconcile), replay-control, optimistic order commands (stale real-money
+    /// intents against a dead session, §3.8 ADR), and `SubmitSecret` (a pre-crash
+    /// plaintext secret bound to the OLD session's request_id, §3.10).
     #[test]
-    fn reconnect_flush_preserves_only_get_orders() {
+    fn reconnect_flush_preserves_only_get_orders_and_reconcile() {
         let drained = vec![
             TransportCommand::Pause,
+            TransportCommand::GetOrdersAndReconcile {
+                venue: "tachibana".to_string(),
+            },
             TransportCommand::GetOrders {
                 venue: "tachibana".to_string(),
             },
@@ -1699,24 +1720,30 @@ mod tests {
                 request_id: "r-old".to_string(),
                 secret: backcast::trading::RedactedSecret::new("hunter2".to_string()),
             },
-            // Other session-scoped variants (L1): must also be dropped.
             TransportCommand::VenueLogout,
         ];
         let preserved = flush_stale_transport_commands(drained);
-        // Only the reconcile primitive survives; all stale session intents dropped.
-        assert_eq!(preserved.len(), 1, "only GetOrders must survive the flush");
-        assert!(
-            matches!(preserved[0], TransportCommand::GetOrders { ref venue } if venue == "tachibana"),
-            "post-restart GetOrders must survive the flush"
+        assert_eq!(
+            preserved.len(),
+            1,
+            "only GetOrdersAndReconcile must survive the flush"
         );
-        // A queued CancelOrder (stale order intent) must NOT be auto-replayed.
+        assert!(
+            matches!(preserved[0], TransportCommand::GetOrdersAndReconcile { ref venue } if venue == "tachibana"),
+            "post-restart GetOrdersAndReconcile must survive the flush"
+        );
+        assert!(
+            !preserved
+                .iter()
+                .any(|c| matches!(c, TransportCommand::GetOrders { .. })),
+            "plain GetOrders (connect-seed only) must be dropped on the reconnect edge"
+        );
         assert!(
             !preserved
                 .iter()
                 .any(|c| matches!(c, TransportCommand::CancelOrder { .. })),
             "stale order commands must be dropped (re-verify at venue, §3.8 ADR)"
         );
-        // A queued SubmitSecret (old session's request_id) must NOT be auto-replayed.
         assert!(
             !preserved
                 .iter()

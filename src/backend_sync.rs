@@ -610,8 +610,8 @@ pub fn backend_restart_resync_system(
         return;
     };
     let venue = venue_status.venue_id.clone().unwrap_or_default();
-    info!("[backend] auto-restart reached Ready — reconciling in-flight orders (GetOrders)");
-    let _ = tx.tx.send(TransportCommand::GetOrders { venue });
+    info!("[backend] auto-restart reached Ready — reconciling in-flight orders (GetOrdersAndReconcile)");
+    let _ = tx.tx.send(TransportCommand::GetOrdersAndReconcile { venue });
 }
 
 /// Issue #29 Slice 2' (Step 5): `status_update_system` が `ExecutionModeRes.mode` を

@@ -1754,6 +1754,37 @@ async def test_fetch_working_orders_returns_full_rows(monkeypatch, httpx_mock: H
 
 
 @pytest.mark.anyio
+async def test_fetch_working_orders_carries_fill_progress(monkeypatch, httpx_mock: HTTPXMock):
+    """一部約定注文の filled_qty / avg_price が OrderEventData に載る（High-2）。"""
+    adapter, _, _ = await _login_with_hooks(monkeypatch, httpx_mock)
+    httpx_mock.add_response(
+        url=_ORDER_LIST_RE, method="GET",
+        content=json.dumps({
+            "p_errno": "0", "sResultCode": "0",
+            "aOrderList": [{
+                "sOrderOrderNumber": "77002",
+                "sOrderIssueCode": "7203",
+                "sOrderSizyouC": "00",
+                "sOrderBaibaiKubun": "3",   # 買
+                "sOrderOrderSuryou": "100",
+                "sOrderCurrentSuryou": "100",
+                "sOrderOrderPrice": "2430",
+                "sOrderOrderPriceKubun": "2",  # 指値
+                "sOrderStatusCode": "0",
+                "sOrderYakuzyouSuryo": "40",
+                "sOrderYakuzyouPrice": "2425",
+            }],
+        }, ensure_ascii=False).encode("shift_jis"),
+    )
+    orders = await adapter.fetch_working_orders()
+    assert len(orders) == 1
+    o = orders[0]
+    assert o.filled_qty == 40.0
+    assert o.avg_price == 2425.0
+    await adapter.logout()
+
+
+@pytest.mark.anyio
 async def test_fetch_working_orders_empty_returns_empty(monkeypatch, httpx_mock: HTTPXMock):
     """注文ゼロ件（aOrderList=''）は [] を返す（R8 空配列仕様）。"""
     adapter, _, _ = await _login_with_hooks(monkeypatch, httpx_mock)

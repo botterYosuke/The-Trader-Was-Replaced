@@ -372,3 +372,20 @@ def test_parse_order_list_response_multiple_orders():
     assert len(rows) == 2
     assert rows[0].venue_order_id == "1001"
     assert rows[1].side == "SELL"
+
+
+def test_parse_order_list_response_carries_cumulative_fill():
+    # Slice 3b 修正: CLMOrderList の sOrderYakuzyouSuryo/sOrderYakuzyouPrice を
+    # WorkingOrderRow に載せ、部分約定済み注文が filled_qty=0 でシードされないこと。
+    item = _order_list_item(
+        sOrderOrderSuryou="100",
+        sOrderYakuzyouSuryo="40",    # 成立株数（累積40株 約定済み）
+        sOrderYakuzyouPrice="2431.5",  # 成立単価
+        sOrderYakuzyouStatus="1",    # 1=一部約定
+    )
+    resp = {"aOrderList": [item], "p_errno": "0", "sResultCode": "0"}
+    rows = to.parse_order_list_response(resp)
+    assert len(rows) == 1
+    row = rows[0]
+    assert row.filled_qty == 40.0
+    assert row.avg_price == 2431.5

@@ -349,6 +349,8 @@ class WorkingOrderRow:
     side: str            # "BUY" or "SELL"
     qty: float           # sOrderOrderSuryou
     price: float | None  # None = 成行（MARKET）
+    filled_qty: float    # sOrderYakuzyouSuryo（累積成立株数）
+    avg_price: float     # sOrderYakuzyouPrice（成立単価）
 
 
 def build_order_list_payload() -> dict[str, str]:
@@ -394,6 +396,8 @@ def parse_order_list_response(payload: dict) -> list[WorkingOrderRow]:
             side=side,
             qty=parse_float(item.get("sOrderOrderSuryou")),
             price=price,
+            filled_qty=parse_float(item.get("sOrderYakuzyouSuryo")),
+            avg_price=parse_float(item.get("sOrderYakuzyouPrice")),
         ))
     return rows
 
