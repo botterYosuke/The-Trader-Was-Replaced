@@ -5,6 +5,7 @@ Slow because it writes a real ParquetDataCatalog to disk and goes through gRPC.
 """
 
 from concurrent import futures
+from pathlib import Path
 
 import grpc
 import pytest
@@ -12,6 +13,9 @@ import pytest
 from engine.core import DataEngine
 from engine.proto import engine_pb2, engine_pb2_grpc
 from engine.server_grpc import GrpcDataEngineServer
+
+# Real 8-byte (standard-precision) catalog snapshot — see GH #34 / Slice 0.
+FIXTURE_STD_CATALOG = Path(__file__).parent / "fixtures" / "catalog_standard_precision"
 
 
 @pytest.fixture
@@ -103,6 +107,41 @@ def test_grpc_load_replay_data_with_catalog_path_then_step(catalog_grpc_server, 
     state = engine.get_current_state()
     assert state.timestamp_ms == 15_000
     assert state.price == 110.25
+
+
+def test_grpc_load_replay_data_precision_mismatch_surfaces_typed_error(
+    catalog_grpc_server, monkeypatch
+):
+    """GH #34: a width-mismatched catalog must surface a typed error through gRPC,
+    not abort the backend (which the UI only ever sees as "transport error").
+
+    Build-independent: we force the running precision to 16-byte against the real
+    8-byte fixture, so the preflight fires regardless of which wheel is installed.
+    The gRPC server runs in this process, so patching the loader module reaches it.
+    """
+    import engine.nautilus_catalog_loader as loader
+
+    monkeypatch.setattr(loader, "_running_precision_bytes", lambda: 16)
+
+    port, token, _ = catalog_grpc_server
+    channel = grpc.insecure_channel(f"localhost:{port}")
+    stub = engine_pb2_grpc.DataEngineStub(channel)
+
+    resp = stub.LoadReplayData(
+        engine_pb2.LoadReplayDataRequest(
+            request_id="r1",
+            instrument_ids=["1301.TSE"],
+            granularity=engine_pb2.MINUTE,
+            catalog_path=str(FIXTURE_STD_CATALOG),
+            token=token,
+        )
+    )
+
+    # Backend stayed up and reported the real cause (no SIGABRT, no transport error).
+    assert not resp.success
+    assert resp.error_code == "CATALOG_PRECISION_MISMATCH"
+    assert "precision mismatch" in resp.error_message.lower()
+    assert "PRECISION_BYTES=16" in resp.error_message
 
 
 def test_grpc_load_replay_data_without_catalog_path_field(catalog_grpc_server):

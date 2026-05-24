@@ -5,6 +5,7 @@ import time
 from typing import Literal, Optional
 
 from .jquants_to_catalog import ensure_jquants_catalog
+from .nautilus_catalog_loader import CatalogPrecisionMismatchError
 from .models import EngineSnapshot, HistoryPoint, OhlcPoint, PerInstrumentState, TradingState
 from .reducer import KlineUpdate, ReducerState, ReplayEvent, ReplayTimeUpdated, apply_event
 from .replay import BaseReplayProvider, NautilusBarsReplayProvider
@@ -178,6 +179,13 @@ class DataEngine:
                             start=start_date or None,
                             end=end_date or None,
                         )
+                    except CatalogPrecisionMismatchError:
+                        # GH #34: never treat a precision mismatch as "missing data".
+                        # The ensure_jquants_catalog fallback below would write
+                        # high-precision bars into the shared standard catalog and
+                        # corrupt it for Windows. Propagate the typed error untouched
+                        # (the gRPC layer maps it to CATALOG_PRECISION_MISMATCH).
+                        raise
                     except (ValueError, FileNotFoundError) as first_err:
                         if not (self.jquants_loader_base_dir and start_date and end_date):
                             return False, f"{iid}: {first_err}"
