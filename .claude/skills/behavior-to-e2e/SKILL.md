@@ -31,6 +31,12 @@ description: >-
   「FLOWS.md に該当 flow があるか」「カバレッジを確認」のような“テスト作成”でなく“カバレッジ照会”の問いでも必ず起動する**
   （既存 flow / e2e_replay / Python テストを棚卸しし、足りない分だけ flow 化する。穴が headless 不可なら fake せず
   doc gap として FLOWS.md に明記する）。
+  **既存 flow が root/枠だけを assert していて子・中身・深い不変条件を取りこぼしている『カバレッジギャップ』を
+  埋める**ときも本スキルを開く（issue の [MEDIUM]/follow-up で「m12 は root の `Visibility` しか見ていない」
+  「子（editor/gutter/scrollbar）まで隠れることを検証していない」「m11 のように Parent 連鎖で
+  `InheritedVisibility` を辿る assert を足す」と指摘されたら、その flow を実 entity spawn 版に強化し
+  FLOWS.md の該当行も追従させる。m8→m11、#33→m12 が実例。新規 flow ID の採番ではなく既存 flow の強化なので
+  「新しい flow を足す」トリガーから漏れやすいが本スキルの本体）。
   さらに **`e2e_replay` が全本落ちる / ハーネスが panic する / `could not access system parameter` が出た /
   マージ後に E2E が壊れた / `BackendEvent`・`BackendStatusUpdate` などの列挙子にフィールドが増えて
   `e2e_replay` が `missing field` でコンパイルできない（テストドリフト）**ときの**ハーネス修復**も本スキルの対象
