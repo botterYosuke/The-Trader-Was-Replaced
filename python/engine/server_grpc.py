@@ -1807,7 +1807,10 @@ class GrpcDataEngineServer(
         """
         if not self._token_ok(request):
             context.abort(grpc.StatusCode.UNAUTHENTICATED, "Invalid token")
-        if self._account_sync is None:
+        # TOCTOU 回避: 別 thread が None チェックと force_resync 呼び出しの間で
+        # self._account_sync を差し替えても、local キャプチャした acct を一貫使用する。
+        acct = self._account_sync
+        if acct is None:
             return engine_pb2.ForceAccountSnapshotResponse(
                 success=False,
                 error_code="VENUE_LOGIN_REQUIRED",
@@ -1815,14 +1818,21 @@ class GrpcDataEngineServer(
         loop = self._ensure_live_loop()
         try:
             future = asyncio.run_coroutine_threadsafe(
-                self._account_sync.force_resync(), loop
+                acct.force_resync(), loop
             )
-            future.result(timeout=self._live_timeout_s)
+            emitted = future.result(timeout=self._live_timeout_s)
         except Exception as exc:
             logging.exception("ForceAccountSnapshot failed: %s", exc)
             return engine_pb2.ForceAccountSnapshotResponse(
                 success=False,
                 error_code="FORCE_RESYNC_FAILED",
+            )
+        if not emitted:
+            # fetch 失敗等で AccountEvent を再 push できなかった。on_error 経路で
+            # BackendError は既に publish 済み。RPC は success=True を返してはならない。
+            return engine_pb2.ForceAccountSnapshotResponse(
+                success=False,
+                error_code="FORCE_RESYNC_NO_EMIT",
             )
         return engine_pb2.ForceAccountSnapshotResponse(
             success=True,

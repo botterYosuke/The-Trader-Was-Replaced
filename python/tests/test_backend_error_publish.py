@@ -191,3 +191,55 @@ def test_force_account_snapshot_handler_reemits_account_event():
 
     received = sub._queue.get(timeout=2.0)
     assert received.WhichOneof("payload") == "account_event"
+
+
+def test_force_account_snapshot_returns_failure_when_fetch_fails():
+    """issue #29 Slice 2' 指摘#1: fetch 失敗で emit できなかった場合、
+    ForceAccountSnapshot ハンドラは success=True を返してはならない。
+
+    force_resync()→_tick(force_emit=True) は fetch 例外を on_error 経路で
+    握り潰して正常 return するため、現状ハンドラは success=True を返す（RED）。
+    GREEN 後は force_resync が「emit しなかった」ことを伝え、ハンドラは
+    success=False / error_code="FORCE_RESYNC_NO_EMIT" を返す。
+    on_error 経路（BackendError publish）は維持される。"""
+    servicer = _make_servicer()
+
+    loop = servicer._ensure_live_loop()
+
+    class _AlwaysFailAdapter(MockVenueAdapter):
+        async def fetch_account(self):  # type: ignore[override]
+            raise RuntimeError("force fetch boom")
+
+    async def setup():
+        adapter = _AlwaysFailAdapter()
+        await adapter.login(
+            VenueCredentials(credentials_source="env", environment_hint="demo")
+        )
+        sync = AccountSync(
+            adapter,
+            on_account_event=servicer._publish_account_snapshot,
+            on_error=servicer._publish_account_sync_error,
+            interval_s=3600.0,
+        )
+        return adapter, sync
+
+    adapter, sync = asyncio.run_coroutine_threadsafe(setup(), loop).result(timeout=5.0)
+    servicer._account_sync = sync
+
+    # on_error 経路（BackendError publish）が維持されることも確認する。
+    sub = servicer._backend_event_bus.subscribe()
+
+    class _Req:
+        token = "test-token"
+
+    resp = servicer.ForceAccountSnapshot(_Req(), context=None)
+
+    # 主眼: fetch 失敗 → emit 無し → success=False
+    assert resp.success is False
+    assert resp.error_code == "FORCE_RESYNC_NO_EMIT"
+
+    # 既存 on_error 経路は維持: BackendError(source="account_sync") が publish される
+    received = sub._queue.get(timeout=2.0)
+    assert received.WhichOneof("payload") == "backend_error"
+    assert received.backend_error.source == "account_sync"
+    assert "force fetch boom" in received.backend_error.detail
