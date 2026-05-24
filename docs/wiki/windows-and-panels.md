@@ -81,10 +81,12 @@
 - **Manual モードでは非表示**です。エディタウィンドウとサイドバーの「Strategy Editor」ボタンが隠れます（Replay / Auto では表示）。これは Manual 中だけの**一時的な上書き**で、Manual を抜けると元の可視性へ復元します。Startup と異なり、保存された layout の `visible` は**権威のまま**（save/restore 方式で一時 hide が永続 layout に焼き込まれないようにしています）。 [M12]
 - 詳細な編集機能（Find / Replace、リージョン分割、シンタックスハイライト等）は [戦略エディタ](strategy.md) を参照してください。
 
-## Order Panel（発注フォーム）
+## Order（発注フォーム）
 
-- Manual モードでサイドバー選択中の銘柄に発注するフォームです（Bevy UI Node + Interaction 流派）。 [K10]
-- side（BUY / SELL）・order type・数量・価格を指定し、`[発注]` で validation → 2 段階 confirm モーダル → `[Confirm]` で `PlaceOrder`。 [K7]/[K10]/[K11]
+- LiveManual 限定のサイドバー **Order** ボタンから開く、ワールド空間のスプライト製フローティングウィンドウ（タイトル `ORDER`）です。サイドバー選択中の銘柄に発注します。 [K10]
+- ドラッグで移動でき、パン（カメラ移動）に追随し、`×` で閉じます。LiveManual を離れると despawn し、レイアウト永続化の対象外です。 [K10]
+- フォーム各ボタンはスプライト + `Pointer<Click>` observer で `OrderButtonPressed` イベントを駆動します（Bevy UI Node ではありません）。 [K10]
+- side（BUY / SELL）・order type・数量・価格を指定し、`[発注]` で validation → 2 段階 confirm モーダル → `[Confirm]` で `PlaceOrder`。確認モーダルは中央オーバーレイの UI Node のままです。 [K7]/[K10]/[K11]
 - 注文行の右クリック context menu から訂正・取消（訂正モーダル）を開始します。 [K9]/[K12]/[K16]
 - Tachibana で第二暗証番号を要求されると SecretModal が開きます。 [F5]/[K8]/[K15]
 - 詳細は [注文](orders.md) を参照してください。
@@ -115,4 +117,4 @@
 
 - Buying Power / Positions / Orders / Run Result はいずれもバックエンド由来の読み取り専用表示です。 [B1]/[F3]/[F4]
 - これらのパネルは Replay 実行の結果反映に加え、Live（Manual / Auto）の注文イベント（OrderEvent）・口座更新（AccountEvent）でもリアルタイムに更新されます。 [F3]/[F4]/[H1]/[H2]
-- 発注・訂正・取消の操作は読み取り専用パネルではなく **Order Panel** から行います。Live Auto 戦略の制御は **Live Run Panel** です。
+- 発注・訂正・取消の操作は読み取り専用パネルではなく **Order** ウィンドウから行います。Live Auto 戦略の制御は **Live Run Panel** です。

@@ -211,6 +211,42 @@ despawn 時に entity key を除く（entity key leak 防止）。`chart_interac
 `install_chart_autoscale_reset_observer` + `chart_click_state_cleanup_system` が実例。flowsurface は
 この罠を避けるため double-click を chart 本体ではなく**軸 gutter**（drag が起きない領域）に置いている。
 
+⚠️ **world-space sprite ボタンのクリックをシステムに橋渡ししたい（event-driven sprite button パターン）**:
+`Changed<Interaction>` / `With<Button>` クエリは UI Node 専用で、Sprite には効かない。Sprite ボタンでは
+代わりに `Pointer<Click>` observer → `EventWriter<MyEvent>` → `EventReader<MyEvent>` の 3 段構成を使う。
+
+```rust
+// 1. イベント型: Copy が必須（observer クロージャが move キャプチャするため）
+#[derive(Event, Debug, Clone, Copy)]
+pub struct MyButtonPressed(pub MyButton);
+
+// 2. Sprite に observer を attach（spawn 時に `.observe(...)` をチェーン）
+let btn = MyButton::Submit; // Copy enum value をキャプチャ
+commands.entity(content_area).with_children(|p| {
+    p.spawn((
+        Sprite { color, custom_size: Some(Vec2::new(w, h)), ..default() },
+        Transform::from_xyz(x, y, z),
+        btn, // marker component
+    ))
+    .observe(move |_: Trigger<Pointer<Click>>, mut ev: EventWriter<MyButtonPressed>| {
+        ev.send(MyButtonPressed(btn)); // btn は move でキャプチャ済み
+    });
+});
+
+// 3. system は EventReader を使う（Changed<Interaction> ではない）
+pub fn my_button_system(mut events: EventReader<MyButtonPressed>, ...) {
+    for MyButtonPressed(button) in events.read() { ... }
+}
+```
+
+**登録の注意点**:
+- `app.add_event::<MyButtonPressed>()` をプラグインの `build` と **すべてのテスト App builder** に入れる
+  （漏れると `order_submit_button_system` 等が "could not access system parameter" で panic）
+- テスト側で "クリック" をシミュレートするには `app.world_mut().send_event(MyButtonPressed(btn))` を使う
+  （`spawn((Button, Interaction::Pressed, btn))` は UI Node 専用で Sprite テストには使えない）
+- E2E harness に `pub fn press_my_button(&mut self, btn: MyButton)` ヘルパーを追加するのが定番
+  （`place_order_via_ui` + `press_order_button` in `tests/e2e/support/mod.rs` が実例）
+
 ## ECS ミニリファレンス（0.15 ピン）
 
 ```rust

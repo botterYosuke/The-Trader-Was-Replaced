@@ -1,9 +1,9 @@
 //! Phase 9 §3.9 — OrderPanel (LiveManual 専用、手動発注フォーム)。
 //!
-//! ユーザー選択 (AskUserQuestion 2026-05-20): 本パネルは **Bevy UI Node + Interaction**
-//! 流派で実装する (instrument_picker / menu_bar と同じ)。表示専用の world-space sprite
-//! floating window (buying_power 等) とは別流派。`PanelKind` / `panel_spawn_dispatcher_system`
-//! は経由せず、Startup で 1 度 spawn し `ExecutionMode == LiveManual` のときだけ Display で出す。
+//! Slice 2: world-space sprite floating window (ORDER) 内のフォーム。
+//! `panel_spawn_dispatcher_system` → `spawn_order_form_in_window` でコンテンツエリアを埋める。
+//!
+//! ボタン操作は `OrderButtonPressed` イベント経由（sprite の Pointer<Click> observer が送信）。
 //!
 //! 2 段階確認: `[発注]` で `OrderConfirm.pending` をセット → 中央オーバーレイの確認モーダルに
 //! 内容 (銘柄/売買/数量/価格/概算約定額) を再表示 → `[Confirm]` で初めて
@@ -13,11 +13,13 @@
 //! 収集する。OrderPanel は `second_secret` を載せない (mock/kabu は不要、Tachibana は Step 5)。
 
 use bevy::prelude::*;
+use bevy::picking::prelude::*;
 
 use crate::trading::{
     ExecutionMode, ExecutionModeRes, LastPrices, OrderFeedback, SecretPrompt, SelectedSymbol,
     TransportCommand, TransportCommandSender, VenueStatusRes,
 };
+use crate::ui::components::PanelKind;
 
 // ── デフォルト売買単位・呼値 ───────────────────────────────────────────────
 // Phase 9 MVP: 銘柄メタデータ (売買単位 / 呼値) はまだ Rust 側 state に流れていない
@@ -237,13 +239,14 @@ pub fn estimated_notional(draft: &OrderDraft, last_price: Option<f64>) -> Option
 }
 
 // ===========================================================================
-// Components
+// Components + Events
 // ===========================================================================
 
-#[derive(Component)]
-pub struct OrderPanelRoot;
+/// ボタン操作を world-space observer から systems に橋渡しするイベント。
+#[derive(Event, Debug, Clone, Copy)]
+pub struct OrderButtonPressed(pub OrderButton);
 
-#[derive(Component, Clone, Copy)]
+#[derive(Component, Clone, Copy, Debug)]
 pub enum OrderButton {
     SideBuy,
     SideSell,
@@ -277,209 +280,6 @@ pub enum ConfirmButton {
 #[derive(Component)]
 pub struct ConfirmSummary;
 
-// ===========================================================================
-// Spawn (Startup)
-// ===========================================================================
-
-fn spawn_value_button(parent: &mut ChildBuilder, action: OrderButton, label: &str) {
-    parent
-        .spawn((
-            Button,
-            Node {
-                padding: UiRect::axes(Val::Px(8.0), Val::Px(3.0)),
-                margin: UiRect::right(Val::Px(4.0)),
-                ..default()
-            },
-            BackgroundColor(COLOR_BTN_IDLE),
-            action,
-        ))
-        .with_children(|b| {
-            b.spawn((
-                Text::new(label.to_string()),
-                TextFont {
-                    font_size: 12.0,
-                    ..default()
-                },
-                TextColor(COLOR_VALUE),
-            ));
-        });
-}
-
-/// ラベル行: 左に固定ラベル、右に子ノード群を並べる横並び Node を作って返す。
-fn spawn_row<'a>(parent: &'a mut ChildBuilder, label: &str) -> EntityCommands<'a> {
-    let mut row = parent.spawn((Node {
-        width: Val::Percent(100.0),
-        margin: UiRect::bottom(Val::Px(5.0)),
-        align_items: AlignItems::Center,
-        ..default()
-    },));
-    row.with_children(|r| {
-        r.spawn((
-            Node {
-                width: Val::Px(56.0),
-                ..default()
-            },
-            Text::new(label.to_string()),
-            TextFont {
-                font_size: 12.0,
-                ..default()
-            },
-            TextColor(COLOR_LABEL),
-        ));
-    });
-    row
-}
-
-/// OrderPanel 本体を spawn する (Startup)。初期 Display は None — visibility system が
-/// LiveManual のときだけ Flex にする。
-pub fn spawn_order_panel(mut commands: Commands) {
-    commands
-        .spawn((
-            Node {
-                display: Display::None,
-                position_type: PositionType::Absolute,
-                top: Val::Px(72.0),
-                right: Val::Px(12.0),
-                width: Val::Px(244.0),
-                flex_direction: FlexDirection::Column,
-                padding: UiRect::all(Val::Px(10.0)),
-                ..default()
-            },
-            BackgroundColor(COLOR_PANEL_BG),
-            GlobalZIndex(60),
-            OrderPanelRoot,
-            Name::new("OrderPanel"),
-        ))
-        .with_children(|p| {
-            // ヘッダー
-            p.spawn((
-                Node {
-                    margin: UiRect::bottom(Val::Px(8.0)),
-                    ..default()
-                },
-                Text::new("ORDER (LiveManual)"),
-                TextFont {
-                    font_size: 14.0,
-                    ..default()
-                },
-                TextColor(COLOR_HEADER),
-            ));
-
-            // 銘柄
-            spawn_row(p, "Symbol:").with_children(|r| {
-                r.spawn((
-                    Text::new("—"),
-                    TextFont {
-                        font_size: 12.0,
-                        ..default()
-                    },
-                    TextColor(COLOR_VALUE),
-                    OrderField::Symbol,
-                ));
-            });
-
-            // 売買区分
-            spawn_row(p, "Side:").with_children(|r| {
-                spawn_value_button(r, OrderButton::SideBuy, "BUY");
-                spawn_value_button(r, OrderButton::SideSell, "SELL");
-            });
-
-            // 注文種別
-            spawn_row(p, "Type:").with_children(|r| {
-                spawn_value_button(r, OrderButton::TypeMarket, "MKT");
-                spawn_value_button(r, OrderButton::TypeLimit, "LIMIT");
-            });
-
-            // 数量ステッパー
-            spawn_row(p, "Qty:").with_children(|r| {
-                spawn_value_button(r, OrderButton::QtyDec, "-");
-                r.spawn((
-                    Node {
-                        width: Val::Px(56.0),
-                        margin: UiRect::right(Val::Px(4.0)),
-                        justify_content: JustifyContent::Center,
-                        ..default()
-                    },
-                    Text::new("100"),
-                    TextFont {
-                        font_size: 12.0,
-                        ..default()
-                    },
-                    TextColor(COLOR_VALUE),
-                    OrderField::Qty,
-                ));
-                spawn_value_button(r, OrderButton::QtyInc, "+");
-            });
-
-            // 価格ステッパー
-            spawn_row(p, "Price:").with_children(|r| {
-                spawn_value_button(r, OrderButton::PriceDec, "-");
-                r.spawn((
-                    Node {
-                        width: Val::Px(56.0),
-                        margin: UiRect::right(Val::Px(4.0)),
-                        justify_content: JustifyContent::Center,
-                        ..default()
-                    },
-                    Text::new("MKT"),
-                    TextFont {
-                        font_size: 12.0,
-                        ..default()
-                    },
-                    TextColor(COLOR_VALUE),
-                    OrderField::Price,
-                ));
-                spawn_value_button(r, OrderButton::PriceInc, "+");
-            });
-
-            // 執行条件
-            spawn_row(p, "TIF:").with_children(|r| {
-                spawn_value_button(r, OrderButton::Tif(TimeInForce::Day), "DAY");
-                spawn_value_button(r, OrderButton::Tif(TimeInForce::Opening), "OPEN");
-                spawn_value_button(r, OrderButton::Tif(TimeInForce::Closing), "CLOSE");
-            });
-
-            // エラー行
-            p.spawn((
-                Node {
-                    margin: UiRect::vertical(Val::Px(4.0)),
-                    ..default()
-                },
-                Text::new(""),
-                TextFont {
-                    font_size: 11.0,
-                    ..default()
-                },
-                TextColor(COLOR_ERROR),
-                OrderField::Error,
-            ));
-
-            // 発注ボタン
-            p.spawn((
-                Button,
-                Node {
-                    width: Val::Percent(100.0),
-                    height: Val::Px(28.0),
-                    margin: UiRect::top(Val::Px(4.0)),
-                    align_items: AlignItems::Center,
-                    justify_content: JustifyContent::Center,
-                    ..default()
-                },
-                BackgroundColor(COLOR_BTN_SUBMIT),
-                OrderButton::Submit,
-            ))
-            .with_children(|b| {
-                b.spawn((
-                    Text::new("発注"),
-                    TextFont {
-                        font_size: 13.0,
-                        ..default()
-                    },
-                    TextColor(COLOR_VALUE),
-                ));
-            });
-        });
-}
 
 /// 2 段階確認モーダル (中央オーバーレイ) を spawn する (Startup)。初期 Display は None。
 pub fn spawn_confirm_modal(mut commands: Commands) {
@@ -591,36 +391,142 @@ pub fn spawn_confirm_modal(mut commands: Commands) {
 }
 
 // ===========================================================================
+// Floating-window content
+// ===========================================================================
+
+pub fn spawn_order_form_in_window(commands: &mut Commands, content_area: Entity) {
+    const LABEL_X: f32 = -95.0;
+    const Y_SYMBOL: f32 = 128.0;
+    const Y_SIDE: f32 = 98.0;
+    const Y_TYPE: f32 = 68.0;
+    const Y_QTY: f32 = 38.0;
+    const Y_PRICE: f32 = 8.0;
+    const Y_TIF: f32 = -22.0;
+    const Y_ERROR: f32 = -58.0;
+    const Y_SUBMIT: f32 = -100.0;
+    const BTN_H: f32 = 22.0;
+    const BTN_SM_W: f32 = 64.0;
+    const BTN_STEP_W: f32 = 28.0;
+    const BTN_TIF_W: f32 = 54.0;
+    const BTN_SUBMIT_W: f32 = 252.0;
+    const BTN_SUBMIT_H: f32 = 28.0;
+    const FONT_SZ: f32 = 11.0;
+
+    let mut spawn_label = |commands: &mut Commands, text: &str, x: f32, y: f32| {
+        commands.entity(content_area).with_children(|p| {
+            p.spawn((
+                Text2d::new(text.to_string()),
+                TextFont { font_size: FONT_SZ, ..default() },
+                TextColor(COLOR_LABEL),
+                Transform::from_xyz(x, y, 0.1),
+                bevy::sprite::Anchor::CenterRight,
+            ));
+        });
+    };
+
+    let mut spawn_field = |commands: &mut Commands, field: OrderField, text: &str, x: f32, y: f32| {
+        commands.entity(content_area).with_children(|p| {
+            p.spawn((
+                Text2d::new(text.to_string()),
+                TextFont { font_size: FONT_SZ, ..default() },
+                TextColor(COLOR_VALUE),
+                Transform::from_xyz(x, y, 0.1),
+                field,
+            ));
+        });
+    };
+
+    let mut spawn_btn = |commands: &mut Commands, action: OrderButton, label: &str, x: f32, y: f32, w: f32, h: f32, color: Color| {
+        let btn = action;
+        commands.entity(content_area).with_children(|p| {
+            p.spawn((
+                Sprite { color, custom_size: Some(Vec2::new(w, h)), ..default() },
+                Transform::from_xyz(x, y, 0.2),
+                btn,
+            ))
+            .observe(move |_trigger: Trigger<Pointer<Click>>, mut ev: EventWriter<OrderButtonPressed>| {
+                ev.send(OrderButtonPressed(btn));
+            })
+            .with_children(|s| {
+                s.spawn((
+                    Text2d::new(label.to_string()),
+                    TextFont { font_size: FONT_SZ, ..default() },
+                    TextColor(COLOR_VALUE),
+                    Transform::from_xyz(0.0, 0.0, 0.1),
+                ));
+            });
+        });
+    };
+
+    spawn_label(commands, "Symbol", LABEL_X, Y_SYMBOL);
+    spawn_field(commands, OrderField::Symbol, "----", 30.0, Y_SYMBOL);
+
+    spawn_label(commands, "Side", LABEL_X, Y_SIDE);
+    spawn_btn(commands, OrderButton::SideBuy, "BUY", -50.0, Y_SIDE, BTN_SM_W, BTN_H, COLOR_BTN_SELECTED);
+    spawn_btn(commands, OrderButton::SideSell, "SELL", 22.0, Y_SIDE, BTN_SM_W, BTN_H, COLOR_BTN_IDLE);
+
+    spawn_label(commands, "Type", LABEL_X, Y_TYPE);
+    spawn_btn(commands, OrderButton::TypeMarket, "MKT", -50.0, Y_TYPE, BTN_SM_W, BTN_H, COLOR_BTN_SELECTED);
+    spawn_btn(commands, OrderButton::TypeLimit, "LIMIT", 22.0, Y_TYPE, BTN_SM_W, BTN_H, COLOR_BTN_IDLE);
+
+    spawn_label(commands, "Qty", LABEL_X, Y_QTY);
+    spawn_btn(commands, OrderButton::QtyDec, "-", -78.0, Y_QTY, BTN_STEP_W, BTN_H, COLOR_BTN_IDLE);
+    spawn_field(commands, OrderField::Qty, "100", -26.0, Y_QTY);
+    spawn_btn(commands, OrderButton::QtyInc, "+", 25.0, Y_QTY, BTN_STEP_W, BTN_H, COLOR_BTN_IDLE);
+
+    spawn_label(commands, "Price", LABEL_X, Y_PRICE);
+    spawn_btn(commands, OrderButton::PriceDec, "-", -78.0, Y_PRICE, BTN_STEP_W, BTN_H, COLOR_BTN_IDLE);
+    spawn_field(commands, OrderField::Price, "----", -26.0, Y_PRICE);
+    spawn_btn(commands, OrderButton::PriceInc, "+", 25.0, Y_PRICE, BTN_STEP_W, BTN_H, COLOR_BTN_IDLE);
+
+    spawn_label(commands, "TIF", LABEL_X, Y_TIF);
+    spawn_btn(commands, OrderButton::Tif(TimeInForce::Day), "DAY", -72.0, Y_TIF, BTN_TIF_W, BTN_H, COLOR_BTN_SELECTED);
+    spawn_btn(commands, OrderButton::Tif(TimeInForce::Opening), "OPEN", -12.0, Y_TIF, BTN_TIF_W, BTN_H, COLOR_BTN_IDLE);
+    spawn_btn(commands, OrderButton::Tif(TimeInForce::Closing), "CLOSE", 48.0, Y_TIF, BTN_TIF_W, BTN_H, COLOR_BTN_IDLE);
+
+    commands.entity(content_area).with_children(|p| {
+        p.spawn((
+            Text2d::new(""),
+            TextFont { font_size: FONT_SZ, ..default() },
+            TextColor(COLOR_ERROR),
+            Transform::from_xyz(0.0, Y_ERROR, 0.1),
+            OrderField::Error,
+        ));
+    });
+
+    let submit = OrderButton::Submit;
+    commands.entity(content_area).with_children(|p| {
+        p.spawn((
+            Sprite { color: COLOR_BTN_SUBMIT, custom_size: Some(Vec2::new(BTN_SUBMIT_W, BTN_SUBMIT_H)), ..default() },
+            Transform::from_xyz(0.0, Y_SUBMIT, 0.2),
+            submit,
+        ))
+        .observe(move |_trigger: Trigger<Pointer<Click>>, mut ev: EventWriter<OrderButtonPressed>| {
+            ev.send(OrderButtonPressed(submit));
+        })
+        .with_children(|s| {
+            s.spawn((
+                Text2d::new("発注"),
+                TextFont { font_size: FONT_SZ + 2.0, ..default() },
+                TextColor(COLOR_VALUE),
+                Transform::from_xyz(0.0, 0.0, 0.1),
+            ));
+        });
+    });
+}
+
+// ===========================================================================
 // Systems
 // ===========================================================================
 
-/// OrderPanel root の Display を `ExecutionMode == LiveManual` に同期する。
-pub fn order_panel_visibility_system(
-    exec_mode: Res<ExecutionModeRes>,
-    mut root_q: Query<&mut Node, With<OrderPanelRoot>>,
-) {
-    let target = if exec_mode.mode == ExecutionMode::LiveManual {
-        Display::Flex
-    } else {
-        Display::None
-    };
-    for mut node in &mut root_q {
-        if node.display != target {
-            node.display = target;
-        }
-    }
-}
 
 /// side/type/TIF/数量±/価格± ボタン押下を `OrderForm` に反映する。
 pub fn order_form_button_system(
-    interactions: Query<(&Interaction, &OrderButton), (Changed<Interaction>, With<Button>)>,
+    mut events: EventReader<OrderButtonPressed>,
     mut form: ResMut<OrderForm>,
     mut confirm: ResMut<OrderConfirm>,
 ) {
-    for (interaction, button) in &interactions {
-        if *interaction != Interaction::Pressed {
-            continue;
-        }
+    for OrderButtonPressed(button) in events.read() {
         match button {
             OrderButton::SideBuy => form.side = Side::Buy,
             OrderButton::SideSell => form.side = Side::Sell,
@@ -650,16 +556,13 @@ pub fn order_form_button_system(
 /// `[発注]` 押下で検証 → OK なら `OrderConfirm.pending` をセット (確認モーダルが開く)。
 /// NG なら `last_error` にメッセージを入れてパネルに赤字表示する。
 pub fn order_submit_button_system(
-    interactions: Query<(&Interaction, &OrderButton), (Changed<Interaction>, With<Button>)>,
+    mut events: EventReader<OrderButtonPressed>,
     form: Res<OrderForm>,
     selected: Res<SelectedSymbol>,
     venue: Res<VenueStatusRes>,
     mut confirm: ResMut<OrderConfirm>,
 ) {
-    for (interaction, button) in &interactions {
-        if *interaction != Interaction::Pressed {
-            continue;
-        }
+    for OrderButtonPressed(button) in events.read() {
         if !matches!(button, OrderButton::Submit) {
             continue;
         }
@@ -762,17 +665,37 @@ pub fn confirm_modal_button_system(
     }
 }
 
+/// ExecutionMode が LiveManual を外れたとき、ORDER floating window をすべて despawn する。
+pub fn order_window_despawn_system(
+    exec_mode: Res<ExecutionModeRes>,
+    panel_q: Query<(Entity, &PanelKind)>,
+    mut commands: Commands,
+) {
+    if !exec_mode.is_changed() {
+        return;
+    }
+    if exec_mode.mode == ExecutionMode::LiveManual {
+        return;
+    }
+    for (entity, kind) in &panel_q {
+        if matches!(kind, PanelKind::Order) {
+            commands.entity(entity).despawn_recursive();
+        }
+    }
+}
+
 /// OrderForm / 選択銘柄をパネルの値テキストと選択ボタン色に差分反映する。
+/// Slice 2 以降: ORDER window は world-space sprite のため Text2d / Sprite を使う。
 pub fn order_panel_sync_system(
     form: Res<OrderForm>,
     selected: Res<SelectedSymbol>,
     confirm: Res<OrderConfirm>,
     feedback: Res<OrderFeedback>,
-    mut fields: Query<(&OrderField, &mut Text)>,
-    mut buttons: Query<(&OrderButton, &mut BackgroundColor), With<Button>>,
+    mut fields: Query<(&OrderField, &mut Text2d, &mut TextColor)>,
+    mut buttons: Query<(&OrderButton, &mut Sprite)>,
 ) {
     // 値テキスト
-    for (field, mut text) in &mut fields {
+    for (field, mut text, _color) in &mut fields {
         let new = match field {
             OrderField::Symbol => selected.id.clone().unwrap_or_else(|| "—".to_string()),
             OrderField::Qty => format!("{:.0}", form.qty),
@@ -793,7 +716,7 @@ pub fn order_panel_sync_system(
     }
 
     // 選択中ボタンをハイライト
-    for (button, mut bg) in &mut buttons {
+    for (button, mut sprite) in &mut buttons {
         let selected_now = match button {
             OrderButton::SideBuy => form.side == Side::Buy,
             OrderButton::SideSell => form.side == Side::Sell,
@@ -807,8 +730,8 @@ pub fn order_panel_sync_system(
         } else {
             COLOR_BTN_IDLE
         };
-        if bg.0 != target {
-            bg.0 = target;
+        if sprite.color != target {
+            sprite.color = target;
         }
     }
 }
@@ -989,6 +912,7 @@ mod tests {
 
     fn make_app() -> App {
         let mut app = App::new();
+        app.add_event::<OrderButtonPressed>();
         app.init_resource::<OrderForm>();
         app.init_resource::<OrderConfirm>();
         app.init_resource::<OrderFeedback>();
@@ -1017,16 +941,13 @@ mod tests {
     fn submit_sets_pending_when_valid() {
         let mut app = make_app();
         app.add_systems(Update, order_submit_button_system);
-        let btn = app
-            .world_mut()
-            .spawn((Button, Interaction::Pressed, OrderButton::Submit))
-            .id();
+        app.world_mut()
+            .send_event(OrderButtonPressed(OrderButton::Submit));
         app.update();
         assert!(
             app.world().resource::<OrderConfirm>().pending.is_some(),
             "valid submit must open the confirm modal"
         );
-        let _ = btn;
     }
 
     #[test]
@@ -1035,7 +956,7 @@ mod tests {
         app.world_mut().resource_mut::<SelectedSymbol>().id = None;
         app.add_systems(Update, order_submit_button_system);
         app.world_mut()
-            .spawn((Button, Interaction::Pressed, OrderButton::Submit));
+            .send_event(OrderButtonPressed(OrderButton::Submit));
         app.update();
         let confirm = app.world().resource::<OrderConfirm>();
         assert!(
@@ -1208,11 +1129,11 @@ mod tests {
         let mut app = make_app();
         app.add_systems(Update, order_form_button_system);
         app.world_mut()
-            .spawn((Button, Interaction::Pressed, OrderButton::SideSell));
+            .send_event(OrderButtonPressed(OrderButton::SideSell));
         app.world_mut()
-            .spawn((Button, Interaction::Pressed, OrderButton::TypeLimit));
+            .send_event(OrderButtonPressed(OrderButton::TypeLimit));
         app.world_mut()
-            .spawn((Button, Interaction::Pressed, OrderButton::QtyInc));
+            .send_event(OrderButtonPressed(OrderButton::QtyInc));
         app.update();
         let f = app.world().resource::<OrderForm>();
         assert_eq!(f.side, Side::Sell);

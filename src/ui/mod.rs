@@ -118,10 +118,10 @@ use crate::ui::order_context_menu::{
     context_menu_keyboard_system, context_menu_visibility_system, spawn_order_context_menu,
 };
 use crate::ui::order_panel::{
-    OrderConfirm, OrderForm, confirm_modal_button_system, confirm_modal_sync_system,
-    confirm_modal_visibility_system, order_form_button_system, order_panel_sync_system,
-    order_panel_visibility_system, order_submit_button_system, spawn_confirm_modal,
-    spawn_order_panel,
+    OrderButtonPressed, OrderConfirm, OrderForm, confirm_modal_button_system,
+    confirm_modal_sync_system, confirm_modal_visibility_system, order_form_button_system,
+    order_panel_sync_system, order_submit_button_system,
+    order_window_despawn_system, spawn_confirm_modal,
 };
 use crate::ui::orders::orders_panel_system;
 use crate::ui::positions::positions_panel_system;
@@ -209,6 +209,7 @@ impl Plugin for UiPlugin {
         .init_resource::<PendingStrategySnapshotRestore>()
         .init_resource::<FindReplaceState>()
         .add_event::<FindActionRequested>()
+        .add_event::<OrderButtonPressed>()
         // ⚠️ 必須: chart_data_tick_system が EventWriter<RequestAutoscale> を取るので
         //    Events リソースが要る。未登録だと初回取得で panic する。
         .add_event::<RequestAutoscale>()
@@ -278,8 +279,7 @@ impl Plugin for UiPlugin {
                 restore_last_strategy_system,
                 // highlight pipeline: syntect SyntaxSet/Theme を resource として用意
                 init_syntect_highlighter,
-                // Phase 9: LiveManual 発注 UI (UI Node 流派、Display で出し入れ)
-                spawn_order_panel,
+                // Phase 9: LiveManual 発注 UI (floating window 流派)
                 spawn_confirm_modal,
                 spawn_secret_modal,
                 // Phase 9 Step 4: 右クリックコンテキストメニュー + Modify モーダル
@@ -481,6 +481,7 @@ impl Plugin for UiPlugin {
                     .after(crate::ui::layout_persistence::apply_layout_system)
                     .after(crate::ui::layout_persistence::apply_pending_layout_system)
                     .after(panel_spawn_dispatcher_system),
+                crate::ui::sidebar::apply_order_button_visibility_system,
             ),
         )
         // ── highlight pipeline (Phase A) ──
@@ -548,10 +549,10 @@ impl Plugin for UiPlugin {
             Update,
             (
                 // OrderPanel
-                order_panel_visibility_system,
                 order_form_button_system,
                 order_submit_button_system,
                 order_panel_sync_system,
+                order_window_despawn_system,
                 confirm_modal_visibility_system,
                 // §3.10 Escape determinism: the confirm modal yields its Escape to an
                 // open SecretModal. Because SecretModal consumes Escape via its event
