@@ -266,6 +266,20 @@ pub fn apply_account_event(
     portfolio.loaded = true;
 }
 
+/// supervisor lifecycle を footer 反映用の status update へ写像する。
+/// `StartupFailed(code)` は loud な `Error` に（footer を `grpc: ERR` 赤に）、
+/// それ以外は `None`（既存の grpc 表示ロジックに委ねる）。
+pub fn lifecycle_status_update(
+    s: BackendLifecycle,
+) -> Option<crate::trading::BackendStatusUpdate> {
+    match s {
+        BackendLifecycle::StartupFailed(code) => Some(
+            crate::trading::BackendStatusUpdate::Error(format!("backend startup failed: {code}")),
+        ),
+        _ => None,
+    }
+}
+
 #[allow(clippy::too_many_arguments)]
 pub fn apply_status_update(
     update: BackendStatusUpdate,
@@ -595,6 +609,34 @@ pub fn apply_available_failed(
 mod tests {
     use super::*;
     use crate::trading::BackendEvent;
+
+    /// RED: `lifecycle_status_update` はまだ未定義（GREEN 段で追加）。
+    /// StartupFailed はエラーコードを内包した `BackendStatusUpdate::Error` へ写す。
+    #[test]
+    fn lifecycle_status_update_maps_startup_failed_to_error() {
+        let out = lifecycle_status_update(BackendLifecycle::StartupFailed(
+            "BACKEND_VENUE_MISMATCH",
+        ));
+        match out {
+            Some(crate::trading::BackendStatusUpdate::Error(msg)) => {
+                assert!(
+                    msg.contains("BACKEND_VENUE_MISMATCH"),
+                    "error message must carry the startup failure code, got: {msg}"
+                );
+            }
+            other => panic!("expected Some(Error(_)), got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn lifecycle_status_update_ready_is_none() {
+        assert!(lifecycle_status_update(BackendLifecycle::Ready).is_none());
+    }
+
+    #[test]
+    fn lifecycle_status_update_probing_existing_is_none() {
+        assert!(lifecycle_status_update(BackendLifecycle::ProbingExisting).is_none());
+    }
 
     /// Phase 9 Step 7: VenueLogoutDetected push → ReloginPrompt.active がセットされ
     /// ReloginModal が開く (§3.5)。headless ハーネスと同じ縫い目で検証する。

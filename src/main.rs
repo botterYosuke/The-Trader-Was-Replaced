@@ -374,14 +374,21 @@ fn setup_backend_connection(
     handle.spawn(async move {
         // Ready 駆動再接続ループ。supervisor が Ready を立てるまで connect しない。
         loop {
-            // (1) 次の Ready を待つ。すでに Ready なら即通過。
-            if lifecycle_rx
-                .wait_for(|s| matches!(s, BackendLifecycle::Ready))
-                .await
-                .is_err()
-            {
-                // watch sender (supervisor) が drop された = アプリ終了。task を畳む。
-                return;
+            // (1) Ready を待つ。待機中に terminal な StartupFailed に達したら footer へ
+            //     loud に surface する (grpc: ERR)。手動 Restart で Ready に戻れる経路は維持。
+            //     初期状態 (起動時に既に StartupFailed のケース) も評価するため borrow 先行。
+            loop {
+                let s = *lifecycle_rx.borrow();
+                if matches!(s, BackendLifecycle::Ready) {
+                    break;
+                }
+                if let Some(update) = backcast::backend_sync::lifecycle_status_update(s) {
+                    let _ = status_tx.send(update);
+                }
+                if lifecycle_rx.changed().await.is_err() {
+                    // watch sender (supervisor) が drop された = アプリ終了。task を畳む。
+                    return;
+                }
             }
 
             // (2) Ready 到達 → connect。Ready 後の connect は構造的に 1 発成功する想定。
