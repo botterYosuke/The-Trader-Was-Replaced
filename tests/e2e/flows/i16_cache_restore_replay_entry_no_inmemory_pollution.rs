@@ -1,27 +1,32 @@
-//! I15 cache_restore_replay_entry_preserves_py — 起動時 cache 復元の直後に Replay へ入っても、
-//! `app_state.py` が scenario `.json` の中身で上書きされないことを保証する（kind:integration）。
+//! I16 cache_restore_replay_entry_no_inmemory_pollution — 起動時 cache 復元の直後に
+//! Replay へ入っても、セッション内 in-memory state（`StrategyBuffer.original_path` /
+//! `PendingStrategyFragments.by_region_key`）が scenario `.json` sidecar の内容で
+//! 汚染されないことを保証する（kind:integration）。
 //!
-//! # 背景（このテストが守るバグ）
+//! # 背景（このテストが守るバグ・i15 と非重複の観点）
+//! i15 は `app_state.py`（永続ファイル）が JSON で上書きされないことを守る。
+//! 本フローはその一段手前、**セッション内メモリ汚染**を守る:
 //! `restore_fixed_registry_on_replay_entry_system`（`src/ui/restore.rs`）は Replay 突入時に
-//! `editable=false`（instruments_ref ロック）の registry を再 resolve するため
-//! `StrategyFileLoadRequested { path: ScenarioReadTarget.0, .. }` を再送する。だが
-//! `ScenarioReadTarget.0` は cache 復元後 `app_state.json`（scenario sidecar）を指す。
-//! 受け手 `handle_strategy_file_load_system` はそのパスを **Python ソース** として扱い、
-//! `split_py_into_fragments` でエディタへ流し込み、さらに `sync_to_cache` が
-//! `std::fs::copy(app_state.json, app_state.py)` で **`app_state.py` を JSON で上書き**する。
-//! 結果、次回起動で `apply_cache_restore_system` が JSON を読み、Strategy Editor に
-//! `.json` の中身が表示される（自己永続化するキャッシュ破壊）。
+//! `editable=false` の registry を再 resolve するため
+//! `StrategyFileLoadRequested { path: ScenarioReadTarget.0(=.json), mode: LayoutRestore }`
+//! を再送する。受け手 `handle_strategy_file_load_system`（`src/ui/menu_bar.rs`）は mode 分岐の
+//! **手前で無条件に**:
+//!   - `buffer.original_path = Some(event.path)` → `.json` を Python ソースパスとして記録
+//!   - `pending.by_region_key` を clear し `split_py_into_fragments(.json 全文)` の結果を注入
+//!     （JSON は `# region` マーカーを持たないため fallback で JSON 全文が `region_001` fragment 化）
+//! を実行する。結果、Strategy Editor の in-memory buffer / pending fragments が JSON で汚染される。
 //!
-//! # 駆動経路
+//! # 駆動経路（i15 と同一の seed / system chain）
 //! 1. `BACKCAST_CACHE_DIR` を temp に差し替え（`CacheDirGuard`）。
-//! 2. temp に `app_state.json`（sidecar layout） + `app_state.py`（Python ソース）を書く。
+//! 2. temp に `app_state.json`（sidecar layout, windows あり） + `app_state.py`（Python ソース）。
 //! 3. `ExecutionModeRes = Replay`（既定）、`InstrumentRegistry.editable = false`。
 //! 4. `restore_last_strategy_system` → `apply_cache_restore_system`
 //!    → `restore_fixed_registry_on_replay_entry_system` → `handle_strategy_file_load_system`
 //!    を 1 フレーム chain で回す。
 //!
 //! # 観測（不変条件）
-//! - `app_state.py` の中身は復元後も Python ソースのまま（JSON で上書きされない）。
+//! - `StrategyBuffer.original_path` が `.json` を指していない。
+//! - `PendingStrategyFragments.by_region_key` のどの値も JSON sidecar 本文（"schema_version" 等）を含まない。
 
 use std::ffi::OsString;
 
@@ -58,7 +63,7 @@ impl Drop for CacheDirGuard {
 
 #[test]
 #[serial]
-fn i15_cache_restore_replay_entry_preserves_py() {
+fn i16_cache_restore_replay_entry_no_inmemory_pollution() {
     let dir = tempfile::tempdir().unwrap();
     let cache_dir = dir.path().to_path_buf();
 
@@ -109,11 +114,9 @@ fn i15_cache_restore_replay_entry_preserves_py() {
     app.init_resource::<ScenarioFileWatchState>();
     app.insert_resource(PendingLayoutApply::default());
     app.insert_resource(AppHistory::default());
-    // 既定モードは Replay。最初の frame で None→Replay 遷移として entered_replay=true になる。
     app.insert_resource(ExecutionModeRes {
         mode: ExecutionMode::Replay,
     });
-    // instruments_ref ロック = editable:false。これが restore.rs の再送をアームする。
     app.insert_resource(InstrumentRegistry {
         ids: vec!["LOCKED.T".to_string()],
         editable: false,
@@ -143,15 +146,24 @@ fn i15_cache_restore_replay_entry_preserves_py() {
 
     app.update();
 
-    let py_after = std::fs::read_to_string(&cache_py).unwrap();
-    assert!(
-        !py_after.trim_start().starts_with('{'),
-        "app_state.py must never be overwritten with the scenario JSON sidecar after \
-         replay-entry restore, but it now starts with '{{': {py_after}"
-    );
-    assert!(
-        py_after.contains("def on_bar"),
-        "app_state.py must remain the original Python source after replay-entry restore, \
-         got: {py_after}"
-    );
+    // 観測1: StrategyBuffer.original_path が .json を指していないこと。
+    let buffer = app.world().resource::<StrategyBuffer>();
+    if let Some(p) = &buffer.original_path {
+        assert_ne!(
+            p.extension().and_then(|e| e.to_str()),
+            Some("json"),
+            "StrategyBuffer.original_path must not be polluted with the scenario .json sidecar \
+             after replay-entry restore, got: {p:?}"
+        );
+    }
+
+    // 観測2: pending fragments のどの値も JSON sidecar 本文を含まないこと。
+    let pending = app.world().resource::<PendingStrategyFragments>();
+    for (key, body) in &pending.by_region_key {
+        assert!(
+            !body.contains("schema_version"),
+            "PendingStrategyFragments.by_region_key[{key:?}] must not contain the scenario JSON \
+             sidecar body after replay-entry restore, got: {body}"
+        );
+    }
 }

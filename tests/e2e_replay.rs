@@ -134,6 +134,8 @@ mod i13_open_scenario_only_json;
 mod i14_save_without_path_falls_back_to_dialog;
 #[path = "e2e/flows/i15_cache_restore_replay_entry_preserves_py.rs"]
 mod i15_cache_restore_replay_entry_preserves_py;
+#[path = "e2e/flows/i16_cache_restore_replay_entry_no_inmemory_pollution.rs"]
+mod i16_cache_restore_replay_entry_no_inmemory_pollution;
 
 // J. Strategy editor / startup panel / scenario / instrument picker (UI / integration)
 #[path = "e2e/flows/j1_strategy_editor_text_autosaves_cache.rs"]
