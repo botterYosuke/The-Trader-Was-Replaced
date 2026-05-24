@@ -171,6 +171,9 @@ pub struct SupervisorConfig {
     pub autospawn: bool,
     pub cwd: Option<String>,
     pub python_bin: Option<String>,
+    /// Optional `--live-venue <VENUE>` passed to an autospawned backend
+    /// (read from `LIVE_VENUE`). `None` keeps the backend in replay/backtest mode.
+    pub live_venue: Option<String>,
 }
 
 impl SupervisorConfig {
@@ -187,6 +190,7 @@ impl SupervisorConfig {
                 .unwrap_or(true),
             cwd: std::env::var("BACKEND_CWD").ok().filter(|s| !s.is_empty()),
             python_bin: std::env::var("PYTHON_BIN").ok().filter(|s| !s.is_empty()),
+            live_venue: std::env::var("LIVE_VENUE").ok().filter(|s| !s.is_empty()),
         }
     }
 }
@@ -205,16 +209,23 @@ pub fn parse_backend_url(url: &str) -> Result<String, &'static str> {
 }
 
 /// Build the argv tail for `python -m engine`. Pure (no env/IO) so the
-/// command-line contract (C-4) is unit-testable without spawning.
-pub fn build_backend_command_args(token: &str, port: u16) -> Vec<String> {
-    vec![
+/// command-line contract (C-4) is unit-testable without spawning. When
+/// `live_venue` is set, a `--live-venue <VENUE>` tail is appended so an
+/// autospawned backend can come up in live mode (e.g. `LIVE_VENUE=TACHIBANA`).
+pub fn build_backend_command_args(token: &str, port: u16, live_venue: Option<&str>) -> Vec<String> {
+    let mut args = vec![
         "-m".to_string(),
         "engine".to_string(),
         "--token".to_string(),
         token.to_string(),
         "--port".to_string(),
         port.to_string(),
-    ]
+    ];
+    if let Some(venue) = live_venue {
+        args.push("--live-venue".to_string());
+        args.push(venue.to_string());
+    }
+    args
 }
 
 /// Parse a backend stdout line for the readiness sentinel
@@ -338,9 +349,10 @@ pub fn spawn_python_backend(
     cwd: &std::path::Path,
     token: &str,
     port: u16,
+    live_venue: Option<&str>,
 ) -> std::io::Result<Child> {
     Command::new(python_bin)
-        .args(build_backend_command_args(token, port))
+        .args(build_backend_command_args(token, port, live_venue))
         .env("PYTHONPATH", cwd.join("python"))
         // Phase 9 Step 8 / §3.7: tell the backend it is supervised so it disables
         // its standalone idle self-shutdown (the supervisor owns process lifetime).
@@ -535,7 +547,13 @@ async fn spawn_and_handshake(
     };
 
     // Spawn the subprocess.
-    let mut child = match spawn_python_backend(&python_bin, &cwd, &config.token, port) {
+    let mut child = match spawn_python_backend(
+        &python_bin,
+        &cwd,
+        &config.token,
+        port,
+        config.live_venue.as_deref(),
+    ) {
         Ok(c) => c,
         Err(e) => {
             bevy::log::error!("[backend] failed to spawn python backend: {}", e);
@@ -1205,6 +1223,7 @@ mod tests {
             autospawn: false,
             cwd: None,
             python_bin: None,
+            live_venue: None,
         };
         let (lt, lr) = watch::channel(BackendLifecycle::Disabled);
         let (ct, cr) = mpsc::unbounded_channel();
@@ -1228,6 +1247,7 @@ mod tests {
             autospawn: true,
             cwd: Some("/tmp".to_string()),
             python_bin: Some("/no/such/python-binary-xyz".to_string()),
+            live_venue: None,
         };
         let (lt, lr) = watch::channel(BackendLifecycle::Disabled);
         let (ct, cr) = mpsc::unbounded_channel();
@@ -1243,8 +1263,25 @@ mod tests {
     #[test]
     fn build_backend_command_args_golden() {
         assert_eq!(
-            build_backend_command_args("tok", 19876),
+            build_backend_command_args("tok", 19876, None),
             vec!["-m", "engine", "--token", "tok", "--port", "19876"]
+        );
+    }
+
+    #[test]
+    fn build_backend_command_args_appends_live_venue() {
+        assert_eq!(
+            build_backend_command_args("tok", 19876, Some("TACHIBANA")),
+            vec![
+                "-m",
+                "engine",
+                "--token",
+                "tok",
+                "--port",
+                "19876",
+                "--live-venue",
+                "TACHIBANA"
+            ]
         );
     }
 

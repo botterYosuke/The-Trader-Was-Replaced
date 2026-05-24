@@ -183,6 +183,8 @@ $p = Start-Process -FilePath ".\target\debug\backcast.exe" -WorkingDirectory $PW
 ```
 
 > F5 → ピッカーで **"backcast: autospawn backend (CodeLLDB)"** を選択。一度選べば以降の F5 は同じシナリオを再実行。`grpc: DISABLED` のままなら Cargo 自動生成シナリオを掴んでいるので選び直す。CodeLLDB アダプタ拡張は Zed が自動取得する。
+>
+> ⚠️ **autospawn は起動時 19876 を probe し、応答があれば attach（新規 spawn しない）**。デバッグ停止が SIGKILL 系だと前回の python child が孤児化（PPID=1）して 19876 を握り続け、次回 F5 が**孤児に attach**する。孤児が `--live-venue` 無しだと live venue ログインが `LIVE_ADAPTER_NOT_CONFIGURED` で死ぬ（§7 参照）。Zed の `build` は `cargo build` しか走らせず `preLaunchTask` 非対応なので port kill が挟まらない。**恒久対策**: `.zed/debug.json` の `build.command` を kill+build ラッパーにする — `"build": { "command": "bash", "args": ["-c", "lsof -ti tcp:19876 | xargs -r kill -9; cargo build"] }`。
 
 ---
 
@@ -277,6 +279,7 @@ cargo test --test backend_integration
 | Run Result パネルに何も出ない（run は実際には成功している） | サイドバーで「Run Result」を選択していない / `run_id` または `summary_json` が None で `RunComplete` が送信されない | ① Run Result パネルを選択して確認 ② `backcast_err.txt` で `RunComplete:` ログを検索 |
 | candle が出ない | `KlineUpdate` に `open_time_ms` が無い | `python/engine/core.py` を確認 |
 | port 19876 が掴めない | 前回の backend がゾンビ | §2.1 で kill |
+| live venue で `Connect Tachibana/Kabu` しても**無反応・ダイアログが出ない**（`grpc: OK` なのに） | autospawn supervisor は起動時に 19876 を probe し、**応答があれば attach（新規 spawn しない）**（`backend_supervisor.rs` probe→attach 経路）。前回の Zed/F5 セッションを SIGKILL 系で止めると python child が**孤児化**（PPID=1）して 19876 を握り続ける。それが `--live-venue` **無し**で起動された非 live backend だと、`LIVE_VENUE` env を無視して attach → `_live_adapter_factory=None` → `VenueLogin` が `LIVE_ADAPTER_NOT_CONFIGURED` で即 reject → tkinter ダイアログ生成の前段で終了。`.env`・`LIVE_VENUE` が正しくても起きる | `ps -p $(lsof -ti tcp:19876) -o command` で 19876 の cmdline を確認。**`--live-venue` が無ければ孤児**なので §2.1 で kill → live シナリオを再起動すると `--live-venue TACHIBANA` 付きで spawn される。ログで `VenueLogin rejected: error_code=LIVE_ADAPTER_NOT_CONFIGURED` が出ていれば確定（出ず `menu: Venue→Connect requested` の後に何も無いなら attach 先が無効） |
 | `python -m engine.server_grpc` でエラー | `__main__` 不在 | `python -m engine` を使う |
 | backcast 再起動後に "No instruments" + 警告「This sidecar uses 'instruments_ref'」が出るが、cache JSON に `instruments_ref` が無い | `InstrumentRegistry::default()` が `editable=false`。cache restore は `ScenarioLoadedFromFile` event を発火しないので registry が default に張り付き、warning が誤発火（Phase 7.5a Issue B） | 手動で `File → Load... → <strategy>.py` 再 Load で state 再確立。**Phase 7.5c で fix 予定** |
 | File→Load で cache `app_state.json` の windows / strategy_path / 追加した instruments が消える | `sync_to_cache → copy_sidecar_to_cache` が cache_sidecar を**無条件削除**し、original sidecar の bare 内容で上書き（Phase 7.5a Issue A、`menu_bar.rs:642-669`） | 仕様としては「Load は fresh start」だが、検証中に状態が縮退する。**Phase 7.5c で fix 予定** |
