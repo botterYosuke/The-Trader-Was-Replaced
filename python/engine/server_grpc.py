@@ -69,6 +69,13 @@ def engine_run(*args, **kwargs):
 #   できないため。UI 側のマージ規則「非空が勝つ・空は既知値を消さない」に委ねる）。
 MANUAL_STRATEGY_ID = "MANUAL-001"
 
+# Statuses that change BP or Positions; EC stream events with these trigger
+# an immediate account_sync.force_resync() so the panel reflects the new state
+# without waiting for the next 30s poll (#29 Slice 4).
+_ACCOUNT_REFETCH_STATUSES: frozenset[str] = frozenset(
+    {"ACCEPTED", "PARTIALLY_FILLED", "FILLED", "CANCELED", "EXPIRED"}
+)
+
 
 class _LiveSessionView:
     """`LiveStrategyHost` が借用する live session の read-only ビュー (Phase 10 §1.1)。
@@ -2002,6 +2009,10 @@ class GrpcDataEngineServer(
         self.publish_backend_event(
             engine_pb2.BackendEvent(order_event=self._order_event_to_proto(ev))
         )
+        if ev.status in _ACCOUNT_REFETCH_STATUSES:
+            account_sync = self._account_sync
+            if account_sync is not None and self._live_loop is not None and self._live_loop.is_running():
+                asyncio.ensure_future(account_sync.force_resync())
 
     def PlaceOrder(self, request, context):
         if not self._token_ok(request):
