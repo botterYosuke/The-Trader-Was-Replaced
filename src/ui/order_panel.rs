@@ -19,7 +19,7 @@ use crate::trading::{
     ExecutionMode, ExecutionModeRes, LastPrices, OrderFeedback, SecretPrompt, SelectedSymbol,
     TransportCommand, TransportCommandSender, VenueStatusRes,
 };
-use crate::ui::components::PanelKind;
+use crate::ui::components::{PanelKind, WindowRoot};
 
 // ── デフォルト売買単位・呼値 ───────────────────────────────────────────────
 // Phase 9 MVP: 銘柄メタデータ (売買単位 / 呼値) はまだ Rust 側 state に流れていない
@@ -668,7 +668,7 @@ pub fn confirm_modal_button_system(
 /// ExecutionMode が LiveManual を外れたとき、ORDER floating window をすべて despawn する。
 pub fn order_window_despawn_system(
     exec_mode: Res<ExecutionModeRes>,
-    panel_q: Query<(Entity, &PanelKind)>,
+    panel_q: Query<(Entity, &PanelKind), With<WindowRoot>>,
     mut commands: Commands,
 ) {
     if !exec_mode.is_changed() {
@@ -1139,5 +1139,81 @@ mod tests {
         assert_eq!(f.side, Side::Sell);
         assert_eq!(f.order_type, OrderType::Limit);
         assert_eq!(f.qty, 200.0, "QtyInc adds one lot");
+    }
+
+    // ── issue #25 Slice 2: ORDER window の LiveManual 離脱 despawn ──────────────
+    fn count_order_kind(app: &mut App) -> usize {
+        let mut q = app.world_mut().query::<&PanelKind>();
+        q.iter(app.world())
+            .filter(|k| matches!(k, PanelKind::Order))
+            .count()
+    }
+
+    #[test]
+    fn order_window_despawns_when_leaving_live_manual() {
+        let mut app = App::new();
+        app.insert_resource(ExecutionModeRes {
+            mode: ExecutionMode::Replay,
+        });
+        app.add_systems(Update, order_window_despawn_system);
+
+        // ORDER floating window root（WindowRoot + PanelKind::Order）。
+        let window = app.world_mut().spawn((WindowRoot, PanelKind::Order)).id();
+        // サイドバーの Order ボタンも PanelKind::Order を marker に持つ（sidebar.rs）。
+        // despawn は WINDOW だけを対象にし、ボタンは Visibility で gate されるため残す。
+        let button = app.world_mut().spawn((Button, PanelKind::Order)).id();
+
+        // mode は LiveManual 外（Replay）かつ resource は今 insert したので is_changed。
+        app.update();
+
+        assert!(
+            app.world().get_entity(window).is_err(),
+            "leaving LiveManual must despawn the ORDER floating window"
+        );
+        assert!(
+            app.world().get_entity(button).is_ok(),
+            "the sidebar Order button (no WindowRoot) must survive — it is hidden via Visibility, not despawned"
+        );
+    }
+
+    #[test]
+    fn order_window_survives_inside_live_manual() {
+        let mut app = App::new();
+        app.insert_resource(ExecutionModeRes {
+            mode: ExecutionMode::LiveManual,
+        });
+        app.add_systems(Update, order_window_despawn_system);
+
+        let window = app.world_mut().spawn((WindowRoot, PanelKind::Order)).id();
+        app.update();
+
+        assert!(
+            app.world().get_entity(window).is_ok(),
+            "ORDER window must persist while in LiveManual"
+        );
+    }
+
+    #[test]
+    fn order_window_despawn_is_gated_on_mode_change() {
+        let mut app = App::new();
+        app.insert_resource(ExecutionModeRes {
+            mode: ExecutionMode::Replay,
+        });
+        app.add_systems(Update, order_window_despawn_system);
+
+        // 1 回目: insert 直後なので is_changed → 既存 window を despawn。
+        let first = app.world_mut().spawn((WindowRoot, PanelKind::Order)).id();
+        app.update();
+        assert!(app.world().get_entity(first).is_err());
+
+        // 2 回目: mode を触らずに新しい window を spawn。is_changed=false なので
+        // 毎フレーム despawn せず、生き残る（spurious despawn 防止の不変条件）。
+        let second = app.world_mut().spawn((WindowRoot, PanelKind::Order)).id();
+        app.update();
+        assert!(
+            app.world().get_entity(second).is_ok(),
+            "without a mode change the system must not despawn windows every frame"
+        );
+        assert_eq!(count_order_kind(&mut app), 1, "only the second window remains");
     }
 }

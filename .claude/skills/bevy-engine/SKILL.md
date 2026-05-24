@@ -431,6 +431,17 @@ egui の中で `state.buffer` のような大きい String を編集するとき
   そのテストは通り続ける（実在しない構成＝fiction を検証している）**。本番 root が sprite なら、テストも
   `(Visibility::Inherited, Marker)` を spawn して `Visibility` を assert する形に移植する。`scenario_startup_panel.rs`
   の `apply_startup_panel_visibility_system` とその visibility テスト群が実例。
+- **`PanelKind` は「サイドバーボタン」と「floating window root」の両方に貼られる二重 marker**:
+  sidebar.rs は Panels セクションの各ボタンに `PanelKind::Xxx` を marker として付け（`spawn_panel_btn`）、
+  dispatcher は同じ `PanelKind::Xxx` を window root にも付ける。よって `Query<(Entity, &PanelKind)>` を
+  **フィルタ無し**で回す system は、window だけのつもりでも**サイドバーボタンまで巻き込む**。despawn 系
+  （例 `order_window_despawn_system`：mode 離脱で ORDER window を畳む）でこれをやると、ボタン entity ごと
+  `despawn_recursive` してボタンが**二度と出なくなる**（`ExecutionMode` の default が `Replay` なら起動 1
+  フレーム目で消える）。**window だけを対象にする system は必ず `With<WindowRoot>` を付ける**
+  （`spawn_floating_window` が root に `WindowRoot` を付与済み。ボタンは持たない）。逆にボタンだけを
+  gate する visibility system は `With<Button>` を付ける（`apply_order_button_visibility_system` が実例）。
+  回帰テスト: window（`(WindowRoot, PanelKind::X)`）とボタン（`(Button, PanelKind::X)`）を両方 spawn し、
+  system 実行後に **window は despawn / ボタンは生存** を両方 assert する（片方だけだと巻き込みを取りこぼす）。
 - **`Changed<T>` 駆動の system が収束せず毎フレーム再発火し続ける**: ある system が
   `Changed<T>` を読んで反応し、別の（または同じ）system が `T` を毎フレーム書き戻すと
   無限に再発火する。典型は autoscale 等の派生値を `&mut T` で毎フレーム代入するケース。
