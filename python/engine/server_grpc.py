@@ -1116,6 +1116,15 @@ class GrpcDataEngineServer(
                 logging.exception("ListInstruments: store read failed; fetching live")
                 raws = None
         if not raws:
+            # Issue #32 Slice 2: scheduler の初回 refresh が進行中（warming）の cold-store
+            # miss は、60s の blocking fetch を避けて独立した PENDING を返す（store-first を
+            # 維持）。UI はこれを Loading spinner にマップし、store が埋まったら再 fetch する。
+            scheduler = self._instruments_scheduler
+            if scheduler is not None and scheduler.is_warming():
+                return engine_pb2.ListInstrumentsResponse(
+                    success=False,
+                    error_message="LIVE_UNIVERSE_PENDING",
+                )
             try:
                 raws = runner.fetch_instruments_blocking(
                     timeout=self._instruments_timeout_s

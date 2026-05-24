@@ -47,6 +47,8 @@ mod c2_list_instruments_failed;
 mod c3_fetch_available_instruments;
 #[path = "e2e/flows/c4_fetch_available_failed.rs"]
 mod c4_fetch_available_failed;
+#[path = "e2e/flows/c6_list_instruments_pending.rs"]
+mod c6_list_instruments_pending;
 
 // D. Venue lifecycle (Live)
 #[path = "e2e/flows/d1_venue_login_success.rs"]

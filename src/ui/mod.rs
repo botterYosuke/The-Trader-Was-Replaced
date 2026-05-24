@@ -90,7 +90,8 @@ use crate::ui::instrument_picker::{
     add_instrument_button_system, auto_fetch_available_on_replay_entry_system,
     auto_fetch_live_universe_on_connect_system, force_close_picker_on_lock_system,
     picker_list_rebuild_system, picker_row_click_system, picker_searchbox_input_system,
-    subscribe_added_instruments_system, sync_picker_dropdown_visibility_system,
+    retry_pending_live_universe_system, subscribe_added_instruments_system,
+    sync_picker_dropdown_visibility_system,
 };
 use crate::ui::instruments_universe_prune::{
     invalidate_tickers_on_venue_disconnect_system, prune_instruments_outside_universe_system,
@@ -391,6 +392,8 @@ impl Plugin for UiPlugin {
                     // §5.3 順序: status 更新後、Tickers 鮮度リセット → live universe fetch
                     invalidate_tickers_on_venue_disconnect_system,
                     auto_fetch_live_universe_on_connect_system,
+                    // #32 Slice 2: warming 中（PENDING→InFlight）は store 充填まで再 fetch
+                    retry_pending_live_universe_system,
                     auto_fetch_available_on_replay_entry_system,
                     // prune → Chart sync → unsubscribe/subscribe → restore → writeback
                     prune_instruments_outside_universe_system,

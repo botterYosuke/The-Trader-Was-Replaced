@@ -81,6 +81,11 @@ backend→ECS seam だけでは十分条件にならない。
    曖昧なら何を観測すれば「動いた」と言えるかをユーザーに確認する。
 2. **FLOWS.md に該当 flow があるか見る**。あれば ID（A1/B2/D3…）と seam・観測がそのまま設計。
    なければ新規 flow として、近いセクション（A〜L）に `- [ ]` 行を追記してよい。
+   ⚠️ **新規 ID を採番する前に衝突を必ず確認する**: FLOWS.md の「保留中の `A5`/`C5`/`D8` など」リストと
+   `docs/wiki/**` の `[<ID>]` 参照を両方 grep する。**保留中（planned）の ID が wiki では既に別挙動に
+   bind 済み**ということがある（例: #32 Slice 2 で C5 を採ろうとしたら、FLOWS.md は C5 を planned 扱いの一方
+   wiki venues.md が `[C5]`=`SelectedSymbol` 更新の planned flow に既に割当済みだった → C6 に採番し直した）。
+   `grep -rn '\[C5\]' docs/wiki tests/e2e/FLOWS.md` で空でない ID は避ける。
 3. **kind を決める**。backend→ECS の resource 変化だけで十分なら `kind:state`。UI 操作・入力・未送信 gating は
    `kind:ui`。ファイル/CLI/backend/env は `kind:integration`。見た目崩れや overlap は `kind:render`。
    実口座など自動化が危険なら `kind:manual-gate` だが、必ず自動 smoke と組み合わせる。

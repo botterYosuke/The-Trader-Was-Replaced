@@ -79,7 +79,8 @@ release gate 列の ID（`I*` / `J*` / `K*` / `L*` 群、保留中の `A5` / `C5
 | find / replace | match span 計算と置換が主対象 | `kind:ui`。FindReplaceState と FindActionRequested を駆動 | J5/J6 ✅ |
 | Startup パネル入力検証 | Run command を送らない UI gating が仕様 | `kind:ui`。field editor state、error label、transport channel 未送信/送信を assert | J7/J8/J16 ✅ |
 | `instruments_ref` fail-closed | file-watch / parser / writeback の連携 | temp sidecar/ref file を使う integration。破損・空・正常の fixture を固定 | J9/J10/J14/J15 ✅ |
-| 銘柄ピッカー | searchbox、debounce、候補表示、readonly が純 UI | `kind:ui`。time advance と text/entity assert。取得 seam は C1-C4 と組み合わせる | J11/J12/J13 ✅ |
+| 銘柄ピッカー | searchbox、debounce、候補表示、readonly が純 UI | `kind:ui`。time advance と text/entity assert。取得 seam は C1-C4/C6 と組み合わせる | J11/J12/J13 ✅ |
+| 銘柄ユニバース取得の pending（cold-store warming） | backend が `LIVE_UNIVERSE_PENDING` を返したら赤エラーでなく Loading spinner（`PendingLiveUniverse`）にする（#32 Slice 2） | `kind:state`。`InstrumentsListFailed{LiveVenue,"LIVE_UNIVERSE_PENDING"}` を注入し `Tickers.status==PendingLiveUniverse`（PENDING 以外は `Failed`）を assert | C6 ✅ |
 | Chart 操作 | wheel/drag/double click と render state が主対象 | `kind:ui` で `ChartViewState` / camera を assert。描画崩れは `kind:render` smoke | K2/K3/K4/K5 ✅ / K1 stub(render) / L4 stub |
 | 注文フォーム / modal / context menu | 2 段階 confirm、focus、Escape 優先順位が主対象 | `kind:ui`。command channel、modal visibility、feedback resource を assert | K7-K16 ✅ |
 | Prod guard / 実 venue | CI で実口座・外部環境に依存 | env isolated backend integration で guard を確認。実接続はリリース時 manual-gate に残す | L3 ✅ / L5 ✅(mock gRPC) / 実接続は manual |

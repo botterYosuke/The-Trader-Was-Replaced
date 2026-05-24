@@ -586,6 +586,9 @@ pub enum TickersStatus {
     #[default]
     NotFetched,
     InFlight,
+    /// Issue #32: backend が `LIVE_UNIVERSE_PENDING` を返した cold-store warming 中。
+    /// 通常の InFlight（遅い live ListInstruments を await 中）と区別し、これだけ retry 対象にする。
+    PendingLiveUniverse,
     Loaded,
     /// Fetch failed; `list` retains the last successfully loaded value (stale display).
     Failed(String),
