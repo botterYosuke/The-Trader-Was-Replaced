@@ -962,6 +962,15 @@ pub fn handle_strategy_run_system(
 }
 
 pub(crate) fn sync_to_cache(original_py: &std::path::Path) -> std::io::Result<()> {
+    // `.py` 以外（cache 復元直後の replay 突入で渡る scenario `.json` sidecar 等）を
+    // app_state.py に copy すると cache を JSON で自己破壊する（i15）。Python ソース以外は何もしない。
+    if original_py.extension().and_then(|e| e.to_str()) != Some("py") {
+        warn!(
+            "sync_to_cache: refusing to sync non-.py source {:?} into app_state.py",
+            original_py
+        );
+        return Ok(());
+    }
     let Some((cache_json, cache_py)) = cache_state_paths() else {
         return Err(std::io::Error::new(
             std::io::ErrorKind::NotFound,
