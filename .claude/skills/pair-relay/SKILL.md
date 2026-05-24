@@ -1,6 +1,6 @@
 ---
 name: pair-relay
-description: 司令塔Agentが Navigator と Driver を分けて長い実装を進めるための運用スキル。司令塔は実装・レビュー・検証を自分で抱えず、Driver の完了報告やバグ報告を Navigator に渡し、Navigator の「次の 1 手」を Driver に渡す。Driver は .claude/agents/pair-relay-driver.md、Navigator は .claude/agents/pair-relay-navigator.md に従う。トリガー: 「/pair-relay」「計画書を実装してください」「プランを実装」「段階的に実装」「複数ファイルにまたがる実装」「長い実装」「フェーズを実装」「TDD で実装」「codex でレビューして修正」「レビューして Medium 以上が無くなるまで修正」「コードレビューしてバグを直して」と言われたとき。複数ファイル・複数レイヤー（Rust + Python）にまたがる実装や、プランファイルを渡されて実装を指示されたときに優先的に発動すること。⚠️ src/ui/** を触る作業では Navigator spawn 前に必ず bevy-engine スキルを発動して内容を把握すること（読まずに進めると Bevy 0.15 固有の罠でハマる）。⚠️ Rust テスト（`#[cfg(test)] mod tests` 追加や `cargo test --lib` 主体の TDD ループ）を伴う作業では Navigator spawn 前に rust-testing スキルも発動すること（subagent は親が発動したスキルしか引き継がない）。⚠️ Python テスト（pytest、特に `pytest-httpx` / `pytest-asyncio` / `freezegun` を使う RED→GREEN ループ）を伴う作業では Navigator spawn 前に tdd-workflow スキルも発動すること。⚠️ 立花証券・kabuステーション venue 関連の Python 実装では tachibana / kabusapi スキルも事前発動すること（API 規約 R1-R10 を Navigator が踏まないため）。⚠️ context 消費に注意: Driver/Navigator 1 往復で 25k+ tokens 消費するため、1 session で消化できる subtask は 2-3 個が現実的。プランファイル全消化を 1 session で狙わない。完了後は simplify スキルで変更コードをレビューすること。
+description: 司令塔Agentが Navigator と Driver を分けて長い実装を進めるための運用スキル。司令塔は実装・レビュー・検証を自分で抱えず、Driver の完了報告やバグ報告を Navigator に渡し、Navigator の「次の 1 手」を Driver に渡す。Driver は .claude/agents/pair-relay-driver.md、Navigator は .claude/agents/pair-relay-navigator.md に従う。トリガー: 「/pair-relay」「計画書を実装してください」「プランを実装」「段階的に実装」「複数ファイルにまたがる実装」「長い実装」「フェーズを実装」「TDD で実装」「codex でレビューして修正」「レビューして Medium 以上が無くなるまで修正」「コードレビューしてバグを直して」と言われたとき。複数ファイル・複数レイヤー（Rust + Python）にまたがる実装や、プランファイルを渡されて実装を指示されたときに優先的に発動すること。⚠️ src/ui/** を触る作業では Navigator spawn 前に必ず bevy-engine スキルを発動して内容を把握すること（読まずに進めると Bevy 0.15 固有の罠でハマる）。⚠️ Rust テスト（`#[cfg(test)] mod tests` 追加や `cargo test --lib` 主体の TDD ループ）を伴う作業では Navigator spawn 前に rust-testing スキルも発動すること（subagent は親が発動したスキルしか引き継がない）。⚠️ Python テスト（pytest、特に `pytest-httpx` / `pytest-asyncio` / `freezegun` を使う RED→GREEN ループ）を伴う作業では Navigator spawn 前に tdd スキルも発動すること。⚠️ 立花証券・kabuステーション venue 関連の Python 実装では tachibana / kabusapi スキルも事前発動すること（API 規約 R1-R10 を Navigator が踏まないため）。⚠️ Nautilus の exec client / order イベント（`_modify_order`・`generate_order_canceled/expired/filled/updated/modify_rejected`・OrderStatus FSM・PENDING_UPDATE・OrderModifyRejected）を触る Python 実装では Navigator spawn 前に nautilus-trader スキルも発動すること（Navigator が毎回 `.venv` の Nautilus ソースを読み直さず、シグネチャ/状態遷移を skill mirror で裏取りできる）。⚠️ context 消費に注意: Driver/Navigator 1 往復で 25k+ tokens 消費するため、1 session で消化できる subtask は 2-3 個が現実的。プランファイル全消化を 1 session で狙わない。完了後は simplify スキルで変更コードをレビューすること。
 ---
 
 # Pair Relay
@@ -174,8 +174,20 @@ format / restore の判断も Navigator に任せます。
 - E2E 結果を曖昧にする
 - 無関係差分をまとめて戻す
 - `git reset --hard` を提案する
+- **Navigator/Driver に破壊的 git 操作を許す**（下記「未コミット作業の保護」）
 
 例外として許されるのは、Human への最終報告での **重複ログ圧縮** のみ。作業判断に関わる情報は削らない。
+
+## 未コミット作業の保護（破壊的 git は subagent に絶対やらせない）
+
+実例: ある Navigator が一時 probe テストを「`git checkout` で除去」した際、**同ファイルの未コミット追加（289 行のテスト）まで巻き戻して消失**させた。実装は別ファイルで無傷だったが、消えたテストは未コミット＝git に記録が無く、復旧元は会話履歴の verbatim だけだった。
+
+ルール:
+
+- **Navigator/Driver を spawn する prompt に必ず**「`git checkout` / `git reset` / `git restore` / `git stash` 等、作業ツリーを巻き戻すコマンドは実行禁止」と明記する。検証は pytest / cargo / Read / Grep / `git status` まで。
+- 一時 probe コードが要るなら、別 throwaway ファイルに書くか Read だけで観測し、消すときも対象を名指しの Edit で消す（git で戻さない）。
+- subagent はワークツリー全体の文脈を持たない。`git checkout <file>` でも、その subagent が作っていない未コミット変更まで道連れにする。`git reset --hard` だけの問題ではない。
+- 長い実装で未コミット差分が積み上がったら、節目で WIP コミットして保護を検討する（git は Bash 経由）。
 
 ## SendMessage が unavailable な harness の運用
 
