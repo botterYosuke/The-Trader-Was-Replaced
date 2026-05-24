@@ -130,6 +130,12 @@ class ManualOrderFacade:
             filled_qty=res.filled_qty,
             avg_price=res.avg_price if res.avg_price is not None else 0.0,
             ts_ms=_now_ms(),
+            # issue #29 Slice3a: 静的属性を載せて GetOrders seed で完全行を復元可能にする。
+            # symbol は instrument_id、price は LIMIT のときだけ（MARKET は指値なし → None）。
+            symbol=instrument_id,
+            side=side_n,
+            qty=qty,
+            price=effective_price,
         )
         with self._lock:
             self._orders[event.order_id] = event
@@ -168,6 +174,11 @@ class ManualOrderFacade:
             filled_qty=prior.filled_qty,
             avg_price=prior.avg_price,
             ts_ms=_now_ms(),
+            # Slice3a: 取消は静的属性を変えない → 元注文の symbol/side/qty/price を保持。
+            symbol=prior.symbol,
+            side=prior.side,
+            qty=prior.qty,
+            price=prior.price,
         )
         with self._lock:
             self._orders[order_id] = event
@@ -228,6 +239,13 @@ class ManualOrderFacade:
             filled_qty=res.filled_qty if res.filled_qty else prior.filled_qty,
             avg_price=res.avg_price if res.avg_price is not None else prior.avg_price,
             ts_ms=_now_ms(),
+            # Slice3a: symbol/side は不変。qty/price は指定された方だけ更新（None は据え置き、
+            # proto optional セマンティクス）。UI の qty/price 反映は従来 Rust が
+            # ModifyOrder コマンドの new_qty/new_price から行うが、store もここで一貫させる。
+            symbol=prior.symbol,
+            side=prior.side,
+            qty=new_qty if new_qty is not None else prior.qty,
+            price=new_price if new_price is not None else prior.price,
         )
         with self._lock:
             self._orders[order_id] = event

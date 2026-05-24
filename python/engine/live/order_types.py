@@ -62,6 +62,12 @@ class OrderEventData(BaseModel):
     この dataclass を `engine_pb2.OrderEvent` に詰め替える。`order_id` は UI が
     扱う安定ハンドルで、mock では `client_order_id` と同値（venue 採番が無いため
     `venue_order_id` は空文字）。
+
+    issue #29 Slice3a: `symbol`/`side`/`qty`/`price` は発注時の静的属性。GetOrders
+    による接続/再起動後の seed で UI が完全な注文行（銘柄・売買・数量・指値）を復元
+    できるよう facade が place 時に載せる（`symbol` は instrument_id、MARKET は
+    `price=None`）。EC stream 由来など静的属性が不明な経路では既定値（""/0.0/None）
+    のまま残り、UI 側は「非空が勝つ」マージ規則で既知の値を保持する。
     """
 
     order_id: str
@@ -71,6 +77,10 @@ class OrderEventData(BaseModel):
     filled_qty: float
     avg_price: float
     ts_ms: int
+    symbol: str = ""
+    side: str = ""
+    qty: float = 0.0
+    price: float | None = None
 
     model_config = {"frozen": True}
 

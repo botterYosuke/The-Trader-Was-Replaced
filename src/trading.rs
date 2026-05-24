@@ -313,6 +313,13 @@ pub enum TransportCommand {
     GetOrders {
         venue: String,
     },
+    /// Phase 9 §3.8 Med-A: like `GetOrders` but ALSO emits `OrdersReconciled`
+    /// to flag optimistic working orders the backend no longer tracks. Used by
+    /// the auto-restart trigger; plain connect-seed uses `GetOrders` (seed only,
+    /// no reconcile).
+    GetOrdersAndReconcile {
+        venue: String,
+    },
     /// Phase 10 §2.7 / §1.3: promote the editor's saved strategy to a Live Auto
     /// run. The transport task expands this into the RPC chain
     /// `RegisterLiveStrategy` → (`SetExecutionMode(LiveAuto)` when `ensure_live_auto`)
@@ -840,6 +847,16 @@ pub enum BackendStatusUpdate {
     OrdersReconciled {
         backend_client_order_ids: Vec<String>,
     },
+    /// Issue #29 Slice 3a: full working-order rows from a `GetOrders` snapshot, used
+    /// to **seed** the OrdersPanel with complete records (symbol/side/qty/price), not
+    /// just the id-diff that `OrdersReconciled` carries. The transport task builds
+    /// these from the proto `OrderEvent`'s static attributes (now populated by the
+    /// backend's order facade). Applied via `LiveOrders::seed_working`, which inserts
+    /// unknown orders and gap-fills known ones without clobbering a recorded
+    /// monotonic fill or known static fields.
+    OrdersSeeded {
+        orders: Vec<LiveOrder>,
+    },
     /// Phase 10 §2.7: structured outcome of a `PromoteToLive` RPC chain. Success
     /// also arrives as a pushed `LiveStrategyEvent{status:"RUNNING"}`, so this is
     /// primarily for surfacing a structured reject (`EXECUTION_MODE_PRECONDITION` /
@@ -1135,6 +1152,69 @@ impl LiveOrders {
             existing.ts_ms = ts_ms;
         }
         // Unknown id: no-op (modify always targets a known order).
+    }
+
+    /// Seed a working order from a `GetOrders` snapshot (issue #29 Slice 3a). Unlike
+    /// `upsert_full` (which wholesale-replaces and is correct for the originating
+    /// `PlaceOrder` response), this is a **merge** safe for reconcile/connect seeds:
+    /// an unknown `client_order_id` is inserted as a full row; a known one keeps its
+    /// recorded static fields and monotonic fill, only gap-filling empties and
+    /// refreshing status. This protects a real-money partial fill / known
+    /// symbol-side-qty-price from being regressed by a lagging snapshot.
+    pub fn seed_working(&mut self, seed: LiveOrder) {
+        // 照合キー: client_order_id が空なら venue-only 行なので venue_order_id で
+        // 突き合わせる（issue #29 High-1）。空同士で潰れるのを防ぐ。両方空なら
+        // find は None を返し、else 側で新規 insert される。
+        let key_co = !seed.client_order_id.is_empty();
+        if let Some(existing) = self.orders.iter_mut().find(|o| {
+            if key_co {
+                o.client_order_id == seed.client_order_id
+            } else {
+                !seed.venue_order_id.is_empty() && o.venue_order_id == seed.venue_order_id
+            }
+        }) {
+            // Dynamic state refreshes from the snapshot; the fill advances
+            // monotonically (real-money under-report guard, §3.12).
+            // Terminal guard (issue #29 Medium-3): a settled order
+            // (FILLED/CANCELED/REJECTED/EXPIRED/DENIED) is final, so a lagging
+            // snapshot must not regress it back to a working status.
+            if !is_terminal_order_status(&existing.status) {
+                existing.status = seed.status;
+            }
+            existing.advance_fill(seed.filled_qty, seed.avg_price);
+            existing.ts_ms = seed.ts_ms;
+            // Non-empty wins for ids/strategy (same rule as apply_event): a snapshot
+            // that omits them must not clear a value the UI already tagged.
+            if !seed.venue_order_id.is_empty() {
+                existing.venue_order_id = seed.venue_order_id;
+            }
+            if !seed.strategy_id.is_empty() {
+                existing.strategy_id = seed.strategy_id;
+            }
+            // Static attrs only gap-fill: a row that already knows its
+            // symbol/side/qty/price keeps them (e.g. seeded from the PlaceOrder
+            // response). An empty/zero field is filled from the snapshot.
+            if existing.symbol.is_empty() {
+                existing.symbol = seed.symbol;
+            }
+            if existing.side.is_empty() {
+                existing.side = seed.side;
+            }
+            if existing.qty == 0.0 {
+                existing.qty = seed.qty;
+            }
+            // facade 由来（key_co=true=client_order_id 一致）の行は、訂正後の
+            // 新 price (Some) で上書きする（issue #29 Low-6）。venue-only 行
+            // (key_co=false) は従来どおり None のときだけ gap-fill する。
+            if key_co && seed.price.is_some() {
+                existing.price = seed.price;
+            } else if existing.price.is_none() {
+                existing.price = seed.price;
+            }
+        } else {
+            self.orders.insert(0, seed);
+            self.orders.truncate(MAX_LIVE_ORDERS);
+        }
     }
 }
 
@@ -1530,20 +1610,59 @@ pub fn reconcile_unknown_orders(
     live: &LiveOrders,
     backend_client_order_ids: &[String],
 ) -> Vec<ReconcileUnknownOrder> {
+    // 空 id は facade も venue も採番していない行 → 常に unknown 扱い。
+    // 空文字同士の衝突で venue-only stale 注文が誤って既知判定されるのを防ぐ。
+    let backend_ids: HashSet<&str> = backend_client_order_ids
+        .iter()
+        .filter(|id| !id.is_empty())
+        .map(String::as_str)
+        .collect();
+
     live.orders
         .iter()
         .filter(|o| !is_terminal_order_status(&o.status))
-        .filter(|o| {
-            !backend_client_order_ids
-                .iter()
-                .any(|id| id == &o.client_order_id)
-        })
+        .filter(|o| !backend_ids.contains(o.client_order_id.as_str()))
         .map(|o| ReconcileUnknownOrder {
             client_order_id: o.client_order_id.clone(),
             symbol: o.symbol.clone(),
             status: o.status.clone(),
         })
         .collect()
+}
+
+/// Issue #29 Slice 3b (Medium-4): a `GetOrders` reconcile whose RPC returned a
+/// non-empty `error_code` means the venue snapshot was unreliable (e.g. timeout).
+/// Surface a verbatim notice in the OrderPanel feedback line so working orders
+/// aren't silently treated as "backend tracks none". Empty error_code → no notice.
+pub fn get_orders_notice(error_code: &str) -> Option<BackendStatusUpdate> {
+    if error_code.is_empty() {
+        None
+    } else {
+        Some(BackendStatusUpdate::OrderNotice {
+            message: format!(
+                "venue の注文取得に失敗しました（{error_code}）— venue で注文状態を確認してください"
+            ),
+        })
+    }
+}
+
+/// Issue #29 Slice 3b (Medium-A): connect-seed と auto-restart reconcile を
+/// 分離する純関数。reconcile=false（接続時 seed-only）なら None を返し、
+/// main.rs は OrdersReconciled を送らない。reconcile=true（restart 後）なら
+/// 空 client_order_id を除いた backend が追跡中の id 列を Some で返す。
+/// 空 id 除外は reconcile_unknown_orders 側（UI の unknown 判定）の二層目防御と
+/// 責務が分かれる（ここは送る reconcile payload の生成）。
+pub fn reconcile_ids_for_seed(seeded: &[LiveOrder], reconcile: bool) -> Option<Vec<String>> {
+    if !reconcile {
+        return None;
+    }
+    Some(
+        seeded
+            .iter()
+            .map(|o| o.client_order_id.clone())
+            .filter(|id| !id.is_empty())
+            .collect(),
+    )
 }
 
 #[cfg(test)]
@@ -1626,6 +1745,96 @@ mod tests {
     }
 
     #[test]
+    fn reconcile_ids_for_seed_returns_none_when_not_reconciling() {
+        // connect-seed パス: reconcile=false なら main.rs は OrdersReconciled を
+        // 撃ってはならない（接続時 seed のみ）。
+        let seeded = vec![make_live_order("c1")];
+        assert_eq!(
+            reconcile_ids_for_seed(&seeded, false),
+            None,
+            "connect-seed (reconcile=false) must not produce reconcile ids"
+        );
+    }
+
+    #[test]
+    fn reconcile_ids_for_seed_returns_nonempty_client_ids_when_reconciling() {
+        // restart-reconcile パス: reconcile=true なら空でない client_order_id を
+        // Some で返す。facade が採番した id は残す。
+        let seeded = vec![make_live_order("c1"), make_live_order("c2")];
+        assert_eq!(
+            reconcile_ids_for_seed(&seeded, true),
+            Some(vec!["c1".to_string(), "c2".to_string()]),
+            "reconcile=true must return backend-tracked client ids"
+        );
+    }
+
+    #[test]
+    fn reconcile_ids_for_seed_excludes_empty_client_ids() {
+        // venue-only 注文（client_order_id 空）は reconcile payload から除外。
+        // 空 id の衝突で stale 注文が誤って既知扱いされるのを防ぐ。
+        let seeded = vec![
+            make_live_order(""),     // venue-only → 除外
+            make_live_order("c1"),   // facade 採番 → 残す
+        ];
+        assert_eq!(
+            reconcile_ids_for_seed(&seeded, true),
+            Some(vec!["c1".to_string()]),
+            "empty client_order_id (venue-only) must be excluded from reconcile ids"
+        );
+    }
+
+    #[test]
+    fn reconcile_empty_client_id_is_not_silenced_by_empty_backend_id() {
+        // A venue-only stale order with an empty client_order_id must NOT be
+        // treated as "known" just because backend_client_order_ids also carries
+        // an empty string. Empty ids collide and would hide the stale order.
+        let mut lo = LiveOrders::default();
+        let mut o = make_live_order_with_status("", "ACCEPTED");
+        o.venue_order_id = "v-stale".to_string();
+        lo.upsert_full(o);
+        let unknown = reconcile_unknown_orders(&lo, &["".to_string()]);
+        assert_eq!(unknown.len(), 1, "empty-id working order must surface as unknown");
+    }
+
+    #[test]
+    fn get_orders_notice_emits_on_error_code() {
+        let notice = get_orders_notice("VENUE_ORDERS_TIMEOUT");
+        assert!(
+            matches!(
+                &notice,
+                Some(BackendStatusUpdate::OrderNotice { message })
+                    if message == "venue の注文取得に失敗しました（VENUE_ORDERS_TIMEOUT）— venue で注文状態を確認してください"
+            ),
+            "non-empty error_code must surface a verbatim OrderNotice, got {notice:?}"
+        );
+    }
+
+    #[test]
+    fn get_orders_notice_silent_on_empty_error_code() {
+        assert!(
+            get_orders_notice("").is_none(),
+            "empty error_code (clean snapshot) must not emit a notice"
+        );
+    }
+
+    #[test]
+    fn get_orders_notice_message_is_error_code_specific_not_timeout() {
+        let notice = get_orders_notice("NO_LIVE_SESSION");
+        let msg = match notice {
+            Some(BackendStatusUpdate::OrderNotice { message }) => message,
+            other => panic!("non-empty error_code must surface an OrderNotice, got {other:?}"),
+        };
+        assert!(
+            msg.contains("NO_LIVE_SESSION"),
+            "notice は渡した error_code を含むべき（汎用文言）, got {msg:?}"
+        );
+        assert!(
+            !msg.contains("タイムアウト"),
+            "timeout 以外の error_code で timeout 文言を出してはいけない, got {msg:?}"
+        );
+    }
+
+    #[test]
     fn live_orders_upsert_full_inserts_newest_first() {
         let mut lo = LiveOrders::default();
         lo.upsert_full(make_live_order("c1"));
@@ -1644,6 +1853,150 @@ mod tests {
         lo.upsert_full(updated);
         assert_eq!(lo.orders.len(), 1, "same client_order_id replaces, no dup");
         assert_eq!(lo.orders[0].qty, 200.0);
+    }
+
+    #[test]
+    fn seed_working_inserts_unknown_order_as_full_row() {
+        // Slice 3a: a GetOrders snapshot of an order the UI never saw (e.g. placed in
+        // a prior session) seeds a complete row — symbol/side/qty/price all present.
+        let mut lo = LiveOrders::default();
+        let mut seed = make_live_order_with_status("c-new", "ACCEPTED");
+        seed.venue_order_id = "V42".to_string();
+        seed.filled_qty = 30.0;
+        seed.avg_price = 2499.0;
+        lo.seed_working(seed);
+        assert_eq!(lo.orders.len(), 1);
+        let o = &lo.orders[0];
+        assert_eq!(o.client_order_id, "c-new");
+        assert_eq!(o.symbol, "7203.T");
+        assert_eq!(o.side, "BUY");
+        assert_eq!(o.qty, 100.0);
+        assert_eq!(o.price, Some(2500.0));
+        assert_eq!(o.status, "ACCEPTED");
+        assert_eq!(o.venue_order_id, "V42");
+        assert_eq!(o.filled_qty, 30.0);
+    }
+
+    #[test]
+    fn seed_working_does_not_regress_a_recorded_partial_fill() {
+        // A known order already has a 60-share partial from the EC stream; a lagging
+        // GetOrders snapshot reporting 30 must NOT lower the cumulative fill
+        // (real-money under-report guard, mirrors apply_event's monotonic rule).
+        let mut lo = LiveOrders::default();
+        let mut known = make_live_order_with_status("c1", "PARTIALLY_FILLED");
+        known.filled_qty = 60.0;
+        known.avg_price = 2502.0;
+        lo.upsert_full(known);
+        let mut stale = make_live_order_with_status("c1", "PARTIALLY_FILLED");
+        stale.filled_qty = 30.0;
+        stale.avg_price = 2400.0;
+        lo.seed_working(stale);
+        let o = &lo.orders[0];
+        assert_eq!(o.filled_qty, 60.0, "fill must not decrease");
+        assert_eq!(o.avg_price, 2502.0, "avg_price stays with the larger fill");
+    }
+
+    #[test]
+    fn seed_working_gap_fills_static_fields_without_clobbering_known() {
+        // An unknown-id order inserted by an EC-stream event (empty static fields) is
+        // later completed by a GetOrders seed; but a row that already knows its
+        // static fields is not overwritten by the seed.
+        let mut lo = LiveOrders::default();
+        // EC-stream first saw "c1" with no static attrs:
+        lo.apply_event("c1", "V1", "ACCEPTED", 0.0, 0.0, 1, "");
+        let mut seed = make_live_order_with_status("c1", "ACCEPTED");
+        seed.qty = 999.0; // would-be clobber if seed overwrote a known qty
+        // c1 currently has empty symbol/side and qty 0 → gap-fill from the seed.
+        lo.seed_working(seed);
+        let o = &lo.orders[0];
+        assert_eq!(o.symbol, "7203.T", "empty symbol gap-filled");
+        assert_eq!(o.side, "BUY", "empty side gap-filled");
+        assert_eq!(o.qty, 999.0, "qty was 0 → taken from seed");
+
+        // Now seed again with different static fields: the known values must win.
+        let mut seed2 = make_live_order_with_status("c1", "ACCEPTED");
+        seed2.symbol = "6758.T".to_string();
+        seed2.qty = 1.0;
+        lo.seed_working(seed2);
+        let o = &lo.orders[0];
+        assert_eq!(o.symbol, "7203.T", "known symbol not clobbered");
+        assert_eq!(o.qty, 999.0, "known qty not clobbered");
+    }
+
+    #[test]
+    fn seed_working_keeps_distinct_venue_only_orders_apart() {
+        // issue #29 High-1: a venue-only working order has an empty client_order_id
+        // (it was never placed through this UI). Two such orders are distinct rows,
+        // keyed by their distinct venue_order_id. Matching on client_order_id alone
+        // collapses them onto the first empty-id row, so the panel shows just one.
+        let mut lo = LiveOrders::default();
+
+        let mut a = make_live_order_with_status("", "ACCEPTED");
+        a.venue_order_id = "V1".to_string();
+        lo.seed_working(a);
+
+        let mut b = make_live_order_with_status("", "ACCEPTED");
+        b.venue_order_id = "V2".to_string();
+        lo.seed_working(b);
+
+        assert_eq!(lo.orders.len(), 2, "distinct venue-only orders stay separate");
+        let venues: Vec<&str> = lo.orders.iter().map(|o| o.venue_order_id.as_str()).collect();
+        assert!(venues.contains(&"V1"), "V1 row present");
+        assert!(venues.contains(&"V2"), "V2 row present");
+    }
+
+    #[test]
+    fn seed_working_does_not_resurrect_a_terminal_order() {
+        // Medium-3: a terminal order (FILLED) is settled. A lagging GetOrders
+        // snapshot that hardcodes status="ACCEPTED" (fetch_working_orders, High-2)
+        // must NOT roll the row back to a working state, or the panel re-shows a
+        // settled order as live.
+        let mut lo = LiveOrders::default();
+        let mut done = make_live_order_with_status("c1", "FILLED");
+        done.filled_qty = 100.0;
+        lo.upsert_full(done);
+
+        let stale = make_live_order_with_status("c1", "ACCEPTED");
+        lo.seed_working(stale);
+
+        let o = &lo.orders[0];
+        assert_eq!(o.status, "FILLED", "terminal status must not regress to ACCEPTED");
+    }
+
+    #[test]
+    fn seed_working_overwrites_price_on_facade_match_for_correction() {
+        // Low-6: an order was placed via this UI (non-empty client_order_id) at 2500,
+        // then corrected to 2450. A GetOrders seed keyed by the matching
+        // client_order_id (facade-origin) must apply the new price, not keep the
+        // stale Some(2500). venue-only rows (empty client_order_id) are left to the
+        // None-gap-fill-only path and are not affected here.
+        let mut lo = LiveOrders::default();
+        let known = make_live_order_with_status("c1", "ACCEPTED"); // price = Some(2500.0)
+        lo.upsert_full(known);
+
+        let mut corrected = make_live_order_with_status("c1", "ACCEPTED");
+        corrected.price = Some(2450.0);
+        lo.seed_working(corrected);
+
+        assert_eq!(lo.orders[0].price, Some(2450.0), "facade-match price correction applied");
+    }
+
+    #[test]
+    fn seed_working_venue_only_does_not_clobber_known_price() {
+        // Low-6 regression: a venue-only seed (empty client_order_id, matched by
+        // venue_order_id) must keep the None-gap-fill-only rule — it never overwrites
+        // an already-known price, only fills a None.
+        let mut lo = LiveOrders::default();
+        let mut known = make_live_order_with_status("", "ACCEPTED"); // price = Some(2500.0)
+        known.venue_order_id = "V1".to_string();
+        lo.upsert_full(known);
+
+        let mut seed = make_live_order_with_status("", "ACCEPTED");
+        seed.venue_order_id = "V1".to_string();
+        seed.price = Some(9999.0); // would clobber if the facade-overwrite path applied
+        lo.seed_working(seed);
+
+        assert_eq!(lo.orders[0].price, Some(2500.0), "venue-only seed must not overwrite a known price");
     }
 
     #[test]

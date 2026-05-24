@@ -405,6 +405,16 @@ message OrderEvent {
   // Manual orders carry "MANUAL-001"; each Live Auto run carries "LIVE-{run}".
   // Additive (proto3 optional): pre-Phase-10 producers leave it unset → "".
   optional string strategy_id = 8;
+  // issue #29 Slice 3a: static order attributes so a GetOrders snapshot can
+  // reconstruct a full UI order row (symbol/side/qty/price) at connect/restart
+  // seed time — the ids+status+fill fields above are not enough on their own.
+  // Populated by the manual order facade (place/cancel/modify); EC-stream pushes
+  // that don't know the static attrs leave them at default (""/0) and the UI keeps
+  // the known values ("non-empty wins"). `price` is unset for market orders.
+  string symbol = 9;
+  string side = 10;        // "BUY" / "SELL"
+  double qty = 11;
+  optional double price = 12;  // unset => market order (no limit price)
 }
 
 message AccountPosition {
