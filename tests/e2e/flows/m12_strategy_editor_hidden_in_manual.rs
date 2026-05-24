@@ -9,10 +9,12 @@
 //! - 別 `PanelKind` のウィンドウは触らない。
 //! - **子まで隠れる構造条件**（issue #33 [MEDIUM]）: 実 Strategy Editor を spawn し、
 //!   editor / gutter / scrollbar_track の各子から `Parent` 連鎖で root まで上がる経路上の
-//!   全 entity が `InheritedVisibility` を持つ（= root を `Hidden` にすれば中身まで伝播する）
-//!   ことを assert する。Bevy 0.15 の `visibility_propagate_system` は途中 entity が
-//!   `Visibility` を欠くと `propagate_recursive` が early-return し、枠だけ消えて中身が
-//!   残る（M11 と同型の構造バグ）。レンダ依存なしにこの構造条件を固定する。
+//!   全 entity が `Visibility` と `InheritedVisibility` の **両方** を持つ
+//!   （= root を `Hidden` にすれば中身まで伝播する）ことを assert する。Bevy 0.15 の
+//!   `propagate_recursive` は各ノードを `(&Visibility, &mut InheritedVisibility)` で get するため、
+//!   どちらか一方でも欠けると early-return し、枠だけ消えて中身が残る（M11 と同型の構造バグ）。
+//!   `InheritedVisibility` の有無だけ見ると「Visibility が無い中間ノード」を取りこぼすため
+//!   伝播ゲートそのものを検証する。レンダ依存なしにこの構造条件を固定する。
 
 use bevy::prelude::*;
 use bevy::transform::TransformPlugin;
@@ -86,10 +88,16 @@ fn m12_strategy_editor_hidden_in_manual() {
         .id();
 
     // ── 子伝播の構造条件（issue #33 [MEDIUM]）──
-    // root は Sprite 由来で InheritedVisibility を持つ（伝播の起点）。
+    // Bevy 0.15 の `propagate_recursive` は各ノードを `(&Visibility, &mut InheritedVisibility)`
+    // で get するため、どちらか一方でも欠けると伝播がそこで途切れる。`InheritedVisibility`
+    // の有無だけ見ると「InheritedVisibility はあるが Visibility が無い」中間ノードを取りこぼす
+    // ので、経路上の全 entity が **両方** を持つことを assert する（伝播ゲートそのものを固定）。
+    let has_propagation_gate =
+        |w: &World, e: Entity| w.get::<Visibility>(e).is_some() && w.get::<InheritedVisibility>(e).is_some();
+    // root は Sprite 由来で Visibility/InheritedVisibility を持つ（伝播の起点）。
     assert!(
-        app.world().get::<InheritedVisibility>(window).is_some(),
-        "root は InheritedVisibility を持つはず（可視性伝播の起点）"
+        has_propagation_gate(app.world(), window),
+        "root は Visibility と InheritedVisibility を持つはず（可視性伝播の起点）"
     );
     let children = app
         .world()
@@ -101,15 +109,17 @@ fn m12_strategy_editor_hidden_in_manual() {
         ("scrollbar_track", children.scrollbar_track),
     ];
     // editor / gutter / scrollbar_track のいずれの子からも、Parent 連鎖で root へ到達でき、
-    // 経路上の全 entity が InheritedVisibility を持つ（content_area で連鎖が切れていない）。
+    // 経路上の全 entity が Visibility と InheritedVisibility の **両方** を持つ
+    // （content_area で連鎖が切れていない＝伝播ゲートが全ノードで成立している）。
     for (label, child) in child_entities {
         let mut cursor = child;
         let mut reached_root = false;
         for _ in 0..32 {
             assert!(
-                app.world().get::<InheritedVisibility>(cursor).is_some(),
-                "{label} から root への経路上の entity {cursor:?} が InheritedVisibility を欠く \
-                 → ここで可視性伝播が途切れ、root を Hidden にしても中身が隠れない（issue #33）"
+                has_propagation_gate(app.world(), cursor),
+                "{label} から root への経路上の entity {cursor:?} が Visibility か \
+                 InheritedVisibility を欠く → ここで `propagate_recursive` が early-return し、\
+                 root を Hidden にしても中身が隠れない（issue #33）"
             );
             if cursor == window {
                 reached_root = true;
