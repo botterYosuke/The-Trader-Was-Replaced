@@ -7,7 +7,17 @@ description: |
   message bus, the data engine, clocks/timers, bar/quote/trade data types, instruments,
   `BacktestEngine` / `BacktestNode` / `BacktestEngineConfig`, `TradingNode` / `LiveExecEngine`,
   `NautilusKernel`, ParquetDataCatalog, indicators, custom data, adapters, or anything in
-  `python/engine/nautilus_*.py`. Also trigger on related vocabulary: "msgbus", "ts_event",
+  `python/engine/nautilus_*.py`.
+  Also trigger on the **precision-mode / catalog-parquet-schema seam** (GH #34): "HIGH_PRECISION",
+  "PRECISION_BYTES", "FIXED_PRECISION", "standard vs high precision", "8-byte / 16-byte", "i64 / i128",
+  "fixed_size_binary", "PrecisionMismatch", "precision mismatch", "catalog precision", `Price.from_raw` /
+  `Quantity.from_raw` raw scaling, the on-disk catalog layout
+  `data/<bar|trade_tick|quote_tick>/<identifier>/*.parquet`, `class_to_filename` / `filename_to_class`,
+  parquet schema metadata (`price_precision` / `size_precision`), and the sdist `HIGH_PRECISION=false`
+  source rebuild (`build.py` Cargo feature) used to match a standard-precision shared catalog. Precision
+  mode is compiled into the wheel, so wheels differ per platform even at the same version — confirm with
+  `nautilus_pyo3.PRECISION_BYTES`, never the version string.
+  Also trigger on related vocabulary: "msgbus", "ts_event",
   "ts_init", "InstrumentId", "ClientId", "Venue", "BarSpec", "OrderFactory", "ExecAlgorithm",
   "PositionEvent", "OrderEvent", "cache" in a trading sense, "Cython .pyx", "PyO3".
   Also trigger on the **execution-client / order-event seam** (common to live venue adapters

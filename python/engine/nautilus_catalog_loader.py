@@ -13,9 +13,141 @@ read clearly:
     runner.run_bars(load_bars(catalog_path, instrument_ids=[...]))
 """
 
+import glob
 import os
 from pathlib import Path
 from typing import Any, Optional
+
+
+class CatalogPrecisionMismatchError(ValueError):
+    """The catalog parquet was written with a different nautilus precision build
+    than the one currently running.
+
+    nautilus bakes its precision mode (standard 8-byte / high 16-byte) into the
+    compiled wheel via the ``HIGH_PRECISION`` Cargo feature. When ``catalog.query()``
+    hits a ``fixed_size_binary`` width it wasn't compiled for, nautilus ``.unwrap()``s
+    a ``PrecisionMismatch`` deep inside Rust and **aborts the whole backend process**
+    (SIGABRT) — uncatchable from Python, and the UI only ever sees "transport error".
+
+    This loader runs a hard preflight *before* ``query()`` and raises this instead, so
+    the real cause reaches the UI. It subclasses ``ValueError`` so the existing
+    ``except (ValueError, FileNotFoundError)`` handlers in the replay/StartEngine paths
+    surface its message rather than letting it escape as an opaque gRPC error.
+
+    See GH #34.
+    """
+
+
+def _running_precision_bytes() -> int:
+    """PRECISION_BYTES of the currently-installed nautilus wheel (8 or 16)."""
+    from nautilus_trader.core import nautilus_pyo3
+
+    return int(nautilus_pyo3.PRECISION_BYTES)
+
+
+def _assert_catalog_precision_compatible(
+    catalog_root: str | Path,
+    data_subdir: str,
+    identifiers: Optional[list[str]],
+    expected_bytes: Optional[int] = None,
+) -> None:
+    """Hard gate run *before* ``catalog.query()``.
+
+    Inspect the ``fixed_size_binary`` column width of the parquet files ``query()``
+    is about to read (``<root>/data/<subdir>/<identifier>/*.parquet``) and compare it
+    to the running nautilus ``PRECISION_BYTES``. Raise :class:`CatalogPrecisionMismatchError`
+    on any mismatch.
+
+    No-op when the catalog has no matching parquet files (width is then unknowable and
+    ``query()`` will report "no data" cleanly). ``expected_bytes`` is injectable for
+    testing; it defaults to the running build.
+    """
+    import pyarrow as pa
+    import pyarrow.parquet as pq
+
+    data_dir = Path(catalog_root) / "data" / data_subdir
+    if not data_dir.exists():
+        return
+
+    if identifiers:
+        id_dirs: list[Path] = []
+        for ident in identifiers:
+            exact = data_dir / ident
+            if exact.is_dir():
+                id_dirs.append(exact)
+            else:
+                # nautilus prefix-matches identifiers: query(identifiers=["1301.TSE"])
+                # reads dir "1301.TSE-1-MINUTE-LAST-EXTERNAL". Exact-dir-only matching
+                # would no-op for a bare instrument id and let an unchecked width reach
+                # query() (→ abort). Over-matching is safe — we only inspect more files,
+                # all written by the same build.
+                id_dirs.extend(
+                    p for p in data_dir.iterdir() if p.is_dir() and p.name.startswith(ident)
+                )
+    else:
+        id_dirs = [p for p in data_dir.iterdir() if p.is_dir()]
+
+    # Check every parquet file query() could read. A single 8-byte shard among 16-byte
+    # files would still abort the process if it reached query(), so sampling one file
+    # per identifier is not enough. read_schema reads only the footer (cheap).
+    files: list[str] = []
+    for id_dir in id_dirs:
+        files.extend(sorted(glob.glob(str(id_dir / "*.parquet"))))
+    if not files:
+        return
+
+    if expected_bytes is None:
+        expected_bytes = _running_precision_bytes()
+
+    for f in files:
+        schema = pq.read_schema(f)
+        for name in schema.names:
+            field_type = schema.field(name).type
+            if pa.types.is_fixed_size_binary(field_type):
+                width = field_type.byte_width
+                if width != expected_bytes:
+                    raise CatalogPrecisionMismatchError(
+                        f"Catalog precision mismatch: {f} stores fixed_size_binary[{width}] "
+                        f"for column {name!r}, but the running nautilus build expects "
+                        f"PRECISION_BYTES={expected_bytes}. The shared catalog is "
+                        f"standard-precision (8-byte) while this machine's nautilus is "
+                        f"high-precision (16-byte). Rebuild nautilus standard-precision "
+                        f"(HIGH_PRECISION=false — see scripts/rebuild_nautilus_standard.sh) "
+                        f"to match the catalog; do NOT rewrite the shared catalog. (GH #34)"
+                    )
+
+
+def _assert_catalog_writable_for_precision(
+    catalog_root: str | Path,
+    expected_bytes: Optional[int] = None,
+) -> None:
+    """Hard gate run *before* writing new bars into a (possibly shared) catalog.
+
+    Unlike :func:`_assert_catalog_precision_compatible` (which is identifier-scoped
+    and no-ops on a missing symbol), this is catalog-WIDE: it inspects every existing
+    parquet already in the catalog and refuses the write if any of them was written
+    by a different nautilus precision build than the one currently running.
+
+    A 16-byte (high-precision) build must NEVER append 16-byte bars to the shared
+    8-byte (standard) catalog: it would corrupt the catalog for the standard-build
+    machines that read it (GH #34). Mixed widths in one identifier dir also abort
+    ``query()`` later (SIGABRT).
+
+    No-op when the catalog has no existing parquet yet (a fresh write is fine — the
+    new files define the width). ``expected_bytes`` is injectable for testing.
+    """
+    if expected_bytes is None:
+        expected_bytes = _running_precision_bytes()
+    # Scan every data class dir catalog-wide (identifiers=None => all id dirs).
+    # _assert_catalog_precision_compatible already no-ops per-subdir when the dir
+    # is absent, so a brand-new catalog path passes cleanly.
+    for subdir in ("bar", "trade_tick"):
+        _assert_catalog_precision_compatible(
+            catalog_root,
+            subdir,
+            identifiers=None,
+            expected_bytes=expected_bytes,
+        )
 
 
 def _resolve_catalog_path(catalog_path: str | Path) -> str:
@@ -47,7 +179,9 @@ def load_bars(
     from nautilus_trader.model.data import Bar
     from nautilus_trader.persistence.catalog import ParquetDataCatalog
 
-    catalog = ParquetDataCatalog(_resolve_catalog_path(catalog_path))
+    root = _resolve_catalog_path(catalog_path)
+    _assert_catalog_precision_compatible(root, "bar", instrument_ids)
+    catalog = ParquetDataCatalog(root)
     return catalog.query(
         data_cls=Bar,
         identifiers=instrument_ids,
@@ -66,7 +200,9 @@ def load_trades(
     from nautilus_trader.model.data import TradeTick
     from nautilus_trader.persistence.catalog import ParquetDataCatalog
 
-    catalog = ParquetDataCatalog(_resolve_catalog_path(catalog_path))
+    root = _resolve_catalog_path(catalog_path)
+    _assert_catalog_precision_compatible(root, "trade_tick", instrument_ids)
+    catalog = ParquetDataCatalog(root)
     return catalog.query(
         data_cls=TradeTick,
         identifiers=instrument_ids,

@@ -25,6 +25,8 @@ mod a3_replay_step_forward;
 mod a4_replay_force_stop;
 #[path = "e2e/flows/a6_replay_failed_strategy.rs"]
 mod a6_replay_failed_strategy;
+#[path = "e2e/flows/a12_replay_precision_mismatch_surfaced.rs"]
+mod a12_replay_precision_mismatch_surfaced;
 #[path = "e2e/flows/a7_replay_startup_progress.rs"]
 mod a7_replay_startup_progress;
 #[path = "e2e/flows/a8_stale_startup_id_ignored.rs"]
