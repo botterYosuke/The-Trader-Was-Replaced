@@ -34,7 +34,7 @@
       "z": 148.0
     }
   ],
-  "strategy_path": "/Users/sasac/_blacksheep/The-Trader-Was-Replaced/examples/test_strategy_minute.py",
+  "strategy_path": "examples/test_strategy_minute.py",
   "scenario": {
     "end": "2025-05-21",
     "granularity": "Minute",
