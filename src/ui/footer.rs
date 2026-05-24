@@ -649,11 +649,11 @@ pub fn footer_pause_resume_system(
 /// (`BackendStatusUpdate::ExecutionModeChanged`) 経由でのみ更新される。これにより
 /// backend が precondition で reject した場合の UI/backend desync を構造的に防ぐ。
 ///
-/// クライアント側 precondition (案 C):
+/// クライアント側 precondition:
 /// - Live (LiveManual / LiveAuto) への遷移: venue が Disconnected / Error なら blocked。
+/// - Replay への遷移: 常に許可（ホームモード）。strategy 未ロード・replay IDLE でも到達可能。
 /// precondition NG の場合は RPC を送らず warn! のみ。OK なら backend に送り、
 /// backend 側 `EXECUTION_MODE_PRECONDITION` reject は polling diff で吸収される。
-/// Replay は常に許可（ホームモード）。Live への遷移のみ venue 接続必須。
 #[allow(clippy::type_complexity)]
 pub fn execution_mode_toggle_system(
     query: Query<(&Interaction, &ExecutionModeToggleSegment), (Changed<Interaction>, With<Button>)>,
