@@ -526,7 +526,7 @@ class GrpcDataEngineServer(
                     engine_pb2.BackendEvent(
                         backend_error=engine_pb2.BackendError(
                             source="server_grpc",
-                            detail=f"{label}: {exc}",
+                            detail=f"{label}: {type(exc).__name__}: {exc}" if str(exc) else f"{label}: {exc!r}",
                             ts_ms=int(time.time() * 1000),
                         )
                     )

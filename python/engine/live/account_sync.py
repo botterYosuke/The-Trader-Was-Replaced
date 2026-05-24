@@ -86,7 +86,8 @@ class AccountSync:
             raise
         except BaseException as exc:  # noqa: BLE001 — best-effort: 1 回失敗で停止させない
             self._last_error = exc
-            record = LiveErrorRecord(source="account_sync", detail=str(exc))
+            detail = f"{type(exc).__name__}: {exc}" if str(exc) else repr(exc)
+            record = LiveErrorRecord(source="account_sync", detail=detail)
             self._last_error_record = record
             _LOG.warning("AccountSync: fetch_account failed, continuing", exc_info=exc)
             if self._on_error is not None:

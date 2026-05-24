@@ -18,6 +18,7 @@ use crate::trading::{
     BackendStatusUpdate, ExecutionModeRes, LastPrices, LastRunResult, LiveOrder, LiveOrders,
     LiveRuns, OrderFeedback, PortfolioPosition, PortfolioState, PromoteFeedback, ReconcilePrompt,
     ReloginPrompt, RunState, SafetyToast, SecretPrompt, SecretPromptRequest, StrategyLogs, Tickers,
+    ToastKind,
     TickersStatus, TransportCommand, TransportCommandSender, VenueStatusRes,
     is_terminal_order_status, parse_summary_json, reconcile_unknown_orders,
 };
@@ -188,7 +189,7 @@ pub fn backend_event_drain_system(
                     "[backend-event] SafetyRailViolation run_id={run_id} kind={kind} detail={detail} ts_ms={ts_ms}"
                 );
                 // §2.10: surface the violation as a Footer toast (criterion line 484).
-                safety_toast.show(run_id, kind, detail, ts_ms);
+                safety_toast.show(ToastKind::SafetyRail, run_id, kind, detail, ts_ms);
             }
             // Issue #29 Slice1 (S1.4): BackendError も SafetyRailViolation と同じく
             // Footer toast (SafetyToast) に出す。run_id は無いので空、kind=source。
@@ -198,7 +199,7 @@ pub fn backend_event_drain_system(
                 ts_ms,
             } => {
                 warn!("[backend-event] BackendError source={source} detail={detail} ts_ms={ts_ms}");
-                safety_toast.show(String::new(), source, detail, ts_ms);
+                safety_toast.show(ToastKind::BackendError, String::new(), source, detail, ts_ms);
             }
             BackendEvent::StrategyLogMessage {
                 run_id,
@@ -720,6 +721,15 @@ mod tests {
         assert!(
             entry.detail.contains("timeout"),
             "toast must carry the error detail"
+        );
+        assert_eq!(
+            entry.toast_kind,
+            ToastKind::BackendError,
+            "BackendError event must be tagged ToastKind::BackendError"
+        );
+        assert!(
+            crate::ui::safety_toast::toast_header(entry).starts_with("BACKEND ERROR"),
+            "header must read 'BACKEND ERROR — ...' for a BackendError toast"
         );
     }
 

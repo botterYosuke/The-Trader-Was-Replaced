@@ -26,6 +26,11 @@ class _FailingComponent:
         raise RuntimeError("boom-start")
 
 
+class _TimeoutStartComponent:
+    async def start(self):
+        raise asyncio.TimeoutError()
+
+
 def test_bg_component_start_failure_publishes_backend_error():
     """`_start_bg_component_after_login` の start 失敗を握り潰さず
     BackendError として backend event stream に publish する（issue #29 D2 / B 経路）。"""
@@ -78,6 +83,57 @@ def test_account_sync_fetch_failure_publishes_backend_error():
     assert received.WhichOneof("payload") == "backend_error"
     assert received.backend_error.source == "account_sync"
     assert "account fetch boom" in received.backend_error.detail
+
+
+def test_account_sync_empty_message_exception_publishes_typed_detail():
+    """`str(exc)` が空の例外（asyncio.TimeoutError 等）でも detail が空にならず
+    型名を含むことを確認する（issue #29 Slice1 ②-A / 空 body 診断トースト回避）。"""
+    servicer = _make_servicer()
+    sub = servicer._backend_event_bus.subscribe()
+
+    class _TimeoutAdapter(MockVenueAdapter):
+        async def fetch_account(self):  # type: ignore[override]
+            raise asyncio.TimeoutError()
+
+    async def scenario():
+        adapter = _TimeoutAdapter()
+        await adapter.login(
+            VenueCredentials(credentials_source="env", environment_hint="demo")
+        )
+        sync = AccountSync(
+            adapter,
+            on_account_event=servicer._publish_account_snapshot,
+            on_error=servicer._publish_account_sync_error,
+            interval_s=0.01,
+        )
+        await sync.start()
+        for _ in range(40):
+            if sync.last_error_record is not None:
+                break
+            await asyncio.sleep(0.005)
+        await sync.stop()
+
+    asyncio.run(scenario())
+
+    received = sub._queue.get(timeout=2.0)
+    assert received.WhichOneof("payload") == "backend_error"
+    assert received.backend_error.source == "account_sync"
+    assert received.backend_error.detail != ""
+    assert "TimeoutError" in received.backend_error.detail
+
+
+def test_bg_component_start_failure_empty_message_publishes_typed_detail():
+    """`str(exc)` が空の start 例外（asyncio.TimeoutError 等）でも detail が空にならず
+    型名を含むことを確認する（issue #29 Slice1 ②-B / 空 body 診断トースト回避・B 経路）。"""
+    servicer = _make_servicer()
+    sub = servicer._backend_event_bus.subscribe()
+
+    servicer._start_bg_component_after_login(_TimeoutStartComponent(), "account sync")
+
+    received = sub._queue.get(timeout=2.0)
+    assert received.backend_error.source == "server_grpc"
+    assert "account sync" in received.backend_error.detail   # label は残る
+    assert "TimeoutError" in received.backend_error.detail    # 型名が残る（②-B の主眼）
 
 
 def test_bg_component_start_failure_does_not_raise_when_bus_closed():
