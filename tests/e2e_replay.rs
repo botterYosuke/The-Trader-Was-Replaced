@@ -146,16 +146,8 @@ mod i18_file_open_relative_strategy_path_loads;
 // J. Strategy editor / startup panel / scenario / instrument picker (UI / integration)
 #[path = "e2e/flows/j1_strategy_editor_text_autosaves_cache.rs"]
 mod j1_strategy_editor_text_autosaves_cache;
-#[path = "e2e/flows/j2_strategy_editor_tab_indent.rs"]
-mod j2_strategy_editor_tab_indent;
-#[path = "e2e/flows/j3_strategy_editor_enter_autoindent.rs"]
-mod j3_strategy_editor_enter_autoindent;
-#[path = "e2e/flows/j4_strategy_editor_bracket_autoclose.rs"]
-mod j4_strategy_editor_bracket_autoclose;
-#[path = "e2e/flows/j5_find_panel_open_close_navigate.rs"]
-mod j5_find_panel_open_close_navigate;
-#[path = "e2e/flows/j6_find_replace_current_and_all.rs"]
-mod j6_find_replace_current_and_all;
+// j2 (Tab indent) / j3 (Enter autoindent) / j4 (bracket autoclose) / j5 (find open-nav) /
+// j6 (find replace): 撤去。入力支援と find は ADR 0003 (bevy_ui_text_input 移行) で drop。
 #[path = "e2e/flows/j7_startup_panel_validation_blocks_run.rs"]
 mod j7_startup_panel_validation_blocks_run;
 #[path = "e2e/flows/j8_startup_panel_valid_run_command.rs"]

@@ -11,7 +11,6 @@ use crate::ui::floating_window::{
 };
 use crate::ui::layout_persistence::{AutoSaveState, PendingLayoutApply};
 use crate::ui::strategy_editor_gutter::spawn_line_number_gutter;
-use crate::ui::strategy_editor_highlight::{BracketSpans, FindMatchSpans, SyntaxSpans};
 use crate::ui::strategy_editor_scrollbar::spawn_editor_scrollbar;
 use crate::ui::render_scale::RenderScaleResponsive;
 use bevy::prelude::*;
@@ -277,15 +276,9 @@ pub fn spawn_strategy_editor_panel(
             CosmicBackgroundColor(EDITOR_BG),
             Transform::from_xyz(EDITOR_CONTENT_X, 0.0, 0.1),
             StrategyEditorContent,
-            // highlight pipeline 用 span コンポーネント (Phase A) + wrap 無効化 (Phase B)。
-            // ネストして 1 Bundle 要素に畳む (tuple Bundle の 15 要素上限回避)。
             // CosmicWrap::InfiniteLine: source 行 == layout 行にして gutter 行番号と一致させる。
-            (
-                SyntaxSpans::default(),
-                FindMatchSpans::default(),
-                BracketSpans::default(),
-                CosmicWrap::InfiniteLine,
-            ),
+            // (highlight/find の span コンポーネントは ADR 0003 で撤去済み。)
+            CosmicWrap::InfiniteLine,
             // editor child にも StrategyEditorId を貼ることで、CosmicTextChanged から
             // region_key を即引きできる (root への親辿りが不要)。
             StrategyEditorId {
