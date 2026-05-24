@@ -651,7 +651,6 @@ pub fn footer_pause_resume_system(
 ///
 /// クライアント側 precondition (案 C):
 /// - Live (LiveManual / LiveAuto) への遷移: venue が Disconnected / Error なら blocked。
-/// - Replay への遷移: strategy が未ロード (`StrategyBuffer.original_path.is_none()`) なら blocked。
 /// precondition NG の場合は RPC を送らず warn! のみ。OK なら backend に送り、
 /// backend 側 `EXECUTION_MODE_PRECONDITION` reject は polling diff で吸収される。
 /// Replay は常に許可（ホームモード）。Live への遷移のみ venue 接続必須。

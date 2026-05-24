@@ -13,14 +13,13 @@ use backcast::trading::{
     ExecutionMode, ExecutionModeRes, TransportCommand, TransportCommandSender, VenueState,
     VenueStatusRes,
 };
-use backcast::ui::components::{ExecutionModeToggleSegment, StrategyBuffer};
+use backcast::ui::components::ExecutionModeToggleSegment;
 use backcast::ui::footer::execution_mode_toggle_system;
 
 /// テスト用 App を共通構築し、TransportCommand の受信端を返す。
 fn build_app(
     current_mode: ExecutionMode,
     venue_state: VenueState,
-    strategy_loaded: bool,
 ) -> (App, mpsc::UnboundedReceiver<TransportCommand>) {
     let (tx, rx) = mpsc::unbounded_channel::<TransportCommand>();
 
@@ -28,14 +27,6 @@ fn build_app(
     app.insert_resource(ExecutionModeRes { mode: current_mode });
     app.insert_resource(VenueStatusRes {
         state: venue_state,
-        ..Default::default()
-    });
-    app.insert_resource(StrategyBuffer {
-        original_path: if strategy_loaded {
-            Some(std::path::PathBuf::from("/tmp/strat.py"))
-        } else {
-            None
-        },
         ..Default::default()
     });
     app.insert_resource(TransportCommandSender { tx });
@@ -60,7 +51,7 @@ fn i4_mode_toggle_client_gating() {
     // 送信なし。
     {
         let (mut app, mut rx) =
-            build_app(ExecutionMode::Replay, VenueState::Disconnected, true);
+            build_app(ExecutionMode::Replay, VenueState::Disconnected);
         press_segment(&mut app, ExecutionMode::LiveManual);
 
         assert!(
@@ -78,7 +69,7 @@ fn i4_mode_toggle_client_gating() {
     // ── ケース 2: LiveAuto へ遷移 — venue が Error → blocked ──
     {
         let (mut app, mut rx) =
-            build_app(ExecutionMode::Replay, VenueState::Error, true);
+            build_app(ExecutionMode::Replay, VenueState::Error);
         press_segment(&mut app, ExecutionMode::LiveAuto);
 
         assert!(
@@ -90,7 +81,7 @@ fn i4_mode_toggle_client_gating() {
     // ── ケース 3: Replay へ遷移 — strategy 未ロードでも常に送信（Replay はホームモード）──
     {
         let (mut app, mut rx) =
-            build_app(ExecutionMode::LiveManual, VenueState::Connected, false);
+            build_app(ExecutionMode::LiveManual, VenueState::Connected);
         press_segment(&mut app, ExecutionMode::Replay);
 
         let cmd = rx
@@ -111,7 +102,7 @@ fn i4_mode_toggle_client_gating() {
     // ── ケース 4: 同じモードへのクリック → no-op（重複送信なし）──
     {
         let (mut app, mut rx) =
-            build_app(ExecutionMode::Replay, VenueState::Connected, true);
+            build_app(ExecutionMode::Replay, VenueState::Connected);
         // 現在 Replay → Replay クリックは exec_mode.mode == target で continue する
         press_segment(&mut app, ExecutionMode::Replay);
 
@@ -124,7 +115,7 @@ fn i4_mode_toggle_client_gating() {
     // ── ケース 5: Live への遷移 — venue が Connected + strategy ロード済み → 送信 ──
     {
         let (mut app, mut rx) =
-            build_app(ExecutionMode::Replay, VenueState::Connected, true);
+            build_app(ExecutionMode::Replay, VenueState::Connected);
         press_segment(&mut app, ExecutionMode::LiveManual);
 
         let cmd = rx
@@ -145,7 +136,7 @@ fn i4_mode_toggle_client_gating() {
     // ── ケース 6: Replay への遷移 — strategy ロード済み → 送信 ──
     {
         let (mut app, mut rx) =
-            build_app(ExecutionMode::LiveManual, VenueState::Disconnected, true);
+            build_app(ExecutionMode::LiveManual, VenueState::Disconnected);
         press_segment(&mut app, ExecutionMode::Replay);
 
         let cmd = rx
