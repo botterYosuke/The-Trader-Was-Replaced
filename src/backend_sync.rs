@@ -419,7 +419,14 @@ pub fn apply_status_update(
         }
         BackendStatusUpdate::InstrumentsListFailed { source, error } => {
             tickers.source = source;
-            tickers.status = TickersStatus::Failed(error);
+            // Issue #32 Slice 2: cold-store warming で backend が返す LIVE_UNIVERSE_PENDING は
+            // 「失敗」ではなく「universe をロード中」なので、赤エラーにせず InFlight（Loading...）
+            // にマップする。retry_pending_live_universe_system が store の充填を待って再 fetch する。
+            tickers.status = if error == "LIVE_UNIVERSE_PENDING" {
+                TickersStatus::PendingLiveUniverse
+            } else {
+                TickersStatus::Failed(error)
+            };
             // list is kept (stale display)
         }
         BackendStatusUpdate::LastPricesUpdated { prices } => {
@@ -608,7 +615,7 @@ pub fn apply_available_failed(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::trading::BackendEvent;
+    use crate::trading::{BackendEvent, TickersSource};
 
     /// RED: `lifecycle_status_update` はまだ未定義（GREEN 段で追加）。
     /// StartupFailed はエラーコードを内包した `BackendStatusUpdate::Error` へ写す。
@@ -717,6 +724,61 @@ mod tests {
         assert!(
             order_feedback.message.is_none(),
             "secret-flow failure must NOT pollute the OrderPanel feedback line"
+        );
+    }
+
+    /// Issue #32 Slice 2: cold-store warming で backend が返す `LIVE_UNIVERSE_PENDING` は
+    /// 赤エラー (`Failed`) ではなく `InFlight`（Loading...）にマップする。それ以外の
+    /// `InstrumentsListFailed` は従来どおり `Failed(error)` に落とす。
+    #[test]
+    fn instruments_list_failed_pending_maps_to_inflight_not_failed() {
+        fn apply(error: &str) -> TickersStatus {
+            let mut status = BackendStatus::default();
+            let mut last_run = LastRunResult::default();
+            let mut portfolio = PortfolioState::default();
+            let mut available = AvailableInstruments::default();
+            let mut progress = ReplayStartupProgress::default();
+            let mut venue_status = VenueStatusRes::default();
+            let mut exec_mode = ExecutionModeRes::default();
+            let mut tickers = Tickers::default();
+            let mut last_prices = LastPrices::default();
+            let mut live_orders = LiveOrders::default();
+            let mut order_feedback = OrderFeedback::default();
+            let mut reconcile_prompt = ReconcilePrompt::default();
+            let mut secret_prompt = SecretPrompt::default();
+            let mut promote_feedback = PromoteFeedback::default();
+            apply_status_update(
+                BackendStatusUpdate::InstrumentsListFailed {
+                    source: TickersSource::LiveVenue,
+                    error: error.to_string(),
+                },
+                &mut status,
+                &mut last_run,
+                &mut portfolio,
+                &mut available,
+                &mut progress,
+                &mut venue_status,
+                &mut exec_mode,
+                &mut tickers,
+                &mut last_prices,
+                &mut live_orders,
+                &mut order_feedback,
+                &mut reconcile_prompt,
+                &mut secret_prompt,
+                &mut promote_feedback,
+            );
+            tickers.status
+        }
+
+        assert_eq!(
+            apply("LIVE_UNIVERSE_PENDING"),
+            TickersStatus::PendingLiveUniverse,
+            "PENDING は warming 中なので Loading spinner（InFlight）にする"
+        );
+        assert_eq!(
+            apply("instruments fetch timed out after 60s"),
+            TickersStatus::Failed("instruments fetch timed out after 60s".to_string()),
+            "その他の失敗は従来どおり赤エラー（Failed）"
         );
     }
 

@@ -741,3 +741,38 @@ def test_live_runner_restart_after_stop_still_publishes_events() -> None:
     assert bar.open == 100.0
     assert bar.close == 100.0
     assert bar.volume == 1.0
+
+
+def test_fetch_instruments_blocking_cancels_underlying_on_timeout() -> None:
+    """Issue #32: blocking fetch が timeout したら scheduled coroutine をキャンセルし、
+    遅い venue download を orphan task として残さない。"""
+    import concurrent.futures
+    import threading
+
+    import pytest
+
+    loop = asyncio.new_event_loop()
+    t = threading.Thread(target=loop.run_forever, daemon=True)
+    t.start()
+    cancelled = threading.Event()
+
+    class SlowAdapter:
+        is_logged_in = True
+        venue_id = "STUB"
+
+        async def fetch_instruments(self):
+            try:
+                await asyncio.sleep(10)
+            except asyncio.CancelledError:
+                cancelled.set()
+                raise
+            return []
+
+    runner = LiveRunner(adapter=SlowAdapter(), interval_ns=INTERVAL_NS)
+    runner._loop = loop
+    try:
+        with pytest.raises(concurrent.futures.TimeoutError):
+            runner.fetch_instruments_blocking(timeout=0.1)
+        assert cancelled.wait(timeout=2.0), "timeout 時に下層 coroutine がキャンセルされること"
+    finally:
+        loop.call_soon_threadsafe(loop.stop)

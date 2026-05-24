@@ -81,6 +81,7 @@ Instruments セクション下部の **+ Add** ボタンを押すと、検索ボ
 |---|---|
 | Replay で `scenario.end` 未設定 | `Set scenario.end first` [J12] |
 | 取得中 | `Loading...` [J12] |
+| Live で venue 接続直後（銘柄マスタを初回ダウンロード中＝cold store） | `Loading...`（赤エラーではなくスピナー。マスタが揃うと自動で銘柄が並びます） [C6] |
 | 取得失敗 | `Error: {メッセージ}` [J12] |
 | Live で venue 未接続 | `Venue not connected` [J12] |
 | 絞り込み結果が空 | `No matches` [J12] |

@@ -20,6 +20,7 @@ Step スコープ外:
 from __future__ import annotations
 
 import asyncio
+import concurrent.futures
 import logging
 from typing import Callable, Iterable, Optional
 
@@ -242,7 +243,15 @@ class LiveRunner:
         if self._loop is None:
             raise RuntimeError("LiveRunner._loop not set; call _ensure_live_loop first")
         fut = asyncio.run_coroutine_threadsafe(self._adapter.fetch_instruments(), self._loop)
-        return fut.result(timeout=timeout)
+        try:
+            return fut.result(timeout=timeout)
+        except concurrent.futures.TimeoutError:
+            # Issue #32: 待ち手が諦めたら scheduled coroutine をキャンセルして orphan task を
+            # 残さない。adapter 側 singleflight が asyncio.shield で下層 CLMEventDownload を
+            # 保護していれば、この cancel は「待ち手 wrapper」だけを畳み、実 download
+            # （InstrumentsScheduler 等が共有）は継続して store 永続化まで走る。
+            fut.cancel()
+            raise
 
     def subscribed_ids(self) -> set:
         """D20: Return the set of currently subscribed instrument IDs."""

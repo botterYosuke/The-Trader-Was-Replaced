@@ -209,3 +209,47 @@ def test_default_persist_writes_real_parquet(monkeypatch, tmp_path) -> None:
 
     asyncio.run(scenario())
     assert instruments_store.read_instruments("TACHIBANA") == _raws()
+
+
+# --- warming state (Issue #32 Slice 2) -------------------------------------
+
+
+def test_is_warming_true_during_initial_refresh_false_before_and_after() -> None:
+    """Issue #32 Slice 2: 初回 refresh（ログイン時 persist）が進行中の間だけ
+    `is_warming()` が True。起動前と初回完了後は False。
+
+    この信号で server_grpc は cold-store miss を 60s blocking fetch せず
+    `LIVE_UNIVERSE_PENDING` に倒す（UI で Loading spinner にする）。"""
+
+    async def scenario() -> None:
+        gate = asyncio.Event()
+        started = asyncio.Event()
+
+        class _SlowAdapter:
+            async def fetch_instruments(self) -> list[InstrumentRaw]:
+                started.set()
+                await gate.wait()  # 初回 refresh をテストが解放するまで止める
+                return _raws()
+
+        sched = InstrumentsScheduler(
+            _SlowAdapter(),
+            "TACHIBANA",
+            persist=lambda v, raws: None,
+            next_delay_s=lambda: 10.0,  # 初回後はすぐ起きない
+        )
+        assert sched.is_warming() is False, "起動前は warming ではない"
+
+        await sched.start()
+        await asyncio.wait_for(started.wait(), timeout=1.0)
+        assert sched.is_warming() is True, "初回 refresh 進行中は warming"
+
+        gate.set()  # 初回 refresh を完了させる
+        for _ in range(100):
+            if not sched.is_warming():
+                break
+            await asyncio.sleep(0.005)
+        assert sched.is_warming() is False, "初回 refresh 完了後は warming ではない"
+
+        await sched.stop()
+
+    asyncio.run(scenario())

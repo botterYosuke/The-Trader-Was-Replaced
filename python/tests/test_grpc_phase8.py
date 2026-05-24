@@ -1395,3 +1395,72 @@ def test_get_state_exposes_configured_venue(phase8_grpc_server_with_live):
     resp = stub.GetState(engine_pb2.GetStateRequest(token=token))
     payload = json.loads(resp.json_data)
     assert payload["configured_venue"] == "MOCK"
+
+
+def test_list_instruments_live_timeout_returns_clear_message(monkeypatch):
+    """Issue #32: venue fetch の timeout で空の 'fetch_instruments failed:' を返さない
+    （concurrent.futures.TimeoutError.__str__() は '' なので素直に流すと空メッセージになる）。
+    store miss → blocking fetch timeout のとき、原因の分かる文言を返す。"""
+    from engine.live import instruments_store
+
+    # store miss を強制（永続化済み parquet なし）
+    monkeypatch.setattr(instruments_store, "read_instruments", lambda venue: None)
+
+    svc = object.__new__(GrpcDataEngineServer)
+    # 両方セットして「現状コード（_live_timeout_s 使用）」でも stub の raise まで到達させ、
+    # 空メッセージを RED で踏む。修正後は _instruments_timeout_s を使う。
+    svc._live_timeout_s = 5.0
+    svc._instruments_timeout_s = 60.0
+    svc._instruments_scheduler = None  # warming ではない → blocking fetch 経路へ
+
+    class _StubRunner:
+        venue_id = "TACHIBANA"
+
+        def is_logged_in(self):
+            return True
+
+        def fetch_instruments_blocking(self, timeout):
+            raise futures.TimeoutError()
+
+    svc._live_runner = _StubRunner()
+
+    resp = svc._list_instruments_live(None)
+    assert resp.success is False
+    assert resp.error_message.strip(), "error_message が空/空白であってはならない"
+    assert resp.error_message.strip() != "fetch_instruments failed:"
+    assert "tim" in resp.error_message.lower()  # 'timed out' / 'timeout'
+
+
+def test_list_instruments_live_warming_returns_pending(monkeypatch):
+    """Issue #32 Slice 2: scheduler の初回 refresh が進行中（warming）の cold-store miss は
+    60s blocking fetch せず `LIVE_UNIVERSE_PENDING` を返す（store-first 維持・赤エラー回避）。
+    UI 側はこれを Loading spinner にマップし、store が埋まったら再 fetch する。"""
+    from engine.live import instruments_store
+
+    # store miss を強制（永続化済み parquet なし）
+    monkeypatch.setattr(instruments_store, "read_instruments", lambda venue: None)
+
+    svc = object.__new__(GrpcDataEngineServer)
+    svc._live_timeout_s = 5.0
+    svc._instruments_timeout_s = 60.0
+
+    class _StubRunner:
+        venue_id = "TACHIBANA"
+
+        def is_logged_in(self):
+            return True
+
+        def fetch_instruments_blocking(self, timeout):
+            raise AssertionError("warming 中は blocking fetch を呼んではならない")
+
+    svc._live_runner = _StubRunner()
+
+    class _WarmingScheduler:
+        def is_warming(self):
+            return True
+
+    svc._instruments_scheduler = _WarmingScheduler()
+
+    resp = svc._list_instruments_live(None)
+    assert resp.success is False
+    assert resp.error_message == "LIVE_UNIVERSE_PENDING"

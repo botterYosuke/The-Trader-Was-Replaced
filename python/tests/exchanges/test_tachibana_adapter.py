@@ -319,6 +319,36 @@ async def test_fetch_instruments_returns_instrument_raw_list(monkeypatch, httpx_
     assert out[0].tick_size == 1.0
 
 
+async def test_fetch_instruments_singleflight_shares_one_download(monkeypatch):
+    """Issue #32: 同時に走った fetch_instruments() は in-flight な CLMEventDownload を
+    共有し、二重 master download を起こさない（picker クリックが scheduler の初回 DL と
+    race しても 1 本に集約される）。"""
+    adapter = TachibanaAdapter(environment="demo")
+
+    calls = 0
+    started = asyncio.Event()
+    release = asyncio.Event()
+
+    async def fake_impl():
+        nonlocal calls
+        calls += 1
+        started.set()
+        await release.wait()
+        return [InstrumentRaw(code="7203", name="t", market="TSE", tick_size=0.5, lot_size=100)]
+
+    monkeypatch.setattr(adapter, "_fetch_instruments_impl", fake_impl)
+
+    t1 = asyncio.ensure_future(adapter.fetch_instruments())
+    await started.wait()  # 1 本目の DL が走り始める
+    t2 = asyncio.ensure_future(adapter.fetch_instruments())  # in-flight 中に 2 本目
+    await asyncio.sleep(0)  # t2 を singleflight 判定まで進める
+    release.set()
+    r1, r2 = await asyncio.gather(t1, t2)
+
+    assert calls == 1, "singleflight: 下層 CLMEventDownload は 1 回だけ"
+    assert r1 == r2
+
+
 async def test_fetch_instruments_hits_url_master_endpoint(monkeypatch, httpx_mock: HTTPXMock):
     """The master DL must be issued against sUrlMaster, not sUrlRequest/sUrlPrice."""
     adapter = await _login_demo(monkeypatch, httpx_mock)

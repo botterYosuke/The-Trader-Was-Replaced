@@ -68,16 +68,35 @@ class InstrumentsScheduler:
         )
         self._task: Optional[asyncio.Task[None]] = None
         self._last_error: Optional[BaseException] = None
+        # Issue #32 Slice 2: 初回 refresh（ログイン時 persist）が完了したか。
+        # `is_warming()` がこれを参照し、cold-store の PENDING 判定に使う。
+        self._initial_refresh_done = False
 
     async def start(self) -> None:
         if self._task is not None and not self._task.done():
             return
         self._last_error = None
+        self._initial_refresh_done = False
         self._task = asyncio.create_task(self._run())
+
+    def is_warming(self) -> bool:
+        """初回 refresh（ログイン時 persist）が進行中なら True。
+
+        起動前（task 未生成）と初回 refresh 完了後は False。Issue #32 Slice 2 で
+        server_grpc が cold-store miss を 60s blocking fetch せず `LIVE_UNIVERSE_PENDING`
+        に倒す判定に使う（store が埋まる前の picker クリックを Loading spinner にする）。
+        """
+        if self._task is None:
+            return False
+        return not self._initial_refresh_done
 
     async def _run(self) -> None:
         # 初期ロード: login 直後に即 fetch+persist（必ず 1 回 = ログイン時 persist）。
-        await self._refresh()
+        try:
+            await self._refresh()
+        finally:
+            # 初回が成功・失敗・cancel いずれでも warming は終わる（無限 spinner を防ぐ）。
+            self._initial_refresh_done = True
         while True:
             try:
                 await asyncio.sleep(self._next_delay_s())

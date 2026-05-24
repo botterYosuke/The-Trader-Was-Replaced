@@ -568,7 +568,7 @@ pub fn picker_list_rebuild_system(
                     );
                     return;
                 }
-                Some(TickersStatus::InFlight) => {
+                Some(TickersStatus::InFlight | TickersStatus::PendingLiveUniverse) => {
                     spawn_picker_row_ui(&mut commands, container, 0, "Loading...", None, false);
                     return;
                 }
@@ -658,10 +658,55 @@ pub fn auto_fetch_live_universe_on_connect_system(
     // Tickers がすでに Loaded ならスキップ（重複 fetch 防止）。InFlight も race するので skip。
     if matches!(
         tickers.status,
-        TickersStatus::Loaded | TickersStatus::InFlight
+        TickersStatus::Loaded | TickersStatus::InFlight | TickersStatus::PendingLiveUniverse
     ) {
         return;
     }
+    if let Some(tx) = sender.as_ref() {
+        let _ = tx.tx.send(TransportCommand::ListInstruments {
+            source: TickersSource::LiveVenue,
+        });
+    }
+}
+
+/// Issue #32 Slice 2: pending（warming）中の live universe 再 fetch 間隔（秒）。
+const LIVE_UNIVERSE_RETRY_INTERVAL_S: f32 = 2.0;
+
+/// Issue #32 Slice 2: live universe が "pending"（backend が `LIVE_UNIVERSE_PENDING` を
+/// 返し `TickersStatus::InFlight` にマップされた = scheduler の初回 refresh 進行中）の間、
+/// store が埋まるまで一定間隔で `ListInstruments` を再送する軽いポーリング。
+///
+/// store が埋まれば次の応答で `Loaded` に、warming 完了後もなお miss なら（直 fetch 経由で）
+/// `Failed` に遷移し、いずれも `InFlight` を抜けるのでポーリングは自然停止する。
+/// backend は singleflight + 即時 PENDING 応答なので、再送は安価で二重 DL も起こさない。
+pub fn retry_pending_live_universe_system(
+    exec_mode: Res<ExecutionModeRes>,
+    tickers: Res<Tickers>,
+    sender: Option<Res<TransportCommandSender>>,
+    time: Res<Time>,
+    mut prev_pending: Local<bool>,
+    mut cooldown: Local<f32>,
+) {
+    let pending = is_live_mode(exec_mode.mode)
+        && tickers.source == TickersSource::LiveVenue
+        && tickers.status == TickersStatus::PendingLiveUniverse;
+    if !pending {
+        *prev_pending = false;
+        *cooldown = 0.0;
+        return;
+    }
+    if !*prev_pending {
+        // pending に入った最初のフレーム: interval を張るだけで、直前に投げた fetch との
+        // 即時重複を避ける（その fetch の応答が PENDING でここに来ているため）。
+        *prev_pending = true;
+        *cooldown = LIVE_UNIVERSE_RETRY_INTERVAL_S;
+        return;
+    }
+    *cooldown -= time.delta_secs();
+    if *cooldown > 0.0 {
+        return;
+    }
+    *cooldown = LIVE_UNIVERSE_RETRY_INTERVAL_S;
     if let Some(tx) = sender.as_ref() {
         let _ = tx.tx.send(TransportCommand::ListInstruments {
             source: TickersSource::LiveVenue,
@@ -1635,6 +1680,133 @@ mod tests {
         assert!(
             rx.try_recv().is_err(),
             "mode-change frame: only bulk (or nothing), no extra diff subscribe"
+        );
+    }
+
+    // ─── Issue #32 Slice 2: retry_pending_live_universe_system ───────────
+
+    #[test]
+    fn pending_live_universe_retries_after_interval() {
+        let mut app = make_app();
+        app.init_resource::<Time>();
+        app.insert_resource(ExecutionModeRes {
+            mode: ExecutionMode::LiveManual,
+        });
+        // PENDING（PendingLiveUniverse）にマップされた cold-store warming 状態
+        app.insert_resource(Tickers {
+            list: vec![],
+            source: TickersSource::LiveVenue,
+            status: TickersStatus::PendingLiveUniverse,
+        });
+        let (transport, mut rx) = make_transport();
+        app.insert_resource(transport);
+        app.add_systems(Update, retry_pending_live_universe_system);
+
+        // Frame 1: pending に入った直後 — 即時の重複 fetch はせず interval を張るだけ
+        app.update();
+        assert!(rx.try_recv().is_err(), "interval 前は再 fetch しない");
+
+        // interval 経過後 — store の充填を待って再 fetch する
+        app.world_mut()
+            .resource_mut::<Time>()
+            .advance_by(Duration::from_secs_f32(LIVE_UNIVERSE_RETRY_INTERVAL_S + 0.1));
+        app.update();
+        let cmd = rx
+            .try_recv()
+            .expect("interval 経過後は ListInstruments を再送する");
+        assert!(
+            matches!(
+                cmd,
+                TransportCommand::ListInstruments {
+                    source: TickersSource::LiveVenue
+                }
+            ),
+            "再 fetch は live universe を対象にする"
+        );
+    }
+
+    #[test]
+    fn loaded_live_universe_does_not_retry() {
+        let mut app = make_app();
+        app.init_resource::<Time>();
+        app.insert_resource(ExecutionModeRes {
+            mode: ExecutionMode::LiveManual,
+        });
+        app.insert_resource(Tickers {
+            list: vec![],
+            source: TickersSource::LiveVenue,
+            status: TickersStatus::Loaded,
+        });
+        let (transport, mut rx) = make_transport();
+        app.insert_resource(transport);
+        app.add_systems(Update, retry_pending_live_universe_system);
+
+        app.update();
+        app.world_mut()
+            .resource_mut::<Time>()
+            .advance_by(Duration::from_secs_f32(LIVE_UNIVERSE_RETRY_INTERVAL_S + 0.1));
+        app.update();
+        assert!(
+            rx.try_recv().is_err(),
+            "Loaded（store 充填済み）なら再 fetch しない"
+        );
+    }
+
+    #[test]
+    fn replay_inflight_does_not_retry_live_universe() {
+        // InFlight でも Replay/local source のときは live universe の再 fetch をしない
+        let mut app = make_app();
+        app.init_resource::<Time>();
+        app.insert_resource(ExecutionModeRes {
+            mode: ExecutionMode::Replay,
+        });
+        app.insert_resource(Tickers {
+            list: vec![],
+            source: TickersSource::ReplayCatalogFallback,
+            status: TickersStatus::InFlight,
+        });
+        let (transport, mut rx) = make_transport();
+        app.insert_resource(transport);
+        app.add_systems(Update, retry_pending_live_universe_system);
+
+        app.update();
+        app.world_mut()
+            .resource_mut::<Time>()
+            .advance_by(Duration::from_secs_f32(LIVE_UNIVERSE_RETRY_INTERVAL_S + 0.1));
+        app.update();
+        assert!(
+            rx.try_recv().is_err(),
+            "Replay/local の InFlight は live universe を再 fetch しない"
+        );
+    }
+
+    #[test]
+    fn slow_normal_inflight_does_not_retry_live_universe() {
+        // PENDING ではない通常の InFlight（遅い live ListInstruments を await 中）は
+        // retry 対象にしてはいけない。2s ごとの再 fire は gRPC worker thread を食い潰す。
+        let mut app = make_app();
+        app.init_resource::<Time>();
+        app.insert_resource(ExecutionModeRes {
+            mode: ExecutionMode::LiveManual,
+        });
+        app.insert_resource(Tickers {
+            list: vec![],
+            source: TickersSource::LiveVenue,
+            // ここは「PENDING ではない通常 InFlight」を表す状態にする。
+            status: TickersStatus::InFlight,
+        });
+        let (transport, mut rx) = make_transport();
+        app.insert_resource(transport);
+        app.add_systems(Update, retry_pending_live_universe_system);
+
+        app.update();
+        app.world_mut()
+            .resource_mut::<Time>()
+            .advance_by(Duration::from_secs_f32(LIVE_UNIVERSE_RETRY_INTERVAL_S + 0.1));
+        app.update();
+        assert!(
+            rx.try_recv().is_err(),
+            "PENDING 由来でない通常 InFlight は再 fetch してはいけない"
         );
     }
 }
