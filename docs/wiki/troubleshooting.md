@@ -15,6 +15,7 @@
 | 起動直後から `state: RUNNING` になる | バックエンドの `auto_start=True` | `python/engine/__main__.py` が `auto_start=False` で起動しているか確認 |
 | チャートに candle が表示されない | `open_time_ms` がバックエンドから届いていない | `KlineUpdate` に `open_time_ms` が含まれているか確認 [K1] |
 | catalog が見つからない | catalog 未構築、または `DEV_J_QUANTS_CACHE` 不正 | `ensure_jquants_catalog` で構築。`DEV_J_QUANTS_CACHE`（既定 `S:/j-quants`）と `ARTIFACTS_PATH` を確認 [L6] |
+| Run すると Run Result に `Catalog precision mismatch ... PRECISION_BYTES=16` が出る | catalog は standard-precision（8-byte）で書かれているのに、この PC の nautilus が high-precision（16-byte）ビルド。共有 catalog は書き換えない（Windows と衝突） | nautilus を standard-precision で再ビルドして揃える: `scripts/rebuild_nautilus_standard.sh`（`HIGH_PRECISION=false` で sdist から再ビルド → `PRECISION_BYTES=8`）。Intel Mac は PyPI に standard wheel が無く sdist 由来の high-precision ビルドを引きやすいので、`uv sync` 後はこのスクリプトを再実行する [A12] |
 | venue ログインに失敗する | 認証情報・環境設定の誤り | Tachibana は `DEV_TACHIBANA_USER_ID` / `DEV_TACHIBANA_PASSWORD`、kabu は `DEV_KABU_API_PASSWORD` と kabuステーション本体の起動を確認 [D3] |
 | Prod に接続できない / 送信が遮断される | 本番ガード | Tachibana は `TACHIBANA_ALLOW_PROD=1`、kabu は `KABU_ALLOW_PROD=1` を設定（二重ガード）[D8]/[L3] |
 | ポート 19876 が競合して起動できない | 既存プロセスがポートを占有 | 既存プロセスを停止する（下記参照） [L5] |

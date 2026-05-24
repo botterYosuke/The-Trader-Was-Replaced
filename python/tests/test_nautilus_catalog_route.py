@@ -91,6 +91,51 @@ def test_catalog_route_loads_and_primes_first_bar(patched_load_bars):
     assert calls["end"] == "2024-07-02"
 
 
+def test_precision_mismatch_does_not_trigger_catalog_write(tmp_path, monkeypatch):
+    """GH #34 (Critical): a CatalogPrecisionMismatchError during catalog read must NOT
+    fall through to ensure_jquants_catalog.
+
+    On a high-precision build that fallback would WRITE high-precision data into the
+    shared standard-precision catalog and corrupt it for the Windows machines — the one
+    thing the issue forbids. The mismatch must propagate as a typed error, untouched.
+    """
+    from engine.nautilus_catalog_loader import CatalogPrecisionMismatchError
+    import engine.nautilus_catalog_loader as loader_mod
+    import engine.core as core_mod
+
+    catalog_dir = tmp_path / "catalog"
+    catalog_dir.mkdir()
+
+    def _raise_mismatch(*a, **k):
+        raise CatalogPrecisionMismatchError(
+            "Catalog precision mismatch: stores fixed_size_binary[8] ... PRECISION_BYTES=16"
+        )
+
+    monkeypatch.setattr(loader_mod, "load_bars", _raise_mismatch)
+
+    ensure_calls: list = []
+    monkeypatch.setattr(
+        core_mod, "ensure_jquants_catalog", lambda *a, **k: ensure_calls.append((a, k))
+    )
+
+    class _FakeLoader:
+        base_dir = str(tmp_path / "jq")
+
+    # nautilus_catalog_path + a jquants loader → the fallback CONDITION is satisfied.
+    engine = DataEngine(nautilus_catalog_path=str(catalog_dir), jquants_loader=_FakeLoader())
+
+    with pytest.raises(CatalogPrecisionMismatchError):
+        engine.load_replay_data(
+            instrument_ids=["1301.TSE"],
+            start_date="2025-01-06",
+            end_date="2025-01-10",
+            granularity="Minute",
+        )
+
+    assert ensure_calls == [], "shared catalog write attempted on precision mismatch"
+    assert engine.replay_state == "IDLE"
+
+
 def test_catalog_route_rejects_trade_granularity(patched_load_bars):
     catalog_dir, _ = patched_load_bars
     engine = DataEngine(nautilus_catalog_path=str(catalog_dir))

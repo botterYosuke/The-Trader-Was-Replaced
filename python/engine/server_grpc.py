@@ -50,6 +50,10 @@ from .replay import BaseReplayProvider
 from .jquants_loader import JQuantsLoader
 from .paths import listed_symbols_artifact_path
 from engine.strategy_runtime.catalog_data_loader import load_bars_for_scenario, normalize_granularity
+from engine.nautilus_catalog_loader import (
+    CatalogPrecisionMismatchError,
+    _assert_catalog_writable_for_precision,
+)
 from engine.jquants_to_catalog import ensure_jquants_catalog
 
 
@@ -743,13 +747,27 @@ class GrpcDataEngineServer(
             )
 
         catalog_path = request.catalog_path if request.HasField("catalog_path") else None
-        success, error = self.engine.load_replay_data(
-            request.instrument_ids,
-            request.start_date,
-            request.end_date,
-            granularity_name,
-            catalog_path=catalog_path,
-        )
+        try:
+            success, error = self.engine.load_replay_data(
+                request.instrument_ids,
+                request.start_date,
+                request.end_date,
+                granularity_name,
+                catalog_path=catalog_path,
+            )
+        except CatalogPrecisionMismatchError as exc:
+            # GH #34: the normal replay flow reads the catalog here (priming the
+            # provider), so the mismatch surfaces in LoadReplayData — not StartEngine.
+            # Surface the real cause instead of letting nautilus abort the process
+            # (which the UI only ever sees as "transport error").
+            logging.error(f"LoadReplayData: catalog precision mismatch: {exc}")
+            return engine_pb2.ReplayControlResponse(
+                success=False,
+                request_id=request.request_id,
+                current_state=self._current_engine_state(),
+                error_code="CATALOG_PRECISION_MISMATCH",
+                error_message=str(exc),
+            )
         return engine_pb2.ReplayControlResponse(
             success=success,
             request_id=request.request_id,
@@ -826,6 +844,12 @@ class GrpcDataEngineServer(
                 missing = [str(k) for k, v in bars_by_instrument.items() if not v]
                 if missing:
                     gran = normalize_granularity(scenario["granularity"])
+                    # GH #34: missing symbol を書き込む前に catalog 全体の
+                    # precision を検査。typed error は外側 try の
+                    # except CatalogPrecisionMismatchError が拾い
+                    # CATALOG_PRECISION_MISMATCH を返す（ループ内 except では
+                    # 飲み込まれない位置）。
+                    _assert_catalog_writable_for_precision(catalog_path)
                     for symbol in missing:
                         try:
                             ensure_jquants_catalog(
@@ -849,6 +873,17 @@ class GrpcDataEngineServer(
                     error_code="NO_BARS_AFTER_FALLBACK",
                     error_message=f"No bars after catalog fallback: {still_missing}",
                 )
+        except CatalogPrecisionMismatchError as exc:
+            # GH #34: surface the real cause instead of letting nautilus abort the
+            # process (which the UI only ever sees as "transport error").
+            logging.error(f"StartEngine: catalog precision mismatch: {exc}")
+            return engine_pb2.StartEngineResponse(
+                success=False,
+                request_id=request.request_id,
+                current_state=self._current_engine_state(),
+                error_code="CATALOG_PRECISION_MISMATCH",
+                error_message=str(exc),
+            )
         except Exception as exc:
             logging.error(f"StartEngine: catalog bars load failed: {exc}")
             return engine_pb2.StartEngineResponse(

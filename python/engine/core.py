@@ -5,6 +5,10 @@ import time
 from typing import Literal, Optional
 
 from .jquants_to_catalog import ensure_jquants_catalog
+from .nautilus_catalog_loader import (
+    CatalogPrecisionMismatchError,
+    _assert_catalog_writable_for_precision,
+)
 from .models import EngineSnapshot, HistoryPoint, OhlcPoint, PerInstrumentState, TradingState
 from .reducer import KlineUpdate, ReducerState, ReplayEvent, ReplayTimeUpdated, apply_event
 from .replay import BaseReplayProvider, NautilusBarsReplayProvider
@@ -178,9 +182,23 @@ class DataEngine:
                             start=start_date or None,
                             end=end_date or None,
                         )
+                    except CatalogPrecisionMismatchError:
+                        # GH #34: never treat a precision mismatch as "missing data".
+                        # The ensure_jquants_catalog fallback below would write
+                        # high-precision bars into the shared standard catalog and
+                        # corrupt it for Windows. Propagate the typed error untouched
+                        # (the gRPC layer maps it to CATALOG_PRECISION_MISMATCH).
+                        raise
                     except (ValueError, FileNotFoundError) as first_err:
                         if not (self.jquants_loader_base_dir and start_date and end_date):
                             return False, f"{iid}: {first_err}"
+                        # GH #34: 書き込み前に catalog 全体の precision を検査。
+                        # 16-byte build が 8-byte 共有 catalog に追記するのを防ぐ。
+                        # CatalogPrecisionMismatchError(=ValueError) を投げるが、
+                        # この raise は内側の except (ValueError, FileNotFoundError) より
+                        # 手前なので飲み込まれず、gRPC LoadReplayData が
+                        # CATALOG_PRECISION_MISMATCH へマップする。
+                        _assert_catalog_writable_for_precision(effective_catalog_path)
                         try:
                             ensure_jquants_catalog(
                                 base_dir=self.jquants_loader_base_dir,
@@ -219,6 +237,14 @@ class DataEngine:
 
                 if not self._jquants_catalog_path:
                     return False, "J-Quants catalog path is not configured"
+
+                # GH #34: direct J-Quants route も書き込み前に catalog 全体の
+                # precision を検査する。16-byte build が 8-byte 共有 catalog へ
+                # 追記して Windows 用を壊すのを防ぐ。CatalogPrecisionMismatchError
+                # (=ValueError) を投げるが、下の try の except (ValueError,
+                # FileNotFoundError) より手前なので飲み込まれず、gRPC LoadReplayData
+                # が CATALOG_PRECISION_MISMATCH へマップする。
+                _assert_catalog_writable_for_precision(self._jquants_catalog_path)
 
                 try:
                     result = ensure_jquants_catalog(
