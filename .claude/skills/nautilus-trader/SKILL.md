@@ -20,6 +20,11 @@ description: |
   Also trigger on related vocabulary: "msgbus", "ts_event",
   "ts_init", "InstrumentId", "ClientId", "Venue", "BarSpec", "OrderFactory", "ExecAlgorithm",
   "PositionEvent", "OrderEvent", "cache" in a trading sense, "Cython .pyx", "PyO3".
+  Also trigger on the **kernel-on-background-loop / signal seam** (live attach in
+  `engine_controller.py`): "signal only works in main thread", `_setup_loop`,
+  `add_signal_handler`, `NautilusKernel(loop=...)`, "kernel on non-main thread",
+  "phase8-live-loop", building the kernel inside a coroutine on a daemon-thread asyncio loop
+  (omit `loop=` so it doesn't grab process signals — GH #36).
   Also trigger on the **execution-client / order-event seam** (common to live venue adapters
   in `python/engine/live/*.py`): `LiveExecutionClient`, `_submit_order` / `_modify_order` /
   `_cancel_order`, `generate_order_accepted` / `generate_order_canceled` /
@@ -201,6 +206,19 @@ adapter as a live client:
   Then `cache.add_instrument(...)` → `exec_engine.register_client(client)` → `trader.add_strategy(...)`
   → `kernel.start()` / `await kernel.stop_async()`. `TradingNode` only adds client-factory
   wiring + signal handling on top.
+- **Do NOT pass `loop=` when building the kernel on a non-main thread (GH #36).** When the
+  kernel is constructed inside a coroutine that runs on a *background-thread* asyncio loop
+  (our live loop = server_grpc's `phase8-live-loop` daemon thread; tests' `_bg_loop`),
+  passing `loop=loop` makes `NautilusKernel.__init__` call `_setup_loop()` →
+  `signal.signal(SIGINT, SIG_DFL)` + `loop.add_signal_handler(...)`, **both of which only
+  work on the main thread**. Python 3.14 raises `ValueError: signal only works in main
+  thread` (older Pythons silently tolerated it). Build it as
+  `NautilusKernel(name=..., config=cfg)` (no `loop=`): the kernel binds via
+  `asyncio.get_running_loop()` (same loop, since the coroutine runs on it) and skips the
+  whole `if loop is not None:` executor+signal block. Safe because the controller uses sync
+  `kernel.start()`, which never calls `_register_executor()` (only `start_async()` reads
+  `self._executor`). The `loop=loop` form is only correct when you own the main thread (a
+  real `TradingNode`). This affected **production**, not just tests.
 - **`OrderDenied` is only a valid transition from `INITIALIZED`.** A custom pre-trade rail in
   `LiveExecutionClient._submit_order` must call `generate_order_denied(...)` **before**
   `generate_order_submitted(...)`. Deny after submit → `SUBMITTED → DENIED` is rejected and the
