@@ -73,7 +73,7 @@ MANUAL_STRATEGY_ID = "MANUAL-001"
 # an immediate account_sync.force_resync() so the panel reflects the new state
 # without waiting for the next 30s poll (#29 Slice 4).
 _ACCOUNT_REFETCH_STATUSES: frozenset[str] = frozenset(
-    {"ACCEPTED", "PARTIALLY_FILLED", "FILLED", "CANCELED"}
+    {"ACCEPTED", "PARTIALLY_FILLED", "FILLED", "CANCELED", "EXPIRED"}
 )
 
 
@@ -2011,9 +2011,8 @@ class GrpcDataEngineServer(
         )
         if ev.status in _ACCOUNT_REFETCH_STATUSES:
             account_sync = self._account_sync
-            loop = self._live_loop
-            if account_sync is not None and loop is not None and loop.is_running():
-                asyncio.run_coroutine_threadsafe(account_sync.force_resync(), loop)
+            if account_sync is not None and self._live_loop is not None and self._live_loop.is_running():
+                asyncio.ensure_future(account_sync.force_resync())
 
     def PlaceOrder(self, request, context):
         if not self._token_ok(request):

@@ -49,13 +49,11 @@ def test_order_event_schedules_force_resync_for_state_changing_status(status: st
     servicer._live_loop = mock_loop
 
     with patch.object(servicer, "publish_backend_event"), patch(
-        "engine.server_grpc.asyncio.run_coroutine_threadsafe"
-    ) as mock_rct:
+        "engine.server_grpc.asyncio.ensure_future"
+    ) as mock_ef:
         servicer._publish_order_event(_make_ev(status))
 
-    mock_rct.assert_called_once()
-    _, called_loop = mock_rct.call_args[0]
-    assert called_loop is mock_loop
+    mock_ef.assert_called_once()
 
 
 @pytest.mark.parametrize("status", ["SUBMITTED", "REJECTED", "INITIALIZED"])
@@ -69,11 +67,11 @@ def test_order_event_no_resync_for_non_state_changing_status(status: str) -> Non
     servicer._live_loop = mock_loop
 
     with patch.object(servicer, "publish_backend_event"), patch(
-        "engine.server_grpc.asyncio.run_coroutine_threadsafe"
-    ) as mock_rct:
+        "engine.server_grpc.asyncio.ensure_future"
+    ) as mock_ef:
         servicer._publish_order_event(_make_ev(status))
 
-    mock_rct.assert_not_called()
+    mock_ef.assert_not_called()
 
 
 def test_order_event_no_resync_when_account_sync_absent() -> None:
@@ -85,11 +83,11 @@ def test_order_event_no_resync_when_account_sync_absent() -> None:
     servicer._live_loop = mock_loop
 
     with patch.object(servicer, "publish_backend_event"), patch(
-        "engine.server_grpc.asyncio.run_coroutine_threadsafe"
-    ) as mock_rct:
+        "engine.server_grpc.asyncio.ensure_future"
+    ) as mock_ef:
         servicer._publish_order_event(_make_ev("FILLED"))
 
-    mock_rct.assert_not_called()
+    mock_ef.assert_not_called()
 
 
 def test_order_event_no_resync_when_loop_not_running() -> None:
@@ -102,8 +100,23 @@ def test_order_event_no_resync_when_loop_not_running() -> None:
     servicer._live_loop = mock_loop
 
     with patch.object(servicer, "publish_backend_event"), patch(
-        "engine.server_grpc.asyncio.run_coroutine_threadsafe"
-    ) as mock_rct:
+        "engine.server_grpc.asyncio.ensure_future"
+    ) as mock_ef:
         servicer._publish_order_event(_make_ev("FILLED"))
 
-    mock_rct.assert_not_called()
+    mock_ef.assert_not_called()
+
+
+def test_order_event_schedules_force_resync_for_expired_status() -> None:
+    """EXPIRED (Tachibana p_NT=4) は terminal で BP を解放するため force_resync() をスケジュールする。"""
+    servicer = _make_servicer()
+    mock_sync = MagicMock()
+    servicer._account_sync = mock_sync
+    mock_loop = MagicMock()
+    mock_loop.is_running.return_value = True
+    servicer._live_loop = mock_loop
+    with patch.object(servicer, "publish_backend_event"), patch(
+        "engine.server_grpc.asyncio.ensure_future"
+    ) as mock_ef:
+        servicer._publish_order_event(_make_ev("EXPIRED"))
+    mock_ef.assert_called_once()
