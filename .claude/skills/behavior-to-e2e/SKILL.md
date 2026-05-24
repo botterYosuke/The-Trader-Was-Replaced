@@ -81,6 +81,12 @@ backend→ECS seam だけでは十分条件にならない。
    曖昧なら何を観測すれば「動いた」と言えるかをユーザーに確認する。
 2. **FLOWS.md に該当 flow があるか見る**。あれば ID（A1/B2/D3…）と seam・観測がそのまま設計。
    なければ新規 flow として、近いセクション（A〜L）に `- [ ]` 行を追記してよい。
+   ⚠️ **「この挙動は既にテストされているか」を判定するときは `tests/e2e/` だけ見て『未カバー』と結論しない**。
+   spawn/dedup/視認性のような **UI system は `src/ui/**` の `#[cfg(test)] mod tests` に unit テストが
+   ある**ことが多い（dispatcher の spawn/重複は `tests/e2e/flows/m1,m5` ではなく `floating_window.rs` の
+   `order_dispatcher_tests` にある等、system 本体の隣に置かれる）。`grep -rn '<system名>\|<Marker>' src/ tests/`
+   で **src と tests の両方**を当たってから gap を申告する（#25 の確認で、dispatcher Order arm を
+   m1/m5 だけ見て「欠落」と誤判定し、実際は floating_window.rs unit テストで既出だった）。
    ⚠️ **新規 ID を採番する前に衝突を必ず確認する**: FLOWS.md の「保留中の `A5`/`C5`/`D8` など」リストと
    `docs/wiki/**` の `[<ID>]` 参照を両方 grep する。**保留中（planned）の ID が wiki では既に別挙動に
    bind 済み**ということがある（例: #32 Slice 2 で C5 を採ろうとしたら、FLOWS.md は C5 を planned 扱いの一方
