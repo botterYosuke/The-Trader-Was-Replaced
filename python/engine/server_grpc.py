@@ -461,6 +461,7 @@ class GrpcDataEngineServer(
             adapter,
             on_account_event=self._publish_account_snapshot,
             interval_s=30.0,
+            on_error=self._publish_account_sync_error,
         )
         self._account_sync = account_sync
         # Phase 9 Step 9: instruments daily refresh. login 直後の初期 refresh で
@@ -512,8 +513,28 @@ class GrpcDataEngineServer(
             asyncio.run_coroutine_threadsafe(component.start(), loop).result(
                 timeout=self._live_timeout_s
             )
-        except Exception:  # noqa: BLE001 — best-effort; login already succeeded
+            mode = self.mode_manager.current_mode if self.mode_manager else "Replay"
+            logging.info("started %s after login (mode=%s)", label, mode)
+        except Exception as exc:  # noqa: BLE001 — best-effort; login already succeeded
             logging.exception("failed to start %s after login", label)
+            # 握り潰さず UI トースト用に surface する（issue #29 D2 / B 経路）。
+            # ただし shutdown 中など bus が closed のときは publish が RuntimeError を
+            # 投げる。A 経路（account_sync の on_error）と同様、publish 失敗で
+            # 起動経路を止めない（issue #29 Slice1 レビュー指摘 #1）。
+            try:
+                self.publish_backend_event(
+                    engine_pb2.BackendEvent(
+                        backend_error=engine_pb2.BackendError(
+                            source="server_grpc",
+                            detail=f"{label}: {type(exc).__name__}: {exc}" if str(exc) else f"{label}: {exc!r}",
+                            ts_ms=int(time.time() * 1000),
+                        )
+                    )
+                )
+            except Exception:  # noqa: BLE001 — publish failure must not fail startup
+                logging.warning(
+                    "failed to publish backend_error for %s start failure", label
+                )
 
     def _start_account_sync_after_login(self) -> None:
         self._start_bg_component_after_login(self._account_sync, "account sync")
@@ -1778,6 +1799,46 @@ class GrpcDataEngineServer(
         self.engine.forget_instrument(request.instrument_id)
         return engine_pb2.SubscribeResponse(success=True, error_code="")
 
+    def ForceAccountSnapshot(self, request, context):
+        """issue #29 Slice 2': ExecutionModeChanged→Live reset 直後に Rust が呼ぶ。
+        AccountSync.force_resync() を live loop で 1 発回し、dedup を貫通して
+        AccountEvent を既存 backend event stream に再 push させる（BP/Positions refill）。
+        snapshot 自体はインライン返却しない（既存 stream 経由で戻る）。
+        """
+        if not self._token_ok(request):
+            context.abort(grpc.StatusCode.UNAUTHENTICATED, "Invalid token")
+        # TOCTOU 回避: 別 thread が None チェックと force_resync 呼び出しの間で
+        # self._account_sync を差し替えても、local キャプチャした acct を一貫使用する。
+        acct = self._account_sync
+        if acct is None:
+            return engine_pb2.ForceAccountSnapshotResponse(
+                success=False,
+                error_code="VENUE_LOGIN_REQUIRED",
+            )
+        loop = self._ensure_live_loop()
+        try:
+            future = asyncio.run_coroutine_threadsafe(
+                acct.force_resync(), loop
+            )
+            emitted = future.result(timeout=self._live_timeout_s)
+        except Exception as exc:
+            logging.exception("ForceAccountSnapshot failed: %s", exc)
+            return engine_pb2.ForceAccountSnapshotResponse(
+                success=False,
+                error_code="FORCE_RESYNC_FAILED",
+            )
+        if not emitted:
+            # fetch 失敗等で AccountEvent を再 push できなかった。on_error 経路で
+            # BackendError は既に publish 済み。RPC は success=True を返してはならない。
+            return engine_pb2.ForceAccountSnapshotResponse(
+                success=False,
+                error_code="FORCE_RESYNC_NO_EMIT",
+            )
+        return engine_pb2.ForceAccountSnapshotResponse(
+            success=True,
+            error_code="",
+        )
+
     def SubmitSecret(self, request, context):
         if not self._token_ok(request):
             context.abort(grpc.StatusCode.UNAUTHENTICATED, "Invalid token")
@@ -1843,6 +1904,21 @@ class GrpcDataEngineServer(
         self.publish_backend_event(engine_pb2.BackendEvent(account_event=proto))
         # Phase 10 §2.4: post-trade max_daily_loss を口座スナップショット毎に評価する。
         self._evaluate_post_trade_loss(snapshot)
+
+    def _publish_account_sync_error(self, record) -> None:
+        """AccountSync on_error callback: LiveErrorRecord → BackendError → backend stream.
+
+        Runs on the live-loop thread (fetch_account 失敗時)。issue #29 D2 / A 経路:
+        握り潰さず UI トースト用に surface する。BackendEventBus は threadsafe (Step 0)。"""
+        self.publish_backend_event(
+            engine_pb2.BackendEvent(
+                backend_error=engine_pb2.BackendError(
+                    source=record.source,
+                    detail=record.detail,
+                    ts_ms=int(time.time() * 1000),
+                )
+            )
+        )
 
     def _publish_secret_required(self, request_id, venue, kind, purpose) -> None:
         """SecondSecretResolver callback: SecretRequired を UI に push する。

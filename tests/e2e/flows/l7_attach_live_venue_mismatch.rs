@@ -131,6 +131,9 @@ impl DataEngine for MockDataEngine {
     async fn resume_live_strategy(&self, _: Request<ResumeLiveStrategyReq>) -> Result<Response<LiveStrategyControlRes>, Status> { Err(Status::unimplemented("stub")) }
     async fn get_live_strategy_status(&self, _: Request<GetLiveStrategyStatusReq>) -> Result<Response<GetLiveStrategyStatusRes>, Status> { Err(Status::unimplemented("stub")) }
     async fn list_live_strategies(&self, _: Request<ListLiveStrategiesReq>) -> Result<Response<ListLiveStrategiesRes>, Status> { Err(Status::unimplemented("stub")) }
+    async fn force_account_snapshot(&self, _: Request<backcast::trading::engine::ForceAccountSnapshotRequest>) -> Result<Response<backcast::trading::engine::ForceAccountSnapshotResponse>, Status> {
+        Ok(Response::new(backcast::trading::engine::ForceAccountSnapshotResponse { success: true, error_code: String::new() }))
+    }
 }
 
 // ── 共通ヘルパー ──────────────────────────────────────────────────────────────

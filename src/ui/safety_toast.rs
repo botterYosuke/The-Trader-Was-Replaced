@@ -13,7 +13,7 @@
 
 use bevy::prelude::*;
 
-use crate::trading::{SafetyToast, SafetyToastEntry, short_id};
+use crate::trading::{SafetyToast, SafetyToastEntry, ToastKind, short_id};
 
 /// How long a violation toast stays on screen before auto-dismiss.
 const TOAST_DURATION_S: f32 = 6.0;
@@ -48,7 +48,10 @@ pub fn toast_color(kind: &str) -> Color {
 
 /// Header line: an ASCII-only label (FiraMono has no ⚠ glyph, so no emoji).
 pub fn toast_header(entry: &SafetyToastEntry) -> String {
-    format!("SAFETY RAIL — {}", entry.kind)
+    match entry.toast_kind {
+        ToastKind::SafetyRail => format!("SAFETY RAIL — {}", entry.kind),
+        ToastKind::BackendError => format!("BACKEND ERROR — {}", entry.kind),
+    }
 }
 
 /// Body line: the violation detail, with the run id when present.
@@ -184,6 +187,7 @@ mod tests {
 
     fn entry(kind: &str) -> SafetyToastEntry {
         SafetyToastEntry {
+            toast_kind: ToastKind::SafetyRail,
             run_id: "run-abcdef0011".to_string(),
             kind: kind.to_string(),
             detail: "limit exceeded".to_string(),
@@ -225,6 +229,7 @@ mod tests {
             .spawn((Text::new(""), TextColor(COLOR_BODY), SafetyToastCell::Header))
             .id();
         app.world_mut().resource_mut::<SafetyToast>().show(
+            ToastKind::SafetyRail,
             "run-abcdef0011".to_string(),
             "MAX_DAILY_LOSS".to_string(),
             "daily loss limit hit".to_string(),

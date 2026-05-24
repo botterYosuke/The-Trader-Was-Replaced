@@ -4,7 +4,8 @@ use backcast::backend_supervisor::{
 };
 use backcast::backend_sync::{
     BackendEventChannel, StatusUpdateChannel, backend_event_drain_system,
-    backend_restart_resync_system, status_update_system,
+    backend_restart_resync_system, request_force_account_snapshot_on_live_entry,
+    status_update_system,
 };
 use backcast::camera::{pancam_suppression_over_editor_system, setup_camera};
 use backcast::grid::GridPlugin;
@@ -27,7 +28,8 @@ use bevy::prelude::*;
 use bevy_pancam::{PanCamPlugin, PanCamSystemSet};
 use engine::data_engine_client::DataEngineClient;
 use engine::{
-    EngineKind, EngineStartConfig, ForceStopReplayRequest, GetPortfolioRequest, GetStateRequest,
+    EngineKind, EngineStartConfig, ForceAccountSnapshotRequest, ForceStopReplayRequest,
+    GetPortfolioRequest, GetStateRequest,
     ListAllListedSymbolsRequest, ListInstrumentsRequest, LoadReplayDataRequest,
     PauseLiveStrategyReq, PauseReplayRequest, RegisterLiveStrategyReq, ReplayGranularity,
     ResumeLiveStrategyReq, ResumeReplayRequest, SafetyLimits, SetExecutionModeRequest,
@@ -237,6 +239,9 @@ async fn main() {
                 // Phase 9 §3.8: after an auto-restart reaches Ready, fire GetOrders
                 // to reconcile the optimistic order list with the fresh backend.
                 backend_restart_resync_system,
+                // Issue #29 Slice 2' (Step 5): Live entry 検出で ForceAccountSnapshot を撃つ。
+                // status_update_system が exec_mode を確定させた後に読む（race-free）。
+                request_force_account_snapshot_on_live_entry.after(status_update_system),
                 update_replay_startup_window_system,
                 animate_replay_startup_bar_system,
                 auto_hide_replay_startup_window_system.after(status_update_system),
@@ -741,6 +746,35 @@ fn setup_backend_connection(
                                     }
                                 }
                                 Err(e) => error!("SetExecutionMode failed: {}", e),
+                            }
+                        });
+                    }
+                    TransportCommand::ForceAccountSnapshot => {
+                        // Issue #29 Slice 2' (Step 6): on Live entry we re-pull the
+                        // account snapshot so PortfolioState refills after the
+                        // ExecutionModeChanged->Live reset. Fire-and-forget: the actual
+                        // BP/Positions arrive on the existing AccountEvent stream via
+                        // backend `force_resync()`; this RPC's ack only tells us whether
+                        // the resync was accepted. No ordering/gate needed.
+                        let mut fas_client = client.clone();
+                        let fas_token = token.clone();
+                        tokio::spawn(async move {
+                            let req = tonic::Request::new(ForceAccountSnapshotRequest {
+                                token: fas_token,
+                            });
+                            match fas_client.force_account_snapshot(req).await {
+                                Ok(r) => {
+                                    let inner = r.into_inner();
+                                    if inner.success {
+                                        info!("ForceAccountSnapshot accepted; awaiting AccountEvent on stream");
+                                    } else {
+                                        error!(
+                                            "ForceAccountSnapshot rejected: error_code={}",
+                                            inner.error_code
+                                        );
+                                    }
+                                }
+                                Err(e) => error!("ForceAccountSnapshot failed: {}", e),
                             }
                         });
                     }
@@ -1560,6 +1594,13 @@ fn setup_backend_connection(
                                     unrealized_pnl: p.unrealized_pnl,
                                     order_count: p.order_count,
                                     fill_count: p.fill_count,
+                                    ts_ms: p.ts_ms,
+                                }
+                            }
+                            engine::backend_event::Payload::BackendError(p) => {
+                                backcast::trading::BackendEvent::BackendError {
+                                    source: p.source,
+                                    detail: p.detail,
                                     ts_ms: p.ts_ms,
                                 }
                             }
