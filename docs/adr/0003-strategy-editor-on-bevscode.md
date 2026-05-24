@@ -1,8 +1,16 @@
 ---
-status: proposed
+status: superseded
+superseded_by: 0003-strategy-editor-on-bevy-ui-text-input.md
 ---
 
-# Strategy Editor moves to bevscode; project upgrades to Bevy 0.18
+> **⚠️ SUPERSEDED (2026-05-24)** by
+> [`0003-strategy-editor-on-bevy-ui-text-input.md`](0003-strategy-editor-on-bevy-ui-text-input.md).
+> The bevscode / big-bang plan below was rejected in favour of a staged Bevy 0.16→0.17→0.18
+> migration with `bevy_ui_text_input` (screen-space) and the accepted syntax-highlight /
+> world-space-editor regressions. This file is retained for the decision trail only; the two
+> `0003-*` files share a number by accident (collision is intentional-historical, not a live ADR).
+
+# Strategy Editor moves to bevscode; project upgrades to Bevy 0.18 (SUPERSEDED)
 
 We are replacing the in-house `bevy_cosmic_edit`-based Strategy Editor with
 [bevscode](https://github.com/PoHsuanLai/bevscode) (a GPU-instanced-text code-editor

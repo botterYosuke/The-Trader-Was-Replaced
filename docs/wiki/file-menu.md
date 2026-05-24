@@ -63,12 +63,13 @@
 | --- | --- |
 | `schema_version` | サイドカーのスキーマバージョン。 |
 | `viewport` | カメラの pan（`pan_x` / `pan_y`）と zoom。 |
-| `windows[]` | 各フローティングウィンドウの `kind` / `position` / `size` / `z` / `region_key`。 |
+| `windows[]` | 各ウィンドウの `kind` / `position` / `size` / `z` / `region_key`。world-space sprite パネル（Buying Power 等）と screen-space `Node` ウィンドウ（Strategy Editor / Startup・ADR 0003）の両方を収集します。 [M13] |
 | `strategy_path` | 復元する戦略 `.py` のパス。 |
 | `scenario` | SCENARIO 設定（保存時に既存 JSON から保持して書き戻し）。 |
 
 - `Save As` は新しい `.json` / `.py` のペアを作成し、以後の保存先を切り替えます。 [I8]
 - ウィンドウを移動すると、約 1 秒のデバウンス後にレイアウトが自動保存されます。 [M2]
+- 戦略エディタと Startup（screen-space ウィンドウ）も位置（`Node` の left/top）がサイドカーに保存・復元されます。戦略エディタはサイズ・可視性も復元しますが、Startup はサイズ・可視性を復元しません（サイズは窓側定数が正、可視性は実行モードが所有）。 [M13]/[M14]/[M9]
 - 起動時に前回の cache state が残っている場合は、最後に開いていた strategy / layout / scenario が復元されます。 [I12]
 - ウィンドウの移動・クローズは Undo / Redo の対象です（AppHistory による管理）。 [I11]/[M2]/[M3]
 - チャートウィンドウはレイアウト永続化の対象外で、サイドバーで選択中の銘柄から導出されます。 [I7]/[K1]
