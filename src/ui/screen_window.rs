@@ -14,12 +14,16 @@
 //!   camera scale は掛けない）。
 //! - 前面化は `GlobalZIndex` を `Pointer<Pressed>` で `WindowManager.max_z` から採番して上げる。
 //!
-//! ⚠️ **既知の未実装（#35 follow-up）**: layout 永続化（`layout_persistence`）は現状 world-space の
-//! `&Sprite`+`&Transform` window しか save/restore しない。`ScreenWindowRoot`（Node・left/top）は
-//! まだ分岐対象外なので、**editor / Startup の位置・サイズ・可視性はサイドカーに永続化されない**
-//! （A-2 の回帰。ADR 0003 の「位置永続化は world xy → UI node の left/top」は未実装）。
-//! `build_layout` / `apply_layout_system` に `ScreenWindowRoot` 分岐（Node geometry の read/write）を
-//! 足すのが残作業。m9 flow はテストが Sprite 偽装 root を使うため production gap を捕捉していない。
+//! layout 永続化（`layout_persistence`）は world-space `&Sprite`+`&Transform` window に加えて
+//! **`ScreenWindowRoot`（Node の left/top/width/height・`GlobalZIndex`）も save/restore する**
+//! （#35 follow-up を close）。`build_layout` が screen window を `windows` 配列へ収集し、
+//! `apply_layout_system` / `apply_pending_layout_system` が world-space match の空振り後に
+//! screen match で `Node` geometry を復元する。Startup は size・可視性を復元しない（size は窓側
+//! 定数が正、可視性は `ExecutionMode` 所有 [M9]）。Strategy Editor は size・可視性も layout 権威 [M14]。
+//! 保存方向の回帰ガードは [M13]。
+//! ⚠️ **残 follow-up**: screen window の close-on-restore（layout に無い editor の despawn）は未対応
+//! （world-space のみ）。z-order は GlobalZIndex を round-trip するが `WindowManager.max_z` への
+//! 完全統合は未確認。詳細は ADR 0003。
 
 use crate::ui::components::{TitleBar, WindowManager, WindowRoot};
 use crate::ui::layout_persistence::AutoSaveState;

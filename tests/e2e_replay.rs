@@ -242,6 +242,10 @@ mod m10_window_resize_updates_size_and_autosave;
 mod m11_startup_window_content_hides_with_panel;
 #[path = "e2e/flows/m12_strategy_editor_hidden_in_manual.rs"]
 mod m12_strategy_editor_hidden_in_manual;
+#[path = "e2e/flows/m13_screen_window_geometry_persists_to_sidecar.rs"]
+mod m13_screen_window_geometry_persists_to_sidecar;
+#[path = "e2e/flows/m14_screen_editor_window_geometry_restores.rs"]
+mod m14_screen_editor_window_geometry_restores;
 
 // N. Live Auto strategy execution (Phase 10: lifecycle / telemetry / safety / log / promote)
 #[path = "e2e/flows/n1_live_strategy_event_lifecycle.rs"]

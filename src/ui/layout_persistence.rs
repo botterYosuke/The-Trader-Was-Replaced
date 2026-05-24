@@ -27,6 +27,7 @@ use crate::ui::components::{
     WindowManager, WindowRoot,
 };
 use crate::ui::menu_bar::{cache_state_paths, sync_to_cache};
+use crate::ui::screen_window::{px_of, ScreenWindowRoot};
 use crate::ui::strategy_editor::{
     StrategyAutoSaveState, StrategyEditorModeHidden, flush_strategy_cache, merge_fragments,
     split_py_into_fragments,
@@ -235,24 +236,53 @@ fn is_non_persisted_layout_entry(win_layout: &WindowLayout) -> bool {
     }
 }
 
+/// world-space sprite window（`build_layout` 用）の read-only クエリ型。
+type WorldPanelQuery<'w, 's> = Query<
+    'w,
+    's,
+    (
+        &'static PanelKind,
+        Option<&'static StrategyEditorId>,
+        Option<&'static StrategyEditorModeHidden>,
+        &'static Transform,
+        &'static Sprite,
+        &'static Visibility,
+    ),
+    (With<WindowRoot>, Without<LayoutExcluded>),
+>;
+
+/// screen-space `Node` window（Strategy Editor / Startup、ADR 0003）の read-only クエリ型。
+/// world-space と異なり geometry は `Node`(left/top/width/height)・z は `GlobalZIndex`。
+type ScreenPanelQuery<'w, 's> = Query<
+    'w,
+    's,
+    (
+        &'static PanelKind,
+        Option<&'static StrategyEditorId>,
+        Option<&'static StrategyEditorModeHidden>,
+        &'static Node,
+        &'static GlobalZIndex,
+        &'static Visibility,
+    ),
+    (
+        With<WindowRoot>,
+        With<ScreenWindowRoot>,
+        Without<LayoutExcluded>,
+    ),
+>;
+
 /// ECS 状態から `SidecarLayout` を組み立てる。
 ///
 /// `preserve_scenario_json` に `Some(path)` を渡すと、その `.json` パスから
 /// 既存 `scenario` キーを回収して新 layout に含める（F1 対応）。
 /// `None` を渡すと `scenario` は `None` のままになる。
+///
+/// world-space sprite window（`panels`）と screen-space `Node` window（`screen_panels`、
+/// ADR 0003 の Strategy Editor / Startup）の両方を 1 つの `windows` 配列に収集する。
 #[allow(clippy::type_complexity)]
 fn build_layout(
-    panels: &Query<
-        (
-            &PanelKind,
-            Option<&StrategyEditorId>,
-            Option<&StrategyEditorModeHidden>,
-            &Transform,
-            &Sprite,
-            &Visibility,
-        ),
-        (With<WindowRoot>, Without<LayoutExcluded>),
-    >,
+    panels: &WorldPanelQuery<'_, '_>,
+    screen_panels: &ScreenPanelQuery<'_, '_>,
     camera: &Query<(&Transform, &Projection), (With<Camera2d>, Without<WindowRoot>)>,
     buffer: &StrategyBuffer,
     preserve_scenario_json: Option<&std::path::Path>,
@@ -266,29 +296,46 @@ fn build_layout(
         })
         .unwrap_or_default();
 
-    let windows: Vec<WindowLayout> = panels
+    // issue #31: LiveManual 中の Strategy Editor は `apply_strategy_editor_mode_visibility_system`
+    // が live `Visibility` を一時的に `Hidden` へ固定している。そのまま保存すると「layout の
+    // visible は権威」という不変条件を破り、Manual 中の autosave / 明示 Save が editor を
+    // `visible:false` に焼き込んで Replay でも消えたままになる。退避マーカーがあれば、その退避値
+    // （＝本来の意図）を保存する。
+    fn saved_visible(mode_hidden: Option<&StrategyEditorModeHidden>, vis: &Visibility) -> bool {
+        match mode_hidden {
+            Some(StrategyEditorModeHidden(saved)) => !matches!(saved, Visibility::Hidden),
+            None => !matches!(vis, Visibility::Hidden),
+        }
+    }
+
+    let mut windows: Vec<WindowLayout> = panels
         .iter()
         .filter(|(kind, ..)| kind.restore_driver() != PanelRestoreDriver::ScenarioInstruments)
-        .map(|(kind, id, mode_hidden, tf, sprite, vis)| {
-            // issue #31: LiveManual 中の Strategy Editor は `apply_strategy_editor_mode_visibility_system`
-            // が live `Visibility` を一時的に `Hidden` へ固定している。そのまま保存すると
-            // 「layout の visible は権威」という不変条件を破り、Manual 中の autosave / 明示 Save が
-            // editor を `visible:false` に焼き込んで Replay でも消えたままになる。退避マーカーが
-            // あれば、その退避値（＝本来の意図）を保存する。
-            let visible = match mode_hidden {
-                Some(StrategyEditorModeHidden(saved)) => !matches!(saved, Visibility::Hidden),
-                None => !matches!(vis, Visibility::Hidden),
-            };
-            WindowLayout {
-                kind: *kind,
-                visible,
-                position: [tf.translation.x, tf.translation.y],
-                size: sprite.custom_size.unwrap_or(Vec2::ZERO).to_array(),
-                z: tf.translation.z,
-                region_key: id.map(|i| i.region_key.clone()),
-            }
+        .map(|(kind, id, mode_hidden, tf, sprite, vis)| WindowLayout {
+            kind: *kind,
+            visible: saved_visible(mode_hidden, vis),
+            position: [tf.translation.x, tf.translation.y],
+            size: sprite.custom_size.unwrap_or(Vec2::ZERO).to_array(),
+            z: tf.translation.z,
+            region_key: id.map(|i| i.region_key.clone()),
         })
         .collect();
+
+    // ADR 0003: screen-space window（Node geometry）を同じ windows 配列へ追記する。
+    // position = Node の left/top、size = Node の width/height、z = GlobalZIndex（i32→f32）。
+    windows.extend(
+        screen_panels
+            .iter()
+            .filter(|(kind, ..)| kind.restore_driver() != PanelRestoreDriver::ScenarioInstruments)
+            .map(|(kind, id, mode_hidden, node, z, vis)| WindowLayout {
+                kind: *kind,
+                visible: saved_visible(mode_hidden, vis),
+                position: [px_of(node.left), px_of(node.top)],
+                size: [px_of(node.width), px_of(node.height)],
+                z: z.0 as f32,
+                region_key: id.map(|i| i.region_key.clone()),
+            }),
+    );
 
     let strategy_path = buffer
         .original_path
@@ -324,17 +371,8 @@ fn build_layout(
 /// - registry.editable == false の場合は scenario 形状を一切変更しない。
 #[allow(clippy::type_complexity)]
 fn build_layout_for_explicit_save(
-    panels: &Query<
-        (
-            &PanelKind,
-            Option<&StrategyEditorId>,
-            Option<&StrategyEditorModeHidden>,
-            &Transform,
-            &Sprite,
-            &Visibility,
-        ),
-        (With<WindowRoot>, Without<LayoutExcluded>),
-    >,
+    panels: &WorldPanelQuery<'_, '_>,
+    screen_panels: &ScreenPanelQuery<'_, '_>,
     camera: &Query<(&Transform, &Projection), (With<Camera2d>, Without<WindowRoot>)>,
     buffer: &StrategyBuffer,
     registry: &crate::ui::components::InstrumentRegistry,
@@ -344,7 +382,7 @@ fn build_layout_for_explicit_save(
 ) -> Option<SidecarLayout> {
     // preserve source: cache 第一、fallback 第二
     let preserve_from: Option<&std::path::Path> = cache_sidecar.or(fallback_original_json);
-    let mut layout = build_layout(panels, camera, buffer, preserve_from);
+    let mut layout = build_layout(panels, screen_panels, camera, buffer, preserve_from);
 
     if !registry.editable {
         // instruments_ref などは scenario 形状を壊さない
@@ -606,17 +644,8 @@ fn finish_layout_save(
     json_path: &PathBuf,
     py_path: &PathBuf,
     was_new: bool,
-    panels: &Query<
-        (
-            &PanelKind,
-            Option<&StrategyEditorId>,
-            Option<&StrategyEditorModeHidden>,
-            &Transform,
-            &Sprite,
-            &Visibility,
-        ),
-        (With<WindowRoot>, Without<LayoutExcluded>),
-    >,
+    panels: &WorldPanelQuery<'_, '_>,
+    screen_panels: &ScreenPanelQuery<'_, '_>,
     camera: &Query<(&Transform, &Projection), (With<Camera2d>, Without<WindowRoot>)>,
     buffer: &mut StrategyBuffer,
     fragments_q: &mut Query<(&StrategyEditorId, &mut StrategyFragment), With<WindowRoot>>,
@@ -648,6 +677,7 @@ fn finish_layout_save(
         .map(|p| p.with_extension("json"));
     let layout = match build_layout_for_explicit_save(
         panels,
+        screen_panels,
         camera,
         &*buffer,
         registry,
@@ -724,17 +754,8 @@ fn finish_layout_save(
 #[allow(clippy::type_complexity)]
 pub fn handle_save_layout_system(
     mut events: EventReader<LayoutSaveRequested>,
-    panels: Query<
-        (
-            &PanelKind,
-            Option<&StrategyEditorId>,
-            Option<&StrategyEditorModeHidden>,
-            &Transform,
-            &Sprite,
-            &Visibility,
-        ),
-        (With<WindowRoot>, Without<LayoutExcluded>),
-    >,
+    panels: WorldPanelQuery<'_, '_>,
+    screen_panels: ScreenPanelQuery<'_, '_>,
     camera: Query<(&Transform, &Projection), (With<Camera2d>, Without<WindowRoot>)>,
     mut buffer: ResMut<StrategyBuffer>,
     mut fragments_q: Query<(&StrategyEditorId, &mut StrategyFragment), With<WindowRoot>>,
@@ -767,6 +788,7 @@ pub fn handle_save_layout_system(
             &py_path,
             was_new,
             &panels,
+            &screen_panels,
             &camera,
             &mut buffer,
             &mut fragments_q,
@@ -841,17 +863,8 @@ fn poll_load_dialog_system(
 #[allow(clippy::type_complexity)]
 pub fn poll_save_as_dialog_system(
     mut pending: ResMut<PendingFileDialog>,
-    panels: Query<
-        (
-            &PanelKind,
-            Option<&StrategyEditorId>,
-            Option<&StrategyEditorModeHidden>,
-            &Transform,
-            &Sprite,
-            &Visibility,
-        ),
-        (With<WindowRoot>, Without<LayoutExcluded>),
-    >,
+    panels: WorldPanelQuery<'_, '_>,
+    screen_panels: ScreenPanelQuery<'_, '_>,
     camera: Query<(&Transform, &Projection), (With<Camera2d>, Without<WindowRoot>)>,
     mut buffer: ResMut<StrategyBuffer>,
     mut fragments_q: Query<(&StrategyEditorId, &mut StrategyFragment), With<WindowRoot>>,
@@ -900,6 +913,7 @@ pub fn poll_save_as_dialog_system(
     let old_original_json = old_original.as_ref().map(|p| p.with_extension("json"));
     let layout = match build_layout_for_explicit_save(
         &panels,
+        &screen_panels,
         &camera,
         &*buffer,
         &registry,
@@ -971,17 +985,8 @@ pub fn poll_save_as_dialog_system(
 #[allow(clippy::type_complexity)]
 fn poll_save_dialog_system(
     mut pending: ResMut<PendingFileDialog>,
-    panels: Query<
-        (
-            &PanelKind,
-            Option<&StrategyEditorId>,
-            Option<&StrategyEditorModeHidden>,
-            &Transform,
-            &Sprite,
-            &Visibility,
-        ),
-        (With<WindowRoot>, Without<LayoutExcluded>),
-    >,
+    panels: WorldPanelQuery<'_, '_>,
+    screen_panels: ScreenPanelQuery<'_, '_>,
     camera: Query<(&Transform, &Projection), (With<Camera2d>, Without<WindowRoot>)>,
     mut buffer: ResMut<StrategyBuffer>,
     mut fragments_q: Query<(&StrategyEditorId, &mut StrategyFragment), With<WindowRoot>>,
@@ -1016,6 +1021,7 @@ fn poll_save_dialog_system(
         &py_path,
         true,
         &panels,
+        &screen_panels,
         &camera,
         &mut buffer,
         &mut fragments_q,
@@ -1029,12 +1035,46 @@ fn poll_save_dialog_system(
     }
 }
 
+/// screen-space window（`ScreenWindowRoot`）へ保存 geometry を復元する（ADR 0003）。
+/// - position → `Node.left`/`Node.top`、z → `GlobalZIndex`。
+/// - Startup は size・可視性を復元しない（size は窓側定数が正、可視性は `ExecutionMode` 所有 [M9]）。
+/// - Strategy Editor は size・可視性も layout が権威。issue #31 の退避マーカーがあれば、その
+///   マーカーへ intent を書く（Manual 中の layout load でマーカーが陳腐化するのを防ぐ）。
+fn restore_screen_window_geometry(
+    win_layout: &WindowLayout,
+    kind: &PanelKind,
+    node: &mut Node,
+    z: &mut GlobalZIndex,
+    vis: &mut Visibility,
+    mode_hidden: Option<Mut<StrategyEditorModeHidden>>,
+) {
+    node.left = Val::Px(win_layout.position[0]);
+    node.top = Val::Px(win_layout.position[1]);
+    z.0 = win_layout.z as i32;
+    if *kind != PanelKind::Startup {
+        node.width = Val::Px(win_layout.size[0]);
+        node.height = Val::Px(win_layout.size[1]);
+        let intended = if win_layout.visible {
+            Visibility::Inherited
+        } else {
+            Visibility::Hidden
+        };
+        if let Some(mut marker) = mode_hidden {
+            marker.0 = intended;
+        } else {
+            *vis = intended;
+        }
+    }
+}
+
 #[allow(clippy::too_many_arguments, clippy::type_complexity)]
 // pub: headless integration test（tests/e2e/flows/i5_*）が file-open → spawn の
 // seam を駆動するため。本番の登録は LayoutPersistencePlugin 内のまま。
 pub fn apply_layout_system(
     mut commands: Commands,
     mut events: EventReader<LayoutLoadRequested>,
+    // world-space sprite window（geometry = Transform/Sprite）。screen window と &mut Visibility が
+    // 競合しないよう Without<ScreenWindowRoot> で明示的に分離する。
     mut panels: Query<
         (
             Entity,
@@ -1045,7 +1085,27 @@ pub fn apply_layout_system(
             &mut Visibility,
             Option<&mut StrategyEditorModeHidden>,
         ),
-        (With<WindowRoot>, Without<LayoutExcluded>),
+        (
+            With<WindowRoot>,
+            Without<LayoutExcluded>,
+            Without<ScreenWindowRoot>,
+        ),
+    >,
+    // screen-space Node window（geometry = Node left/top/width/height、z = GlobalZIndex、ADR 0003）。
+    mut screen_panels: Query<
+        (
+            &PanelKind,
+            Option<&StrategyEditorId>,
+            &mut Node,
+            &mut GlobalZIndex,
+            &mut Visibility,
+            Option<&mut StrategyEditorModeHidden>,
+        ),
+        (
+            With<WindowRoot>,
+            With<ScreenWindowRoot>,
+            Without<LayoutExcluded>,
+        ),
     >,
     mut camera: Query<
         (&mut Transform, &mut Projection),
@@ -1234,7 +1294,32 @@ pub fn apply_layout_system(
 
                 match found {
                     None => {
-                        // Startup は起動スケジュールで一度だけ spawn し、cosmic フィールドも
+                        // world-space miss → screen-space window（ScreenWindowRoot）を試す（ADR 0003）。
+                        // Strategy Editor / Startup は screen window なので本番ではこちらで match する。
+                        let screen_found = screen_panels.iter_mut().find(|(kind, id, ..)| {
+                            if **kind != win_layout.kind {
+                                return false;
+                            }
+                            match (win_layout.kind, want_key.as_deref(), id.as_ref()) {
+                                (PanelKind::StrategyEditor, Some(k), Some(eid)) => {
+                                    eid.region_key == k
+                                }
+                                (PanelKind::StrategyEditor, _, _) => false,
+                                _ => true,
+                            }
+                        });
+                        if let Some((kind, _, mut node, mut z, mut vis, mode_hidden)) = screen_found
+                        {
+                            restore_screen_window_geometry(
+                                win_layout, kind, &mut node, &mut z, &mut vis, mode_hidden,
+                            );
+                            if win_layout.z > new_max_z {
+                                new_max_z = win_layout.z;
+                            }
+                            continue;
+                        }
+
+                        // Startup は起動スケジュールで一度だけ spawn し、フィールドも
                         // そこで attach する。layout 経由で再 spawn するとフィールド無しの
                         // 壊れた窓になるため、layout からは spawn しない。
                         if win_layout.kind == PanelKind::Startup {
@@ -1336,7 +1421,27 @@ pub fn apply_pending_layout_system(
             &mut Visibility,
             Option<&mut StrategyEditorModeHidden>,
         ),
-        (With<WindowRoot>, Without<LayoutExcluded>),
+        (
+            With<WindowRoot>,
+            Without<LayoutExcluded>,
+            Without<ScreenWindowRoot>,
+        ),
+    >,
+    // screen-space Node window（deferred spawn された Strategy Editor をここで geometry 復元する）。
+    mut screen_panels: Query<
+        (
+            &PanelKind,
+            Option<&StrategyEditorId>,
+            &mut Node,
+            &mut GlobalZIndex,
+            &mut Visibility,
+            Option<&mut StrategyEditorModeHidden>,
+        ),
+        (
+            With<WindowRoot>,
+            With<ScreenWindowRoot>,
+            Without<LayoutExcluded>,
+        ),
     >,
     mut wm: ResMut<WindowManager>,
     pending_fragments: Res<PendingStrategyFragments>,
@@ -1370,6 +1475,28 @@ pub fn apply_pending_layout_system(
         });
         match found {
             None => {
+                // world-space miss → deferred spawn された screen-space window を試す（ADR 0003）。
+                let screen_found = screen_panels.iter_mut().find(|(kind, id, ..)| {
+                    if **kind != win_layout.kind {
+                        return false;
+                    }
+                    if win_layout.kind == PanelKind::StrategyEditor {
+                        let want = win_layout.region_key.as_deref().unwrap_or("region_001");
+                        id.map(|i| i.region_key == want).unwrap_or(false)
+                    } else {
+                        true
+                    }
+                });
+                if let Some((kind, _, mut node, mut z, mut vis, mode_hidden)) = screen_found {
+                    restore_screen_window_geometry(
+                        &win_layout, kind, &mut node, &mut z, &mut vis, mode_hidden,
+                    );
+                    if win_layout.z > wm.max_z {
+                        wm.max_z = win_layout.z;
+                    }
+                    continue;
+                }
+
                 // Startup は layout から spawn しない（フィールド attach は起動スケジュールのみ）。
                 if win_layout.kind == PanelKind::Startup {
                     continue;
@@ -1438,17 +1565,8 @@ pub fn apply_pending_layout_system(
 #[allow(clippy::type_complexity)]
 fn save_layout_on_window_close(
     mut close_events: EventReader<WindowCloseRequested>,
-    panels: Query<
-        (
-            &PanelKind,
-            Option<&StrategyEditorId>,
-            Option<&StrategyEditorModeHidden>,
-            &Transform,
-            &Sprite,
-            &Visibility,
-        ),
-        (With<WindowRoot>, Without<LayoutExcluded>),
-    >,
+    panels: WorldPanelQuery<'_, '_>,
+    screen_panels: ScreenPanelQuery<'_, '_>,
     camera: Query<(&Transform, &Projection), (With<Camera2d>, Without<WindowRoot>)>,
     mut buffer: ResMut<StrategyBuffer>,
     mut fragments_q: Query<(&StrategyEditorId, &mut StrategyFragment), With<WindowRoot>>,
@@ -1486,7 +1604,13 @@ fn save_layout_on_window_close(
             error!("layout auto-save failed: cache_dir not found");
             continue;
         };
-        let layout = build_layout(&panels, &camera, &*buffer, paths.cache_sidecar.as_deref());
+        let layout = build_layout(
+            &panels,
+            &screen_panels,
+            &camera,
+            &*buffer,
+            paths.cache_sidecar.as_deref(),
+        );
         match save_layout_to(&cache_json, &layout) {
             Ok(()) => info!("layout auto-saved to {:?}", cache_json),
             Err(e) => error!("layout auto-save failed: {e}"),
@@ -1498,17 +1622,8 @@ fn save_layout_on_window_close(
 #[allow(clippy::type_complexity)]
 fn debounced_autosave_system(
     mut auto_save: ResMut<AutoSaveState>,
-    panels: Query<
-        (
-            &PanelKind,
-            Option<&StrategyEditorId>,
-            Option<&StrategyEditorModeHidden>,
-            &Transform,
-            &Sprite,
-            &Visibility,
-        ),
-        (With<WindowRoot>, Without<LayoutExcluded>),
-    >,
+    panels: WorldPanelQuery<'_, '_>,
+    screen_panels: ScreenPanelQuery<'_, '_>,
     camera: Query<(&Transform, &Projection), (With<Camera2d>, Without<WindowRoot>)>,
     buffer: Res<StrategyBuffer>,
     paths: Res<crate::ui::components::ScenarioWritebackPaths>,
@@ -1530,7 +1645,13 @@ fn debounced_autosave_system(
         auto_save.last_change = None;
         return;
     };
-    let layout = build_layout(&panels, &camera, &*buffer, paths.cache_sidecar.as_deref());
+    let layout = build_layout(
+        &panels,
+        &screen_panels,
+        &camera,
+        &*buffer,
+        paths.cache_sidecar.as_deref(),
+    );
     match save_layout_to(&cache_json, &layout) {
         Ok(()) => info!("debounced autosave → {:?}", cache_json),
         Err(e) => error!("debounced autosave failed: {e}"),
@@ -2011,12 +2132,27 @@ mod tests {
                 ),
                 (With<WindowRoot>, Without<LayoutExcluded>),
             >,
+            Query<
+                (
+                    &PanelKind,
+                    Option<&StrategyEditorId>,
+                    Option<&StrategyEditorModeHidden>,
+                    &Node,
+                    &GlobalZIndex,
+                    &Visibility,
+                ),
+                (
+                    With<WindowRoot>,
+                    With<ScreenWindowRoot>,
+                    Without<LayoutExcluded>,
+                ),
+            >,
             Query<(&Transform, &Projection), (With<Camera2d>, Without<WindowRoot>)>,
             Res<StrategyBuffer>,
         )> = SystemState::new(app.world_mut());
 
-        let (panels, camera, buffer) = state.get(app.world());
-        let layout = build_layout(&panels, &camera, &*buffer, None);
+        let (panels, screen_panels, camera, buffer) = state.get(app.world());
+        let layout = build_layout(&panels, &screen_panels, &camera, &*buffer, None);
 
         let windows = layout.windows.expect("windows must be Some");
         assert_eq!(windows.len(), 1, "ChartInstrument 付き root は除外される");
@@ -2083,12 +2219,27 @@ mod tests {
                 ),
                 (With<WindowRoot>, Without<LayoutExcluded>),
             >,
+            Query<
+                (
+                    &PanelKind,
+                    Option<&StrategyEditorId>,
+                    Option<&StrategyEditorModeHidden>,
+                    &Node,
+                    &GlobalZIndex,
+                    &Visibility,
+                ),
+                (
+                    With<WindowRoot>,
+                    With<ScreenWindowRoot>,
+                    Without<LayoutExcluded>,
+                ),
+            >,
             Query<(&Transform, &Projection), (With<Camera2d>, Without<WindowRoot>)>,
             Res<StrategyBuffer>,
         )> = SystemState::new(app.world_mut());
 
-        let (panels, camera, buffer) = state.get(app.world());
-        let layout = build_layout(&panels, &camera, &*buffer, None);
+        let (panels, screen_panels, camera, buffer) = state.get(app.world());
+        let layout = build_layout(&panels, &screen_panels, &camera, &*buffer, None);
 
         let windows = layout.windows.expect("windows must be Some");
         let by_region = |key: &str| {
@@ -2383,17 +2534,8 @@ mod tests {
         // production の save 系と同様に mode system の前に走らせる。
         #[allow(clippy::type_complexity)]
         fn capture_sys(
-            panels: Query<
-                (
-                    &PanelKind,
-                    Option<&StrategyEditorId>,
-                    Option<&StrategyEditorModeHidden>,
-                    &Transform,
-                    &Sprite,
-                    &Visibility,
-                ),
-                (With<WindowRoot>, Without<LayoutExcluded>),
-            >,
+            panels: WorldPanelQuery<'_, '_>,
+            screen_panels: ScreenPanelQuery<'_, '_>,
             camera: Query<
                 (&Transform, &Projection),
                 (With<Camera2d>, Without<WindowRoot>),
@@ -2401,7 +2543,7 @@ mod tests {
             buffer: Res<StrategyBuffer>,
             mut out: ResMut<CapturedVisible>,
         ) {
-            let layout = build_layout(&panels, &camera, &*buffer, None);
+            let layout = build_layout(&panels, &screen_panels, &camera, &*buffer, None);
             out.0 = layout
                 .windows
                 .unwrap()
@@ -2564,12 +2706,27 @@ mod tests {
                 ),
                 (With<WindowRoot>, Without<LayoutExcluded>),
             >,
+            Query<
+                (
+                    &PanelKind,
+                    Option<&StrategyEditorId>,
+                    Option<&StrategyEditorModeHidden>,
+                    &Node,
+                    &GlobalZIndex,
+                    &Visibility,
+                ),
+                (
+                    With<WindowRoot>,
+                    With<ScreenWindowRoot>,
+                    Without<LayoutExcluded>,
+                ),
+            >,
             Query<(&Transform, &Projection), (With<Camera2d>, Without<WindowRoot>)>,
             Res<StrategyBuffer>,
         )> = SystemState::new(app.world_mut());
 
-        let (panels, camera, buffer) = state.get(app.world());
-        let layout = build_layout(&panels, &camera, &*buffer, None);
+        let (panels, screen_panels, camera, buffer) = state.get(app.world());
+        let layout = build_layout(&panels, &screen_panels, &camera, &*buffer, None);
 
         let windows = layout.windows.expect("windows must be Some");
         assert_eq!(
@@ -2631,12 +2788,27 @@ mod tests {
                 ),
                 (With<WindowRoot>, Without<LayoutExcluded>),
             >,
+            Query<
+                (
+                    &PanelKind,
+                    Option<&StrategyEditorId>,
+                    Option<&StrategyEditorModeHidden>,
+                    &Node,
+                    &GlobalZIndex,
+                    &Visibility,
+                ),
+                (
+                    With<WindowRoot>,
+                    With<ScreenWindowRoot>,
+                    Without<LayoutExcluded>,
+                ),
+            >,
             Query<(&Transform, &Projection), (With<Camera2d>, Without<WindowRoot>)>,
             Res<StrategyBuffer>,
         )> = SystemState::new(app.world_mut());
 
-        let (panels, camera, buffer) = state.get(app.world());
-        let layout = build_layout(&panels, &camera, &*buffer, None);
+        let (panels, screen_panels, camera, buffer) = state.get(app.world());
+        let layout = build_layout(&panels, &screen_panels, &camera, &*buffer, None);
 
         let windows = layout.windows.expect("windows must be Some");
         assert!(
