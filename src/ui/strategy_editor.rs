@@ -137,6 +137,80 @@ pub struct StrategyEditorLayoutChildren {
     pub scrollbar_track: Entity,
 }
 
+/// LiveManual 中に Strategy Editor ウィンドウを隠す際、隠す直前の `Visibility` を退避する marker。
+/// Manual を抜けたら保存値へ復元して marker を除去する (issue #31: save/restore 方式)。
+/// layout_persistence が `visible:false` で復元したウィンドウは `Hidden` が保存されるため、
+/// Manual を抜けても layout の意図どおり隠れたままになる (layout が権威)。
+#[derive(Component)]
+pub struct StrategyEditorModeHidden(pub Visibility);
+
+/// `ExecutionMode::LiveManual` のときだけ Strategy Editor を隠すシステム。
+///
+/// - フローティングウィンドウ (`WindowRoot` + `PanelKind::StrategyEditor`): Manual 突入時に
+///   現在の `Visibility` を `StrategyEditorModeHidden` に退避して `Hidden` にし、Manual 中は
+///   毎フレーム `Hidden` を維持する (他の writer による復活を防ぐ)。Manual を抜けたら退避値へ
+///   戻して marker を除去する。
+/// - サイドバー "Panels" の Strategy Editor ボタン (`Button` + `PanelKind::StrategyEditor`):
+///   Manual のとき `Display::None`、それ以外は `Display::Flex`。
+///
+/// `is_changed()` ゲートは張らない: Manual 中に新規 spawn されたウィンドウ
+/// (file open / cache restore / layout load) も捕捉するため毎フレーム diff-write する。
+pub fn apply_strategy_editor_mode_visibility_system(
+    exec_mode: Res<crate::trading::ExecutionModeRes>,
+    mut commands: Commands,
+    mut win_q: Query<
+        (
+            Entity,
+            &PanelKind,
+            &mut Visibility,
+            Option<&StrategyEditorModeHidden>,
+        ),
+        With<WindowRoot>,
+    >,
+    mut btn_q: Query<(&PanelKind, &mut Node), With<Button>>,
+) {
+    let manual = matches!(exec_mode.mode, crate::trading::ExecutionMode::LiveManual);
+
+    for (entity, kind, mut vis, saved) in &mut win_q {
+        if *kind != PanelKind::StrategyEditor {
+            continue;
+        }
+        if manual {
+            // 初回だけ現在値を退避。以降は Hidden を維持する。
+            if saved.is_none() {
+                commands
+                    .entity(entity)
+                    .insert(StrategyEditorModeHidden(*vis));
+            }
+            if *vis != Visibility::Hidden {
+                *vis = Visibility::Hidden;
+            }
+        } else if let Some(saved) = saved {
+            // Manual を抜けた: 退避値へ復元して marker 除去。
+            if *vis != saved.0 {
+                *vis = saved.0;
+            }
+            commands
+                .entity(entity)
+                .remove::<StrategyEditorModeHidden>();
+        }
+    }
+
+    let display = if manual {
+        Display::None
+    } else {
+        Display::Flex
+    };
+    for (kind, mut node) in &mut btn_q {
+        if *kind != PanelKind::StrategyEditor {
+            continue;
+        }
+        if node.display != display {
+            node.display = display;
+        }
+    }
+}
+
 /// dispatcher から呼ばれる spawn 関数。
 pub fn spawn_strategy_editor_panel(
     commands: &mut Commands,
@@ -1353,5 +1427,44 @@ mod tests {
         let auto_save = app.world().resource::<StrategyAutoSaveState>();
         assert!(auto_save.dirty);
         assert!(auto_save.last_change.is_some());
+    }
+
+    /// 退避マーカーが layout 権威を保持することの回帰: 最初から Hidden のウィンドウは
+    /// Replay→Manual→Replay を経ても Hidden のまま（blanket-Inherited にしない）。
+    #[test]
+    fn mode_hidden_marker_preserves_layout_authority() {
+        use bevy::transform::TransformPlugin;
+
+        let mut app = App::new();
+        app.add_plugins(TransformPlugin);
+        app.init_resource::<crate::trading::ExecutionModeRes>();
+        app.add_systems(Update, apply_strategy_editor_mode_visibility_system);
+
+        // layout で visible:false 相当 = 最初から Hidden。
+        let window = app
+            .world_mut()
+            .spawn((WindowRoot, PanelKind::StrategyEditor, Visibility::Hidden))
+            .id();
+
+        // Replay: Hidden のまま（触られない）。
+        app.update();
+        assert_eq!(*app.world().get::<Visibility>(window).unwrap(), Visibility::Hidden);
+
+        // Manual: Hidden を退避して Hidden のまま。
+        app.world_mut().resource_mut::<crate::trading::ExecutionModeRes>().mode =
+            crate::trading::ExecutionMode::LiveManual;
+        app.update();
+        assert_eq!(*app.world().get::<Visibility>(window).unwrap(), Visibility::Hidden);
+
+        // Replay へ戻す: 退避値 Hidden に復元 → blanket-Inherited にならない。
+        app.world_mut().resource_mut::<crate::trading::ExecutionModeRes>().mode =
+            crate::trading::ExecutionMode::Replay;
+        app.update();
+        assert_eq!(
+            *app.world().get::<Visibility>(window).unwrap(),
+            Visibility::Hidden,
+            "layout が Hidden を意図していたなら Manual を抜けても Hidden のまま"
+        );
+        assert!(app.world().get::<StrategyEditorModeHidden>(window).is_none());
     }
 }

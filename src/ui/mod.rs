@@ -472,6 +472,15 @@ impl Plugin for UiPlugin {
             (
                 crate::ui::footer::apply_execution_mode_visibility_system,
                 crate::ui::scenario_startup_panel::apply_startup_panel_visibility_system,
+                // issue #31: layout apply / panel spawn の後に走らせる。Manual 中の layout load /
+                // 新規 spawn で apply 系が StrategyEditor の「本来の可視性」を確定させ、spawn dispatcher
+                // が新規窓を materialize させた後に mode system がそれを退避マーカーへ捕捉する順序を
+                // 保証する。これにより (a) 新規 spawn 窓が 1 フレーム可視で出る flash を防ぎ、
+                // (b) spawn 既定値 Inherited を先に捕捉してマーカーが陳腐化するのを防ぐ。
+                crate::ui::strategy_editor::apply_strategy_editor_mode_visibility_system
+                    .after(crate::ui::layout_persistence::apply_layout_system)
+                    .after(crate::ui::layout_persistence::apply_pending_layout_system)
+                    .after(panel_spawn_dispatcher_system),
                 crate::ui::sidebar::apply_order_button_visibility_system,
             ),
         )
