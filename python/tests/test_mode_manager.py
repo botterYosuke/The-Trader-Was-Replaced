@@ -62,16 +62,16 @@ def test_set_live_auto_rejected_when_venue_disconnected():
 
 # --- Replay ガード ---
 
-def test_set_replay_rejected_when_replay_state_idle():
+def test_set_replay_succeeds_when_replay_state_idle():
+    """Replay は replay_state=IDLE でも常に遷移可能（ホームモード）。"""
     venue = VenueStateMachine()
     venue.transition_to("AUTHENTICATING")
     venue.transition_to("CONNECTED")
     sm = ModeManager(venue, _FakeReplayEngine(state="IDLE"))
-    # まず LiveManual に進めておく (初期 Replay からの切替を意味あるテストにする)
     sm.set_execution_mode("LiveManual")
-    with pytest.raises(ValueError, match="EXECUTION_MODE_PRECONDITION"):
-        sm.set_execution_mode("Replay")
-    assert sm.current_mode == "LiveManual"
+    result = sm.set_execution_mode("Replay")
+    assert result == "Replay"
+    assert sm.current_mode == "Replay"
 
 
 def test_set_replay_succeeds_when_replay_state_loaded():

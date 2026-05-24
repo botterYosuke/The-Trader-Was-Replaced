@@ -4,7 +4,7 @@
 //! テストでは Replay / Manual / Auto segment click を注入し、`TransportCommandSender` の送信有無と `ExecutionModeRes` を観測する。
 //! `execution_mode_toggle_system` (footer.rs ~657) の precondition:
 //! - Live への遷移: venue が Disconnected / Error なら blocked。
-//! - Replay への遷移: strategy が未ロード (`StrategyBuffer.original_path.is_none()`) なら blocked。
+//! - Replay への遷移: 常に許可（ホームモード）。
 
 use bevy::prelude::*;
 use tokio::sync::mpsc;
@@ -87,15 +87,24 @@ fn i4_mode_toggle_client_gating() {
         );
     }
 
-    // ── ケース 3: Replay へ遷移 — strategy 未ロード → blocked ──
+    // ── ケース 3: Replay へ遷移 — strategy 未ロードでも常に送信（Replay はホームモード）──
     {
         let (mut app, mut rx) =
             build_app(ExecutionMode::LiveManual, VenueState::Connected, false);
         press_segment(&mut app, ExecutionMode::Replay);
 
+        let cmd = rx
+            .try_recv()
+            .expect("strategy 未ロードでも Replay へ遷移すると SetExecutionMode が送られるはず");
         assert!(
-            rx.try_recv().is_err(),
-            "strategy 未ロード で Replay へ遷移しようとしても SetExecutionMode は送られないはず"
+            matches!(
+                cmd,
+                TransportCommand::SetExecutionMode {
+                    mode: ExecutionMode::Replay
+                }
+            ),
+            "SetExecutionMode(Replay) が送られるはず、got {:?}",
+            cmd
         );
     }
 

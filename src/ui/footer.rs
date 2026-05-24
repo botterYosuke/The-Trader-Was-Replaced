@@ -654,12 +654,12 @@ pub fn footer_pause_resume_system(
 /// - Replay への遷移: strategy が未ロード (`StrategyBuffer.original_path.is_none()`) なら blocked。
 /// precondition NG の場合は RPC を送らず warn! のみ。OK なら backend に送り、
 /// backend 側 `EXECUTION_MODE_PRECONDITION` reject は polling diff で吸収される。
+/// Replay は常に許可（ホームモード）。Live への遷移のみ venue 接続必須。
 #[allow(clippy::type_complexity)]
 pub fn execution_mode_toggle_system(
     query: Query<(&Interaction, &ExecutionModeToggleSegment), (Changed<Interaction>, With<Button>)>,
     exec_mode: Res<ExecutionModeRes>,
     venue: Res<VenueStatusRes>,
-    buffer: Res<StrategyBuffer>,
     sender: Option<Res<TransportCommandSender>>,
 ) {
     for (interaction, seg) in &query {
@@ -670,7 +670,7 @@ pub fn execution_mode_toggle_system(
         if exec_mode.mode == target {
             continue;
         }
-        // precondition: Live への遷移は venue 接続必須
+        // precondition: Live への遷移は venue 接続必須（Replay は無条件許可）
         if matches!(target, ExecutionMode::LiveManual | ExecutionMode::LiveAuto)
             && matches!(venue.state, VenueState::Disconnected | VenueState::Error)
         {
@@ -678,11 +678,6 @@ pub fn execution_mode_toggle_system(
                 "ExecutionMode→Live blocked: venue not connected (state={:?})",
                 venue.state
             );
-            continue;
-        }
-        // precondition: Replay への遷移は strategy ロード必須
-        if target == ExecutionMode::Replay && buffer.original_path.is_none() {
-            warn!("ExecutionMode→Replay blocked: no strategy loaded");
             continue;
         }
         let Some(sender) = sender.as_ref() else {

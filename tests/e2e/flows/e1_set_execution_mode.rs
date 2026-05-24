@@ -44,3 +44,47 @@ fn e1_set_execution_mode() {
     });
     assert_eq!(h.exec_mode().mode, ExecutionMode::LiveManual);
 }
+
+#[test]
+fn e1_replay_live_manual_replay_round_trip() {
+    // Replay → LiveManual → Replay の完全往復。
+    // Replay への帰還は strategy 未ロード・replay IDLE でも常に成功する（ホームモード）。
+    let mut h = Harness::new();
+    assert_eq!(h.exec_mode().mode, ExecutionMode::Replay);
+
+    h.set_venue(VenueState::Connected, "tachibana");
+
+    // ── 1. Replay → LiveManual ──
+    h.click(ExecutionModeToggleSegment(ExecutionMode::LiveManual));
+    let cmds = h.drain_commands();
+    assert!(
+        cmds.iter().any(|c| matches!(
+            c,
+            TransportCommand::SetExecutionMode {
+                mode: ExecutionMode::LiveManual
+            }
+        )),
+        "Replay→LiveManual: SetExecutionMode(LiveManual) が送られるはず (got {cmds:?})"
+    );
+    h.send_status(BackendStatusUpdate::ExecutionModeChanged {
+        mode: ExecutionMode::LiveManual,
+    });
+    assert_eq!(h.exec_mode().mode, ExecutionMode::LiveManual);
+
+    // ── 2. LiveManual → Replay（strategy 未ロード、replay IDLE のまま）──
+    h.click(ExecutionModeToggleSegment(ExecutionMode::Replay));
+    let cmds = h.drain_commands();
+    assert!(
+        cmds.iter().any(|c| matches!(
+            c,
+            TransportCommand::SetExecutionMode {
+                mode: ExecutionMode::Replay
+            }
+        )),
+        "LiveManual→Replay: strategy 未ロード・IDLE でも SetExecutionMode(Replay) が送られるはず (got {cmds:?})"
+    );
+    h.send_status(BackendStatusUpdate::ExecutionModeChanged {
+        mode: ExecutionMode::Replay,
+    });
+    assert_eq!(h.exec_mode().mode, ExecutionMode::Replay);
+}
