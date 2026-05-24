@@ -193,3 +193,40 @@ def test_callback_exception_does_not_kill_loop() -> None:
 
     n = asyncio.run(scenario())
     assert n >= 2  # 初回例外後も 2 回目 emit が来た
+
+
+def test_fetch_exception_records_source_aware_error() -> None:
+    """fetch 例外が source 付き error record として観測できる。"""
+
+    class _FlakyAdapter(MockVenueAdapter):
+        def __init__(self) -> None:
+            super().__init__()
+            self._boom_calls = 0
+
+        async def fetch_account(self) -> AccountSnapshot:  # type: ignore[override]
+            self._boom_calls += 1
+            if self._boom_calls == 2:
+                raise RuntimeError("transient venue error")
+            return await super().fetch_account()
+
+    async def scenario() -> "AccountSync":
+        adapter = _FlakyAdapter()
+        await adapter.login(
+            VenueCredentials(credentials_source="env", environment_hint="demo")
+        )
+        adapter.set_account_snapshot(cash=10.0, buying_power=20.0, positions=[])
+        seen: list[AccountSnapshot] = []
+        sync = AccountSync(adapter, on_account_event=seen.append, interval_s=0.01)
+        await sync.start()
+        for _ in range(40):
+            if sync.last_error is not None:
+                break
+            await asyncio.sleep(0.005)
+        await sync.stop()
+        return sync
+
+    sync = asyncio.run(scenario())
+    rec = sync.last_error_record
+    assert rec is not None
+    assert rec.source == "account_sync"
+    assert "transient venue error" in rec.detail

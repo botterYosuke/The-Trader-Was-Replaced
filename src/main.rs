@@ -1563,6 +1563,13 @@ fn setup_backend_connection(
                                     ts_ms: p.ts_ms,
                                 }
                             }
+                            engine::backend_event::Payload::BackendError(p) => {
+                                backcast::trading::BackendEvent::BackendError {
+                                    source: p.source,
+                                    detail: p.detail,
+                                    ts_ms: p.ts_ms,
+                                }
+                            }
                         };
                         let _ = event_tx.send(mapped);
                     }

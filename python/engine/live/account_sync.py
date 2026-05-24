@@ -24,11 +24,19 @@ from __future__ import annotations
 
 import asyncio
 import logging
+from dataclasses import dataclass
 from typing import Callable, Optional, Protocol
 
 from engine.live.order_types import AccountSnapshot
 
 _LOG = logging.getLogger(__name__)
+
+
+@dataclass(frozen=True)
+class LiveErrorRecord:
+    """source 付きの live エラー観測点（D2 で server_grpc が読み、BackendError event へ寄せる布石）。"""
+    source: str
+    detail: str
 
 
 class _AccountSource(Protocol):
@@ -43,13 +51,16 @@ class AccountSync:
         adapter: _AccountSource,
         on_account_event: Callable[[AccountSnapshot], None],
         interval_s: float = 30.0,
+        on_error: Optional[Callable[[LiveErrorRecord], None]] = None,
     ) -> None:
         self._adapter = adapter
         self._on_account_event = on_account_event
         self._interval_s = interval_s
+        self._on_error = on_error
         self._task: Optional[asyncio.Task[None]] = None
         self._last_emitted: Optional[AccountSnapshot] = None
         self._last_error: Optional[BaseException] = None
+        self._last_error_record: Optional[LiveErrorRecord] = None
 
     async def start(self) -> None:
         # 既に走っていれば no-op。die 済み task は再起動を許可（reducer_bridge と同 semantics）。
@@ -75,7 +86,16 @@ class AccountSync:
             raise
         except BaseException as exc:  # noqa: BLE001 — best-effort: 1 回失敗で停止させない
             self._last_error = exc
+            record = LiveErrorRecord(source="account_sync", detail=str(exc))
+            self._last_error_record = record
             _LOG.warning("AccountSync: fetch_account failed, continuing", exc_info=exc)
+            if self._on_error is not None:
+                try:
+                    self._on_error(record)
+                except asyncio.CancelledError:
+                    raise
+                except BaseException:  # noqa: BLE001 — on_error の失敗でループを止めない
+                    _LOG.warning("AccountSync: on_error callback failed", exc_info=True)
             return
 
         if not force_emit and snapshot == self._last_emitted:
@@ -106,3 +126,7 @@ class AccountSync:
     @property
     def last_error(self) -> Optional[BaseException]:
         return self._last_error
+
+    @property
+    def last_error_record(self) -> Optional[LiveErrorRecord]:
+        return self._last_error_record

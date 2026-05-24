@@ -461,6 +461,7 @@ class GrpcDataEngineServer(
             adapter,
             on_account_event=self._publish_account_snapshot,
             interval_s=30.0,
+            on_error=self._publish_account_sync_error,
         )
         self._account_sync = account_sync
         # Phase 9 Step 9: instruments daily refresh. login 直後の初期 refresh で
@@ -512,8 +513,28 @@ class GrpcDataEngineServer(
             asyncio.run_coroutine_threadsafe(component.start(), loop).result(
                 timeout=self._live_timeout_s
             )
-        except Exception:  # noqa: BLE001 — best-effort; login already succeeded
+            mode = self.mode_manager.current_mode if self.mode_manager else "Replay"
+            logging.info("started %s after login (mode=%s)", label, mode)
+        except Exception as exc:  # noqa: BLE001 — best-effort; login already succeeded
             logging.exception("failed to start %s after login", label)
+            # 握り潰さず UI トースト用に surface する（issue #29 D2 / B 経路）。
+            # ただし shutdown 中など bus が closed のときは publish が RuntimeError を
+            # 投げる。A 経路（account_sync の on_error）と同様、publish 失敗で
+            # 起動経路を止めない（issue #29 Slice1 レビュー指摘 #1）。
+            try:
+                self.publish_backend_event(
+                    engine_pb2.BackendEvent(
+                        backend_error=engine_pb2.BackendError(
+                            source="server_grpc",
+                            detail=f"{label}: {exc}",
+                            ts_ms=int(time.time() * 1000),
+                        )
+                    )
+                )
+            except Exception:  # noqa: BLE001 — publish failure must not fail startup
+                logging.warning(
+                    "failed to publish backend_error for %s start failure", label
+                )
 
     def _start_account_sync_after_login(self) -> None:
         self._start_bg_component_after_login(self._account_sync, "account sync")
@@ -1843,6 +1864,21 @@ class GrpcDataEngineServer(
         self.publish_backend_event(engine_pb2.BackendEvent(account_event=proto))
         # Phase 10 §2.4: post-trade max_daily_loss を口座スナップショット毎に評価する。
         self._evaluate_post_trade_loss(snapshot)
+
+    def _publish_account_sync_error(self, record) -> None:
+        """AccountSync on_error callback: LiveErrorRecord → BackendError → backend stream.
+
+        Runs on the live-loop thread (fetch_account 失敗時)。issue #29 D2 / A 経路:
+        握り潰さず UI トースト用に surface する。BackendEventBus は threadsafe (Step 0)。"""
+        self.publish_backend_event(
+            engine_pb2.BackendEvent(
+                backend_error=engine_pb2.BackendError(
+                    source=record.source,
+                    detail=record.detail,
+                    ts_ms=int(time.time() * 1000),
+                )
+            )
+        )
 
     def _publish_secret_required(self, request_id, venue, kind, purpose) -> None:
         """SecondSecretResolver callback: SecretRequired を UI に push する。

@@ -190,6 +190,16 @@ pub fn backend_event_drain_system(
                 // §2.10: surface the violation as a Footer toast (criterion line 484).
                 safety_toast.show(run_id, kind, detail, ts_ms);
             }
+            // Issue #29 Slice1 (S1.4): BackendError も SafetyRailViolation と同じく
+            // Footer toast (SafetyToast) に出す。run_id は無いので空、kind=source。
+            BackendEvent::BackendError {
+                source,
+                detail,
+                ts_ms,
+            } => {
+                warn!("[backend-event] BackendError source={source} detail={detail} ts_ms={ts_ms}");
+                safety_toast.show(String::new(), source, detail, ts_ms);
+            }
             BackendEvent::StrategyLogMessage {
                 run_id,
                 level,
@@ -671,6 +681,45 @@ mod tests {
             app.world().resource::<ReloginPrompt>().active.as_deref(),
             Some("KABU"),
             "VenueLogoutDetected must open the relogin prompt with the venue id"
+        );
+    }
+
+    /// Issue #29 Slice1 (S1.4): backend からの BackendError push が Footer toast
+    /// (SafetyToast) に source/detail を出すこと。SafetyRailViolation と同型の縫い目。
+    #[test]
+    fn backend_error_surfaces_on_safety_toast() {
+        let (tx, rx) = mpsc::unbounded_channel();
+        let mut app = App::new();
+        app.insert_resource(BackendEventChannel { rx });
+        app.init_resource::<SecretPrompt>();
+        app.init_resource::<LiveOrders>();
+        app.init_resource::<PortfolioState>();
+        app.init_resource::<ReloginPrompt>();
+        app.init_resource::<LiveRuns>();
+        app.init_resource::<SafetyToast>();
+        app.init_resource::<StrategyLogs>();
+        app.add_systems(Update, backend_event_drain_system);
+
+        tx.send(BackendEvent::BackendError {
+            source: "account_sync".to_string(),
+            detail: "balance fetch failed: timeout".to_string(),
+            ts_ms: 1_700_000_000_000,
+        })
+        .unwrap();
+        app.update();
+
+        let toast = app.world().resource::<SafetyToast>();
+        let entry = toast
+            .active
+            .as_ref()
+            .expect("BackendError must surface as a Footer toast (SafetyToast.active)");
+        assert!(
+            entry.kind.contains("account_sync"),
+            "toast must carry the error source"
+        );
+        assert!(
+            entry.detail.contains("timeout"),
+            "toast must carry the error detail"
         );
     }
 

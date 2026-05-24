@@ -912,6 +912,13 @@ pub enum BackendEvent {
         fill_count: i64,
         ts_ms: i64,
     },
+    /// Issue #29 Slice1: backend 側の継続的エラー (account_sync / server_grpc) を
+    /// Footer toast に出すための汎用エラーイベント。proto BackendError のミラー。
+    BackendError {
+        source: String,
+        detail: String,
+        ts_ms: i64,
+    },
 }
 
 /// AccountEvent.positions の 1 要素。proto AccountPosition のミラー。
