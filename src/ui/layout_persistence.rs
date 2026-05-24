@@ -237,6 +237,8 @@ fn is_non_persisted_layout_entry(win_layout: &WindowLayout) -> bool {
 }
 
 /// world-space sprite window（`build_layout` 用）の read-only クエリ型。
+/// `Without<ScreenWindowRoot>` で screen-space window を明示的に除外し、`ScreenPanelQuery` と
+/// アーキタイプ非交差にする（screen root が将来 `Sprite` を得ても二重カウントしない）。
 type WorldPanelQuery<'w, 's> = Query<
     'w,
     's,
@@ -248,7 +250,11 @@ type WorldPanelQuery<'w, 's> = Query<
         &'static Sprite,
         &'static Visibility,
     ),
-    (With<WindowRoot>, Without<LayoutExcluded>),
+    (
+        With<WindowRoot>,
+        Without<LayoutExcluded>,
+        Without<ScreenWindowRoot>,
+    ),
 >;
 
 /// screen-space `Node` window（Strategy Editor / Startup、ADR 0003）の read-only クエリ型。
@@ -2130,7 +2136,11 @@ mod tests {
                     &Sprite,
                     &Visibility,
                 ),
-                (With<WindowRoot>, Without<LayoutExcluded>),
+                (
+                    With<WindowRoot>,
+                    Without<LayoutExcluded>,
+                    Without<ScreenWindowRoot>,
+                ),
             >,
             Query<
                 (
@@ -2217,7 +2227,11 @@ mod tests {
                     &Sprite,
                     &Visibility,
                 ),
-                (With<WindowRoot>, Without<LayoutExcluded>),
+                (
+                    With<WindowRoot>,
+                    Without<LayoutExcluded>,
+                    Without<ScreenWindowRoot>,
+                ),
             >,
             Query<
                 (
@@ -2704,7 +2718,11 @@ mod tests {
                     &Sprite,
                     &Visibility,
                 ),
-                (With<WindowRoot>, Without<LayoutExcluded>),
+                (
+                    With<WindowRoot>,
+                    Without<LayoutExcluded>,
+                    Without<ScreenWindowRoot>,
+                ),
             >,
             Query<
                 (
@@ -2786,7 +2804,11 @@ mod tests {
                     &Sprite,
                     &Visibility,
                 ),
-                (With<WindowRoot>, Without<LayoutExcluded>),
+                (
+                    With<WindowRoot>,
+                    Without<LayoutExcluded>,
+                    Without<ScreenWindowRoot>,
+                ),
             >,
             Query<
                 (
