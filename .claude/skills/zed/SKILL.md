@@ -1,7 +1,7 @@
 ---
 name: zed
 description: |
-  Use this skill BEFORE editing `src/ui/**` in The-Trader-Was-Replaced, or whenever the user wants editor/IDE-style UI in our Bevy + bevy_cosmic_edit + bevy_egui + syntect frontend. Ships a Zed editor source mirror at `.claude/skills/zed/src/crates/` so you can read how a production desktop editor solves the same problem before writing Bevy code.
+  Use this skill BEFORE editing `src/ui/**` in The-Trader-Was-Replaced, or whenever the user wants editor/IDE-style UI in our Bevy frontend. ⚠️ 2026-05-24: the editor stack changed — `bevy_cosmic_edit` / `bevy_egui` / `syntect` are all **removed** (issue #35, ADR 0003). The Strategy Editor is now `bevy_ui_text_input` (`TextInputNode`) in a screen-space window; syntax highlight / gutter / find-replace / auto-indent were dropped as accepted regressions. This skill's Zed mirror still helps for editor UX patterns, but treat any cosmic/egui/syntect specifics as historical. Ships a Zed editor source mirror at `.claude/skills/zed/src/crates/` so you can read how a production desktop editor solves the same problem before writing Bevy code.
 
   Trigger eagerly on:
   - Any `src/ui/` file (`strategy_editor`, `instrument_picker`, `sidebar`, `menu_bar`, `footer`, `floating_window`, `layout_persistence`, `components`, `chart`, etc.) or a new panel/window/sidebar section.

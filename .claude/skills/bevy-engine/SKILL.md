@@ -1,6 +1,13 @@
 ---
 name: bevy-engine
 description: |
+  ⚠️ 2026-05-24 在: issue #35 で Bevy 0.15→0.18 段階移行 + `bevy_cosmic_edit`→`bevy_ui_text_input` 置換が進行中。
+  A-2 完了で **現在 Bevy 0.16**・cosmic は完全撤去・Strategy Editor / Startup は **screen-space**
+  (`src/ui/screen_window.rs` の `spawn_screen_window` + `TextInputNode`)。本文の「Bevy 0.15 ピン」
+  「CosmicEditPlugin / CosmicEditBuffer / CosmicTextChanged / TextEdit2d / FocusedWidget」記述は
+  **A-2 で陳腐化**（テキスト入力は `TextInputNode` / `TextInputContents`(Changed で読む) / `TextInputQueue`
+  (SelectAll+Paste で全文セット) / `bevy::input_focus::InputFocus`）。Step B(0.17)/C(0.18) 完了まで本文は
+  段階的に現行化中なので、API 詳細はコードと公式 migration guide で都度確認すること。
   The-Trader-Was-Replaced プロジェクトで Bevy（ゲーム/UI フレームワーク）を使う際の必読スキル。
   特に `src/camera.rs` と `src/ui/**` の floating-window 系（buying_power / positions / orders /
   run_result / strategy_editor / chart / sidebar / footer / menu_bar / order_panel / secret_modal）、
