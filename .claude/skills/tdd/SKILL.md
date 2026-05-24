@@ -73,6 +73,8 @@ This is your tracer bullet - proves the path works end-to-end.
 > **必ず RED を「実行して」確認してから実装に入る。** 仕様/issue が「回帰テストは RED 済み」と書いていても鵜呑みにしない。まず `cargo test <名前>` を走らせる。**もし既に GREEN なら、その修正は既にコミット済みの可能性が高い**（issue が OPEN なまま放置されているだけ）。`git log --oneline -- <対象ファイル>` と該当 system/guard の実装を grep で当て直し、本当に未実装か確認する。既に実装済みなら**再実装せず**、検証結果を添えてユーザーに報告する（二重実装・既存コードの上書きを防ぐ）。例: issue #23 は「i15 RED 済み」と書かれていたが実際は HEAD コミットで A+B 解決済み・i15 green で、着手前の RED 実行で発覚した。
 >
 > **自分の「最初の Read」も鵜呑みにしない。** セッション中に `git pull`/merge で HEAD が動き、序盤に Read したファイルが古くなることがある（作業ツリーが裏で更新される）。RED を書く直前に `git log --oneline -3` で HEAD を確認し、対象ファイルは Grep で当て直してから着手する。例: issue #24 は着手時の Read で supervisor に `LIVE_VENUE` 配線が皆無に見えたが、その後の merge（`05e5c491`）で spawn 側配線が既に入っており、Grep で再確認して初めて「残作業は attach 側照合のみ」と判明した。Read 1 回ぶんの古いスナップショットで設計すると、既存実装を再実装・上書きしかける。
+>
+> **このリポジトリの watcher 制約 → 「build-green / runtime-RED」で RED を作る。** この workspace は外部 watcher が走っており、**`cargo build --lib` がコンパイル不可な間は未コミットの編集（テスト含む）を巻き戻す**（bevy-engine skill 参照）。そのため「未定義シンボルを参照して compile error を出す」古典的 RED は、書いた瞬間に watcher に巻き戻されて消える。回避策＝**RED テストは lib が「コンパイルできる」形で書き、実行時に落とす**：既存シンボルだけを参照し、挙動は `app.update()` 等で駆動して assert を外す（watcher は red **build** でのみ巻き戻す。red **test** は安全）。RED の確認は「ビルドは通った／テストは runtime で FAILED（例: `left: Inherited, right: Hidden`）」で行う。**例外**: enum バリアント新規追加など、exhaustive match を壊して compile error が不可避な土台ステップは、最小の GREEN（バリアント＋全 match arm）を同じ手にまとめて lib を green に保つ（テストは intent を記録する characterization 寄りになる）。例: issue #25 は全スライスをこの build-green/runtime-RED で回し、各手を `cargo build --lib` green に保ったまま TDD した。
 
 ### 3. Incremental Loop
 
