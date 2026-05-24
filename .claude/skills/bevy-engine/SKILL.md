@@ -604,6 +604,15 @@ egui の中で `state.buffer` のような大きい String を編集するとき
   （バージョンは Cargo.lock の解決版＝現在 `0.12` に合わせる。型同一性のため）。
   bare `App`（MinimalPlugins すら無し）＋必要 system だけでも spawn は走る（spawn は純 ECS）。
   実例: `tests/e2e/flows/i5_file_open_spawns_editor_and_chart.rs`。
+- **1 つの system に 2 つの `&mut T`（同じ component）クエリを持たせたら起動時 panic（`error[B0001]` / "conflicts with a previous access" / "accesses component in a way that conflicts"）**:
+  Bevy のクエリ衝突検知は**実行時の重なりではなくアーキタイプ集合（`With`/`Without` フィルタと、`&T`/`&mut T` が暗黙に足す `With<T>`）で判定**する。2 つのクエリが同じ component を `&mut` で触る場合、フィルタが**証明可能に排他**（片方 `With<M>`・他方 `Without<M>`）でないと衝突扱いになる。`&mut Sprite` クエリと `&mut Node` クエリのように**データ component が違っても**、両方が `&mut Visibility` を含むなら Visibility で衝突する（Sprite/Node の差は Bevy は「排他の証明」には使ってくれない＝相手が `Without<Sprite>` と言っていない）。**対策**: 一方に `With<Marker>`、他方に **`Without<Marker>`** を付けて archetype を分割する（例: world-space window=`Without<ScreenWindowRoot>` / screen-space window=`With<ScreenWindowRoot>` の 2 クエリで `&mut Visibility` を別々に持つ。`src/ui/layout_persistence.rs` の `apply_layout_system`/`apply_pending_layout_system`）。read-only（`&T` ×2）なら共有借用なので衝突しない（save 系の 2 クエリは Without 不要だが、対称性のため付けてもよい）。⚠️ コンパイルは通り**起動した瞬間に panic** するので、`cargo build` だけでなく当該 system を `app.update()` で踏むテストで確認する。
+- **クエリ型を free 関数（helper）に渡したい / 同じ巨大クエリ型を複数 system で使い回したい**:
+  `type FooQuery<'w,'s> = Query<'w, 's, (&'static A, Option<&'static B>, &'static C), (With<M>, Without<N>)>;`
+  の **type alias**（QueryData は必ず `&'static` で書く）を定義する。helper 引数は `panels: &FooQuery<'_, '_>`、
+  system 引数は `panels: FooQuery<'_, '_>`、呼び出しは `foo(&panels)`。inline `Query<&A,...>` を `&FooQuery` 引数へ渡しても
+  D が `&'static` 同士で一致するのでコアース可能（`SystemState<(Query<...inline...>, ...)>` の `state.get()` で得た
+  クエリも同様に渡せる）。巨大タプル（save/restore の 6 要素 window クエリ等）を 8 箇所へ重複させずに済む。
+  `src/ui/layout_persistence.rs` の `WorldPanelQuery`/`ScreenPanelQuery` が実例。
 
 ## ground truth ソースの引き方
 
