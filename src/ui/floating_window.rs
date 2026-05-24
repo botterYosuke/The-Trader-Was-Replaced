@@ -12,6 +12,7 @@ use crate::ui::orders::spawn_orders_panel;
 use crate::ui::positions::spawn_positions_panel;
 use crate::ui::run_result_panel::spawn_run_result_panel;
 use crate::ui::scenario_startup_panel::spawn_scenario_startup_window;
+use crate::ui::order_panel::spawn_order_form_in_window;
 use crate::ui::strategy_editor::spawn_strategy_editor_panel;
 use bevy::prelude::*;
 use bevy_cosmic_edit::prelude::CosmicFontSystem;
@@ -687,7 +688,7 @@ pub fn panel_spawn_dispatcher_system(
                 spawn_strategy_editor_panel(&mut commands, &mut font_system, &mut allocator, spec);
             }
             PanelKind::Order => {
-                let (root, _content_area, _title_bar) = spawn_floating_window(
+                let (root, content_area, _title_bar) = spawn_floating_window(
                     &mut commands,
                     FloatingWindowSpec {
                         title: "ORDER".to_string(),
@@ -699,6 +700,7 @@ pub fn panel_spawn_dispatcher_system(
                     },
                 );
                 commands.entity(root).insert((PanelKind::Order, LayoutExcluded));
+                spawn_order_form_in_window(&mut commands, content_area);
             }
         }
         if event.source == PanelSpawnSource::User && !history.is_replaying() {

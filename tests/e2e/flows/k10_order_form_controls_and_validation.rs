@@ -21,7 +21,7 @@ use backcast::trading::{
 };
 use backcast::ui::order_panel::{
     order_form_button_system, order_submit_button_system, validate_order,
-    OrderButton, OrderConfirm, OrderForm, OrderType, Side, TimeInForce,
+    OrderButton, OrderButtonPressed, OrderConfirm, OrderForm, OrderType, Side, TimeInForce,
 };
 
 const DEFAULT_LOT_SIZE: f64 = 100.0;
@@ -45,6 +45,7 @@ fn build_app() -> (App, mpsc::UnboundedReceiver<TransportCommand>) {
     app.insert_resource(ButtonInput::<KeyCode>::default());
     app.insert_resource(TransportCommandSender { tx });
 
+    app.add_event::<OrderButtonPressed>();
     app.add_systems(Update, (order_form_button_system, order_submit_button_system));
 
     (app, rx)
@@ -56,7 +57,7 @@ fn k10_order_form_controls_and_validation() {
     {
         let (mut app, _) = build_app();
         app.world_mut()
-            .spawn((Button, Interaction::Pressed, OrderButton::SideSell));
+            .send_event(OrderButtonPressed(OrderButton::SideSell));
         app.update();
         assert_eq!(
             app.world().resource::<OrderForm>().side,
@@ -70,10 +71,10 @@ fn k10_order_form_controls_and_validation() {
         let (mut app, _) = build_app();
         // まず Sell に変えてから Buy に戻す。
         app.world_mut()
-            .spawn((Button, Interaction::Pressed, OrderButton::SideSell));
+            .send_event(OrderButtonPressed(OrderButton::SideSell));
         app.update();
         app.world_mut()
-            .spawn((Button, Interaction::Pressed, OrderButton::SideBuy));
+            .send_event(OrderButtonPressed(OrderButton::SideBuy));
         app.update();
         assert_eq!(
             app.world().resource::<OrderForm>().side,
@@ -86,7 +87,7 @@ fn k10_order_form_controls_and_validation() {
     {
         let (mut app, _) = build_app();
         app.world_mut()
-            .spawn((Button, Interaction::Pressed, OrderButton::TypeLimit));
+            .send_event(OrderButtonPressed(OrderButton::TypeLimit));
         app.update();
         assert_eq!(
             app.world().resource::<OrderForm>().order_type,
@@ -99,10 +100,10 @@ fn k10_order_form_controls_and_validation() {
     {
         let (mut app, _) = build_app();
         app.world_mut()
-            .spawn((Button, Interaction::Pressed, OrderButton::TypeLimit));
+            .send_event(OrderButtonPressed(OrderButton::TypeLimit));
         app.update();
         app.world_mut()
-            .spawn((Button, Interaction::Pressed, OrderButton::TypeMarket));
+            .send_event(OrderButtonPressed(OrderButton::TypeMarket));
         app.update();
         assert_eq!(
             app.world().resource::<OrderForm>().order_type,
@@ -116,7 +117,7 @@ fn k10_order_form_controls_and_validation() {
         let (mut app, _) = build_app();
         // デフォルト qty = 100
         app.world_mut()
-            .spawn((Button, Interaction::Pressed, OrderButton::QtyInc));
+            .send_event(OrderButtonPressed(OrderButton::QtyInc));
         app.update();
         assert_eq!(
             app.world().resource::<OrderForm>().qty,
@@ -130,7 +131,7 @@ fn k10_order_form_controls_and_validation() {
         let (mut app, _) = build_app();
         // qty = 100 → 0 へ（負にならない）。
         app.world_mut()
-            .spawn((Button, Interaction::Pressed, OrderButton::QtyDec));
+            .send_event(OrderButtonPressed(OrderButton::QtyDec));
         app.update();
         assert_eq!(
             app.world().resource::<OrderForm>().qty,
@@ -144,7 +145,7 @@ fn k10_order_form_controls_and_validation() {
         let (mut app, _) = build_app();
         // デフォルト price = 0
         app.world_mut()
-            .spawn((Button, Interaction::Pressed, OrderButton::PriceInc));
+            .send_event(OrderButtonPressed(OrderButton::PriceInc));
         app.update();
         assert_eq!(
             app.world().resource::<OrderForm>().price,
@@ -158,7 +159,7 @@ fn k10_order_form_controls_and_validation() {
         let (mut app, _) = build_app();
         // price = 0 → 0 (負にならない)。
         app.world_mut()
-            .spawn((Button, Interaction::Pressed, OrderButton::PriceDec));
+            .send_event(OrderButtonPressed(OrderButton::PriceDec));
         app.update();
         assert_eq!(
             app.world().resource::<OrderForm>().price,
@@ -171,7 +172,7 @@ fn k10_order_form_controls_and_validation() {
     {
         let (mut app, _) = build_app();
         app.world_mut()
-            .spawn((Button, Interaction::Pressed, OrderButton::Tif(TimeInForce::Opening)));
+            .send_event(OrderButtonPressed(OrderButton::Tif(TimeInForce::Opening)));
         app.update();
         assert_eq!(
             app.world().resource::<OrderForm>().tif,
@@ -183,7 +184,7 @@ fn k10_order_form_controls_and_validation() {
     {
         let (mut app, _) = build_app();
         app.world_mut()
-            .spawn((Button, Interaction::Pressed, OrderButton::Tif(TimeInForce::Closing)));
+            .send_event(OrderButtonPressed(OrderButton::Tif(TimeInForce::Closing)));
         app.update();
         assert_eq!(
             app.world().resource::<OrderForm>().tif,
@@ -200,7 +201,7 @@ fn k10_order_form_controls_and_validation() {
             Some("銘柄が未選択です".to_string());
 
         app.world_mut()
-            .spawn((Button, Interaction::Pressed, OrderButton::SideSell));
+            .send_event(OrderButtonPressed(OrderButton::SideSell));
         app.update();
 
         assert!(
@@ -313,7 +314,7 @@ fn k10_order_form_controls_and_validation() {
         app.world_mut().resource_mut::<OrderForm>().qty = 150.0;
 
         app.world_mut()
-            .spawn((Button, Interaction::Pressed, OrderButton::Submit));
+            .send_event(OrderButtonPressed(OrderButton::Submit));
         app.update();
 
         let confirm = app.world().resource::<OrderConfirm>();
