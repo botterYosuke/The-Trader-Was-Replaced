@@ -223,7 +223,17 @@ class NautilusLiveEngineController:
             risk_engine=risk_cfg,
             data_engine=LiveDataEngineConfig(),
         )
-        kernel = NautilusKernel(name="LiveStrategyHost", config=cfg, loop=loop)
+        # `_do_attach` は live loop 上で実行される（attach() が run_coroutine_threadsafe で
+        # 投げる）ため、kernel は `loop=` を渡さず `asyncio.get_running_loop()` で同じ loop に
+        # bind させる。`loop=` を渡すと NautilusKernel が `_setup_loop()` で
+        # `signal.signal(SIGINT)` / `loop.add_signal_handler()` を呼ぶが、これらは
+        # **メインスレッドでしか動かない**。本番の live loop は server_grpc の daemon thread
+        # （phase8-live-loop）で回っており、Python 3.14 は非メインスレッドの signal.signal で
+        # `ValueError: signal only works in main thread` を raise する（#36）。プロセスの
+        # ライフサイクル/シグナルは backend が所有するので、Nautilus には signal handler を
+        # 登録させない。sync `kernel.start()` 経路は `_register_executor()` を呼ばないため、
+        # `loop=` 省略で executor が未設定でも安全（start_async() のみが executor を要求する）。
+        kernel = NautilusKernel(name="LiveStrategyHost", config=cfg)
 
         # instrument を cache へ（RiskEngine の notional 計算 / exec client の precision に必要）。
         instrument = make_equity_instrument(iid.symbol.value, venue_str)

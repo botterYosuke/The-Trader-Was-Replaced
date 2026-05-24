@@ -122,12 +122,16 @@ def test_set_execution_mode_invalid_mode_raises_invalid_argument(phase8_grpc_ser
     assert exc.value.code() == grpc.StatusCode.INVALID_ARGUMENT
 
 
-def test_set_execution_mode_replay_precondition(phase8_grpc_server):
+def test_set_execution_mode_replay_always_reachable(phase8_grpc_server):
+    # #30: Replay is the always-reachable home mode — no precondition gating,
+    # reachable even with no strategy loaded / venue IDLE. (GH #37: was asserting
+    # the pre-#30 behavior where Replay was rejected by precondition.)
     port, token, engine, venue_sm, mm = phase8_grpc_server
     stub = _stub(port)
     resp = stub.SetExecutionMode(engine_pb2.SetExecutionModeRequest(mode="Replay", token=token))
-    assert resp.success is False
-    assert resp.error_code == "EXECUTION_MODE_PRECONDITION"
+    assert resp.success is True
+    assert resp.error_code == ""
+    assert resp.execution_mode == "Replay"
 
 
 # --- token 検証 (RED: handler 未実装) ---------------------------------------

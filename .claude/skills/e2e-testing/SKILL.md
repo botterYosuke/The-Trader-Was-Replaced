@@ -242,6 +242,8 @@ $p = (Get-NetTCPConnection -LocalPort 19876 -ErrorAction SilentlyContinue).Ownin
 if ($p) { Stop-Process -Id $p -Force }
 ```
 
+> ⚠️ **macOS で backend を kill するとき `kill -9 $(lsof -ti tcp:19876)` は GUI も道連れにする**。`lsof -ti tcp:19876` はそのポートに socket を持つ全 PID を返すので、**listener（backend）だけでなく、接続中の backcast クライアントの PID も含まれる**。両方 SIGKILL されて GUI が落ちる。backend だけ残して落としたいときは **起動時に控えた backend の PID を直接 kill**（`backend launching (pid $!)` を覚えておく）するか、`pkill -f "python -m engine"` を使う。GUI は `pkill -x backcast`。port ベースで kill してよいのは「全部まとめて落とす後片付け」のときだけ。
+
 ---
 
 ## 6. 自動テスト（手動検証 **ではない** もの）
