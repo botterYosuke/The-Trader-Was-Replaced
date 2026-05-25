@@ -1804,6 +1804,7 @@ mod writeback_scenario_instruments_tests {
         app.init_resource::<RegionKeyAllocator>();
         app.init_resource::<PendingStrategyFragments>();
         app.init_resource::<ScenarioInstrumentsWritebackState>();
+        app.init_resource::<ChartSizeMap>();
         app.add_event::<StrategyFileLoadRequested>();
         app.add_event::<ScenarioLoadedFromFile>();
         app.add_event::<ScenarioClearedFromFile>();
@@ -1906,6 +1907,7 @@ mod writeback_scenario_instruments_tests {
         app.init_resource::<ScenarioInstrumentsWritebackState>();
         app.init_resource::<InstrumentPickerState>();
         app.init_resource::<AvailableInstruments>();
+        app.init_resource::<ChartSizeMap>();
         app.add_event::<StrategyFileLoadRequested>();
         app.add_event::<ScenarioLoadedFromFile>();
         app.add_event::<ScenarioClearedFromFile>();
@@ -2121,6 +2123,7 @@ mod writeback_scenario_instruments_tests {
         app.init_resource::<ScenarioInstrumentsWritebackState>();
         app.init_resource::<InstrumentPickerState>();
         app.init_resource::<AvailableInstruments>();
+        app.init_resource::<ChartSizeMap>();
         app.add_event::<StrategyFileLoadRequested>();
         app.add_event::<ScenarioLoadedFromFile>();
         app.add_event::<ScenarioClearedFromFile>();
@@ -2247,6 +2250,7 @@ mod writeback_scenario_instruments_tests {
         app.init_resource::<ScenarioInstrumentsWritebackState>();
         app.init_resource::<InstrumentPickerState>();
         app.init_resource::<AvailableInstruments>();
+        app.init_resource::<ChartSizeMap>();
         app.add_event::<StrategyFileLoadRequested>();
         app.add_event::<StrategyRunRequested>();
         app.add_event::<ScenarioLoadedFromFile>();
@@ -2479,6 +2483,7 @@ mod writeback_scenario_instruments_tests {
         app.init_resource::<RegionKeyAllocator>();
         app.init_resource::<PendingStrategyFragments>();
         app.init_resource::<ScenarioInstrumentsWritebackState>();
+        app.init_resource::<ChartSizeMap>();
         app.add_event::<StrategyFileLoadRequested>();
         app.add_event::<ScenarioLoadedFromFile>();
         app.add_event::<ScenarioClearedFromFile>();
@@ -2617,6 +2622,7 @@ mod writeback_scenario_instruments_tests {
         app.init_resource::<RegionKeyAllocator>();
         app.init_resource::<PendingStrategyFragments>();
         app.init_resource::<ScenarioInstrumentsWritebackState>();
+        app.init_resource::<ChartSizeMap>();
         app.add_event::<StrategyFileLoadRequested>();
         app.add_event::<StrategyRunRequested>();
         app.add_event::<ScenarioLoadedFromFile>();
@@ -3247,3 +3253,12 @@ pub struct ScenarioStartupErrorLabel {
 pub struct ScenarioStartupFieldEditor {
     pub field: ScenarioStartupField,
 }
+
+/// 銘柄 ID をキーにしたチャートパネルサイズの永続マップ。
+/// `instrument_chart_sync_system` がこのマップを参照し、再 spawn 時に保存済みサイズを使う。
+/// リサイズ DragEnd 時に更新される。
+#[derive(Resource, Default)]
+pub struct ChartSizeMap {
+    pub map: HashMap<String, Vec2>,
+}
+

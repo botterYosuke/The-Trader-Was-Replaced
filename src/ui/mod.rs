@@ -77,6 +77,7 @@ use crate::ui::components::{
 use crate::ui::components::{
     ScenarioStartupParams, SidebarTickersScrollOffset, SidebarTickersSearchState,
 };
+use crate::ui::components::ChartSizeMap;
 use crate::ui::editor_history::{
     ActiveDrag, AppHistory, PendingStrategySnapshotRestore, UndoRedoApplied,
 };
@@ -173,7 +174,7 @@ use crate::ui::strategy_editor_input::{
 };
 use crate::ui::strategy_editor_scrollbar::update_scrollbar_thumb_system;
 use crate::ui::systems::{update_price_display, update_status_indicator};
-use crate::ui::window::instrument_chart_sync_system;
+use crate::ui::window::{chart_content_layout_system, instrument_chart_sync_system};
 use bevy::prelude::*;
 use bevy_cosmic_edit::{
     CosmicEditPlugin, CosmicFontConfig,
@@ -231,6 +232,7 @@ impl Plugin for UiPlugin {
         .init_resource::<ScenarioMetadata>()
         .init_resource::<ScenarioStartupParams>()
         .init_resource::<InstrumentRegistry>()
+        .init_resource::<ChartSizeMap>()
         .init_resource::<SidebarTickersScrollOffset>()
         .init_resource::<SidebarTickersSearchState>()
         .init_resource::<ScenarioFileWatchState>()
@@ -306,6 +308,7 @@ impl Plugin for UiPlugin {
                 panel_spawn_dispatcher_system,
                 floating_window_layout_system,
                 strategy_editor_content_layout_system,
+                chart_content_layout_system,
             ),
         )
         // ── Chart (Phase 7.3 A): ViewState 更新 / autoscale / 描画 ──

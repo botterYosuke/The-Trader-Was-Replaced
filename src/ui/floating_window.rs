@@ -1,9 +1,9 @@
 use crate::ui::buying_power::spawn_buying_power_panel;
 use crate::ui::components::{
-    ChartInstrument, CloseButton, InstrumentRegistry, LayoutExcluded, PanelKind, PanelSpawnRequested,
-    PanelSpawnSource, PendingStrategyFragments, RegionKeyAllocator, StrategyBuffer,
-    StrategyEditorId, StrategyEditorSpawnSpec, StrategyFragment, TitleBar, WindowManager,
-    WindowRoot,
+    ChartInstrument, ChartSizeMap, CloseButton, InstrumentRegistry, LayoutExcluded, PanelKind,
+    PanelSpawnRequested, PanelSpawnSource, PendingStrategyFragments, RegionKeyAllocator,
+    StrategyBuffer, StrategyEditorId, StrategyEditorSpawnSpec, StrategyFragment, TitleBar,
+    WindowManager, WindowRoot,
 };
 use crate::ui::editor_history::{ActiveDrag, AppHistory};
 use crate::ui::layout_persistence::WindowLayout;
@@ -121,19 +121,26 @@ fn spawn_resize_handle(commands: &mut Commands, axis: ResizeAxis, size: Vec2, po
                 tf.translation.y -= adh / 2.0; // world y は screen y の逆
             },
         )
-        // DragEnd → autosave をマーク
+        // DragEnd → autosave をマーク（chart は ChartSizeMap にサイズを保存）
         .observe(
             |end: Trigger<Pointer<DragEnd>>,
              parent_q: Query<&Parent>,
-             root_q: Query<Option<&ChartInstrument>, With<WindowRoot>>,
-             mut auto_save: ResMut<crate::ui::layout_persistence::AutoSaveState>| {
+             root_q: Query<(Option<&ChartInstrument>, Option<&Sprite>), With<WindowRoot>>,
+             mut auto_save: ResMut<crate::ui::layout_persistence::AutoSaveState>,
+             mut chart_sizes: ResMut<ChartSizeMap>| {
                 let Ok(parent) = parent_q.get(end.entity()) else {
                     return;
                 };
-                let Ok(chart) = root_q.get(parent.get()) else {
+                let Ok((chart_opt, sprite_opt)) = root_q.get(parent.get()) else {
                     return;
                 };
-                if chart.is_some() {
+                if let Some(chart_instrument) = chart_opt {
+                    // chart resize → instrument_id をキーにサイズを保存
+                    if let Some(size) = sprite_opt.and_then(|s| s.custom_size) {
+                        chart_sizes
+                            .map
+                            .insert(chart_instrument.instrument_id.clone(), size);
+                    }
                     return;
                 }
                 auto_save.mark_layout_changed(std::time::Instant::now());

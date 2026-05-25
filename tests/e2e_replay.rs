@@ -217,6 +217,12 @@ mod k14_reconcile_modal_dismiss_escape_priority;
 mod k15_secret_modal_timeout_zeroize_empty_submit;
 #[path = "e2e/flows/k16_order_context_menu_open_close.rs"]
 mod k16_order_context_menu_open_close;
+#[path = "e2e/flows/k17_chart_resize_reflow.rs"]
+mod k17_chart_resize_reflow;
+#[path = "e2e/flows/k18_live_chart_resize_reflow.rs"]
+mod k18_live_chart_resize_reflow;
+#[path = "e2e/flows/k19_chart_size_persists.rs"]
+mod k19_chart_size_persists;
 
 // L. CLI / backend process / prod guard
 // l1: stub のみ（PowerShell .ps1 — Windows 専用、darwin CI 不可）
