@@ -2,7 +2,7 @@
 //!
 //! Drains the two mpsc channels fed by the transport task (`BackendStatusUpdate`
 //! and `BackendEvent`) and applies them to the observable Bevy resources
-//! (`LastRunResult`, `PortfolioState`, `VenueStatusRes`, …). This is the heart
+//! (`CurrentRun`, `PortfolioState`, `VenueStatusRes`, …). This is the heart
 //! of the desktop app's state machine: every user-visible state transition that
 //! originates from the backend flows through `apply_status_update`.
 //!
@@ -15,7 +15,7 @@ use crate::backend_supervisor::{BackendLifecycle, BackendLifecycleHandle};
 use crate::replay::{ReplayStartupPhase, ReplayStartupProgress};
 use crate::trading::{
     AccountPosition, AvailableInstruments, BackendEvent, BackendStartupStage, BackendStatus,
-    BackendStatusUpdate, CurrentRun, ExecutionMode, ExecutionModeRes, LastPrices, LastRunResult, LiveOrder, LiveOrders,
+    BackendStatusUpdate, CurrentRun, ExecutionMode, ExecutionModeRes, LastPrices, LiveOrder, LiveOrders,
     LiveRuns, OrderFeedback, PortfolioPosition, PortfolioState, ReconcilePrompt,
     ReloginPrompt, RunState, SafetyToast, SecretPrompt, SecretPromptRequest, StrategyLogs, Tickers,
     ToastKind,
@@ -38,7 +38,7 @@ pub struct StatusUpdateChannel {
 pub fn status_update_system(
     mut status: ResMut<BackendStatus>,
     mut channel: ResMut<StatusUpdateChannel>,
-    mut last_run: ResMut<LastRunResult>,
+    mut current_run: ResMut<CurrentRun>,
     mut portfolio: ResMut<PortfolioState>,
     mut available: ResMut<AvailableInstruments>,
     mut progress: ResMut<ReplayStartupProgress>,
@@ -55,7 +55,7 @@ pub fn status_update_system(
         apply_status_update(
             update,
             &mut status,
-            &mut last_run,
+            &mut current_run,
             &mut portfolio,
             &mut available,
             &mut progress,
@@ -325,7 +325,7 @@ pub fn lifecycle_status_update(
 pub fn apply_status_update(
     update: BackendStatusUpdate,
     status: &mut BackendStatus,
-    last_run: &mut LastRunResult,
+    current_run: &mut CurrentRun,
     portfolio: &mut PortfolioState,
     available: &mut AvailableInstruments,
     progress: &mut ReplayStartupProgress,
@@ -346,7 +346,7 @@ pub fn apply_status_update(
             status.connected = false;
         }
         BackendStatusUpdate::RunStarted => {
-            last_run.state = RunState::Running;
+            current_run.state = RunState::Running;
         }
         BackendStatusUpdate::ReplayStartup { startup_id, stage } => {
             if progress.visible && progress.startup_id == startup_id {
@@ -369,10 +369,10 @@ pub fn apply_status_update(
             summary_json,
         } => {
             info!("RunComplete: run_id={} summary={}", run_id, summary_json);
-            last_run.parsed_summary = parse_summary_json(&summary_json);
-            last_run.run_id = Some(run_id);
-            last_run.summary_json = Some(summary_json);
-            last_run.state = RunState::Completed;
+            current_run.parsed_summary = parse_summary_json(&summary_json);
+            current_run.run_id = Some(run_id);
+            current_run.summary_json = Some(summary_json);
+            current_run.state = RunState::Completed;
 
             if let Some(sid) = startup_id
                 && progress.visible
@@ -393,7 +393,7 @@ pub fn apply_status_update(
             {
                 progress.error = Some(error.clone());
             }
-            last_run.state = RunState::Failed { error };
+            current_run.state = RunState::Failed { error };
         }
         BackendStatusUpdate::PortfolioLoaded {
             buying_power,
@@ -860,7 +860,7 @@ mod tests {
     #[test]
     fn secret_submit_failed_sets_secret_prompt_error_not_order_feedback() {
         let mut status = BackendStatus::default();
-        let mut last_run = LastRunResult::default();
+        let mut current_run = CurrentRun::default();
         let mut portfolio = PortfolioState::default();
         let mut available = AvailableInstruments::default();
         let mut progress = ReplayStartupProgress::default();
@@ -878,7 +878,7 @@ mod tests {
                 error_code: "SECOND_SECRET_INVALID".to_string(),
             },
             &mut status,
-            &mut last_run,
+            &mut current_run,
             &mut portfolio,
             &mut available,
             &mut progress,
@@ -912,7 +912,7 @@ mod tests {
     fn instruments_list_failed_pending_maps_to_inflight_not_failed() {
         fn apply(error: &str) -> TickersStatus {
             let mut status = BackendStatus::default();
-            let mut last_run = LastRunResult::default();
+            let mut current_run = CurrentRun::default();
             let mut portfolio = PortfolioState::default();
             let mut available = AvailableInstruments::default();
             let mut progress = ReplayStartupProgress::default();
@@ -930,7 +930,7 @@ mod tests {
                     error: error.to_string(),
                 },
                 &mut status,
-                &mut last_run,
+                &mut current_run,
                 &mut portfolio,
                 &mut available,
                 &mut progress,
@@ -969,7 +969,7 @@ mod tests {
         // 既存の全引数組み立て helper（他テストと同形）。
         fn reduce_exec_mode_changed(portfolio: &mut PortfolioState, mode: ExecutionMode) {
             let mut status = BackendStatus::default();
-            let mut last_run = LastRunResult::default();
+            let mut current_run = CurrentRun::default();
             let mut available = AvailableInstruments::default();
             let mut progress = ReplayStartupProgress::default();
             let mut venue_status = VenueStatusRes::default();
@@ -984,7 +984,7 @@ mod tests {
             apply_status_update(
                 BackendStatusUpdate::ExecutionModeChanged { mode },
                 &mut status,
-                &mut last_run,
+                &mut current_run,
                 portfolio,
                 &mut available,
                 &mut progress,

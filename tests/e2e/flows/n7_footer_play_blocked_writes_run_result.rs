@@ -1,10 +1,10 @@
 //! N7 footer_play_blocked_writes_run_result — LiveAuto の footer ▶ が pre-flight guard で
-//! ブロックされたとき、サイレントに無反応で終わらず `LastRunResult.state` に
+//! ブロックされたとき、サイレントに無反応で終わらず `CurrentRun.state` に
 //! `RunState::Failed { error }` を書いて Run Result パネルへ理由を出すことを保証する。
 //!
 //! N6 は「全 pre-flight 通過 → StartLiveAuto 送出」のハッピーパスを踏む。N7 はその裏で、
 //! guard が落ちたとき（venue 未接続 / venue identity 未設定）にユーザへ理由が surfacing される
-//! ことを固定する回帰ガード。fix 前は guard が `warn!`+`continue` だけで `LastRunResult` は
+//! ことを固定する回帰ガード。fix 前は guard が `warn!`+`continue` だけで `CurrentRun` は
 //! `Idle` のまま残り、画面に何も出ない（silent）＝この 2 関数は assert fail（RED）になる。
 //! 詳細は `tests/e2e/FLOWS.md` の N 群を参照。
 
@@ -15,7 +15,7 @@ use serial_test::serial;
 use bevy::prelude::*;
 
 use backcast::trading::{
-    BackendStatus, ExecutionMode, ExecutionModeRes, LastRunResult, ReplaySpeed, RunState,
+    BackendStatus, CurrentRun, ExecutionMode, ExecutionModeRes, ReplaySpeed, RunState,
     SelectedSymbol, TradingSession, TradingSettings, TransportCommand, TransportCommandSender,
     VenueState, VenueStatusRes,
 };
@@ -66,7 +66,7 @@ fn make_app() -> (App, mpsc::UnboundedReceiver<TransportCommand>) {
         .insert_resource(TradingSettings::default())
         .insert_resource(ReplaySpeed::default())
         .insert_resource(StrategyBuffer::default())
-        .insert_resource(LastRunResult::default())
+        .insert_resource(CurrentRun::default())
         .insert_resource(SelectedSymbol::default())
         .insert_resource(VenueStatusRes::default())
         .insert_resource(ScenarioMetadata::default())
@@ -98,7 +98,7 @@ fn pause_resume_entity(app: &mut App) -> Entity {
 }
 
 /// guard ① (instruments 空) を通すため scenario / cache_path / StrategyFragment 窓を埋める。
-/// これで残る guard だけが落ち、その guard が `LastRunResult` を書くかどうかを単離して観測できる。
+/// これで残る guard だけが落ち、その guard が `CurrentRun` を書くかどうかを単離して観測できる。
 fn seed_strategy_cache(app: &mut App, cache_py: &std::path::Path) {
     app.world_mut().resource_mut::<ExecutionModeRes>().mode = ExecutionMode::LiveAuto;
     app.world_mut().resource_mut::<SelectedSymbol>().id = Some("7203.TSE".to_string());
@@ -118,7 +118,7 @@ fn seed_strategy_cache(app: &mut App, cache_py: &std::path::Path) {
 }
 
 /// guard ② (venue not live): scenario / cache は揃うが venue.state=Disconnected。
-/// fix 前は `warn!`+`continue` だけで `LastRunResult` は `Idle` のまま残る（silent）＝RED。
+/// fix 前は `warn!`+`continue` だけで `CurrentRun` は `Idle` のまま残る（silent）＝RED。
 #[test]
 #[serial]
 fn n7_footer_play_blocked_venue_not_connected_writes_run_result() {
@@ -157,11 +157,11 @@ fn n7_footer_play_blocked_venue_not_connected_writes_run_result() {
 
     assert!(
         matches!(
-            app.world().resource::<LastRunResult>().state,
+            app.world().resource::<CurrentRun>().state,
             RunState::Failed { ref error } if error.contains("Venue not connected")
         ),
-        "venue 未接続で ▶ がブロックされたら LastRunResult に Failed{{Venue not connected}} を書くはず（fix 前は Idle のまま＝silent）。実際: {:?}",
-        app.world().resource::<LastRunResult>().state,
+        "venue 未接続で ▶ がブロックされたら CurrentRun に Failed{{Venue not connected}} を書くはず（fix 前は Idle のまま＝silent）。実際: {:?}",
+        app.world().resource::<CurrentRun>().state,
     );
 }
 
@@ -203,10 +203,10 @@ fn n7_footer_play_blocked_venue_identity_unset_writes_run_result() {
 
     assert!(
         matches!(
-            app.world().resource::<LastRunResult>().state,
+            app.world().resource::<CurrentRun>().state,
             RunState::Failed { ref error } if error.contains("Venue not configured")
         ),
-        "venue identity 未設定で ▶ がブロックされたら LastRunResult に Failed{{Venue not configured}} を書くはず（fix 前は Idle のまま＝silent）。実際: {:?}",
-        app.world().resource::<LastRunResult>().state,
+        "venue identity 未設定で ▶ がブロックされたら CurrentRun に Failed{{Venue not configured}} を書くはず（fix 前は Idle のまま＝silent）。実際: {:?}",
+        app.world().resource::<CurrentRun>().state,
     );
 }

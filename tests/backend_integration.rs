@@ -506,6 +506,7 @@ impl DataEngine for MyDataEngine {
             strategy_id: "test-strategy".to_string(),
             strategy_sha256: String::new(),
             display_name: String::new(),
+            error_message: String::new(),
         }))
     }
 
@@ -523,6 +524,7 @@ impl DataEngine for MyDataEngine {
             error_code: String::new(),
             run_id: "test-run".to_string(),
             status: None,
+            error_message: String::new(),
         }))
     }
 

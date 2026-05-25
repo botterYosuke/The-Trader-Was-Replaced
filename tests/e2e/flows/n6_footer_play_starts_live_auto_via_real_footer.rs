@@ -15,7 +15,7 @@ use serial_test::serial;
 use bevy::prelude::*;
 
 use backcast::trading::{
-    BackendStatus, ExecutionMode, ExecutionModeRes, LastRunResult, ReplaySpeed, SelectedSymbol,
+    BackendStatus, CurrentRun, ExecutionMode, ExecutionModeRes, ReplaySpeed, SelectedSymbol,
     TradingSession, TradingSettings, TransportCommand, TransportCommandSender, VenueState,
     VenueStatusRes,
 };
@@ -69,7 +69,7 @@ fn make_app() -> (App, mpsc::UnboundedReceiver<TransportCommand>) {
         .insert_resource(TradingSettings::default())
         .insert_resource(ReplaySpeed::default())
         .insert_resource(StrategyBuffer::default())
-        .insert_resource(LastRunResult::default())
+        .insert_resource(CurrentRun::default())
         .insert_resource(SelectedSymbol::default())
         .insert_resource(VenueStatusRes::default())
         .insert_resource(ScenarioMetadata::default())

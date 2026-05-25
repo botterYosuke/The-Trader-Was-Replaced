@@ -41,10 +41,10 @@ fn a1_replay_runs_to_completion() {
     });
 
     assert_eq!(h.run_state(), RunState::Completed);
-    let last = h.last_run();
-    assert_eq!(last.run_id.as_deref(), Some("run-1"));
-    assert!(last.summary_json.is_some());
-    let summary = last.parsed_summary.expect("summary parsed");
+    let current = h.current_run();
+    assert_eq!(current.run_id.as_deref(), Some("run-1"));
+    assert!(current.summary_json.is_some());
+    let summary = current.parsed_summary.expect("summary parsed");
     assert_eq!(summary.fills_count, 3);
     assert_eq!(summary.total_pnl, 1234.5);
 }

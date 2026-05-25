@@ -77,3 +77,98 @@ def test_start_live_strategy_res_has_error_message_field():
         error_message="SyntaxError in strategy file",  # ← このフィールドが存在するか
     )
     assert res.error_message == "SyntaxError in strategy file"
+
+
+def test_register_live_strategy_handler_returns_cause_error_message():
+    """RegisterLiveStrategy handler が STRATEGY_LOAD_FAILED の実原因を response に詰める。"""
+    import sys
+    from pathlib import Path
+
+    proto_dir = Path(__file__).resolve().parents[2] / "engine" / "proto"
+    if str(proto_dir) not in sys.path:
+        sys.path.insert(0, str(proto_dir))
+
+    from engine.core import DataEngine
+    from engine.live.engine_controller import NoopLiveEngineController
+    from engine.proto import engine_pb2
+    from engine.server_grpc import GrpcDataEngineServer
+
+    servicer = GrpcDataEngineServer(
+        "test-token",
+        DataEngine(),
+        engine_controller=NoopLiveEngineController(),
+    )
+    servicer._strategy_registry = StrategyRegistry(loader=_loader_raises)
+
+    res = servicer.RegisterLiveStrategy(
+        engine_pb2.RegisterLiveStrategyReq(
+            token="test-token",
+            request_id="req-handler",
+            strategy_file=__file__,
+            expected_sha256="",
+        ),
+        context=None,
+    )
+
+    assert not res.success
+    assert res.request_id == "req-handler"
+    assert res.error_code == "STRATEGY_LOAD_FAILED"
+    assert "unexpected indent at line 42" in res.error_message
+
+
+def test_start_live_strategy_handler_returns_cause_error_message():
+    """StartLiveStrategy handler が LiveStrategyHostError の実原因を response に詰める。"""
+    import sys
+    from pathlib import Path
+    from types import SimpleNamespace
+
+    proto_dir = Path(__file__).resolve().parents[2] / "engine" / "proto"
+    if str(proto_dir) not in sys.path:
+        sys.path.insert(0, str(proto_dir))
+
+    from engine.core import DataEngine
+    from engine.live.engine_controller import NoopLiveEngineController
+    from engine.live.strategy_host import LiveStrategyHostError
+    from engine.proto import engine_pb2
+    from engine.server_grpc import GrpcDataEngineServer
+
+    class FakeModeManager:
+        current_mode = "LiveAuto"
+
+    class FakeRegistry:
+        def resolve(self, strategy_id: str):
+            return SimpleNamespace(
+                strategy_id=strategy_id,
+                resolved_path=__file__,
+            )
+
+    class FakeHost:
+        def start_run(self, params):
+            raise LiveStrategyHostError("STRATEGY_LOAD_FAILED") from SyntaxError(
+                "invalid syntax at line 9"
+            )
+
+    servicer = GrpcDataEngineServer(
+        "test-token",
+        DataEngine(),
+        mode_manager=FakeModeManager(),
+        engine_controller=NoopLiveEngineController(),
+    )
+    servicer._strategy_registry = FakeRegistry()
+    servicer._strategy_host = FakeHost()
+
+    res = servicer.StartLiveStrategy(
+        engine_pb2.StartLiveStrategyReq(
+            token="test-token",
+            request_id="start-handler",
+            strategy_id="strat-test",
+            instrument_id="7203.TSE",
+            venue="MOCK",
+        ),
+        context=None,
+    )
+
+    assert not res.success
+    assert res.request_id == "start-handler"
+    assert res.error_code == "STRATEGY_LOAD_FAILED"
+    assert "invalid syntax at line 9" in res.error_message

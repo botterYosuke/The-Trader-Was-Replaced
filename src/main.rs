@@ -13,7 +13,7 @@ use backcast::grid::GridPlugin;
 use backcast::replay::ReplayStartupProgress;
 use backcast::trading::{
     AvailableInstruments, BackendChannel, BackendStartupStage, BackendStatus, BackendStatusUpdate,
-    ExecutionMode, ExecutionModeRes, LastPrices, LastRunResult, LiveOrder, LiveOrders, LiveRuns,
+    CurrentRun, ExecutionMode, ExecutionModeRes, LastPrices, LiveOrder, LiveOrders, LiveRuns,
     OrderFeedback, PortfolioOrder, PortfolioPosition, PortfolioState,
     ReconcilePrompt, ReloginPrompt, ReplaySpeed, SecretPrompt, SelectedSymbol, Ticker, Tickers,
     TickersSource, TradingSettings, TransportCommand, TransportCommandSender, VenueState,
@@ -258,7 +258,7 @@ async fn main() {
         .insert_resource(backcast::trading::TradingSession::default())
         .insert_resource(TradingSettings::default())
         .insert_resource(BackendStatus::default())
-        .insert_resource(LastRunResult::default())
+        .insert_resource(CurrentRun::default())
         .init_resource::<ReplayStartupProgress>()
         .insert_resource(AvailableInstruments::default())
         .insert_resource(PortfolioState::default())
@@ -1250,9 +1250,14 @@ fn setup_backend_connection(
                                 Ok(r) => {
                                     let inner = r.into_inner();
                                     if !inner.success {
+                                        let detail = if inner.error_message.trim().is_empty() {
+                                            inner.error_code.clone()
+                                        } else {
+                                            format!("{}: {}", inner.error_code, inner.error_message)
+                                        };
                                         let msg = format!(
-                                            "RegisterLiveStrategy rejected: instrument_id={} venue={} error_code={}",
-                                            instrument_id, venue, inner.error_code
+                                            "RegisterLiveStrategy rejected: instrument_id={} venue={} error={}",
+                                            instrument_id, venue, detail
                                         );
                                         error!("{}", msg);
                                         let _ = run_failed_tx.send(BackendStatusUpdate::RunFailed {
@@ -1293,9 +1298,14 @@ fn setup_backend_connection(
                                 Ok(r) => {
                                     let inner = r.into_inner();
                                     if !inner.success {
+                                        let detail = if inner.error_message.trim().is_empty() {
+                                            inner.error_code.clone()
+                                        } else {
+                                            format!("{}: {}", inner.error_code, inner.error_message)
+                                        };
                                         let msg = format!(
-                                            "StartLiveStrategy rejected: strategy_id={} instrument_id={} venue={} error_code={}",
-                                            strategy_id, instrument_id, venue, inner.error_code
+                                            "StartLiveStrategy rejected: strategy_id={} instrument_id={} venue={} error={}",
+                                            strategy_id, instrument_id, venue, detail
                                         );
                                         error!("{}", msg);
                                         let _ = run_failed_tx.send(BackendStatusUpdate::RunFailed {
@@ -1651,7 +1661,7 @@ mod tests {
     use backcast::trading::TransportCommand;
     use backcast::trading::{
         AccountPosition, AvailableInstruments, BackendStartupStage, BackendStatus,
-        BackendStatusUpdate, ExecutionModeRes, LastPrices, LastRunResult, LiveOrders,
+        BackendStatusUpdate, CurrentRun, ExecutionModeRes, LastPrices, LiveOrders,
         OrderFeedback, PortfolioState, ReconcilePrompt, RunState, SecretPrompt,
         Ticker, Tickers, VenueStatusRes,
     };
@@ -1774,9 +1784,9 @@ mod tests {
         }
     }
 
-    fn apply(update: BackendStatusUpdate, progress: &mut ReplayStartupProgress) -> LastRunResult {
+    fn apply(update: BackendStatusUpdate, progress: &mut ReplayStartupProgress) -> CurrentRun {
         let mut status = BackendStatus::default();
-        let mut last_run = LastRunResult::default();
+        let mut current_run = CurrentRun::default();
         let mut portfolio = PortfolioState::default();
         let mut available = AvailableInstruments::default();
         let mut venue_status = VenueStatusRes::default();
@@ -1789,7 +1799,7 @@ mod tests {
         apply_status_update(
             update,
             &mut status,
-            &mut last_run,
+            &mut current_run,
             &mut portfolio,
             &mut available,
             progress,
@@ -1802,14 +1812,14 @@ mod tests {
             &mut reconcile_prompt,
             &mut SecretPrompt::default(),
         );
-        last_run
+        current_run
     }
 
     /// Variant of `apply` that seeds an initial `OrderFeedback` and returns it,
     /// for verifying the order-notice set/clear behavior (Round 2 M-A/M-B).
     fn apply_feedback(update: BackendStatusUpdate, initial: Option<&str>) -> OrderFeedback {
         let mut status = BackendStatus::default();
-        let mut last_run = LastRunResult::default();
+        let mut current_run = CurrentRun::default();
         let mut portfolio = PortfolioState::default();
         let mut available = AvailableInstruments::default();
         let mut progress = ReplayStartupProgress::default();
@@ -1825,7 +1835,7 @@ mod tests {
         apply_status_update(
             update,
             &mut status,
-            &mut last_run,
+            &mut current_run,
             &mut portfolio,
             &mut available,
             &mut progress,
@@ -1931,7 +1941,7 @@ mod tests {
     fn mode_change_resets_portfolio_to_prevent_live_replay_bleed() {
         use backcast::trading::ExecutionMode;
         let mut status = BackendStatus::default();
-        let mut last_run = LastRunResult::default();
+        let mut current_run = CurrentRun::default();
         // Seed a "Live" portfolio snapshot (as apply_account_event would leave it).
         let mut portfolio = PortfolioState {
             cash: 100_000.0,
@@ -1957,7 +1967,7 @@ mod tests {
                 mode: ExecutionMode::Replay,
             },
             &mut status,
-            &mut last_run,
+            &mut current_run,
             &mut portfolio,
             &mut available,
             &mut progress,
@@ -1987,7 +1997,7 @@ mod tests {
         tickers: &mut Tickers,
     ) {
         let mut status = BackendStatus::default();
-        let mut last_run = LastRunResult::default();
+        let mut current_run = CurrentRun::default();
         let mut portfolio = PortfolioState::default();
         let mut available = AvailableInstruments::default();
         let mut venue_status = VenueStatusRes::default();
@@ -1999,7 +2009,7 @@ mod tests {
         apply_status_update(
             update,
             &mut status,
-            &mut last_run,
+            &mut current_run,
             &mut portfolio,
             &mut available,
             progress,
@@ -2142,7 +2152,7 @@ mod tests {
     #[test]
     fn apply_run_failed_sets_progress_error_when_matching() {
         let mut progress = fresh_progress(7, true);
-        let last_run = apply(
+        let current_run = apply(
             BackendStatusUpdate::RunFailed {
                 startup_id: Some(7),
                 error: "boom".into(),
@@ -2151,7 +2161,7 @@ mod tests {
         );
         assert_eq!(progress.error.as_deref(), Some("boom"));
         assert_eq!(
-            last_run.state,
+            current_run.state,
             RunState::Failed {
                 error: "boom".into()
             }
@@ -2159,9 +2169,9 @@ mod tests {
     }
 
     #[test]
-    fn apply_run_failed_with_none_startup_id_only_updates_last_run() {
+    fn apply_run_failed_with_none_startup_id_only_updates_current_run() {
         let mut progress = fresh_progress(7, true);
-        let last_run = apply(
+        let current_run = apply(
             BackendStatusUpdate::RunFailed {
                 startup_id: None,
                 error: "boom".into(),
@@ -2170,7 +2180,7 @@ mod tests {
         );
         assert!(progress.error.is_none());
         assert_eq!(
-            last_run.state,
+            current_run.state,
             RunState::Failed {
                 error: "boom".into()
             }
@@ -2180,7 +2190,7 @@ mod tests {
     #[test]
     fn apply_run_failed_with_mismatched_startup_id_ignored() {
         let mut progress = fresh_progress(7, true);
-        let last_run = apply(
+        let current_run = apply(
             BackendStatusUpdate::RunFailed {
                 startup_id: Some(9),
                 error: "boom".into(),
@@ -2189,7 +2199,7 @@ mod tests {
         );
         assert!(progress.error.is_none());
         assert_eq!(
-            last_run.state,
+            current_run.state,
             RunState::Failed {
                 error: "boom".into()
             }
@@ -2210,7 +2220,7 @@ mod tests {
             start_engine_accepted: true,
             ..ReplayStartupProgress::default()
         };
-        let last_run = apply(
+        let current_run = apply(
             BackendStatusUpdate::RunComplete {
                 startup_id: Some(7),
                 run_id: "r1".into(),
@@ -2224,7 +2234,7 @@ mod tests {
         assert!(progress.baseline_timestamp_ms.is_none());
         assert!(progress.started_at_elapsed.is_none());
         assert!(!progress.start_engine_accepted);
-        assert!(matches!(last_run.state, RunState::Completed { .. }));
+        assert!(matches!(current_run.state, RunState::Completed { .. }));
     }
 
     /// #7b strict: a `RunComplete` whose `startup_id == None` (legacy / unrelated)
@@ -2373,7 +2383,7 @@ mod tests {
         last_prices: &mut LastPrices,
     ) {
         let mut status = BackendStatus::default();
-        let mut last_run = LastRunResult::default();
+        let mut current_run = CurrentRun::default();
         let mut portfolio = PortfolioState::default();
         let mut available = AvailableInstruments::default();
         let mut venue_status = VenueStatusRes::default();
@@ -2385,7 +2395,7 @@ mod tests {
         apply_status_update(
             update,
             &mut status,
-            &mut last_run,
+            &mut current_run,
             &mut portfolio,
             &mut available,
             progress,

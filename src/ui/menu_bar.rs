@@ -1,6 +1,6 @@
 use crate::replay::{ReplayStartupPhase, ReplayStartupProgress};
 use crate::trading::{
-    ExecutionMode, ExecutionModeRes, LastRunResult, RunState, StrategyRunConfig, TradingSession,
+    CurrentRun, ExecutionMode, ExecutionModeRes, RunState, StrategyRunConfig, TradingSession,
     TransportCommand, TransportCommandSender, VenueStatusRes, is_venue_busy_for_menu,
 };
 use crate::ui::components::ScenarioMetadata;
@@ -873,7 +873,7 @@ pub fn handle_strategy_run_system(
     mut progress: ResMut<ReplayStartupProgress>,
     trading_data: Res<TradingSession>,
     real_time: Res<Time<Real>>,
-    mut last_run: ResMut<LastRunResult>,
+    mut current_run: ResMut<CurrentRun>,
     startup_params: Res<ScenarioStartupParams>,
 ) {
     for event in events.read() {
@@ -957,7 +957,7 @@ pub fn handle_strategy_run_system(
         progress.started_at_elapsed = Some(real_time.elapsed());
         progress.baseline_timestamp_ms = Some(trading_data.timestamp_ms);
         progress.start_engine_accepted = false;
-        last_run.state = RunState::Running;
+        current_run.state = RunState::Running;
     }
 }
 
@@ -1153,7 +1153,7 @@ mod tests {
         app.init_resource::<ReplayStartupProgress>();
         app.init_resource::<ScenarioStartupParams>();
         app.insert_resource(TradingSession::default());
-        app.insert_resource(LastRunResult::default());
+        app.insert_resource(CurrentRun::default());
         app.add_event::<StrategyRunRequested>();
         app.add_systems(Update, handle_strategy_run_system);
 
@@ -1183,8 +1183,8 @@ mod tests {
         assert!(progress.error.is_none());
         assert!(!progress.start_engine_accepted);
 
-        let last_run = app.world().resource::<LastRunResult>();
-        assert!(matches!(last_run.state, RunState::Running));
+        let current_run = app.world().resource::<CurrentRun>();
+        assert!(matches!(current_run.state, RunState::Running));
 
         let rx = rx.as_mut().unwrap();
         let cmd = rx.try_recv().expect("RunStrategy command should be sent");
@@ -1208,8 +1208,8 @@ mod tests {
         assert!(!progress.visible);
         assert_eq!(progress.phase, ReplayStartupPhase::Idle);
 
-        let last_run = app.world().resource::<LastRunResult>();
-        assert!(matches!(last_run.state, RunState::Idle));
+        let current_run = app.world().resource::<CurrentRun>();
+        assert!(matches!(current_run.state, RunState::Idle));
     }
 
     #[test]
@@ -1250,8 +1250,8 @@ mod tests {
             "no RunStrategy command should be sent"
         );
 
-        let last_run = app.world().resource::<LastRunResult>();
-        assert!(matches!(last_run.state, RunState::Idle));
+        let current_run = app.world().resource::<CurrentRun>();
+        assert!(matches!(current_run.state, RunState::Idle));
     }
 
     // Venue menu gating: while is_venue_busy_for_menu(state) is true, all
