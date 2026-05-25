@@ -1585,3 +1585,47 @@ def test_venue_logout_still_teardowns_and_disconnects(phase8_grpc_server_with_li
 
     assert servicer._live_runner is None, "VenueLogout 後は live runner が解放されるべき"
     assert venue_sm.current == "DISCONNECTED", "VenueLogout 後は DISCONNECTED"
+
+
+# --- Slice 2: Replay 表示中の live イベント混線ガード --------------------------------
+
+def test_replay_mode_does_not_apply_live_klines_to_reducer(phase8_grpc_server_with_live):
+    """Slice 2 RED: Replay 中に live KlineUpdate が DataEngine の per_id_close を汚染しないこと。
+
+    live session が生き続ける（Slice 1）副作用で LiveReducerBridge が Replay 中も
+    apply_replay_event を呼ぶと、per_id_close / per_id_ohlc_points が live 価格で
+    上書きされ GetState の last_prices / per_instrument に混入する。
+    """
+    import time as _time
+    from engine.live.adapter import KlineUpdate as LiveKlineUpdate
+
+    port, token, engine, venue_sm, mm, servicer = phase8_grpc_server_with_live
+    stub = _stub(port)
+
+    engine._replay_state = "LOADED"
+    _do_venue_login(stub, token)
+    assert venue_sm.current == "CONNECTED"
+
+    # LiveManual → Replay（Slice 1: live runner は生き続ける）
+    stub.SetExecutionMode(engine_pb2.SetExecutionModeRequest(mode="LiveManual", token=token))
+    resp = stub.SetExecutionMode(engine_pb2.SetExecutionModeRequest(mode="Replay", token=token))
+    assert resp.success is True
+    assert servicer._live_runner is not None, "Slice 1: Replay 切替で live runner が解放されてはいけない"
+
+    # live bus に KlineUpdate を直接 publish して bridge 経由の混入を再現する
+    loop = servicer._live_loop
+    bus = servicer._live_runner.bus
+    live_kline = LiveKlineUpdate(
+        kind="kline",
+        ts_ns=int(_time.time() * 1_000_000_000),
+        instrument_id="CONTAMINATION.TEST",
+        open=9999.0, high=9999.0, low=9999.0, close=9999.0, volume=1.0,
+    )
+    asyncio.run_coroutine_threadsafe(bus.publish(live_kline), loop).result(timeout=1.0)
+    _time.sleep(0.15)  # bridge task が event を消化するのを待つ
+
+    # Replay モードでは live 由来の price が per_id_close に入ってはいけない
+    prices = engine.get_replay_last_prices()
+    assert "CONTAMINATION.TEST" not in prices, (
+        f"Replay 中に live kline が per_id_close を汚染した: prices={prices}"
+    )

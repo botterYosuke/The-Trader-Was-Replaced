@@ -17,7 +17,7 @@
 from __future__ import annotations
 
 import asyncio
-from typing import AsyncIterator, Optional, Protocol
+from typing import AsyncIterator, Callable, Optional, Protocol
 
 from engine.live.adapter import KlineUpdate as LiveKlineUpdate
 from engine.live.event_bus import LiveEventBus
@@ -62,9 +62,15 @@ class LiveReducerBridge:
       iterator が綺麗に終端するため、追加処理は不要。
     """
 
-    def __init__(self, bus: LiveEventBus, data_engine: _DataEngineLike) -> None:
+    def __init__(
+        self,
+        bus: LiveEventBus,
+        data_engine: _DataEngineLike,
+        mode_provider: Optional[Callable[[], str]] = None,
+    ) -> None:
         self._bus = bus
         self._data_engine = data_engine
+        self._mode_provider = mode_provider
         self._task: Optional[asyncio.Task[None]] = None
         self._iter: Optional[AsyncIterator] = None
         self._last_error: Optional[BaseException] = None
@@ -82,6 +88,9 @@ class LiveReducerBridge:
         assert self._iter is not None
         try:
             async for evt in self._iter:
+                # Replay モード中は live 由来イベントを reducer に流さない（混線防止）
+                if self._mode_provider is not None and self._mode_provider() == "Replay":
+                    continue
                 if isinstance(evt, LiveKlineUpdate):
                     self._data_engine.apply_replay_event(
                         live_kline_to_replay_time_updated(evt)

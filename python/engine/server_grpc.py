@@ -427,7 +427,11 @@ class GrpcDataEngineServer(
         )
         # D10: wire the event loop reference so fetch_instruments_blocking works
         runner._loop = self._live_loop
-        bridge = LiveReducerBridge(bus=runner.bus, data_engine=self.engine)
+        bridge = LiveReducerBridge(
+            bus=runner.bus,
+            data_engine=self.engine,
+            mode_provider=lambda: (self.mode_manager.current_mode if self.mode_manager else "Replay"),
+        )
         cache = LastPriceCache(bus=runner.bus)
         depth_cache = DepthCache(bus=runner.bus)
         await bridge.start()
