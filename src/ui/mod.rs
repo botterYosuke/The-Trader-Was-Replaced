@@ -462,7 +462,13 @@ impl Plugin for UiPlugin {
                 crate::ui::footer::apply_execution_mode_visibility_system,
                 crate::ui::scenario_startup_panel::apply_startup_panel_visibility_system,
                 apply_run_result_visibility_system
-                    .after(panel_spawn_dispatcher_system),
+                    .after(panel_spawn_dispatcher_system)
+                    // ExecutionModeRes の唯一の writer は backend echo を反映する
+                    // status_update_system。これより後に走らせないと mode 遷移の
+                    // フレームで RunResult が 1 フレーム古い可視性を出す（race-free
+                    // 化。main.rs の request_force_account_snapshot_on_live_entry と
+                    // 同型の .after(status_update_system) 制約。issue #41 codex review）。
+                    .after(crate::backend_sync::status_update_system),
                 // issue #31: layout apply / panel spawn の後に走らせる。Manual 中の layout load /
                 // 新規 spawn で apply 系が StrategyEditor の「本来の可視性」を確定させ、spawn dispatcher
                 // が新規窓を materialize させた後に mode system がそれを退避マーカーへ捕捉する順序を
