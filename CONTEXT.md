@@ -76,8 +76,45 @@ _Avoid_: selected universe / instrument list
 **Tickers**:
 Live モードで venue から取得した銘柄一覧（`Tickers`）。Live における Universe の実体（Replay の Available Instruments に相当する役割）。
 
+### Strategy Execution
+
+A strategy is launched into a **Run**. The dashboard is always in exactly one
+`ExecutionMode`, so exactly one Run is current at a time; the **Run Result** window
+describes that one Run.
+
+**Run**:
+A single execution of a strategy. Exactly one is *current* at any moment (scoped to
+the active `ExecutionMode`). Comes in two kinds — **Replay Run** and **Live Run** —
+that share an identity (`run_id`) but differ in lifecycle.
+_Avoid_: session, job, backtest (as a synonym for the Run itself).
+
+**Replay Run**:
+A Run over a historical date range in Replay mode. **Terminal**: it reaches
+*Completed* or *Failed* and stops on its own.
+_Avoid_: backtest run, sim run.
+
+**Live Run**:
+A Run against a connected venue in Auto mode. **Long-lived**: it stays *RUNNING* /
+*PAUSED* until stopped. Capped to one active Run. Run control (start / pause /
+resume / stop) lives on the **footer ▶**, not on the Run Result window.
+_Avoid_: live session, live strategy (the strategy is what's *run*; the Run is the execution).
+
+**Run Result**:
+The single **display-only** floating window that describes the current Run — its
+state, identity, P&L / stats, and the Strategy Log. It is **mode-scoped**: a Replay
+Run's outcome in Replay mode, the Live Run in Auto mode. It carries **no controls**
+(run control is the footer ▶'s job) and is **always visible** (per #41). This is the
+*one* run-status surface; there is no separate live panel.
+_Avoid_: Live Runs panel, Live Run Panel (abolished — folded into Run Result), "run outcome panel".
+
+**Strategy Log**:
+The stream of log lines a strategy emits during its Run (the strategy's own
+`self.log.*` output). Shown inside the Run Result window.
+_Avoid_: console, output, stdout.
+
 ### Flagged ambiguities
 
+- **"Run Result" の意味変更**: 旧来 Run Result は **Replay の結果専用**（terminal な Completed/Failed のみ）だった。今後は **現在の Run 全般**（Replay Run の結果 *および* Live Run の進行・操作・ログ）を担う単一サーフェス。旧「Live Runs / Live Run Panel」は廃止し Run Result に統合する。
 - **"universe" の overload**: コードでは `instruments_universe_prune.rs` / `auto_fetch_live_universe` がモードの候補集合（U1）の意味で、`UNIVERSE_JSON_PATH` / `strategy_runtime/universe.py` がストラテジー設定（U2）の意味で使っている。**U1 = Universe、U2 = Strategy Universe** に分離して解決。
 - **同一役割の二面性**: Replay の **Available Instruments** と Live の **Tickers** は「Universe を保持する resource」という同じ役割を 2 モードで担う。共通の上位語は **Universe**。
 

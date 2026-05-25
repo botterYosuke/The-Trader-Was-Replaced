@@ -272,3 +272,5 @@ mod n5_footer_play_starts_live_auto;
 mod n6_footer_play_starts_live_auto_via_real_footer;
 #[path = "e2e/flows/n7_footer_play_blocked_writes_run_result.rs"]
 mod n7_footer_play_blocked_writes_run_result;
+#[path = "e2e/flows/n8_live_reject_surfaces_run_failed.rs"]
+mod n8_live_reject_surfaces_run_failed;

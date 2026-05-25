@@ -76,6 +76,8 @@ pub fn run_result_panel_system(
             RunResultLabel::State => match &last_run.state {
                 RunState::Idle => ("No run yet".to_string(), COLOR_IDLE),
                 RunState::Running => ("Running…".to_string(), COLOR_RUNNING),
+                RunState::Paused => ("Paused".to_string(), COLOR_RUNNING),
+                RunState::Stopped => ("Stopped".to_string(), COLOR_IDLE),
                 RunState::Completed => ("Completed".to_string(), COLOR_COMPLETED),
                 RunState::Failed { error } => (format!("Failed: {}", error), COLOR_FAILED),
             },
@@ -83,23 +85,48 @@ pub fn run_result_panel_system(
                 Some(id) => (format!("run: {}", id), COLOR_RUNID),
                 None => (String::new(), COLOR_DEFAULT),
             },
-            RunResultLabel::Stats => match &last_run.parsed_summary {
-                Some(s) => (
-                    format!("fills: {}  eq_pts: {}", s.fills_count, s.equity_points),
+            RunResultLabel::Stats => match &last_run.state {
+                RunState::Running | RunState::Paused => (
+                    format!(
+                        "strat: {}  o:{} f:{}",
+                        last_run.strategy_name, last_run.order_count, last_run.fill_count
+                    ),
                     COLOR_DEFAULT,
                 ),
-                None => (String::new(), COLOR_DEFAULT),
+                _ => match &last_run.parsed_summary {
+                    Some(s) => (
+                        format!("fills: {}  eq_pts: {}", s.fills_count, s.equity_points),
+                        COLOR_DEFAULT,
+                    ),
+                    None => (String::new(), COLOR_DEFAULT),
+                },
             },
-            RunResultLabel::Pnl => match &last_run.parsed_summary {
-                Some(s) => {
-                    let c = if s.total_pnl >= 0.0 {
+            RunResultLabel::Pnl => match &last_run.state {
+                RunState::Running | RunState::Paused => {
+                    let c = if last_run.realized_pnl + last_run.unrealized_pnl >= 0.0 {
                         COLOR_PNL_POS
                     } else {
                         COLOR_PNL_NEG
                     };
-                    (format!("pnl: {:.0}", s.total_pnl), c)
+                    (
+                        format!(
+                            "pnl: {:.0} / unrlz: {:.0}",
+                            last_run.realized_pnl, last_run.unrealized_pnl
+                        ),
+                        c,
+                    )
                 }
-                None => (String::new(), COLOR_DEFAULT),
+                _ => match &last_run.parsed_summary {
+                    Some(s) => {
+                        let c = if s.total_pnl >= 0.0 {
+                            COLOR_PNL_POS
+                        } else {
+                            COLOR_PNL_NEG
+                        };
+                        (format!("pnl: {:.0}", s.total_pnl), c)
+                    }
+                    None => (String::new(), COLOR_DEFAULT),
+                },
             },
         };
         if text.0 != new_text {

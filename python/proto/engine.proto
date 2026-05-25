@@ -616,6 +616,7 @@ message RegisterLiveStrategyRes {
   string strategy_id = 4;      // opaque handle passed to StartLiveStrategy
   string strategy_sha256 = 5;  // re-confirm at Promote time
   string display_name = 6;
+  string error_message = 7;
 }
 
 message StartLiveStrategyReq {
@@ -636,6 +637,7 @@ message StartLiveStrategyRes {
   string error_code = 3;
   string run_id = 4;
   LiveStrategyStatus status = 5;
+  string error_message = 6;
 }
 
 message StopLiveStrategyReq { string token = 1; string request_id = 2; string run_id = 3; }

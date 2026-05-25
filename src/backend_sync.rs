@@ -15,7 +15,7 @@ use crate::backend_supervisor::{BackendLifecycle, BackendLifecycleHandle};
 use crate::replay::{ReplayStartupPhase, ReplayStartupProgress};
 use crate::trading::{
     AccountPosition, AvailableInstruments, BackendEvent, BackendStartupStage, BackendStatus,
-    BackendStatusUpdate, ExecutionMode, ExecutionModeRes, LastPrices, LastRunResult, LiveOrder, LiveOrders,
+    BackendStatusUpdate, CurrentRun, ExecutionMode, ExecutionModeRes, LastPrices, LastRunResult, LiveOrder, LiveOrders,
     LiveRuns, OrderFeedback, PortfolioPosition, PortfolioState, ReconcilePrompt,
     ReloginPrompt, RunState, SafetyToast, SecretPrompt, SecretPromptRequest, StrategyLogs, Tickers,
     ToastKind,
@@ -87,6 +87,7 @@ pub fn backend_event_drain_system(
     mut live_runs: ResMut<LiveRuns>,
     mut safety_toast: ResMut<SafetyToast>,
     mut strategy_logs: ResMut<StrategyLogs>,
+    mut current_run: ResMut<CurrentRun>,
 ) {
     while let Ok(event) = channel.rx.try_recv() {
         match event {
@@ -176,6 +177,25 @@ pub fn backend_event_drain_system(
                 );
                 // §2.8: drive the Live Run Panel's run list.
                 live_runs.apply_event(&run_id, &strategy_id, &status, ts_ms);
+                // issue #42: CurrentRun にも同期する
+                if current_run.run_id.as_deref() == Some(&*run_id)
+                    || current_run.run_id.is_none()
+                {
+                    current_run.run_id = Some(run_id.clone());
+                    if !strategy_id.is_empty() {
+                        current_run.strategy_name = strategy_id.clone();
+                    }
+                    if current_run.started_ts_ms == 0 {
+                        current_run.started_ts_ms = ts_ms;
+                    }
+                    current_run.state = match status.as_str() {
+                        "RUNNING" => RunState::Running,
+                        "PAUSED"  => RunState::Paused,
+                        "STOPPED" => RunState::Stopped,
+                        "FAILED"  => RunState::Failed { error: String::new() },
+                        _         => current_run.state.clone(),
+                    };
+                }
             }
             BackendEvent::SafetyRailViolation {
                 run_id,
@@ -233,6 +253,18 @@ pub fn backend_event_drain_system(
                     fill_count,
                     ts_ms,
                 );
+                // issue #42: CurrentRun にも同期する
+                if current_run.run_id.as_deref() == Some(&*run_id)
+                    || current_run.run_id.is_none()
+                {
+                    if !strategy_id.is_empty() {
+                        current_run.strategy_name = strategy_id.clone();
+                    }
+                    current_run.realized_pnl   = realized_pnl;
+                    current_run.unrealized_pnl = unrealized_pnl;
+                    current_run.order_count    = order_count;
+                    current_run.fill_count     = fill_count;
+                }
             }
         }
     }
@@ -718,6 +750,7 @@ mod tests {
         app.init_resource::<LiveRuns>();
         app.init_resource::<SafetyToast>();
         app.init_resource::<StrategyLogs>();
+        app.init_resource::<CurrentRun>();
         app.add_systems(Update, backend_event_drain_system);
 
         tx.send(BackendEvent::VenueLogoutDetected {
@@ -747,6 +780,7 @@ mod tests {
         app.init_resource::<LiveRuns>();
         app.init_resource::<SafetyToast>();
         app.init_resource::<StrategyLogs>();
+        app.init_resource::<CurrentRun>();
         app.add_systems(Update, backend_event_drain_system);
 
         tx.send(BackendEvent::BackendError {
@@ -1021,6 +1055,7 @@ mod tests {
         app.init_resource::<LiveRuns>();
         app.init_resource::<SafetyToast>();
         app.init_resource::<StrategyLogs>();
+        app.init_resource::<CurrentRun>();
         app.add_systems(Update, backend_event_drain_system);
         (app, tx)
     }

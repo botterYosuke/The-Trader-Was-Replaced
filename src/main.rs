@@ -1236,6 +1236,7 @@ fn setup_backend_connection(
                         // SetExecutionMode は再送しない (ExecutionMode は backend 権威)。
                         let mut c = client.clone();
                         let t = token.clone();
+                        let run_failed_tx = status_tx.clone();
                         tokio::spawn(async move {
                             let strategy_file_str = strategy_file.to_string_lossy().to_string();
                             let register_req = tonic::Request::new(RegisterLiveStrategyReq {
@@ -1249,19 +1250,29 @@ fn setup_backend_connection(
                                 Ok(r) => {
                                     let inner = r.into_inner();
                                     if !inner.success {
-                                        error!(
+                                        let msg = format!(
                                             "RegisterLiveStrategy rejected: instrument_id={} venue={} error_code={}",
                                             instrument_id, venue, inner.error_code
                                         );
+                                        error!("{}", msg);
+                                        let _ = run_failed_tx.send(BackendStatusUpdate::RunFailed {
+                                            startup_id: None,
+                                            error: msg,
+                                        });
                                         return;
                                     }
                                     inner.strategy_id
                                 }
                                 Err(e) => {
-                                    error!(
+                                    let msg = format!(
                                         "RegisterLiveStrategy failed: instrument_id={} venue={} err={}",
                                         instrument_id, venue, e
                                     );
+                                    error!("{}", msg);
+                                    let _ = run_failed_tx.send(BackendStatusUpdate::RunFailed {
+                                        startup_id: None,
+                                        error: msg,
+                                    });
                                     return;
                                 }
                             };
@@ -1282,17 +1293,27 @@ fn setup_backend_connection(
                                 Ok(r) => {
                                     let inner = r.into_inner();
                                     if !inner.success {
-                                        error!(
+                                        let msg = format!(
                                             "StartLiveStrategy rejected: strategy_id={} instrument_id={} venue={} error_code={}",
                                             strategy_id, instrument_id, venue, inner.error_code
                                         );
+                                        error!("{}", msg);
+                                        let _ = run_failed_tx.send(BackendStatusUpdate::RunFailed {
+                                            startup_id: None,
+                                            error: msg,
+                                        });
                                     }
                                 }
                                 Err(e) => {
-                                    error!(
+                                    let msg = format!(
                                         "StartLiveStrategy failed: strategy_id={} instrument_id={} venue={} err={}",
                                         strategy_id, instrument_id, venue, e
                                     );
+                                    error!("{}", msg);
+                                    let _ = run_failed_tx.send(BackendStatusUpdate::RunFailed {
+                                        startup_id: None,
+                                        error: msg,
+                                    });
                                 }
                             }
                         });

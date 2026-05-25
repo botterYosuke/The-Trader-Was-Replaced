@@ -440,6 +440,8 @@ pub enum RunState {
     #[default]
     Idle,
     Running,
+    Paused,
+    Stopped,
     Completed,
     Failed {
         error: String,
@@ -447,12 +449,22 @@ pub enum RunState {
 }
 
 #[derive(Resource, Default, Debug, Clone)]
-pub struct LastRunResult {
+pub struct CurrentRun {
     pub run_id: Option<String>,
     pub summary_json: Option<String>,
     pub parsed_summary: Option<RunSummary>,
     pub state: RunState,
+    // Live run フィールド（LiveStrategyEvent / LiveStrategyTelemetry から書き込む）
+    pub strategy_name: String,
+    pub started_ts_ms: i64,
+    pub realized_pnl: f64,
+    pub unrealized_pnl: f64,
+    pub order_count: i64,
+    pub fill_count: i64,
 }
+
+/// 後方互換エイリアス。Slice 2 完了後に削除する。
+pub type LastRunResult = CurrentRun;
 
 #[derive(Resource, Default, Debug, Clone)]
 pub struct AvailableInstruments {
