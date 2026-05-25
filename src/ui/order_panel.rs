@@ -443,6 +443,7 @@ pub fn spawn_order_form_in_window(commands: &mut Commands, content_area: Entity)
                 Sprite { color, custom_size: Some(Vec2::new(w, h)), ..default() },
                 Transform::from_xyz(x, y, 0.2),
                 btn,
+                Pickable::default(), // 0.16: sprite picking opt-in。Click observer に必須 (#35)
             ))
             .observe(move |_trigger: Trigger<Pointer<Click>>, mut ev: EventWriter<OrderButtonPressed>| {
                 ev.send(OrderButtonPressed(btn));
@@ -499,6 +500,7 @@ pub fn spawn_order_form_in_window(commands: &mut Commands, content_area: Entity)
         p.spawn((
             Sprite { color: COLOR_BTN_SUBMIT, custom_size: Some(Vec2::new(BTN_SUBMIT_W, BTN_SUBMIT_H)), ..default() },
             Transform::from_xyz(0.0, Y_SUBMIT, 0.2),
+            Pickable::default(), // 0.16: sprite picking opt-in。Submit Click observer に必須 (#35)
             submit,
         ))
         .observe(move |_trigger: Trigger<Pointer<Click>>, mut ev: EventWriter<OrderButtonPressed>| {

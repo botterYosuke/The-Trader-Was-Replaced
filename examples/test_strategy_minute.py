@@ -100,3 +100,6 @@ class BuyAndHoldMinuteStrategy(Strategy):
         self._bought = True
         self.log.info(f"BUY: {self.lot_size} shares @ {bar.close}")
 # endregion region_001
+# region region_002
+#dummy
+# endregion region_002

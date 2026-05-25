@@ -1,11 +1,15 @@
 use bevy::input_focus::InputFocus;
 use bevy::prelude::*;
 use bevy_ui_text_input::actions::{TextInputAction, TextInputEdit};
-use bevy_ui_text_input::{TextInputContents, TextInputFilter, TextInputMode, TextInputNode, TextInputQueue};
+use bevy_ui_text_input::{
+    TextInputBuffer, TextInputContents, TextInputFilter, TextInputMode, TextInputNode,
+    TextInputQueue,
+};
 use chrono::{Months, NaiveDate};
 
 use crate::replay::startup_progress::ReplayStartupProgress;
 use crate::ui::screen_window::{ScreenWindowSpec, spawn_screen_window};
+use crate::ui::strategy_editor::{PendingEditorSeed, buffer_ready};
 
 /// `TextInputBuffer` の全文を `src` で置き換える action 列を queue に積む（SelectAll→Paste）。
 fn queue_full_text(queue: &mut TextInputQueue, src: &str) {
@@ -572,10 +576,13 @@ pub fn write_startup_params_to_cache_sidecar_system(
 /// buffer. Gated on `params.is_changed()` to avoid resetting the user's cursor; per-field
 /// we also skip when the current contents already match (no-op Paste avoidance).
 pub fn sync_startup_param_editors_text_system(
+    mut commands: Commands,
     params: Res<ScenarioStartupParams>,
     mut editors_q: Query<(
+        Entity,
         &ScenarioStartupFieldEditor,
         &TextInputContents,
+        &TextInputBuffer,
         &mut TextInputQueue,
     )>,
 ) {
@@ -583,7 +590,7 @@ pub fn sync_startup_param_editors_text_system(
         return;
     }
 
-    for (editor, contents, mut queue) in editors_q.iter_mut() {
+    for (entity, editor, contents, buffer, mut queue) in editors_q.iter_mut() {
         let expected: &str = match editor.field {
             ScenarioStartupField::Start => &params.start,
             ScenarioStartupField::End => &params.end,
@@ -595,7 +602,16 @@ pub fn sync_startup_param_editors_text_system(
         if contents.get().trim() == expected {
             continue;
         }
-        queue_full_text(&mut queue, expected);
+        // spawn 直後の空 buffer（0 行）へ SelectAll+Paste を積むと cosmic-text が
+        // `buffer.lines[0]` を index して panic する (#35)。buffer 未初期化なら直接積まず
+        // `PendingEditorSeed` に退避し、`apply_pending_editor_seed_system` が ready 後に流す。
+        if buffer_ready(buffer) {
+            queue_full_text(&mut queue, expected);
+        } else {
+            commands
+                .entity(entity)
+                .insert(PendingEditorSeed(expected.to_string()));
+        }
     }
 }
 

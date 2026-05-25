@@ -93,6 +93,9 @@ fn spawn_resize_handle(commands: &mut Commands, axis: ResizeAxis, size: Vec2, po
                 ..default()
             },
             Transform::from_xyz(pos.x, pos.y, 0.5),
+            // 0.16: sprite picking は opt-in。Pickable が無いと picking backend の
+            // クエリ（&Pickable 必須）に載らず Drag/Over observer が発火しない (#35)。
+            Pickable::default(),
         ))
         // Drag → root の custom_size / translation を更新（左端・上端固定）
         .observe(
@@ -201,6 +204,7 @@ pub fn spawn_floating_window(
             },
             Transform::from_xyz(spec.position.x, spec.position.y, 10.0),
             WindowRoot,
+            Pickable::default(), // 0.16: sprite picking opt-in。クリックで z 前面化する root に必須 (#35)
         ))
         .observe(
             |trigger: Trigger<Pointer<Pressed>>,
@@ -252,6 +256,7 @@ pub fn spawn_floating_window(
             },
             Transform::from_xyz(0.0, title_bar_y, 0.1),
             TitleBar,
+            Pickable::default(), // 0.16: sprite picking opt-in。タイトルバー Drag observer に必須 (#35)
         ))
         .observe(
             |drag: Trigger<Pointer<Drag>>,
@@ -367,6 +372,7 @@ pub fn spawn_floating_window(
                 },
                 Transform::from_xyz(close_btn_x, title_bar_y, 0.2),
                 CloseButton,
+                Pickable::default(), // 0.16: sprite picking opt-in。× クリック observer に必須 (#35)
             ))
             .observe(
                 |trigger: Trigger<Pointer<Click>>,
@@ -835,5 +841,53 @@ mod order_dispatcher_tests {
             app.update();
         }
         assert_eq!(order_panel_count(&app), 1, "dedup guard holds: still exactly 1 Order window");
+    }
+}
+
+#[cfg(test)]
+mod picking_tests {
+    use super::*;
+
+    /// #35: Bevy 0.16 で sprite picking は opt-in（backend のクエリが `&Pickable` 必須）。
+    /// Pickable が無いと title-bar drag / × close / resize / クリック z-focus が全部沈黙する
+    /// （compile は通り、実機で初めて壊れる）。本番 `spawn_floating_window` の対話 sprite に
+    /// Pickable が付くことを固定する回帰ガード。実機 smoke で全 panel のドラッグ不可を検出した。
+    #[test]
+    fn interactive_window_sprites_are_pickable() {
+        let mut app = App::new();
+        app.add_systems(Startup, |mut commands: Commands| {
+            spawn_floating_window(
+                &mut commands,
+                FloatingWindowSpec {
+                    title: "TEST".to_string(),
+                    size: Vec2::new(200.0, 150.0),
+                    position: Vec2::ZERO,
+                    accent: Color::WHITE,
+                    closeable: true,
+                    resizable: true,
+                },
+            );
+        });
+        app.update();
+
+        let world = app.world_mut();
+        let mut root_q = world.query_filtered::<(), (With<WindowRoot>, With<Pickable>)>();
+        assert_eq!(
+            root_q.iter(world).count(),
+            1,
+            "WindowRoot must be Pickable (click → z front)"
+        );
+        let mut title_q = world.query_filtered::<(), (With<TitleBar>, With<Pickable>)>();
+        assert_eq!(
+            title_q.iter(world).count(),
+            1,
+            "TitleBar must be Pickable (drag to move window)"
+        );
+        let mut close_q = world.query_filtered::<(), (With<CloseButton>, With<Pickable>)>();
+        assert_eq!(
+            close_q.iter(world).count(),
+            1,
+            "CloseButton must be Pickable (× click closes)"
+        );
     }
 }

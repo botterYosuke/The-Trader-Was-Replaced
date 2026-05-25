@@ -85,6 +85,9 @@ pub fn install_chart_drag_observer(
     new_charts: Query<Entity, (Added<ChartViewState>, With<Sprite>)>,
 ) {
     for entity in &new_charts {
+        // 0.16: sprite picking opt-in。chart sprite に Pickable が無いと picking backend の
+        // クエリ（&Pickable 必須）に載らず、drag/crosshair/autoscale-reset observer が発火しない (#35)。
+        commands.entity(entity).insert(Pickable::default());
         commands.entity(entity).observe(
             |mut drag: Trigger<Pointer<Drag>>,
              mut chart_q: Query<&mut ChartViewState>,

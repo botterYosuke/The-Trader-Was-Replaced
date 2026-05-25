@@ -1,11 +1,63 @@
 {
   "schema_version": 1,
   "viewport": {
-    "pan_x": 640.93604,
-    "pan_y": 217.46492,
-    "zoom": 2.7293382
+    "pan_x": -337.00134,
+    "pan_y": -195.31177,
+    "zoom": 3.2200136
   },
   "windows": [
+    {
+      "kind": "BuyingPower",
+      "visible": true,
+      "position": [
+        -450.0,
+        100.0
+      ],
+      "size": [
+        270.0,
+        130.0
+      ],
+      "z": 10.0
+    },
+    {
+      "kind": "RunResult",
+      "visible": true,
+      "position": [
+        -450.0,
+        -70.0
+      ],
+      "size": [
+        280.0,
+        160.0
+      ],
+      "z": 10.0
+    },
+    {
+      "kind": "Positions",
+      "visible": true,
+      "position": [
+        -150.0,
+        -270.0
+      ],
+      "size": [
+        280.0,
+        200.0
+      ],
+      "z": 10.0
+    },
+    {
+      "kind": "Orders",
+      "visible": true,
+      "position": [
+        300.0,
+        -270.0
+      ],
+      "size": [
+        360.0,
+        220.0
+      ],
+      "z": 10.0
+    },
     {
       "kind": "StrategyEditor",
       "visible": true,
@@ -21,6 +73,20 @@
       "region_key": "region_001"
     },
     {
+      "kind": "StrategyEditor",
+      "visible": true,
+      "position": [
+        219.99994,
+        94.399994
+      ],
+      "size": [
+        500.0,
+        400.0
+      ],
+      "z": 216.0,
+      "region_key": "region_002"
+    },
+    {
       "kind": "Startup",
       "visible": true,
       "position": [
@@ -28,8 +94,8 @@
         67.31933
       ],
       "size": [
-        320.0,
-        200.0
+        300.0,
+        250.0
       ],
       "z": 148.0
     }

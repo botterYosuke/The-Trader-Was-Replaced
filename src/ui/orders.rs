@@ -158,6 +158,7 @@ pub fn spawn_orders_panel(commands: &mut Commands) {
                 },
                 Transform::from_xyz(0.0, y, 0.05),
                 OrdersRowHit { row },
+                Pickable::default(), // 0.16: sprite picking opt-in。行クリック observer に必須 (#35)
             ))
             .observe(
                 |down: Trigger<Pointer<Pressed>>,
@@ -219,6 +220,7 @@ pub fn spawn_orders_panel(commands: &mut Commands) {
             },
             Transform::from_xyz(-150.0 + FILTER_HIT_WIDTH / 2.0, FILTER_Y, 0.05),
             OrdersFilterHit,
+            Pickable::default(), // 0.16: sprite picking opt-in。フィルタクリック observer に必須 (#35)
         ))
         .observe(
             |down: Trigger<Pointer<Pressed>>,

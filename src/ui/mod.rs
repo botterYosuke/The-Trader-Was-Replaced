@@ -154,9 +154,9 @@ use crate::ui::sidebar::{
     spawn_sidebar, update_instrument_price_text_system, update_sidebar_system,
 };
 use crate::ui::strategy_editor::{
-    StrategyAutoSaveState, apply_pending_app_edits_system, apply_strategy_snapshot_restore_system,
-    debounced_strategy_autosave_system, sync_editor_to_strategy_buffer_system,
-    sync_strategy_buffer_to_editor_system, undo_redo_system,
+    StrategyAutoSaveState, apply_pending_app_edits_system, apply_pending_editor_seed_system,
+    apply_strategy_snapshot_restore_system, debounced_strategy_autosave_system,
+    sync_editor_to_strategy_buffer_system, sync_strategy_buffer_to_editor_system, undo_redo_system,
 };
 use crate::ui::systems::{update_price_display, update_status_indicator};
 use crate::ui::window::instrument_chart_sync_system;
@@ -418,6 +418,8 @@ impl Plugin for UiPlugin {
                 buying_power_panel_system,
                 positions_panel_system,
                 orders_panel_system,
+                // spawn 直後の空 buffer に seed を積むと panic するため、buffer 初期化後に流し込む (#35)。
+                apply_pending_editor_seed_system,
                 sync_editor_to_strategy_buffer_system,
                 undo_redo_system.after(sync_editor_to_strategy_buffer_system),
                 apply_pending_app_edits_system.after(undo_redo_system),

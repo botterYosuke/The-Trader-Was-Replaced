@@ -10,8 +10,9 @@ use crate::ui::layout_persistence::{AutoSaveState, PendingLayoutApply};
 use crate::ui::screen_window::{ScreenWindowSpec, spawn_screen_window};
 use bevy::input_focus::InputFocus;
 use bevy::prelude::*;
+use bevy::text::cosmic_text::Edit; // Editor::with_buffer (buffer readiness probe)
 use bevy_ui_text_input::actions::{TextInputAction, TextInputEdit};
-use bevy_ui_text_input::{TextInputContents, TextInputNode, TextInputQueue};
+use bevy_ui_text_input::{TextInputBuffer, TextInputContents, TextInputNode, TextInputQueue};
 
 // ── Strategy Editor on bevy_ui_text_input（screen-space Bevy UI, ADR 0003）─────
 
@@ -27,20 +28,52 @@ const EDITOR_TEXT_COLOR: Color = Color::srgb(0.86, 0.86, 0.86);
 
 /// `TextInputBuffer` の全文を `src` で置き換えるための action 列を queue に積む。
 /// `SelectAll` で全選択してから `Paste` すると、`insert_string` が選択範囲を置換するので
-/// 「全文セット」になる（空 buffer でも no-op の SelectAll → Paste で成立）。
-/// cosmic 時代の `CosmicEditBuffer::set_text` 相当。
+/// 「全文セット」になる。cosmic 時代の `CosmicEditBuffer::set_text` 相当。
+///
+/// ⚠️ **buffer が 1 行も持たない（`Buffer::new_empty`）状態で呼んではならない**。
+/// `bevy_ui_text_input` は `process_text_input_queues` を `text_input_system`（最初の
+/// `set_text` で buffer に 1 行目を作る system）より前に chain しているため、spawn 直後の
+/// 最初のフレームでこの queue を処理すると cosmic-text が `buffer.lines[0]` を index して
+/// `index out of bounds` で panic する。よって seed は spawn 時に直接積まず、buffer が
+/// 初期化されてから流し込む（[`PendingEditorSeed`] + [`apply_pending_editor_seed_system`]）。
+/// 既存の生きたエディタ（undo/redo の `sync_strategy_buffer_to_editor_system`）は buffer が
+/// 既に ready なので直接呼んでよい。
 fn queue_full_text(queue: &mut TextInputQueue, src: &str) {
     queue.add(TextInputAction::Edit(TextInputEdit::SelectAll));
     queue.add(TextInputAction::Edit(TextInputEdit::Paste(src.to_string())));
 }
 
-/// seed テキストを初期表示する `TextInputQueue` を作る（spawn 時に component として挿入）。
-fn seed_queue(src: &str) -> TextInputQueue {
-    let mut queue = TextInputQueue::default();
-    if !src.is_empty() {
-        queue_full_text(&mut queue, src);
+/// spawn 直後のエディタに「buffer 初期化後に流し込む全文 seed」を退避するマーカー。
+/// `apply_pending_editor_seed_system` が buffer ready 後に [`queue_full_text`] で流し込み、
+/// 自身を除去する。空文字なら queue を積まずマーカーだけ除去（blank editor）。
+#[derive(Component)]
+pub struct PendingEditorSeed(pub String);
+
+/// `TextInputBuffer` が `process_text_input_queues` の編集 action を安全に処理できる状態か。
+/// `Buffer::new_empty`（0 行）だと `SelectAll`/`Paste` が `buffer.lines[0]` を index して panic
+/// するため、最初の `set_text`（plugin の `text_input_system`）で 1 行以上になるまで false。
+/// startup パネルの seed 防御（`scenario_startup_panel`）でも使うため `pub(crate)`。
+pub(crate) fn buffer_ready(buffer: &TextInputBuffer) -> bool {
+    buffer.editor.with_buffer(|b| !b.lines.is_empty())
+}
+
+/// buffer が初期化されたエディタに [`PendingEditorSeed`] の全文を流し込む。
+/// buffer ready になるまでスキップ（font 未ロード等で初期化が遅延しても安全）。
+/// `Update` で走らせ、同フレームの `PostUpdate`(`process_text_input_queues`) が ready な
+/// buffer 上で seed を処理する。
+pub fn apply_pending_editor_seed_system(
+    mut commands: Commands,
+    mut editor_q: Query<(Entity, &PendingEditorSeed, &TextInputBuffer, &mut TextInputQueue)>,
+) {
+    for (entity, seed, buffer, mut queue) in editor_q.iter_mut() {
+        if !buffer_ready(buffer) {
+            continue;
+        }
+        if !seed.0.is_empty() {
+            queue_full_text(&mut queue, &seed.0);
+        }
+        commands.entity(entity).remove::<PendingEditorSeed>();
     }
-    queue
 }
 
 /// debounce 自動保存の進行状況を追跡する resource。
@@ -252,8 +285,9 @@ pub fn spawn_strategy_editor_panel(
             // `update_text_input_contents` が走らず Changed<TextInputContents> が一切発火せず、
             // editor→buffer 同期が丸ごと死ぬ（編集が保存されない）。明示挿入が必須。
             TextInputContents::default(),
-            // 初期テキストを buffer に流し込む（SelectAll+Paste）。
-            seed_queue(&seed),
+            // 初期テキストは buffer 初期化後に流し込む（spawn 直後の空 buffer に SelectAll+Paste を
+            // 積むと cosmic-text が panic する。apply_pending_editor_seed_system が処理）。
+            PendingEditorSeed(seed),
             StrategyEditorContent,
             // editor entity にも StrategyEditorId を貼ることで、Changed<TextInputContents> から
             // region_key を即引きできる（root への親辿りが不要）。
@@ -795,6 +829,34 @@ mod tests {
 
     fn ks(s: &str) -> String {
         s.to_string()
+    }
+
+    // ── #35: buffer readiness gate（seed-at-spawn panic 回避の核）─────────────
+
+    #[test]
+    fn buffer_ready_false_for_fresh_buffer() {
+        // Buffer::new_empty（0 行）のまま seed(SelectAll+Paste) を積むと cosmic-text が
+        // buffer.lines[0] を index して panic する。この invariant が崩れると
+        // apply_pending_editor_seed_system が早すぎる seed を流して panic する。
+        let buffer = TextInputBuffer::default();
+        assert!(
+            !buffer_ready(&buffer),
+            "fresh TextInputBuffer (Buffer::new_empty) must not be ready for full-text injection"
+        );
+    }
+
+    #[test]
+    fn buffer_ready_true_after_set_text() {
+        use bevy::text::cosmic_text::{Attrs, FontSystem, Shaping};
+        let mut fs = FontSystem::new();
+        let mut buffer = TextInputBuffer::default();
+        buffer
+            .editor
+            .with_buffer_mut(|b| b.set_text(&mut fs, "x", Attrs::new(), Shaping::Advanced));
+        assert!(
+            buffer_ready(&buffer),
+            "buffer with at least one line must be ready (gate must not be stuck closed)"
+        );
     }
 
     #[test]
