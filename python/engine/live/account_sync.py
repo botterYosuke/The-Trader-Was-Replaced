@@ -52,11 +52,15 @@ class AccountSync:
         on_account_event: Callable[[AccountSnapshot], None],
         interval_s: float = 30.0,
         on_error: Optional[Callable[[LiveErrorRecord], None]] = None,
+        mode_provider: Optional[Callable[[], str]] = None,
     ) -> None:
         self._adapter = adapter
         self._on_account_event = on_account_event
         self._interval_s = interval_s
         self._on_error = on_error
+        # issue #39 Slice 2: Replay 中は fetch/emit を入口で抑止する（kline bridge の
+        # mode_provider と対称）。None なら従来どおり常に同期する（mode 非依存テスト用）。
+        self._mode_provider = mode_provider
         self._task: Optional[asyncio.Task[None]] = None
         self._last_emitted: Optional[AccountSnapshot] = None
         self._last_error: Optional[BaseException] = None
@@ -94,6 +98,11 @@ class AccountSync:
     async def _tick(self, *, force_emit: bool) -> bool:
         """1 回 fetch + emit を試みる。emit に成功したら True、fetch 失敗や
         callback 失敗で emit できなかった場合は False を返す（dedup skip も False）。"""
+        # issue #39 Slice 2 (案A+Y): Replay 中は fetch/dedup/force すべての前に gate する。
+        # force_emit=True（force_resync 経由）でも Replay では emit しない。これにより
+        # callback の dedup 汚染（_last_emitted）も起きず、Live 切替後の差分 push が健全に残る。
+        if self._mode_provider is not None and self._mode_provider() == "Replay":
+            return False
         try:
             snapshot = await self._adapter.fetch_account()
         except asyncio.CancelledError:
