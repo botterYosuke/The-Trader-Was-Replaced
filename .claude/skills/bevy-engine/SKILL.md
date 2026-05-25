@@ -629,6 +629,16 @@ egui の中で `state.buffer` のような大きい String を編集するとき
   bare `App`（MinimalPlugins すら無し）＋必要 system だけでも spawn は走る（spawn は純 ECS）。
   実例: `tests/e2e/flows/i5_file_open_spawns_editor_and_chart.rs`。
 
+- **mode-owned visibility system に `is_changed()` ガードを張ると mid-session spawn が隠れる**:
+  `Res<ExecutionModeRes>` の `is_changed()` guard を返すパターン（`apply_startup_panel_visibility_system`
+  はこれを使う）は、パネルが再 spawn されるフレームで mode 変化が無ければ可視性を補正しない。
+  **boot-owned でも layout restore 等で再 spawn が起こりうるパネルは毎フレーム diff-write パターン**
+  にすること: `is_changed()` ガードを外し `if *vis != target { *vis = target; }` だけにする。
+  `apply_strategy_editor_mode_visibility_system` のコメント「`is_changed()` ゲートは張らない: Manual 中に
+  新規 spawn されたウィンドウも捕捉するため」が手本（`src/ui/strategy_editor.rs` L156）。
+  併せて `mod.rs` で `.after(panel_spawn_dispatcher_system)` を付けて spawn 直後の 1 フレーム flash を防ぐ
+  （issue #41 code review で apply_run_result_visibility_system が両方引っかかった実例）。
+
 ## ground truth ソースの引き方
 
 `.claude/skills/bevy-engine/src/` には Bevy 0.19-dev の全ソースがある。
