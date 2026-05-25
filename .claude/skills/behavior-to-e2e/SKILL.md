@@ -53,6 +53,14 @@ description: >-
   に含まれていれば D9 のような flow + FLOWS.md 追記 + wiki [FlowID] 引用が必要。`pair-relay` の Navigator が内部で
   カバーしても、本スキルを明示的に invoke しないと flow/wiki 追加が「実装の付録」として埋もれやすい（実例: #39 Slice 1
   で D9 flow + venues.md + modes.md 更新が必要だったが behavior-to-e2e を invoke せず、pair-relay Navigator 任せになった）。
+  **さらに重要: 初期プロンプトが「レビューして修正して」「Medium をつぶして」のような /pair-relay・code-review ループで、
+  flow/wiki の必要性が *レビュー途中で判明する*（codex/Navigator が新しい不変条件・取りこぼしを指摘 → 新 flow ID 追加や
+  FLOWS.md/wiki の現行化が要る）パターンでも、その時点で本スキルを invoke する**。初期プロンプトに flow/wiki 意図が無く
+  ても、レビュー駆動で挙動を変えた / 新 flow を足すと決まった瞬間が発動点（実例: #39 Slice 2 のレビューで AccountEvent
+  ゲートを新設し D22/D23 + modes.md を更新したが、また behavior-to-e2e を invoke せず Navigator 任せになった＝Slice 1 と
+  同じ取りこぼしの再発）。レビュー中に設計が変わったら、先に書いた FLOWS.md の Mechanism 列 / wiki が *旧機構を記述したまま*
+  食い違う事故が起きやすい（Slice 2 では D23 の Mechanism 列が撤去済みの `_publish_account_snapshot` gate を指したまま残り
+  最終レビューで Medium 指摘になった）ので、設計変更のたびに FLOWS.md/wiki の該当記述も同時に追従させる。
   **さらに、headless 不可で `#[ignore]`/doc-stub のまま諦めていた flow を「実テスト化」する**ときも本スキルを開く
   （「i8/i14 を headless テスト可能にする」「`#[test] #[ignore]` を外したい」「rfd / ファイルダイアログ /
   `AsyncComputeTaskPool` / async task を seam でバイパスしてテスト」「ダイアログ要求と書き込みを分離してテスト可能に」
@@ -68,6 +76,7 @@ description: >-
   FLOWS.md に追加し `python/tests/` に自動テストを足す。EC stream → force_resync トリガー、mode 遷移 →
   account_sync 存続、dedup 保証など「Python サービス内の状態機械」は pytest でカバーできる（Rust seam は不要）。
   **この場合も FLOWS.md への flow 追加・wiki の [FlowID] 引用は必須**（Rust E2E に限らない）。
+  **「verify first」パターン（issue に「まず混入するか確認してから修正」「RED が立つか先に検証」「本当に再現するか確かめてから直す」と書かれているとき）でも本スキルを発動する**: verify-first はテストを先に書いて問題を実証するアプローチであり、RED テスト + FLOWS.md 追記 + wiki [FlowID] が必要。issue の Acceptance Criteria に「verify first」が含まれていれば、実装の説明が詳細でもスキルを invoke する（#39 Slice 2 の「verify first: live 接続状態で Replay に切替えたとき混入するか確認（RED が立つか）」が典型）。
 ---
 
 # behavior-to-e2e — 挙動の言葉を E2E テストに変える

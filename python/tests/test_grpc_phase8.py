@@ -1585,3 +1585,155 @@ def test_venue_logout_still_teardowns_and_disconnects(phase8_grpc_server_with_li
 
     assert servicer._live_runner is None, "VenueLogout 後は live runner が解放されるべき"
     assert venue_sm.current == "DISCONNECTED", "VenueLogout 後は DISCONNECTED"
+
+
+# --- Slice 2: Replay 表示中の live イベント混線ガード --------------------------------
+
+def test_replay_mode_does_not_apply_live_klines_to_reducer(phase8_grpc_server_with_live):
+    """Slice 2 RED: Replay 中に live KlineUpdate が DataEngine の per_id_close を汚染しないこと。
+
+    live session が生き続ける（Slice 1）副作用で LiveReducerBridge が Replay 中も
+    apply_replay_event を呼ぶと、per_id_close / per_id_ohlc_points が live 価格で
+    上書きされ GetState の last_prices / per_instrument に混入する。
+    """
+    import time as _time
+    from engine.live.adapter import KlineUpdate as LiveKlineUpdate
+
+    port, token, engine, venue_sm, mm, servicer = phase8_grpc_server_with_live
+    stub = _stub(port)
+
+    engine._replay_state = "LOADED"
+    _do_venue_login(stub, token)
+    assert venue_sm.current == "CONNECTED"
+
+    # LiveManual → Replay（Slice 1: live runner は生き続ける）
+    stub.SetExecutionMode(engine_pb2.SetExecutionModeRequest(mode="LiveManual", token=token))
+    resp = stub.SetExecutionMode(engine_pb2.SetExecutionModeRequest(mode="Replay", token=token))
+    assert resp.success is True
+    assert servicer._live_runner is not None, "Slice 1: Replay 切替で live runner が解放されてはいけない"
+
+    # live bus に KlineUpdate を直接 publish して bridge 経由の混入を再現する
+    loop = servicer._live_loop
+    bus = servicer._live_runner.bus
+    live_kline = LiveKlineUpdate(
+        kind="kline",
+        ts_ns=int(_time.time() * 1_000_000_000),
+        instrument_id="CONTAMINATION.TEST",
+        open=9999.0, high=9999.0, low=9999.0, close=9999.0, volume=1.0,
+    )
+    asyncio.run_coroutine_threadsafe(bus.publish(live_kline), loop).result(timeout=1.0)
+    _time.sleep(0.15)  # bridge task が event を消化するのを待つ
+
+    # Replay モードでは live 由来の price が per_id_close に入ってはいけない
+    prices = engine.get_replay_last_prices()
+    assert "CONTAMINATION.TEST" not in prices, (
+        f"Replay 中に live kline が per_id_close を汚染した: prices={prices}"
+    )
+
+    # --- 対照ケース: ゲートが効いているだけで bridge 自体は生きていることを保証する ---
+    # LiveManual に戻すと mode_provider() != "Replay" になり、同じ bridge が
+    # 別 instrument の live kline を per_id_close に流すはず。これが通らないなら
+    # bridge が死んでいる / 購読できていない退行であり、case2 の「何も流れない」
+    # pass が false-negative であることを意味する。
+    resp_back = stub.SetExecutionMode(
+        engine_pb2.SetExecutionModeRequest(mode="LiveManual", token=token)
+    )
+    assert resp_back.success is True
+    control_kline = LiveKlineUpdate(
+        kind="kline",
+        ts_ns=int(_time.time() * 1_000_000_000),
+        instrument_id="CONTROL.LIVE.OK",
+        open=1234.0, high=1234.0, low=1234.0, close=1234.0, volume=1.0,
+    )
+    asyncio.run_coroutine_threadsafe(bus.publish(control_kline), loop).result(timeout=1.0)
+    _time.sleep(0.15)  # bridge task が event を消化するのを待つ
+
+    prices_after = engine.get_replay_last_prices()
+    assert "CONTROL.LIVE.OK" in prices_after, (
+        "LiveManual では bridge が live kline を per_id_close に流すべき "
+        f"(bridge が死んでいる/購読断の退行を検知): prices={prices_after}"
+    )
+
+    # bridge task が例外で silent dead していないこと（last_error が積まれていない）。
+    assert servicer._live_bridge is not None
+    assert servicer._live_bridge.last_error is None, (
+        f"bridge task が例外で死んでいる: {servicer._live_bridge.last_error!r}"
+    )
+
+
+def test_replay_mode_does_not_publish_live_account_event(phase8_grpc_server_with_live):
+    """issue #39 Slice 2: Replay 中は AccountSync が AccountEvent を backend stream へ
+    push しないこと（live の余力・建玉が Replay の portfolio panel を上書きしない）。
+
+    Slice 2 是正（案A+Y）: gate は _publish_account_snapshot 直叩きではなく
+    AccountSync._tick 入口の mode_provider gate が担う。server_grpc が注入する
+    `mode_provider=lambda: mm.current_mode` と同形の lambda を仕込み、mm.current_mode を
+    LiveManual / Replay に切り替えて force_resync の emit 有無を対照する。
+    LiveManual では emit され（gate が live を塞がない対照）、Replay では emit されない。
+    """
+    import asyncio
+    from engine.live.account_sync import AccountSync
+    from engine.live.adapter import VenueCredentials
+    from engine.live.mock_adapter import MockVenueAdapter
+
+    port, token, engine, venue_sm, mm, servicer = phase8_grpc_server_with_live
+
+    loop = servicer._ensure_live_loop()
+
+    # server_grpc が注入する lambda と同形（mm.current_mode を実際に読む統合点）。
+    async def setup():
+        adapter = MockVenueAdapter()
+        await adapter.login(
+            VenueCredentials(credentials_source="env", environment_hint="demo")
+        )
+        adapter.set_account_snapshot(cash=123456.0, buying_power=654321.0, positions=[])
+        sync = AccountSync(
+            adapter,
+            on_account_event=servicer._publish_account_snapshot,
+            on_error=servicer._publish_account_sync_error,
+            interval_s=3600.0,  # tick を止めて force_resync の 1 発だけを観測する
+            mode_provider=lambda: (
+                mm.current_mode if mm else "Replay"
+            ),
+        )
+        return adapter, sync
+
+    adapter, sync = asyncio.run_coroutine_threadsafe(setup(), loop).result(timeout=5.0)
+
+    # publish_backend_event をスパイして AccountEvent の push をキャプチャする
+    published = []
+    original_publish = servicer.publish_backend_event
+
+    def _spy(event):
+        published.append(event)
+        return original_publish(event)
+
+    servicer.publish_backend_event = _spy
+
+    def _account_events():
+        return [e for e in published if e.WhichOneof("payload") == "account_event"]
+
+    # 1. LiveManual: gate が live を塞がない対照（emit されるべき）
+    mm.current_mode = "LiveManual"
+    emitted_live = asyncio.run_coroutine_threadsafe(
+        sync.force_resync(), loop
+    ).result(timeout=5.0)
+    assert emitted_live is True, "LiveManual では force_resync が emit すべき"
+    account_events_live = _account_events()
+    assert len(account_events_live) == 1, (
+        "LiveManual では AccountEvent が backend stream に push されるべき"
+    )
+    assert account_events_live[0].account_event.buying_power == 654321.0
+
+    # 2. Replay: AccountSync._tick 入口 gate が emit を抑止する（push されない）
+    published.clear()
+    mm.current_mode = "Replay"
+    emitted_replay = asyncio.run_coroutine_threadsafe(
+        sync.force_resync(), loop
+    ).result(timeout=5.0)
+    assert emitted_replay is False, (
+        "Replay では force（force_emit=True）でも _tick 入口 gate が emit を抑止すべき（案Y）"
+    )
+    assert _account_events() == [], (
+        f"Replay 中に live AccountEvent が backend stream を汚染した: {_account_events()}"
+    )
