@@ -521,6 +521,11 @@ pub fn apply_cache_restore_system(
                     continue;
                 }
                 pending.windows.push(win_layout.clone());
+                // boot-owned panels は常に生存済みなので spawn event は不要。
+                // pending.windows への追加は position 復元のために保持する。
+                if win_layout.kind.is_boot_spawned_mode_owned() {
+                    continue;
+                }
 
                 let region_key = if win_layout.kind == PanelKind::StrategyEditor {
                     Some(
@@ -1221,10 +1226,10 @@ pub fn apply_layout_system(
 
                 match found {
                     None => {
-                        // Startup は起動スケジュールで一度だけ spawn し、cosmic フィールドも
-                        // そこで attach する。layout 経由で再 spawn するとフィールド無しの
-                        // 壊れた窓になるため、layout からは spawn しない。
-                        if win_layout.kind == PanelKind::Startup {
+                        // boot-spawned/mode-owned パネル（Startup, RunResult）は起動スケジュール
+                        // で一度だけ spawn し、可視性は ExecutionMode が所有する。
+                        // layout 経由で再 spawn するとフィールド無しの壊れた窓になるため除外。
+                        if win_layout.kind.is_boot_spawned_mode_owned() {
                             continue;
                         }
                         let dedupe_key = (win_layout.kind, want_key.clone());
@@ -1250,10 +1255,10 @@ pub fn apply_layout_system(
                         tf.translation.x = win_layout.position[0];
                         tf.translation.y = win_layout.position[1];
                         tf.translation.z = win_layout.z;
-                        // Startup は position/z のみ復元する。size と可視性は復元しない
-                        // （可視性は ExecutionMode が所有し、size は窓側定数が正。古い
-                        // layout の size を当てると窓幅が巻き戻り、子要素とズレる）。
-                        if *kind != PanelKind::Startup {
+                        // boot-spawned/mode-owned パネルは position/z のみ復元する。
+                        // size と可視性は復元しない（可視性は ExecutionMode が所有し、
+                        // size は窓側定数が正。古い layout の size を当てると子要素とズレる）。
+                        if !kind.is_boot_spawned_mode_owned() {
                             sprite.custom_size = Some(Vec2::from_array(win_layout.size));
                             let intended = if win_layout.visible {
                                 Visibility::Inherited
@@ -1282,10 +1287,10 @@ pub fn apply_layout_system(
             let to_despawn: Vec<Entity> = panels
                 .iter()
                 .filter(|(_, kind, id, _, _, _, _)| {
-                    // Startup は layout の windows リストに依存しない（起動時に一度だけ
-                    // spawn・可視性は ExecutionMode が所有）。list に無くても despawn しない。
-                    // pre-#14 sidecar など Startup を含まない layout でも消えないように。
-                    if **kind == PanelKind::Startup {
+                    // boot-spawned/mode-owned パネル（Startup, RunResult）は layout の windows
+                    // リストに依存しない。list に無くても despawn しない。
+                    // pre-#14 sidecar など旧 layout でも消えないように。
+                    if kind.is_boot_spawned_mode_owned() {
                         return false;
                     }
                     !win_layouts.iter().any(|w| {
@@ -1357,8 +1362,8 @@ pub fn apply_pending_layout_system(
         });
         match found {
             None => {
-                // Startup は layout から spawn しない（フィールド attach は起動スケジュールのみ）。
-                if win_layout.kind == PanelKind::Startup {
+                // boot-spawned/mode-owned パネルは layout から spawn しない。
+                if win_layout.kind.is_boot_spawned_mode_owned() {
                     continue;
                 }
                 let region_key = if win_layout.kind == PanelKind::StrategyEditor {
@@ -1394,8 +1399,8 @@ pub fn apply_pending_layout_system(
                 tf.translation.x = win_layout.position[0];
                 tf.translation.y = win_layout.position[1];
                 tf.translation.z = win_layout.z;
-                // Startup は position/z のみ復元（size・可視性は復元しない）。
-                if *kind != PanelKind::Startup {
+                // boot-spawned/mode-owned パネルは position/z のみ復元（size・可視性は復元しない）。
+                if !kind.is_boot_spawned_mode_owned() {
                     sprite.custom_size = Some(Vec2::from_array(win_layout.size));
                     let intended = if win_layout.visible {
                         Visibility::Inherited

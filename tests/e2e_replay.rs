@@ -262,6 +262,12 @@ mod m10_window_resize_updates_size_and_autosave;
 mod m11_startup_window_content_hides_with_panel;
 #[path = "e2e/flows/m12_strategy_editor_hidden_in_manual.rs"]
 mod m12_strategy_editor_hidden_in_manual;
+#[path = "e2e/flows/m13_run_result_no_close_button.rs"]
+mod m13_run_result_no_close_button;
+#[path = "e2e/flows/m14_run_result_mode_visibility.rs"]
+mod m14_run_result_mode_visibility;
+#[path = "e2e/flows/m15_run_result_button_absent.rs"]
+mod m15_run_result_button_absent;
 
 // N. Live Auto strategy execution (Phase 10: lifecycle / telemetry / safety / log)
 #[path = "e2e/flows/n1_live_strategy_event_lifecycle.rs"]
@@ -272,3 +278,9 @@ mod n2_live_strategy_telemetry;
 mod n3_safety_rail_violation_toast;
 #[path = "e2e/flows/n4_strategy_log_message_buffer.rs"]
 mod n4_strategy_log_message_buffer;
+#[path = "e2e/flows/n5_footer_play_starts_live_auto.rs"]
+mod n5_footer_play_starts_live_auto;
+#[path = "e2e/flows/n6_footer_play_starts_live_auto_via_real_footer.rs"]
+mod n6_footer_play_starts_live_auto_via_real_footer;
+#[path = "e2e/flows/n7_footer_play_blocked_writes_run_result.rs"]
+mod n7_footer_play_blocked_writes_run_result;

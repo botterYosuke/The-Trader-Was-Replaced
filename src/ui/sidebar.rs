@@ -69,7 +69,6 @@ pub fn spawn_sidebar(mut commands: Commands) {
             for kind in [
                 PanelKind::StrategyEditor,
                 PanelKind::BuyingPower,
-                PanelKind::RunResult,
                 PanelKind::Positions,
                 PanelKind::Orders,
                 PanelKind::Order,

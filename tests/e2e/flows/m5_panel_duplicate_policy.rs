@@ -96,7 +96,7 @@ fn m5_panel_duplicate_policy() {
     );
 
     // ── RunResult / Positions / Orders も同様に singleton チェック ──
-    for kind in [PanelKind::RunResult, PanelKind::Positions, PanelKind::Orders] {
+    for kind in [PanelKind::Positions, PanelKind::Orders] {
         app.world_mut()
             .spawn((Button, Interaction::Pressed, kind, BackgroundColor::default()));
         app.update();
@@ -108,11 +108,6 @@ fn m5_panel_duplicate_policy() {
     }
 
     let panels = dump_panels(app.world_mut());
-    assert_eq!(
-        panels_of(&panels, "Run Result").len(),
-        1,
-        "RunResult は 1 枚のはず"
-    );
     assert_eq!(
         panels_of(&panels, "Positions").len(),
         1,

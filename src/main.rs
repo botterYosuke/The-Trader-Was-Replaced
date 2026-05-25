@@ -17,7 +17,8 @@ use backcast::trading::{
     OrderFeedback, PortfolioOrder, PortfolioPosition, PortfolioState,
     ReconcilePrompt, ReloginPrompt, ReplaySpeed, SecretPrompt, SelectedSymbol, Ticker, Tickers,
     TickersSource, TradingSettings, TransportCommand, TransportCommandSender, VenueState,
-    VenueStatusRes, backend_update_system, engine, tickers_source_to_wire,
+    VenueStatusRes, backend_update_system, default_live_auto_safety_limits, engine,
+    tickers_source_to_wire,
 };
 use backcast::ui::UiPlugin;
 use backcast::ui::replay_startup_window::{
@@ -32,9 +33,9 @@ use engine::{
     EngineKind, EngineStartConfig, ForceAccountSnapshotRequest, ForceStopReplayRequest,
     GetPortfolioRequest, GetStateRequest,
     ListAllListedSymbolsRequest, ListInstrumentsRequest, LoadReplayDataRequest,
-    PauseLiveStrategyReq, PauseReplayRequest, ReplayGranularity,
-    ResumeLiveStrategyReq, ResumeReplayRequest, SetExecutionModeRequest,
-    SetReplaySpeedRequest, StartEngineRequest, StartEngineResponse,
+    PauseLiveStrategyReq, PauseReplayRequest, RegisterLiveStrategyReq, ReplayGranularity,
+    ResumeLiveStrategyReq, ResumeReplayRequest, SafetyLimits, SetExecutionModeRequest,
+    SetReplaySpeedRequest, StartEngineRequest, StartEngineResponse, StartLiveStrategyReq,
     StepReplayRequest, StopLiveStrategyReq, SubscribeBackendEventsReq, SubscribeRequest,
     VenueLoginRequest, VenueLogoutRequest,
 };
@@ -1224,6 +1225,77 @@ fn setup_backend_connection(
                     TransportCommand::GetOrders { venue } => {
                         // connect-seed: full 行で seed のみ。reconcile はしない（Med-A）。
                         seed_orders_from_backend(&mut client, &token, venue, &status_tx, false).await;
+                    }
+                    TransportCommand::StartLiveAuto {
+                        instrument_id,
+                        venue,
+                        strategy_file,
+                    } => {
+                        // ▶ (LiveAuto): RegisterLiveStrategy → StartLiveStrategy を直列発行
+                        // (issue #40 代替)。成功は pushed LiveStrategyEvent 経由で panel に届く。
+                        // SetExecutionMode は再送しない (ExecutionMode は backend 権威)。
+                        let mut c = client.clone();
+                        let t = token.clone();
+                        tokio::spawn(async move {
+                            let strategy_file_str = strategy_file.to_string_lossy().to_string();
+                            let register_req = tonic::Request::new(RegisterLiveStrategyReq {
+                                token: t.clone(),
+                                request_id: String::new(),
+                                strategy_file: strategy_file_str,
+                                expected_sha256: String::new(),
+                            });
+
+                            let strategy_id = match c.register_live_strategy(register_req).await {
+                                Ok(r) => {
+                                    let inner = r.into_inner();
+                                    if !inner.success {
+                                        error!(
+                                            "RegisterLiveStrategy rejected: instrument_id={} venue={} error_code={}",
+                                            instrument_id, venue, inner.error_code
+                                        );
+                                        return;
+                                    }
+                                    inner.strategy_id
+                                }
+                                Err(e) => {
+                                    error!(
+                                        "RegisterLiveStrategy failed: instrument_id={} venue={} err={}",
+                                        instrument_id, venue, e
+                                    );
+                                    return;
+                                }
+                            };
+
+                            let safety_limits: SafetyLimits =
+                                default_live_auto_safety_limits(&instrument_id);
+                            let start_req = tonic::Request::new(StartLiveStrategyReq {
+                                token: t,
+                                request_id: String::new(),
+                                strategy_id: strategy_id.clone(),
+                                instrument_id: instrument_id.clone(),
+                                venue: venue.clone(),
+                                params: Default::default(),
+                                safety_limits: Some(safety_limits),
+                            });
+
+                            match c.start_live_strategy(start_req).await {
+                                Ok(r) => {
+                                    let inner = r.into_inner();
+                                    if !inner.success {
+                                        error!(
+                                            "StartLiveStrategy rejected: strategy_id={} instrument_id={} venue={} error_code={}",
+                                            strategy_id, instrument_id, venue, inner.error_code
+                                        );
+                                    }
+                                }
+                                Err(e) => {
+                                    error!(
+                                        "StartLiveStrategy failed: strategy_id={} instrument_id={} venue={} err={}",
+                                        strategy_id, instrument_id, venue, e
+                                    );
+                                }
+                            }
+                        });
                     }
                     TransportCommand::PauseLiveStrategy { run_id } => {
                         // §2.8: pause = new-order gate on the backend. Success arrives
