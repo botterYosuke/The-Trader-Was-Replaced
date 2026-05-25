@@ -51,7 +51,6 @@ fn m1_sidebar_panel_buttons_spawn_windows() {
     // Changed<Interaction> を確実に発火させるため各 kind を 1 フレームずつ処理する。
     for kind in [
         PanelKind::BuyingPower,
-        PanelKind::RunResult,
         PanelKind::Positions,
         PanelKind::Orders,
         PanelKind::StrategyEditor,
@@ -71,11 +70,6 @@ fn m1_sidebar_panel_buttons_spawn_windows() {
         panels_of(&panels, "Buying Power").len(),
         1,
         "BuyingPower が 1 枚 spawn するはず (panels={panels:#?})"
-    );
-    assert_eq!(
-        panels_of(&panels, "Run Result").len(),
-        1,
-        "RunResult が 1 枚 spawn するはず (panels={panels:#?})"
     );
     assert_eq!(
         panels_of(&panels, "Positions").len(),
@@ -99,5 +93,5 @@ fn m1_sidebar_panel_buttons_spawn_windows() {
         .query_filtered::<Entity, With<WindowRoot>>()
         .iter(app.world())
         .count();
-    assert_eq!(total, 5, "WindowRoot は 5 体のはず (got {total})");
+    assert_eq!(total, 4, "WindowRoot は 4 体のはず (got {total})");
 }

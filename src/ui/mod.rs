@@ -133,7 +133,10 @@ use crate::ui::relogin_modal::{
     spawn_relogin_modal,
 };
 use crate::ui::restore::restore_fixed_registry_on_replay_entry_system;
-use crate::ui::run_result_panel::run_result_panel_system;
+use crate::ui::run_result_panel::{
+    apply_run_result_visibility_system, run_result_panel_system,
+    spawn_run_result_panel_system,
+};
 use crate::ui::safety_toast::{safety_toast_system, spawn_safety_toast};
 use crate::ui::scenario_parser::parse_scenario_system;
 use crate::ui::scenario_startup_panel::{
@@ -281,6 +284,7 @@ impl Plugin for UiPlugin {
                 spawn_live_run_panel,
                 // Phase 10 §2.10: Safety Rail violation toast (Footer 右下)
                 spawn_safety_toast,
+                spawn_run_result_panel_system,
             ),
         )
         .add_systems(
@@ -457,6 +461,7 @@ impl Plugin for UiPlugin {
             (
                 crate::ui::footer::apply_execution_mode_visibility_system,
                 crate::ui::scenario_startup_panel::apply_startup_panel_visibility_system,
+                apply_run_result_visibility_system,
                 // issue #31: layout apply / panel spawn の後に走らせる。Manual 中の layout load /
                 // 新規 spawn で apply 系が StrategyEditor の「本来の可視性」を確定させ、spawn dispatcher
                 // が新規窓を materialize させた後に mode system がそれを退避マーカーへ捕捉する順序を

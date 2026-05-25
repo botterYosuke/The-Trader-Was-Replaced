@@ -1,5 +1,5 @@
 use crate::trading::{LastRunResult, RunState};
-use crate::ui::components::PanelKind;
+use crate::ui::components::{PanelKind, RunResultPanelRoot};
 use crate::ui::floating_window::{FloatingWindowSpec, spawn_floating_window};
 use bevy::prelude::*;
 
@@ -36,17 +36,21 @@ pub fn spawn_run_result_panel(commands: &mut Commands) {
             size: PANEL_SIZE,
             position: PANEL_POSITION,
             accent: ACCENT,
-            closeable: true,
+            closeable: false,
             resizable: false,
         },
     );
-    commands.entity(root).insert(PanelKind::RunResult);
+    commands.entity(root).insert((PanelKind::RunResult, RunResultPanelRoot));
 
     // 4 行を上から下へ 22px 間隔で配置
     spawn_row(commands, content_area, RunResultLabel::State, 33.0);
     spawn_row(commands, content_area, RunResultLabel::RunId, 11.0);
     spawn_row(commands, content_area, RunResultLabel::Stats, -11.0);
     spawn_row(commands, content_area, RunResultLabel::Pnl, -33.0);
+}
+
+pub fn spawn_run_result_panel_system(mut commands: Commands) {
+    spawn_run_result_panel(&mut commands);
 }
 
 fn spawn_row(commands: &mut Commands, parent: Entity, kind: RunResultLabel, y: f32) {
@@ -107,6 +111,26 @@ pub fn run_result_panel_system(
         }
         if color.0 != new_color {
             color.0 = new_color;
+        }
+    }
+}
+
+/// ExecutionMode が変化するたびに RunResult パネルの可視性を更新する。
+/// Replay / LiveAuto で可視、LiveManual で非表示（issue #41 仕様）。
+pub fn apply_run_result_visibility_system(
+    exec_mode: Res<crate::trading::ExecutionModeRes>,
+    mut panel_q: Query<&mut Visibility, With<RunResultPanelRoot>>,
+) {
+    if !exec_mode.is_changed() {
+        return;
+    }
+    let target = match exec_mode.mode {
+        crate::trading::ExecutionMode::LiveManual => Visibility::Hidden,
+        _ => Visibility::Inherited,
+    };
+    for mut vis in &mut panel_q {
+        if *vis != target {
+            *vis = target;
         }
     }
 }

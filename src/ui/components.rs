@@ -195,6 +195,11 @@ pub struct SidebarInstrumentRowClick {
 #[derive(Component)]
 pub struct CloseButton;
 
+/// RUN RESULT floating window の root entity に貼るマーカー。
+/// `StartupPanelRoot` と同型の「閉じられない・起動時自動 spawn・ExecutionMode 所有」パネル。
+#[derive(Component)]
+pub struct RunResultPanelRoot;
+
 #[derive(Resource, Default, Debug, Clone)]
 pub struct ScenarioMetadata {
     pub schema_version: Option<u32>,
@@ -266,6 +271,13 @@ impl PanelKind {
             | PanelKind::Orders
             | PanelKind::Startup => PanelRestoreDriver::WindowLayout,
         }
+    }
+
+    /// 起動スケジュールで自動 spawn され、ExecutionMode が可視性を所有するパネル。
+    /// layout_persistence の再 spawn・size/visibility 復元・窓リスト外 despawn を
+    /// すべてスキップする特例対象。
+    pub fn is_boot_spawned_mode_owned(self) -> bool {
+        matches!(self, PanelKind::Startup | PanelKind::RunResult)
     }
 }
 
