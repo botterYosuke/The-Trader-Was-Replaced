@@ -48,6 +48,11 @@ description: >-
   （例: Phase 10 で `LiveRuns` / `PromoteFeedback` 追加 → 入れ忘れて全本 panic）。
   既存方式で不可能な場合も「対象外」にせず、代替方式（`kind:ui` / `kind:render` / `kind:integration` /
   `kind:manual-gate`）を FLOWS.md に明記する。
+  **バグ修正（issue 実装）で CLAUDE.md の「先に RED テスト → コード修正 → GREEN」フローが求められる場合も必ず本スキルを
+  発動する**: Python 側のバグでも Rust 契約テスト（`BackendStatusUpdate` seam での contract flow）が Acceptance Criteria
+  に含まれていれば D9 のような flow + FLOWS.md 追記 + wiki [FlowID] 引用が必要。`pair-relay` の Navigator が内部で
+  カバーしても、本スキルを明示的に invoke しないと flow/wiki 追加が「実装の付録」として埋もれやすい（実例: #39 Slice 1
+  で D9 flow + venues.md + modes.md 更新が必要だったが behavior-to-e2e を invoke せず、pair-relay Navigator 任せになった）。
   **さらに、headless 不可で `#[ignore]`/doc-stub のまま諦めていた flow を「実テスト化」する**ときも本スキルを開く
   （「i8/i14 を headless テスト可能にする」「`#[test] #[ignore]` を外したい」「rfd / ファイルダイアログ /
   `AsyncComputeTaskPool` / async task を seam でバイパスしてテスト」「ダイアログ要求と書き込みを分離してテスト可能に」
