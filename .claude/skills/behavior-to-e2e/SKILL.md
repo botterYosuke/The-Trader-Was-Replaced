@@ -276,6 +276,22 @@ backend→ECS seam だけでは十分条件にならない。
   harness 側で `.chain()` 済みなので 1 tick で「クリック→`StrategyRunRequested`→`RunStrategy` コマンド」まで通る。
   発射コマンドは `drain_commands()` で受ける。**「実 UI 操作で `TransportCommand` を assert → その後 backend 応答を
   seam から注入」**が A–H の基本パターン。
+- **command-level テスト（resource 直 seed ＋ 合成 entity spawn）は実機 wiring を素通りする＝false-green の温床**。
+  `Harness` で `set_xxx()` により resource を直接埋め、`click<M>` で `(marker, Button, Interaction)` を**手で spawn**して
+  system を回すテストは、「branch logic が完璧入力で正しく動く」ことしか保証しない。**本番 plugin の system 登録漏れ・
+  本番 `spawn_xxx` が作る実 entity のマーカー/可視性・`Node.display` gating・pre-flight guard の充足経路**は一切踏まない。
+  実例（issue #40 フォローアップ）: footer ▶ の LiveAuto 起動を `N5`（command-level）が「`StartLiveAuto` の送出有無」だけ
+  assert して green だったが、実機では ▶ が無反応だった。原因は pre-flight guard が `warn!`+`continue` の **silent block**
+  （venue 未接続等）で、N5 はそれを「送らないのが正」として暗黙に許容していた（＝抜け漏れ）。
+  **gap を疑ったら、`i5`/`N6`/`N7` の bare-App パターンで本番経路を踏むテストを足す**: `App::new()`＋`MinimalPlugins`＋
+  `AssetPlugin`＋`init_asset::<Font>()` に **本番 `spawn_footer`（等の構築 system）を Startup で 1 回回し**、本番の
+  visibility/handler system を `add_systems` して、`query_filtered::<Entity, With<RealMarker>>()` で引いた**実 entity**を
+  `entity_mut(e).insert(Interaction::Pressed)` で押す。これで「登録・実 entity・可視性・guard」まで丸ごと検証できる
+  （resource は `make_app` で本番 `main.rs` と同じ insert セットを揃える＝1 つ漏れると system-param panic）。
+- **「クリックしても何も起きない」系のバグは silent guard（`warn!`+`continue` だけで UI に何も出さない）を最優先で疑う**。
+  挙動を「保証」するテストは「コマンドが出る/出ない」だけでなく **「ブロック時にユーザーへ理由が surfacing される」**まで
+  assert する（例 N7: pre-flight 失敗時に `LastRunResult.state=RunState::Failed{error}` を書き Run Result パネルへ赤字表示）。
+  silent block を「送らないのが正」とだけ固定すると、無言の無反応を仕様として温存してしまう。
 - **`push_state(ts)` は `TradingSession.replay_state` を `None` に上書きする**（fixture に replay_state が無いため）。
   footer の Pause/Resume は `replay_state` で分岐するので、**`set_replay_state(Some("RUNNING"))` は必ず `push_state` の
   「後」に呼ぶ**。順序を逆にすると clock push が RUNNING を消し、Pause クリックが Run 扱いになって command assert が落ちる
