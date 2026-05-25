@@ -461,7 +461,8 @@ impl Plugin for UiPlugin {
             (
                 crate::ui::footer::apply_execution_mode_visibility_system,
                 crate::ui::scenario_startup_panel::apply_startup_panel_visibility_system,
-                apply_run_result_visibility_system,
+                apply_run_result_visibility_system
+                    .after(panel_spawn_dispatcher_system),
                 // issue #31: layout apply / panel spawn の後に走らせる。Manual 中の layout load /
                 // 新規 spawn で apply 系が StrategyEditor の「本来の可視性」を確定させ、spawn dispatcher
                 // が新規窓を materialize させた後に mode system がそれを退避マーカーへ捕捉する順序を

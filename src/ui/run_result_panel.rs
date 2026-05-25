@@ -115,15 +115,14 @@ pub fn run_result_panel_system(
     }
 }
 
-/// ExecutionMode が変化するたびに RunResult パネルの可視性を更新する。
+/// RunResult パネルの可視性を ExecutionMode に合わせて毎フレーム diff-write する。
 /// Replay / LiveAuto で可視、LiveManual で非表示（issue #41 仕様）。
+/// `is_changed()` ゲートは張らない: mode 変化のないフレームに spawn されたウィンドウも
+/// 正しい可視性に補正するため（apply_strategy_editor_mode_visibility_system と同パターン）。
 pub fn apply_run_result_visibility_system(
     exec_mode: Res<crate::trading::ExecutionModeRes>,
     mut panel_q: Query<&mut Visibility, With<RunResultPanelRoot>>,
 ) {
-    if !exec_mode.is_changed() {
-        return;
-    }
     let target = match exec_mode.mode {
         crate::trading::ExecutionMode::LiveManual => Visibility::Hidden,
         _ => Visibility::Inherited,

@@ -521,6 +521,11 @@ pub fn apply_cache_restore_system(
                     continue;
                 }
                 pending.windows.push(win_layout.clone());
+                // boot-owned panels は常に生存済みなので spawn event は不要。
+                // pending.windows への追加は position 復元のために保持する。
+                if win_layout.kind.is_boot_spawned_mode_owned() {
+                    continue;
+                }
 
                 let region_key = if win_layout.kind == PanelKind::StrategyEditor {
                     Some(
