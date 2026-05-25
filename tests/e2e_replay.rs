@@ -67,6 +67,8 @@ mod d5_venue_logout_detected;
 mod d6_venue_reconnecting;
 #[path = "e2e/flows/d7_live_universe_overwrite.rs"]
 mod d7_live_universe_overwrite;
+#[path = "e2e/flows/d9_venue_stays_connected_on_replay_toggle.rs"]
+mod d9_venue_stays_connected_on_replay_toggle;
 
 // E. Execution mode
 #[path = "e2e/flows/e1_set_execution_mode.rs"]

@@ -38,6 +38,7 @@ class MockVenueAdapter:
 
     def __init__(self) -> None:
         self.is_logged_in: bool = False
+        self.logout_call_count: int = 0
         self._subscribed: dict[InstrumentId, set[Channel]] = {}
         self._queue: asyncio.Queue[LiveEvent] = asyncio.Queue()
         self._next_order_outcome: dict | None = None
@@ -54,6 +55,7 @@ class MockVenueAdapter:
     async def logout(self) -> None:
         # logout は session 終了相当: 購読も内部 queue もクリアする (C-8)。
         # 実 venue の WebSocket 切断時と同じ意味論。
+        self.logout_call_count += 1
         self.is_logged_in = False
         self._subscribed.clear()
         while not self._queue.empty():
