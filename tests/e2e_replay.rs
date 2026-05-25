@@ -272,3 +272,9 @@ mod n2_live_strategy_telemetry;
 mod n3_safety_rail_violation_toast;
 #[path = "e2e/flows/n4_strategy_log_message_buffer.rs"]
 mod n4_strategy_log_message_buffer;
+#[path = "e2e/flows/n5_footer_play_starts_live_auto.rs"]
+mod n5_footer_play_starts_live_auto;
+#[path = "e2e/flows/n6_footer_play_starts_live_auto_via_real_footer.rs"]
+mod n6_footer_play_starts_live_auto_via_real_footer;
+#[path = "e2e/flows/n7_footer_play_blocked_writes_run_result.rs"]
+mod n7_footer_play_blocked_writes_run_result;

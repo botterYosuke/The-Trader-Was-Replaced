@@ -427,7 +427,11 @@ class GrpcDataEngineServer(
         )
         # D10: wire the event loop reference so fetch_instruments_blocking works
         runner._loop = self._live_loop
-        bridge = LiveReducerBridge(bus=runner.bus, data_engine=self.engine)
+        bridge = LiveReducerBridge(
+            bus=runner.bus,
+            data_engine=self.engine,
+            mode_provider=lambda: (self.mode_manager.current_mode if self.mode_manager else "Replay"),
+        )
         cache = LastPriceCache(bus=runner.bus)
         depth_cache = DepthCache(bus=runner.bus)
         await bridge.start()
@@ -477,6 +481,9 @@ class GrpcDataEngineServer(
             on_account_event=self._publish_account_snapshot,
             interval_s=30.0,
             on_error=self._publish_account_sync_error,
+            mode_provider=lambda: (
+                self.mode_manager.current_mode if self.mode_manager else "Replay"
+            ),
         )
         self._account_sync = account_sync
         # Phase 9 Step 9: instruments daily refresh. login 直後の初期 refresh で
@@ -1949,7 +1956,11 @@ class GrpcDataEngineServer(
         """AccountSync callback: AccountSnapshot → proto AccountEvent → backend stream.
 
         Runs on the live-loop thread. The transport-agnostic snapshot has no ts_ms;
-        stamp it here (push time). BackendEventBus is threadsafe (Step 0)."""
+        stamp it here (push time). BackendEventBus is threadsafe (Step 0).
+
+        issue #39 Slice 2: Replay 中の抑止は AccountSync._tick 入口の mode_provider gate
+        （案A+Y）が担う。callback に到達した時点で既に emit 確定なので、ここでは無条件に
+        push する（dedup の last_emitted を汚さない）。"""
         proto = engine_pb2.AccountEvent(
             cash=snapshot.cash,
             buying_power=snapshot.buying_power,

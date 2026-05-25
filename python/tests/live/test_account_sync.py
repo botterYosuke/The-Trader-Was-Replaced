@@ -294,3 +294,35 @@ def test_force_resync_emits_even_for_unchanged_snapshot() -> None:
     assert len(seen) == 2, "force-resync は同一 snapshot でも再 emit しなければならない"
     assert seen[0] == seen[1]
     assert seen[1].cash == 100.0
+
+
+def test_replay_mode_provider_blocks_tick_and_keeps_last_emitted_clean() -> None:
+    """issue #39 Slice 2 (案A+Y): mode_provider が "Replay" を返す間は force_emit でも
+    AccountEvent を emit せず、_last_emitted を汚染しない（_tick 入口で gate）。
+
+    案Y: force_resync (=_tick(force_emit=True)) でも Replay では emit しない。
+    gate は force_emit チェックより前の _tick 入口に入る。
+
+    現状（構造2 gate 未実装）では mode_provider は受理されるが無視され、Replay でも
+    emit + _last_emitted 汚染が起きる → 下記 assert で意図通り RED になる。
+    """
+
+    async def scenario() -> tuple[list[AccountSnapshot], "AccountSync", bool]:
+        adapter = await _logged_in_adapter()
+        adapter.set_account_snapshot(cash=100.0, buying_power=200.0, positions=[])
+        seen: list[AccountSnapshot] = []
+        # interval を長くして自走 tick を排除。明示的な force_resync のみで駆動する。
+        sync = AccountSync(
+            adapter,
+            on_account_event=seen.append,
+            interval_s=1000.0,
+            mode_provider=lambda: "Replay",
+        )
+        # start せず force_resync を直接叩く（_run の初期 emit を介さず gate のみ検証）。
+        emitted = await sync.force_resync()
+        return seen, sync, emitted
+
+    seen, sync, emitted = asyncio.run(scenario())
+    assert emitted is False, "Replay 中は force_emit でも emit しないので False"
+    assert seen == [], "Replay 中は AccountEvent を 1 件も emit してはならない"
+    assert sync._last_emitted is None, "Replay 中の gate は _last_emitted を汚染しない"

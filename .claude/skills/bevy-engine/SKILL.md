@@ -386,6 +386,34 @@ egui の中で `state.buffer` のような大きい String を編集するとき
 - **"the trait `Bundle` is not implemented for `(Sprite, Transform, ...)`"**:
   ほぼ全部 `Component` で derive されているはずなので、構成要素のどれかが Component
   でない（または import 漏れ）。`use bevy::prelude::*;` を確認。
+- **`error[B0001]` "accesses component(s) ... in a way that conflicts with a previous system parameter"
+  （実行時 panic／システム実行時に init で落ちる）**: 同一 system に同じ component（典型は `&mut Node`）の
+  query を **2 つ以上** 持ち、フィルタが**証明可能には**互いに排他でないと出る。Bevy の衝突チェックは
+  「現実にはどの entity も両方に該当しない」では通らず、**`With<X>` vs `Without<X>` の対**で静的に分離
+  できることを要求する。例: `pause_q: Query<&mut Node, With<PauseResumeButton>>` と
+  `speed_q: Query<&mut Node, (With<SpeedButton>, Without<TransportButton>)>` は、現実の entity が
+  重ならなくても **PauseResumeButton で分離されていない**ので衝突する（実際の footer PauseResume entity が
+  `PauseResumeButton` + `TransportButton` の二重マーカーを持つ罠と同根）。**対策**: 各 query 対に必ず
+  「片方 `With<M>`／もう片方 `Without<M>`」を入れて全 pair を分離する（例: speed_q に `Without<PauseResumeButton>`
+  を足す）。分離フィルタは**実 entity の集合を変えない**もの（その marker を実際には持たない）を選ぶこと。
+  どうしても重なる更新が要るなら `ParamSet<(Query<..>, Query<..>)>` でまとめる。⚠️ この panic は system が
+  **実際に実行される schedule でしか出ない**: e2e harness が当該 system を登録していないと e2e は緑のまま
+  `#[cfg(test)]` の単体 App（その system を `add_systems` する）だけが落ちるので、複数 `&mut` query を持つ
+  system を足したら **その system を回す側のテスト（lib unit / harness 両方）を必ず走らせる**。
+- **「`spawn((Marker, Button, Interaction))` は `BackgroundColor` を含まないから `Query<(&Interaction, &mut BackgroundColor)>` にマッチしない」と思い込む（レビューの false positive）**:
+  **required components は推移的**。`Button` は `#[require(Node, FocusPolicy, Interaction)]`、`Node` は
+  `#[require(ComputedNode, BackgroundColor, BorderColor, BorderRadius, FocusPolicy, ScrollPosition, Transform,
+  Visibility, ZIndex)]`（`bevy_ui-0.15.1/src/ui_node.rs` / `widget/button.rs`）。つまり `Button` を spawn する
+  だけで `Node` 経由 `BackgroundColor` まで**自動挿入**され、`(&Interaction, &mut BackgroundColor)` クエリに
+  マッチする。`footer_pause_resume_system` のシグネチャに `&mut BackgroundColor` を足しても、`Harness::click`
+  が spawn する `(marker, Button, Interaction::Pressed)` は依然マッチする（A2 は green のまま）。
+  ⚠️ **罠の方向**: 「query に component を足した → spawn 側がそれを明示していないから壊れる」という指摘は、
+  その component が既存 component の推移 require で供給されていれば**誤り**。判定するときは
+  spawn タプルの**直接の**構成要素だけでなく、各 component の `#[require(...)]` を**推移的に**辿る
+  （`~/.cargo/registry/src/*/bevy_ui-0.15.1/src/` を grep）。最終的な真偽は `cargo test` の実測で確定する
+  （静的読みで「マッチしない」と断じない）。実例: issue #40 フォローアップのレビューで codex が「A2 が
+  `BackgroundColor` 不足でマッチせず fail」と Medium 指摘 → 推移 require の見落としで false positive、
+  実測 `e2e_replay` 116 passed で A2 green だった。
 - **"no method named `single` found"**: 0.15 は `get_single()`。
 - **"no field `entity` on `Trigger`"**: 0.19 流。0.15 は `trigger.entity()` (method)。
 - **"unresolved import `bevy::ChildOf`"**: 0.19 流。0.15 は `Parent`。

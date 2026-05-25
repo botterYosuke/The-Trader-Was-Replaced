@@ -35,3 +35,18 @@ purpose for the imminent footer-play rewiring.
 
 `safety_rails.py` is *not* Promote-specific — it is the exec client's required pre/post-trade
 risk gate — so it is out of scope for removal regardless.
+
+## Follow-up status (resolved)
+
+The transitional gap above is now closed. The footer transport **▶** button launches Live Auto in
+`ExecutionMode::LiveAuto` by emitting `TransportCommand::StartLiveAuto`, which the transport task
+serializes into `RegisterLiveStrategy` → `StartLiveStrategy` — reusing the preserved RPCs and
+`default_live_auto_safety_limits` (AC#8 defaults). The ▶ does **not** re-send `SetExecutionMode`
+(mode stays backend-authoritative). Pre-flight gates guard the send: scenario instruments present, venue live, venue identity set
+(`venue_id` or `configured_venue`), and the strategy cache flushed. The launch instrument is
+scenario-derived to match Replay Run; sidebar selection is only a tiebreaker for multi-instrument
+scenarios. Covered by E2E flows **N5** (command-level, `n5_footer_play_starts_live_auto.rs`, kind:ui) and
+**N6** (real `spawn_footer` integration, `n6_footer_play_starts_live_auto_via_real_footer.rs`, kind:ui)
+plus footer visibility unit tests
+(PauseResume ▶ visible in Replay | LiveAuto, hidden in LiveManual). The "Auto mode has no UI launch
+entry" window described above no longer applies.

@@ -1,11 +1,11 @@
 use crate::trading::{
     BackendStatus, ExecutionMode, ExecutionModeRes, LastRunResult, ReplaySpeed, RunState,
-    TradingSession, TradingSettings, TransportCommand, TransportCommandSender, VenueState,
-    VenueStatusRes,
+    SelectedSymbol, TradingSession, TradingSettings, TransportCommand, TransportCommandSender,
+    VenueState, VenueStatusRes, is_venue_live,
 };
 use crate::ui::components::{
     ExecutionModeToggleSegment, FooterRoot, GrpcStatusLabel, PauseResumeButton, PauseResumeLabel,
-    ReplayStateBadge, ReplayTimeLabel, SpeedButton, StrategyBuffer, StrategyEditorId,
+    ReplayStateBadge, ReplayTimeLabel, ScenarioMetadata, SpeedButton, StrategyBuffer, StrategyEditorId,
     StrategyFragment, StrategyRunRequested, TransportButton, VenueStateBadge, WindowRoot,
 };
 use crate::ui::strategy_editor::{StrategyAutoSaveState, flush_strategy_cache, merge_fragments};
@@ -582,37 +582,105 @@ pub fn footer_pause_resume_system(
     data: Res<TradingSession>,
     sender: Res<TransportCommandSender>,
     mut buffer: ResMut<StrategyBuffer>,
-    last_run: Res<LastRunResult>,
+    mut last_run: ResMut<LastRunResult>,
     mut auto_save: ResMut<StrategyAutoSaveState>,
     mut run_events: EventWriter<StrategyRunRequested>,
     fragments_q: Query<(&StrategyEditorId, &StrategyFragment), With<WindowRoot>>,
     exec_mode: Res<ExecutionModeRes>,
+    selected: Res<SelectedSymbol>,
+    scenario: Res<ScenarioMetadata>,
+    venue: Res<VenueStatusRes>,
 ) {
-    if !matches!(exec_mode.mode, ExecutionMode::Replay) {
+    if !matches!(exec_mode.mode, ExecutionMode::Replay | ExecutionMode::LiveAuto) {
         return;
     }
     for (interaction, mut bg) in &mut query {
         match interaction {
             Interaction::Pressed => {
                 bg.0 = BTN_PRESSED;
-                match data.replay_state.as_deref() {
-                    Some("RUNNING") => {
-                        if sender.tx.send(TransportCommand::Pause).is_err() {
-                            warn!("transport: pause send failed (receiver dropped)");
+                match exec_mode.mode {
+                    ExecutionMode::Replay => match data.replay_state.as_deref() {
+                        Some("RUNNING") => {
+                            if sender.tx.send(TransportCommand::Pause).is_err() {
+                                warn!("transport: pause send failed (receiver dropped)");
+                            }
                         }
-                    }
-                    Some("PAUSED") => {
-                        if sender.tx.send(TransportCommand::Resume).is_err() {
-                            warn!("transport: resume send failed (receiver dropped)");
+                        Some("PAUSED") => {
+                            if sender.tx.send(TransportCommand::Resume).is_err() {
+                                warn!("transport: resume send failed (receiver dropped)");
+                            }
                         }
-                    }
-                    // None / Some("IDLE") / Some("LOADED") / 未知 → Run フロー。
-                    // strategy_editor.rs の Run observer と同じ手順で再実装。
-                    _ => {
-                        if matches!(last_run.state, RunState::Running) {
-                            warn!("Run blocked: already running");
+                        _ => {
+                            if matches!(last_run.state, RunState::Running) {
+                                warn!("Run blocked: already running");
+                                continue;
+                            }
+                            let mut items: Vec<(String, String)> = fragments_q
+                                .iter()
+                                .map(|(id, f)| (id.region_key.clone(), f.source.clone()))
+                                .collect();
+                            items.sort_by(|a, b| a.0.cmp(&b.0));
+                            let merged = merge_fragments(&items);
+                            match flush_strategy_cache(&merged, &mut buffer, &mut auto_save) {
+                                Ok(true) => {}
+                                Ok(false) => {
+                                    warn!("Run blocked: no cache_path set");
+                                    continue;
+                                }
+                                Err(e) => {
+                                    error!("strategy flush before run failed: {}", e);
+                                    continue;
+                                }
+                            }
+                            let Some(path) = buffer.cache_path.clone() else {
+                                warn!("Run blocked: no cache_path set");
+                                continue;
+                            };
+                            run_events.send(StrategyRunRequested { cache_path: path });
+                        }
+                    },
+                    ExecutionMode::LiveAuto => {
+                        // ▶ (LiveAuto): 全 pre-flight 通過時のみ StartLiveAuto を送出。
+                        // SetExecutionMode は再送しない (ExecutionMode は backend 権威)。
+                        // 起動銘柄は scenario（サイドカー JSON）から導出する（Replay Run と対称）。
+                        // 複数銘柄では sidebar 選択が scenario 内ならそれを優先、無ければ先頭。
+                        let instrument_id = match scenario.instruments.as_slice() {
+                            [] => {
+                                warn!("LiveAuto play: scenario has no instruments");
+                                last_run.state = RunState::Failed {
+                                    error: "No instrument selected".into(),
+                                };
+                                continue;
+                            }
+                            [only] => only.clone(),
+                            instruments => selected
+                                .id
+                                .as_ref()
+                                .filter(|id| instruments.iter().any(|instrument| instrument == *id))
+                                .cloned()
+                                .unwrap_or_else(|| instruments[0].clone()),
+                        };
+                        if !is_venue_live(venue.state) {
+                            warn!("LiveAuto play: venue not live");
+                            last_run.state = RunState::Failed {
+                                error: "Venue not connected".into(),
+                            };
                             continue;
                         }
+                        // venue_id is empty for a `--live-venue` auto-connect (no md runner yet);
+                        // fall back to the authoritative configured_venue (issue #40 E2E finding).
+                        let Some(venue_identity) = venue
+                            .venue_id
+                            .clone()
+                            .or_else(|| venue.configured_venue.clone())
+                        else {
+                            warn!("LiveAuto play: venue identity unset");
+                            last_run.state = RunState::Failed {
+                                error: "Venue not configured (launch with --live-venue)".into(),
+                            };
+                            continue;
+                        };
+
                         let mut items: Vec<(String, String)> = fragments_q
                             .iter()
                             .map(|(id, f)| (id.region_key.clone(), f.source.clone()))
@@ -622,20 +690,38 @@ pub fn footer_pause_resume_system(
                         match flush_strategy_cache(&merged, &mut buffer, &mut auto_save) {
                             Ok(true) => {}
                             Ok(false) => {
-                                warn!("Run blocked: no cache_path set");
+                                warn!("LiveAuto play: no cache_path set");
+                                last_run.state = RunState::Failed {
+                                    error: "No strategy loaded (open a strategy file)".into(),
+                                };
                                 continue;
                             }
                             Err(e) => {
-                                error!("strategy flush before run failed: {}", e);
+                                error!("LiveAuto play: strategy flush failed: {}", e);
                                 continue;
                             }
                         }
                         let Some(path) = buffer.cache_path.clone() else {
-                            warn!("Run blocked: no cache_path set");
+                            warn!("LiveAuto play: no cache_path set");
+                            last_run.state = RunState::Failed {
+                                error: "No strategy loaded (open a strategy file)".into(),
+                            };
                             continue;
                         };
-                        run_events.send(StrategyRunRequested { cache_path: path });
+
+                        if sender
+                            .tx
+                            .send(TransportCommand::StartLiveAuto {
+                                instrument_id,
+                                venue: venue_identity,
+                                strategy_file: path,
+                            })
+                            .is_err()
+                        {
+                            warn!("transport: StartLiveAuto send failed (receiver dropped)");
+                        }
                     }
+                    ExecutionMode::LiveManual => {}
                 }
             }
             Interaction::Hovered => bg.0 = BTN_HOVER,
@@ -702,25 +788,52 @@ pub fn execution_mode_toggle_system(
 #[allow(clippy::type_complexity)]
 pub fn apply_execution_mode_visibility_system(
     exec_mode: Res<ExecutionModeRes>,
-    mut transport_q: Query<&mut Node, (With<TransportButton>, Without<SpeedButton>)>,
-    mut speed_q: Query<&mut Node, (With<SpeedButton>, Without<TransportButton>)>,
+    mut pause_q: Query<&mut Node, With<PauseResumeButton>>,
+    mut transport_q: Query<
+        &mut Node,
+        (
+            With<TransportButton>,
+            Without<PauseResumeButton>,
+            Without<SpeedButton>,
+        ),
+    >,
+    mut speed_q: Query<
+        &mut Node,
+        (
+            With<SpeedButton>,
+            Without<TransportButton>,
+            Without<PauseResumeButton>,
+        ),
+    >,
 ) {
     if !exec_mode.is_changed() {
         return;
     }
-    let target = if matches!(exec_mode.mode, ExecutionMode::Replay) {
+
+    let pause_target = if matches!(exec_mode.mode, ExecutionMode::Replay | ExecutionMode::LiveAuto) {
         Display::Flex
     } else {
         Display::None
     };
+    let replay_target = if matches!(exec_mode.mode, ExecutionMode::Replay) {
+        Display::Flex
+    } else {
+        Display::None
+    };
+
+    for mut node in &mut pause_q {
+        if node.display != pause_target {
+            node.display = pause_target;
+        }
+    }
     for mut node in &mut transport_q {
-        if node.display != target {
-            node.display = target;
+        if node.display != replay_target {
+            node.display = replay_target;
         }
     }
     for mut node in &mut speed_q {
-        if node.display != target {
-            node.display = target;
+        if node.display != replay_target {
+            node.display = replay_target;
         }
     }
 }
@@ -729,8 +842,8 @@ pub fn apply_execution_mode_visibility_system(
 mod tests {
     use super::*;
     use crate::trading::{
-        ExecutionMode, ExecutionModeRes, LastRunResult, ReplaySpeed, TradingSession,
-        TransportCommand, TransportCommandSender,
+        ExecutionMode, ExecutionModeRes, LastRunResult, ReplaySpeed, SelectedSymbol,
+        TradingSession, TransportCommand, TransportCommandSender, VenueStatusRes,
     };
     use crate::ui::components::{
         PauseResumeButton, SpeedButton, StrategyBuffer, StrategyRunRequested, TransportButton,
@@ -747,6 +860,9 @@ mod tests {
             .init_resource::<ReplaySpeed>()
             .init_resource::<StrategyBuffer>()
             .init_resource::<LastRunResult>()
+            .init_resource::<SelectedSymbol>()
+            .init_resource::<VenueStatusRes>()
+            .init_resource::<ScenarioMetadata>()
             .init_resource::<StrategyAutoSaveState>()
             .add_event::<StrategyRunRequested>();
         app.add_systems(
@@ -912,6 +1028,16 @@ mod tests {
         app.world_mut().spawn((Node::default(), kind)).id()
     }
 
+    fn spawn_pause_resume_vis(app: &mut App) -> Entity {
+        app.world_mut()
+            .spawn((
+                Node::default(),
+                PauseResumeButton,
+                TransportButton::PauseResume,
+            ))
+            .id()
+    }
+
     fn spawn_speed(app: &mut App, mult: u32) -> Entity {
         app.world_mut()
             .spawn((Node::default(), SpeedButton(mult)))
@@ -927,7 +1053,7 @@ mod tests {
         let mut app = make_visibility_app();
         let entities = [
             spawn_transport(&mut app, TransportButton::JumpToStart),
-            spawn_transport(&mut app, TransportButton::PauseResume),
+            spawn_pause_resume_vis(&mut app),
             spawn_transport(&mut app, TransportButton::StepForward),
             spawn_transport(&mut app, TransportButton::ForceStop),
         ];
@@ -935,6 +1061,27 @@ mod tests {
         for e in entities {
             assert_eq!(display_of(&app, e), Display::Flex);
         }
+    }
+
+    #[test]
+    fn pause_resume_visible_in_replay_and_auto_only() {
+        let mut app = make_visibility_app();
+        let e = spawn_pause_resume_vis(&mut app);
+
+        app.update();
+        assert_eq!(display_of(&app, e), Display::Flex);
+
+        set_mode(&mut app, ExecutionMode::LiveAuto);
+        app.update();
+        assert_eq!(display_of(&app, e), Display::Flex);
+
+        set_mode(&mut app, ExecutionMode::LiveManual);
+        app.update();
+        assert_eq!(display_of(&app, e), Display::None);
+
+        set_mode(&mut app, ExecutionMode::Replay);
+        app.update();
+        assert_eq!(display_of(&app, e), Display::Flex);
     }
 
     #[test]
@@ -958,7 +1105,7 @@ mod tests {
         let mut app = make_visibility_app();
         let entities = [
             spawn_transport(&mut app, TransportButton::JumpToStart),
-            spawn_transport(&mut app, TransportButton::PauseResume),
+            spawn_pause_resume_vis(&mut app),
             spawn_transport(&mut app, TransportButton::StepForward),
             spawn_transport(&mut app, TransportButton::ForceStop),
         ];
@@ -970,19 +1117,20 @@ mod tests {
     }
 
     #[test]
-    fn transport_buttons_hidden_in_auto() {
+    fn non_pause_transport_buttons_hidden_in_auto() {
         let mut app = make_visibility_app();
         let entities = [
             spawn_transport(&mut app, TransportButton::JumpToStart),
-            spawn_transport(&mut app, TransportButton::PauseResume),
             spawn_transport(&mut app, TransportButton::StepForward),
             spawn_transport(&mut app, TransportButton::ForceStop),
         ];
+        let pause = spawn_pause_resume_vis(&mut app);
         set_mode(&mut app, ExecutionMode::LiveAuto);
         app.update();
         for e in entities {
             assert_eq!(display_of(&app, e), Display::None);
         }
+        assert_eq!(display_of(&app, pause), Display::Flex);
     }
 
     #[test]
@@ -1015,21 +1163,29 @@ mod tests {
     fn mode_switch_toggles_display() {
         let mut app = make_visibility_app();
         let t = spawn_transport(&mut app, TransportButton::JumpToStart);
+        let p = spawn_pause_resume_vis(&mut app);
         let s = spawn_speed(&mut app, 1);
         app.update();
         assert_eq!(display_of(&app, t), Display::Flex);
+        assert_eq!(display_of(&app, p), Display::Flex);
         assert_eq!(display_of(&app, s), Display::Flex);
+
         set_mode(&mut app, ExecutionMode::LiveManual);
         app.update();
         assert_eq!(display_of(&app, t), Display::None);
+        assert_eq!(display_of(&app, p), Display::None);
         assert_eq!(display_of(&app, s), Display::None);
+
         set_mode(&mut app, ExecutionMode::LiveAuto);
         app.update();
         assert_eq!(display_of(&app, t), Display::None);
+        assert_eq!(display_of(&app, p), Display::Flex);
         assert_eq!(display_of(&app, s), Display::None);
+
         set_mode(&mut app, ExecutionMode::Replay);
         app.update();
         assert_eq!(display_of(&app, t), Display::Flex);
+        assert_eq!(display_of(&app, p), Display::Flex);
         assert_eq!(display_of(&app, s), Display::Flex);
     }
 
