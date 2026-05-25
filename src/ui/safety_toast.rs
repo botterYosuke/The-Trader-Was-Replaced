@@ -1,8 +1,8 @@
 //! Phase 10 §2.10 — Safety Rail violation toast.
 //!
 //! A transient warning overlay anchored bottom-right, just above the footer. It is
-//! the project's first toast: `OrderFeedback` / `PromoteFeedback` are persistent
-//! inline lines, but a safety-rail violation is a momentary alarm that must catch
+//! the project's first toast: `OrderFeedback` is a persistent inline line, but a
+//! safety-rail violation is a momentary alarm that must catch
 //! the eye and then fade (success criterion: "`SafetyRailViolation` トーストが
 //! Footer 右下に出る").
 //!
@@ -96,8 +96,7 @@ pub fn spawn_safety_toast(mut commands: Commands) {
                 ..default()
             },
             BackgroundColor(COLOR_TOAST_BG),
-            // Above the Live Run Panel (62) and the promote feedback (65) so a
-            // violation is never occluded.
+            // Above the Live Run Panel (62) so a violation is never occluded.
             GlobalZIndex(70),
             SafetyToastRoot,
             Name::new("SafetyToast"),

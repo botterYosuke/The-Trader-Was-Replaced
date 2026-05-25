@@ -26,7 +26,6 @@ pub mod render_scale;
 pub mod replay_startup_window;
 pub mod restore;
 pub mod run_result_panel;
-pub mod safety_rails_modal;
 pub mod safety_toast;
 pub mod scenario_parser;
 pub mod scenario_startup_panel;
@@ -135,12 +134,6 @@ use crate::ui::relogin_modal::{
 };
 use crate::ui::restore::restore_fixed_registry_on_replay_entry_system;
 use crate::ui::run_result_panel::run_result_panel_system;
-use crate::ui::safety_rails_modal::{
-    PromotePrompt, SafetyRailsForm, promote_feedback_sync_system, promote_trigger_button_system,
-    promote_trigger_visual_system, safety_rails_modal_button_system,
-    safety_rails_modal_sync_system, safety_rails_modal_visibility_system,
-    safety_rails_stepper_system, spawn_promote_trigger, spawn_safety_rails_modal,
-};
 use crate::ui::safety_toast::{safety_toast_system, spawn_safety_toast};
 use crate::ui::scenario_parser::parse_scenario_system;
 use crate::ui::scenario_startup_panel::{
@@ -259,11 +252,6 @@ impl Plugin for UiPlugin {
         .init_resource::<ModifyForm>()
         // Phase 10 §2.9: OrdersPanel strategy_id filter (All / Manual / Strategy).
         .init_resource::<crate::trading::OrdersFilter>()
-        // Phase 10 §2.7: Promote-to-Live trigger + Safety Rails modal state.
-        // `PromoteFeedback` is inserted in the binary (main.rs) since the
-        // transport-facing `status_update_system` mutates it.
-        .init_resource::<PromotePrompt>()
-        .init_resource::<SafetyRailsForm>()
         // Phase 10 §2.10 / log Open Question: violation toast + strategy log buffer.
         .init_resource::<crate::trading::SafetyToast>()
         .init_resource::<crate::trading::StrategyLogs>()
@@ -289,9 +277,6 @@ impl Plugin for UiPlugin {
                 spawn_relogin_modal,
                 // Phase 9 Step 8 §3.8: backend 再起動後の注文 reconcile 通知モーダル
                 spawn_reconcile_modal,
-                // Phase 10 §2.7: Promote-to-Live トリガー + Safety Rails モーダル
-                spawn_promote_trigger,
-                spawn_safety_rails_modal,
                 // Phase 10 §2.8: Live Run Panel (アクティブ run + Pause/Resume/Stop)
                 spawn_live_run_panel,
                 // Phase 10 §2.10: Safety Rail violation toast (Footer 右下)
@@ -625,21 +610,6 @@ impl Plugin for UiPlugin {
                     .before(secret_modal_input_system)
                     .before(confirm_modal_button_system),
                 reconcile_modal_sync_system,
-            ),
-        )
-        // ── Phase 10 §2.7: Promote-to-Live トリガー + Safety Rails モーダル ──
-        .add_systems(
-            Update,
-            (
-                promote_trigger_visual_system,
-                promote_trigger_button_system,
-                safety_rails_modal_visibility_system,
-                safety_rails_stepper_system,
-                // §3.10 Escape determinism (see confirm_modal_button_system): yield Esc
-                // to an open SecretModal by reading its flag before the secret drain.
-                safety_rails_modal_button_system.before(secret_modal_input_system),
-                safety_rails_modal_sync_system,
-                promote_feedback_sync_system,
             ),
         )
         // ── Phase 10 §2.8: Live Run Panel ──

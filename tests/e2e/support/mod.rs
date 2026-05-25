@@ -27,7 +27,7 @@ use backcast::trading::{
     backend_update_system, AvailableInstruments, BackendChannel, BackendEvent, BackendStatus,
     BackendStatusUpdate, BackendTradingState, ExecutionMode, ExecutionModeRes,
     InstrumentTradingDataMap, LastPrices, LastRunResult, LiveOrders, LiveRuns, OrderFeedback,
-    PortfolioState, PromoteFeedback, ReconcilePrompt, ReloginPrompt, ReplaySpeed, RunState,
+    PortfolioState, ReconcilePrompt, ReloginPrompt, ReplaySpeed, RunState,
     SafetyToast, SecretPrompt, SelectedSymbol, StrategyLogs, Tickers, TradingSession,
     TradingSettings, TransportCommand,
     TransportCommandSender, VenueState, VenueStatusRes,
@@ -117,10 +117,9 @@ impl Harness {
             .insert_resource(InstrumentTradingDataMap::default())
             .insert_resource(LiveOrders::default())
             // Phase 10: backend_event_drain_system mutates LiveRuns / SafetyToast /
-            // StrategyLogs and status_update_system mutates PromoteFeedback. Without
-            // these the headless schedule panics ("could not access system parameter").
+            // StrategyLogs. Without these the headless schedule panics
+            // ("could not access system parameter").
             .insert_resource(LiveRuns::default())
-            .insert_resource(PromoteFeedback::default())
             .insert_resource(SafetyToast::default())
             .insert_resource(StrategyLogs::default())
             .insert_resource(OrderFeedback::default())
@@ -303,10 +302,6 @@ impl Harness {
 
     pub fn strategy_logs(&self) -> StrategyLogs {
         self.app.world().resource::<StrategyLogs>().clone()
-    }
-
-    pub fn promote_feedback(&self) -> PromoteFeedback {
-        self.app.world().resource::<PromoteFeedback>().clone()
     }
 
     pub fn startup_progress(&self) -> ReplayStartupProgress {

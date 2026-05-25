@@ -93,7 +93,7 @@
 
 ## Live Run Panel（ライブラン）
 
-- Auto モードで Promote to Live により起動した Live Auto run を一覧表示し、`[Pause]` / `[Resume]` / `[Stop]` で制御するパネルです（Bevy UI Node + Interaction 流派、run が無いあいだは非表示）。 [N1]
+- Auto モードで起動した Live Auto run を一覧表示し、`[Pause]` / `[Resume]` / `[Stop]` で制御するパネルです（Bevy UI Node + Interaction 流派、run が無いあいだは非表示）。 [N1]
 - 各 run 行に lifecycle 状態（READY / RUNNING / PAUSED / STOPPING / STOPPED / ERROR、色分け）・開始時刻・run 単位の PnL / order / fill テレメトリを表示します。 [N1]/[N2]
 - 下部に戦略ログ（`self.log.*`）の直近行を tail 表示します（リングバッファ 100 行）。 [N4]
 - Safety Rail 違反は Footer のトーストで通知されます。 [N3]

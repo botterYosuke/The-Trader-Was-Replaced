@@ -266,11 +266,9 @@ pub fn spawn_live_run_panel(mut commands: Commands) {
             Node {
                 display: Display::None,
                 position_type: PositionType::Absolute,
-                // Stacks below the top-right promote cluster: the Promote button
-                // (top 46, h22) and its resident PromoteFeedbackText (top 70, up to
-                // ~2 lines for the success "run: <uuid>" line, GlobalZIndex 65).
-                // Starting at 72 let that higher-z feedback overprint the panel
-                // header on a successful promote — the exact happy path. 108 clears it.
+                // Anchored top-right. The Promote-to-Live button + feedback text that
+                // used to occupy this corner were removed (issue #40); the 108px top
+                // offset is kept so the panel sits clear of the menu bar.
                 top: Val::Px(108.0),
                 right: Val::Px(12.0),
                 width: Val::Px(304.0),

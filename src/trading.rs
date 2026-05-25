@@ -196,22 +196,6 @@ pub struct StrategyRunConfig {
     pub initial_cash: Option<i64>,
 }
 
-/// Phase 10 §2.4 / §0.6: the safety-rail limits the user sets in the
-/// Promote-to-Live modal, carried in `TransportCommand::PromoteToLive` and mapped
-/// to the proto `SafetyLimits` by the transport task. **`0` disables that rail**
-/// (mirrors the backend `SafetyRails`, where `0 = rail off`). `allowed_instruments`
-/// is the pre-trade whitelist; the modal defaults it to the single promoted
-/// instrument. Transport-neutral mirror so the lib (UI) never imports the
-/// generated proto types.
-#[derive(Debug, Clone, Default, PartialEq)]
-pub struct SafetyLimitsInput {
-    pub max_position_size_jpy: i64,
-    pub max_order_value_jpy: i64,
-    pub max_daily_loss_jpy: i64,
-    pub max_orders_per_minute: i32,
-    pub allowed_instruments: Vec<String>,
-}
-
 #[derive(Debug, Clone)]
 pub enum TransportCommand {
     Pause,
@@ -319,25 +303,6 @@ pub enum TransportCommand {
     /// no reconcile).
     GetOrdersAndReconcile {
         venue: String,
-    },
-    /// Phase 10 §2.7 / §1.3: promote the editor's saved strategy to a Live Auto
-    /// run. The transport task expands this into the RPC chain
-    /// `RegisterLiveStrategy` → (`SetExecutionMode(LiveAuto)` when `ensure_live_auto`)
-    /// → `StartLiveStrategy`, **awaited in order** so the backend's
-    /// `ExecutionMode == LiveAuto` precondition is satisfied before Start (firing
-    /// the three as independent commands would race). `token` is injected by the
-    /// transport task. `expected_sha256` is the TOCTOU guard (empty → backend
-    /// computes only). The unary outcome comes back as
-    /// `BackendStatusUpdate::LiveStrategyPromoteResult`; success ALSO arrives as a
-    /// pushed `LiveStrategyEvent{status:"RUNNING"}`.
-    PromoteToLive {
-        strategy_file: std::path::PathBuf,
-        expected_sha256: String,
-        instrument_id: String,
-        venue: String,
-        params: HashMap<String, String>,
-        safety_limits: SafetyLimitsInput,
-        ensure_live_auto: bool,
     },
     /// Phase 10 §2.8: Live Run Panel controls. `token` is injected by the transport
     /// task. `Pause`/`Resume`/`Stop` are gated on `run_id` existence on the backend
@@ -540,9 +505,10 @@ pub enum VenueState {
 }
 
 /// Execution mode selected in the UI. All three variants are user-selectable:
-/// the footer renders a segment for each (`footer.rs`), `LiveAuto` drives the
-/// promote-to-live strategy chain (`main.rs`), and `is_live_mode` treats both
-/// `LiveManual` and `LiveAuto` as live.
+/// the footer renders a segment for each (`footer.rs`), and `is_live_mode` treats
+/// both `LiveManual` and `LiveAuto` as live. `LiveAuto` currently has no UI launch
+/// entry — the "Promote to Live" entry was removed (issue #40) and the strategy
+/// launch is being reworked onto the footer transport (play) button.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
 pub enum ExecutionMode {
     #[default]
@@ -856,17 +822,6 @@ pub enum BackendStatusUpdate {
     /// monotonic fill or known static fields.
     OrdersSeeded {
         orders: Vec<LiveOrder>,
-    },
-    /// Phase 10 §2.7: structured outcome of a `PromoteToLive` RPC chain. Success
-    /// also arrives as a pushed `LiveStrategyEvent{status:"RUNNING"}`, so this is
-    /// primarily for surfacing a structured reject (`EXECUTION_MODE_PRECONDITION` /
-    /// `VENUE_LOGIN_REQUIRED` / `LIVE_STRATEGY_ALREADY_RUNNING` /
-    /// `STRATEGY_LOAD_FAILED` / `STRATEGY_HASH_MISMATCH`) to the user via
-    /// `PromoteFeedback`. On success `run_id` is the new Live run.
-    LiveStrategyPromoteResult {
-        success: bool,
-        error_code: String,
-        run_id: String,
     },
 }
 
@@ -1473,21 +1428,11 @@ pub struct OrderFeedback {
     pub message: Option<String>,
 }
 
-/// Phase 10 §2.7: latest user-facing notice for the Promote-to-Live flow. Set by
-/// `apply_status_update` from a `LiveStrategyPromoteResult` (success → run id,
-/// reject → error code) and surfaced by the Safety Rails modal / Promote button.
-/// Distinct from `OrderFeedback` because the OrderPanel error line only shows in
-/// `LiveManual`, whereas a promote outcome must be visible in `LiveAuto`.
-#[derive(Resource, Default, Debug, Clone)]
-pub struct PromoteFeedback {
-    pub message: Option<String>,
-}
-
 /// Phase 10 §2.10: one safety-rail violation surfaced as a transient Footer toast.
 /// `backend_event_drain_system` sets `active` from a `SafetyRailViolation` push; the
 /// `safety_toast` UI system renders it and auto-expires it. This is the project's
-/// first toast — `OrderFeedback`/`PromoteFeedback` are persistent inline lines, not
-/// time-bounded overlays, so a violation needs its own channel (criterion line 484).
+/// first toast — `OrderFeedback` is a persistent inline line, not a
+/// time-bounded overlay, so a violation needs its own channel (criterion line 484).
 #[derive(Resource, Default, Debug, Clone)]
 pub struct SafetyToast {
     pub active: Option<SafetyToastEntry>,

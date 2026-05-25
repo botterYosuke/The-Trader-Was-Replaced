@@ -255,7 +255,7 @@ mod m11_startup_window_content_hides_with_panel;
 #[path = "e2e/flows/m12_strategy_editor_hidden_in_manual.rs"]
 mod m12_strategy_editor_hidden_in_manual;
 
-// N. Live Auto strategy execution (Phase 10: lifecycle / telemetry / safety / log / promote)
+// N. Live Auto strategy execution (Phase 10: lifecycle / telemetry / safety / log)
 #[path = "e2e/flows/n1_live_strategy_event_lifecycle.rs"]
 mod n1_live_strategy_event_lifecycle;
 #[path = "e2e/flows/n2_live_strategy_telemetry.rs"]
@@ -264,5 +264,3 @@ mod n2_live_strategy_telemetry;
 mod n3_safety_rail_violation_toast;
 #[path = "e2e/flows/n4_strategy_log_message_buffer.rs"]
 mod n4_strategy_log_message_buffer;
-#[path = "e2e/flows/n5_promote_result_feedback.rs"]
-mod n5_promote_result_feedback;
