@@ -1326,6 +1326,64 @@ def test_live_last_error_cleared_when_toggling_to_replay(
     )
 
 
+def test_live_last_error_bridge_error_suppressed_on_replay_then_new_error_shows(
+    phase8_grpc_server_with_live,
+):
+    """Medium-2: bridge 由来の live_last_error も Replay 切替で `is` 比較により
+    抑制され、別オブジェクトの新エラーは抑制解除されて表示される。
+
+    runner.last_error は一切触らない（None のまま）。_resolve_live_last_error は
+    runner 優先 → None のとき bridge を見るため、bridge._last_error が live_last_error に
+    反映される。arm 時の baseline は同じ bridge error オブジェクトを記録し、GetState の
+    suppression は `is` 比較なので同一オブジェクトのみ隠す。
+    """
+    port, token, engine, venue_sm, mm, servicer = phase8_grpc_server_with_live
+    stub = _stub(port)
+    _do_venue_login(stub, token)
+    stub.SetExecutionMode(
+        engine_pb2.SetExecutionModeRequest(mode="LiveManual", token=token)
+    )
+
+    # runner.last_error は触らず、bridge にだけエラーを inject する。
+    assert servicer._live_runner is not None
+    assert servicer._live_runner.last_error is None
+    assert servicer._live_bridge is not None
+    baseline_err = ConnectionError("bridge boom")
+    servicer._live_bridge._last_error = baseline_err
+
+    resp = stub.GetState(engine_pb2.GetStateRequest(token=token))
+    payload = json.loads(resp.json_data)
+    assert payload["live_last_error"] == "ConnectionError: bridge boom"
+
+    # Replay 戻し precondition: engine_replay_state in {LOADED,RUNNING,PAUSED}
+    engine._replay_state = "LOADED"
+    resp_replay = stub.SetExecutionMode(
+        engine_pb2.SetExecutionModeRequest(mode="Replay", token=token)
+    )
+    assert resp_replay.success is True
+
+    # 同じ bridge error オブジェクトのまま → `is` 比較で抑制される。
+    # runner は teardown されず last_error は None のままなので bridge が引き続き見える。
+    assert servicer._live_runner is not None
+    assert servicer._live_runner.last_error is None
+    assert servicer._live_bridge.last_error is baseline_err
+    resp2 = stub.GetState(engine_pb2.GetStateRequest(token=token))
+    payload2 = json.loads(resp2.json_data)
+    assert payload2["live_last_error"] is None, (
+        f"bridge baseline error must be suppressed on Replay toggle (is-compare); "
+        f"got {payload2['live_last_error']!r}"
+    )
+
+    # 別オブジェクトの新エラーを inject → baseline と `is` 不一致なので抑制解除・表示される。
+    servicer._live_bridge._last_error = ConnectionError("new boom")
+    resp3 = stub.GetState(engine_pb2.GetStateRequest(token=token))
+    payload3 = json.loads(resp3.json_data)
+    assert payload3["live_last_error"] == "ConnectionError: new boom", (
+        f"a freshly raised error object must surface and drop suppression; "
+        f"got {payload3['live_last_error']!r}"
+    )
+
+
 def test_live_last_error_cleared_on_venue_re_login(phase8_grpc_server_with_live):
     """HIGH-3: VenueLogin 成功で live_last_error が None にリセットされる。"""
     port, token, engine, venue_sm, mm, servicer = phase8_grpc_server_with_live
@@ -1503,6 +1561,7 @@ def test_live_replay_live_roundtrip_without_relogin(phase8_grpc_server_with_live
     assert resp_replay.success is True
     adapter = servicer._live_runner.adapter
     assert adapter.is_logged_in is True, "Replay 切替で logout してはいけない"
+    assert adapter.logout_call_count == 0, "Replay 切替で logout を呼んではいけない"
 
     # 3. LiveManual に再切替（再ログインなし）
     resp_live2 = stub.SetExecutionMode(

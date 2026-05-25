@@ -274,6 +274,10 @@ class GrpcDataEngineServer(
         # Live re-enter / VenueLogin success / Replay toggle, cleared lazily by
         # the next observed error from runner/bridge.
         self._suppress_live_last_error: bool = False
+        # The runner/bridge error object that existed when suppression was armed.
+        # GetState hides live_last_error only while the *same* object is the current
+        # error; a freshly-raised (different) error bypasses suppression and shows.
+        self._suppressed_error_baseline: Optional[BaseException] = None
         # D21: venue id from --live-venue flag, uppercase normalized
         self._live_venue_id: Optional[str] = live_venue_id.upper() if live_venue_id else None
         # Phase 9 Step 0: backend → frontend event push (threading-based fan-out).
@@ -613,6 +617,7 @@ class GrpcDataEngineServer(
             self._instruments_scheduler = None
             # Arm clear-on-toggle: a prior lifecycle's last_error must not bleed
             # into the next Live session or stay visible after returning to Replay.
+            self._suppressed_error_baseline = self._resolve_live_last_error()
             self._suppress_live_last_error = True
         # adapter.logout() gets its own budget: PUT /unregister/all can take several
         # seconds and must not inflate _live_timeout_s (shared with start/subscribe).
@@ -666,16 +671,15 @@ class GrpcDataEngineServer(
             context.abort(grpc.StatusCode.UNAUTHENTICATED, "Invalid token")
 
         err = self._resolve_live_last_error()
-        # Clear-on-mode-toggle: while the suppression flag is set, GetState
-        # reports None until a *new* error bubbles up from runner/bridge.
-        if self._suppress_live_last_error and err is None:
+        # Clear-on-toggle: hide the error that existed when suppression was armed.
+        # A *different* (freshly raised) error object means the new lifecycle hit a
+        # real failure — show it and drop suppression.
+        if self._suppress_live_last_error and (err is None or err is self._suppressed_error_baseline):
             live_last_error = None
-        elif self._suppress_live_last_error and err is not None:
-            # A fresh error appeared after the suppression was armed — that
-            # means the new lifecycle hit a real failure. Stop suppressing.
-            self._suppress_live_last_error = False
-            live_last_error = f"{type(err).__name__}: {err}"
         else:
+            if self._suppress_live_last_error and err is not None:
+                self._suppress_live_last_error = False
+                self._suppressed_error_baseline = None
             live_last_error = f"{type(err).__name__}: {err}" if err is not None else None
 
         # D8: mode-aware last_prices dispatch
@@ -1680,6 +1684,7 @@ class GrpcDataEngineServer(
                 # is logged in (= login-time persist), then refreshes at 5:00 JST.
                 self._start_instruments_scheduler_after_login()
                 # Arm clear-on-toggle: suppress stale errors from a prior session.
+                self._suppressed_error_baseline = self._resolve_live_last_error()
                 self._suppress_live_last_error = True
                 return True, ""
             except ValueError as exc:
@@ -1762,11 +1767,13 @@ class GrpcDataEngineServer(
                     execution_mode="",
                 )
         if applied == "Replay":
-            # Clear-on-toggle: runner._last_error must not bleed into Replay.
-            # Directly clear the attribute so GetState sees None immediately,
-            # even when the runner instance is still alive (no teardown path).
-            if self._live_runner is not None:
-                self._live_runner._last_error = None
+            # Clear-on-toggle: arm the suppression flag so GetState reports
+            # live_last_error as None until a *fresh* error appears. Do NOT clear
+            # runner/bridge._last_error itself — VenueLogin's dead-session detection
+            # (_resolve_live_last_error) must still see a crashed session's error to
+            # avoid healthy-misjudging a stale-CONNECTED runner (issue #39 Slice 1).
+            self._suppressed_error_baseline = self._resolve_live_last_error()
+            self._suppress_live_last_error = True
         return engine_pb2.SetExecutionModeResponse(
             success=True,
             error_code="",
