@@ -223,6 +223,10 @@ mod k17_chart_resize_reflow;
 mod k18_live_chart_resize_reflow;
 #[path = "e2e/flows/k19_chart_size_persists.rs"]
 mod k19_chart_size_persists;
+#[path = "e2e/flows/k20_chart_size_sidecar_round_trip.rs"]
+mod k20_chart_size_sidecar_round_trip;
+#[path = "e2e/flows/k21_chart_size_map_cleared_on_despawn.rs"]
+mod k21_chart_size_map_cleared_on_despawn;
 
 // L. CLI / backend process / prod guard
 // l1: stub のみ（PowerShell .ps1 — Windows 専用、darwin CI 不可）
