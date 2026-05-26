@@ -141,6 +141,7 @@ fn spawn_resize_handle(commands: &mut Commands, axis: ResizeAxis, size: Vec2, po
                             .map
                             .insert(chart_instrument.instrument_id.clone(), size);
                     }
+                    auto_save.mark_layout_changed(std::time::Instant::now());
                     return;
                 }
                 auto_save.mark_layout_changed(std::time::Instant::now());

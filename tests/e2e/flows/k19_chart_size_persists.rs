@@ -53,7 +53,9 @@ fn k19_chart_size_persists_across_respawn() {
         );
     }
 
-    // assert B: 銘柄を再 spawn（registry remove → re-add）しても同サイズが復元される
+    // assert B: despawn によって ChartSizeMap エントリが削除されるため、
+    //   再 spawn はデフォルトサイズ CHART_PANEL_SIZE を使う（K21 で詳細検証）。
+    //   セッションをまたぐサイズ復元は disk persistence（K20）が担保する。
     {
         let mut reg = app.world_mut().resource_mut::<InstrumentRegistry>();
         reg.replace_all(&[]);
@@ -72,9 +74,9 @@ fn k19_chart_size_persists_across_respawn() {
         assert_eq!(results.len(), 1, "再 spawn 後も 1 つのチャートが存在するはず");
         assert_eq!(
             results[0].0.custom_size,
-            Some(custom_size),
-            "再 spawn 後も保存済みサイズ {:?} が復元されるはず",
-            custom_size,
+            Some(CHART_PANEL_SIZE),
+            "despawn で ChartSizeMap エントリが削除されるため、再 spawn はデフォルトサイズ {:?} を使うはず (fix #43)",
+            CHART_PANEL_SIZE,
         );
     }
 }

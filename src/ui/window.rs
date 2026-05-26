@@ -189,7 +189,7 @@ pub fn instrument_chart_sync_system(
     chart_q: Query<(Entity, &ChartInstrument), With<WindowRoot>>,
     mut commands: Commands,
     mut map: ResMut<crate::trading::InstrumentTradingDataMap>,
-    chart_sizes: Res<ChartSizeMap>,
+    mut chart_sizes: ResMut<ChartSizeMap>,
 ) {
     if !registry.is_changed() {
         return;
@@ -210,6 +210,7 @@ pub fn instrument_chart_sync_system(
         if !desired.contains(id) {
             commands.entity(*e).despawn_recursive();
             map.map.remove(*id);
+            chart_sizes.map.remove(*id);
         }
     }
 }
