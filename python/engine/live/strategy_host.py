@@ -28,6 +28,7 @@ path 検証は gRPC layer に委ねる。
 
 from __future__ import annotations
 
+import logging
 import time
 import uuid
 from dataclasses import dataclass, field
@@ -218,6 +219,7 @@ class LiveStrategyHost:
                 safety_rails=params.safety_rails,
             )
         except Exception as exc:  # noqa: BLE001
+            logging.exception("Live strategy attach failed")
             self._registry.unregister(run_id)
             sm.error("STRATEGY_ATTACH_FAILED")
             raise LiveStrategyHostError("STRATEGY_ATTACH_FAILED") from exc
