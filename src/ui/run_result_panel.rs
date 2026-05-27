@@ -90,13 +90,16 @@ pub fn run_result_panel_system(
                 None => (String::new(), COLOR_DEFAULT),
             },
             RunResultLabel::Stats => match &current_run.state {
-                RunState::Running | RunState::Paused => (
+                // Live Auto run: strategy_name is populated by LiveStrategyEvent.
+                // Replay run: strategy_name stays empty (no LiveStrategyEvent), so show nothing.
+                RunState::Running | RunState::Paused if !current_run.strategy_name.is_empty() => (
                     format!(
                         "strat: {}  o:{} f:{}",
                         current_run.strategy_name, current_run.order_count, current_run.fill_count
                     ),
                     COLOR_DEFAULT,
                 ),
+                RunState::Running | RunState::Paused => (String::new(), COLOR_DEFAULT),
                 _ => match &current_run.parsed_summary {
                     Some(s) => (
                         format!("fills: {}  eq_pts: {}", s.fills_count, s.equity_points),
@@ -115,7 +118,7 @@ pub fn run_result_panel_system(
                 },
             },
             RunResultLabel::Pnl => match &current_run.state {
-                RunState::Running | RunState::Paused => {
+                RunState::Running | RunState::Paused if !current_run.strategy_name.is_empty() => {
                     let c = if current_run.realized_pnl + current_run.unrealized_pnl >= 0.0 {
                         COLOR_PNL_POS
                     } else {
@@ -129,6 +132,7 @@ pub fn run_result_panel_system(
                         c,
                     )
                 }
+                RunState::Running | RunState::Paused => (String::new(), COLOR_DEFAULT),
                 _ => match &current_run.parsed_summary {
                     Some(s) => {
                         let c = if s.total_pnl >= 0.0 {

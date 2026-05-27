@@ -261,6 +261,7 @@ pub fn update_footer_system(
     buffer: Res<StrategyBuffer>,
     venue: Res<VenueStatusRes>,
     exec_mode: Res<ExecutionModeRes>,
+    current_run: Res<CurrentRun>,
     mut time_q: Query<
         &mut Text,
         (
@@ -325,6 +326,7 @@ pub fn update_footer_system(
         && !buffer.is_changed()
         && !venue.is_changed()
         && !exec_mode.is_changed()
+        && !current_run.is_changed()
     {
         return;
     }
@@ -441,8 +443,15 @@ pub fn update_footer_system(
     // RUNNING/PAUSED は常に enabled（Pause/Resume は cache_path 不要）。
     let run_disabled = matches!(replay, "IDLE" | "LOADED") && buffer.cache_path.is_none();
     for (mut text, mut color) in &mut pause_q {
-        let new_label = match replay {
-            "RUNNING" => "||",
+        let new_label = match exec_mode.mode {
+            ExecutionMode::Replay => match replay {
+                "RUNNING" => "||",
+                _ => "▶",
+            },
+            ExecutionMode::LiveAuto => match current_run.state {
+                RunState::Running => "||",
+                _ => "▶",
+            },
             _ => "▶",
         };
         if text.0 != new_label {
@@ -641,6 +650,32 @@ pub fn footer_pause_resume_system(
                         }
                     },
                     ExecutionMode::LiveAuto => {
+                        // Active run: ▶ toggles Pause/Resume instead of starting a new run.
+                        if let Some(run_id) = current_run.run_id.clone() {
+                            match current_run.state {
+                                RunState::Running => {
+                                    if sender
+                                        .tx
+                                        .send(TransportCommand::PauseLiveStrategy { run_id })
+                                        .is_err()
+                                    {
+                                        warn!("transport: PauseLiveStrategy send failed");
+                                    }
+                                    continue;
+                                }
+                                RunState::Paused => {
+                                    if sender
+                                        .tx
+                                        .send(TransportCommand::ResumeLiveStrategy { run_id })
+                                        .is_err()
+                                    {
+                                        warn!("transport: ResumeLiveStrategy send failed");
+                                    }
+                                    continue;
+                                }
+                                _ => {} // Idle / Stopped / Failed / Completed → start new run
+                            }
+                        }
                         // ▶ (LiveAuto): 全 pre-flight 通過時のみ StartLiveAuto を送出。
                         // SetExecutionMode は再送しない (ExecutionMode は backend 権威)。
                         // 起動銘柄は scenario（サイドカー JSON）から導出する（Replay Run と対称）。

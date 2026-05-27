@@ -75,8 +75,8 @@
 | --- | --- | --- |
 | State | 実行状態。`No run yet`（グレー）/ `Running…`（黄）/ `Completed`（緑）/ `Failed: {error}`（赤）。 | Running→Completed [A1] / Failed [A6] |
 | Run ID | `run: {id}` 形式。実行 ID 未設定時は空。 | [A1] |
-| Stats | **Replay 完了時**: `fills: {件数}  eq_pts: {点数}`（サマリから）。**Live Auto 実行中（Running/Paused）または STOPPED/FAILED で order/fill 記録あり**: `strat: {名前}  o:{件数} f:{件数}`（live カウントから）。それ以外は空。 | [B2]/[M16] |
-| P&L | **Replay 完了時**: `pnl: {損益}`（サマリから）。**Live Auto 実行中または STOPPED/FAILED で pnl 記録あり**: `pnl: {実現} / unrlz: {未実現}`。それ以外は空。0 以上で緑、負で赤。 | [B2]/[M16] |
+| Stats | **Replay 完了時**: `fills: {件数}  eq_pts: {点数}`（サマリから）。**Live Auto 実行中（Running/Paused）または STOPPED/FAILED で order/fill 記録あり**: `strat: {名前}  o:{件数} f:{件数}`（live カウントから）。**Replay 実行中（Running/Paused）は空白**（strategy_name なし）。それ以外は空。 | [B2]/[M16]/[M17] |
+| P&L | **Replay 完了時**: `pnl: {損益}`（サマリから）。**Live Auto 実行中または STOPPED/FAILED で pnl 記録あり**: `pnl: {実現} / unrlz: {未実現}`。**Replay 実行中（Running/Paused）は空白**（strategy_name なし）。それ以外は空。0 以上で緑、負で赤。 | [B2]/[M16]/[M17] |
 
 ## Strategy Editor（戦略エディタ）
 

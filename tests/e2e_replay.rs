@@ -274,6 +274,8 @@ mod m14_run_result_mode_visibility;
 mod m15_run_result_button_absent;
 #[path = "e2e/flows/m16_run_result_stats_pnl_fallback.rs"]
 mod m16_run_result_stats_pnl_fallback;
+#[path = "e2e/flows/m17_run_result_stats_blank_in_replay.rs"]
+mod m17_run_result_stats_blank_in_replay;
 
 // N. Live Auto strategy execution (Phase 10: lifecycle / telemetry / safety / log)
 #[path = "e2e/flows/n1_live_strategy_event_lifecycle.rs"]
@@ -292,3 +294,11 @@ mod n6_footer_play_starts_live_auto_via_real_footer;
 mod n7_footer_play_blocked_writes_run_result;
 #[path = "e2e/flows/n8_live_reject_surfaces_run_failed.rs"]
 mod n8_live_reject_surfaces_run_failed;
+#[path = "e2e/flows/n9_second_live_run_accepted_after_stopped.rs"]
+mod n9_second_live_run_accepted_after_stopped;
+#[path = "e2e/flows/n10_live_error_status_maps_to_failed.rs"]
+mod n10_live_error_status_maps_to_failed;
+#[path = "e2e/flows/n12_failed_status_preserves_rich_error.rs"]
+mod n12_failed_status_preserves_rich_error;
+#[path = "e2e/flows/n13_footer_live_auto_pause_resume.rs"]
+mod n13_footer_live_auto_pause_resume;

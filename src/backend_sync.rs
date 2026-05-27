@@ -174,10 +174,32 @@ pub fn backend_event_drain_system(
                 info!(
                     "[backend-event] LiveStrategyEvent run_id={run_id} strategy_id={strategy_id} status={status} ts_ms={ts_ms}"
                 );
-                if current_run.run_id.as_deref() == Some(&*run_id)
-                    || current_run.run_id.is_none()
-                {
-                    current_run.run_id = Some(run_id.clone());
+                let is_same_run = current_run.run_id.as_deref() == Some(&*run_id);
+                // Accept a new run when there is no prior run or the prior run reached a
+                // terminal state — prevents the 2nd+ Live run from being silently dropped.
+                let is_new_run = current_run.run_id.is_none()
+                    || matches!(
+                        current_run.state,
+                        RunState::Idle
+                            | RunState::Stopped
+                            | RunState::Completed
+                            | RunState::Failed { .. }
+                    );
+                if is_same_run || is_new_run {
+                    if !is_same_run {
+                        // Stale fields only need resetting when a *previous* run existed.
+                        // run_id==None means telemetry raced ahead — keep its counters.
+                        if current_run.run_id.is_some() {
+                            current_run.strategy_name  = String::new();
+                            current_run.started_ts_ms  = 0;
+                            current_run.order_count    = 0;
+                            current_run.fill_count     = 0;
+                            current_run.realized_pnl   = 0.0;
+                            current_run.unrealized_pnl = 0.0;
+                            current_run.parsed_summary = None;
+                        }
+                        current_run.run_id = Some(run_id.clone());
+                    }
                     if !strategy_id.is_empty() {
                         current_run.strategy_name = strategy_id.clone();
                     }
@@ -188,8 +210,17 @@ pub fn backend_event_drain_system(
                         "RUNNING" => RunState::Running,
                         "PAUSED"  => RunState::Paused,
                         "STOPPED" => RunState::Stopped,
-                        "FAILED"  => RunState::Failed { error: String::new() },
-                        _         => current_run.state.clone(),
+                        // Preserve a rich error written by RunFailed (status channel) — it
+                        // arrives before the event channel drains and carries the real cause.
+                        "FAILED" | "ERROR" => {
+                            if matches!(&current_run.state, RunState::Failed { error } if !error.is_empty())
+                            {
+                                current_run.state.clone()
+                            } else {
+                                RunState::Failed { error: String::new() }
+                            }
+                        }
+                        _ => current_run.state.clone(),
                     };
                 }
             }
@@ -240,9 +271,16 @@ pub fn backend_event_drain_system(
                 info!(
                     "[backend-event] LiveStrategyTelemetry run_id={run_id} strategy_id={strategy_id} realized_pnl={realized_pnl} unrealized_pnl={unrealized_pnl} order_count={order_count} fill_count={fill_count} ts_ms={ts_ms}"
                 );
-                if current_run.run_id.as_deref() == Some(&*run_id)
-                    || current_run.run_id.is_none()
-                {
+                let is_same_run = current_run.run_id.as_deref() == Some(&*run_id);
+                let is_new_run = current_run.run_id.is_none()
+                    || matches!(
+                        current_run.state,
+                        RunState::Idle
+                            | RunState::Stopped
+                            | RunState::Completed
+                            | RunState::Failed { .. }
+                    );
+                if is_same_run || is_new_run {
                     if !strategy_id.is_empty() {
                         current_run.strategy_name = strategy_id.clone();
                     }
