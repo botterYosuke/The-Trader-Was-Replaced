@@ -211,7 +211,11 @@ class NautilusLiveEngineController:
         iid = InstrumentId.from_str(instrument_id)
         venue_str = iid.venue.value
 
-        risk_cfg: LiveRiskEngineConfig = rails.to_live_risk_engine_config([instrument_id])
+        live_instrument_ids = self._live_instrument_ids(
+            primary_instrument_id=instrument_id,
+            scenario=scenario,
+        )
+        risk_cfg: LiveRiskEngineConfig = rails.to_live_risk_engine_config(live_instrument_ids)
         cfg = TradingNodeConfig(
             trader_id=self._trader_id,
             # log_level_file="OFF": live は bypass_logging を許さないが、ファイル出力は止める
@@ -235,9 +239,16 @@ class NautilusLiveEngineController:
         # `loop=` 省略で executor が未設定でも安全（start_async() のみが executor を要求する）。
         kernel = NautilusKernel(name="LiveStrategyHost", config=cfg)
 
-        # instrument を cache へ（RiskEngine の notional 計算 / exec client の precision に必要）。
-        instrument = make_equity_instrument(iid.symbol.value, venue_str)
-        kernel.cache.add_instrument(instrument)
+        # instruments を cache/provider へ（RiskEngine の notional 計算、exec client の
+        # precision、LiveDataEngine の bar aggregation instrument lookup に必要）。
+        instrument_provider = InstrumentProvider()
+        instruments = []
+        for live_instrument_id in live_instrument_ids:
+            live_iid = InstrumentId.from_str(live_instrument_id)
+            instrument = make_equity_instrument(live_iid.symbol.value, live_iid.venue.value)
+            kernel.cache.add_instrument(instrument)
+            instruments.append(instrument)
+        instrument_provider.add_bulk(instruments)
 
         client = NautilusVenueExecClient(
             loop=loop,
@@ -247,7 +258,7 @@ class NautilusLiveEngineController:
             clock=kernel.clock,
             adapter=adapter,
             safety_rails=rails,
-            instrument_provider=InstrumentProvider(),
+            instrument_provider=instrument_provider,
             on_safety_violation=self._on_safety_violation,
             is_run_gated=self._run_gate_provider,
         )
@@ -263,7 +274,7 @@ class NautilusLiveEngineController:
             msgbus=kernel.msgbus,
             cache=kernel.cache,
             clock=kernel.clock,
-            instrument_provider=InstrumentProvider(),
+            instrument_provider=instrument_provider,
         )
         kernel.data_engine.register_client(data_client)
 
@@ -330,24 +341,41 @@ class NautilusLiveEngineController:
         runner = self._runner_provider() if self._runner_provider is not None else None
         if runner is not None:
             try:
-                await runner.subscribe(instrument_id)
+                for live_instrument_id in live_instrument_ids:
+                    await runner.subscribe(live_instrument_id)
             except Exception:  # noqa: BLE001 — 既購読/購読失敗でも attach は続行（既存 UI 購読を尊重）
                 log.exception("runner.subscribe failed during attach")
             self._runner = runner
-            self._tick_listener = self._make_tick_listener(data_client, instrument_id)
+            self._tick_listener = self._make_tick_listener(data_client, live_instrument_ids)
             runner.add_tick_listener(self._tick_listener)
 
-    def _make_tick_listener(self, data_client, instrument_id: str):
+    @staticmethod
+    def _live_instrument_ids(*, primary_instrument_id: str, scenario: dict) -> list[str]:
+        """Return the live universe to register before strategy on_start subscriptions."""
+
+        result: list[str] = []
+        seen: set[str] = set()
+        for candidate in [primary_instrument_id, *(scenario.get("instruments") or [])]:
+            if not isinstance(candidate, str) or not candidate:
+                continue
+            if candidate in seen:
+                continue
+            seen.add(candidate)
+            result.append(candidate)
+        return result
+
+    def _make_tick_listener(self, data_client, instrument_ids: list[str]):
         """LiveRunner 用の tick listener を作る (Step 8)。
 
-        当該 run の instrument の `TradesUpdate` のみを data client に渡す。listener は
+        当該 run の instruments の `TradesUpdate` のみを data client に渡す。listener は
         live loop thread 上で同期呼び出しされる（`feed_trades_update` は `_handle_data` =
         msgbus.send のみで blocking しない、§Step4 不変条件と整合）。best-effort。
         """
+        allowed = set(instrument_ids)
 
         def _listener(trade) -> None:
             try:
-                if str(trade.instrument_id) != instrument_id:
+                if str(trade.instrument_id) not in allowed:
                     return
                 data_client.feed_trades_update(trade)
             except Exception:  # noqa: BLE001 — bar 供給の失敗で戦略/pipeline を止めない

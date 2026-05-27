@@ -77,6 +77,7 @@ use crate::ui::components::{
 use crate::ui::components::{
     ScenarioStartupParams, SidebarTickersScrollOffset, SidebarTickersSearchState,
 };
+use crate::ui::components::ChartSizeMap;
 use crate::ui::editor_history::{
     ActiveDrag, AppHistory, PendingStrategySnapshotRestore, UndoRedoApplied,
 };
@@ -133,7 +134,10 @@ use crate::ui::relogin_modal::{
     spawn_relogin_modal,
 };
 use crate::ui::restore::restore_fixed_registry_on_replay_entry_system;
-use crate::ui::run_result_panel::run_result_panel_system;
+use crate::ui::run_result_panel::{
+    apply_run_result_visibility_system, run_result_panel_system,
+    spawn_run_result_panel_system,
+};
 use crate::ui::safety_toast::{safety_toast_system, spawn_safety_toast};
 use crate::ui::scenario_parser::parse_scenario_system;
 use crate::ui::scenario_startup_panel::{
@@ -173,7 +177,7 @@ use crate::ui::strategy_editor_input::{
 };
 use crate::ui::strategy_editor_scrollbar::update_scrollbar_thumb_system;
 use crate::ui::systems::{update_price_display, update_status_indicator};
-use crate::ui::window::instrument_chart_sync_system;
+use crate::ui::window::{chart_content_layout_system, instrument_chart_sync_system};
 use bevy::prelude::*;
 use bevy_cosmic_edit::{
     CosmicEditPlugin, CosmicFontConfig,
@@ -231,6 +235,7 @@ impl Plugin for UiPlugin {
         .init_resource::<ScenarioMetadata>()
         .init_resource::<ScenarioStartupParams>()
         .init_resource::<InstrumentRegistry>()
+        .init_resource::<ChartSizeMap>()
         .init_resource::<SidebarTickersScrollOffset>()
         .init_resource::<SidebarTickersSearchState>()
         .init_resource::<ScenarioFileWatchState>()
@@ -281,6 +286,7 @@ impl Plugin for UiPlugin {
                 spawn_live_run_panel,
                 // Phase 10 §2.10: Safety Rail violation toast (Footer 右下)
                 spawn_safety_toast,
+                spawn_run_result_panel_system,
             ),
         )
         .add_systems(
@@ -306,6 +312,7 @@ impl Plugin for UiPlugin {
                 panel_spawn_dispatcher_system,
                 floating_window_layout_system,
                 strategy_editor_content_layout_system,
+                chart_content_layout_system,
             ),
         )
         // ── Chart (Phase 7.3 A): ViewState 更新 / autoscale / 描画 ──
@@ -457,6 +464,8 @@ impl Plugin for UiPlugin {
             (
                 crate::ui::footer::apply_execution_mode_visibility_system,
                 crate::ui::scenario_startup_panel::apply_startup_panel_visibility_system,
+                apply_run_result_visibility_system
+                    .after(panel_spawn_dispatcher_system),
                 // issue #31: layout apply / panel spawn の後に走らせる。Manual 中の layout load /
                 // 新規 spawn で apply 系が StrategyEditor の「本来の可視性」を確定させ、spawn dispatcher
                 // が新規窓を materialize させた後に mode system がそれを退避マーカーへ捕捉する順序を

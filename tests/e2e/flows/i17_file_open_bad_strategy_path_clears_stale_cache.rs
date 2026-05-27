@@ -114,7 +114,8 @@ fn i17_file_open_bad_strategy_path_clears_stale_cache() {
         .insert_resource(ScenarioFileWatchState::default())
         .insert_resource(ScenarioInstrumentsWritebackState::default())
         .insert_resource(InstrumentRegistry::default())
-        .insert_resource(InstrumentTradingDataMap::default());
+        .insert_resource(InstrumentTradingDataMap::default())
+        .init_resource::<backcast::ui::components::ChartSizeMap>();
 
     app.add_event::<LayoutSaveRequested>()
         .add_event::<LayoutSaveAsRequested>()

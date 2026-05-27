@@ -309,3 +309,62 @@ def test_controller_attach_wires_tick_listener_and_feeds_data_client(logged_in_a
         assert runner.listeners == []
     finally:
         _stop_bg_loop(loop, t)
+
+
+def test_controller_attach_registers_scenario_universe_before_strategy_start(logged_in_adapter):
+    """Issue #49: multi-symbol live strategies subscribe bars for their universe in
+    on_start, so every scenario instrument must exist in Nautilus before attach starts
+    the kernel."""
+    from nautilus_trader.model.identifiers import InstrumentId
+
+    from engine.live.engine_controller import NautilusLiveEngineController
+    from engine.live.safety_rails import SafetyLimits, SafetyRails
+
+    runner = _FakeRunner()
+    loop, t = _bg_loop()
+    controller = NautilusLiveEngineController(
+        loop_provider=lambda: loop,
+        adapter_provider=lambda: logged_in_adapter,
+        runner_provider=lambda: runner,
+    )
+    scenario = {"instruments": [_IID, "9984.TSE", "1306.TSE"], "granularity": "Minute"}
+    try:
+        controller.attach(
+            strategy_cls=_KwargsCapturing,
+            scenario=scenario,
+            instrument_id=_IID,
+            venue="TSE",
+            params={},
+            nautilus_strategy_id="LIVE-univ001",
+            session=None,
+            safety_rails=SafetyRails(SafetyLimits(max_order_value_jpy=500_000)),
+        )
+
+        assert runner.subscribed == [_IID, "9984.TSE", "1306.TSE"]
+        assert (
+            controller._kernel.cache.instrument(InstrumentId.from_str("9984.TSE"))
+            is not None
+        )
+        assert (
+            controller._kernel.cache.instrument(InstrumentId.from_str("1306.TSE"))
+            is not None
+        )
+
+        listener = runner.listeners[0]
+
+        def _push(tu):
+            async def _call():
+                listener(tu)
+
+            asyncio.run_coroutine_threadsafe(_call(), loop).result(timeout=5)
+
+        _push(_tu(1, 1000.0, 100.0, iid="9984.TSE"))
+        _push(_tu(2, 2000.0, 50.0, iid="1306.TSE"))
+        assert controller._data_client._seq == 2
+
+        _push(_tu(3, 1.0, 1.0, iid="9999.TSE"))
+        assert controller._data_client._seq == 2
+
+        controller.detach(nautilus_strategy_id="LIVE-univ001")
+    finally:
+        _stop_bg_loop(loop, t)

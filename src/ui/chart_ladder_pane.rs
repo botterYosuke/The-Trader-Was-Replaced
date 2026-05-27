@@ -210,15 +210,15 @@ pub fn chart_ladder_mode_sync_system(
         }
 
         // 枠サイズをモードに合わせて更新 (Caveat #34: custom_size のみ、Transform.scale は使わない)。
-        // 実値が変わるときだけ書く (spurious な Changed<Sprite> を立てない)。
+        // ユーザーがリサイズした枠は上書きしない: 新規 root (is_new_root) は常に既定を適用し、
+        // モード変化でも前モードの既定サイズのままのパネルのみ新しい既定へ切り替える。
         if let Ok(mut sprite) = root_sprites.get_mut(root_entity) {
-            let target = Some(if is_live {
-                LIVE_COMBINED_PANEL_SIZE
-            } else {
-                CHART_PANEL_SIZE
-            });
-            if sprite.custom_size != target {
-                sprite.custom_size = target;
+            let target = if is_live { LIVE_COMBINED_PANEL_SIZE } else { CHART_PANEL_SIZE };
+            let from_default = if is_live { CHART_PANEL_SIZE } else { LIVE_COMBINED_PANEL_SIZE };
+            let is_new_root = new_roots.iter().any(|e| e == root_entity);
+            let should_resize = is_new_root || sprite.custom_size == Some(from_default);
+            if should_resize && sprite.custom_size != Some(target) {
+                sprite.custom_size = Some(target);
             }
         }
 

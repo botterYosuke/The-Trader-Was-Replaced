@@ -7,9 +7,9 @@ use std::path::PathBuf;
 use std::time::Instant;
 
 use crate::ui::components::{
-    LayoutExcluded, PanelKind, PanelRestoreDriver, PanelSpawnRequested, PanelSpawnSource,
-    PendingStrategyFragments,
-    RegionKeyAllocator, ScenarioReadTarget, StrategyBuffer, StrategyEditorId,
+    ChartSizeMap, LayoutExcluded, PanelKind, PanelRestoreDriver, PanelSpawnRequested,
+    PanelSpawnSource, PendingStrategyFragments, RegionKeyAllocator, ScenarioReadTarget,
+    StrategyBuffer, StrategyEditorId,
     StrategyEditorSpawnSpec, StrategyFileLoadRequested, StrategyFragment, StrategyLoadMode,
     WindowManager, WindowRoot,
 };
@@ -49,6 +49,10 @@ pub struct SidecarLayout {
     /// サイドバーで選択中だった銘柄シンボル（例: "7203.T"）。
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub selected_symbol: Option<String>,
+    /// 各チャート銘柄ごとの窓サイズ。
+    /// skip_serializing_if = "Option::is_none" で空ならキー自体を書かない。
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub chart_sizes: Option<std::collections::HashMap<String, [f32; 2]>>,
     /// SCENARIO の passthrough フィールド。
     /// layout 側は内容を読まないが、save 時に既存 JSON から回収して書き戻す（F1 対応）。
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -242,6 +246,7 @@ fn build_layout(
     >,
     camera: &Query<(&Transform, &OrthographicProjection), (With<Camera2d>, Without<WindowRoot>)>,
     buffer: &StrategyBuffer,
+    chart_sizes: &ChartSizeMap,
     preserve_scenario_json: Option<&std::path::Path>,
 ) -> SidecarLayout {
     let viewport = camera
@@ -289,6 +294,18 @@ fn build_layout(
         .and_then(|s| serde_json::from_str::<serde_json::Value>(&s).ok())
         .and_then(|v| v.get("scenario").cloned());
 
+    let sizes_opt = if chart_sizes.map.is_empty() {
+        None
+    } else {
+        Some(
+            chart_sizes
+                .map
+                .iter()
+                .map(|(k, v)| (k.clone(), [v.x, v.y]))
+                .collect(),
+        )
+    };
+
     SidecarLayout {
         schema_version: Some(SCHEMA_VERSION),
         viewport: Some(viewport),
@@ -296,6 +313,7 @@ fn build_layout(
         strategy_path,
         // 将来の Phase で選択銘柄を収集・復元する予定
         selected_symbol: None,
+        chart_sizes: sizes_opt,
         scenario,
     }
 }
@@ -324,6 +342,7 @@ fn build_layout_for_explicit_save(
     >,
     camera: &Query<(&Transform, &OrthographicProjection), (With<Camera2d>, Without<WindowRoot>)>,
     buffer: &StrategyBuffer,
+    chart_sizes: &ChartSizeMap,
     registry: &crate::ui::components::InstrumentRegistry,
     scenario_meta: &crate::ui::components::ScenarioMetadata,
     cache_sidecar: Option<&std::path::Path>,
@@ -331,7 +350,7 @@ fn build_layout_for_explicit_save(
 ) -> Option<SidecarLayout> {
     // preserve source: cache 第一、fallback 第二
     let preserve_from: Option<&std::path::Path> = cache_sidecar.or(fallback_original_json);
-    let mut layout = build_layout(panels, camera, buffer, preserve_from);
+    let mut layout = build_layout(panels, camera, buffer, chart_sizes, preserve_from);
 
     if !registry.editable {
         // instruments_ref などは scenario 形状を壊さない
@@ -396,6 +415,17 @@ fn save_layout_to(path: &PathBuf, layout: &SidecarLayout) -> std::io::Result<()>
     let json = serde_json::to_string_pretty(layout)
         .map_err(|e| std::io::Error::new(std::io::ErrorKind::InvalidData, e))?;
     std::fs::write(path, json)
+}
+
+fn apply_chart_sizes(layout: &SidecarLayout, chart_sizes: &mut ChartSizeMap) {
+    chart_sizes.map.clear();
+    if let Some(sizes) = &layout.chart_sizes {
+        chart_sizes.map.extend(
+            sizes
+                .iter()
+                .map(|(id, size)| (id.clone(), Vec2::from_array(*size))),
+        );
+    }
 }
 
 /// UTF-8 BOM (0xEF 0xBB 0xBF) を読み飛ばしてから JSON parse する。
@@ -473,6 +503,7 @@ pub fn apply_cache_restore_system(
     mut pending: ResMut<PendingLayoutApply>,
     mut spawn_ev: EventWriter<PanelSpawnRequested>,
     mut scenario_target: ResMut<ScenarioReadTarget>, // ← ADD
+    mut chart_sizes: ResMut<ChartSizeMap>,
 ) {
     for event in events.read() {
         let Some((cache_json, cache_py)) = cache_state_paths() else {
@@ -521,6 +552,11 @@ pub fn apply_cache_restore_system(
                     continue;
                 }
                 pending.windows.push(win_layout.clone());
+                // boot-owned panels は常に生存済みなので spawn event は不要。
+                // pending.windows への追加は position 復元のために保持する。
+                if win_layout.kind.is_boot_spawned_mode_owned() {
+                    continue;
+                }
 
                 let region_key = if win_layout.kind == PanelKind::StrategyEditor {
                     Some(
@@ -551,6 +587,8 @@ pub fn apply_cache_restore_system(
                 }
             }
         }
+
+        apply_chart_sizes(&event.layout, &mut chart_sizes);
 
         let dedupe_keys = pending
             .spawn_requested
@@ -611,6 +649,7 @@ fn finish_layout_save(
     registry: &crate::ui::components::InstrumentRegistry,
     paths: &crate::ui::components::ScenarioWritebackPaths,
     scenario: &crate::ui::components::ScenarioMetadata,
+    chart_sizes: &ChartSizeMap,
     scenario_target: &mut ScenarioReadTarget,
 ) -> bool {
     // 計画書 KC4: 明示 Save の前に cache 側だけ最新化する。
@@ -637,6 +676,7 @@ fn finish_layout_save(
         panels,
         camera,
         &*buffer,
+        chart_sizes,
         registry,
         scenario,
         scenario_json.as_deref(),
@@ -729,6 +769,7 @@ pub fn handle_save_layout_system(
     registry: Res<crate::ui::components::InstrumentRegistry>,
     paths: Res<crate::ui::components::ScenarioWritebackPaths>,
     scenario: Res<crate::ui::components::ScenarioMetadata>,
+    chart_sizes: Res<ChartSizeMap>,
     mut scenario_target: ResMut<ScenarioReadTarget>,
     mut save_as_writer: EventWriter<LayoutSaveAsRequested>,
 ) {
@@ -761,6 +802,7 @@ pub fn handle_save_layout_system(
             &registry,
             &paths,
             &scenario,
+            &chart_sizes,
             &mut scenario_target,
         ) {
             continue;
@@ -846,6 +888,7 @@ pub fn poll_save_as_dialog_system(
     registry: Res<crate::ui::components::InstrumentRegistry>,
     paths: Res<crate::ui::components::ScenarioWritebackPaths>,
     scenario: Res<crate::ui::components::ScenarioMetadata>,
+    chart_sizes: Res<ChartSizeMap>,
     mut writeback: ResMut<crate::ui::components::ScenarioInstrumentsWritebackState>,
     mut scenario_target: ResMut<crate::ui::components::ScenarioReadTarget>,
 ) {
@@ -889,6 +932,7 @@ pub fn poll_save_as_dialog_system(
         &panels,
         &camera,
         &*buffer,
+        &chart_sizes,
         &registry,
         &scenario,
         scenario_json.as_deref(),
@@ -976,6 +1020,7 @@ fn poll_save_dialog_system(
     registry: Res<crate::ui::components::InstrumentRegistry>,
     paths: Res<crate::ui::components::ScenarioWritebackPaths>,
     scenario: Res<crate::ui::components::ScenarioMetadata>,
+    chart_sizes: Res<ChartSizeMap>,
     mut scenario_target: ResMut<ScenarioReadTarget>,
 ) {
     let Some(result) = pending.poll_take(FileDialogKind::Save) else {
@@ -1010,6 +1055,7 @@ fn poll_save_dialog_system(
         &registry,
         &paths,
         &scenario,
+        &chart_sizes,
         &mut scenario_target,
     ) {
         return;
@@ -1049,6 +1095,7 @@ pub fn apply_layout_system(
     // 「同じ JSON を後から再 Open」したケースまで抑制されてしまうため。
     mut pending_loopback: Local<Option<PathBuf>>,
     mut scenario_target: ResMut<ScenarioReadTarget>,
+    mut chart_sizes: ResMut<ChartSizeMap>,
 ) {
     for event in events.read() {
         let layout = match load_layout_from(&event.path) {
@@ -1106,6 +1153,8 @@ pub fn apply_layout_system(
             }
             _ => {}
         }
+
+        apply_chart_sizes(&layout, &mut chart_sizes);
 
         if let Some(path_str) = &layout.strategy_path {
             let path = std::path::PathBuf::from(path_str);
@@ -1221,10 +1270,10 @@ pub fn apply_layout_system(
 
                 match found {
                     None => {
-                        // Startup は起動スケジュールで一度だけ spawn し、cosmic フィールドも
-                        // そこで attach する。layout 経由で再 spawn するとフィールド無しの
-                        // 壊れた窓になるため、layout からは spawn しない。
-                        if win_layout.kind == PanelKind::Startup {
+                        // boot-spawned/mode-owned パネル（Startup, RunResult）は起動スケジュール
+                        // で一度だけ spawn し、可視性は ExecutionMode が所有する。
+                        // layout 経由で再 spawn するとフィールド無しの壊れた窓になるため除外。
+                        if win_layout.kind.is_boot_spawned_mode_owned() {
                             continue;
                         }
                         let dedupe_key = (win_layout.kind, want_key.clone());
@@ -1250,10 +1299,10 @@ pub fn apply_layout_system(
                         tf.translation.x = win_layout.position[0];
                         tf.translation.y = win_layout.position[1];
                         tf.translation.z = win_layout.z;
-                        // Startup は position/z のみ復元する。size と可視性は復元しない
-                        // （可視性は ExecutionMode が所有し、size は窓側定数が正。古い
-                        // layout の size を当てると窓幅が巻き戻り、子要素とズレる）。
-                        if *kind != PanelKind::Startup {
+                        // boot-spawned/mode-owned パネルは position/z のみ復元する。
+                        // size と可視性は復元しない（可視性は ExecutionMode が所有し、
+                        // size は窓側定数が正。古い layout の size を当てると子要素とズレる）。
+                        if !kind.is_boot_spawned_mode_owned() {
                             sprite.custom_size = Some(Vec2::from_array(win_layout.size));
                             let intended = if win_layout.visible {
                                 Visibility::Inherited
@@ -1282,10 +1331,10 @@ pub fn apply_layout_system(
             let to_despawn: Vec<Entity> = panels
                 .iter()
                 .filter(|(_, kind, id, _, _, _, _)| {
-                    // Startup は layout の windows リストに依存しない（起動時に一度だけ
-                    // spawn・可視性は ExecutionMode が所有）。list に無くても despawn しない。
-                    // pre-#14 sidecar など Startup を含まない layout でも消えないように。
-                    if **kind == PanelKind::Startup {
+                    // boot-spawned/mode-owned パネル（Startup, RunResult）は layout の windows
+                    // リストに依存しない。list に無くても despawn しない。
+                    // pre-#14 sidecar など旧 layout でも消えないように。
+                    if kind.is_boot_spawned_mode_owned() {
                         return false;
                     }
                     !win_layouts.iter().any(|w| {
@@ -1357,8 +1406,8 @@ pub fn apply_pending_layout_system(
         });
         match found {
             None => {
-                // Startup は layout から spawn しない（フィールド attach は起動スケジュールのみ）。
-                if win_layout.kind == PanelKind::Startup {
+                // boot-spawned/mode-owned パネルは layout から spawn しない。
+                if win_layout.kind.is_boot_spawned_mode_owned() {
                     continue;
                 }
                 let region_key = if win_layout.kind == PanelKind::StrategyEditor {
@@ -1394,8 +1443,8 @@ pub fn apply_pending_layout_system(
                 tf.translation.x = win_layout.position[0];
                 tf.translation.y = win_layout.position[1];
                 tf.translation.z = win_layout.z;
-                // Startup は position/z のみ復元（size・可視性は復元しない）。
-                if *kind != PanelKind::Startup {
+                // boot-spawned/mode-owned パネルは position/z のみ復元（size・可視性は復元しない）。
+                if !kind.is_boot_spawned_mode_owned() {
                     sprite.custom_size = Some(Vec2::from_array(win_layout.size));
                     let intended = if win_layout.visible {
                         Visibility::Inherited
@@ -1441,6 +1490,7 @@ fn save_layout_on_window_close(
     mut fragments_q: Query<(&StrategyEditorId, &mut StrategyFragment), With<WindowRoot>>,
     mut strategy_auto_save: ResMut<StrategyAutoSaveState>,
     paths: Res<crate::ui::components::ScenarioWritebackPaths>,
+    chart_sizes: Res<ChartSizeMap>,
 ) {
     // Bevy 0.15 の winit は WindowCloseRequested を EventWriter 経由で送る。
     // add_observer が期待する trigger_targets() では送られないため observer は発火しない。
@@ -1473,7 +1523,13 @@ fn save_layout_on_window_close(
             error!("layout auto-save failed: cache_dir not found");
             continue;
         };
-        let layout = build_layout(&panels, &camera, &*buffer, paths.cache_sidecar.as_deref());
+        let layout = build_layout(
+            &panels,
+            &camera,
+            &*buffer,
+            &chart_sizes,
+            paths.cache_sidecar.as_deref(),
+        );
         match save_layout_to(&cache_json, &layout) {
             Ok(()) => info!("layout auto-saved to {:?}", cache_json),
             Err(e) => error!("layout auto-save failed: {e}"),
@@ -1499,6 +1555,7 @@ fn debounced_autosave_system(
     camera: Query<(&Transform, &OrthographicProjection), (With<Camera2d>, Without<WindowRoot>)>,
     buffer: Res<StrategyBuffer>,
     paths: Res<crate::ui::components::ScenarioWritebackPaths>,
+    chart_sizes: Res<ChartSizeMap>,
 ) {
     if !auto_save.dirty {
         return;
@@ -1517,7 +1574,13 @@ fn debounced_autosave_system(
         auto_save.last_change = None;
         return;
     };
-    let layout = build_layout(&panels, &camera, &*buffer, paths.cache_sidecar.as_deref());
+    let layout = build_layout(
+        &panels,
+        &camera,
+        &*buffer,
+        &chart_sizes,
+        paths.cache_sidecar.as_deref(),
+    );
     match save_layout_to(&cache_json, &layout) {
         Ok(()) => info!("debounced autosave → {:?}", cache_json),
         Err(e) => error!("debounced autosave failed: {e}"),
@@ -1774,6 +1837,7 @@ mod tests {
             ]),
             strategy_path: None,
             selected_symbol: None,
+            chart_sizes: None,
             scenario: None,
         };
         let json = serde_json::to_string_pretty(&layout).unwrap();
@@ -1847,6 +1911,7 @@ mod tests {
             windows: Some(vec![]),
             strategy_path: None,
             selected_symbol: None,
+            chart_sizes: None,
             scenario: Some(scenario_val),
         };
         let json = serde_json::to_string_pretty(&layout).unwrap();
@@ -1868,6 +1933,7 @@ mod tests {
             windows: Some(vec![]),
             strategy_path: None,
             selected_symbol: None,
+            chart_sizes: None,
             scenario: None,
         };
         let json = serde_json::to_string_pretty(&layout).unwrap();
@@ -2003,7 +2069,7 @@ mod tests {
         )> = SystemState::new(app.world_mut());
 
         let (panels, camera, buffer) = state.get(app.world());
-        let layout = build_layout(&panels, &camera, &*buffer, None);
+        let layout = build_layout(&panels, &camera, &*buffer, &ChartSizeMap::default(), None);
 
         let windows = layout.windows.expect("windows must be Some");
         assert_eq!(windows.len(), 1, "ChartInstrument 付き root は除外される");
@@ -2075,7 +2141,7 @@ mod tests {
         )> = SystemState::new(app.world_mut());
 
         let (panels, camera, buffer) = state.get(app.world());
-        let layout = build_layout(&panels, &camera, &*buffer, None);
+        let layout = build_layout(&panels, &camera, &*buffer, &ChartSizeMap::default(), None);
 
         let windows = layout.windows.expect("windows must be Some");
         let by_region = |key: &str| {
@@ -2388,7 +2454,7 @@ mod tests {
             buffer: Res<StrategyBuffer>,
             mut out: ResMut<CapturedVisible>,
         ) {
-            let layout = build_layout(&panels, &camera, &*buffer, None);
+            let layout = build_layout(&panels, &camera, &*buffer, &ChartSizeMap::default(), None);
             out.0 = layout
                 .windows
                 .unwrap()
@@ -2556,7 +2622,7 @@ mod tests {
         )> = SystemState::new(app.world_mut());
 
         let (panels, camera, buffer) = state.get(app.world());
-        let layout = build_layout(&panels, &camera, &*buffer, None);
+        let layout = build_layout(&panels, &camera, &*buffer, &ChartSizeMap::default(), None);
 
         let windows = layout.windows.expect("windows must be Some");
         assert_eq!(
@@ -2623,7 +2689,7 @@ mod tests {
         )> = SystemState::new(app.world_mut());
 
         let (panels, camera, buffer) = state.get(app.world());
-        let layout = build_layout(&panels, &camera, &*buffer, None);
+        let layout = build_layout(&panels, &camera, &*buffer, &ChartSizeMap::default(), None);
 
         let windows = layout.windows.expect("windows must be Some");
         assert!(

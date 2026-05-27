@@ -16,6 +16,11 @@ description: >-
   他スキル（`bevy-engine` / `pair-relay` / `plan` 等）を明示していても本スキルを併発する**
   （`feat(ui):` で M/N 群の release-gate flow を新設するタスクが典型。テスト＋FLOWS.md＋wiki が
   「実装の付録」ではなく本スキルの本体なので、実装スキルに気を取られて取りこぼさない）。
+  **`gh issue #N に着手してください` のような issue 着手指示で `gh issue view` を fetch したとき、
+  issue 本文に `m13` / `M13` / `N1` のような flow ID パターン（英字 1〜2 文字 + 数字）や
+  「FLOWS.md 追記」「wiki 現行化」「[FlowID] を引く」という文言が含まれれば、
+  他スキルと同時に本スキルも並発する**（issue #41 の S5 が m13/m14/m15 を明記していたにもかかわらず
+  `/bevy-engine /pair-relay /plan` を優先して見落とされた実例）。
   **`docs/wiki` 等のドキュメント/wiki レビューで「実装済みなのに『未実装』『開発中』『将来』扱い」の機能が
   見つかった**ときも本スキルを開く（「wiki を修正」「ドキュメントを実装に追従」と言われたら併発）: その機能は
   E2E 未カバーのことが多い（実装が先行し doc も flow も置き去り）。wiki を現行化しつつ、対応 flow が

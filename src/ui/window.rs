@@ -1,30 +1,32 @@
 use crate::ui::chart_axes::{PriceGutter, PriceGutterRef, TimeGutter, TimeGutterRef};
 use crate::ui::chart_crosshair::CrosshairState;
+use crate::ui::chart_ladder_pane::LadderPane;
 use crate::ui::chart_viewstate::{
     CHART_CHILD_LOCAL_X_REPLAY, CHART_CHILD_LOCAL_Y, CHART_DRAW_SIZE, CHART_PANEL_SIZE,
-    ChartViewState, PRICE_GUTTER_WIDTH, TIME_GUTTER_HEIGHT,
+    ChartViewState, LADDER_WIDTH, PRICE_GUTTER_WIDTH, TIME_GUTTER_HEIGHT,
 };
 use crate::ui::components::{
-    ChartInstrument, InstrumentRegistry, LayoutExcluded, PanelKind, PriceDisplay, WindowRoot,
+    ChartInstrument, ChartSizeMap, InstrumentRegistry, LayoutExcluded, PanelKind, PriceDisplay,
+    WindowRoot,
 };
-use crate::ui::floating_window::{FloatingWindowSpec, spawn_floating_window};
+use crate::ui::floating_window::{FloatingWindowSpec, TITLE_BAR_HEIGHT, spawn_floating_window};
 use bevy::prelude::*;
 use std::collections::{HashMap, HashSet};
 
 const PANEL_POSITION: Vec2 = Vec2::new(200.0, 0.0);
 const ACCENT: Color = Color::srgba(0.0, 0.8, 1.0, 0.4);
 
-pub fn spawn_chart_panel(commands: &mut Commands, instrument_id: &str) {
+pub fn spawn_chart_panel(commands: &mut Commands, instrument_id: &str, initial_size: Vec2) {
     // 枠は共通ヘルパーに任せる
     let (root, content_area, _title_bar) = spawn_floating_window(
         commands,
         FloatingWindowSpec {
             title: format!("CHART — {}", instrument_id),
-            size: CHART_PANEL_SIZE,
+            size: initial_size,
             position: PANEL_POSITION,
             accent: ACCENT,
             closeable: true,
-            resizable: false,
+            resizable: true,
         },
     );
     commands.entity(root).insert(PanelKind::Chart);
@@ -108,6 +110,77 @@ pub fn spawn_chart_panel(commands: &mut Commands, instrument_id: &str) {
 
     commands.entity(content_area).add_child(price_text);
     commands.entity(content_area).add_child(chart);
+    commands.entity(root).insert(ChartLayoutChildren { chart, price_text });
+}
+
+/// リサイズ時にチャート描画エリアを追従させるため、root entity に挿入する子エンティティ参照。
+#[derive(Component)]
+pub struct ChartLayoutChildren {
+    pub chart: Entity,
+    pub price_text: Entity,
+}
+
+/// root Sprite の custom_size が変わったとき chart 描画領域をリフローする。
+/// Ladder ペインがある（Live 複合）場合は draw_w から LADDER_WIDTH も引き、
+/// ladder pane の x と高さも更新する。
+pub fn chart_content_layout_system(
+    roots: Query<(Entity, &Sprite, &ChartLayoutChildren), (With<WindowRoot>, Changed<Sprite>)>,
+    mut charts: Query<
+        (&PriceGutterRef, &TimeGutterRef, &mut ChartViewState, &mut Sprite),
+        (Without<WindowRoot>, Without<LadderPane>),
+    >,
+    mut transforms: Query<&mut Transform, (Without<WindowRoot>, Without<LadderPane>)>,
+    mut ladder_panes: Query<(&LadderPane, &mut Sprite, &mut Transform), Without<WindowRoot>>,
+) {
+    for (root_entity, root_sprite, layout) in &roots {
+        let Some(root_size) = root_sprite.custom_size else { continue; };
+
+        // ladder の有無を確認し draw_w を決定する（差分書き込みのため先に iter）。
+        let ladder_w = ladder_panes
+            .iter()
+            .find(|(lp, _, _)| lp.chart_root == root_entity)
+            .map(|_| LADDER_WIDTH)
+            .unwrap_or(0.0);
+
+        let draw_w = (root_size.x - PRICE_GUTTER_WIDTH - ladder_w).max(10.0);
+        let draw_h = (root_size.y - TITLE_BAR_HEIGHT - TIME_GUTTER_HEIGHT).max(10.0);
+        let new_size = Vec2::new(draw_w, draw_h);
+
+        let Ok((price_gutter_ref, time_gutter_ref, mut view_state, mut chart_sprite)) =
+            charts.get_mut(layout.chart)
+        else { continue; };
+
+        if chart_sprite.custom_size != Some(new_size) {
+            chart_sprite.custom_size = Some(new_size);
+        }
+        if view_state.bounds != new_size {
+            view_state.bounds = new_size;
+        }
+        let pg_x = draw_w / 2.0 + PRICE_GUTTER_WIDTH / 2.0;
+        if let Ok(mut t) = transforms.get_mut(price_gutter_ref.0) {
+            if (t.translation.x - pg_x).abs() > 0.01 { t.translation.x = pg_x; }
+        }
+        let tg_y = -draw_h / 2.0 - TIME_GUTTER_HEIGHT / 2.0;
+        if let Ok(mut t) = transforms.get_mut(time_gutter_ref.0) {
+            if (t.translation.y - tg_y).abs() > 0.01 { t.translation.y = tg_y; }
+        }
+
+        // ladder ペインの位置と高さを更新する（right-flush）。
+        if ladder_w > 0.0 {
+            let ladder_x = root_size.x / 2.0 - LADDER_WIDTH / 2.0;
+            let ladder_h = root_size.y - TITLE_BAR_HEIGHT;
+            for (lp, mut lp_sprite, mut lp_tf) in ladder_panes.iter_mut() {
+                if lp.chart_root != root_entity { continue; }
+                let new_lp_size = Vec2::new(LADDER_WIDTH, ladder_h);
+                if lp_sprite.custom_size != Some(new_lp_size) {
+                    lp_sprite.custom_size = Some(new_lp_size);
+                }
+                if (lp_tf.translation.x - ladder_x).abs() > 0.01 {
+                    lp_tf.translation.x = ladder_x;
+                }
+            }
+        }
+    }
 }
 
 /// `InstrumentRegistry` と Chart `WindowRoot` を同期する。
@@ -116,6 +189,7 @@ pub fn instrument_chart_sync_system(
     chart_q: Query<(Entity, &ChartInstrument), With<WindowRoot>>,
     mut commands: Commands,
     mut map: ResMut<crate::trading::InstrumentTradingDataMap>,
+    mut chart_sizes: ResMut<ChartSizeMap>,
 ) {
     if !registry.is_changed() {
         return;
@@ -128,13 +202,15 @@ pub fn instrument_chart_sync_system(
 
     for id in &desired {
         if !spawned.contains_key(id) {
-            spawn_chart_panel(&mut commands, id);
+            let size = chart_sizes.map.get(*id).copied().unwrap_or(CHART_PANEL_SIZE);
+            spawn_chart_panel(&mut commands, id, size);
         }
     }
     for (id, e) in &spawned {
         if !desired.contains(id) {
             commands.entity(*e).despawn_recursive();
             map.map.remove(*id);
+            chart_sizes.map.remove(*id);
         }
     }
 }
@@ -148,7 +224,7 @@ mod tests {
     fn spawn_chart_panel_attaches_chart_instrument_to_root() {
         let mut app = App::new();
         app.add_systems(Startup, |mut commands: Commands| {
-            spawn_chart_panel(&mut commands, "1301.TSE");
+            spawn_chart_panel(&mut commands, "1301.TSE", CHART_PANEL_SIZE);
         });
         app.update();
 
@@ -171,6 +247,7 @@ mod tests {
         let mut app = App::new();
         app.init_resource::<InstrumentRegistry>();
         app.init_resource::<crate::trading::InstrumentTradingDataMap>();
+        app.init_resource::<ChartSizeMap>();
         app.add_systems(Update, instrument_chart_sync_system);
 
         {
@@ -197,6 +274,7 @@ mod tests {
         let mut app = App::new();
         app.init_resource::<InstrumentRegistry>();
         app.init_resource::<crate::trading::InstrumentTradingDataMap>();
+        app.init_resource::<ChartSizeMap>();
         app.add_systems(Update, instrument_chart_sync_system);
 
         {
@@ -226,6 +304,7 @@ mod tests {
         let mut app = App::new();
         app.init_resource::<InstrumentRegistry>();
         app.init_resource::<crate::trading::InstrumentTradingDataMap>();
+        app.init_resource::<ChartSizeMap>();
         app.add_systems(Update, instrument_chart_sync_system);
 
         {
@@ -255,6 +334,7 @@ mod tests {
         let mut app = App::new();
         app.init_resource::<InstrumentRegistry>();
         app.init_resource::<crate::trading::InstrumentTradingDataMap>();
+        app.init_resource::<ChartSizeMap>();
         app.add_systems(Update, instrument_chart_sync_system);
 
         {
@@ -285,6 +365,7 @@ mod tests {
         let mut app = App::new();
         app.init_resource::<InstrumentRegistry>();
         app.init_resource::<InstrumentTradingDataMap>();
+        app.init_resource::<ChartSizeMap>();
         app.add_systems(Update, instrument_chart_sync_system);
 
         {

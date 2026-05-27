@@ -1,5 +1,5 @@
 use crate::trading::{CurrentRun, RunState};
-use crate::ui::components::PanelKind;
+use crate::ui::components::{PanelKind, RunResultPanelRoot};
 use crate::ui::floating_window::{FloatingWindowSpec, spawn_floating_window};
 use bevy::prelude::*;
 
@@ -36,17 +36,21 @@ pub fn spawn_run_result_panel(commands: &mut Commands) {
             size: PANEL_SIZE,
             position: PANEL_POSITION,
             accent: ACCENT,
-            closeable: true,
+            closeable: false,
             resizable: false,
         },
     );
-    commands.entity(root).insert(PanelKind::RunResult);
+    commands.entity(root).insert((PanelKind::RunResult, RunResultPanelRoot));
 
     // 4 行を上から下へ 22px 間隔で配置
     spawn_row(commands, content_area, RunResultLabel::State, 33.0);
     spawn_row(commands, content_area, RunResultLabel::RunId, 11.0);
     spawn_row(commands, content_area, RunResultLabel::Stats, -11.0);
     spawn_row(commands, content_area, RunResultLabel::Pnl, -33.0);
+}
+
+pub fn spawn_run_result_panel_system(mut commands: Commands) {
+    spawn_run_result_panel(&mut commands);
 }
 
 fn spawn_row(commands: &mut Commands, parent: Entity, kind: RunResultLabel, y: f32) {
@@ -66,7 +70,7 @@ fn spawn_row(commands: &mut Commands, parent: Entity, kind: RunResultLabel, y: f
 }
 
 /// CurrentRun の現在値を 4 行のテキストに反映する。
-/// 同名の旧 egui 版から引数も中身も完全に作り直し。
+/// Replay と LiveAuto の両モードをカバーし、Running/Paused 中は live フィールドを表示する。
 pub fn run_result_panel_system(
     current_run: Res<CurrentRun>,
     mut q: Query<(&RunResultLabel, &mut Text2d, &mut TextColor)>,
@@ -134,6 +138,25 @@ pub fn run_result_panel_system(
         }
         if color.0 != new_color {
             color.0 = new_color;
+        }
+    }
+}
+
+/// RunResult パネルの可視性を ExecutionMode に合わせて毎フレーム diff-write する。
+/// Replay / LiveAuto で可視、LiveManual で非表示（issue #41 仕様）。
+/// `is_changed()` ゲートは張らない: mode 変化のないフレームに spawn されたウィンドウも
+/// 正しい可視性に補正するため（apply_strategy_editor_mode_visibility_system と同パターン）。
+pub fn apply_run_result_visibility_system(
+    exec_mode: Res<crate::trading::ExecutionModeRes>,
+    mut panel_q: Query<&mut Visibility, With<RunResultPanelRoot>>,
+) {
+    let target = match exec_mode.mode {
+        crate::trading::ExecutionMode::LiveManual => Visibility::Hidden,
+        _ => Visibility::Inherited,
+    };
+    for mut vis in &mut panel_q {
+        if *vis != target {
+            *vis = target;
         }
     }
 }

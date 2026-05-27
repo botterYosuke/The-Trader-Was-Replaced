@@ -217,6 +217,16 @@ mod k14_reconcile_modal_dismiss_escape_priority;
 mod k15_secret_modal_timeout_zeroize_empty_submit;
 #[path = "e2e/flows/k16_order_context_menu_open_close.rs"]
 mod k16_order_context_menu_open_close;
+#[path = "e2e/flows/k17_chart_resize_reflow.rs"]
+mod k17_chart_resize_reflow;
+#[path = "e2e/flows/k18_live_chart_resize_reflow.rs"]
+mod k18_live_chart_resize_reflow;
+#[path = "e2e/flows/k19_chart_size_persists.rs"]
+mod k19_chart_size_persists;
+#[path = "e2e/flows/k20_chart_size_sidecar_round_trip.rs"]
+mod k20_chart_size_sidecar_round_trip;
+#[path = "e2e/flows/k21_chart_size_map_cleared_on_despawn.rs"]
+mod k21_chart_size_map_cleared_on_despawn;
 
 // L. CLI / backend process / prod guard
 // l1: stub のみ（PowerShell .ps1 — Windows 専用、darwin CI 不可）
@@ -256,6 +266,12 @@ mod m10_window_resize_updates_size_and_autosave;
 mod m11_startup_window_content_hides_with_panel;
 #[path = "e2e/flows/m12_strategy_editor_hidden_in_manual.rs"]
 mod m12_strategy_editor_hidden_in_manual;
+#[path = "e2e/flows/m13_run_result_no_close_button.rs"]
+mod m13_run_result_no_close_button;
+#[path = "e2e/flows/m14_run_result_mode_visibility.rs"]
+mod m14_run_result_mode_visibility;
+#[path = "e2e/flows/m15_run_result_button_absent.rs"]
+mod m15_run_result_button_absent;
 
 // N. Live Auto strategy execution (Phase 10: lifecycle / telemetry / safety / log)
 #[path = "e2e/flows/n1_live_strategy_event_lifecycle.rs"]
