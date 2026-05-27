@@ -1,0 +1,16 @@
+/target
+.claude
+CLAUDE.md
+.DS_Store
+/rust_out
+/tracy/
+
+/zed
+/vscode
+/warp
+
+*.md
+
+!README.md
+!CHANGELOG.md
+*.mov

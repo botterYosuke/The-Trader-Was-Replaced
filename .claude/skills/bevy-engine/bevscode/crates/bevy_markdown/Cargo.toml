@@ -1,0 +1,51 @@
+[package]
+name = "bevy_markdown"
+version = "0.1.0"
+edition = "2021"
+authors = ["PoHsuanLai"]
+license = "MIT OR Apache-2.0"
+description = "CommonMark renderer for Bevy: parses markdown with pulldown-cmark and spawns a bevy_ui + bevy_text flex tree. Designed for LSP hover/docs, README viewers, and inline help."
+repository = "https://github.com/PoHsuanLai/bevscode"
+keywords = ["bevy", "markdown", "commonmark", "ui", "lsp"]
+categories = ["game-development", "rendering", "text-processing"]
+
+[dependencies]
+bevy = { workspace = true, features = [
+    "bevy_asset",
+    "bevy_color",
+    "bevy_render",
+    "bevy_core_pipeline",
+    "bevy_sprite",
+    "bevy_sprite_render",
+    "bevy_text",
+    "bevy_ui",
+    "default_font",
+] }
+pulldown-cmark = { version = "0.12", default-features = false }
+bevy_tree_sitter = { path = "../bevy_tree_sitter", version = "0.1.1", features = [
+    "lang-rust",
+    "lang-typescript",
+    "lang-tsx",
+    "lang-javascript",
+    "lang-python",
+    "lang-go",
+    "lang-c",
+    "lang-cpp",
+    "lang-json",
+    "lang-toml",
+    "lang-yaml",
+    "lang-bash",
+    "lang-html",
+    "lang-css",
+    "lang-markdown",
+] }
+ropey = { workspace = true }
+
+[dev-dependencies]
+bevy = { workspace = true, features = [
+    "ui",
+    "bevy_text",
+    "default_font",
+    "png",
+    "x11",
+] }

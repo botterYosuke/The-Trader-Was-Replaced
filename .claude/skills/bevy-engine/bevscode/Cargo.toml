@@ -1,0 +1,41 @@
+[workspace]
+resolver = "2"
+members = [
+    "crates/bevscode",
+    "crates/bevy_lsp",
+    "crates/bevsterm",
+    "crates/bevy_instanced_text_editor",
+    "crates/bevy_markdown",
+    "crates/bevy_tree_sitter",
+    "examples",
+    "examples/wasm_lsp",
+]
+
+[profile.release]
+debug = true
+
+[workspace.dependencies]
+# Bevy. Features stay per-crate; default-features = false everywhere.
+bevy = { version = "0.18", default-features = false }
+bevy_app = "0.18"
+bevy_ecs = "0.18"
+bevy_log = "0.18"
+bevy_tasks = "0.18"
+bevy_camera = "0.18"
+
+# In-workspace bevy_instanced_text family.
+bevy_instanced_text = { git = "https://github.com/PoHsuanLai/bevy_instanced_text.git", rev = "51220b7" }
+bevy_instanced_text_interaction = { git = "https://github.com/PoHsuanLai/bevy_instanced_text.git", rev = "51220b7", default-features = false }
+
+# Shared third-party crates with 2+ callers.
+ropey = "1.6"
+serde = { version = "1.0", features = ["derive"] }
+serde_json = "1.0"
+leafwing-input-manager = "0.20"
+lsp-types = "0.95"
+
+# Wezterm trio — must stay on the same git rev. Pinned commit, isolated to
+# bevsterm::backend; bumping this is a coordinated change.
+wezterm-term = { git = "https://github.com/wezterm/wezterm", rev = "577474d89ee61aef4a48145cdec82a638d874751" }
+wezterm-surface = { git = "https://github.com/wezterm/wezterm", rev = "577474d89ee61aef4a48145cdec82a638d874751" }
+termwiz = { git = "https://github.com/wezterm/wezterm", rev = "577474d89ee61aef4a48145cdec82a638d874751" }

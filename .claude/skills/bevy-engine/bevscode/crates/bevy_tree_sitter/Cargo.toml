@@ -1,0 +1,44 @@
+[package]
+name = "bevy_tree_sitter"
+version = "0.1.1"
+edition = "2021"
+authors = ["PoHsuanLai"]
+license = "MIT OR Apache-2.0"
+readme = "README.md"
+description = "Text-rendering-agnostic tree-sitter integration for Bevy: parse trees, incremental updates, and structural highlight ranges keyed by capture name. Suitable for editors, code outline panels, AI agents reasoning about syntax, log viewers, and other syntax-aware UI."
+repository = "https://github.com/PoHsuanLai/bevscode"
+keywords = ["bevy", "tree-sitter", "syntax", "parsing"]
+categories = ["game-development", "parser-implementations"]
+
+[dependencies]
+bevy_app = { workspace = true }
+bevy_ecs = { workspace = true }
+bevy_log = { workspace = true }
+bevy_tasks = { workspace = true }
+
+arborium = { version = "2.17", default-features = false }
+streaming-iterator = "0.1"
+ropey = { workspace = true }
+futures-lite = "2.5"
+
+[features]
+default = []
+
+# Bundled grammar pass-throughs. Adding a language here only opts in to
+# arborium's per-grammar crate; the parse pipeline is grammar-agnostic.
+# Mirror an arborium `lang-*` feature when a host needs that grammar.
+lang-rust = ["arborium/lang-rust"]
+lang-c = ["arborium/lang-c"]
+lang-cpp = ["arborium/lang-cpp"]
+lang-python = ["arborium/lang-python"]
+lang-javascript = ["arborium/lang-javascript"]
+lang-typescript = ["arborium/lang-typescript"]
+lang-tsx = ["arborium/lang-tsx"]
+lang-json = ["arborium/lang-json"]
+lang-html = ["arborium/lang-html"]
+lang-css = ["arborium/lang-css"]
+lang-markdown = ["arborium/lang-markdown"]
+lang-toml = ["arborium/lang-toml"]
+lang-yaml = ["arborium/lang-yaml"]
+lang-bash = ["arborium/lang-bash"]
+lang-go = ["arborium/lang-go"]

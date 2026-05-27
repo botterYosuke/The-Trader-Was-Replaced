@@ -67,6 +67,17 @@ description: |
     「新規 spawn が 1 フレーム可視で出る」race になる（issue #31 で実際に踏んだ。読者・
     save 系を mode system の前に、spawn dispatcher を後続 apply/可視性 system の前に置いて解消）。
 
+  ⑫ **コード編集系 UI**（`src/ui/strategy_editor.rs` など）の機能を作る／改修するとき:
+    "行番号", "gutter", "ガター", "シンタックスハイライト", "syntax highlight",
+    "マルチカーソル", "multi-cursor", "folding", "コード折りたたみ", "括弧マッチ",
+    "bracket match", "スクロールバー", "検索置換", "find/replace", "LSP UI", "補完",
+    "completion", "hover", "diagnostics", "tree-sitter", "rope", "undo/redo of editor",
+    "コードエディタ", "code editor", "テキストエディタ widget" と言われたとき。
+    本スキルには **bevscode**（Bevy ネイティブのコードエディタ・コンポーネントライブラリ）の
+    完全ソースミラーが `.claude/skills/bevy-engine/bevscode/` に同梱されており、エディタ系 UI の
+    先行事例として引く（**Bevy 0.18 なのでコピペ不可・cosmic_edit を置き換える依存ではない**点に注意。
+    詳細は本文「bevscode」節）。
+
   本プロジェクトは **Bevy 0.15** をピン留めしている（`Cargo.toml` の `bevy = "0.15"`）。
   一方 `.claude/skills/bevy-engine/src/` にミラーされている upstream は **0.19.0-dev** で、
   ECS API が一部破壊的に変わっている。両者の差は `references/0.15-vs-0.19.md` に集約してある。
@@ -85,6 +96,9 @@ description: |
 2. 編集対象に応じて `references/` の該当ファイル
 3. それでも不明なら `.claude/skills/bevy-engine/src/examples/<category>/*.rs` を引く
    （**ただしバージョンは 0.19-dev なので注意**）
+4. **コード編集系 UI（Strategy Editor / 行番号 / ハイライト / 折りたたみ / LSP UI）** を
+   作るときは下の「bevscode」節 → `.claude/skills/bevy-engine/bevscode/` を引く
+   （**Bevy ネイティブのエディタ先行事例。ただし 0.18 なので注意**）
 
 ## このプロジェクトの Bevy スタック
 
@@ -667,9 +681,65 @@ egui の中で `state.buffer` のような大きい String を編集するとき
   併せて `mod.rs` で `.after(panel_spawn_dispatcher_system)` を付けて spawn 直後の 1 フレーム flash を防ぐ
   （issue #41 code review で apply_run_result_visibility_system が両方引っかかった実例）。
 
+## bevscode — Bevy ネイティブのコードエディタ実装を引く
+
+`.claude/skills/bevy-engine/bevscode/` は **bevscode**（Bevy 用の埋め込み型コードエディタ・
+コンポーネントライブラリ）の完全ソースミラー。**スタンドアロン IDE ではなく**、Bevy アプリに
+組み込む「コード編集ウィジェット」一式で、汎用の `src/` ミラーと違って **エディタ特化の先行事例** として引く。
+
+**いつ引くか**: `src/ui/strategy_editor.rs` をはじめとする**コード編集系 UI** を作る／改修するとき。
+具体的には 行番号・ガター、シンタックスハイライト、マルチカーソル、コード折りたたみ（folding）、
+括弧マッチ、スクロールバー、検索/置換、LSP UI（補完・hover・diagnostics）など。
+flowsurface（チャート）/ zed（GPUI 製の production エディタ）と同じ「先行事例ミラー」の位置づけだが、
+bevscode は **Bevy ネイティブ**（ECS の Component / System / Plugin / Message で構成）なので、
+zed（非 Bevy）より翻訳ギャップが小さく、ほぼそのまま我々の ECS に移植できる発想が多い。
+逆に zed の方が成熟度・アルゴリズム（display map / multi-buffer 等）の参考になる場面もある。
+
+**⚠️ バージョン注意**: bevscode は **Bevy 0.18**。本プロジェクトは **0.15**。`src/`（0.19-dev）と
+同様、読むのは OK だがコピペは不可。特に 0.18 では Event 系が **`Message` / `MessageReader` /
+`MessageWriter`** に改名されている（0.15 は `Event` / `EventReader` / `EventWriter`）。
+README の `MessageReader<SaveRequested>` をそのまま 0.15 に持ち込まないこと。差分は
+`references/0.15-vs-0.19.md` の考え方で照合する。
+
+**⚠️ 依存にしない**: Strategy Editor の編集バックエンドは **bevy_cosmic_edit 0.26** であって
+bevscode ではない。bevscode は「Bevy でコードエディタの関心事をどう分割・配線するか」の
+**参照**であり、`Cargo.toml` に足す依存ではない。エディタの土台を差し替えないこと。
+
+**クレート構成**（`bevscode/crates/` と git 依存）:
+
+| クレート | 役割 | 場所 |
+|---|---|---|
+| `bevy_instanced_text` | GPU インスタンシング文字描画（グリフアトラス / soft-wrap / overlay） | git 依存（別リポ） |
+| `bevy_instanced_text_interaction` | 共有 UI プリミティブ（クリップボード / 選択 / キャレット / picking observer） | git 依存（別リポ） |
+| `bevy_instanced_text_editor` | rope ベースの編集可能テキスト（編集履歴 / undo-redo / 文字挿入 / anchor） | `crates/` |
+| `bevy_tree_sitter` | tree-sitter による増分シンタックスハイライト | `crates/` |
+| `bevy_lsp` | 非同期 LSP トランスポート。応答は Bevy message で届く | `crates/` |
+| `bevy_markdown` | Markdown パース / ハイライト / spawn | `crates/` |
+| `bevscode` | エディタ本体（マルチカーソル / folding / 括弧 / 行番号 / LSP UI） | `crates/` |
+| `bevsterm` | PTY バックドの端末ウィジェット（wezterm） | `crates/` |
+
+`bevscode` 本体の内部分割（`crates/bevscode/src/`）も読みどころ:
+`display_map`（表示行↔バッファ行のマッピング・folding）、`syntax`（ハイライトパイプライン）、
+`input`（キーバインド / leafwing-input-manager）、`lsp_ui`（補完・hover の UI）、
+`text_view`（描画）、`settings` / `ui_kit` / `types` / `plugin`。
+
+**読む入口**: まず動く例（`bevscode/examples/`）から。
+- `editor.rs` — 最小のエディタ（164 行）
+- `editor_syntax.rs` — シンタックスハイライト（203 行）
+- `editor_multi.rs` — マルチカーソル / 複数ペイン（133 行）
+- `editor_lsp.rs` — LSP UI 配線（220 行）
+- `editor_perf.rs` — 大きいバッファでの描画性能
+
+プラグイン構成は `bevscode/README.md` の "Composition" を参照:
+`InstancedTextPlugins`（描画だけ）→ `+ InstancedTextInteractionPlugin`（選択/クリップボード）→
+`CodeEditorPlugins`（フル）。状態は素の ECS（`TextBuffer<RopeBuffer>` / `CursorState` を
+任意 system から query）。組み込みアクション（save/open/補完要求）は
+`EditorAppExt::add_editor_action_handler` でハンドラを足す。
+
 ## ground truth ソースの引き方
 
-`.claude/skills/bevy-engine/src/` には Bevy 0.19-dev の全ソースがある。
+`.claude/skills/bevy-engine/src/` には Bevy 0.19-dev の全ソースがある（**コード編集系 UI は
+上の「bevscode」節の Bevy 0.18 ミラーの方が直接的**）。
 
 - API 名や signature を確認したい: `crates/bevy_<name>/src/lib.rs` を読む
 - 例を探したい: `examples/<category>/*.rs`（例: `examples/ecs/hierarchy.rs`）
@@ -692,3 +762,4 @@ egui の中で `state.buffer` のような大きい String を編集するとき
 - [references/observers-and-pointer.md](references/observers-and-pointer.md) — observe & Pointer
 - [references/ecs-basics.md](references/ecs-basics.md) — 汎用 ECS（プロジェクト外でも使える）
 - [references/winit-update-mode.md](references/winit-update-mode.md) — WinitSettings / アイドル CPU 削減 / reactive update mode
+- [bevscode/](bevscode/) — Bevy ネイティブのコードエディタ・コンポーネントライブラリの完全ミラー（Bevy 0.18）。Strategy Editor 等のコード編集系 UI の先行事例。入口は `bevscode/README.md` と `bevscode/examples/`

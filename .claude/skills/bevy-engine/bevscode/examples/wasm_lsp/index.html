@@ -1,0 +1,40 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="utf-8">
+    <title>bevscode — wasm + LSP</title>
+    <style>
+        html, body {
+            margin: 0;
+            padding: 0;
+            height: 100%;
+            background: #1e1e1e;
+            color: #ddd;
+            font-family: system-ui, sans-serif;
+            overflow: hidden;
+        }
+        /* Let Bevy/winit own the canvas's intrinsic pixel size — they
+           write the canvas's `width`/`height` attributes to match the
+           parent each frame via `fit_canvas_to_parent`. If we force CSS
+           dimensions here, the canvas gets stretched/squashed and
+           pointer events arrive in CSS-pixel coordinates that don't
+           match the backbuffer, so `bevy_picking` misses every hit. */
+        #bevy-parent {
+            position: fixed;
+            inset: 0;
+            outline: none;
+        }
+        canvas#bevy {
+            display: block;
+            outline: none;
+        }
+    </style>
+    <link data-trunk rel="rust" data-bin="wasm_lsp" />
+    <link data-trunk rel="copy-dir" href="../assets" data-target-path="assets" />
+</head>
+<body>
+    <div id="bevy-parent">
+        <canvas id="bevy"></canvas>
+    </div>
+</body>
+</html>

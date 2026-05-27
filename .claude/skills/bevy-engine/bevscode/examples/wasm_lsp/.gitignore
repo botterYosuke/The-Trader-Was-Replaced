@@ -1,0 +1,6 @@
+/dist/
+/bridge/node_modules/
+/bridge/package-lock.json
+/bridge/bun.lock
+/bridge/yarn.lock
+/bridge/pnpm-lock.yaml
