@@ -205,11 +205,11 @@ impl Plugin for UiPlugin {
         .init_resource::<ActiveDrag>()
         .init_resource::<PendingStrategySnapshotRestore>()
         .init_resource::<FindReplaceState>()
-        .add_event::<FindActionRequested>()
-        .add_event::<OrderButtonPressed>()
+        .add_message::<FindActionRequested>()
+        .add_message::<OrderButtonPressed>()
         // ⚠️ 必須: chart_data_tick_system が EventWriter<RequestAutoscale> を取るので
         //    Events リソースが要る。未登録だと初回取得で panic する。
-        .add_event::<RequestAutoscale>()
+        .add_message::<RequestAutoscale>()
         // Phase E: double-click reset observer が per-chart クリック状態を持つ。
         .init_resource::<ChartClickState>()
         .configure_sets(
@@ -225,13 +225,13 @@ impl Plugin for UiPlugin {
         )
         .init_resource::<OpenMenu>()
         .init_resource::<crate::ui::instrument_picker::InstrumentPickerState>()
-        .add_event::<StrategyFileLoadRequested>()
-        .add_event::<StrategyRunRequested>()
-        .add_event::<PanelSpawnRequested>()
-        .add_event::<UndoRedoApplied>()
-        .add_event::<UndoMenuRequested>()
-        .add_event::<RedoMenuRequested>()
-        .add_event::<ScenarioStartupParamCommit>()
+        .add_message::<StrategyFileLoadRequested>()
+        .add_message::<StrategyRunRequested>()
+        .add_message::<PanelSpawnRequested>()
+        .add_message::<UndoRedoApplied>()
+        .add_message::<UndoMenuRequested>()
+        .add_message::<RedoMenuRequested>()
+        .add_message::<ScenarioStartupParamCommit>()
         .init_resource::<ScenarioMetadata>()
         .init_resource::<ScenarioStartupParams>()
         .init_resource::<InstrumentRegistry>()
@@ -244,8 +244,8 @@ impl Plugin for UiPlugin {
         .insert_resource(ScenarioWritebackPaths {
             cache_sidecar: crate::ui::menu_bar::cache_state_paths().map(|(json, _)| json),
         })
-        .add_event::<ScenarioLoadedFromFile>()
-        .add_event::<ScenarioClearedFromFile>()
+        .add_message::<ScenarioLoadedFromFile>()
+        .add_message::<ScenarioClearedFromFile>()
         // Phase 9 §3.9 / §3.10: OrderPanel form state + 2-stage confirm + Secret input.
         // `SecretPrompt` / `LiveOrders` are inserted in the binary (main.rs) since the
         // transport-facing systems own them.

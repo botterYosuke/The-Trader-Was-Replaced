@@ -349,7 +349,7 @@ impl AppHistory {
 /// undo/redo の適用が完了したフレームに発火するイベント。
 /// `sync_strategy_buffer_to_editor_system` がこのイベントを受けて
 /// エディタ表示を更新する（通常のユーザー入力では発火しない）。
-#[derive(Event, Debug, Clone)]
+#[derive(Message, Debug, Clone)]
 pub struct UndoRedoApplied;
 
 /// Strategy Editor の内容を復元するためのキュー。
@@ -368,7 +368,7 @@ pub struct PendingStrategySnapshotRestore {
 /// DragEnd 時に before/after を比較して WindowMove を push する。
 #[derive(Resource, Default, Debug)]
 pub struct ActiveDrag {
-    pub starts: bevy::utils::HashMap<Entity, Vec2>,
+    pub starts: std::collections::HashMap<Entity, Vec2>,
 }
 
 // ─────────────────────────────────────────────────────────────────────────────

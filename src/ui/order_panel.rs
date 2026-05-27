@@ -243,7 +243,7 @@ pub fn estimated_notional(draft: &OrderDraft, last_price: Option<f64>) -> Option
 // ===========================================================================
 
 /// ボタン操作を world-space observer から systems に橋渡しするイベント。
-#[derive(Event, Debug, Clone, Copy)]
+#[derive(Message, Debug, Clone, Copy)]
 pub struct OrderButtonPressed(pub OrderButton);
 
 #[derive(Component, Clone, Copy, Debug)]
@@ -444,8 +444,8 @@ pub fn spawn_order_form_in_window(commands: &mut Commands, content_area: Entity)
                 Transform::from_xyz(x, y, 0.2),
                 btn,
             ))
-            .observe(move |_trigger: Trigger<Pointer<Click>>, mut ev: EventWriter<OrderButtonPressed>| {
-                ev.send(OrderButtonPressed(btn));
+            .observe(move |_trigger: On<Pointer<Click>>, mut ev: MessageWriter<OrderButtonPressed>| {
+                ev.write(OrderButtonPressed(btn));
             })
             .with_children(|s| {
                 s.spawn((
@@ -501,8 +501,8 @@ pub fn spawn_order_form_in_window(commands: &mut Commands, content_area: Entity)
             Transform::from_xyz(0.0, Y_SUBMIT, 0.2),
             submit,
         ))
-        .observe(move |_trigger: Trigger<Pointer<Click>>, mut ev: EventWriter<OrderButtonPressed>| {
-            ev.send(OrderButtonPressed(submit));
+        .observe(move |_trigger: On<Pointer<Click>>, mut ev: MessageWriter<OrderButtonPressed>| {
+            ev.write(OrderButtonPressed(submit));
         })
         .with_children(|s| {
             s.spawn((
@@ -522,7 +522,7 @@ pub fn spawn_order_form_in_window(commands: &mut Commands, content_area: Entity)
 
 /// side/type/TIF/数量±/価格± ボタン押下を `OrderForm` に反映する。
 pub fn order_form_button_system(
-    mut events: EventReader<OrderButtonPressed>,
+    mut events: MessageReader<OrderButtonPressed>,
     mut form: ResMut<OrderForm>,
     mut confirm: ResMut<OrderConfirm>,
 ) {
@@ -556,7 +556,7 @@ pub fn order_form_button_system(
 /// `[発注]` 押下で検証 → OK なら `OrderConfirm.pending` をセット (確認モーダルが開く)。
 /// NG なら `last_error` にメッセージを入れてパネルに赤字表示する。
 pub fn order_submit_button_system(
-    mut events: EventReader<OrderButtonPressed>,
+    mut events: MessageReader<OrderButtonPressed>,
     form: Res<OrderForm>,
     selected: Res<SelectedSymbol>,
     venue: Res<VenueStatusRes>,
@@ -912,7 +912,7 @@ mod tests {
 
     fn make_app() -> App {
         let mut app = App::new();
-        app.add_event::<OrderButtonPressed>();
+        app.add_message::<OrderButtonPressed>();
         app.init_resource::<OrderForm>();
         app.init_resource::<OrderConfirm>();
         app.init_resource::<OrderFeedback>();

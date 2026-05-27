@@ -25,7 +25,7 @@ impl RenderScaleResponsive {
 /// set_initial_scale(First) / add_editor_to_focused(PostUpdate) の競合とは無関係。
 pub fn update_cosmic_render_scale_system(
     window_q: Query<&Window, With<PrimaryWindow>>,
-    camera_q: Query<&OrthographicProjection, With<Camera2d>>,
+    camera_q: Query<&Projection, With<Camera2d>>,
     mut q: Query<(&mut RenderScaleResponsive, &mut CosmicRenderScale)>,
 ) {
     let dpi = window_q
@@ -35,8 +35,11 @@ pub fn update_cosmic_render_scale_system(
         .max(1.0);
     let camera_scale = camera_q
         .get_single()
-        .map(|p| p.scale.max(0.01))
-        .unwrap_or(1.0);
+        .map(|p| {
+            if let Projection::Orthographic(proj) = p { proj.scale } else { 1.0 }
+        })
+        .unwrap_or(1.0)
+        .max(0.01);
     let zoom = (1.0 / camera_scale).max(1.0);
 
     for (mut responsive, mut render_scale) in &mut q {

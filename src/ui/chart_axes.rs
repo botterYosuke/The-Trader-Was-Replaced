@@ -443,7 +443,7 @@ mod tests {
         };
 
         let mut app = App::new();
-        app.add_event::<RequestAutoscale>();
+        app.add_message::<RequestAutoscale>();
         app.init_resource::<InstrumentTradingDataMap>();
 
         let mut data = InstrumentTradingData::default();
@@ -604,7 +604,7 @@ mod tests {
         use crate::ui::chart_viewstate::{ChartViewState, RequestAutoscale};
 
         let mut app = App::new();
-        app.add_event::<RequestAutoscale>();
+        app.add_message::<RequestAutoscale>();
         app.init_resource::<InstrumentTradingDataMap>();
 
         let mut data = InstrumentTradingData::default();
@@ -694,7 +694,7 @@ mod tests {
         use crate::ui::chart_viewstate::{ChartViewState, RequestAutoscale};
 
         let mut app = App::new();
-        app.add_event::<RequestAutoscale>();
+        app.add_message::<RequestAutoscale>();
         app.init_resource::<InstrumentTradingDataMap>();
 
         let mut data = InstrumentTradingData::default();

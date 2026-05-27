@@ -1,6 +1,7 @@
 use bevy::prelude::*;
-use bevy::render::render_resource::{AsBindGroup, ShaderRef};
-use bevy::sprite::{AlphaMode2d, Material2d, Material2dPlugin};
+use bevy::render::render_resource::AsBindGroup;
+use bevy::shader::ShaderRef;
+use bevy::sprite_render::{AlphaMode2d, Material2d, Material2dPlugin};
 
 pub struct GridPlugin;
 
@@ -46,10 +47,10 @@ fn setup_grid(
 #[allow(clippy::type_complexity)]
 fn update_grid_position(
     camera_query: Query<
-        (&Transform, &OrthographicProjection),
+        (&Transform, &Projection),
         (
             With<Camera2d>,
-            Or<(Changed<Transform>, Changed<OrthographicProjection>)>,
+            Or<(Changed<Transform>, Changed<Projection>)>,
         ),
     >,
     mut grid_query: Query<&mut Transform, (With<MainGrid>, Without<Camera2d>)>,
@@ -62,6 +63,11 @@ fn update_grid_position(
 
         // Ensure the grid quad is always large enough to cover the screen
         // 100000.0 is the base size. We scale it by the camera's zoom scale.
-        grid_transform.scale = Vec3::splat(projection.scale.max(1.0));
+        let scale = if let Projection::Orthographic(proj) = projection {
+            proj.scale
+        } else {
+            1.0
+        };
+        grid_transform.scale = Vec3::splat(scale.max(1.0));
     }
 }

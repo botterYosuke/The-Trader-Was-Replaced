@@ -62,7 +62,7 @@ pub struct DefaultAttrs(pub AttrsOwned);
 
 impl Default for DefaultAttrs {
     fn default() -> Self {
-        DefaultAttrs(AttrsOwned::new(Attrs::new()))
+        DefaultAttrs(AttrsOwned::new(&Attrs::new()))
     }
 }
 

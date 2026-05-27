@@ -75,7 +75,7 @@ pub fn tab_input_system(
     focused: Res<FocusedWidget>,
     mut editor_q: Query<(Entity, &mut CosmicEditor), With<StrategyEditorContent>>,
     mut font_system: ResMut<CosmicFontSystem>,
-    mut evw_changed: EventWriter<CosmicTextChanged>,
+    mut evw_changed: MessageWriter<CosmicTextChanged>,
 ) {
     if !keys.just_pressed(KeyCode::Tab) {
         return;
@@ -91,7 +91,7 @@ pub fn tab_input_system(
     }
     keys.reset(KeyCode::Tab); // 将来 cosmic が Tab を扱う場合への防衛 + 二重発火防止
     let new_text = editor.with_buffer_mut(|b| buffer_text(b));
-    evw_changed.send(CosmicTextChanged((entity, new_text)));
+    evw_changed.write(CosmicTextChanged((entity, new_text)));
 }
 
 /// Enter → 改行 + 前行インデント継承。focused な Strategy Editor のみ。
@@ -102,7 +102,7 @@ pub fn enter_autoindent_system(
     focused: Res<FocusedWidget>,
     mut editor_q: Query<(Entity, &mut CosmicEditor), With<StrategyEditorContent>>,
     mut font_system: ResMut<CosmicFontSystem>,
-    mut evw_changed: EventWriter<CosmicTextChanged>,
+    mut evw_changed: MessageWriter<CosmicTextChanged>,
 ) {
     if !keys.just_pressed(KeyCode::Enter) {
         return;
@@ -129,19 +129,19 @@ pub fn enter_autoindent_system(
     }
     keys.reset(KeyCode::Enter); // cosmic の Enter 処理を抑止 (Caveat #3)
     let new_text = editor.with_buffer_mut(|b| buffer_text(b));
-    evw_changed.send(CosmicTextChanged((entity, new_text)));
+    evw_changed.write(CosmicTextChanged((entity, new_text)));
 }
 
 /// 括弧 opener が入力されたら closer を後置してカーソルを間に残す。
 /// cosmic が opener を挿入した直後 (`.after(InputSet)`) に走り、`KeyboardInput` を
 /// **読むだけ** (clear しない) で opener 文字を判定する (Caveat #5)。
 pub fn bracket_autoclose_system(
-    mut keyboard_evr: EventReader<KeyboardInput>,
+    mut keyboard_evr: MessageReader<KeyboardInput>,
     keys: Res<ButtonInput<KeyCode>>,
     focused: Res<FocusedWidget>,
     mut editor_q: Query<(Entity, &mut CosmicEditor), With<StrategyEditorContent>>,
     mut font_system: ResMut<CosmicFontSystem>,
-    mut evw_changed: EventWriter<CosmicTextChanged>,
+    mut evw_changed: MessageWriter<CosmicTextChanged>,
 ) {
     // focus が editor 以外なら events を読み捨ててスキップ (溜め込み防止)。
     let Some(focus_entity) = focused.0 else {
@@ -192,7 +192,7 @@ pub fn bracket_autoclose_system(
 
     if inserted {
         let new_text = editor.with_buffer_mut(|b| buffer_text(b));
-        evw_changed.send(CosmicTextChanged((entity, new_text)));
+        evw_changed.write(CosmicTextChanged((entity, new_text)));
     }
 }
 

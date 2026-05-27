@@ -29,7 +29,7 @@ impl Plugin for WidgetPlugin {
                 )
                     .chain()
                     .in_set(WidgetSet)
-                    .after(TransformSystem::TransformPropagate),
+                    .after(TransformSystems::Propagate),
             )
             .register_type::<CosmicPadding>();
     }

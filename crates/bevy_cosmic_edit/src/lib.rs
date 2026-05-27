@@ -73,12 +73,12 @@ pub mod prelude {
         print_editor_text, ColorExtras as _,
     };
     #[doc(no_inline)]
-    pub use bevy::text::cosmic_text::{
+    pub use cosmic_text::{
         Color as CosmicColor, Style as FontStyle, Weight as FontWeight,
     };
 }
 
-pub use bevy::text::cosmic_text;
+pub use cosmic_text;
 
 pub use primary::{CosmicEditPlugin, CosmicFontConfig, CosmicPrimaryCamera};
 /// Contains the library global important types you probably want to explore first

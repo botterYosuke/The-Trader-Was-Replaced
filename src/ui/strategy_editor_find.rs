@@ -81,7 +81,7 @@ pub enum FindButtonKind {
 }
 
 /// ボタン click / キーボードから発行されるアクション要求。
-#[derive(Event, Clone, Copy)]
+#[derive(Message, Clone, Copy)]
 pub struct FindActionRequested(pub FindButtonKind);
 
 // ─────────────────────────────────────────────────────────────────
@@ -371,7 +371,7 @@ pub fn manage_find_panel_lifecycle_system(
 /// **history / autosave / fragment には絶対に触らない** (Caveat #28)。
 /// `Without<StrategyEditorContent>` を二重ガードに使い、マーカー取り違えを検出する。
 pub fn sync_find_editors_to_state_system(
-    mut events: EventReader<CosmicTextChanged>,
+    mut events: MessageReader<CosmicTextChanged>,
     query_q: Query<Entity, (With<FindQueryEditor>, Without<StrategyEditorContent>)>,
     replacement_q: Query<Entity, (With<FindReplacementEditor>, Without<StrategyEditorContent>)>,
     mut state: ResMut<FindReplaceState>,
@@ -499,7 +499,7 @@ pub fn compute_find_match_spans_system(
 /// query 欄に focus 中は Enter を navigation に使わない (F3 / ボタンのみ)。
 pub fn find_navigate_system(
     keys: Res<ButtonInput<KeyCode>>,
-    mut actions: EventReader<FindActionRequested>,
+    mut actions: MessageReader<FindActionRequested>,
     focused: Res<FocusedWidget>,
     mut state: ResMut<FindReplaceState>,
     mut editor_q: Query<&mut FindMatchSpans, With<StrategyEditorContent>>,
@@ -589,7 +589,7 @@ pub fn find_scroll_to_match_system(
 /// `set_text` + `CosmicTextChanged` を発行する。fragment 更新・undo 記録・autosave・
 /// 再ハイライトは Phase A パイプライン (CosmicTextChanged → fragment Changed) に委譲する。
 pub fn replace_execute_system(
-    mut actions: EventReader<FindActionRequested>,
+    mut actions: MessageReader<FindActionRequested>,
     state: Res<FindReplaceState>,
     fragments_q: Query<(&StrategyEditorId, &StrategyFragment), With<WindowRoot>>,
     mut editor_q: Query<
@@ -601,7 +601,7 @@ pub fn replace_execute_system(
         With<StrategyEditorContent>,
     >,
     mut font_system: ResMut<CosmicFontSystem>,
-    mut evw_changed: EventWriter<CosmicTextChanged>,
+    mut evw_changed: MessageWriter<CosmicTextChanged>,
 ) {
     if !state.is_open {
         return;
@@ -660,7 +660,7 @@ pub fn replace_execute_system(
         });
         editor.set_redraw(true);
     }
-    evw_changed.send(CosmicTextChanged((target, new_source)));
+    evw_changed.write(CosmicTextChanged((target, new_source)));
 }
 
 /// 件数表示 ("current/total") を state 変化時に更新する。
@@ -755,11 +755,11 @@ fn spawn_button(
             kind,
         ))
         .observe(
-            |trigger: Trigger<Pointer<Click>>,
+            |trigger: On<Pointer<Click>>,
              kind_q: Query<&FindButtonKind>,
-             mut w: EventWriter<FindActionRequested>| {
-                if let Ok(k) = kind_q.get(trigger.entity()) {
-                    w.send(FindActionRequested(*k));
+             mut w: MessageWriter<FindActionRequested>| {
+                if let Ok(k) = kind_q.get(trigger.entity) {
+                    w.write(FindActionRequested(*k));
                 }
             },
         )
@@ -909,7 +909,7 @@ mod tests {
     fn sync_find_editors_writes_query_not_replacement() {
         let mut app = App::new();
         app.init_resource::<FindReplaceState>();
-        app.add_event::<CosmicTextChanged>();
+        app.add_message::<CosmicTextChanged>();
         app.add_systems(Update, sync_find_editors_to_state_system);
 
         let query_e = app.world_mut().spawn(FindQueryEditor).id();
@@ -1025,7 +1025,7 @@ mod tests {
         app.init_resource::<FindReplaceState>();
         app.init_resource::<ButtonInput<KeyCode>>();
         app.insert_resource(FocusedWidget(None));
-        app.add_event::<FindActionRequested>();
+        app.add_message::<FindActionRequested>();
         app.add_systems(
             Update,
             (compute_find_match_spans_system, find_navigate_system).chain(),

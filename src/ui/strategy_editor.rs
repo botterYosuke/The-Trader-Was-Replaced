@@ -409,8 +409,8 @@ pub fn strategy_editor_content_layout_system(
 /// 更新するので、本 system は必ず `.after(open_strategy_buffer_system)` で走らせる。
 /// `EventReader` は system ごとに独立した読み取りカーソルを持つため、両方とも同じイベントを読める。
 pub fn sync_strategy_buffer_to_editor_system(
-    mut open_events: EventReader<StrategyFileLoadRequested>,
-    mut undo_events: EventReader<UndoRedoApplied>,
+    mut open_events: MessageReader<StrategyFileLoadRequested>,
+    mut undo_events: MessageReader<UndoRedoApplied>,
     fragments_q: Query<(&StrategyEditorId, &StrategyFragment), With<WindowRoot>>,
     mut editor_q: Query<
         (
@@ -458,7 +458,7 @@ pub fn sync_strategy_buffer_to_editor_system(
 /// 第 1 要素が編集されたエディタ entity、第 2 要素が新しい全文。
 /// Strategy Editor 以外のエディタ entity からのイベントは無視する。
 pub fn sync_editor_to_strategy_buffer_system(
-    mut events: EventReader<CosmicTextChanged>,
+    mut events: MessageReader<CosmicTextChanged>,
     editor_q: Query<&StrategyEditorId, With<StrategyEditorContent>>,
     mut fragments_q: Query<(&StrategyEditorId, &mut StrategyFragment), With<WindowRoot>>,
     mut history: ResMut<AppHistory>,
@@ -513,8 +513,8 @@ pub fn undo_redo_system(
     time: Res<Time>,
     mut cooldown: Local<f32>,
     mut history: ResMut<AppHistory>,
-    mut undo_menu_ev: EventReader<UndoMenuRequested>,
-    mut redo_menu_ev: EventReader<RedoMenuRequested>,
+    mut undo_menu_ev: MessageReader<UndoMenuRequested>,
+    mut redo_menu_ev: MessageReader<RedoMenuRequested>,
     // UndoRedoApplied は apply_pending_app_edits_system がテキスト変更時のみ送る。
     // ここで送ると Window spawn/despawn undo でも editor set_text が走りカーソルリセットが起きる。
 ) {
@@ -572,10 +572,10 @@ pub fn apply_pending_app_edits_system(
     mut windows_q: Query<(Entity, &PanelKind, &mut Transform), With<WindowRoot>>,
     editor_id_q: Query<(Entity, &StrategyEditorId), With<WindowRoot>>,
     mut commands: Commands,
-    mut spawn_ev: EventWriter<PanelSpawnRequested>,
+    mut spawn_ev: MessageWriter<PanelSpawnRequested>,
     mut pending_layout: ResMut<PendingLayoutApply>,
     mut pending_restore: ResMut<PendingStrategySnapshotRestore>,
-    mut undo_applied: EventWriter<UndoRedoApplied>,
+    mut undo_applied: MessageWriter<UndoRedoApplied>,
     mut auto_save: ResMut<StrategyAutoSaveState>,
     mut layout_auto_save: ResMut<AutoSaveState>,
 ) {
@@ -639,7 +639,7 @@ pub fn apply_pending_app_edits_system(
                 } else {
                     None
                 };
-                spawn_ev.send(PanelSpawnRequested {
+                spawn_ev.write(PanelSpawnRequested {
                     kind: layout.kind,
                     source: PanelSpawnSource::UndoRedo,
                     strategy_spec,
@@ -673,7 +673,7 @@ pub fn apply_pending_app_edits_system(
     }
 
     if any_text && history.is_replaying() {
-        undo_applied.send(UndoRedoApplied);
+        undo_applied.write(UndoRedoApplied);
     }
 
     if history.replaying_depth > 0 {
@@ -689,7 +689,7 @@ pub fn apply_strategy_snapshot_restore_system(
     mut fragments_q: Query<(&StrategyEditorId, &mut StrategyFragment), With<WindowRoot>>,
     mut history: ResMut<AppHistory>,
     editor_q: Query<Entity, With<StrategyEditorContent>>,
-    mut undo_applied: EventWriter<UndoRedoApplied>,
+    mut undo_applied: MessageWriter<UndoRedoApplied>,
     mut auto_save: ResMut<StrategyAutoSaveState>,
 ) {
     if pending_restore.snapshot.is_none() {
@@ -705,7 +705,7 @@ pub fn apply_strategy_snapshot_restore_system(
             .find(|(id, _)| id.region_key == region_key)
         {
             mark_fragment_dirty(&mut fragment, &mut auto_save, source);
-            undo_applied.send(UndoRedoApplied);
+            undo_applied.write(UndoRedoApplied);
         } else {
             warn!(
                 "snapshot restore for region '{}' but no matching root yet",
@@ -1219,8 +1219,8 @@ mod tests {
         app.init_resource::<AutoSaveState>();
         app.init_resource::<PendingLayoutApply>();
         app.init_resource::<PendingStrategySnapshotRestore>();
-        app.add_event::<PanelSpawnRequested>();
-        app.add_event::<UndoRedoApplied>();
+        app.add_message::<PanelSpawnRequested>();
+        app.add_message::<UndoRedoApplied>();
         app.add_systems(Update, apply_pending_app_edits_system);
 
         let region_key = "region_001".to_string();
@@ -1263,7 +1263,7 @@ mod tests {
         app.init_resource::<AppHistory>();
         app.init_resource::<StrategyAutoSaveState>();
         app.init_resource::<PendingStrategySnapshotRestore>();
-        app.add_event::<UndoRedoApplied>();
+        app.add_message::<UndoRedoApplied>();
         app.add_systems(Update, apply_strategy_snapshot_restore_system);
 
         app.world_mut().spawn(StrategyEditorContent);

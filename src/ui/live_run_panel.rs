@@ -208,7 +208,7 @@ pub struct StrategyLogLineTag {
 // ===========================================================================
 
 fn spawn_control_button(
-    parent: &mut ChildBuilder,
+    parent: &mut ChildSpawner,
     row: usize,
     action: LiveRunControlAction,
     label: &str,
@@ -243,7 +243,7 @@ fn spawn_control_button(
         });
 }
 
-fn spawn_cell(parent: &mut ChildBuilder, row: usize, cell: LiveRunCell, width: f32) {
+fn spawn_cell(parent: &mut ChildSpawner, row: usize, cell: LiveRunCell, width: f32) {
     parent.spawn((
         Node {
             width: Val::Px(width),

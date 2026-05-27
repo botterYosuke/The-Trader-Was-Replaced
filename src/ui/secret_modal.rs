@@ -342,7 +342,7 @@ pub fn secret_modal_visibility_system(
 pub fn secret_modal_input_system(
     mut prompt: ResMut<SecretPrompt>,
     mut input: ResMut<SecretInput>,
-    mut kb_events: ResMut<Events<KeyboardInput>>,
+    mut kb_events: ResMut<Messages<KeyboardInput>>,
     sender: Option<Res<TransportCommandSender>>,
 ) {
     if prompt.active.is_none() {

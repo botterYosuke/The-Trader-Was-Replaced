@@ -92,7 +92,7 @@ fn validate_date_field(field_name: &str, s: &str) -> Result<NaiveDate, String> {
         .map_err(|_| format!("invalid date '{}'; use YYYY-MM-DD", s))
 }
 
-#[derive(Event, Debug, Clone)]
+#[derive(Message, Debug, Clone)]
 pub enum ScenarioStartupParamCommit {
     Start(String),
     End(String),
@@ -222,15 +222,15 @@ pub fn spawn_scenario_startup_window(commands: &mut Commands) {
                 marker,
             ))
             .observe(
-                move |_trigger: Trigger<Pointer<Click>>,
-                      mut commit_w: EventWriter<ScenarioStartupParamCommit>,
+                move |_trigger: On<Pointer<Click>>,
+                      mut commit_w: MessageWriter<ScenarioStartupParamCommit>,
                       mut params: ResMut<ScenarioStartupParams>,
                       progress: Res<ReplayStartupProgress>,
                       paths: Res<ScenarioWritebackPaths>| {
                     if is_panel_disabled(&progress, &paths) {
                         return;
                     }
-                    commit_w.send(ScenarioStartupParamCommit::Granularity(choice));
+                    commit_w.write(ScenarioStartupParamCommit::Granularity(choice));
                     params.dirty = true;
                 },
             )
@@ -449,7 +449,7 @@ pub fn sync_startup_params_from_scenario_system(
 }
 
 pub fn commit_startup_params_to_scenario_system(
-    mut events: EventReader<ScenarioStartupParamCommit>,
+    mut events: MessageReader<ScenarioStartupParamCommit>,
     mut params: ResMut<ScenarioStartupParams>,
     mut metadata: ResMut<ScenarioMetadata>,
     progress: Res<ReplayStartupProgress>,
@@ -599,9 +599,9 @@ pub fn sync_startup_param_editors_text_system(
 }
 
 pub fn scenario_startup_param_input_system(
-    mut events: EventReader<CosmicTextChanged>,
+    mut events: MessageReader<CosmicTextChanged>,
     editors_q: Query<&ScenarioStartupFieldEditor>,
-    mut commit_w: EventWriter<ScenarioStartupParamCommit>,
+    mut commit_w: MessageWriter<ScenarioStartupParamCommit>,
     mut params: ResMut<ScenarioStartupParams>,
     progress: Res<ReplayStartupProgress>,
     paths: Res<ScenarioWritebackPaths>,
@@ -623,15 +623,15 @@ pub fn scenario_startup_param_input_system(
         let trimmed = new_text.trim();
         match editor.field {
             ScenarioStartupField::Start => {
-                commit_w.send(ScenarioStartupParamCommit::Start(trimmed.to_string()));
+                commit_w.write(ScenarioStartupParamCommit::Start(trimmed.to_string()));
                 params.dirty = true;
             }
             ScenarioStartupField::End => {
-                commit_w.send(ScenarioStartupParamCommit::End(trimmed.to_string()));
+                commit_w.write(ScenarioStartupParamCommit::End(trimmed.to_string()));
                 params.dirty = true;
             }
             ScenarioStartupField::InitialCash => {
-                commit_w.send(ScenarioStartupParamCommit::InitialCash(trimmed.to_string()));
+                commit_w.write(ScenarioStartupParamCommit::InitialCash(trimmed.to_string()));
                 params.dirty = true;
             }
             ScenarioStartupField::Granularity | ScenarioStartupField::CrossField => {}
@@ -935,7 +935,7 @@ mod tests {
             .insert_resource(ScenarioWritebackPaths {
                 cache_sidecar: Some(std::path::PathBuf::from("/tmp/dummy_cache.json")),
             })
-            .add_event::<ScenarioStartupParamCommit>()
+            .add_message::<ScenarioStartupParamCommit>()
             .add_systems(
                 Update,
                 (
@@ -1282,7 +1282,7 @@ mod tests {
     #[test]
     fn test_19_input_strips_whitespace_before_commit() {
         let mut app = make_app();
-        app.add_event::<CosmicTextChanged>().add_systems(
+        app.add_message::<CosmicTextChanged>().add_systems(
             Update,
             (
                 scenario_startup_param_input_system,
@@ -1321,7 +1321,7 @@ mod tests {
     #[test]
     fn test_19_initial_cash_input_strips_whitespace_before_commit() {
         let mut app = make_app();
-        app.add_event::<CosmicTextChanged>().add_systems(
+        app.add_message::<CosmicTextChanged>().add_systems(
             Update,
             (
                 scenario_startup_param_input_system,
@@ -1359,7 +1359,7 @@ mod tests {
     #[test]
     fn test_19_whitespace_only_input_collapses_to_empty_error() {
         let mut app = make_app();
-        app.add_event::<CosmicTextChanged>().add_systems(
+        app.add_message::<CosmicTextChanged>().add_systems(
             Update,
             (
                 scenario_startup_param_input_system,
@@ -1400,7 +1400,7 @@ mod tests {
     #[test]
     fn test_19_initial_cash_whitespace_only_collapses_to_empty_error() {
         let mut app = make_app();
-        app.add_event::<CosmicTextChanged>().add_systems(
+        app.add_message::<CosmicTextChanged>().add_systems(
             Update,
             (
                 scenario_startup_param_input_system,
@@ -1510,7 +1510,7 @@ mod tests {
             .insert_resource(ScenarioWritebackPaths {
                 cache_sidecar: Some(cache_path),
             })
-            .add_event::<ScenarioStartupParamCommit>()
+            .add_message::<ScenarioStartupParamCommit>()
             .add_systems(Update, write_startup_params_to_cache_sidecar_system);
         app
     }
@@ -1592,8 +1592,8 @@ mod tests {
         app.insert_resource(ScenarioMetadata::default());
         app.init_resource::<ScenarioFileWatchState>();
         app.insert_resource(ScenarioReadTarget(Some(cache_path.clone())));
-        app.add_event::<crate::ui::components::ScenarioLoadedFromFile>();
-        app.add_event::<crate::ui::components::ScenarioClearedFromFile>();
+        app.add_message::<crate::ui::components::ScenarioLoadedFromFile>();
+        app.add_message::<crate::ui::components::ScenarioClearedFromFile>();
         app.add_systems(
             Update,
             (
@@ -1638,7 +1638,7 @@ mod tests {
             .insert_resource(crate::trading::ExecutionModeRes {
                 mode: crate::trading::ExecutionMode::Replay,
             })
-            .add_event::<ScenarioStartupParamCommit>()
+            .add_message::<ScenarioStartupParamCommit>()
             .add_systems(
                 Update,
                 (

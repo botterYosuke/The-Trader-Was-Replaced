@@ -80,7 +80,7 @@ fn add_placeholder_to_buffer(
         }
 
         if buffer.get_text().is_empty() {
-            buffer.set_text(&mut font_system, placeholder.text, placeholder.attrs);
+            buffer.set_text(&mut font_system, placeholder.text, placeholder.attrs.clone());
             placeholder.active = true;
         }
     }
@@ -106,8 +106,9 @@ fn add_placeholder_to_editor(
                 buffer.set_text(
                     &mut font_system,
                     placeholder.text,
-                    placeholder.attrs,
+                    &placeholder.attrs,
                     cosmic_text::Shaping::Advanced,
+                    None,
                 );
                 placeholder.active = true;
                 buffer.set_redraw(true);
@@ -126,7 +127,7 @@ fn move_cursor_to_start_of_placeholder(mut q: Query<(&mut CosmicEditor, &mut Pla
 
 fn remove_placeholder_on_input(
     mut q: Query<(&mut CosmicEditor, &mut Placeholder, &DefaultAttrs)>,
-    evr: EventReader<CosmicTextChanged>,
+    evr: MessageReader<CosmicTextChanged>,
     mut font_system: ResMut<CosmicFontSystem>,
 ) {
     for (mut editor, mut placeholder, attrs) in q.iter_mut() {
@@ -165,8 +166,9 @@ fn remove_placeholder_on_input(
                 b.set_text(
                     &mut font_system,
                     full_text.as_str(),
-                    attrs.0.as_attrs(),
+                    &attrs.0.as_attrs(),
                     cosmic_text::Shaping::Advanced,
+                    None,
                 );
 
                 let last_line = full_text.lines().last();
@@ -198,8 +200,9 @@ fn remove_placeholder_on_input(
                     b.set_text(
                         &mut font_system,
                         placeholder.text,
-                        placeholder.attrs,
+                        &placeholder.attrs,
                         cosmic_text::Shaping::Advanced,
+                        None,
                     );
                     return None;
                 }
@@ -208,8 +211,9 @@ fn remove_placeholder_on_input(
             b.set_text(
                 &mut font_system,
                 single_line.as_str(),
-                attrs.0.as_attrs(),
+                &attrs.0.as_attrs(),
                 cosmic_text::Shaping::Advanced,
+                None,
             );
 
             Some(single_line)

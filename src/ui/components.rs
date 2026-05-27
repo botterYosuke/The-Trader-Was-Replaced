@@ -106,7 +106,7 @@ pub struct StrategyBuffer {
 #[derive(Component)]
 pub struct StrategyStatusLabel;
 
-#[derive(Event, Debug, Clone)]
+#[derive(Message, Debug, Clone)]
 pub struct StrategyRunRequested {
     pub cache_path: std::path::PathBuf,
 }
@@ -295,7 +295,7 @@ pub enum PanelSpawnSource {
 
 /// パネルボタンが押されたとき発火するイベント。
 /// `panel_spawn_dispatcher_system` が受け取り、未スポーンなら spawn する。
-#[derive(Event, Debug, Clone)]
+#[derive(Message, Debug, Clone)]
 pub struct PanelSpawnRequested {
     pub kind: PanelKind,
     pub source: PanelSpawnSource,
@@ -303,10 +303,10 @@ pub struct PanelSpawnRequested {
     pub strategy_spec: Option<StrategyEditorSpawnSpec>,
 }
 
-#[derive(Event, Debug, Clone)]
+#[derive(Message, Debug, Clone)]
 pub struct UndoMenuRequested;
 
-#[derive(Event, Debug, Clone)]
+#[derive(Message, Debug, Clone)]
 pub struct RedoMenuRequested;
 
 // ─── Strategy Editor multi-spawn 用型群 ───────────────────────────────────
@@ -359,7 +359,7 @@ pub struct PendingStrategyFragments {
 /// ユーザー操作またはレイアウト復元でストラテジーファイルをロードするイベント。
 /// 旧 `OpenStrategyRequested` を置き換え、mode によって read→split→spawn の
 /// 判断木を `handle_strategy_file_load_system` 一か所に集約する。
-#[derive(Event, Debug, Clone)]
+#[derive(Message, Debug, Clone)]
 pub struct StrategyFileLoadRequested {
     pub path: PathBuf,
     pub mode: StrategyLoadMode,
@@ -448,7 +448,7 @@ impl InstrumentRegistry {
 
 /// `parse_scenario_system` がサイドカー JSON の読み込み成功時のみ発火する。
 /// registry → JSON writeback 経路では発火させない（同期方向の一方向化）。
-#[derive(Event, Debug, Clone)]
+#[derive(Message, Debug, Clone)]
 pub struct ScenarioLoadedFromFile {
     pub source_path: PathBuf,
     pub instruments: Vec<String>,
@@ -462,7 +462,7 @@ pub struct ScenarioLoadedFromFile {
 /// 同期方向は file → registry の一方向。registry → file では発火させない。
 /// 計画書 §9.2: locked sidecar から scenario なし sidecar に切替えても
 /// `registry.editable` / `registry.ids` が残存しないようにするため。
-#[derive(Event, Debug, Clone)]
+#[derive(Message, Debug, Clone)]
 pub struct ScenarioClearedFromFile {
     pub source_path: Option<PathBuf>,
 }
@@ -601,7 +601,7 @@ mod instrument_registry_tests {
 /// `editable = ref_path.is_none()`。ファイル由来の代入は writeback の
 /// revision を flushed と同値に保ち、Run 直前 inline flush を起動させない（計画書 §3.2）。
 pub fn sync_registry_from_scenario_loaded_system(
-    mut events: EventReader<ScenarioLoadedFromFile>,
+    mut events: MessageReader<ScenarioLoadedFromFile>,
     mut registry: ResMut<InstrumentRegistry>,
     mut writeback: ResMut<ScenarioInstrumentsWritebackState>,
 ) {
@@ -617,7 +617,7 @@ pub fn sync_registry_from_scenario_loaded_system(
 /// `ScenarioLoadedFromFile` 側と同じく writeback.revision は flushed と同値に保ち、
 /// このリセットを起点にした再 writeback ループを起こさない（計画書 §9.2 Green）。
 pub fn sync_registry_from_scenario_cleared_system(
-    mut events: EventReader<ScenarioClearedFromFile>,
+    mut events: MessageReader<ScenarioClearedFromFile>,
     mut registry: ResMut<InstrumentRegistry>,
     mut writeback: ResMut<ScenarioInstrumentsWritebackState>,
 ) {
@@ -635,7 +635,7 @@ mod sync_registry_from_scenario_loaded_tests {
 
     fn build_app() -> App {
         let mut app = App::new();
-        app.add_event::<ScenarioLoadedFromFile>()
+        app.add_message::<ScenarioLoadedFromFile>()
             .init_resource::<InstrumentRegistry>()
             .init_resource::<ScenarioInstrumentsWritebackState>()
             .add_systems(Update, sync_registry_from_scenario_loaded_system);
@@ -1458,8 +1458,8 @@ mod writeback_scenario_instruments_tests {
         app.insert_resource(crate::trading::ExecutionModeRes {
             mode: crate::trading::ExecutionMode::Replay,
         });
-        app.add_event::<ScenarioLoadedFromFile>();
-        app.add_event::<ScenarioClearedFromFile>();
+        app.add_message::<ScenarioLoadedFromFile>();
+        app.add_message::<ScenarioClearedFromFile>();
 
         app.add_systems(Update, parse_scenario_system);
         app.update();
@@ -1518,7 +1518,7 @@ mod writeback_scenario_instruments_tests {
         let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel::<TransportCommand>();
 
         let mut app = App::new();
-        app.add_event::<StrategyRunRequested>();
+        app.add_message::<StrategyRunRequested>();
         app.insert_resource(StrategyBuffer {
             original_path: Some(original_py.clone()),
             cache_path: None,
@@ -1593,7 +1593,7 @@ mod writeback_scenario_instruments_tests {
         let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel::<TransportCommand>();
 
         let mut app = App::new();
-        app.add_event::<StrategyRunRequested>();
+        app.add_message::<StrategyRunRequested>();
         app.insert_resource(StrategyBuffer {
             original_path: Some(original_py.clone()),
             cache_path: None,
@@ -1669,7 +1669,7 @@ mod writeback_scenario_instruments_tests {
         let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel::<TransportCommand>();
 
         let mut app = App::new();
-        app.add_event::<StrategyRunRequested>();
+        app.add_message::<StrategyRunRequested>();
         app.insert_resource(StrategyBuffer {
             original_path: Some(original_py.clone()),
             cache_path: None,
@@ -1731,7 +1731,7 @@ mod writeback_scenario_instruments_tests {
         let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel::<TransportCommand>();
 
         let mut app = App::new();
-        app.add_event::<StrategyRunRequested>();
+        app.add_message::<StrategyRunRequested>();
         app.insert_resource(StrategyBuffer {
             original_path: Some(original_py.clone()),
             cache_path: None,
@@ -1817,11 +1817,11 @@ mod writeback_scenario_instruments_tests {
         app.init_resource::<PendingStrategyFragments>();
         app.init_resource::<ScenarioInstrumentsWritebackState>();
         app.init_resource::<ChartSizeMap>();
-        app.add_event::<StrategyFileLoadRequested>();
-        app.add_event::<ScenarioLoadedFromFile>();
-        app.add_event::<ScenarioClearedFromFile>();
-        app.add_event::<LayoutLoadRequested>();
-        app.add_event::<PanelSpawnRequested>();
+        app.add_message::<StrategyFileLoadRequested>();
+        app.add_message::<ScenarioLoadedFromFile>();
+        app.add_message::<ScenarioClearedFromFile>();
+        app.add_message::<LayoutLoadRequested>();
+        app.add_message::<PanelSpawnRequested>();
 
         app.add_systems(
             Update,
@@ -1920,11 +1920,11 @@ mod writeback_scenario_instruments_tests {
         app.init_resource::<InstrumentPickerState>();
         app.init_resource::<AvailableInstruments>();
         app.init_resource::<ChartSizeMap>();
-        app.add_event::<StrategyFileLoadRequested>();
-        app.add_event::<ScenarioLoadedFromFile>();
-        app.add_event::<ScenarioClearedFromFile>();
-        app.add_event::<LayoutLoadRequested>();
-        app.add_event::<PanelSpawnRequested>();
+        app.add_message::<StrategyFileLoadRequested>();
+        app.add_message::<ScenarioLoadedFromFile>();
+        app.add_message::<ScenarioClearedFromFile>();
+        app.add_message::<LayoutLoadRequested>();
+        app.add_message::<PanelSpawnRequested>();
 
         app.add_systems(
             Update,
@@ -2136,11 +2136,11 @@ mod writeback_scenario_instruments_tests {
         app.init_resource::<InstrumentPickerState>();
         app.init_resource::<AvailableInstruments>();
         app.init_resource::<ChartSizeMap>();
-        app.add_event::<StrategyFileLoadRequested>();
-        app.add_event::<ScenarioLoadedFromFile>();
-        app.add_event::<ScenarioClearedFromFile>();
-        app.add_event::<LayoutLoadRequested>();
-        app.add_event::<PanelSpawnRequested>();
+        app.add_message::<StrategyFileLoadRequested>();
+        app.add_message::<ScenarioLoadedFromFile>();
+        app.add_message::<ScenarioClearedFromFile>();
+        app.add_message::<LayoutLoadRequested>();
+        app.add_message::<PanelSpawnRequested>();
 
         app.add_systems(
             Update,
@@ -2263,12 +2263,12 @@ mod writeback_scenario_instruments_tests {
         app.init_resource::<InstrumentPickerState>();
         app.init_resource::<AvailableInstruments>();
         app.init_resource::<ChartSizeMap>();
-        app.add_event::<StrategyFileLoadRequested>();
-        app.add_event::<StrategyRunRequested>();
-        app.add_event::<ScenarioLoadedFromFile>();
-        app.add_event::<ScenarioClearedFromFile>();
-        app.add_event::<LayoutLoadRequested>();
-        app.add_event::<PanelSpawnRequested>();
+        app.add_message::<StrategyFileLoadRequested>();
+        app.add_message::<StrategyRunRequested>();
+        app.add_message::<ScenarioLoadedFromFile>();
+        app.add_message::<ScenarioClearedFromFile>();
+        app.add_message::<LayoutLoadRequested>();
+        app.add_message::<PanelSpawnRequested>();
 
         app.add_systems(
             Update,
@@ -2496,11 +2496,11 @@ mod writeback_scenario_instruments_tests {
         app.init_resource::<PendingStrategyFragments>();
         app.init_resource::<ScenarioInstrumentsWritebackState>();
         app.init_resource::<ChartSizeMap>();
-        app.add_event::<StrategyFileLoadRequested>();
-        app.add_event::<ScenarioLoadedFromFile>();
-        app.add_event::<ScenarioClearedFromFile>();
-        app.add_event::<LayoutLoadRequested>();
-        app.add_event::<PanelSpawnRequested>();
+        app.add_message::<StrategyFileLoadRequested>();
+        app.add_message::<ScenarioLoadedFromFile>();
+        app.add_message::<ScenarioClearedFromFile>();
+        app.add_message::<LayoutLoadRequested>();
+        app.add_message::<PanelSpawnRequested>();
 
         app.add_systems(
             Update,
@@ -2635,12 +2635,12 @@ mod writeback_scenario_instruments_tests {
         app.init_resource::<PendingStrategyFragments>();
         app.init_resource::<ScenarioInstrumentsWritebackState>();
         app.init_resource::<ChartSizeMap>();
-        app.add_event::<StrategyFileLoadRequested>();
-        app.add_event::<StrategyRunRequested>();
-        app.add_event::<ScenarioLoadedFromFile>();
-        app.add_event::<ScenarioClearedFromFile>();
-        app.add_event::<LayoutLoadRequested>();
-        app.add_event::<PanelSpawnRequested>();
+        app.add_message::<StrategyFileLoadRequested>();
+        app.add_message::<StrategyRunRequested>();
+        app.add_message::<ScenarioLoadedFromFile>();
+        app.add_message::<ScenarioClearedFromFile>();
+        app.add_message::<LayoutLoadRequested>();
+        app.add_message::<PanelSpawnRequested>();
 
         app.add_systems(
             Update,

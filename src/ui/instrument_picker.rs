@@ -85,7 +85,7 @@ pub struct InstrumentPickerSearchText;
 ///
 /// 注意: 呼び出し側 (sidebar の Add ボタン spawn 内) は次手で配線する。
 /// 現時点では未配線なので `#[allow(dead_code)]`。
-pub fn spawn_picker_dropdown(parent: &mut ChildBuilder) {
+pub fn spawn_picker_dropdown(parent: &mut ChildSpawner) {
     parent
         .spawn((
             Node {
@@ -333,7 +333,7 @@ pub fn force_close_picker_on_lock_system(
 /// （`menu_keyboard_system` と同じパターン、§D-3-b）。
 pub fn picker_searchbox_input_system(
     mut picker: ResMut<InstrumentPickerState>,
-    mut kb_events: ResMut<Events<KeyboardInput>>,
+    mut kb_events: ResMut<Messages<KeyboardInput>>,
     mut searchbox_q: Query<&mut Text, With<InstrumentPickerSearchText>>,
 ) {
     if !picker.visible {

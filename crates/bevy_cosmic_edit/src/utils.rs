@@ -46,8 +46,12 @@ pub fn change_active_editor_sprite(
     >,
     camera_q: Query<(&Camera, &GlobalTransform), CameraFilter>,
 ) {
-    let window = windows.single();
-    let (camera, camera_transform) = camera_q.single();
+    let Ok(window) = windows.single() else {
+        return;
+    };
+    let Ok((camera, camera_transform)) = camera_q.single() else {
+        return;
+    };
     if buttons.just_pressed(MouseButton::Left) {
         for (sprite, node_transform, visibility, entity) in &mut cosmic_edit_query.iter_mut() {
             if visibility == Visibility::Hidden {
@@ -115,7 +119,7 @@ struct DebugName {
     entity: Entity,
 }
 
-impl std::fmt::Debug for DebugNameItem<'_> {
+impl std::fmt::Debug for DebugNameItem<'_, '_> {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         // write!(f, "{:?} {:?}", self.name, self.entity)
         match self.name {

@@ -88,20 +88,22 @@ fn spawn_resize_handle(commands: &mut Commands, axis: ResizeAxis, size: Vec2, po
         ))
         // Drag → root の custom_size / translation を更新（左端・上端固定）
         .observe(
-            move |drag: Trigger<Pointer<Drag>>,
-                  parent_q: Query<&Parent>,
+            move |drag: On<Pointer<Drag>>,
+                  parent_q: Query<&ChildOf>,
                   mut root_q: Query<(&mut Sprite, &mut Transform), With<WindowRoot>>,
-                  camera_q: Query<&OrthographicProjection, With<Camera2d>>| {
-                if drag.event().button != PointerButton::Primary {
+                  camera_q: Query<&Projection, With<Camera2d>>| {
+                if drag.button != PointerButton::Primary {
                     return;
                 }
-                let Ok(parent) = parent_q.get(drag.entity()) else {
+                let Ok(child_of) = parent_q.get(drag.entity) else {
                     return;
                 };
-                let scale = camera_q.get_single().map(|p| p.scale).unwrap_or(1.0);
-                let dx = drag.event().delta.x * scale;
-                let dy = drag.event().delta.y * scale; // screen down (+) = height increase
-                let Ok((mut sprite, mut tf)) = root_q.get_mut(parent.get()) else {
+                let scale = camera_q.get_single().map(|p| {
+                    if let Projection::Orthographic(proj) = p { proj.scale } else { 1.0 }
+                }).unwrap_or(1.0);
+                let dx = drag.delta.x * scale;
+                let dy = drag.delta.y * scale; // screen down (+) = height increase
+                let Ok((mut sprite, mut tf)) = root_q.get_mut(child_of.parent()) else {
                     return;
                 };
                 let Some(cur) = sprite.custom_size else {
@@ -123,15 +125,15 @@ fn spawn_resize_handle(commands: &mut Commands, axis: ResizeAxis, size: Vec2, po
         )
         // DragEnd → autosave をマーク（chart は ChartSizeMap にサイズを保存）
         .observe(
-            |end: Trigger<Pointer<DragEnd>>,
-             parent_q: Query<&Parent>,
+            |end: On<Pointer<DragEnd>>,
+             parent_q: Query<&ChildOf>,
              root_q: Query<(Option<&ChartInstrument>, Option<&Sprite>), With<WindowRoot>>,
              mut auto_save: ResMut<crate::ui::layout_persistence::AutoSaveState>,
              mut chart_sizes: ResMut<ChartSizeMap>| {
-                let Ok(parent) = parent_q.get(end.entity()) else {
+                let Ok(child_of) = parent_q.get(end.entity) else {
                     return;
                 };
-                let Ok((chart_opt, sprite_opt)) = root_q.get(parent.get()) else {
+                let Ok((chart_opt, sprite_opt)) = root_q.get(child_of.parent()) else {
                     return;
                 };
                 if let Some(chart_instrument) = chart_opt {
@@ -149,11 +151,11 @@ fn spawn_resize_handle(commands: &mut Commands, axis: ResizeAxis, size: Vec2, po
         )
         // Over → リサイズカーソルに変更（Window entity に CursorIcon component を insert）
         .observe(
-            move |_: Trigger<Pointer<Over>>,
+            move |_: On<Pointer<Over>>,
                   mut commands: Commands,
                   windows: Query<Entity, With<bevy::window::PrimaryWindow>>| {
                 use bevy::window::SystemCursorIcon;
-                use bevy::winit::cursor::CursorIcon;
+                use bevy::window::CursorIcon;
                 if let Ok(entity) = windows.get_single() {
                     let icon = match axis {
                         ResizeAxis::Right => SystemCursorIcon::EwResize,
@@ -166,11 +168,11 @@ fn spawn_resize_handle(commands: &mut Commands, axis: ResizeAxis, size: Vec2, po
         )
         // Out → デフォルトカーソルに戻す
         .observe(
-            |_: Trigger<Pointer<Out>>,
+            |_: On<Pointer<Out>>,
              mut commands: Commands,
              windows: Query<Entity, With<bevy::window::PrimaryWindow>>| {
                 use bevy::window::SystemCursorIcon;
-                use bevy::winit::cursor::CursorIcon;
+                use bevy::window::CursorIcon;
                 if let Ok(entity) = windows.get_single() {
                     commands
                         .entity(entity)
@@ -203,11 +205,11 @@ pub fn spawn_floating_window(
             WindowRoot,
         ))
         .observe(
-            |trigger: Trigger<Pointer<Down>>,
+            |trigger: On<Pointer<Press>>,
              mut query: Query<&mut Transform, With<WindowRoot>>,
              mut wm: ResMut<WindowManager>| {
                 wm.max_z += 2.0;
-                if let Ok(mut transform) = query.get_mut(trigger.entity()) {
+                if let Ok(mut transform) = query.get_mut(trigger.entity) {
                     transform.translation.z = 10.0 + wm.max_z;
                 }
             },
@@ -254,30 +256,32 @@ pub fn spawn_floating_window(
             TitleBar,
         ))
         .observe(
-            |drag: Trigger<Pointer<Drag>>,
+            |drag: On<Pointer<Drag>>,
              mut query: Query<&mut Transform, With<WindowRoot>>,
-             parent_query: Query<&Parent>,
-             camera_query: Query<&OrthographicProjection, With<Camera2d>>| {
-                let Ok(parent) = parent_query.get(drag.entity()) else {
+             parent_query: Query<&ChildOf>,
+             camera_query: Query<&Projection, With<Camera2d>>| {
+                let Ok(child_of) = parent_query.get(drag.entity) else {
                     return;
                 };
-                let Ok(mut transform) = query.get_mut(parent.get()) else {
+                let Ok(mut transform) = query.get_mut(child_of.parent()) else {
                     return;
                 };
-                let scale = camera_query.get_single().map(|p| p.scale).unwrap_or(1.0);
-                transform.translation.x += drag.event().delta.x * scale;
-                transform.translation.y -= drag.event().delta.y * scale;
+                let scale = camera_query.get_single().map(|p| {
+                    if let Projection::Orthographic(proj) = p { proj.scale } else { 1.0 }
+                }).unwrap_or(1.0);
+                transform.translation.x += drag.delta.x * scale;
+                transform.translation.y -= drag.delta.y * scale;
             },
         )
         .observe(
-            |drag_start: Trigger<Pointer<DragStart>>,
-             parent_query: Query<&Parent>,
+            |drag_start: On<Pointer<DragStart>>,
+             parent_query: Query<&ChildOf>,
              root_q: Query<&Transform, With<WindowRoot>>,
              mut active_drag: ResMut<ActiveDrag>| {
-                let Ok(parent) = parent_query.get(drag_start.entity()) else {
+                let Ok(child_of) = parent_query.get(drag_start.entity) else {
                     return;
                 };
-                let root_entity = parent.get();
+                let root_entity = child_of.parent();
                 let Ok(tf) = root_q.get(root_entity) else {
                     return;
                 };
@@ -287,8 +291,8 @@ pub fn spawn_floating_window(
             },
         )
         .observe(
-            |drag_end: Trigger<Pointer<DragEnd>>,
-             parent_query: Query<&Parent>,
+            |drag_end: On<Pointer<DragEnd>>,
+             parent_query: Query<&ChildOf>,
              root_q: Query<
                 (
                     &Transform,
@@ -301,10 +305,10 @@ pub fn spawn_floating_window(
              mut active_drag: ResMut<ActiveDrag>,
              mut history: ResMut<AppHistory>,
              mut auto_save: ResMut<crate::ui::layout_persistence::AutoSaveState>| {
-                let Ok(parent) = parent_query.get(drag_end.entity()) else {
+                let Ok(child_of) = parent_query.get(drag_end.entity) else {
                     return;
                 };
-                let root_entity = parent.get();
+                let root_entity = child_of.parent();
                 let Some(before) = active_drag.starts.remove(&root_entity) else {
                     return;
                 };
@@ -369,8 +373,8 @@ pub fn spawn_floating_window(
                 CloseButton,
             ))
             .observe(
-                |trigger: Trigger<Pointer<Click>>,
-                 parent_query: Query<&Parent>,
+                |trigger: On<Pointer<Click>>,
+                 parent_query: Query<&ChildOf>,
                  root_q: Query<
                     (
                         &PanelKind,
@@ -387,10 +391,10 @@ pub fn spawn_floating_window(
                  mut registry: ResMut<InstrumentRegistry>,
                  mut map: ResMut<crate::trading::InstrumentTradingDataMap>,
                  mut commands: Commands| {
-                    let Ok(parent) = parent_query.get(trigger.entity()) else {
+                    let Ok(child_of) = parent_query.get(trigger.entity) else {
                         return;
                     };
-                    let root_entity = parent.get();
+                    let root_entity = child_of.parent();
                     let Ok((kind, tf, sprite, editor_id, fragment, chart_instrument)) =
                         root_q.get(root_entity)
                     else {
@@ -626,7 +630,7 @@ fn fixed_strategy_cache_path() -> Option<std::path::PathBuf> {
 /// - 無ければ各 PanelKind に対応する spawn 関数を呼ぶ（Sub-step 1.3+ で arm を埋める）
 /// - source が User かつ is_replaying でなければ WindowSpawnEdit を AppHistory に push する
 pub fn panel_spawn_dispatcher_system(
-    mut events: EventReader<PanelSpawnRequested>,
+    mut events: MessageReader<PanelSpawnRequested>,
     existing: Query<&PanelKind, With<WindowRoot>>,
     mut commands: Commands,
     mut font_system: ResMut<CosmicFontSystem>,
@@ -800,7 +804,7 @@ mod order_dispatcher_tests {
         app.init_resource::<AppHistory>();
         app.init_resource::<PendingStrategyFragments>();
         app.init_resource::<StrategyBuffer>();
-        app.add_event::<PanelSpawnRequested>();
+        app.add_message::<PanelSpawnRequested>();
         app.add_systems(Update, panel_spawn_dispatcher_system);
         app
     }

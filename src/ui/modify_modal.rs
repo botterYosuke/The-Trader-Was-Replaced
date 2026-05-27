@@ -325,7 +325,7 @@ pub fn spawn_modify_modal(mut commands: Commands) {
 
 /// ラベル + クリックでフォーカスする入力欄 (背景に focus 色) を 1 行 spawn する。
 fn spawn_input_row(
-    parent: &mut ChildBuilder,
+    parent: &mut ChildSpawner,
     label: &str,
     field: ModifyField,
     focus: ModifyButton,
@@ -408,7 +408,7 @@ pub fn modify_modal_visibility_system(
 /// Tab = フォーカス切替、Enter = Confirm (可能なら)、Esc = 破棄。数字 / `.` のみ受ける。
 pub fn modify_modal_input_system(
     mut form: ResMut<ModifyForm>,
-    mut kb_events: ResMut<Events<KeyboardInput>>,
+    mut kb_events: ResMut<Messages<KeyboardInput>>,
     mut feedback: ResMut<OrderFeedback>,
     sender: Option<Res<TransportCommandSender>>,
 ) {

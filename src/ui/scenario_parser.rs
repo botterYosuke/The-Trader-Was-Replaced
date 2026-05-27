@@ -95,8 +95,8 @@ pub fn parse_scenario_system(
     target: Res<ScenarioReadTarget>,
     mut scenario: ResMut<ScenarioMetadata>,
     mut watch: ResMut<ScenarioFileWatchState>,
-    mut loaded_events: EventWriter<ScenarioLoadedFromFile>,
-    mut cleared_events: EventWriter<ScenarioClearedFromFile>,
+    mut loaded_events: MessageWriter<ScenarioLoadedFromFile>,
+    mut cleared_events: MessageWriter<ScenarioClearedFromFile>,
 ) {
     let json_path: Option<PathBuf> = target.0.clone();
     let current_mtime = json_path
@@ -110,7 +110,7 @@ pub fn parse_scenario_system(
     watch.last_mtime = current_mtime;
 
     let Some(json_path) = json_path else {
-        cleared_events.send(ScenarioClearedFromFile { source_path: None });
+        cleared_events.write(ScenarioClearedFromFile { source_path: None });
         *scenario = ScenarioMetadata::default();
         return;
     };
@@ -122,7 +122,7 @@ pub fn parse_scenario_system(
                 "no sidecar JSON for {:?}: {} — ScenarioMetadata reset",
                 json_path, e
             );
-            cleared_events.send(ScenarioClearedFromFile {
+            cleared_events.write(ScenarioClearedFromFile {
                 source_path: Some(json_path.clone()),
             });
             *scenario = ScenarioMetadata::default();
@@ -137,7 +137,7 @@ pub fn parse_scenario_system(
                 "malformed sidecar JSON {:?}: {} — ScenarioMetadata reset",
                 json_path, e
             );
-            cleared_events.send(ScenarioClearedFromFile {
+            cleared_events.write(ScenarioClearedFromFile {
                 source_path: Some(json_path.clone()),
             });
             *scenario = ScenarioMetadata::default();
@@ -206,7 +206,7 @@ pub fn parse_scenario_system(
 
     *scenario = new_meta;
 
-    loaded_events.send(ScenarioLoadedFromFile {
+    loaded_events.write(ScenarioLoadedFromFile {
         source_path: json_path,
         instruments,
         end: sf.end,
@@ -307,8 +307,8 @@ mod tests {
         app.insert_resource(ScenarioReadTarget(Some(json_path.clone())));
         app.init_resource::<ScenarioMetadata>();
         app.init_resource::<ScenarioFileWatchState>();
-        app.add_event::<ScenarioLoadedFromFile>();
-        app.add_event::<ScenarioClearedFromFile>();
+        app.add_message::<ScenarioLoadedFromFile>();
+        app.add_message::<ScenarioClearedFromFile>();
         app.add_systems(Update, parse_scenario_system);
         app.update();
 
@@ -343,8 +343,8 @@ mod tests {
         app.insert_resource(ScenarioReadTarget(Some(json_path)));
         app.init_resource::<ScenarioMetadata>();
         app.init_resource::<ScenarioFileWatchState>();
-        app.add_event::<ScenarioLoadedFromFile>();
-        app.add_event::<ScenarioClearedFromFile>();
+        app.add_message::<ScenarioLoadedFromFile>();
+        app.add_message::<ScenarioClearedFromFile>();
         app.add_systems(Update, parse_scenario_system);
         app.update();
 
@@ -378,8 +378,8 @@ mod tests {
         });
         app.insert_resource(ScenarioReadTarget(Some(dir.path().join("no_sidecar.json"))));
         app.init_resource::<ScenarioFileWatchState>();
-        app.add_event::<ScenarioLoadedFromFile>();
-        app.add_event::<ScenarioClearedFromFile>();
+        app.add_message::<ScenarioLoadedFromFile>();
+        app.add_message::<ScenarioClearedFromFile>();
         app.add_systems(Update, parse_scenario_system);
         app.update();
 
@@ -414,8 +414,8 @@ mod tests {
         app.insert_resource(ScenarioReadTarget(Some(json_path.clone())));
         app.init_resource::<ScenarioMetadata>();
         app.init_resource::<ScenarioFileWatchState>();
-        app.add_event::<ScenarioLoadedFromFile>();
-        app.add_event::<ScenarioClearedFromFile>();
+        app.add_message::<ScenarioLoadedFromFile>();
+        app.add_message::<ScenarioClearedFromFile>();
         app.add_systems(Update, parse_scenario_system);
         app.update();
 
@@ -459,8 +459,8 @@ mod tests {
         app.insert_resource(ScenarioReadTarget(Some(json_path.clone())));
         app.init_resource::<ScenarioMetadata>();
         app.init_resource::<ScenarioFileWatchState>();
-        app.add_event::<ScenarioLoadedFromFile>();
-        app.add_event::<ScenarioClearedFromFile>();
+        app.add_message::<ScenarioLoadedFromFile>();
+        app.add_message::<ScenarioClearedFromFile>();
         app.add_systems(Update, parse_scenario_system);
 
         app.update(); // 1 回目: 発火
@@ -505,8 +505,8 @@ mod tests {
         app.insert_resource(ScenarioReadTarget(Some(json_path.clone())));
         app.init_resource::<ScenarioMetadata>();
         app.init_resource::<ScenarioFileWatchState>();
-        app.add_event::<ScenarioLoadedFromFile>();
-        app.add_event::<ScenarioClearedFromFile>();
+        app.add_message::<ScenarioLoadedFromFile>();
+        app.add_message::<ScenarioClearedFromFile>();
         app.add_systems(Update, parse_scenario_system);
         app.update();
 
@@ -551,8 +551,8 @@ mod tests {
         app.insert_resource(ScenarioReadTarget(Some(json_path.clone())));
         app.init_resource::<ScenarioMetadata>();
         app.init_resource::<ScenarioFileWatchState>();
-        app.add_event::<ScenarioLoadedFromFile>();
-        app.add_event::<ScenarioClearedFromFile>();
+        app.add_message::<ScenarioLoadedFromFile>();
+        app.add_message::<ScenarioClearedFromFile>();
         app.add_systems(Update, parse_scenario_system);
         app.update();
 
@@ -591,8 +591,8 @@ mod tests {
         app.insert_resource(ScenarioReadTarget(Some(json_path.clone())));
         app.init_resource::<ScenarioMetadata>();
         app.init_resource::<ScenarioFileWatchState>();
-        app.add_event::<ScenarioLoadedFromFile>();
-        app.add_event::<ScenarioClearedFromFile>();
+        app.add_message::<ScenarioLoadedFromFile>();
+        app.add_message::<ScenarioClearedFromFile>();
         app.add_systems(Update, parse_scenario_system);
         app.update();
 
@@ -653,8 +653,8 @@ mod tests {
         app.init_resource::<InstrumentRegistry>();
         app.init_resource::<ScenarioInstrumentsWritebackState>();
         app.insert_resource(ScenarioReadTarget(Some(json_a.clone())));
-        app.add_event::<ScenarioLoadedFromFile>();
-        app.add_event::<ScenarioClearedFromFile>();
+        app.add_message::<ScenarioLoadedFromFile>();
+        app.add_message::<ScenarioClearedFromFile>();
         app.add_systems(
             Update,
             (
@@ -736,8 +736,8 @@ mod tests {
         app.insert_resource(ScenarioReadTarget(Some(cache_json.clone())));
         app.init_resource::<ScenarioMetadata>();
         app.init_resource::<ScenarioFileWatchState>();
-        app.add_event::<ScenarioLoadedFromFile>();
-        app.add_event::<ScenarioClearedFromFile>();
+        app.add_message::<ScenarioLoadedFromFile>();
+        app.add_message::<ScenarioClearedFromFile>();
         app.add_systems(Update, parse_scenario_system);
         app.update();
 

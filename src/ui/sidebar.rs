@@ -46,7 +46,7 @@ pub fn spawn_sidebar(mut commands: Commands) {
                 ..default()
             },
             BackgroundColor(BG),
-            BorderColor(BORDER),
+            BorderColor::all(BORDER),
             SidebarRoot,
         ))
         .with_children(|parent| {
@@ -99,7 +99,7 @@ pub fn spawn_sidebar(mut commands: Commands) {
         });
 }
 
-fn spawn_section_header(parent: &mut ChildBuilder, title: &str) {
+fn spawn_section_header(parent: &mut ChildSpawner, title: &str) {
     parent
         .spawn((
             Node {
@@ -142,7 +142,7 @@ pub fn apply_order_button_visibility_system(
     }
 }
 
-fn spawn_panel_btn(parent: &mut ChildBuilder, kind: PanelKind) {
+fn spawn_panel_btn(parent: &mut ChildSpawner, kind: PanelKind) {
     parent
         .spawn((
             Button,
@@ -469,7 +469,7 @@ pub fn panel_button_system(
         (&Interaction, &mut BackgroundColor, &PanelKind),
         (Changed<Interaction>, With<Button>),
     >,
-    mut spawn_events: EventWriter<PanelSpawnRequested>,
+    mut spawn_events: MessageWriter<PanelSpawnRequested>,
     existing_kinds: Query<&PanelKind, With<WindowRoot>>,
 ) {
     for (interaction, mut bg, kind) in &mut query {
@@ -480,7 +480,7 @@ pub fn panel_button_system(
                 // dispatcher が allocator から region_key を払い出して空エディタを生やす。
                 let allow_multi = matches!(kind, PanelKind::StrategyEditor);
                 if allow_multi || !existing_kinds.iter().any(|k| k == kind) {
-                    spawn_events.send(PanelSpawnRequested {
+                    spawn_events.write(PanelSpawnRequested {
                         kind: *kind,
                         source: PanelSpawnSource::User,
                         strategy_spec: None,

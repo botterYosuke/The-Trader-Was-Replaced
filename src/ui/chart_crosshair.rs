@@ -86,10 +86,9 @@ pub fn install_chart_crosshair_observer(
 ) {
     for entity in &new_charts {
         commands.entity(entity).observe(
-            |trigger: Trigger<Pointer<Move>>,
+            |trigger: On<Pointer<Move>>,
              mut chart_q: Query<(&GlobalTransform, &mut CrosshairState)>| {
-                // Bevy 0.15: trigger.entity() (Caveat #3)。
-                let Ok((gt, mut crosshair)) = chart_q.get_mut(trigger.entity()) else {
+                let Ok((gt, mut crosshair)) = chart_q.get_mut(trigger.entity) else {
                     return;
                 };
                 // `hit.position` は world space (bevy_sprite_picking_backend 前提 — Caveat #12/#24)。
@@ -97,7 +96,7 @@ pub fn install_chart_crosshair_observer(
                 // observer は ChartSet::Autoscale 順序非依存にするため ChartViewState を読まない。
                 // position が None の Move は位置不明なので skip する (旧 unwrap_or(ZERO) は world
                 // 原点 - chart 位置という garbage 座標に crosshair を飛ばすので使わない)。
-                let Some(world_pos) = trigger.event().hit.position else {
+                let Some(world_pos) = trigger.hit.position else {
                     return;
                 };
                 let local = world_pos - gt.translation();
@@ -106,8 +105,8 @@ pub fn install_chart_crosshair_observer(
             },
         );
         commands.entity(entity).observe(
-            |trigger: Trigger<Pointer<Out>>, mut chart_q: Query<&mut CrosshairState>| {
-                if let Ok(mut crosshair) = chart_q.get_mut(trigger.entity()) {
+            |trigger: On<Pointer<Out>>, mut chart_q: Query<&mut CrosshairState>| {
+                if let Ok(mut crosshair) = chart_q.get_mut(trigger.entity) {
                     crosshair.cursor_world = None;
                     crosshair.hovered_price = None;
                     crosshair.hovered_time_ms = None;

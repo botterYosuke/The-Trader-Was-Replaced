@@ -160,22 +160,22 @@ pub fn spawn_orders_panel(commands: &mut Commands) {
                 OrdersRowHit { row },
             ))
             .observe(
-                |down: Trigger<Pointer<Down>>,
+                |down: On<Pointer<Press>>,
                  hit_q: Query<&OrdersRowHit>,
                  live_orders: Res<LiveOrders>,
                  filter: Res<OrdersFilter>,
                  exec_mode: Res<ExecutionModeRes>,
                  venue: Res<crate::trading::VenueStatusRes>,
                  mut menu: ResMut<OrderContextMenu>| {
-                    // Pointer<Down> は全ボタンで発火する → Secondary (右) のみ反応 (規約)。
-                    if down.event().button != PointerButton::Secondary {
+                    // Pointer<Press> は全ボタンで発火する → Secondary (右) のみ反応 (規約)。
+                    if down.button != PointerButton::Secondary {
                         return;
                     }
                     // Live モードのみ。Replay 注文には取消/訂正を出さない。
                     if !is_live_mode(exec_mode.mode) {
                         return;
                     }
-                    let Ok(hit) = hit_q.get(down.entity()) else {
+                    let Ok(hit) = hit_q.get(down.entity) else {
                         return;
                     };
                     // §2.9: index into the SAME filtered view the panel renders, so
@@ -186,7 +186,7 @@ pub fn spawn_orders_panel(commands: &mut Commands) {
                     menu.open = true;
                     menu.client_order_id = Some(order.client_order_id.clone());
                     menu.venue = venue.venue_id.clone().unwrap_or_default();
-                    menu.screen_pos = down.event().pointer_location.position;
+                    menu.screen_pos = down.pointer_location.position;
                 },
             )
             .id();
@@ -221,12 +221,12 @@ pub fn spawn_orders_panel(commands: &mut Commands) {
             OrdersFilterHit,
         ))
         .observe(
-            |down: Trigger<Pointer<Down>>,
+            |down: On<Pointer<Press>>,
              exec_mode: Res<ExecutionModeRes>,
              live_orders: Res<LiveOrders>,
              mut filter: ResMut<OrdersFilter>| {
-                // Pointer<Down> は全ボタンで発火する → Primary (左) のみ反応 (規約)。
-                if down.event().button != PointerButton::Primary {
+                // Pointer<Press> は全ボタンで発火する → Primary (左) のみ反応 (規約)。
+                if down.button != PointerButton::Primary {
                     return;
                 }
                 // Live モードのみ。Replay 経路はフィルタを使わない。
