@@ -85,7 +85,7 @@ pub struct InstrumentPickerSearchText;
 ///
 /// 注意: 呼び出し側 (sidebar の Add ボタン spawn 内) は次手で配線する。
 /// 現時点では未配線なので `#[allow(dead_code)]`。
-pub fn spawn_picker_dropdown(parent: &mut ChildSpawner) {
+pub fn spawn_picker_dropdown(parent: &mut ChildSpawnerCommands) {
     parent
         .spawn((
             Node {
@@ -378,7 +378,7 @@ pub fn picker_searchbox_input_system(
     }
     let _ = consumed; // drain 自体が消費。明示変数は将来 modifier 対応の足場
     if changed {
-        if let Ok(mut text) = searchbox_q.get_single_mut() {
+        if let Ok(mut text) = searchbox_q.single_mut() {
             if text.0 != picker.query {
                 text.0 = picker.query.clone();
             }
@@ -429,7 +429,7 @@ fn spawn_picker_row_ui(
         ));
     }
     let row_entity = e.id();
-    commands.entity(row_entity).set_parent(container);
+    commands.entity(row_entity).set_parent_in_place(container);
     commands
         .spawn((
             Text::new(label.to_string()),
@@ -439,7 +439,7 @@ fn spawn_picker_row_ui(
             },
             TextColor(Color::WHITE),
         ))
-        .set_parent(row_entity);
+        .set_parent_in_place(row_entity);
 }
 
 /// Picker row click を処理する純粋ハンドラ。
@@ -492,19 +492,19 @@ pub fn picker_list_rebuild_system(
     {
         return;
     }
-    let Ok(container) = container_q.get_single() else {
+    let Ok(container) = container_q.single() else {
         return;
     };
 
     // 既存の子（行 + placeholder 行 全部）を despawn
-    if let Ok(children) = container_children_q.get_single() {
-        for &child in children.iter() {
-            commands.entity(child).despawn_recursive();
+    if let Ok(children) = container_children_q.single() {
+        for child in children.iter() {
+            commands.entity(child).despawn();
         }
     }
     // 念のため orphan の Row も掃除
     for entity in &existing_rows_q {
-        commands.entity(entity).despawn_recursive();
+        commands.entity(entity).despawn();
     }
 
     // §4.5: mode 分岐で候補 ids を確定する

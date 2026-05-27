@@ -50,10 +50,10 @@ pub fn pancam_suppression_over_editor_system(
 ) {
     let ctrl = keys.any_pressed([KeyCode::ControlLeft, KeyCode::ControlRight]);
 
-    let Ok(window) = windows.get_single() else {
+    let Ok(window) = windows.single() else {
         return;
     };
-    let Ok((mut pancam, camera, camera_transform)) = camera_q.get_single_mut() else {
+    let Ok((mut pancam, camera, camera_transform)) = camera_q.single_mut() else {
         return;
     };
 

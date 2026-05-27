@@ -9,7 +9,7 @@
 use bevy::picking::events::{Drag, Pointer};
 use bevy::picking::pointer::{Location, PointerButton, PointerId};
 use bevy::prelude::*;
-use bevy::render::camera::NormalizedRenderTarget;
+use bevy::camera::NormalizedRenderTarget;
 use bevy::transform::TransformPlugin;
 use backcast::ui::chart_axes::PriceGutter;
 use backcast::ui::chart_axes::PriceGutterRef;
@@ -30,7 +30,7 @@ use backcast::ui::layout_persistence::AutoSaveState;
 
 fn dummy_location() -> Location {
     Location {
-        target: NormalizedRenderTarget::Image(Handle::<bevy::image::Image>::default()),
+        target: NormalizedRenderTarget::Image(Handle::<bevy::image::Image>::default().into()),
         position: Vec2::ZERO,
     }
 }
@@ -49,7 +49,7 @@ fn k17_chart_resize_reflow() {
 
     // OrthographicProjection.scale = 1.0 (drag delta の scale 補正に使う)
     app.world_mut()
-        .spawn((Camera2d, Transform::default(), OrthographicProjection::default_2d()));
+        .spawn((Camera2d, Transform::default()));
 
     let initial_size = CHART_PANEL_SIZE; // Vec2(360.0, 244.0)
 
@@ -142,9 +142,8 @@ fn k17_chart_resize_reflow() {
         .expect("resizable=true なら resize_right entity が存在するはず");
 
     // ── Drag +80px 右端 ──
-    app.world_mut().trigger_targets(
+    app.world_mut().entity_mut(resize_right).trigger(|entity| {
         Pointer::<Drag>::new(
-            resize_right,
             PointerId::Mouse,
             dummy_location(),
             Drag {
@@ -152,9 +151,9 @@ fn k17_chart_resize_reflow() {
                 distance: Vec2::new(80.0, 0.0),
                 delta: Vec2::new(80.0, 0.0),
             },
-        ),
-        resize_right,
-    );
+            entity,
+        )
+    });
     app.update();
 
     // ── assert A: root 幅が増加している（Slice 1 実装前から PASS する基礎確認）──

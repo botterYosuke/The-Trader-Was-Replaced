@@ -12,8 +12,8 @@
 use bevy::prelude::*;
 use bevy::transform::TransformPlugin;
 use bevy::picking::pointer::{Location, PointerId, PointerButton};
-use bevy::picking::events::{Down, Pointer};
-use bevy::render::camera::NormalizedRenderTarget;
+use bevy::picking::events::{Press, Pointer};
+use bevy::camera::NormalizedRenderTarget;
 
 use backcast::ui::components::{
     InstrumentRegistry, PanelKind, PendingStrategyFragments, RegionKeyAllocator,
@@ -27,7 +27,7 @@ use backcast::ui::layout_persistence::AutoSaveState;
 /// observer 内では pointer_location を参照しないため、image target で代替する。
 fn dummy_location() -> Location {
     Location {
-        target: NormalizedRenderTarget::Image(Handle::<bevy::image::Image>::default()),
+        target: NormalizedRenderTarget::Image(Handle::<bevy::image::Image>::default().into()),
         position: Vec2::ZERO,
     }
 }
@@ -91,19 +91,18 @@ fn m4_window_focus_brings_to_front() {
         .map(|t| t.translation.z)
         .expect("root_a は Transform を持つはず");
 
-    // ── Window A に Pointer<Down> を発火して前面化 ──
-    app.world_mut().trigger_targets(
-        Pointer::<Down>::new(
-            root_a,
+    // ── Window A に Pointer<Press> を発火して前面化 ──
+    app.world_mut().entity_mut(root_a).trigger(|entity| {
+        Pointer::<Press>::new(
             PointerId::Mouse,
             dummy_location(),
-            Down {
+            Press {
                 button: PointerButton::Primary,
-                hit: bevy::picking::backend::HitData::new(Entity::from_raw(0), 0.0, None, None),
+                hit: bevy::picking::backend::HitData::new(Entity::PLACEHOLDER, 0.0, None, None),
             },
-        ),
-        root_a,
-    );
+            entity,
+        )
+    });
     app.update();
 
     let z_a_after = app

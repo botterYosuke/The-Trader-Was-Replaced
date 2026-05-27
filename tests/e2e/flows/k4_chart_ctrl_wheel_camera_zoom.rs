@@ -24,7 +24,7 @@
 //! PanCam の動作検証が必要な場合は kind:render の smoke test（L4）で行う。
 
 use bevy::input::mouse::{MouseScrollUnit, MouseWheel};
-use bevy::picking::focus::HoverMap;
+use bevy::picking::hover::HoverMap;
 use bevy::prelude::*;
 
 use backcast::ui::chart_interaction::chart_scroll_zoom_system;
@@ -34,13 +34,13 @@ use backcast::ui::components::ChartInstrument;
 #[test]
 fn k4_chart_ctrl_wheel_camera_zoom() {
     let mut app = App::new();
-    app.add_plugins(bevy::core::TaskPoolPlugin::default());
+    app.add_plugins(bevy::app::TaskPoolPlugin::default());
     app.add_plugins(bevy::app::ScheduleRunnerPlugin::default());
     app.add_plugins(bevy::time::TimePlugin);
 
     app.insert_resource(ButtonInput::<KeyCode>::default());
     app.insert_resource(HoverMap::default());
-    app.add_event::<MouseWheel>();
+    app.add_message::<MouseWheel>();
 
     let chart = app
         .world_mut()
@@ -70,7 +70,7 @@ fn k4_chart_ctrl_wheel_camera_zoom() {
 
     // ── Case 1: Ctrl なし + hover なし — zoom は適用されない ──
     // HoverMap が空なので system は hover ループを素通りし、ChartViewState は不変。
-    app.world_mut().send_event(MouseWheel {
+    app.world_mut().write_message(MouseWheel {
         unit: MouseScrollUnit::Line,
         x: 0.0,
         y: 3.0,
@@ -95,7 +95,7 @@ fn k4_chart_ctrl_wheel_camera_zoom() {
         let mut keys = app.world_mut().resource_mut::<ButtonInput<KeyCode>>();
         keys.press(KeyCode::ControlLeft);
     }
-    app.world_mut().send_event(MouseWheel {
+    app.world_mut().write_message(MouseWheel {
         unit: MouseScrollUnit::Line,
         x: 0.0,
         y: 5.0, // 大きい値でも chart zoom は適用されない
@@ -132,7 +132,7 @@ fn k4_chart_ctrl_wheel_camera_zoom() {
         keys.reset_all();
         keys.press(KeyCode::ControlRight);
     }
-    app.world_mut().send_event(MouseWheel {
+    app.world_mut().write_message(MouseWheel {
         unit: MouseScrollUnit::Line,
         x: 0.0,
         y: -2.0,

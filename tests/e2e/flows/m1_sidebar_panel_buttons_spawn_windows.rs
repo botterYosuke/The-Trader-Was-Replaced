@@ -40,7 +40,7 @@ fn m1_sidebar_panel_buttons_spawn_windows() {
         .insert_resource(AutoSaveState::default())
         .insert_resource(InstrumentRegistry::default());
 
-    app.add_event::<PanelSpawnRequested>();
+    app.add_message::<PanelSpawnRequested>();
 
     app.add_systems(
         Update,

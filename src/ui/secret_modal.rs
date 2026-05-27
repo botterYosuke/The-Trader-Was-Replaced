@@ -424,7 +424,7 @@ pub fn secret_modal_sync_system(
     mut info_q: Query<&mut Text, (With<SecretInfoText>, Without<SecretMaskedText>)>,
 ) {
     let mask: String = "•".repeat(input.len());
-    if let Ok(mut t) = masked_q.get_single_mut()
+    if let Ok(mut t) = masked_q.single_mut()
         && t.0 != mask
     {
         t.0 = mask;
@@ -441,7 +441,7 @@ pub fn secret_modal_sync_system(
         }
         None => String::new(),
     };
-    if let Ok(mut t) = info_q.get_single_mut()
+    if let Ok(mut t) = info_q.single_mut()
         && t.0 != info
     {
         t.0 = info;

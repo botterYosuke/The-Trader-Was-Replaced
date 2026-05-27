@@ -250,7 +250,7 @@ fn build_layout(
     preserve_scenario_json: Option<&std::path::Path>,
 ) -> SidecarLayout {
     let viewport = camera
-        .get_single()
+        .single()
         .map(|(cam_tf, proj)| ViewportState {
             pan_x: cam_tf.translation.x,
             pan_y: cam_tf.translation.y,
@@ -539,7 +539,7 @@ pub fn apply_cache_restore_system(
         }
 
         if let (Some(vp), Ok((mut cam_tf, mut proj))) =
-            (&event.layout.viewport, camera.get_single_mut())
+            (&event.layout.viewport, camera.single_mut())
         {
             cam_tf.translation.x = vp.pan_x;
             cam_tf.translation.y = vp.pan_y;
@@ -1210,7 +1210,7 @@ pub fn apply_layout_system(
                     }
                     // カメラは同フレーム内で適用可能
                     if let (Some(vp), Ok((mut cam_tf, mut proj))) =
-                        (&layout.viewport, camera.get_single_mut())
+                        (&layout.viewport, camera.single_mut())
                     {
                         cam_tf.translation.x = vp.pan_x;
                         cam_tf.translation.y = vp.pan_y;
@@ -1236,7 +1236,7 @@ pub fn apply_layout_system(
         }
 
         // viewport: None → カメラを触らない（F10: scenario-only JSON で camera reset を防ぐ）
-        if let (Some(vp), Ok((mut cam_tf, mut proj))) = (&layout.viewport, camera.get_single_mut())
+        if let (Some(vp), Ok((mut cam_tf, mut proj))) = (&layout.viewport, camera.single_mut())
         {
             cam_tf.translation.x = vp.pan_x;
             cam_tf.translation.y = vp.pan_y;
@@ -1358,7 +1358,7 @@ pub fn apply_layout_system(
                 .map(|(entity, _, _, _, _, _, _)| entity)
                 .collect();
             for entity in to_despawn {
-                commands.entity(entity).despawn_recursive();
+                commands.entity(entity).despawn();
             }
         }
 
@@ -2222,11 +2222,12 @@ mod tests {
         });
         std::fs::write(&tmp, serde_json::to_string(&layout_json).unwrap()).unwrap();
 
-        app.world_mut().send_event(LayoutLoadRequested {
+        app.world_mut().write_message(LayoutLoadRequested {
             path: tmp.clone(),
             mode: LayoutLoadMode::UserJsonOpen,
         });
         app.init_resource::<ScenarioReadTarget>();
+        app.insert_resource(ChartSizeMap::default());
         app.add_systems(Update, apply_layout_system);
         app.update();
 
@@ -2283,6 +2284,7 @@ mod tests {
             .id();
 
         // apply_layout → mode system の順に走らせる（mode が毎フレーム Hidden を維持する）。
+        app.insert_resource(ChartSizeMap::default());
         app.add_systems(
             Update,
             (
@@ -2318,7 +2320,7 @@ mod tests {
             }]
         });
         std::fs::write(&tmp, serde_json::to_string(&layout_json).unwrap()).unwrap();
-        app.world_mut().send_event(LayoutLoadRequested {
+        app.world_mut().write_message(LayoutLoadRequested {
             path: tmp.clone(),
             mode: LayoutLoadMode::UserJsonOpen,
         });
@@ -2555,10 +2557,11 @@ mod tests {
             "precondition: sibling .py は存在しないこと"
         );
 
-        app.world_mut().send_event(LayoutLoadRequested {
+        app.world_mut().write_message(LayoutLoadRequested {
             path: json_path.clone(),
             mode: LayoutLoadMode::UserJsonOpen,
         });
+        app.insert_resource(ChartSizeMap::default());
         app.add_systems(Update, apply_layout_system);
         app.update();
 
@@ -2760,11 +2763,12 @@ mod tests {
         });
         std::fs::write(&tmp, serde_json::to_string(&layout_json).unwrap()).unwrap();
 
-        app.world_mut().send_event(LayoutLoadRequested {
+        app.world_mut().write_message(LayoutLoadRequested {
             path: tmp.clone(),
             mode: LayoutLoadMode::UserJsonOpen,
         });
         app.init_resource::<ScenarioReadTarget>();
+        app.insert_resource(ChartSizeMap::default());
         app.add_systems(Update, apply_layout_system);
         app.update();
 
@@ -2814,11 +2818,12 @@ mod tests {
         });
         std::fs::write(&tmp, serde_json::to_string(&layout_json).unwrap()).unwrap();
 
-        app.world_mut().send_event(LayoutLoadRequested {
+        app.world_mut().write_message(LayoutLoadRequested {
             path: tmp.clone(),
             mode: LayoutLoadMode::UserJsonOpen,
         });
         app.init_resource::<ScenarioReadTarget>();
+        app.insert_resource(ChartSizeMap::default());
         app.add_systems(Update, apply_layout_system);
         app.update();
 
@@ -2826,7 +2831,7 @@ mod tests {
 
         let mut spawn_events = app
             .world_mut()
-            .resource_mut::<Events<PanelSpawnRequested>>();
+            .resource_mut::<Messages<PanelSpawnRequested>>();
         let order_spawns: Vec<PanelKind> = spawn_events
             .update_drain()
             .map(|ev| ev.kind)
@@ -2892,11 +2897,12 @@ mod tests {
         });
         std::fs::write(&tmp, serde_json::to_string(&layout_json).unwrap()).unwrap();
 
-        app.world_mut().send_event(LayoutLoadRequested {
+        app.world_mut().write_message(LayoutLoadRequested {
             path: tmp.clone(),
             mode: LayoutLoadMode::UserJsonOpen,
         });
         app.init_resource::<ScenarioReadTarget>();
+        app.insert_resource(ChartSizeMap::default());
         app.add_systems(Update, apply_layout_system);
         app.update();
 
@@ -2960,11 +2966,12 @@ mod tests {
         });
         std::fs::write(&tmp, serde_json::to_string(&layout_json).unwrap()).unwrap();
 
-        app.world_mut().send_event(LayoutLoadRequested {
+        app.world_mut().write_message(LayoutLoadRequested {
             path: tmp.clone(),
             mode: LayoutLoadMode::UserJsonOpen,
         });
         app.init_resource::<ScenarioReadTarget>();
+        app.insert_resource(ChartSizeMap::default());
         app.add_systems(Update, apply_layout_system);
         app.update();
 
@@ -3030,11 +3037,12 @@ mod tests {
         });
         std::fs::write(&tmp, serde_json::to_string(&layout_json).unwrap()).unwrap();
 
-        app.world_mut().send_event(LayoutLoadRequested {
+        app.world_mut().write_message(LayoutLoadRequested {
             path: tmp.clone(),
             mode: LayoutLoadMode::UserJsonOpen,
         });
         app.init_resource::<ScenarioReadTarget>();
+        app.insert_resource(ChartSizeMap::default());
         app.add_systems(Update, apply_layout_system);
         app.update();
 
@@ -3094,8 +3102,9 @@ mod tests {
         ));
 
         app.init_resource::<PendingFileDialog>();
+        app.insert_resource(ChartSizeMap::default());
         app.add_systems(Update, handle_save_layout_system);
-        app.world_mut().send_event(LayoutSaveRequested);
+        app.world_mut().write_message(LayoutSaveRequested);
         app.update();
 
         let body = std::fs::read_to_string(&json_path).unwrap();
@@ -3187,10 +3196,11 @@ mod tests {
         ));
 
         app.init_resource::<PendingFileDialog>();
+        app.insert_resource(ChartSizeMap::default());
         app.add_systems(Update, (handle_save_layout_system, apply_layout_system));
 
         // --- Save ---
-        app.world_mut().send_event(LayoutSaveRequested);
+        app.world_mut().write_message(LayoutSaveRequested);
         app.update();
 
         let body = std::fs::read_to_string(&json_path).unwrap();
@@ -3212,7 +3222,7 @@ mod tests {
         // apply_layout_system は found Some 経路に入り PanelSpawnRequested は発火しない想定。
         // ただし「picker が JSON に混ざっていた」場合は found None 経路で picker kind の
         // PanelSpawnRequested が発火するため、ここで検知できる。
-        app.world_mut().send_event(LayoutLoadRequested {
+        app.world_mut().write_message(LayoutLoadRequested {
             path: json_path.clone(),
             mode: LayoutLoadMode::UserJsonOpen,
         });
@@ -3220,7 +3230,7 @@ mod tests {
 
         let mut spawn_events = app
             .world_mut()
-            .resource_mut::<Events<PanelSpawnRequested>>();
+            .resource_mut::<Messages<PanelSpawnRequested>>();
         let kinds: Vec<PanelKind> = spawn_events.update_drain().map(|ev| ev.kind).collect();
         assert!(
             kinds.is_empty(),
@@ -3271,8 +3281,9 @@ mod tests {
         ));
 
         app.init_resource::<PendingFileDialog>();
+        app.insert_resource(ChartSizeMap::default());
         app.add_systems(Update, handle_save_layout_system);
-        app.world_mut().send_event(LayoutSaveRequested);
+        app.world_mut().write_message(LayoutSaveRequested);
         app.update();
 
         let body = std::fs::read_to_string(&json_path).unwrap();
@@ -3324,8 +3335,9 @@ mod tests {
         ));
 
         app.init_resource::<PendingFileDialog>();
+        app.insert_resource(ChartSizeMap::default());
         app.add_systems(Update, handle_save_layout_system);
-        app.world_mut().send_event(LayoutSaveRequested);
+        app.world_mut().write_message(LayoutSaveRequested);
         app.update();
 
         // cache_sidecar 関連 path が None のまま
@@ -3396,8 +3408,9 @@ mod tests {
         ));
 
         app.init_resource::<PendingFileDialog>();
+        app.insert_resource(ChartSizeMap::default());
         app.add_systems(Update, handle_save_layout_system);
-        app.world_mut().send_event(LayoutSaveRequested);
+        app.world_mut().write_message(LayoutSaveRequested);
         app.update();
 
         // 元 sidecar 側に registry 値が反映されている
@@ -3457,8 +3470,9 @@ mod tests {
         ));
 
         app.init_resource::<PendingFileDialog>();
+        app.insert_resource(ChartSizeMap::default());
         app.add_systems(Update, handle_save_layout_system);
-        app.world_mut().send_event(LayoutSaveRequested);
+        app.world_mut().write_message(LayoutSaveRequested);
         app.update();
 
         let body = std::fs::read_to_string(&json_path).unwrap();
@@ -3529,8 +3543,9 @@ mod tests {
         ));
 
         app.init_resource::<PendingFileDialog>();
+        app.insert_resource(ChartSizeMap::default());
         app.add_systems(Update, handle_save_layout_system);
-        app.world_mut().send_event(LayoutSaveRequested);
+        app.world_mut().write_message(LayoutSaveRequested);
         app.update();
 
         // ① 元 strat.json の instruments が registry の最新値で上書きされている
@@ -3629,8 +3644,9 @@ mod tests {
         }
 
         app.init_resource::<ScenarioReadTarget>();
+        app.insert_resource(ChartSizeMap::default());
         app.add_systems(Update, apply_layout_system);
-        app.world_mut().send_event(LayoutLoadRequested {
+        app.world_mut().write_message(LayoutLoadRequested {
             path: json_path.clone(),
             mode: LayoutLoadMode::UserJsonOpen,
         });
@@ -3639,7 +3655,7 @@ mod tests {
 
         let mut load_events = app
             .world_mut()
-            .resource_mut::<Events<StrategyFileLoadRequested>>();
+            .resource_mut::<Messages<StrategyFileLoadRequested>>();
         let loads: Vec<StrategyFileLoadRequested> = load_events.update_drain().collect();
         assert_eq!(
             loads.len(),
@@ -3699,8 +3715,9 @@ mod tests {
         }
 
         app.init_resource::<ScenarioReadTarget>();
+        app.insert_resource(ChartSizeMap::default());
         app.add_systems(Update, apply_layout_system);
-        app.world_mut().send_event(LayoutLoadRequested {
+        app.world_mut().write_message(LayoutLoadRequested {
             path: json_path.clone(),
             mode: LayoutLoadMode::UserJsonOpen,
         });
@@ -3769,8 +3786,9 @@ mod tests {
         }
 
         app.init_resource::<ScenarioReadTarget>();
+        app.insert_resource(ChartSizeMap::default());
         app.add_systems(Update, apply_layout_system);
-        app.world_mut().send_event(LayoutLoadRequested {
+        app.world_mut().write_message(LayoutLoadRequested {
             path: json_path,
             mode: LayoutLoadMode::ApplySidecarForPy,
         });
@@ -3779,7 +3797,7 @@ mod tests {
 
         let mut load_events = app
             .world_mut()
-            .resource_mut::<Events<StrategyFileLoadRequested>>();
+            .resource_mut::<Messages<StrategyFileLoadRequested>>();
         let loads: Vec<StrategyFileLoadRequested> = load_events.update_drain().collect();
         assert!(
             loads.is_empty(),

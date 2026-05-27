@@ -29,7 +29,7 @@ fn j5_find_panel_open_close_navigate() {
         .insert_resource(Time::<()>::default())
         .insert_resource(FindReplaceState::default())
         .insert_resource(FocusedWidget(None))
-        .add_event::<FindActionRequested>()
+        .add_message::<FindActionRequested>()
         .add_systems(
             Update,
             (
@@ -123,7 +123,7 @@ fn j5_find_panel_open_close_navigate() {
 
     // ── Phase C: Next で次のマッチへ移動 ──
     app.world_mut()
-        .send_event(FindActionRequested(FindButtonKind::Next));
+        .write_message(FindActionRequested(FindButtonKind::Next));
     app.update();
 
     {
@@ -133,7 +133,7 @@ fn j5_find_panel_open_close_navigate() {
 
     // Next をもう 1 回。
     app.world_mut()
-        .send_event(FindActionRequested(FindButtonKind::Next));
+        .write_message(FindActionRequested(FindButtonKind::Next));
     app.update();
 
     {
@@ -143,7 +143,7 @@ fn j5_find_panel_open_close_navigate() {
 
     // Next で末尾からラップアラウンドする。
     app.world_mut()
-        .send_event(FindActionRequested(FindButtonKind::Next));
+        .write_message(FindActionRequested(FindButtonKind::Next));
     app.update();
 
     {
@@ -153,7 +153,7 @@ fn j5_find_panel_open_close_navigate() {
 
     // ── Phase D: Prev で前のマッチへ移動 ──
     app.world_mut()
-        .send_event(FindActionRequested(FindButtonKind::Prev));
+        .write_message(FindActionRequested(FindButtonKind::Prev));
     app.update();
 
     {

@@ -12,7 +12,7 @@
 //!  (d) 文字キー入力 → len() 増加 → Backspace → len() 減少 (mask 表示の前提確認)
 //!
 //! **入力方法**: `SecretInput.push_char` は private。
-//! 外部テストは `Events<KeyboardInput>` + `secret_modal_input_system` で入力する。
+//! 外部テストは `Messages<KeyboardInput>` + `secret_modal_input_system` で入力する。
 
 use bevy::input::ButtonState;
 use bevy::input::keyboard::{Key, KeyboardInput};
@@ -36,7 +36,7 @@ fn make_app() -> (App, mpsc::UnboundedReceiver<TransportCommand>) {
     app.init_resource::<SecretPrompt>();
     app.init_resource::<OrderFeedback>();
     app.insert_resource(TransportCommandSender { tx });
-    app.add_event::<KeyboardInput>();
+    app.add_message::<KeyboardInput>();
     (app, rx)
 }
 
@@ -55,27 +55,29 @@ fn queue_chars(app: &mut App, s: &str) {
     for c in s.chars() {
         let cs = c.to_string();
         app.world_mut()
-            .resource_mut::<Events<KeyboardInput>>()
-            .send(KeyboardInput {
+            .resource_mut::<Messages<KeyboardInput>>()
+            .write(KeyboardInput {
                 // key_code は secret_modal_input_system が参照しない。logical_key のみ使用。
                 key_code: KeyCode::F35,
                 logical_key: Key::Character(cs.as_str().into()),
                 state: ButtonState::Pressed,
                 repeat: false,
                 window: Entity::PLACEHOLDER,
+            text: None,
             });
     }
 }
 
 fn queue_escape(app: &mut App) {
     app.world_mut()
-        .resource_mut::<Events<KeyboardInput>>()
-        .send(KeyboardInput {
+        .resource_mut::<Messages<KeyboardInput>>()
+        .write(KeyboardInput {
             key_code: KeyCode::Escape,
             logical_key: Key::Escape,
             state: ButtonState::Pressed,
             repeat: false,
             window: Entity::PLACEHOLDER,
+            text: None,
         });
 }
 
@@ -228,13 +230,14 @@ fn k15_secret_modal_timeout_zeroize_empty_submit() {
         );
 
         app.world_mut()
-            .resource_mut::<Events<KeyboardInput>>()
-            .send(KeyboardInput {
+            .resource_mut::<Messages<KeyboardInput>>()
+            .write(KeyboardInput {
                 key_code: KeyCode::Backspace,
                 logical_key: Key::Backspace,
                 state: ButtonState::Pressed,
                 repeat: false,
                 window: Entity::PLACEHOLDER,
+            text: None,
             });
         app.update();
         assert_eq!(

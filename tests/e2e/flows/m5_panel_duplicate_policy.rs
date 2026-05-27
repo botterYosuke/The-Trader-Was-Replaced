@@ -42,7 +42,7 @@ fn m5_panel_duplicate_policy() {
         .insert_resource(StrategyBuffer::default())
         .insert_resource(InstrumentRegistry::default());
 
-    app.add_event::<PanelSpawnRequested>();
+    app.add_message::<PanelSpawnRequested>();
 
     app.add_systems(
         Update,

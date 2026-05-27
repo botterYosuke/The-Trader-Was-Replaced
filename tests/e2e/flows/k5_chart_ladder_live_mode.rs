@@ -178,10 +178,10 @@ fn k5_chart_ladder_live_mode() {
 
     {
         let world = app.world_mut();
-        let mut rq = world.query::<(&LadderRow, &Parent)>();
+        let mut rq = world.query::<(&LadderRow, &ChildOf)>();
         let rows: Vec<_> = rq
             .iter(world)
-            .filter(|(_, p)| p.get() == pane_entity)
+            .filter(|(_, p)| p.parent() == pane_entity)
             .collect();
         assert_eq!(rows.len(), 1, "depth なしはプレースホルダ 1 行のみ");
     }
@@ -209,10 +209,10 @@ fn k5_chart_ladder_live_mode() {
 
     {
         let world = app.world_mut();
-        let mut rq = world.query::<(&LadderRow, &Parent)>();
+        let mut rq = world.query::<(&LadderRow, &ChildOf)>();
         let rows: Vec<_> = rq
             .iter(world)
-            .filter(|(_, p)| p.get() == pane_entity)
+            .filter(|(_, p)| p.parent() == pane_entity)
             .collect();
         assert_eq!(rows.len(), 21, "depth ありは ask10 + last + bid10 = 21 行");
     }

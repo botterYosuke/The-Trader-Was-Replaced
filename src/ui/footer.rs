@@ -21,7 +21,7 @@ const SPEED_OPTIONS: &[u32] = &[1, 2, 5, 10, 50];
 const BUTTON_DISABLED_ALPHA: f32 = 0.35;
 const BUTTON_ENABLED_ALPHA: f32 = 1.0;
 
-fn spawn_transport_btn(parent: &mut ChildSpawner, label: &str, action: TransportButton) {
+fn spawn_transport_btn(parent: &mut ChildSpawnerCommands, label: &str, action: TransportButton) {
     parent
         .spawn((
             Button,
@@ -47,7 +47,7 @@ fn spawn_transport_btn(parent: &mut ChildSpawner, label: &str, action: Transport
         });
 }
 
-fn spawn_speed_btn(parent: &mut ChildSpawner, multiplier: u32, selected: bool) {
+fn spawn_speed_btn(parent: &mut ChildSpawnerCommands, multiplier: u32, selected: bool) {
     parent
         .spawn((
             Button,
@@ -77,7 +77,7 @@ fn spawn_speed_btn(parent: &mut ChildSpawner, multiplier: u32, selected: bool) {
         });
 }
 
-fn spawn_mode_segment(parent: &mut ChildSpawner, label: &str, mode: ExecutionMode) {
+fn spawn_mode_segment(parent: &mut ChildSpawnerCommands, label: &str, mode: ExecutionMode) {
     parent
         .spawn((
             Button,
@@ -951,7 +951,7 @@ mod tests {
         app.world_mut().resource_mut::<StrategyBuffer>().cache_path = Some(cache_path);
         let _ = spawn_pressed_pause_resume(&mut app);
         app.update();
-        let events = app.world().resource::<Events<StrategyRunRequested>>();
+        let events = app.world().resource::<Messages<StrategyRunRequested>>();
         let mut reader = events.get_cursor();
         assert_eq!(
             reader.read(events).count(),
@@ -972,7 +972,7 @@ mod tests {
         app.world_mut().resource_mut::<StrategyBuffer>().cache_path = Some(cache_path);
         let _ = spawn_pressed_pause_resume(&mut app);
         app.update();
-        let events = app.world().resource::<Events<StrategyRunRequested>>();
+        let events = app.world().resource::<Messages<StrategyRunRequested>>();
         let mut reader = events.get_cursor();
         assert_eq!(
             reader.read(events).count(),

@@ -147,7 +147,7 @@ mod tests {
         let mouse_input: ButtonInput<MouseButton> = ButtonInput::<MouseButton>::default();
         app.insert_resource(mouse_input);
 
-        app.add_event::<KeyboardInput>();
+        app.add_message::<KeyboardInput>();
 
         app.update();
 

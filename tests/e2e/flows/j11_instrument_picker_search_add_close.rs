@@ -59,7 +59,7 @@ fn make_app_with_candidates() -> (App, NaiveDate) {
             mode: ExecutionMode::Replay,
         });
 
-    app.add_event::<KeyboardInput>();
+    app.add_message::<KeyboardInput>();
 
     // システムを本番と同じ順序でチェーン。
     // add_instrument_button_system → sync_picker_dropdown → picker_list_rebuild → searchbox_input → row_click
@@ -154,14 +154,15 @@ fn j11_instrument_picker_search_add_close() {
     for ch in "7201".chars() {
         let s = ch.to_string();
         app.world_mut()
-            .resource_mut::<Events<KeyboardInput>>()
-            .send(KeyboardInput {
+            .resource_mut::<Messages<KeyboardInput>>()
+            .write(KeyboardInput {
                 // key_code は picker_searchbox_input_system が読まない。logical_key のみ使用。
                 key_code: KeyCode::F35,
                 logical_key: Key::Character(s.as_str().into()),
                 state: ButtonState::Pressed,
                 repeat: false,
                 window: Entity::PLACEHOLDER,
+            text: None,
             });
     }
     // 1フレーム: picker_searchbox_input_system が query を "7201" に更新する。
@@ -212,13 +213,14 @@ fn j11_instrument_picker_search_add_close() {
 
     // ── Phase E: Escape で picker が閉じること ───────────────────────────────
     app.world_mut()
-        .resource_mut::<Events<KeyboardInput>>()
-        .send(KeyboardInput {
+        .resource_mut::<Messages<KeyboardInput>>()
+        .write(KeyboardInput {
             key_code: KeyCode::Escape,
             logical_key: Key::Escape,
             state: ButtonState::Pressed,
             repeat: false,
             window: Entity::PLACEHOLDER,
+            text: None,
         });
     app.update();
     app.update(); // sync_picker_dropdown_visibility_system が Display を None に戻すフレームを確保

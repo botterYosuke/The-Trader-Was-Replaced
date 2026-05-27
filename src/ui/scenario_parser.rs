@@ -150,7 +150,7 @@ pub fn parse_scenario_system(
             "no 'scenario' key in {:?} — ScenarioMetadata reset",
             json_path
         );
-        cleared_events.send(ScenarioClearedFromFile {
+        cleared_events.write(ScenarioClearedFromFile {
             source_path: Some(json_path.clone()),
         });
         *scenario = ScenarioMetadata::default();
@@ -419,7 +419,7 @@ mod tests {
         app.add_systems(Update, parse_scenario_system);
         app.update();
 
-        let events = app.world().resource::<Events<ScenarioLoadedFromFile>>();
+        let events = app.world().resource::<Messages<ScenarioLoadedFromFile>>();
         let mut reader = events.get_cursor();
         let collected: Vec<_> = reader.read(events).cloned().collect();
         assert_eq!(
@@ -465,11 +465,11 @@ mod tests {
 
         app.update(); // 1 回目: 発火
         app.world_mut()
-            .resource_mut::<Events<ScenarioLoadedFromFile>>()
+            .resource_mut::<Messages<ScenarioLoadedFromFile>>()
             .clear();
         app.update(); // 2 回目: 発火してはいけない
 
-        let events = app.world().resource::<Events<ScenarioLoadedFromFile>>();
+        let events = app.world().resource::<Messages<ScenarioLoadedFromFile>>();
         let mut reader = events.get_cursor();
         let collected: Vec<_> = reader.read(events).cloned().collect();
         assert!(
@@ -510,7 +510,7 @@ mod tests {
         app.add_systems(Update, parse_scenario_system);
         app.update();
 
-        let events = app.world().resource::<Events<ScenarioLoadedFromFile>>();
+        let events = app.world().resource::<Messages<ScenarioLoadedFromFile>>();
         let mut reader = events.get_cursor();
         let collected: Vec<_> = reader.read(events).cloned().collect();
         assert_eq!(
@@ -556,7 +556,7 @@ mod tests {
         app.add_systems(Update, parse_scenario_system);
         app.update();
 
-        let events = app.world().resource::<Events<ScenarioLoadedFromFile>>();
+        let events = app.world().resource::<Messages<ScenarioLoadedFromFile>>();
         let mut reader = events.get_cursor();
         let collected: Vec<_> = reader.read(events).cloned().collect();
         assert_eq!(collected.len(), 1, "inline instruments must emit event");
@@ -596,7 +596,7 @@ mod tests {
         app.add_systems(Update, parse_scenario_system);
         app.update();
 
-        let events = app.world().resource::<Events<ScenarioLoadedFromFile>>();
+        let events = app.world().resource::<Messages<ScenarioLoadedFromFile>>();
         let mut reader = events.get_cursor();
         let collected: Vec<_> = reader.read(events).cloned().collect();
         assert!(

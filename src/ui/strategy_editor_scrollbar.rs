@@ -131,7 +131,7 @@ pub fn spawn_editor_scrollbar(commands: &mut Commands, target_editor: Entity, x:
                 let Ok((mut editor_opt, mut buffer)) = editor_q.get_mut(thumb.target_editor) else {
                     return;
                 };
-                let scale = camera_q.get_single().map(|p| {
+                let scale = camera_q.single().map(|p| {
                     if let Projection::Orthographic(proj) = p { proj.scale } else { 1.0 }
                 }).unwrap_or(1.0);
                 let track_h = track_q

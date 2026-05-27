@@ -48,7 +48,7 @@ fn build_app(scenario: ScenarioMetadata) -> (App, mpsc::UnboundedReceiver<Transp
     app.insert_resource(TradingSession::default());
     app.insert_resource(LastRunResult::default());
     app.insert_resource(TransportCommandSender { tx });
-    app.add_event::<StrategyRunRequested>();
+    app.add_message::<StrategyRunRequested>();
     app.add_systems(Update, handle_strategy_run_system);
 
     (app, rx)
@@ -61,7 +61,7 @@ fn j8_startup_panel_valid_run_command() {
         let (mut app, mut rx) = build_app(make_valid_scenario());
 
         let cache_path = std::path::PathBuf::from("/tmp/app_state.py");
-        app.world_mut().send_event(StrategyRunRequested {
+        app.world_mut().write_message(StrategyRunRequested {
             cache_path: cache_path.clone(),
         });
         app.update();
@@ -117,7 +117,7 @@ fn j8_startup_panel_valid_run_command() {
         let (mut app, mut rx) = build_app(make_valid_scenario());
 
         // 1 回目
-        app.world_mut().send_event(StrategyRunRequested {
+        app.world_mut().write_message(StrategyRunRequested {
             cache_path: std::path::PathBuf::from("/tmp/a.py"),
         });
         app.update();
@@ -133,7 +133,7 @@ fn j8_startup_panel_valid_run_command() {
             .visible = false;
 
         // 2 回目
-        app.world_mut().send_event(StrategyRunRequested {
+        app.world_mut().write_message(StrategyRunRequested {
             cache_path: std::path::PathBuf::from("/tmp/a.py"),
         });
         app.update();
@@ -159,7 +159,7 @@ fn j8_startup_panel_valid_run_command() {
         };
         let (mut app, mut rx) = build_app(empty);
 
-        app.world_mut().send_event(StrategyRunRequested {
+        app.world_mut().write_message(StrategyRunRequested {
             cache_path: std::path::PathBuf::from("/tmp/a.py"),
         });
         app.update();
@@ -187,10 +187,10 @@ fn j8_startup_panel_valid_run_command() {
         app.insert_resource(TradingSession::default());
         app.insert_resource(LastRunResult::default());
         // TransportCommandSender を挿入しない
-        app.add_event::<StrategyRunRequested>();
+        app.add_message::<StrategyRunRequested>();
         app.add_systems(Update, handle_strategy_run_system);
 
-        app.world_mut().send_event(StrategyRunRequested {
+        app.world_mut().write_message(StrategyRunRequested {
             cache_path: std::path::PathBuf::from("/tmp/a.py"),
         });
         app.update();

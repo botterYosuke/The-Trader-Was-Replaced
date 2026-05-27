@@ -98,7 +98,7 @@ fn spawn_resize_handle(commands: &mut Commands, axis: ResizeAxis, size: Vec2, po
                 let Ok(child_of) = parent_q.get(drag.entity) else {
                     return;
                 };
-                let scale = camera_q.get_single().map(|p| {
+                let scale = camera_q.single().map(|p| {
                     if let Projection::Orthographic(proj) = p { proj.scale } else { 1.0 }
                 }).unwrap_or(1.0);
                 let dx = drag.delta.x * scale;
@@ -156,7 +156,7 @@ fn spawn_resize_handle(commands: &mut Commands, axis: ResizeAxis, size: Vec2, po
                   windows: Query<Entity, With<bevy::window::PrimaryWindow>>| {
                 use bevy::window::SystemCursorIcon;
                 use bevy::window::CursorIcon;
-                if let Ok(entity) = windows.get_single() {
+                if let Ok(entity) = windows.single() {
                     let icon = match axis {
                         ResizeAxis::Right => SystemCursorIcon::EwResize,
                         ResizeAxis::Bottom => SystemCursorIcon::NsResize,
@@ -173,7 +173,7 @@ fn spawn_resize_handle(commands: &mut Commands, axis: ResizeAxis, size: Vec2, po
              windows: Query<Entity, With<bevy::window::PrimaryWindow>>| {
                 use bevy::window::SystemCursorIcon;
                 use bevy::window::CursorIcon;
-                if let Ok(entity) = windows.get_single() {
+                if let Ok(entity) = windows.single() {
                     commands
                         .entity(entity)
                         .insert(CursorIcon::from(SystemCursorIcon::Default));
@@ -266,7 +266,7 @@ pub fn spawn_floating_window(
                 let Ok(mut transform) = query.get_mut(child_of.parent()) else {
                     return;
                 };
-                let scale = camera_query.get_single().map(|p| {
+                let scale = camera_query.single().map(|p| {
                     if let Projection::Orthographic(proj) = p { proj.scale } else { 1.0 }
                 }).unwrap_or(1.0);
                 transform.translation.x += drag.delta.x * scale;
@@ -337,7 +337,7 @@ pub fn spawn_floating_window(
                 ..default()
             },
             TextColor(Color::WHITE),
-            bevy::sprite::Anchor::CenterLeft,
+            bevy::sprite::Anchor::CENTER_LEFT,
             Transform::from_xyz(title_text_x, 0.0, 0.1),
         ))
         .id();
@@ -398,7 +398,7 @@ pub fn spawn_floating_window(
                     let Ok((kind, tf, sprite, editor_id, fragment, chart_instrument)) =
                         root_q.get(root_entity)
                     else {
-                        commands.entity(root_entity).despawn_recursive();
+                        commands.entity(root_entity).despawn();
                         return;
                     };
 
@@ -409,7 +409,7 @@ pub fn spawn_floating_window(
                         }
                         registry.remove(&ci.instrument_id);
                         map.map.remove(&ci.instrument_id);
-                        commands.entity(root_entity).despawn_recursive();
+                        commands.entity(root_entity).despawn();
                         return;
                     }
 
@@ -436,7 +436,7 @@ pub fn spawn_floating_window(
                         history.push_window_despawn(layout, snapshot);
                         auto_save.mark_layout_changed(std::time::Instant::now());
                     }
-                    commands.entity(root_entity).despawn_recursive();
+                    commands.entity(root_entity).despawn();
                 },
             )
             .id();
@@ -453,7 +453,7 @@ pub fn spawn_floating_window(
                 TextColor(Color::WHITE),
                 Transform::from_xyz(0.0, 0.0, 0.1),
             ))
-            .set_parent(close_btn);
+            .insert(ChildOf(close_btn));
 
         close_button_entity = Some(close_btn);
     }
@@ -763,23 +763,17 @@ mod close_button_tests {
 
     #[test]
     fn closeable_true_spawns_close_button() {
-        let (app, _root) = spawn_test_window(true);
-        let count = app
-            .world()
-            .iter_entities()
-            .filter(|e| e.contains::<CloseButton>())
-            .count();
+        let (mut app, _root) = spawn_test_window(true);
+        let mut q = app.world_mut().query_filtered::<(), With<CloseButton>>();
+        let count = q.iter(app.world()).count();
         assert_eq!(count, 1, "closeable:true は × ボタンを 1 個 spawn する");
     }
 
     #[test]
     fn closeable_false_spawns_no_close_button() {
-        let (app, _root) = spawn_test_window(false);
-        let count = app
-            .world()
-            .iter_entities()
-            .filter(|e| e.contains::<CloseButton>())
-            .count();
+        let (mut app, _root) = spawn_test_window(false);
+        let mut q = app.world_mut().query_filtered::<(), With<CloseButton>>();
+        let count = q.iter(app.world()).count();
         assert_eq!(count, 0, "closeable:false は × ボタンを spawn しない");
     }
 }
@@ -809,39 +803,38 @@ mod order_dispatcher_tests {
         app
     }
 
-    fn order_panel_count(app: &App) -> usize {
-        app.world()
-            .iter_entities()
-            .filter(|e| {
-                e.contains::<WindowRoot>()
-                    && e.get::<PanelKind>() == Some(&PanelKind::Order)
-            })
+    fn order_panel_count(app: &mut App) -> usize {
+        let mut q = app
+            .world_mut()
+            .query_filtered::<&PanelKind, With<WindowRoot>>();
+        q.iter(app.world())
+            .filter(|kind| **kind == PanelKind::Order)
             .count()
     }
 
     #[test]
     fn order_request_spawns_exactly_one_window() {
         let mut app = order_dispatch_app();
-        app.world_mut().send_event(PanelSpawnRequested {
+        app.world_mut().write_message(PanelSpawnRequested {
             kind: PanelKind::Order,
             source: PanelSpawnSource::User,
             strategy_spec: None,
         });
         app.update();
-        assert_eq!(order_panel_count(&app), 1, "Order request spawns exactly 1 window");
+        assert_eq!(order_panel_count(&mut app), 1, "Order request spawns exactly 1 window");
     }
 
     #[test]
     fn duplicate_order_request_does_not_spawn_second_window() {
         let mut app = order_dispatch_app();
         for _ in 0..2 {
-            app.world_mut().send_event(PanelSpawnRequested {
+            app.world_mut().write_message(PanelSpawnRequested {
                 kind: PanelKind::Order,
                 source: PanelSpawnSource::User,
                 strategy_spec: None,
             });
             app.update();
         }
-        assert_eq!(order_panel_count(&app), 1, "dedup guard holds: still exactly 1 Order window");
+        assert_eq!(order_panel_count(&mut app), 1, "dedup guard holds: still exactly 1 Order window");
     }
 }

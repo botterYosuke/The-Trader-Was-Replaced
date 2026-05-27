@@ -124,13 +124,13 @@ pub fn update_replay_startup_window_system(
     } else {
         Visibility::Hidden
     };
-    if let Ok(mut visibility) = window_q.get_single_mut() {
+    if let Ok(mut visibility) = window_q.single_mut() {
         if *visibility != target_vis {
             *visibility = target_vis;
         }
     }
 
-    if let Ok(mut text) = label_q.get_single_mut() {
+    if let Ok(mut text) = label_q.single_mut() {
         let new_label: &str = if let Some(err) = &progress.error {
             err.as_str()
         } else {
@@ -153,7 +153,7 @@ pub fn update_replay_startup_window_system(
     } else {
         Visibility::Hidden
     };
-    if let Ok(mut vis) = close_btn_q.get_single_mut() {
+    if let Ok(mut vis) = close_btn_q.single_mut() {
         if *vis != target_close_vis {
             *vis = target_close_vis;
         }
@@ -172,7 +172,7 @@ pub fn animate_replay_startup_bar_system(
     let t = (time.elapsed_secs() % 2.0) as f32;
     let phase = if t < 1.0 { t } else { 2.0 - t };
     let left_percent = 70.0 * phase;
-    if let Ok(mut node) = fill_q.get_single_mut() {
+    if let Ok(mut node) = fill_q.single_mut() {
         node.left = Val::Percent(left_percent);
     }
 }
@@ -267,11 +267,11 @@ mod tests {
 
         let mut label_q = world.query_filtered::<&Text, With<ReplayStartupStageLabel>>();
         let label_text = label_q.single(world);
-        assert_eq!(label_text.0, "Loading replay data...");
+        assert_eq!(label_text.unwrap().0, "Loading replay data...");
 
         let mut win_q = world.query_filtered::<&Visibility, With<ReplayStartupWindow>>();
         let vis = win_q.single(world);
-        assert!(matches!(vis, Visibility::Visible));
+        assert!(matches!(vis.unwrap(), Visibility::Visible));
     }
 
     #[test]

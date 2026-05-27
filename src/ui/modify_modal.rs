@@ -325,7 +325,7 @@ pub fn spawn_modify_modal(mut commands: Commands) {
 
 /// ラベル + クリックでフォーカスする入力欄 (背景に focus 色) を 1 行 spawn する。
 fn spawn_input_row(
-    parent: &mut ChildSpawner,
+    parent: &mut ChildSpawnerCommands,
     label: &str,
     field: ModifyField,
     focus: ModifyButton,
@@ -570,19 +570,19 @@ pub fn modify_modal_sync_system(
 
     // 警告バナーとチェック行の表示 (kabu のときだけ)
     let warn_display = if kabu { Display::Flex } else { Display::None };
-    if let Ok(mut node) = warn_q.get_single_mut()
+    if let Ok(mut node) = warn_q.single_mut()
         && node.display != warn_display
     {
         node.display = warn_display;
     }
-    if let Ok(mut node) = ack_row_q.get_single_mut()
+    if let Ok(mut node) = ack_row_q.single_mut()
         && node.display != warn_display
     {
         node.display = warn_display;
     }
 
     // チェックボックス色
-    if let Ok(mut bg) = check_q.get_single_mut() {
+    if let Ok(mut bg) = check_q.single_mut() {
         let target = if form.ack_kabu {
             COLOR_CHECK_ON
         } else {

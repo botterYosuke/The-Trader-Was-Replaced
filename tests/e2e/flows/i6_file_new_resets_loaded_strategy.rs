@@ -37,11 +37,11 @@ fn i6_file_new_resets_loaded_strategy() {
     app.insert_resource(OpenMenu::default());
     app.insert_resource(TransportCommandSender { tx });
 
-    app.add_event::<LayoutSaveRequested>();
-    app.add_event::<LayoutSaveAsRequested>();
-    app.add_event::<LayoutLoadDialogRequested>();
-    app.add_event::<UndoMenuRequested>();
-    app.add_event::<RedoMenuRequested>();
+    app.add_message::<LayoutSaveRequested>();
+    app.add_message::<LayoutSaveAsRequested>();
+    app.add_message::<LayoutLoadDialogRequested>();
+    app.add_message::<UndoMenuRequested>();
+    app.add_message::<RedoMenuRequested>();
 
     app.add_systems(Update, menu_item_system);
 
@@ -90,11 +90,11 @@ fn i6_file_new_resets_loaded_strategy() {
         app2.insert_resource(OpenMenu::default());
         // TransportCommandSender を挿入しない → Option<Res<>> は None
 
-        app2.add_event::<LayoutSaveRequested>();
-        app2.add_event::<LayoutSaveAsRequested>();
-        app2.add_event::<LayoutLoadDialogRequested>();
-        app2.add_event::<UndoMenuRequested>();
-        app2.add_event::<RedoMenuRequested>();
+        app2.add_message::<LayoutSaveRequested>();
+        app2.add_message::<LayoutSaveAsRequested>();
+        app2.add_message::<LayoutLoadDialogRequested>();
+        app2.add_message::<UndoMenuRequested>();
+        app2.add_message::<RedoMenuRequested>();
 
         app2.add_systems(Update, menu_item_system);
 

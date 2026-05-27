@@ -47,8 +47,8 @@ fn j3_strategy_editor_enter_autoindent() {
     app.insert_resource(CosmicFontSystem(font_system))
         .insert_resource(FocusedWidget(None))
         .insert_resource(ButtonInput::<KeyCode>::default())
-        .add_event::<CosmicTextChanged>()
-        .add_event::<KeyboardInput>()
+        .add_message::<CosmicTextChanged>()
+        .add_message::<KeyboardInput>()
         .add_systems(Update, enter_autoindent_system);
 
     let editor_entity = app
@@ -68,7 +68,7 @@ fn j3_strategy_editor_enter_autoindent() {
     // ── CosmicTextChanged が発火したか確認 ──
     let changed_events: Vec<(Entity, String)> = app
         .world_mut()
-        .resource_mut::<Events<CosmicTextChanged>>()
+        .resource_mut::<Messages<CosmicTextChanged>>()
         .drain()
         .map(|CosmicTextChanged(pair)| pair)
         .collect();

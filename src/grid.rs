@@ -56,7 +56,7 @@ fn update_grid_position(
     mut grid_query: Query<&mut Transform, (With<MainGrid>, Without<Camera2d>)>,
 ) {
     if let (Ok((camera_transform, projection)), Ok(mut grid_transform)) =
-        (camera_query.get_single(), grid_query.get_single_mut())
+        (camera_query.single(), grid_query.single_mut())
     {
         grid_transform.translation.x = camera_transform.translation.x;
         grid_transform.translation.y = camera_transform.translation.y;

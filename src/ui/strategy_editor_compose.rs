@@ -24,19 +24,19 @@ pub fn compose_attrs_for_line(
     current_find: Option<&SpanStyle>,
     bracket: &[SpanStyle],
 ) -> cosmic_text::AttrsList {
-    let mut list = AttrsList::new(base);
+    let mut list = AttrsList::new(&base);
 
     for span in syntax {
-        list.add_span(span.byte_range.clone(), apply_span(base, span));
+        list.add_span(span.byte_range.clone(), &apply_span(&base, span));
     }
     for span in find {
-        list.add_span(span.byte_range.clone(), apply_span(base, span));
+        list.add_span(span.byte_range.clone(), &apply_span(&base, span));
     }
     if let Some(span) = current_find {
-        list.add_span(span.byte_range.clone(), apply_span(base, span));
+        list.add_span(span.byte_range.clone(), &apply_span(&base, span));
     }
     for span in bracket {
-        list.add_span(span.byte_range.clone(), apply_span(base, span));
+        list.add_span(span.byte_range.clone(), &apply_span(&base, span));
     }
 
     list
@@ -44,10 +44,10 @@ pub fn compose_attrs_for_line(
 
 /// span の fg を base に重ねた Attrs を返す。
 /// fg が None の span は base の色をそのまま使う。
-fn apply_span<'a>(base: Attrs<'a>, span: &SpanStyle) -> Attrs<'a> {
+fn apply_span<'a>(base: &Attrs<'a>, span: &SpanStyle) -> Attrs<'a> {
     match span.fg {
-        Some(color) => base.color(color),
-        None => base,
+        Some(color) => base.clone().color(color),
+        None => base.clone(),
     }
 }
 
@@ -165,7 +165,7 @@ pub fn apply_highlight_layers_system(
                 }
 
                 let attrs_list = compose_attrs_for_line(
-                    base,
+                    base.clone(),
                     syntax_spans,
                     &find_spans,
                     current_find.as_ref(),
@@ -227,11 +227,12 @@ mod tests {
     #[test]
     fn empty_spans_yield_base_only() {
         let base = base_attrs();
+        let base_color = base.color_opt;
         let list = compose_attrs_for_line(base, &[], &[], None, &[]);
 
         assert!(list.spans().is_empty(), "no spans expected");
         assert_eq!(list.get_span(0).color_opt, None);
-        assert_eq!(list.get_span(5).color_opt, base.color_opt);
+        assert_eq!(list.get_span(5).color_opt, base_color);
     }
 
     /// (2) syntax のみ → その range だけ syntax 色、範囲外は base。

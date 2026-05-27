@@ -86,7 +86,7 @@ fn collect_child_texts(app: &mut App, container: Entity) -> Vec<String> {
     let children: Vec<Entity> = app
         .world()
         .get::<Children>(container)
-        .map(|c| c.iter().copied().collect())
+        .map(|c| c.iter().collect())
         .unwrap_or_default();
 
     let mut texts = Vec::new();
@@ -97,7 +97,7 @@ fn collect_child_texts(app: &mut App, container: Entity) -> Vec<String> {
         }
         // 1 段深い子（button → text child の構造）
         if let Some(grandchildren) = app.world().get::<Children>(child) {
-            let gc: Vec<Entity> = grandchildren.iter().copied().collect();
+            let gc: Vec<Entity> = grandchildren.iter().collect();
             for gc_ent in gc {
                 if let Some(t) = app.world().get::<Text>(gc_ent) {
                     texts.push(t.0.clone());

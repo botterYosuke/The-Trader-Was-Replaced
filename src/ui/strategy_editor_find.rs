@@ -309,7 +309,7 @@ pub fn manage_find_panel_lifecycle_system(
                     ..default()
                 },
                 TextColor(Color::srgb(0.7, 0.7, 0.75)),
-                bevy::sprite::Anchor::CenterLeft,
+                bevy::sprite::Anchor::CENTER_LEFT,
                 Transform::from_xyz(-205.0, -55.0, 0.2),
                 FindMatchCountText,
             ))
@@ -360,7 +360,7 @@ pub fn manage_find_panel_lifecycle_system(
     // close 遷移: despawn。
     if !state.is_open && state.panel_root.is_some() {
         let root = state.panel_root.take().unwrap();
-        commands.entity(root).despawn_recursive();
+        commands.entity(root).despawn();
         state.query_editor = None;
         state.replacement_editor = None;
         // matches のクリアは compute_find_match_spans_system が is_open=false で行う。
@@ -653,8 +653,9 @@ pub fn replace_execute_system(
             b.set_text(
                 &mut font_system.0,
                 &new_source,
-                Attrs::new(),
+                &Attrs::new(),
                 Shaping::Advanced,
+                None,
             );
             b.set_redraw(true);
         });
@@ -708,7 +709,7 @@ fn spawn_find_field(
                 Metrics::new(FIND_FONT_SIZE, FIND_LINE_HEIGHT),
             )
             .with_text(&mut font_system.0, "", Attrs::new().color(text_color)),
-            DefaultAttrs(AttrsOwned::new(Attrs::new().color(text_color))),
+            DefaultAttrs(AttrsOwned::new(&Attrs::new().color(text_color))),
             CursorColor(Color::WHITE),
             CosmicBackgroundColor(FIELD_BG),
             Transform::from_translation(pos),
@@ -728,7 +729,7 @@ fn spawn_label(commands: &mut Commands, parent: Entity, text: &str, pos: Vec3) {
                 ..default()
             },
             TextColor(Color::srgb(0.8, 0.8, 0.85)),
-            bevy::sprite::Anchor::CenterLeft,
+            bevy::sprite::Anchor::CENTER_LEFT,
             Transform::from_translation(pos),
         ))
         .id();
@@ -916,9 +917,9 @@ mod tests {
         let repl_e = app.world_mut().spawn(FindReplacementEditor).id();
 
         app.world_mut()
-            .send_event(CosmicTextChanged((query_e, "needle".to_string())));
+            .write_message(CosmicTextChanged((query_e, "needle".to_string())));
         app.world_mut()
-            .send_event(CosmicTextChanged((repl_e, "rep".to_string())));
+            .write_message(CosmicTextChanged((repl_e, "rep".to_string())));
         app.update();
 
         let state = app.world().resource::<FindReplaceState>();
@@ -1062,7 +1063,7 @@ mod tests {
 
         // Frame 1: compute finds 3 matches (current=0), then Next advances current → 1.
         app.world_mut()
-            .send_event(FindActionRequested(FindButtonKind::Next));
+            .write_message(FindActionRequested(FindButtonKind::Next));
         app.update();
         assert_eq!(app.world().resource::<FindReplaceState>().matches.len(), 3);
         assert_eq!(

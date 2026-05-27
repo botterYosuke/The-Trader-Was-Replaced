@@ -26,7 +26,7 @@ use bevy::picking::backend::HitData;
 use bevy::picking::events::{Click, Drag, Pointer};
 use bevy::picking::pointer::{Location, PointerId, PointerButton};
 use bevy::prelude::*;
-use bevy::render::camera::NormalizedRenderTarget;
+use bevy::camera::NormalizedRenderTarget;
 
 use backcast::ui::chart_interaction::{
     install_chart_autoscale_reset_observer, install_chart_drag_observer, ChartClickState,
@@ -37,7 +37,7 @@ use backcast::ui::components::ChartInstrument;
 /// headless テスト用の dummy `Location`。viewport 計算には使われない。
 fn dummy_location() -> Location {
     Location {
-        target: NormalizedRenderTarget::Image(Handle::<Image>::default()),
+        target: NormalizedRenderTarget::Image(Handle::<bevy::image::Image>::default().into()),
         position: Vec2::ZERO,
     }
 }
@@ -50,7 +50,7 @@ fn dummy_hit() -> HitData {
 #[test]
 fn k3_chart_drag_pan_and_double_click_reset() {
     let mut app = App::new();
-    app.add_plugins(bevy::core::TaskPoolPlugin::default());
+    app.add_plugins(bevy::app::TaskPoolPlugin::default());
     app.add_plugins(bevy::app::ScheduleRunnerPlugin::default());
     app.add_plugins(bevy::time::TimePlugin);
 
@@ -85,9 +85,8 @@ fn k3_chart_drag_pan_and_double_click_reset() {
 
     // ── Case 1: 左ドラッグ → translation 変化 + auto_scale = false ──
     // delta = (10, 5): translation.x += 10, translation.y -= 5 (Bevy Y は上が正)。
-    app.world_mut().trigger_targets(
+    app.world_mut().entity_mut(chart).trigger(|entity| {
         Pointer::<Drag>::new(
-            chart,
             PointerId::Mouse,
             dummy_location(),
             Drag {
@@ -95,9 +94,9 @@ fn k3_chart_drag_pan_and_double_click_reset() {
                 distance: Vec2::new(10.0, 5.0),
                 delta: Vec2::new(10.0, 5.0),
             },
-        ),
-        chart,
-    );
+            entity,
+        )
+    });
     app.update();
 
     {
@@ -128,9 +127,8 @@ fn k3_chart_drag_pan_and_double_click_reset() {
         .unwrap()
         .translation;
 
-    app.world_mut().trigger_targets(
+    app.world_mut().entity_mut(chart).trigger(|entity| {
         Pointer::<Drag>::new(
-            chart,
             PointerId::Mouse,
             dummy_location(),
             Drag {
@@ -138,9 +136,9 @@ fn k3_chart_drag_pan_and_double_click_reset() {
                 distance: Vec2::new(20.0, 20.0),
                 delta: Vec2::new(20.0, 20.0),
             },
-        ),
-        chart,
-    );
+            entity,
+        )
+    });
     app.update();
 
     {
@@ -167,9 +165,8 @@ fn k3_chart_drag_pan_and_double_click_reset() {
     // ドラッグ後の pointer-up が drag 由来 Click を 1 発生み、その Click が印を消費する)。
     // この drag 由来 click を 1 回流して dragged 印を消費し、以降の click を genuine 扱いにする。
     // (ChartClickState のフィールドは非公開なのでテストから直接 clear できない。)
-    app.world_mut().trigger_targets(
+    app.world_mut().entity_mut(chart).trigger(|entity| {
         Pointer::<Click>::new(
-            chart,
             PointerId::Mouse,
             dummy_location(),
             Click {
@@ -177,17 +174,16 @@ fn k3_chart_drag_pan_and_double_click_reset() {
                 hit: dummy_hit(),
                 duration: Duration::from_millis(50),
             },
-        ),
-        chart,
-    );
+            entity,
+        )
+    });
     app.update();
 
     // 1 click 目: dragged フラグ無し → last_click に時刻が入る。
     // headless では Time elapsed_secs が 0.0 に近い（フレームは極小時間）ので
     // 2 click の時刻差 ≤ DOUBLE_CLICK_SECS (0.4s) が自然に成立する。
-    app.world_mut().trigger_targets(
+    app.world_mut().entity_mut(chart).trigger(|entity| {
         Pointer::<Click>::new(
-            chart,
             PointerId::Mouse,
             dummy_location(),
             Click {
@@ -195,9 +191,9 @@ fn k3_chart_drag_pan_and_double_click_reset() {
                 hit: dummy_hit(),
                 duration: Duration::from_millis(80),
             },
-        ),
-        chart,
-    );
+            entity,
+        )
+    });
     app.update();
 
     // 1 click 後: reset はまだされていない（double-click 判定未成立）。
@@ -211,9 +207,8 @@ fn k3_chart_drag_pan_and_double_click_reset() {
     }
 
     // 2 click 目: 前の click から delta_t ≈ 0 なので double-click 成立 → reset_view()。
-    app.world_mut().trigger_targets(
+    app.world_mut().entity_mut(chart).trigger(|entity| {
         Pointer::<Click>::new(
-            chart,
             PointerId::Mouse,
             dummy_location(),
             Click {
@@ -221,9 +216,9 @@ fn k3_chart_drag_pan_and_double_click_reset() {
                 hit: dummy_hit(),
                 duration: Duration::from_millis(80),
             },
-        ),
-        chart,
-    );
+            entity,
+        )
+    });
     app.update();
 
     {
@@ -257,9 +252,8 @@ fn k3_chart_drag_pan_and_double_click_reset() {
     }
 
     // 左ドラッグ → dragged 印が ChartClickState に入る。
-    app.world_mut().trigger_targets(
+    app.world_mut().entity_mut(chart).trigger(|entity| {
         Pointer::<Drag>::new(
-            chart,
             PointerId::Mouse,
             dummy_location(),
             Drag {
@@ -267,14 +261,13 @@ fn k3_chart_drag_pan_and_double_click_reset() {
                 distance: Vec2::ZERO,
                 delta: Vec2::ZERO, // delta=0 なので translation は動かない
             },
-        ),
-        chart,
-    );
+            entity,
+        )
+    });
 
     // drag 由来の click 1 回目 → dragged フラグを除去して last_click もクリア。
-    app.world_mut().trigger_targets(
+    app.world_mut().entity_mut(chart).trigger(|entity| {
         Pointer::<Click>::new(
-            chart,
             PointerId::Mouse,
             dummy_location(),
             Click {
@@ -282,9 +275,9 @@ fn k3_chart_drag_pan_and_double_click_reset() {
                 hit: dummy_hit(),
                 duration: Duration::from_millis(50),
             },
-        ),
-        chart,
-    );
+            entity,
+        )
+    });
     app.update();
 
     {
@@ -306,9 +299,8 @@ fn k3_chart_drag_pan_and_double_click_reset() {
         s.translation = Vec2::new(5.0, 0.0); // reset してないので平行移動状態
     }
     // genuine click 1 回のみ（last_click は空なので double-click 未成立）。
-    app.world_mut().trigger_targets(
+    app.world_mut().entity_mut(chart).trigger(|entity| {
         Pointer::<Click>::new(
-            chart,
             PointerId::Mouse,
             dummy_location(),
             Click {
@@ -316,9 +308,9 @@ fn k3_chart_drag_pan_and_double_click_reset() {
                 hit: dummy_hit(),
                 duration: Duration::from_millis(80),
             },
-        ),
-        chart,
-    );
+            entity,
+        )
+    });
     app.update();
 
     {

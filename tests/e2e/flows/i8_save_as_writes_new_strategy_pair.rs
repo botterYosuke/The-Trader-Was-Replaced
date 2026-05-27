@@ -20,6 +20,7 @@ use bevy::prelude::*;
 use bevy::transform::TransformPlugin;
 
 use backcast::ui::components::{
+    ChartSizeMap,
     InstrumentRegistry, ScenarioInstrumentsWritebackState, ScenarioMetadata, ScenarioReadTarget,
     ScenarioWritebackPaths, StrategyBuffer, StrategyEditorId, StrategyFragment, WindowRoot,
 };
@@ -100,14 +101,14 @@ fn i8_save_as_writes_new_strategy_pair() {
     // 旧 scenario_target を seed（preserve_scenario の第一候補 / 切替の before 値）。
     app.insert_resource(ScenarioReadTarget(Some(old_json.clone())));
 
-    app.add_event::<LayoutSaveAsRequested>();
+    app.init_resource::<ChartSizeMap>();
+    app.add_message::<LayoutSaveAsRequested>();
 
     // build_layout 内 camera.get_single() 用（無くても panic しないが i7 同様 spawn）。
     app.world_mut().spawn((
         Camera2d,
         Transform::default(),
-        OrthographicProjection::default_2d(),
-    ));
+            ));
 
     // .py を書かせるため StrategyFragment を持つ WindowRoot を 1 つ spawn。
     // poll_save_as の .py 書込は fragments_q (WindowRoot + StrategyEditorId + StrategyFragment) に依存する。

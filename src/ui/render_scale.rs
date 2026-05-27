@@ -29,18 +29,18 @@ pub fn update_cosmic_render_scale_system(
     mut q: Query<(&mut RenderScaleResponsive, &mut CosmicRenderScale)>,
 ) {
     let dpi = window_q
-        .get_single()
+        .single()
         .map(|w| w.scale_factor())
         .unwrap_or(1.0)
         .max(1.0);
     let camera_scale = camera_q
-        .get_single()
+        .single()
         .map(|p| {
             if let Projection::Orthographic(proj) = p { proj.scale } else { 1.0 }
         })
         .unwrap_or(1.0)
         .max(0.01);
-    let zoom = (1.0 / camera_scale).max(1.0);
+    let zoom = (1.0_f32 / camera_scale).max(1.0);
 
     for (mut responsive, mut render_scale) in &mut q {
         let target = (dpi * zoom).clamp(1.0, responsive.max_supersample);

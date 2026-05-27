@@ -21,13 +21,13 @@ fn run_parse(json: &str) -> (ScenarioMetadata, usize) {
     app.insert_resource(ScenarioReadTarget(Some(json_path)));
     app.init_resource::<ScenarioMetadata>();
     app.init_resource::<ScenarioFileWatchState>();
-    app.add_event::<ScenarioLoadedFromFile>();
-    app.add_event::<ScenarioClearedFromFile>();
+    app.add_message::<ScenarioLoadedFromFile>();
+    app.add_message::<ScenarioClearedFromFile>();
     app.add_systems(Update, parse_scenario_system);
     app.update();
 
     let meta = app.world().resource::<ScenarioMetadata>().clone();
-    let events = app.world().resource::<Events<ScenarioLoadedFromFile>>();
+    let events = app.world().resource::<Messages<ScenarioLoadedFromFile>>();
     let mut reader = events.get_cursor();
     let count = reader.read(events).count();
     (meta, count)
@@ -92,8 +92,8 @@ fn j14_scenario_schema_normalization() {
         app.insert_resource(ScenarioReadTarget(Some(json_path)));
         app.init_resource::<ScenarioMetadata>();
         app.init_resource::<ScenarioFileWatchState>();
-        app.add_event::<ScenarioLoadedFromFile>();
-        app.add_event::<ScenarioClearedFromFile>();
+        app.add_message::<ScenarioLoadedFromFile>();
+        app.add_message::<ScenarioClearedFromFile>();
         app.add_systems(Update, parse_scenario_system);
         app.update();
 
@@ -105,7 +105,7 @@ fn j14_scenario_schema_normalization() {
         );
         assert_eq!(meta.schema_version, Some(3));
 
-        let events = app.world().resource::<Events<ScenarioLoadedFromFile>>();
+        let events = app.world().resource::<Messages<ScenarioLoadedFromFile>>();
         let mut reader = events.get_cursor();
         let collected: Vec<_> = reader.read(events).cloned().collect();
         assert_eq!(collected.len(), 1);

@@ -244,7 +244,7 @@ pub fn crosshair_badge_system(
         // 自 chart の既存 badge を一括 despawn (背景 + 文字の 2 entity)。
         for (badge_e, badge) in &existing {
             if badge.target_chart == chart_entity {
-                commands.entity(badge_e).despawn_recursive();
+                commands.entity(badge_e).despawn();
             }
         }
 
@@ -316,7 +316,7 @@ fn spawn_badge(
                 ..default()
             },
             TextColor(BADGE_TEXT_COLOR),
-            Anchor::Center,
+            Anchor::CENTER,
             // 背景 Sprite の子。z をわずかに上げて文字を背景の上に出す。
             Transform::from_xyz(0.0, 0.0, 0.01),
         ))
@@ -333,7 +333,7 @@ fn spawn_badge(
         ))
         .id();
     commands.entity(badge).add_child(text_entity);
-    commands.entity(badge).set_parent(gutter);
+    commands.entity(badge).insert(ChildOf(gutter));
 }
 
 #[cfg(test)]
@@ -617,13 +617,13 @@ mod tests {
         app.update();
 
         let world = app.world_mut();
-        let mut bq = world.query::<(&CrosshairBadge, &Parent)>();
+        let mut bq = world.query::<(&CrosshairBadge, &ChildOf)>();
         let badges: Vec<_> = bq.iter(world).collect();
         // price badge + time badge = 2 (どちらも gutter 子)。
         assert_eq!(badges.len(), 2, "expected price + time badge");
         for (badge, parent) in &badges {
             assert_eq!(badge.target_chart, chart);
-            let p = parent.get();
+            let p = parent.parent();
             assert!(
                 p == price_gutter || p == time_gutter,
                 "badge must be child of a gutter"
@@ -730,7 +730,7 @@ mod tests {
         app.update();
 
         let world = app.world_mut();
-        let mut bq = world.query::<(&CrosshairBadge, &Parent)>();
+        let mut bq = world.query::<(&CrosshairBadge, &ChildOf)>();
         let badges: Vec<_> = bq.iter(world).collect();
         assert_eq!(
             badges.len(),
@@ -739,7 +739,7 @@ mod tests {
         );
         for (badge, parent) in &badges {
             assert_eq!(badge.target_chart, chart);
-            let p = parent.get();
+            let p = parent.parent();
             assert!(p == price_gutter || p == time_gutter);
         }
     }

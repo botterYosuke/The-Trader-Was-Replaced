@@ -419,7 +419,7 @@ pub fn spawn_order_form_in_window(commands: &mut Commands, content_area: Entity)
                 TextFont { font_size: FONT_SZ, ..default() },
                 TextColor(COLOR_LABEL),
                 Transform::from_xyz(x, y, 0.1),
-                bevy::sprite::Anchor::CenterRight,
+                bevy::sprite::Anchor::CENTER_RIGHT,
             ));
         });
     };
@@ -679,7 +679,7 @@ pub fn order_window_despawn_system(
     }
     for (entity, kind) in &panel_q {
         if matches!(kind, PanelKind::Order) {
-            commands.entity(entity).despawn_recursive();
+            commands.entity(entity).despawn();
         }
     }
 }
@@ -745,7 +745,7 @@ pub fn confirm_modal_sync_system(
     let Some(draft) = confirm.pending.as_ref() else {
         return;
     };
-    let Ok(mut text) = summary_q.get_single_mut() else {
+    let Ok(mut text) = summary_q.single_mut() else {
         return;
     };
     let price_str = match draft.price {
@@ -942,7 +942,7 @@ mod tests {
         let mut app = make_app();
         app.add_systems(Update, order_submit_button_system);
         app.world_mut()
-            .send_event(OrderButtonPressed(OrderButton::Submit));
+            .write_message(OrderButtonPressed(OrderButton::Submit));
         app.update();
         assert!(
             app.world().resource::<OrderConfirm>().pending.is_some(),
@@ -956,7 +956,7 @@ mod tests {
         app.world_mut().resource_mut::<SelectedSymbol>().id = None;
         app.add_systems(Update, order_submit_button_system);
         app.world_mut()
-            .send_event(OrderButtonPressed(OrderButton::Submit));
+            .write_message(OrderButtonPressed(OrderButton::Submit));
         app.update();
         let confirm = app.world().resource::<OrderConfirm>();
         assert!(
@@ -1129,11 +1129,11 @@ mod tests {
         let mut app = make_app();
         app.add_systems(Update, order_form_button_system);
         app.world_mut()
-            .send_event(OrderButtonPressed(OrderButton::SideSell));
+            .write_message(OrderButtonPressed(OrderButton::SideSell));
         app.world_mut()
-            .send_event(OrderButtonPressed(OrderButton::TypeLimit));
+            .write_message(OrderButtonPressed(OrderButton::TypeLimit));
         app.world_mut()
-            .send_event(OrderButtonPressed(OrderButton::QtyInc));
+            .write_message(OrderButtonPressed(OrderButton::QtyInc));
         app.update();
         let f = app.world().resource::<OrderForm>();
         assert_eq!(f.side, Side::Sell);

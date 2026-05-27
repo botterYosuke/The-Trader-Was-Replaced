@@ -27,7 +27,7 @@ use backcast::ui::replay_startup_window::{
     update_replay_startup_window_system,
 };
 use bevy::prelude::*;
-use bevy_pancam::{PanCamPlugin, PanCamSystemSet};
+use bevy_pancam::{PanCamPlugin, PanCamSystems};
 use engine::data_engine_client::DataEngineClient;
 use engine::{
     EngineKind, EngineStartConfig, ForceAccountSnapshotRequest, ForceStopReplayRequest,
@@ -315,7 +315,7 @@ async fn main() {
                 replay_startup_close_button_system,
                 replay_startup_timeout_system,
                 // PanCam の do_camera_zoom より前に走らせ、enabled フラグを先に確定させる。
-                pancam_suppression_over_editor_system.before(PanCamSystemSet),
+                pancam_suppression_over_editor_system.before(PanCamSystems),
             ),
         )
         .add_systems(Last, app_exit_shutdown_system)
@@ -364,7 +364,7 @@ async fn events_reconnect_backoff(rx: &mut tokio::sync::watch::Receiver<BackendL
 }
 
 fn app_exit_shutdown_system(
-    mut app_exit: EventReader<AppExit>,
+    mut app_exit: MessageReader<AppExit>,
     cmd_sender: Res<SupervisorCommandSender>,
     lifecycle: Res<BackendLifecycleHandle>,
 ) {

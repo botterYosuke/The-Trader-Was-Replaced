@@ -24,7 +24,7 @@ const BTN_NORMAL: Color = Color::srgba(0.10, 0.10, 0.16, 1.0);
 const BTN_HOVER: Color = Color::srgba(0.20, 0.20, 0.30, 1.0);
 const BTN_PRESSED: Color = Color::srgba(0.30, 0.30, 0.48, 1.0);
 
-fn spawn_menu_item(parent: &mut ChildSpawner, label: &str, action: MenuItem) {
+fn spawn_menu_item(parent: &mut ChildSpawnerCommands, label: &str, action: MenuItem) {
     parent
         .spawn((
             Button,
@@ -401,7 +401,7 @@ pub fn gate_venue_menu_items_system(
             }
         }
         let target_text = if disabled { TEXT_DISABLED } else { TEXT_NORMAL };
-        for &child in children.iter() {
+        for child in children.iter() {
             if let Ok(mut tc) = text_q.get_mut(child) {
                 if tc.0 != target_text {
                     tc.0 = target_text;
@@ -781,7 +781,7 @@ pub fn handle_strategy_file_load_system(
 
         for (entity, kind) in &existing_roots {
             if matches!(kind, PanelKind::StrategyEditor) {
-                commands.entity(entity).despawn_recursive();
+                commands.entity(entity).despawn();
             }
         }
 
@@ -1170,7 +1170,7 @@ mod tests {
     #[test]
     fn test_handle_strategy_run_writes_progress_on_send_success() {
         let (mut app, mut rx) = build_app_for_run(make_valid_scenario(), true);
-        app.world_mut().send_event(StrategyRunRequested {
+        app.world_mut().write_message(StrategyRunRequested {
             cache_path: std::path::PathBuf::from("/tmp/foo.py"),
         });
         app.update();
@@ -1199,7 +1199,7 @@ mod tests {
     #[test]
     fn test_handle_strategy_run_no_sender_keeps_progress_idle() {
         let (mut app, _rx) = build_app_for_run(make_valid_scenario(), false);
-        app.world_mut().send_event(StrategyRunRequested {
+        app.world_mut().write_message(StrategyRunRequested {
             cache_path: std::path::PathBuf::from("/tmp/foo.py"),
         });
         app.update();
@@ -1215,7 +1215,7 @@ mod tests {
     #[test]
     fn test_handle_strategy_run_invalid_scenario_keeps_progress_idle() {
         let (mut app, _rx) = build_app_for_run(ScenarioMetadata::default(), true);
-        app.world_mut().send_event(StrategyRunRequested {
+        app.world_mut().write_message(StrategyRunRequested {
             cache_path: std::path::PathBuf::from("/tmp/foo.py"),
         });
         app.update();
@@ -1235,7 +1235,7 @@ mod tests {
             granularity: Some("unknown granularity".to_string()),
             ..Default::default()
         };
-        app.world_mut().send_event(StrategyRunRequested {
+        app.world_mut().write_message(StrategyRunRequested {
             cache_path: std::path::PathBuf::from("/tmp/foo.py"),
         });
         app.update();

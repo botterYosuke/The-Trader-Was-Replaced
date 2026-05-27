@@ -212,7 +212,7 @@ pub fn relogin_modal_sync_system(
         Some(venue) => format!("venue: {venue}"),
         None => String::new(),
     };
-    if let Ok(mut t) = info_q.get_single_mut()
+    if let Ok(mut t) = info_q.single_mut()
         && t.0 != info
     {
         t.0 = info;

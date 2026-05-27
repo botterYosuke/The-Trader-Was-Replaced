@@ -30,7 +30,7 @@ tempfile = "3"
 tokio-stream = "0.1"
 # headless テストで CosmicFontSystem(FontSystem) を手構築するための直接参照
 # （bevy_cosmic_edit の transitive 依存と同版に固定）
-cosmic-text = "0.12"
+cosmic-text = "0.16"
 
 [build-dependencies]
 tonic-build = "0.12"

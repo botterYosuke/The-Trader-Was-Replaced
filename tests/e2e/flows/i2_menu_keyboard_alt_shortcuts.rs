@@ -3,7 +3,7 @@
 //!
 //! テストでは `ButtonInput<KeyCode>` に Alt と対象キーを注入し、本番 `menu_keyboard_system` が
 //! `OpenMenu` をトグルすることを観測する。`menu_keyboard_system` は `ButtonInput<KeyCode>` と
-//! `Events<KeyboardInput>` を読む（KeyboardInput は handled 時に clear するため ResMut 必須）。
+//! `Messages<KeyboardInput>` を読む（KeyboardInput は handled 時に clear するため ResMut 必須）。
 //!
 //! 注意: bare `App` には input プラグインが無く `ButtonInput` はフレーム境界で自動 clear されない。
 //! `just_pressed` が前フレームから残り、既に pressed のキーへの再 `press()` は no-op になるため、
@@ -21,7 +21,7 @@ fn i2_menu_keyboard_alt_shortcuts() {
 
     app.insert_resource(OpenMenu(None));
     app.insert_resource(ButtonInput::<KeyCode>::default());
-    app.add_event::<KeyboardInput>();
+    app.add_message::<KeyboardInput>();
     app.add_systems(Update, menu_keyboard_system);
 
     // Alt を押しつつ `key` を just_pressed にして 1 フレーム回す。

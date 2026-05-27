@@ -202,7 +202,7 @@ pub fn spawn_orders_panel(commands: &mut Commands) {
                 ..default()
             },
             TextColor(COLOR_FILTER),
-            Anchor::CenterLeft,
+            Anchor::CENTER_LEFT,
             Transform::from_xyz(-150.0, FILTER_Y, 0.1),
             OrdersFilterLabel,
         ))
@@ -325,7 +325,7 @@ pub fn orders_panel_system(
     } else {
         ""
     };
-    if let Ok(mut t) = status_q.get_single_mut()
+    if let Ok(mut t) = status_q.single_mut()
         && t.0 != status_text
     {
         t.0 = status_text.to_string();
@@ -339,7 +339,7 @@ pub fn orders_panel_system(
     } else {
         String::new()
     };
-    if let Ok(mut t) = filter_q.get_single_mut()
+    if let Ok(mut t) = filter_q.single_mut()
         && t.0 != filter_text
     {
         t.0 = filter_text;

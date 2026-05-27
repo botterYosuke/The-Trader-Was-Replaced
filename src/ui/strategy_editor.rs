@@ -271,7 +271,7 @@ pub fn spawn_strategy_editor_panel(
                 Attrs::new().color(CosmicColor::rgb(220, 220, 220)),
             ),
             DefaultAttrs(AttrsOwned::new(
-                Attrs::new().color(CosmicColor::rgb(220, 220, 220)),
+                &Attrs::new().color(CosmicColor::rgb(220, 220, 220)),
             )),
             CursorColor(Color::WHITE),
             CosmicBackgroundColor(EDITOR_BG),
@@ -439,7 +439,7 @@ pub fn sync_strategy_buffer_to_editor_system(
         edit_buffer.set_text(&mut font_system, source, Attrs::new());
         if let Some(mut editor) = editor_opt {
             editor.with_buffer_mut(|b| {
-                b.set_text(&mut font_system, source, Attrs::new(), Shaping::Advanced);
+                b.set_text(&mut font_system, source, &Attrs::new(), Shaping::Advanced, None);
                 b.set_redraw(true);
             });
         }
@@ -665,7 +665,7 @@ pub fn apply_pending_app_edits_system(
                         .map(|(e, _, _)| e)
                 };
                 if let Some(entity) = target_entity {
-                    commands.entity(entity).despawn_recursive();
+                    commands.entity(entity).despawn();
                     layout_auto_save.dirty = true;
                 }
             }

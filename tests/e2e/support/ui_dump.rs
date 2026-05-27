@@ -63,7 +63,7 @@ pub fn dump_panels(world: &mut World) -> Vec<PanelSnapshot> {
     {
         let mut q = world.query::<(Entity, &Children)>();
         for (e, ch) in q.iter(world) {
-            children_map.insert(e, ch.iter().copied().collect());
+            children_map.insert(e, ch.iter().collect());
         }
     }
     let mut text_map: HashMap<Entity, String> = HashMap::new();
@@ -117,7 +117,7 @@ pub fn dump_panels(world: &mut World) -> Vec<PanelSnapshot> {
                 snap.captions.push(t.clone());
             }
             if let Some(ch) = children_map.get(&e) {
-                stack.extend(ch.iter().copied());
+                stack.extend(ch.iter());
             }
         }
     }

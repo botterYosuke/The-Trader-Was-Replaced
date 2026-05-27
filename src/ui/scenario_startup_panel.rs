@@ -159,7 +159,7 @@ pub fn spawn_scenario_startup_window(commands: &mut Commands) {
                     ..default()
                 },
                 TextColor(STARTUP_LABEL_COLOR),
-                bevy::sprite::Anchor::CenterRight,
+                bevy::sprite::Anchor::CENTER_RIGHT,
                 Transform::from_xyz(LABEL_X, y, 0.1),
             ))
             .id();
@@ -268,7 +268,7 @@ pub fn spawn_scenario_startup_window(commands: &mut Commands) {
                 ..default()
             },
             TextColor(STARTUP_LABEL_COLOR),
-            bevy::sprite::Anchor::CenterRight,
+            bevy::sprite::Anchor::CENTER_RIGHT,
             Transform::from_xyz(LABEL_X, 6.0, 0.1),
         ))
         .id();
@@ -347,13 +347,13 @@ pub fn spawn_scenario_startup_input_fields(
                 CosmicEditBuffer::new(font_system, Metrics::new(9.0, 11.0)).with_text(
                     font_system,
                     "",
-                    text_attrs,
+                    text_attrs.clone(),
                 ),
                 // render_texture reads font_color from DefaultAttrs (not from
                 // the Attrs passed to set_text). Without this, font_color
                 // falls back to rgb(0,0,0) and the text becomes invisible on
                 // the dark background even though the buffer holds the value.
-                DefaultAttrs(AttrsOwned::new(text_attrs)),
+                DefaultAttrs(AttrsOwned::new(&text_attrs)),
                 CursorColor(Color::WHITE),
                 CosmicBackgroundColor(FIELD_BG_ACTIVE),
                 CosmicRenderScale(1.0),
@@ -373,7 +373,7 @@ pub fn spawn_scenario_startup_input_fields(
         commands.entity(host).add_child(entity);
     }
 
-    if let Ok(host) = start_host_q.get_single() {
+    if let Ok(host) = start_host_q.single() {
         spawn_field(
             &mut commands,
             &mut font_system,
@@ -381,7 +381,7 @@ pub fn spawn_scenario_startup_input_fields(
             ScenarioStartupField::Start,
         );
     }
-    if let Ok(host) = end_host_q.get_single() {
+    if let Ok(host) = end_host_q.single() {
         spawn_field(
             &mut commands,
             &mut font_system,
@@ -389,7 +389,7 @@ pub fn spawn_scenario_startup_input_fields(
             ScenarioStartupField::End,
         );
     }
-    if let Ok(host) = cash_host_q.get_single() {
+    if let Ok(host) = cash_host_q.single() {
         spawn_field(
             &mut commands,
             &mut font_system,
@@ -1086,7 +1086,7 @@ mod tests {
 
         // granularity を選択（commit）すると errors が解消し Run 有効化。
         app.world_mut()
-            .send_event(ScenarioStartupParamCommit::Granularity(GranularityChoice::Daily));
+            .write_message(ScenarioStartupParamCommit::Granularity(GranularityChoice::Daily));
         app.update();
 
         let params = app.world().resource::<ScenarioStartupParams>();
@@ -1104,7 +1104,7 @@ mod tests {
             params.dirty = true;
         }
         app.world_mut()
-            .send_event(ScenarioStartupParamCommit::Start("not-a-date".into()));
+            .write_message(ScenarioStartupParamCommit::Start("not-a-date".into()));
         app.update();
 
         let params = app.world().resource::<ScenarioStartupParams>();
@@ -1123,9 +1123,9 @@ mod tests {
             params.dirty = true;
         }
         app.world_mut()
-            .send_event(ScenarioStartupParamCommit::Start("bad".into()));
+            .write_message(ScenarioStartupParamCommit::Start("bad".into()));
         app.world_mut()
-            .send_event(ScenarioStartupParamCommit::End("also-bad".into()));
+            .write_message(ScenarioStartupParamCommit::End("also-bad".into()));
         app.update();
         {
             let params = app.world().resource::<ScenarioStartupParams>();
@@ -1134,7 +1134,7 @@ mod tests {
         }
 
         app.world_mut()
-            .send_event(ScenarioStartupParamCommit::Start("2024-01-01".into()));
+            .write_message(ScenarioStartupParamCommit::Start("2024-01-01".into()));
         app.update();
 
         let params = app.world().resource::<ScenarioStartupParams>();
@@ -1159,7 +1159,7 @@ mod tests {
             params.errors.start = None;
         }
         app.world_mut()
-            .send_event(ScenarioStartupParamCommit::Start("2024-01-01".into()));
+            .write_message(ScenarioStartupParamCommit::Start("2024-01-01".into()));
         app.update();
 
         let params = app.world().resource::<ScenarioStartupParams>();
@@ -1217,9 +1217,9 @@ mod tests {
         let mut app = make_app();
         // Valid start, then end that's *before* start → cross_field fires.
         app.world_mut()
-            .send_event(ScenarioStartupParamCommit::Start("2024-06-01".into()));
+            .write_message(ScenarioStartupParamCommit::Start("2024-06-01".into()));
         app.world_mut()
-            .send_event(ScenarioStartupParamCommit::End("2024-01-01".into()));
+            .write_message(ScenarioStartupParamCommit::End("2024-01-01".into()));
         app.update();
 
         let params = app.world().resource::<ScenarioStartupParams>();
@@ -1235,9 +1235,9 @@ mod tests {
         // Valid date + invalid cash → cash error remains, no writeback scheduled.
         let mut app = make_app();
         app.world_mut()
-            .send_event(ScenarioStartupParamCommit::Start("2024-01-01".into()));
+            .write_message(ScenarioStartupParamCommit::Start("2024-01-01".into()));
         app.world_mut()
-            .send_event(ScenarioStartupParamCommit::InitialCash(
+            .write_message(ScenarioStartupParamCommit::InitialCash(
                 "not-a-number".into(),
             ));
         app.update();
@@ -1261,7 +1261,7 @@ mod tests {
             cache_sidecar: None,
         });
         app.world_mut()
-            .send_event(ScenarioStartupParamCommit::Start("2024-01-01".into()));
+            .write_message(ScenarioStartupParamCommit::Start("2024-01-01".into()));
         app.update();
 
         let params = app.world().resource::<ScenarioStartupParams>();
@@ -1299,7 +1299,7 @@ mod tests {
             .id();
 
         app.world_mut()
-            .send_event(CosmicTextChanged((editor, "  2024-01-01  ".into())));
+            .write_message(CosmicTextChanged((editor, "  2024-01-01  ".into())));
         app.update();
 
         let params = app.world().resource::<ScenarioStartupParams>();
@@ -1338,7 +1338,7 @@ mod tests {
             .id();
 
         app.world_mut()
-            .send_event(CosmicTextChanged((editor, "  1000  ".into())));
+            .write_message(CosmicTextChanged((editor, "  1000  ".into())));
         app.update();
 
         let params = app.world().resource::<ScenarioStartupParams>();
@@ -1376,7 +1376,7 @@ mod tests {
             .id();
 
         app.world_mut()
-            .send_event(CosmicTextChanged((editor, "   ".into())));
+            .write_message(CosmicTextChanged((editor, "   ".into())));
         app.update();
 
         let params = app.world().resource::<ScenarioStartupParams>();
@@ -1417,7 +1417,7 @@ mod tests {
             .id();
 
         app.world_mut()
-            .send_event(CosmicTextChanged((editor, "   ".into())));
+            .write_message(CosmicTextChanged((editor, "   ".into())));
         app.update();
 
         let params = app.world().resource::<ScenarioStartupParams>();
@@ -1470,9 +1470,9 @@ mod tests {
         }
         // First set start > end so cross_field error fires.
         app.world_mut()
-            .send_event(ScenarioStartupParamCommit::Start("2024-06-01".into()));
+            .write_message(ScenarioStartupParamCommit::Start("2024-06-01".into()));
         app.world_mut()
-            .send_event(ScenarioStartupParamCommit::End("2024-01-01".into()));
+            .write_message(ScenarioStartupParamCommit::End("2024-01-01".into()));
         app.update();
         assert!(
             app.world()
@@ -1484,7 +1484,7 @@ mod tests {
 
         // Now invalidate end; cross_field should no longer claim ordering.
         app.world_mut()
-            .send_event(ScenarioStartupParamCommit::End("not-a-date".into()));
+            .write_message(ScenarioStartupParamCommit::End("not-a-date".into()));
         app.update();
 
         let params = app.world().resource::<ScenarioStartupParams>();
@@ -1793,7 +1793,7 @@ mod tests {
         // Primary window at 2x DPI; no Camera2d (system's camera_q errs -> zoom 1.0).
         app.world_mut().spawn((
             Window {
-                resolution: WindowResolution::new(1280.0, 720.0)
+                resolution: WindowResolution::new(1280, 720)
                     .with_scale_factor_override(2.0),
                 ..default()
             },

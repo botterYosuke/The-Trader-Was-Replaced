@@ -9,7 +9,7 @@
 use bevy::picking::events::{Drag, DragEnd, Pointer};
 use bevy::picking::pointer::{Location, PointerButton, PointerId};
 use bevy::prelude::*;
-use bevy::render::camera::NormalizedRenderTarget;
+use bevy::camera::NormalizedRenderTarget;
 use bevy::transform::TransformPlugin;
 use backcast::ui::components::{
     InstrumentRegistry, PanelKind, PendingStrategyFragments, RegionKeyAllocator,
@@ -21,7 +21,7 @@ use backcast::ui::layout_persistence::AutoSaveState;
 
 fn dummy_location() -> Location {
     Location {
-        target: NormalizedRenderTarget::Image(Handle::<bevy::image::Image>::default()),
+        target: NormalizedRenderTarget::Image(Handle::<bevy::image::Image>::default().into()),
         position: Vec2::ZERO,
     }
 }
@@ -43,7 +43,7 @@ fn m10_window_resize_updates_size_and_autosave() {
 
     // OrthographicProjection.scale = 1.0 (drag delta の scale 補正に使う)
     app.world_mut()
-        .spawn((Camera2d, Transform::default(), OrthographicProjection::default_2d()));
+        .spawn((Camera2d, Transform::default()));
 
     let initial_size = Vec2::new(360.0, 260.0);
 
@@ -75,9 +75,8 @@ fn m10_window_resize_updates_size_and_autosave() {
     let loc = dummy_location();
 
     // ── Phase A: 右端を +80px 右にドラッグ ──
-    app.world_mut().trigger_targets(
+    app.world_mut().entity_mut(resize_right).trigger(|entity| {
         Pointer::<Drag>::new(
-            resize_right,
             PointerId::Mouse,
             loc.clone(),
             Drag {
@@ -85,9 +84,9 @@ fn m10_window_resize_updates_size_and_autosave() {
                 distance: Vec2::new(80.0, 0.0),
                 delta: Vec2::new(80.0, 0.0),
             },
-        ),
-        resize_right,
-    );
+            entity,
+        )
+    });
     app.update();
 
     let size_after = app
@@ -109,9 +108,8 @@ fn m10_window_resize_updates_size_and_autosave() {
 
     // ── Phase B: 最小サイズより小さくしようとしてもクランプされること ──
     // 現在の幅から -9999 px 左へ drag（left edge 固定なので幅が負になろうとする）
-    app.world_mut().trigger_targets(
+    app.world_mut().entity_mut(resize_right).trigger(|entity| {
         Pointer::<Drag>::new(
-            resize_right,
             PointerId::Mouse,
             loc.clone(),
             Drag {
@@ -119,9 +117,9 @@ fn m10_window_resize_updates_size_and_autosave() {
                 distance: Vec2::new(-9999.0, 0.0),
                 delta: Vec2::new(-9999.0, 0.0),
             },
-        ),
-        resize_right,
-    );
+            entity,
+        )
+    });
     app.update();
 
     let size_clamped = app
@@ -137,18 +135,17 @@ fn m10_window_resize_updates_size_and_autosave() {
     );
 
     // ── Phase C: DragEnd で AutoSaveState.dirty = true になること ──
-    app.world_mut().trigger_targets(
+    app.world_mut().entity_mut(resize_right).trigger(|entity| {
         Pointer::<DragEnd>::new(
-            resize_right,
             PointerId::Mouse,
             loc.clone(),
             DragEnd {
                 button: PointerButton::Primary,
                 distance: Vec2::new(80.0, 0.0),
             },
-        ),
-        resize_right,
-    );
+            entity,
+        )
+    });
     app.update();
 
     let dirty = app.world().resource::<AutoSaveState>().dirty;

@@ -42,8 +42,8 @@ fn j4_strategy_editor_bracket_autoclose() {
     app.insert_resource(CosmicFontSystem(font_system))
         .insert_resource(FocusedWidget(None))
         .insert_resource(ButtonInput::<KeyCode>::default())
-        .add_event::<CosmicTextChanged>()
-        .add_event::<KeyboardInput>()
+        .add_message::<CosmicTextChanged>()
+        .add_message::<KeyboardInput>()
         .add_systems(Update, bracket_autoclose_system);
 
     let editor_entity = app
@@ -55,13 +55,14 @@ fn j4_strategy_editor_bracket_autoclose() {
 
     // ── `(` の KeyboardInput イベントを注入 (cosmic が insert した後の模擬) ──
     app.world_mut()
-        .resource_mut::<Events<KeyboardInput>>()
-        .send(KeyboardInput {
+        .resource_mut::<Messages<KeyboardInput>>()
+        .write(KeyboardInput {
             key_code: KeyCode::Unidentified(NativeKeyCode::Unidentified),
             logical_key: Key::Character("(".into()),
             state: ButtonState::Pressed,
             repeat: false,
             window: Entity::PLACEHOLDER,
+            text: None,
         });
 
     app.update();
@@ -69,7 +70,7 @@ fn j4_strategy_editor_bracket_autoclose() {
     // ── CosmicTextChanged が発火し、closer `)` が挿入されているか確認 ──
     let changed_events: Vec<(Entity, String)> = app
         .world_mut()
-        .resource_mut::<Events<CosmicTextChanged>>()
+        .resource_mut::<Messages<CosmicTextChanged>>()
         .drain()
         .map(|CosmicTextChanged(pair)| pair)
         .collect();
@@ -126,8 +127,8 @@ fn j4_strategy_editor_bracket_autoclose() {
     app2.insert_resource(CosmicFontSystem(font_system2))
         .insert_resource(FocusedWidget(None))
         .insert_resource(ButtonInput::<KeyCode>::default())
-        .add_event::<CosmicTextChanged>()
-        .add_event::<KeyboardInput>()
+        .add_message::<CosmicTextChanged>()
+        .add_message::<KeyboardInput>()
         .add_systems(Update, bracket_autoclose_system);
 
     let editor_entity2 = app2
@@ -139,20 +140,21 @@ fn j4_strategy_editor_bracket_autoclose() {
 
     // opener の KeyboardInput を送る。`)` の直前なので autoclose しないはず。
     app2.world_mut()
-        .resource_mut::<Events<KeyboardInput>>()
-        .send(KeyboardInput {
+        .resource_mut::<Messages<KeyboardInput>>()
+        .write(KeyboardInput {
             key_code: KeyCode::Unidentified(NativeKeyCode::Unidentified),
             logical_key: Key::Character("(".into()),
             state: ButtonState::Pressed,
             repeat: false,
             window: Entity::PLACEHOLDER,
+            text: None,
         });
 
     app2.update();
 
     let events2: Vec<_> = app2
         .world_mut()
-        .resource_mut::<Events<CosmicTextChanged>>()
+        .resource_mut::<Messages<CosmicTextChanged>>()
         .drain()
         .collect();
 

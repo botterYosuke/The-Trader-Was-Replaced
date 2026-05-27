@@ -645,7 +645,7 @@ mod sync_registry_from_scenario_loaded_tests {
     #[test]
     fn replaces_and_marks_locked_when_has_instruments_ref_true() {
         let mut app = build_app();
-        app.world_mut().send_event(ScenarioLoadedFromFile {
+        app.world_mut().write_message(ScenarioLoadedFromFile {
             source_path: std::path::PathBuf::from("dummy.py"),
             instruments: vec!["7203.T".into(), "9984.T".into()],
             end: None,
@@ -667,7 +667,7 @@ mod sync_registry_from_scenario_loaded_tests {
             let mut reg = app.world_mut().resource_mut::<InstrumentRegistry>();
             reg.replace_all(&["AAPL".to_string()]);
         }
-        app.world_mut().send_event(ScenarioLoadedFromFile {
+        app.world_mut().write_message(ScenarioLoadedFromFile {
             source_path: std::path::PathBuf::from("dummy.py"),
             instruments: vec!["7203.T".into()],
             end: None,
@@ -688,7 +688,7 @@ mod sync_registry_from_scenario_loaded_tests {
         app.world_mut()
             .resource_mut::<ScenarioInstrumentsWritebackState>()
             .revision = 5;
-        app.world_mut().send_event(ScenarioLoadedFromFile {
+        app.world_mut().write_message(ScenarioLoadedFromFile {
             source_path: std::path::PathBuf::from("dummy.py"),
             instruments: vec!["7203.T".into()],
             end: None,
@@ -1464,7 +1464,7 @@ mod writeback_scenario_instruments_tests {
         app.add_systems(Update, parse_scenario_system);
         app.update();
         app.world_mut()
-            .resource_mut::<Events<ScenarioLoadedFromFile>>()
+            .resource_mut::<Messages<ScenarioLoadedFromFile>>()
             .clear();
 
         {
@@ -1486,7 +1486,7 @@ mod writeback_scenario_instruments_tests {
         );
         app.update();
 
-        let events = app.world().resource::<Events<ScenarioLoadedFromFile>>();
+        let events = app.world().resource::<Messages<ScenarioLoadedFromFile>>();
         let mut cursor = events.get_cursor();
         let collected: Vec<_> = cursor.read(events).collect();
         assert!(
@@ -1546,7 +1546,7 @@ mod writeback_scenario_instruments_tests {
 
         app.add_systems(Update, handle_strategy_run_system);
 
-        app.world_mut().send_event(StrategyRunRequested {
+        app.world_mut().write_message(StrategyRunRequested {
             cache_path: original_py.clone(),
         });
         app.update();
@@ -1621,13 +1621,13 @@ mod writeback_scenario_instruments_tests {
 
         app.add_systems(Update, handle_strategy_run_system);
 
-        app.world_mut().send_event(StrategyRunRequested {
+        app.world_mut().write_message(StrategyRunRequested {
             cache_path: original_py.clone(),
         });
         app.update();
         let _ = rx.try_recv().expect("first RunStrategy must be sent");
 
-        app.world_mut().send_event(StrategyRunRequested {
+        app.world_mut().write_message(StrategyRunRequested {
             cache_path: original_py.clone(),
         });
         app.update();
@@ -1697,7 +1697,7 @@ mod writeback_scenario_instruments_tests {
 
         app.add_systems(Update, handle_strategy_run_system);
 
-        app.world_mut().send_event(StrategyRunRequested {
+        app.world_mut().write_message(StrategyRunRequested {
             cache_path: original_py.clone(),
         });
         app.update();
@@ -1761,7 +1761,7 @@ mod writeback_scenario_instruments_tests {
             reg.replace_all(&["NEW.T".to_string()]);
             reg.editable = true;
         }
-        app.world_mut().send_event(StrategyRunRequested {
+        app.world_mut().write_message(StrategyRunRequested {
             cache_path: original_py.clone(),
         });
         app.update();
@@ -1834,7 +1834,7 @@ mod writeback_scenario_instruments_tests {
                 .chain(),
         );
 
-        app.world_mut().send_event(StrategyFileLoadRequested {
+        app.world_mut().write_message(StrategyFileLoadRequested {
             path: py_path.clone(),
             mode: StrategyLoadMode::UserOpen,
         });
@@ -1941,7 +1941,7 @@ mod writeback_scenario_instruments_tests {
         );
 
         // Step 1: Open pair_trade_minute.json → 2 銘柄 + 2 Chart
-        app.world_mut().send_event(StrategyFileLoadRequested {
+        app.world_mut().write_message(StrategyFileLoadRequested {
             path: py_path.clone(),
             mode: StrategyLoadMode::UserOpen,
         });
@@ -2157,7 +2157,7 @@ mod writeback_scenario_instruments_tests {
         );
 
         // Step 1: Open → 2 銘柄 + 2 Chart (E2E-1 と同一の事前条件)
-        app.world_mut().send_event(StrategyFileLoadRequested {
+        app.world_mut().write_message(StrategyFileLoadRequested {
             path: py_path.clone(),
             mode: StrategyLoadMode::UserOpen,
         });
@@ -2287,7 +2287,7 @@ mod writeback_scenario_instruments_tests {
         );
 
         // Step A: Open → registry 2 銘柄
-        app.world_mut().send_event(StrategyFileLoadRequested {
+        app.world_mut().write_message(StrategyFileLoadRequested {
             path: py_path.clone(),
             mode: StrategyLoadMode::UserOpen,
         });
@@ -2383,7 +2383,7 @@ mod writeback_scenario_instruments_tests {
         }
 
         // Step E: Run 発火 → RunStrategy.config.instruments が 3 銘柄
-        app.world_mut().send_event(StrategyRunRequested {
+        app.world_mut().write_message(StrategyRunRequested {
             cache_path: py_path.clone(),
         });
         app.update();
@@ -2515,7 +2515,7 @@ mod writeback_scenario_instruments_tests {
                 .chain(),
         );
 
-        app.world_mut().send_event(StrategyFileLoadRequested {
+        app.world_mut().write_message(StrategyFileLoadRequested {
             path: py_path.clone(),
             mode: StrategyLoadMode::UserOpen,
         });
@@ -2656,7 +2656,7 @@ mod writeback_scenario_instruments_tests {
                 .chain(),
         );
 
-        app.world_mut().send_event(StrategyFileLoadRequested {
+        app.world_mut().write_message(StrategyFileLoadRequested {
             path: py_path.clone(),
             mode: StrategyLoadMode::UserOpen,
         });
@@ -2678,7 +2678,7 @@ mod writeback_scenario_instruments_tests {
             let mut reg = app.world_mut().resource_mut::<InstrumentRegistry>();
             reg.ids.retain(|id| id != "7203.TSE");
         }
-        app.world_mut().send_event(StrategyRunRequested {
+        app.world_mut().write_message(StrategyRunRequested {
             cache_path: py_path.clone(),
         });
         app.update();

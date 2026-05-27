@@ -50,8 +50,8 @@ fn build_run_app(
     app.insert_resource(TradingSession::default());
     app.insert_resource(LastRunResult::default());
     app.insert_resource(TransportCommandSender { tx });
-    app.add_event::<StrategyRunRequested>();
-    app.add_event::<ScenarioStartupParamCommit>();
+    app.add_message::<StrategyRunRequested>();
+    app.add_message::<ScenarioStartupParamCommit>();
     app.add_systems(
         Update,
         (
@@ -76,7 +76,7 @@ fn j7_startup_panel_validation_blocks_run() {
 
         // 不正な日付をコミット → errors.start がセットされる
         app.world_mut()
-            .send_event(ScenarioStartupParamCommit::Start("not-a-date".into()));
+            .write_message(ScenarioStartupParamCommit::Start("not-a-date".into()));
         app.update();
 
         // errors.start が Some であることを確認
@@ -87,7 +87,7 @@ fn j7_startup_panel_validation_blocks_run() {
         );
 
         // errors.any() == true の状態で Run を試みる
-        app.world_mut().send_event(StrategyRunRequested {
+        app.world_mut().write_message(StrategyRunRequested {
             cache_path: std::path::PathBuf::from("/tmp/strategy.py"),
         });
         app.update();
@@ -109,13 +109,13 @@ fn j7_startup_panel_validation_blocks_run() {
         });
 
         app.world_mut()
-            .send_event(ScenarioStartupParamCommit::End("invalid".into()));
+            .write_message(ScenarioStartupParamCommit::End("invalid".into()));
         app.update();
 
         let params = app.world().resource::<ScenarioStartupParams>();
         assert!(params.errors.end.is_some(), "不正な End 日付で errors.end がセットされるはず");
 
-        app.world_mut().send_event(StrategyRunRequested {
+        app.world_mut().write_message(StrategyRunRequested {
             cache_path: std::path::PathBuf::from("/tmp/strategy.py"),
         });
         app.update();
@@ -135,9 +135,9 @@ fn j7_startup_panel_validation_blocks_run() {
 
         // 先に両フィールドを有効な値でコミット
         app.world_mut()
-            .send_event(ScenarioStartupParamCommit::Start("2025-03-31".into()));
+            .write_message(ScenarioStartupParamCommit::Start("2025-03-31".into()));
         app.world_mut()
-            .send_event(ScenarioStartupParamCommit::End("2025-01-01".into()));
+            .write_message(ScenarioStartupParamCommit::End("2025-01-01".into()));
         app.update();
 
         let params = app.world().resource::<ScenarioStartupParams>();
@@ -146,7 +146,7 @@ fn j7_startup_panel_validation_blocks_run() {
             "Start > End で cross_field エラーがセットされるはず"
         );
 
-        app.world_mut().send_event(StrategyRunRequested {
+        app.world_mut().write_message(StrategyRunRequested {
             cache_path: std::path::PathBuf::from("/tmp/strategy.py"),
         });
         app.update();
@@ -165,7 +165,7 @@ fn j7_startup_panel_validation_blocks_run() {
         });
 
         app.world_mut()
-            .send_event(ScenarioStartupParamCommit::InitialCash("not-a-number".into()));
+            .write_message(ScenarioStartupParamCommit::InitialCash("not-a-number".into()));
         app.update();
 
         let params = app.world().resource::<ScenarioStartupParams>();
@@ -174,7 +174,7 @@ fn j7_startup_panel_validation_blocks_run() {
             "不正な InitialCash で errors.initial_cash がセットされるはず"
         );
 
-        app.world_mut().send_event(StrategyRunRequested {
+        app.world_mut().write_message(StrategyRunRequested {
             cache_path: std::path::PathBuf::from("/tmp/strategy.py"),
         });
         app.update();
@@ -197,7 +197,7 @@ fn j7_startup_panel_validation_blocks_run() {
             ..Default::default()
         };
 
-        app.world_mut().send_event(StrategyRunRequested {
+        app.world_mut().write_message(StrategyRunRequested {
             cache_path: std::path::PathBuf::from("/tmp/strategy.py"),
         });
         app.update();

@@ -95,7 +95,7 @@ pub fn install_chart_drag_observer(
                     return;
                 };
                 let delta = drag.delta;
-                let scale = camera_q.get_single().map(|p| {
+                let scale = camera_q.single().map(|p| {
                     if let Projection::Orthographic(proj) = p { proj.scale } else { 1.0 }
                 }).unwrap_or(1.0);
                 state.translation.x += delta.x * scale;
@@ -218,7 +218,7 @@ pub fn chart_scroll_zoom_system(
         else {
             continue;
         };
-        let Ok((cam, cam_t)) = camera_q.get_single() else {
+        let Ok((cam, cam_t)) = camera_q.single() else {
             continue;
         };
         // hover 中の chart に対応する pointer の座標を引く (別 pointer の座標を拾わない)。

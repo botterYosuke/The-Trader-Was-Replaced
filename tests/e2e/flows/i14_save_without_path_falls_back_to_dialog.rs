@@ -9,6 +9,7 @@ use bevy::prelude::*;
 use bevy::transform::TransformPlugin;
 
 use backcast::ui::components::{
+    ChartSizeMap,
     InstrumentRegistry, ScenarioMetadata, ScenarioReadTarget, ScenarioWritebackPaths,
     StrategyBuffer,
 };
@@ -39,24 +40,24 @@ fn i14_save_without_path_falls_back_to_dialog() {
     app.init_resource::<ScenarioReadTarget>();
     app.init_resource::<PendingFileDialog>();
 
-    app.add_event::<LayoutSaveRequested>();
-    app.add_event::<LayoutSaveAsRequested>();
+    app.init_resource::<ChartSizeMap>();
+    app.add_message::<LayoutSaveRequested>();
+    app.add_message::<LayoutSaveAsRequested>();
 
     app.world_mut().spawn((
         Camera2d,
         Transform::default(),
-        OrthographicProjection::default_2d(),
-    ));
+            ));
 
     app.add_systems(Update, handle_save_layout_system);
 
     // original_path=None で Save を要求 → Save As フォールバックが発火するはず。
-    app.world_mut().send_event(LayoutSaveRequested);
+    app.world_mut().write_message(LayoutSaveRequested);
     app.update();
 
     let save_as_count = app
         .world_mut()
-        .resource_mut::<Events<LayoutSaveAsRequested>>()
+        .resource_mut::<Messages<LayoutSaveAsRequested>>()
         .drain()
         .count();
     assert_eq!(

@@ -21,8 +21,8 @@ fn build_app(json_path: std::path::PathBuf) -> App {
     app.init_resource::<ScenarioFileWatchState>();
     app.init_resource::<InstrumentRegistry>();
     app.init_resource::<ScenarioInstrumentsWritebackState>();
-    app.add_event::<ScenarioLoadedFromFile>();
-    app.add_event::<ScenarioClearedFromFile>();
+    app.add_message::<ScenarioLoadedFromFile>();
+    app.add_message::<ScenarioClearedFromFile>();
     app.add_systems(
         Update,
         (parse_scenario_system, sync_registry_from_scenario_loaded_system).chain(),
@@ -105,8 +105,8 @@ fn j10_instruments_ref_readonly_sidebar() {
         app.init_resource::<ScenarioFileWatchState>();
         app.init_resource::<InstrumentRegistry>();
         app.init_resource::<ScenarioInstrumentsWritebackState>();
-        app.add_event::<ScenarioLoadedFromFile>();
-        app.add_event::<ScenarioClearedFromFile>();
+        app.add_message::<ScenarioLoadedFromFile>();
+        app.add_message::<ScenarioClearedFromFile>();
         app.add_systems(
             Update,
             (
