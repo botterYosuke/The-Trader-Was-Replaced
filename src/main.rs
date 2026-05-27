@@ -4,8 +4,8 @@ use backcast::backend_supervisor::{
 };
 use backcast::backend_sync::{
     BackendEventChannel, StatusUpdateChannel, backend_event_drain_system,
-    backend_restart_resync_system, request_force_account_snapshot_on_live_entry,
-    request_get_orders_on_venue_connected,
+    backend_restart_resync_system, build_register_reject_message, build_start_reject_message,
+    request_force_account_snapshot_on_live_entry, request_get_orders_on_venue_connected,
     status_update_system,
 };
 use backcast::camera::{pancam_suppression_over_editor_system, setup_camera};
@@ -1247,16 +1247,13 @@ fn setup_backend_connection(
                             let strategy_id = match c.register_live_strategy(register_req).await {
                                 Ok(r) => {
                                     let inner = r.into_inner();
-                                    if !inner.success {
-                                        let detail = if inner.error_message.trim().is_empty() {
-                                            inner.error_code.clone()
-                                        } else {
-                                            format!("{}: {}", inner.error_code, inner.error_message)
-                                        };
-                                        let msg = format!(
-                                            "RegisterLiveStrategy rejected: instrument_id={} venue={} error={}",
-                                            instrument_id, venue, detail
-                                        );
+                                    if let Some(msg) = build_register_reject_message(
+                                        inner.success,
+                                        &inner.error_code,
+                                        &inner.error_message,
+                                        &instrument_id,
+                                        &venue,
+                                    ) {
                                         error!("{}", msg);
                                         let _ = run_failed_tx.send(BackendStatusUpdate::RunFailed {
                                             startup_id: None,
@@ -1295,16 +1292,14 @@ fn setup_backend_connection(
                             match c.start_live_strategy(start_req).await {
                                 Ok(r) => {
                                     let inner = r.into_inner();
-                                    if !inner.success {
-                                        let detail = if inner.error_message.trim().is_empty() {
-                                            inner.error_code.clone()
-                                        } else {
-                                            format!("{}: {}", inner.error_code, inner.error_message)
-                                        };
-                                        let msg = format!(
-                                            "StartLiveStrategy rejected: strategy_id={} instrument_id={} venue={} error={}",
-                                            strategy_id, instrument_id, venue, detail
-                                        );
+                                    if let Some(msg) = build_start_reject_message(
+                                        inner.success,
+                                        &inner.error_code,
+                                        &inner.error_message,
+                                        &strategy_id,
+                                        &instrument_id,
+                                        &venue,
+                                    ) {
                                         error!("{}", msg);
                                         let _ = run_failed_tx.send(BackendStatusUpdate::RunFailed {
                                             startup_id: None,

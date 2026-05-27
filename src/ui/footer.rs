@@ -650,6 +650,15 @@ pub fn footer_pause_resume_system(
                         }
                     },
                     ExecutionMode::LiveAuto => {
+                        // Double-press guard: once a run is starting/running, ▶ must not
+                        // start a 2nd run. run_id may still be None (server RUNNING not yet
+                        // drained), so this must precede the run_id-based active-run branch.
+                        if matches!(current_run.state, RunState::Running)
+                            && current_run.run_id.is_none()
+                        {
+                            warn!("LiveAuto play blocked: run already starting/running");
+                            continue;
+                        }
                         // Active run: ▶ toggles Pause/Resume instead of starting a new run.
                         if let Some(run_id) = current_run.run_id.clone() {
                             match current_run.state {
@@ -755,6 +764,11 @@ pub fn footer_pause_resume_system(
                             .is_err()
                         {
                             warn!("transport: StartLiveAuto send failed (receiver dropped)");
+                        } else {
+                            // Optimistically mark Running so a 2nd ▶ press is blocked by the
+                            // guard above. run_id stays None → backend_sync is_new_run still
+                            // accepts the authoritative RUNNING event (backend_sync.rs:180).
+                            current_run.state = RunState::Running;
                         }
                     }
                     ExecutionMode::LiveManual => {}

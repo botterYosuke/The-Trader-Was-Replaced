@@ -727,6 +727,56 @@ pub fn apply_available_failed(
     available.in_flight.remove(&end_date);
 }
 
+/// Issue #42 (M1): build the user-visible reject message for a `RegisterLiveStrategy`
+/// response. Returns `None` when the response succeeded (nothing to surface).
+/// Empty `error_message` falls back to `error_code` as the detail; otherwise the
+/// detail reads `"{code}: {message}"`. Extracted from `main.rs` so E2E tests can
+/// assert the exact text that drives `RunState::Failed`.
+pub fn build_register_reject_message(
+    success: bool,
+    error_code: &str,
+    error_message: &str,
+    instrument_id: &str,
+    venue: &str,
+) -> Option<String> {
+    if success {
+        return None;
+    }
+    let detail = if error_message.trim().is_empty() {
+        error_code.to_string()
+    } else {
+        format!("{}: {}", error_code, error_message)
+    };
+    Some(format!(
+        "RegisterLiveStrategy rejected: instrument_id={} venue={} error={}",
+        instrument_id, venue, detail
+    ))
+}
+
+/// Issue #42 (M1): build the user-visible reject message for a `StartLiveStrategy`
+/// response. Same `None`/empty-detail rules as `build_register_reject_message`.
+pub fn build_start_reject_message(
+    success: bool,
+    error_code: &str,
+    error_message: &str,
+    strategy_id: &str,
+    instrument_id: &str,
+    venue: &str,
+) -> Option<String> {
+    if success {
+        return None;
+    }
+    let detail = if error_message.trim().is_empty() {
+        error_code.to_string()
+    } else {
+        format!("{}: {}", error_code, error_message)
+    };
+    Some(format!(
+        "StartLiveStrategy rejected: strategy_id={} instrument_id={} venue={} error={}",
+        strategy_id, instrument_id, venue, detail
+    ))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
