@@ -24,7 +24,7 @@
 //! system は実行しないので resource のセットアップは不要（`initialize` は param のアクセス
 //! 登録だけで、resource の存在は run 時にしか要求されない）。
 
-use bevy::ecs::schedule::{NodeId, Schedules};
+use bevy::ecs::schedule::{Schedules, SystemKey};
 use bevy::prelude::*;
 
 use backcast::backend_sync::status_update_system;
@@ -52,12 +52,12 @@ fn m20_mode_visibility_systems_run_after_status_update() {
 
     // `build` 後の executable は topsort（実行）順。NodeId→名前 と実行順 index を両方ここから引く
     // （`graph.systems()` の inner は build で executable へ移動して空になるため使えない）。
-    let ordered: Vec<(NodeId, String)> = schedule
+    let ordered: Vec<(SystemKey, String)> = schedule
         .systems()
         .expect("schedule is initialized")
         .map(|(id, sys)| (id, sys.name().to_string()))
         .collect();
-    let name_of = |id: &NodeId| {
+    let name_of = |id: &SystemKey| {
         ordered
             .iter()
             .find(|(nid, _)| nid == id)
@@ -88,7 +88,7 @@ fn m20_mode_visibility_systems_run_after_status_update() {
     // (1) `.after` 欠落の検出: status_update_system と衝突したまま（= どちらの向きにも
     //     順序付けられていない）可視性 system が無いこと。
     let mut unordered: Vec<String> = Vec::new();
-    for (a, b, _conflicts) in schedule.graph().conflicting_systems() {
+    for (a, b, _conflicts) in schedule.graph().conflicting_systems().iter() {
         let (na, nb) = (name_of(a), name_of(b));
         if na.contains("status_update_system") {
             unordered.push(nb.to_string());
