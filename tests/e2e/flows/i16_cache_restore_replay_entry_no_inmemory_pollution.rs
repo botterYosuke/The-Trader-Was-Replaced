@@ -115,6 +115,7 @@ fn i16_cache_restore_replay_entry_no_inmemory_pollution() {
     app.init_resource::<ScenarioFileWatchState>();
     app.insert_resource(PendingLayoutApply::default());
     app.insert_resource(AppHistory::default());
+    app.init_resource::<backcast::ui::components::ChartSizeMap>();
     app.insert_resource(ExecutionModeRes {
         mode: ExecutionMode::Replay,
     });

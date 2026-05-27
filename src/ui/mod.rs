@@ -187,6 +187,31 @@ use bevy_vector_shapes::Shape2dPlugin;
 
 pub struct UiPlugin;
 
+/// mode 可視性 system 群の登録。production と RED ガード (M20) が同一 registration を共有する。
+pub fn add_mode_visibility_systems(app: &mut App) {
+    // 全 mode 可視性 system は ExecutionModeRes の唯一の writer (status_update_system) の後に走らせ、mode 遷移フレームで 1 フレーム古い可視性を出さない（race-free。issue #41）。
+    app.add_systems(
+        Update,
+        (
+            crate::ui::footer::apply_execution_mode_visibility_system
+                .after(crate::backend_sync::status_update_system),
+            crate::ui::scenario_startup_panel::apply_startup_panel_visibility_system
+                .after(crate::backend_sync::status_update_system),
+            apply_run_result_visibility_system
+                .after(panel_spawn_dispatcher_system)
+                .after(crate::backend_sync::status_update_system),
+            // issue #31: layout apply / panel spawn の後に走らせ、Manual 中の新規 spawn 窓を退避マーカーへ捕捉する（flash 防止 + マーカー陳腐化防止）。
+            crate::ui::strategy_editor::apply_strategy_editor_mode_visibility_system
+                .after(crate::ui::layout_persistence::apply_layout_system)
+                .after(crate::ui::layout_persistence::apply_pending_layout_system)
+                .after(panel_spawn_dispatcher_system)
+                .after(crate::backend_sync::status_update_system),
+            crate::ui::sidebar::apply_order_button_visibility_system
+                .after(crate::backend_sync::status_update_system),
+        ),
+    );
+}
+
 impl Plugin for UiPlugin {
     fn build(&self, app: &mut App) {
         app.add_plugins((
@@ -458,26 +483,11 @@ impl Plugin for UiPlugin {
             (change_active_editor_sprite, change_active_editor_ui)
                 .after(menu_keyboard_system)
                 .after(picker_searchbox_input_system),
-        )
-        .add_systems(
-            Update,
-            (
-                crate::ui::footer::apply_execution_mode_visibility_system,
-                crate::ui::scenario_startup_panel::apply_startup_panel_visibility_system,
-                apply_run_result_visibility_system
-                    .after(panel_spawn_dispatcher_system),
-                // issue #31: layout apply / panel spawn の後に走らせる。Manual 中の layout load /
-                // 新規 spawn で apply 系が StrategyEditor の「本来の可視性」を確定させ、spawn dispatcher
-                // が新規窓を materialize させた後に mode system がそれを退避マーカーへ捕捉する順序を
-                // 保証する。これにより (a) 新規 spawn 窓が 1 フレーム可視で出る flash を防ぎ、
-                // (b) spawn 既定値 Inherited を先に捕捉してマーカーが陳腐化するのを防ぐ。
-                crate::ui::strategy_editor::apply_strategy_editor_mode_visibility_system
-                    .after(crate::ui::layout_persistence::apply_layout_system)
-                    .after(crate::ui::layout_persistence::apply_pending_layout_system)
-                    .after(panel_spawn_dispatcher_system),
-                crate::ui::sidebar::apply_order_button_visibility_system,
-            ),
-        )
+        );
+        // mode 可視性 system 群（footer/startup/run_result/strategy_editor/order）は
+        // production と M20 RED ガードで同一 registration を共有するため関数に切り出す。
+        add_mode_visibility_systems(app);
+        app
         // ── highlight pipeline (Phase A) ──
         // span 計算は buffer→editor 同期の後に走らせ、合成 (apply) はその両者の後。
         .add_systems(
