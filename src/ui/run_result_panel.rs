@@ -102,6 +102,15 @@ pub fn run_result_panel_system(
                         format!("fills: {}  eq_pts: {}", s.fills_count, s.equity_points),
                         COLOR_DEFAULT,
                     ),
+                    None if current_run.order_count > 0 || current_run.fill_count > 0 => (
+                        format!(
+                            "strat: {}  o:{} f:{}",
+                            current_run.strategy_name,
+                            current_run.order_count,
+                            current_run.fill_count
+                        ),
+                        COLOR_DEFAULT,
+                    ),
                     None => (String::new(), COLOR_DEFAULT),
                 },
             },
@@ -128,6 +137,24 @@ pub fn run_result_panel_system(
                             COLOR_PNL_NEG
                         };
                         (format!("pnl: {:.0}", s.total_pnl), c)
+                    }
+                    None
+                        if current_run.realized_pnl != 0.0
+                            || current_run.unrealized_pnl != 0.0 =>
+                    {
+                        let c =
+                            if current_run.realized_pnl + current_run.unrealized_pnl >= 0.0 {
+                                COLOR_PNL_POS
+                            } else {
+                                COLOR_PNL_NEG
+                            };
+                        (
+                            format!(
+                                "pnl: {:.0} / unrlz: {:.0}",
+                                current_run.realized_pnl, current_run.unrealized_pnl
+                            ),
+                            c,
+                        )
                     }
                     None => (String::new(), COLOR_DEFAULT),
                 },

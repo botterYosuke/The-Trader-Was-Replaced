@@ -26,6 +26,7 @@ fn m9_startup_window_position_persists_visible_not_authoritative() {
     app.insert_resource(PendingLayoutApply::default());
     app.insert_resource(PendingStrategyFragments::default());
     app.init_resource::<ScenarioReadTarget>();
+    app.init_resource::<backcast::ui::components::ChartSizeMap>();
 
     app.world_mut().spawn((
         Camera2d,

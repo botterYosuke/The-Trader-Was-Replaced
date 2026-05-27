@@ -16,7 +16,7 @@ use crate::replay::{ReplayStartupPhase, ReplayStartupProgress};
 use crate::trading::{
     AccountPosition, AvailableInstruments, BackendEvent, BackendStartupStage, BackendStatus,
     BackendStatusUpdate, CurrentRun, ExecutionMode, ExecutionModeRes, LastPrices, LiveOrder, LiveOrders,
-    LiveRuns, OrderFeedback, PortfolioPosition, PortfolioState, ReconcilePrompt,
+    OrderFeedback, PortfolioPosition, PortfolioState, ReconcilePrompt,
     ReloginPrompt, RunState, SafetyToast, SecretPrompt, SecretPromptRequest, StrategyLogs, Tickers,
     ToastKind,
     TickersStatus, TransportCommand, TransportCommandSender, VenueState, VenueStatusRes,
@@ -84,7 +84,6 @@ pub fn backend_event_drain_system(
     mut live_orders: ResMut<LiveOrders>,
     mut portfolio: ResMut<PortfolioState>,
     mut relogin_prompt: ResMut<ReloginPrompt>,
-    mut live_runs: ResMut<LiveRuns>,
     mut safety_toast: ResMut<SafetyToast>,
     mut strategy_logs: ResMut<StrategyLogs>,
     mut current_run: ResMut<CurrentRun>,
@@ -175,9 +174,6 @@ pub fn backend_event_drain_system(
                 info!(
                     "[backend-event] LiveStrategyEvent run_id={run_id} strategy_id={strategy_id} status={status} ts_ms={ts_ms}"
                 );
-                // §2.8: drive the Live Run Panel's run list.
-                live_runs.apply_event(&run_id, &strategy_id, &status, ts_ms);
-                // issue #42: CurrentRun にも同期する
                 if current_run.run_id.as_deref() == Some(&*run_id)
                     || current_run.run_id.is_none()
                 {
@@ -244,16 +240,6 @@ pub fn backend_event_drain_system(
                 info!(
                     "[backend-event] LiveStrategyTelemetry run_id={run_id} strategy_id={strategy_id} realized_pnl={realized_pnl} unrealized_pnl={unrealized_pnl} order_count={order_count} fill_count={fill_count} ts_ms={ts_ms}"
                 );
-                live_runs.apply_telemetry(
-                    &run_id,
-                    &strategy_id,
-                    realized_pnl,
-                    unrealized_pnl,
-                    order_count,
-                    fill_count,
-                    ts_ms,
-                );
-                // issue #42: CurrentRun にも同期する
                 if current_run.run_id.as_deref() == Some(&*run_id)
                     || current_run.run_id.is_none()
                 {
@@ -747,7 +733,6 @@ mod tests {
         app.init_resource::<LiveOrders>();
         app.init_resource::<PortfolioState>();
         app.init_resource::<ReloginPrompt>();
-        app.init_resource::<LiveRuns>();
         app.init_resource::<SafetyToast>();
         app.init_resource::<StrategyLogs>();
         app.init_resource::<CurrentRun>();
@@ -777,7 +762,6 @@ mod tests {
         app.init_resource::<LiveOrders>();
         app.init_resource::<PortfolioState>();
         app.init_resource::<ReloginPrompt>();
-        app.init_resource::<LiveRuns>();
         app.init_resource::<SafetyToast>();
         app.init_resource::<StrategyLogs>();
         app.init_resource::<CurrentRun>();
@@ -1052,7 +1036,6 @@ mod tests {
         app.init_resource::<LiveOrders>();
         app.init_resource::<PortfolioState>();
         app.init_resource::<ReloginPrompt>();
-        app.init_resource::<LiveRuns>();
         app.init_resource::<SafetyToast>();
         app.init_resource::<StrategyLogs>();
         app.init_resource::<CurrentRun>();
@@ -1060,9 +1043,9 @@ mod tests {
         (app, tx)
     }
 
-    /// §2.8 / §2.9: a LiveStrategyTelemetry push drives the LiveRuns counters.
+    /// §2.8 / §2.9 (issue #42): a LiveStrategyTelemetry push drives CurrentRun counters.
     #[test]
-    fn telemetry_push_drives_live_runs_counters() {
+    fn telemetry_push_drives_current_run_counters() {
         let (mut app, tx) = drain_app();
         tx.send(BackendEvent::LiveStrategyTelemetry {
             run_id: "run-1".to_string(),
@@ -1075,18 +1058,12 @@ mod tests {
         })
         .unwrap();
         app.update();
-        let runs = app.world().resource::<crate::trading::LiveRuns>();
-        assert_eq!(
-            runs.runs.len(),
-            1,
-            "telemetry upserts a run even before lifecycle"
-        );
-        let r = &runs.runs[0];
-        assert_eq!(r.realized_pnl, 5000.0);
-        assert_eq!(r.unrealized_pnl, 1234.0);
-        assert_eq!(r.order_count, 4);
-        assert_eq!(r.fill_count, 2);
-        assert_eq!(r.strategy_id, "LIVE-abc12345");
+        let cr = app.world().resource::<CurrentRun>();
+        assert_eq!(cr.realized_pnl, 5000.0);
+        assert_eq!(cr.unrealized_pnl, 1234.0);
+        assert_eq!(cr.order_count, 4);
+        assert_eq!(cr.fill_count, 2);
+        assert_eq!(cr.strategy_name, "LIVE-abc12345");
     }
 
     /// §2.9 merge invariant through the drain: an OrderEvent's non-empty strategy_id

@@ -13,7 +13,7 @@ use backcast::grid::GridPlugin;
 use backcast::replay::ReplayStartupProgress;
 use backcast::trading::{
     AvailableInstruments, BackendChannel, BackendStartupStage, BackendStatus, BackendStatusUpdate,
-    CurrentRun, ExecutionMode, ExecutionModeRes, LastPrices, LiveOrder, LiveOrders, LiveRuns,
+    CurrentRun, ExecutionMode, ExecutionModeRes, LastPrices, LiveOrder, LiveOrders,
     OrderFeedback, PortfolioOrder, PortfolioPosition, PortfolioState,
     ReconcilePrompt, ReloginPrompt, ReplaySpeed, SecretPrompt, SelectedSymbol, Ticker, Tickers,
     TickersSource, TradingSettings, TransportCommand, TransportCommandSender, VenueState,
@@ -273,8 +273,6 @@ async fn main() {
         // `status_update_system` / `backend_event_drain_system` that mutate them
         // live in this binary.
         .insert_resource(LiveOrders::default())
-        // Phase 10 §2.8: Live Run Panel run list (filled by backend_event_drain_system).
-        .insert_resource(LiveRuns::default())
         .insert_resource(SecretPrompt::default())
         .insert_resource(ReloginPrompt::default())
         .insert_resource(ReconcilePrompt::default())

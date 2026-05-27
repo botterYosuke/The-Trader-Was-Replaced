@@ -37,6 +37,7 @@ fn build_app() -> App {
     app.insert_resource(RegionKeyAllocator::default());
     app.insert_resource(AppHistory::default());
     app.insert_resource(StrategyBuffer::default());
+    app.init_resource::<backcast::ui::components::ChartSizeMap>();
 
     app.add_event::<LayoutLoadRequested>();
     app.add_event::<LayoutSaveRequested>();
