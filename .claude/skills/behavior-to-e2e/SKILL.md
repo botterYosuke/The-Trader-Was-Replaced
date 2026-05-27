@@ -58,6 +58,14 @@ description: >-
   に含まれていれば D9 のような flow + FLOWS.md 追記 + wiki [FlowID] 引用が必要。`pair-relay` の Navigator が内部で
   カバーしても、本スキルを明示的に invoke しないと flow/wiki 追加が「実装の付録」として埋もれやすい（実例: #39 Slice 1
   で D9 flow + venues.md + modes.md 更新が必要だったが behavior-to-e2e を invoke せず、pair-relay Navigator 任せになった）。
+  **さらに重要: 初期プロンプトが「レビューして修正して」「Medium をつぶして」のような /pair-relay・code-review ループで、
+  flow/wiki の必要性が *レビュー途中で判明する*（codex/Navigator が新しい不変条件・取りこぼしを指摘 → 新 flow ID 追加や
+  FLOWS.md/wiki の現行化が要る）パターンでも、その時点で本スキルを invoke する**。初期プロンプトに flow/wiki 意図が無く
+  ても、レビュー駆動で挙動を変えた / 新 flow を足すと決まった瞬間が発動点（実例: #39 Slice 2 のレビューで AccountEvent
+  ゲートを新設し D22/D23 + modes.md を更新したが、また behavior-to-e2e を invoke せず Navigator 任せになった＝Slice 1 と
+  同じ取りこぼしの再発）。レビュー中に設計が変わったら、先に書いた FLOWS.md の Mechanism 列 / wiki が *旧機構を記述したまま*
+  食い違う事故が起きやすい（Slice 2 では D23 の Mechanism 列が撤去済みの `_publish_account_snapshot` gate を指したまま残り
+  最終レビューで Medium 指摘になった）ので、設計変更のたびに FLOWS.md/wiki の該当記述も同時に追従させる。
   **さらに、headless 不可で `#[ignore]`/doc-stub のまま諦めていた flow を「実テスト化」する**ときも本スキルを開く
   （「i8/i14 を headless テスト可能にする」「`#[test] #[ignore]` を外したい」「rfd / ファイルダイアログ /
   `AsyncComputeTaskPool` / async task を seam でバイパスしてテスト」「ダイアログ要求と書き込みを分離してテスト可能に」
@@ -73,6 +81,7 @@ description: >-
   FLOWS.md に追加し `python/tests/` に自動テストを足す。EC stream → force_resync トリガー、mode 遷移 →
   account_sync 存続、dedup 保証など「Python サービス内の状態機械」は pytest でカバーできる（Rust seam は不要）。
   **この場合も FLOWS.md への flow 追加・wiki の [FlowID] 引用は必須**（Rust E2E に限らない）。
+  **「verify first」パターン（issue に「まず混入するか確認してから修正」「RED が立つか先に検証」「本当に再現するか確かめてから直す」と書かれているとき）でも本スキルを発動する**: verify-first はテストを先に書いて問題を実証するアプローチであり、RED テスト + FLOWS.md 追記 + wiki [FlowID] が必要。issue の Acceptance Criteria に「verify first」が含まれていれば、実装の説明が詳細でもスキルを invoke する（#39 Slice 2 の「verify first: live 接続状態で Replay に切替えたとき混入するか確認（RED が立つか）」が典型）。
 ---
 
 # behavior-to-e2e — 挙動の言葉を E2E テストに変える
@@ -281,6 +290,22 @@ backend→ECS seam だけでは十分条件にならない。
   harness 側で `.chain()` 済みなので 1 tick で「クリック→`StrategyRunRequested`→`RunStrategy` コマンド」まで通る。
   発射コマンドは `drain_commands()` で受ける。**「実 UI 操作で `TransportCommand` を assert → その後 backend 応答を
   seam から注入」**が A–H の基本パターン。
+- **command-level テスト（resource 直 seed ＋ 合成 entity spawn）は実機 wiring を素通りする＝false-green の温床**。
+  `Harness` で `set_xxx()` により resource を直接埋め、`click<M>` で `(marker, Button, Interaction)` を**手で spawn**して
+  system を回すテストは、「branch logic が完璧入力で正しく動く」ことしか保証しない。**本番 plugin の system 登録漏れ・
+  本番 `spawn_xxx` が作る実 entity のマーカー/可視性・`Node.display` gating・pre-flight guard の充足経路**は一切踏まない。
+  実例（issue #40 フォローアップ）: footer ▶ の LiveAuto 起動を `N5`（command-level）が「`StartLiveAuto` の送出有無」だけ
+  assert して green だったが、実機では ▶ が無反応だった。原因は pre-flight guard が `warn!`+`continue` の **silent block**
+  （venue 未接続等）で、N5 はそれを「送らないのが正」として暗黙に許容していた（＝抜け漏れ）。
+  **gap を疑ったら、`i5`/`N6`/`N7` の bare-App パターンで本番経路を踏むテストを足す**: `App::new()`＋`MinimalPlugins`＋
+  `AssetPlugin`＋`init_asset::<Font>()` に **本番 `spawn_footer`（等の構築 system）を Startup で 1 回回し**、本番の
+  visibility/handler system を `add_systems` して、`query_filtered::<Entity, With<RealMarker>>()` で引いた**実 entity**を
+  `entity_mut(e).insert(Interaction::Pressed)` で押す。これで「登録・実 entity・可視性・guard」まで丸ごと検証できる
+  （resource は `make_app` で本番 `main.rs` と同じ insert セットを揃える＝1 つ漏れると system-param panic）。
+- **「クリックしても何も起きない」系のバグは silent guard（`warn!`+`continue` だけで UI に何も出さない）を最優先で疑う**。
+  挙動を「保証」するテストは「コマンドが出る/出ない」だけでなく **「ブロック時にユーザーへ理由が surfacing される」**まで
+  assert する（例 N7: pre-flight 失敗時に `LastRunResult.state=RunState::Failed{error}` を書き Run Result パネルへ赤字表示）。
+  silent block を「送らないのが正」とだけ固定すると、無言の無反応を仕様として温存してしまう。
 - **`push_state(ts)` は `TradingSession.replay_state` を `None` に上書きする**（fixture に replay_state が無いため）。
   footer の Pause/Resume は `replay_state` で分岐するので、**`set_replay_state(Some("RUNNING"))` は必ず `push_state` の
   「後」に呼ぶ**。順序を逆にすると clock push が RUNNING を消し、Pause クリックが Run 扱いになって command assert が落ちる

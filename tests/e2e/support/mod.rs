@@ -16,6 +16,7 @@ use bevy::prelude::*;
 use bevy::MinimalPlugins;
 use tokio::sync::mpsc;
 
+use std::path::PathBuf;
 use std::time::Duration;
 
 use backcast::backend_sync::{
@@ -401,6 +402,32 @@ impl Harness {
         self.tick();
     }
 
+    /// Click the footer ▶ (PauseResume) button. `Button` requires `Node`, which
+    /// transitively requires `BackgroundColor`, so even the generic `click<M>` would
+    /// satisfy the production `footer_pause_resume_system` query. This helper is a
+    /// named alias that keeps the PauseResume call sites in N5 readable.
+    pub fn click_pause_resume(&mut self) {
+        self.app.world_mut().spawn((
+            PauseResumeButton,
+            Button,
+            BackgroundColor::default(),
+            Interaction::Pressed,
+        ));
+        self.tick();
+    }
+
+    pub fn set_selected_symbol(&mut self, symbol: Option<&str>) {
+        self.app.world_mut().resource_mut::<SelectedSymbol>().id =
+            symbol.map(|s| s.to_string());
+    }
+
+    pub fn set_strategy_cache_path(&mut self, name: &str) -> PathBuf {
+        let cache_py = self.tmp.path().join(name);
+        std::fs::write(&cache_py, "# strategy cache fixture\n").expect("write cache fixture");
+        self.app.world_mut().resource_mut::<StrategyBuffer>().cache_path = Some(cache_py.clone());
+        cache_py
+    }
+
     pub fn press_order_button(&mut self, button: OrderButton) {
         self.app
             .world_mut()
@@ -469,6 +496,14 @@ impl Harness {
     /// Set the scenario end date the replay-entry auto-fetch keys on.
     pub fn set_scenario_end(&mut self, end: &str) {
         self.app.world_mut().resource_mut::<ScenarioMetadata>().end = Some(end.to_string());
+    }
+
+    /// Set the scenario instruments used by Replay Run and the LiveAuto footer ▶.
+    pub fn set_scenario_instruments(&mut self, ids: &[&str]) {
+        self.app
+            .world_mut()
+            .resource_mut::<ScenarioMetadata>()
+            .instruments = ids.iter().map(|s| s.to_string()).collect();
     }
 
     /// Seed the live-mode instrument registry (universe) for sidebar/prune flows.

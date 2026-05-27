@@ -217,6 +217,16 @@ mod k14_reconcile_modal_dismiss_escape_priority;
 mod k15_secret_modal_timeout_zeroize_empty_submit;
 #[path = "e2e/flows/k16_order_context_menu_open_close.rs"]
 mod k16_order_context_menu_open_close;
+#[path = "e2e/flows/k17_chart_resize_reflow.rs"]
+mod k17_chart_resize_reflow;
+#[path = "e2e/flows/k18_live_chart_resize_reflow.rs"]
+mod k18_live_chart_resize_reflow;
+#[path = "e2e/flows/k19_chart_size_persists.rs"]
+mod k19_chart_size_persists;
+#[path = "e2e/flows/k20_chart_size_sidecar_round_trip.rs"]
+mod k20_chart_size_sidecar_round_trip;
+#[path = "e2e/flows/k21_chart_size_map_cleared_on_despawn.rs"]
+mod k21_chart_size_map_cleared_on_despawn;
 
 // L. CLI / backend process / prod guard
 // l1: stub のみ（PowerShell .ps1 — Windows 専用、darwin CI 不可）
@@ -274,3 +284,9 @@ mod n2_live_strategy_telemetry;
 mod n3_safety_rail_violation_toast;
 #[path = "e2e/flows/n4_strategy_log_message_buffer.rs"]
 mod n4_strategy_log_message_buffer;
+#[path = "e2e/flows/n5_footer_play_starts_live_auto.rs"]
+mod n5_footer_play_starts_live_auto;
+#[path = "e2e/flows/n6_footer_play_starts_live_auto_via_real_footer.rs"]
+mod n6_footer_play_starts_live_auto_via_real_footer;
+#[path = "e2e/flows/n7_footer_play_blocked_writes_run_result.rs"]
+mod n7_footer_play_blocked_writes_run_result;

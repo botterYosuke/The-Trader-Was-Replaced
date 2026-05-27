@@ -38,7 +38,8 @@ fn m10_window_resize_updates_size_and_autosave() {
         .insert_resource(InstrumentRegistry::default())
         .insert_resource(RegionKeyAllocator::default())
         .insert_resource(StrategyBuffer::default())
-        .insert_resource(PendingStrategyFragments::default());
+        .insert_resource(PendingStrategyFragments::default())
+        .init_resource::<backcast::ui::components::ChartSizeMap>();
 
     // OrthographicProjection.scale = 1.0 (drag delta の scale 補正に使う)
     app.world_mut()

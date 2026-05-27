@@ -211,6 +211,13 @@ pub enum TransportCommand {
         /// startup window を閉じないようにするために使う。
         startup_id: u64,
     },
+    /// User-initiated Live Auto launch via the footer ▶ button (issue #40 代替).
+    /// 2 段直列: RegisterLiveStrategy → StartLiveStrategy。`token` は transport task が注入。
+    StartLiveAuto {
+        instrument_id: String,
+        venue: String,
+        strategy_file: std::path::PathBuf,
+    },
     FetchAvailableInstruments {
         end_date: NaiveDate,
     },
@@ -322,6 +329,17 @@ pub enum TransportCommand {
     /// `force_resync()` で dedup を貫通して AccountEvent を既存 stream に再 push する。
     /// これが無いと CONNECTED でも BUYING POWER/POSITIONS が空のまま残る。
     ForceAccountSnapshot,
+}
+
+/// Live Auto 起動時の独立セーフティの既定値。allowed_instruments は起動対象 1 銘柄のみ whitelist。
+pub fn default_live_auto_safety_limits(instrument_id: &str) -> engine::SafetyLimits {
+    engine::SafetyLimits {
+        max_position_size_jpy: 1_000_000,
+        max_order_value_jpy: 500_000,
+        max_daily_loss_jpy: 100_000,
+        max_orders_per_minute: 5,
+        allowed_instruments: vec![instrument_id.to_string()],
+    }
 }
 
 /// Wrapper around a Tachibana second password that redacts itself in `Debug`
