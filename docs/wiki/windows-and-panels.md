@@ -75,8 +75,8 @@
 | --- | --- | --- |
 | State | 実行状態。`No run yet`（グレー）/ `Running…`（黄）/ `Completed`（緑）/ `Failed: {error}`（赤）。 | Running→Completed [A1] / Failed [A6] |
 | Run ID | `run: {id}` 形式。実行 ID 未設定時は空。 | [A1] |
-| Stats | `fills: {件数}  eq_pts: {点数}`。約定件数とエクイティ点数。サマリ未取得時は空。 | [B2] |
-| P&L | `pnl: {損益}`。0 以上で緑、負で赤。サマリ未取得時は空。 | [B2] |
+| Stats | **Replay 完了時**: `fills: {件数}  eq_pts: {点数}`（サマリから）。**Live Auto 実行中（Running/Paused）または STOPPED/FAILED で order/fill 記録あり**: `strat: {名前}  o:{件数} f:{件数}`（live カウントから）。それ以外は空。 | [B2]/[M16] |
+| P&L | **Replay 完了時**: `pnl: {損益}`（サマリから）。**Live Auto 実行中または STOPPED/FAILED で pnl 記録あり**: `pnl: {実現} / unrlz: {未実現}`。それ以外は空。0 以上で緑、負で赤。 | [B2]/[M16] |
 
 ## Strategy Editor（戦略エディタ）
 
@@ -95,12 +95,11 @@
 - Tachibana で第二暗証番号を要求されると SecretModal が開きます。 [F5]/[K8]/[K15]
 - 詳細は [注文](orders.md) を参照してください。
 
-## Live Run Panel（ライブラン）
+## Live Run Panel（撤去済み）
 
-- Auto モードで起動した Live Auto run を一覧表示し、`[Pause]` / `[Resume]` / `[Stop]` で制御するパネルです（Bevy UI Node + Interaction 流派、run が無いあいだは非表示）。 [N1]
-- 各 run 行に lifecycle 状態（READY / RUNNING / PAUSED / STOPPING / STOPPED / ERROR、色分け）・開始時刻・run 単位の PnL / order / fill テレメトリを表示します。 [N1]/[N2]
-- 下部に戦略ログ（`self.log.*`）の直近行を tail 表示します（リングバッファ 100 行）。 [N4]
-- Safety Rail 違反は Footer のトーストで通知されます。 [N3]
+> **issue #42 Slice 2 で撤去。** Live Auto run の状態（lifecycle / PnL / order / fill）は **Run Result** パネルに統合表示されます。[N1]/[N2]/[N8]
+> 戦略ログ tail は `StrategyLogs` リソースに保持されます（リングバッファ 100 行）。[N4]
+> Safety Rail 違反は Footer のトーストで通知されます。[N3]
 
 ## Startup（実行条件）
 
@@ -121,4 +120,4 @@
 
 - Buying Power / Positions / Orders / Run Result はいずれもバックエンド由来の読み取り専用表示です。 [B1]/[F3]/[F4]
 - これらのパネルは Replay 実行の結果反映に加え、Live（Manual / Auto）の注文イベント（OrderEvent）・口座更新（AccountEvent）でもリアルタイムに更新されます。 [F3]/[F4]/[H1]/[H2]
-- 発注・訂正・取消の操作は読み取り専用パネルではなく **Order** ウィンドウから行います。Live Auto 戦略の制御は **Live Run Panel** です。
+- 発注・訂正・取消の操作は読み取り専用パネルではなく **Order** ウィンドウから行います。Live Auto run の状態は **Run Result** パネルで確認します。[N1]/[N2]

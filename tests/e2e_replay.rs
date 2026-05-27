@@ -272,6 +272,8 @@ mod m13_run_result_no_close_button;
 mod m14_run_result_mode_visibility;
 #[path = "e2e/flows/m15_run_result_button_absent.rs"]
 mod m15_run_result_button_absent;
+#[path = "e2e/flows/m16_run_result_stats_pnl_fallback.rs"]
+mod m16_run_result_stats_pnl_fallback;
 
 // N. Live Auto strategy execution (Phase 10: lifecycle / telemetry / safety / log)
 #[path = "e2e/flows/n1_live_strategy_event_lifecycle.rs"]
