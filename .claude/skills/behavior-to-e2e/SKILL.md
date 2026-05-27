@@ -205,6 +205,34 @@ backend→ECS seam だけでは十分条件にならない。
 
 ## 落とし穴（事前に知らないと必ずハマる）
 
+- **Bevy system 順序 race（`.after()` 制約が無い）の RED→GREEN は schedule introspection で
+  ヘッドレスに固定できる**（「`.before()` で強制逆順 RED」は不可: fix 後もテスト側が逆順を張り続け
+  GREEN にならないため）。症状: `is_changed()` ガード付き（または毎フレーム read の）visibility system が
+  `status_update_system` の後に `.after()` 無しで登録されていると、同フレームで前に走ったとき古い mode で
+  判断し 1 フレーム遅延する。これには **2 種類のテストを併用** する:
+  - **contract test（system logic の回帰ガード。M16/M18/M19。`kind:state`）**: テスト harness 側で
+    `visibility_system.after(status_update_system)` を明示し、`h.send_status(ExecutionModeChanged)` で
+    同一 tick に mode+visibility が変わることを assert。常に GREEN（順序をテスト側で確保）。これは
+    「順序が正しければ logic が正しい」ことだけを保証し、**production の `.after` 付け忘れは検出できない**
+    （テストが自前で `.after` を張るため、production の mod.rs 配線そのものは観測しない）。
+  - **wiring guard（production 配線そのものの RED→GREEN。M20。`kind:wiring`）**: production の registration を
+    `pub fn add_xxx_systems(app: &mut App)` に切り出し、テストは **それ＋`status_update_system` を bare
+    `App` に登録** → `app.world_mut().resource_mut::<Schedules>().remove(Update)` で Update を取り出し
+    `schedule.initialize(app.world_mut())` で build（system は実行しない＝resource セットアップ不要。
+    `initialize` は param のアクセス登録だけで、resource 存在は run 時にしか要求されない）→
+    `ScheduleGraph::conflicting_systems()` を読む。`status_update_system` (ResMut) と visibility system (Res) は
+    同一 resource アクセスなので、`.after` が無いと衝突対に現れる。**3 段 assert**: (0) 対象 system が全て
+    登録されている（登録漏れ検出。`if let Some` 直前に存在チェック）、(1) `status_update_system` が
+    visibility system と衝突対に**現れない**（`.after` 欠落＝順序無しを検出）、(2) `Schedule::systems()`
+    （build 後の executable は topsort＝実行順）で `status_update_system` が各 visibility system より**前**に
+    居る（`.before` 逆付けを検出。(1) だけだと逆向きも「順序付け済み」で素通りする）。
+    **これは fix 前 RED → fix 後 GREEN がヘッドレスで決定的に取れる**（`conflicting_systems()` は schedule
+    build で ambiguity 設定に関係なく常に算出され、scheduler の実行時発火順序の非決定性に依存しない）。
+    罠: `ScheduleGraph::systems()` は build 後 inner が executable へ移動して空になるので名前は
+    `Schedule::systems()` から引く / `Schedule::initialize` は内部で `Schedules` resource に触るので
+    `resource_scope` 内では呼べない（Update だけ remove して world に対し初期化する）。
+  実例: `tests/e2e/flows/m20_mode_visibility_systems_run_after_status_update.rs`（issue #41）。
+  fix 後は FLOWS.md の「⚠️ production コードに `.after()` を追加することで fix」注釈を「fix 適用済み」に更新する。
 - **ハーネスは wire した system が要求する resource を全部 insert していないと全テストが即死する**。
   `Harness::with_backend_enabled`（`mod.rs`）は `status_update_system` / `backend_update_system` /
   `backend_event_drain_system` / `replay_startup_timeout_system` が取る `ResMut<T>` を**手で全部

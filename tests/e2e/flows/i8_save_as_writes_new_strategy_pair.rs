@@ -97,6 +97,7 @@ fn i8_save_as_writes_new_strategy_pair() {
     app.init_resource::<StrategyAutoSaveState>();
     app.init_resource::<ScenarioInstrumentsWritebackState>();
     app.init_resource::<PendingFileDialog>();
+    app.init_resource::<backcast::ui::components::ChartSizeMap>();
 
     // 旧 scenario_target を seed（preserve_scenario の第一候補 / 切替の before 値）。
     app.insert_resource(ScenarioReadTarget(Some(old_json.clone())));
