@@ -274,6 +274,10 @@ mod m14_run_result_mode_visibility;
 mod m15_run_result_button_absent;
 #[path = "e2e/flows/m16_run_result_visibility_follows_backend_mode.rs"]
 mod m16_run_result_visibility_follows_backend_mode;
+#[path = "e2e/flows/m18_footer_mode_visibility_follows_backend_mode.rs"]
+mod m18_footer_mode_visibility_follows_backend_mode;
+#[path = "e2e/flows/m19_strategy_editor_mode_visibility_follows_backend_mode.rs"]
+mod m19_strategy_editor_mode_visibility_follows_backend_mode;
 
 // N. Live Auto strategy execution (Phase 10: lifecycle / telemetry / safety / log)
 #[path = "e2e/flows/n1_live_strategy_event_lifecycle.rs"]
