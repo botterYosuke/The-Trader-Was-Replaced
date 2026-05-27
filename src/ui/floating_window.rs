@@ -14,6 +14,7 @@ use crate::ui::run_result_panel::spawn_run_result_panel;
 use crate::ui::scenario_startup_panel::spawn_scenario_startup_window;
 use crate::ui::order_panel::spawn_order_form_in_window;
 use crate::ui::strategy_editor::spawn_strategy_editor_panel;
+use bevy::picking::Pickable;
 use bevy::prelude::*;
 use bevy_cosmic_edit::prelude::CosmicFontSystem;
 
@@ -85,6 +86,7 @@ fn spawn_resize_handle(commands: &mut Commands, axis: ResizeAxis, size: Vec2, po
                 ..default()
             },
             Transform::from_xyz(pos.x, pos.y, 0.5),
+            Pickable::default(),
         ))
         // Drag → root の custom_size / translation を更新（左端・上端固定）
         .observe(
@@ -203,6 +205,7 @@ pub fn spawn_floating_window(
             },
             Transform::from_xyz(spec.position.x, spec.position.y, 10.0),
             WindowRoot,
+            Pickable::default(),
         ))
         .observe(
             |trigger: On<Pointer<Press>>,
@@ -254,12 +257,16 @@ pub fn spawn_floating_window(
             },
             Transform::from_xyz(0.0, title_bar_y, 0.1),
             TitleBar,
+            Pickable::default(),
         ))
         .observe(
             |drag: On<Pointer<Drag>>,
              mut query: Query<&mut Transform, With<WindowRoot>>,
              parent_query: Query<&ChildOf>,
              camera_query: Query<&Projection, With<Camera2d>>| {
+                if drag.button != PointerButton::Primary {
+                    return;
+                }
                 let Ok(child_of) = parent_query.get(drag.entity) else {
                     return;
                 };
@@ -371,6 +378,7 @@ pub fn spawn_floating_window(
                 },
                 Transform::from_xyz(close_btn_x, title_bar_y, 0.2),
                 CloseButton,
+                Pickable::default(),
             ))
             .observe(
                 |trigger: On<Pointer<Click>>,

@@ -22,7 +22,9 @@ description: |
     "ハンドル", "drag handle", "drag-resize" と言われたとき
   ③ Bevy のバージョン差（0.15 と 0.19/0.16/0.17/0.18 の API 差）でハマっているとき
   ④ "Bundle is deprecated", "set_parent", "Parent", "ChildOf", "get_single", "single",
-    "Trigger::entity", "Trigger::target", "required components" など破壊的変更語彙が出たとき
+    "Trigger::entity", "Trigger::target", "required components",
+    "Pickable", "picking", "observer を付けたのに反応しない", "drag が動かない", "click が効かない",
+    "Pointer イベントが来ない" など破壊的変更語彙が出たとき
   ⑤ 新しいパネル（floating window）を増やす／既存パネルを書き換える作業
   ⑥ 操作系 UI（Bevy UI Node + Interaction/Button）と 表示専用パネル（world-space Sprite）の
     どちらで作るか迷ったとき、または「発注フォーム」「モーダル」「ボタン」「ラジオ」「入力欄」
@@ -86,7 +88,77 @@ description: |
 
 # Bevy Engine — The-Trader-Was-Replaced
 
-このスキルは **Bevy 0.15** を前提にした、本プロジェクトの UI レイヤー（`src/ui/**` と
+> ## ⚠️ Bevy 0.18 へ移行済み（issue #52 / branch `feat/bevscode`）
+> **本スキル本文の大半はまだ「Bevy 0.15 前提」で書かれている。** `feat/bevscode` 以降の
+> `Cargo.toml` は `bevy = "0.18"` / `bevy_pancam = "0.20"` / `bevy_vector_shapes = "0.12"`。
+> 以下の 0.15 記述（ECS ミニリファレンス・トラブルシュート群）を読むときは、まずこの
+> **0.15→0.18 確定デルタ**で読み替えること（issue #52 で実コードと bevy 0.18.1 API 定義で確認済み）:
+>
+> | 0.15 | 0.18 | 補足 |
+> |---|---|---|
+> | `Event` / `EventReader` / `EventWriter` | **`Message` / `MessageReader` / `MessageWriter`** | Bevy 0.18 で「観測子向け Event」と「バッファ型 Message」が分離。従来の `#[derive(Event)]`＋`EventReader` バッファ用途は **Message** 側 |
+> | `app.add_event::<T>()` | **`app.add_message::<T>()`**（`add_event` は削除） | |
+> | `World`/`Commands`/`App` `.send_event(x)` | **`.write_message(x)`** | |
+> | `Events<T>`（resource 型） | **`Messages<T>`**（`Events` は削除） | `.get_cursor()` / `.update_drain()` / `.drain()` / `.clear()` / `.write()` は **同名で残存**（メソッドは触らず型名だけ置換） |
+> | `Messages<T>::send(x)` | **`.write(x)`** | |
+> | `query.get_single()` | **`query.single()` → `Result`**（`get_single` 廃止） | `QueryState::single(&World)` も `Result<_, QuerySingleError>`。`.unwrap()`/`let Ok(..) else` が要る |
+> | `Parent` component + `parent.get()` | **`ChildOf` component + `parent.parent()`**（`.get()` は無い） | `ChildOf` insert で親側 `Children` は自動同期（relationship hook）。`Parent`/`ChildOf` とも prelude |
+> | `commands.entity(e).set_parent(p)`（**local Transform 保持**） | **`commands.entity(e).insert(ChildOf(p))`** | ⚠️ 下記トラップ参照 |
+> | `commands.entity(e).set_parent_in_place(p)` | 同名で存在するが **local Transform を再計算**（global 保持） | ⚠️ 下記トラップ参照 |
+> | `world.trigger_targets(ev, target)` | **`world.trigger(ev)`**（`Pointer<E>` は `EntityEvent`、target は event 内） | |
+> | `Pointer::<E>::new(target, id, loc, ev)` | **`new(id, loc, ev, target)`**（target が末尾へ） | |
+> | `trigger.entity()` | **`trigger.target()`**（ただし `On<Pointer<E>>` は `Pointer<E>` へ Deref、`Pointer.entity` フィールド直読も可） | |
+> | `World::iter_entities()` | **削除** → `world.query_filtered::<D, F>()`（`&mut World` 必須）→ `q.iter(world)` | `&World` から entity 走査不可。test ヘルパは `&mut App` 化が要る |
+> | `WindowResolution::new(f32, f32)` | **`WindowResolution::new(u32, u32)`**（physical px） | |
+> | `OrthographicProjection` をタプルに単体 spawn | **`Projection::from(OrthographicProjection{..})`**（単体コンポーネント廃止） | camera spawn |
+> | `KeyboardInput { .. }` | **`text: Option<SmolStr>` フィールド新設・必須** | 合成キーストロークは `text: None` |
+> | missing `Res<T>` → system を**暗黙スキップ** | **param validation で panic**（`handler.rs`） | ⚠️ test setup の穴・false-green が顕在化（下記） |
+> | `bevy::picking::focus`（HoverMap） / `picking::events::Down` | **`bevy::picking::hover`** / **`Press`** | |
+> | `bevy_pancam::PanCamSystemSet` | **`PanCamSystems`**（struct, pancam 0.20） | |
+> | `Sprite` spawn → **自動で picking 対象** | **`Pickable` コンポーネントを明示 insert しないと picking 対象外** | `Sprite` の `#[require]` に `Pickable` が無い。`observer` を attach した Sprite には **必ず `Pickable::default()` を足す**。`bevy::prelude::*` 非収録なので `use bevy::picking::Pickable;` も要る。issue #52 で `floating_window.rs` の title_bar / close_btn / resize_handle / root が全滅してドラッグが無反応になった実例 |
+>
+> ### ⚠️ トラップ 1: `set_parent` → `set_parent_in_place` の機械置換は world-space entity で回帰を生む
+> 0.15 の `set_parent(p)` は子の **local** Transform を保持したが、0.18 の `set_parent_in_place(p)` は
+> **global を保持するため local を再計算**する（`bevy_transform-0.18.1/src/commands.rs`：「Transform を更新したく
+> ないなら `ChildOf` を直接 insert せよ」と明記）。`Transform::from_xyz(x,y,z)` で **local 位置を確定した直後に
+> 同フレームで reparent** する world-space entity（軸ラベル/crosshair バッジ/`Text2d("×")` 等）では、
+> propagation 前で親 `GlobalTransform` が identity のため **local が 0 に潰れる**（ラベルが重なる・z が潰れて
+> 描画順がズレる）。**正解は `.insert(ChildOf(p))`**（再計算が走らず local 保持＝0.15 `set_parent` と同義）。
+> UI `Node`/`Text`（flexbox layout で配置、明示 Transform 無し）はこの回帰を受けないので `set_parent_in_place`
+> のままで可。判定は「明示 `Transform::from_xyz` を持つ world-space entity か / 親が同フレーム spawn か」。
+> 実例: issue #52 で `chart_axes.rs:245/316`・`chart_crosshair.rs:336`・`floating_window.rs:456`(× text) が回帰、
+> `instrument_picker.rs:432/442`(UI Node) は据え置き正当。
+>
+> ### ⚠️ トラップ 3: 0.18 で `Sprite` に observer を attach したのに Pointer イベントが一切来ない
+> 原因: Bevy 0.18 の `sprite_picking` バックエンドのクエリが `&Pickable` を**必須コンポーネント**として要求する。
+> `Sprite` の `#[require(Transform, Visibility, VisibilityClass, Anchor)]` に `Pickable` は含まれていないため、
+> 明示 insert しないと picking 対象から完全に除外される（`Pointer<Drag>` / `Pointer<Click>` / `Pointer<Press>`
+> がすべて発火しなくなる）。0.15 は bounds ベースで全 Sprite を対象にしていたので気づかずに来た変更。
+>
+> **対処**: `observe(...)` を呼ぶ Sprite（タイトルバー・クローズボタン・リサイズハンドル・ウィンドウ root 等）に
+> **必ず** `Pickable::default()` を spawn タプルに足す。import は `use bevy::picking::Pickable;`
+> （`bevy::prelude::*` に含まれていないため明示が必要）。
+> 透明な Sprite（`Color::srgba(0,0,0,0)`）でも alpha チェックは「texture 無しの color sprite」扱いで skip されるので
+> `Pickable::default()` さえあれば bounds picking が効く（`bevy_sprite-0.18.1/src/picking_backend.rs` 確認済み）。
+>
+> **疑い方**: observer を attach した Sprite のドラッグ・クリックが全く反応しない → まず `Pickable` の有無を確認。
+>
+> ### ⚠️ トラップ 2: `cargo build --lib` green ≠ `cargo test --lib` green ≠ test 全 pass
+> 移行検証は **3 段別物**。①`cargo build --lib` は `#[cfg(test)]` を compile しない（test 内の旧 API は素通り）。
+> ②`cargo test --lib --no-run` で初めて test モジュールの compile error が出る（`src/ui/**` の unit test が
+> 別サーフェス）。③ compile が通っても **実行**しないと assert は検証されない。特に 0.18 は missing resource を
+> panic にするため、0.15 で「resource 不足→system 暗黙スキップ」で**偽グリーンだった test** が顕在化する
+> （issue #52 で `layout_persistence` の 18 test が `Res<ChartSizeMap>` 不足で panic。resource を挿入して実走
+> させたら全 pass だったが、これは「実は何も検証していなかった test」が動き出したケース）。**`cargo build --lib`
+> /`cargo test --lib`/`cargo test --test e2e_replay` を必ず実行（--no-run でなく run）して `test result: ok`
+> を確認すること。**
+>
+> ### このバナー以下の 0.15 トラブルシュート群について
+> Color API（`srgb`）・required components の推移性・cosmic_edit DPI 罠・picking bounds・visibility 伝播 等の
+> **挙動系トラップは 0.18 でも概ね有効**だが、API 名（`get_single`/`Parent`/`EventReader` 等）は上表で読み替える。
+> 0.18 のエディタ実装は `.claude/skills/bevy-engine/bevscode/`（Bevy 0.18 ミラー）が ground truth。
+
+このスキルは（移行前は）**Bevy 0.15** を前提にした、本プロジェクトの UI レイヤー（`src/ui/**` と
 `src/camera.rs`）の流儀を伝えるためのものです。汎用 Bevy の知識はミラーされた upstream
 ソース（`.claude/skills/bevy-engine/src/`）と `references/` 配下にまとめてあります。
 
