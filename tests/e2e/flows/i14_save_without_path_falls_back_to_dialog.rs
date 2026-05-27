@@ -38,6 +38,7 @@ fn i14_save_without_path_falls_back_to_dialog() {
     app.init_resource::<StrategyAutoSaveState>();
     app.init_resource::<ScenarioReadTarget>();
     app.init_resource::<PendingFileDialog>();
+    app.init_resource::<backcast::ui::components::ChartSizeMap>();
 
     app.add_event::<LayoutSaveRequested>();
     app.add_event::<LayoutSaveAsRequested>();

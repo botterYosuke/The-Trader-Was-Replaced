@@ -103,6 +103,7 @@ fn i12_restore_last_strategy_cache_on_launch() {
     app.insert_resource(RegionKeyAllocator::default());
     app.insert_resource(PendingLayoutApply::default());
     app.insert_resource(AppHistory::default());
+    app.init_resource::<backcast::ui::components::ChartSizeMap>();
 
     app.add_event::<CacheRestoreRequested>();
     app.add_event::<PanelSpawnRequested>();

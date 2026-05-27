@@ -109,6 +109,7 @@ fn i15_cache_restore_replay_entry_preserves_py() {
     app.init_resource::<ScenarioFileWatchState>();
     app.insert_resource(PendingLayoutApply::default());
     app.insert_resource(AppHistory::default());
+    app.init_resource::<backcast::ui::components::ChartSizeMap>();
     // 既定モードは Replay。最初の frame で None→Replay 遷移として entered_replay=true になる。
     app.insert_resource(ExecutionModeRes {
         mode: ExecutionMode::Replay,

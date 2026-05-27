@@ -93,6 +93,7 @@ fn i7_save_layout_writes_sidecar() {
     app.init_resource::<StrategyAutoSaveState>();
     app.init_resource::<ScenarioReadTarget>();
     app.init_resource::<PendingFileDialog>();
+    app.init_resource::<backcast::ui::components::ChartSizeMap>();
 
     app.add_event::<LayoutSaveRequested>();
     app.add_event::<LayoutSaveAsRequested>();
