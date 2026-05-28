@@ -21,10 +21,8 @@ use backcast::trading::{
     tickers_source_to_wire,
 };
 use backcast::ui::UiPlugin;
-use backcast::ui::replay_startup_window::{
-    animate_replay_startup_bar_system, auto_hide_replay_startup_window_system,
-    replay_startup_close_button_system, replay_startup_timeout_system, spawn_replay_startup_window,
-    update_replay_startup_window_system,
+use backcast::ui::run_result_panel::{
+    auto_hide_startup_progress_system, replay_startup_timeout_system,
 };
 use bevy::prelude::*;
 use bevy_pancam::{PanCamPlugin, PanCamSystems};
@@ -291,7 +289,6 @@ async fn main() {
                 setup_camera,
                 setup_backend_connection,
                 spawn_supervisor_task_system,
-                spawn_replay_startup_window,
             ),
         )
         .add_systems(
@@ -314,10 +311,7 @@ async fn main() {
                 // Issue #29 Slice 3b: venue CONNECTED 時に GetOrders を撃って接続前の
                 // working-orders を seed する（status_update_system が venue_state を確定後）。
                 request_get_orders_on_venue_connected.after(status_update_system),
-                update_replay_startup_window_system,
-                animate_replay_startup_bar_system,
-                auto_hide_replay_startup_window_system.after(status_update_system),
-                replay_startup_close_button_system,
+                auto_hide_startup_progress_system.after(status_update_system),
                 replay_startup_timeout_system,
                 // PanCam の do_camera_zoom より前に走らせ、enabled フラグを先に確定させる。
                 pancam_suppression_over_editor_system.before(PanCamSystems),

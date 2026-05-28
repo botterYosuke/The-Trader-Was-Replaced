@@ -10,6 +10,7 @@
 use bevy::prelude::*;
 use bevy::transform::TransformPlugin;
 
+use backcast::replay::ReplayStartupProgress;
 use backcast::trading::{CurrentRun, RunState};
 use backcast::ui::run_result_panel::{RunResultLabel, run_result_panel_system, spawn_run_result_panel};
 
@@ -18,6 +19,7 @@ fn m23_run_result_stats_blank_in_replay() {
     let mut app = App::new();
     app.add_plugins(TransformPlugin);
     app.init_resource::<CurrentRun>();
+    app.init_resource::<ReplayStartupProgress>();
     app.add_systems(Update, run_result_panel_system);
     app.add_systems(Startup, |mut commands: Commands| {
         spawn_run_result_panel(&mut commands);

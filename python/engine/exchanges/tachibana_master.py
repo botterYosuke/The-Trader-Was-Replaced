@@ -409,7 +409,7 @@ def build_instruments_from_master_records(
             continue
         market = row.get("sSizyouC")
         lot_size_raw = row.get("sBaibaiTaniNumber")
-        if not market or lot_size_raw is None:
+        if not market or not lot_size_raw:
             log.warning(
                 "tachibana: skipping sizyou row missing market/lot_size: issue=%r", code
             )

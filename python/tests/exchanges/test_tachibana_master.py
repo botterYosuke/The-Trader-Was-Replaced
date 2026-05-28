@@ -410,3 +410,22 @@ def test_build_instruments_skips_sizyou_missing_lot_size(caplog: pytest.LogCaptu
         out = build_instruments_from_master_records(records)
     assert out == []
     assert any("missing market/lot_size" in r.message for r in caplog.records)
+
+
+def test_build_instruments_skips_sizyou_empty_string_lot_size(caplog: pytest.LogCaptureFixture):
+    """sBaibaiTaniNumber が空文字列のレコードは ValueError を出さず skip する。"""
+    records = [
+        {"sCLMID": "CLMIssueMstKabu", "sIssueCode": "9984", "sIssueName": "ソフトバンクＧ"},
+        {
+            "sCLMID": "CLMIssueSizyouMstKabu",
+            "sIssueCode": "9984",
+            "sSizyouC": "00",
+            "sYobineTaniNumber": "Y1",
+            "sBaibaiTaniNumber": "",  # 空文字列（None ではなく ""）
+        },
+        _yobine_record("Y1", "3000", "1", 0),
+    ]
+    with caplog.at_level(logging.WARNING):
+        out = build_instruments_from_master_records(records)
+    assert out == []
+    assert any("missing market/lot_size" in r.message for r in caplog.records)

@@ -1,12 +1,8 @@
-//! Shared state for the replay startup progress UI: resource + phase enum +
-//! marker components. Resource init / system wiring / UI spawn live elsewhere.
+//! Shared state for the replay startup progress UI: resource + phase enum.
+//! Marker components and system wiring live in `ui::run_result_panel`.
 
-use bevy::prelude::{Component, Resource};
+use bevy::prelude::Resource;
 
-/// Replay 起動シーケンスの進捗を UI と orchestrator が共有する resource。
-///
-/// `Failed` 状態は意図的に [`ReplayStartupPhase`] に含めず、
-/// `error.is_some()` で表現する。
 #[derive(Resource, Default, Debug, Clone)]
 pub struct ReplayStartupProgress {
     pub visible: bool,
@@ -35,15 +31,3 @@ pub enum ReplayStartupPhase {
     StartingStrategy,
     WaitingForFirstTick,
 }
-
-#[derive(Component)]
-pub struct ReplayStartupWindow;
-
-#[derive(Component)]
-pub struct ReplayStartupStageLabel;
-
-#[derive(Component)]
-pub struct ReplayStartupBarFill;
-
-#[derive(Component)]
-pub struct ReplayStartupCloseButton;

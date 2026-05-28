@@ -863,6 +863,39 @@ pub fn apply_venue_live_button_visibility_system(
     }
 }
 
+/// Venue が非 live 状態（Disconnected / Reconnecting / Error 等）に遷移したとき、
+/// モードが LiveManual / LiveAuto なら Replay に自動切り替えする。
+/// ボタンが非表示になった状態でライブモードに留まり続けるのを防ぐ。
+pub fn auto_replay_on_venue_disconnect_system(
+    venue: Res<VenueStatusRes>,
+    mut exec_mode: ResMut<ExecutionModeRes>,
+    sender: Option<Res<TransportCommandSender>>,
+) {
+    if !venue.is_changed() {
+        return;
+    }
+    if !is_venue_live(venue.state)
+        && matches!(exec_mode.mode, ExecutionMode::LiveManual | ExecutionMode::LiveAuto)
+    {
+        info!(
+            "venue non-live ({:?}): auto-switching {} → Replay",
+            venue.state,
+            exec_mode.mode.as_wire_str()
+        );
+        exec_mode.mode = ExecutionMode::Replay;
+        if let Some(s) = sender.as_ref() {
+            if s.tx
+                .send(TransportCommand::SetExecutionMode {
+                    mode: ExecutionMode::Replay,
+                })
+                .is_err()
+            {
+                warn!("auto_replay: transport channel closed; SetExecutionMode dropped");
+            }
+        }
+    }
+}
+
 /// ExecutionMode に応じて transport / speed ボタンの `Node.display` を切り替える。
 #[allow(clippy::type_complexity)]
 pub fn apply_execution_mode_visibility_system(

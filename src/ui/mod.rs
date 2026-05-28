@@ -22,7 +22,6 @@ pub mod positions;
 pub mod reconcile_modal;
 pub mod relogin_modal;
 pub mod render_scale;
-pub mod replay_startup_window;
 pub mod restore;
 pub mod run_result_panel;
 pub mod safety_toast;
@@ -132,10 +131,11 @@ use crate::ui::relogin_modal::{
 };
 use crate::ui::restore::restore_fixed_registry_on_replay_entry_system;
 use crate::ui::run_result_panel::{
-    apply_run_result_visibility_system, run_result_panel_system,
-    spawn_run_result_panel_system,
+    animate_run_result_startup_bar_system, apply_run_result_visibility_system,
+    run_result_panel_system, spawn_run_result_panel_system,
 };
 use crate::ui::safety_toast::{safety_toast_system, spawn_safety_toast};
+use crate::ui::settings::settings_modal_close_system;
 use crate::ui::scenario_parser::parse_scenario_system;
 use crate::ui::scenario_startup_panel::{
     ScenarioStartupParamCommit, commit_startup_params_to_scenario_system,
@@ -193,8 +193,13 @@ pub fn add_mode_visibility_systems(app: &mut App) {
         (
             crate::ui::footer::apply_venue_live_button_visibility_system
                 .after(crate::backend_sync::status_update_system),
-            crate::ui::footer::apply_execution_mode_visibility_system
+            // venue 切断時に LiveManual/LiveAuto → Replay 自動切り替え。
+            // apply_execution_mode_visibility_system より前に走らせ、同フレームで可視性に反映させる。
+            crate::ui::footer::auto_replay_on_venue_disconnect_system
                 .after(crate::backend_sync::status_update_system),
+            crate::ui::footer::apply_execution_mode_visibility_system
+                .after(crate::backend_sync::status_update_system)
+                .after(crate::ui::footer::auto_replay_on_venue_disconnect_system),
             crate::ui::scenario_startup_panel::apply_startup_panel_visibility_system
                 .after(crate::backend_sync::status_update_system),
             apply_run_result_visibility_system
@@ -321,9 +326,11 @@ impl Plugin for UiPlugin {
             (
                 update_price_display,
                 update_status_indicator,
-                update_footer_system,
+                update_footer_system.after(crate::trading::backend_update_system),
                 transport_button_system,
-                footer_pause_resume_system.before(handle_strategy_run_system),
+                footer_pause_resume_system
+                    .before(handle_strategy_run_system)
+                    .after(crate::trading::backend_update_system),
                 speed_button_system,
                 update_speed_buttons_system,
                 execution_mode_toggle_system,
@@ -331,6 +338,7 @@ impl Plugin for UiPlugin {
                 handle_strategy_file_load_system,
                 update_strategy_status_label_system,
                 run_result_panel_system,
+                animate_run_result_startup_bar_system,
                 log_strategy_run_requested_system,
                 handle_strategy_run_system
                     .after(sync_scenario_metadata_from_registry_system)
@@ -712,6 +720,13 @@ impl Plugin for UiPlugin {
                     .after(bevy_instanced_text::LayoutProduceSet)
                     .before(bevy_instanced_text::TextViewRenderSet),
             ),
+        )
+        // ── Settings モーダル（on-demand spawn / × ボタン or Escape で despawn）──
+        .add_systems(
+            Update,
+            settings_modal_close_system
+                .before(secret_modal_input_system)
+                .before(confirm_modal_button_system),
         );
     }
 }
