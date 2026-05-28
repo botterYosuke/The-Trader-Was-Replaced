@@ -197,7 +197,7 @@ pub fn reconcile_modal_sync_system(
         return;
     }
     let body = format_unknown_list(&prompt);
-    if let Ok(mut t) = list_q.get_single_mut()
+    if let Ok(mut t) = list_q.single_mut()
         && t.0 != body
     {
         t.0 = body;
@@ -318,7 +318,7 @@ mod tests {
 
         let mut app = make_app();
         app.init_resource::<SecretInput>();
-        app.init_resource::<Events<KeyboardInput>>();
+        app.init_resource::<Messages<KeyboardInput>>();
         app.world_mut().resource_mut::<ReconcilePrompt>().unknown = vec![unknown("c1")];
         app.world_mut().resource_mut::<SecretPrompt>().active = Some(SecretPromptRequest {
             request_id: "r1".to_string(),
@@ -340,11 +340,12 @@ mod tests {
             .resource_mut::<ButtonInput<KeyCode>>()
             .press(KeyCode::Escape);
         app.world_mut()
-            .resource_mut::<Events<KeyboardInput>>()
-            .send(KeyboardInput {
+            .resource_mut::<Messages<KeyboardInput>>()
+            .write(KeyboardInput {
                 key_code: KeyCode::Escape,
                 logical_key: Key::Escape,
                 state: ButtonState::Pressed,
+                text: None,
                 repeat: false,
                 window: Entity::PLACEHOLDER,
             });

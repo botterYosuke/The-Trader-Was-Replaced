@@ -41,11 +41,11 @@ fn build_app() -> App {
     app.insert_resource(Time::<()>::default());
     app.insert_resource(AppHistory::default());
 
-    app.add_event::<LayoutSaveRequested>();
-    app.add_event::<LayoutSaveAsRequested>();
-    app.add_event::<LayoutLoadDialogRequested>();
-    app.add_event::<UndoMenuRequested>();
-    app.add_event::<RedoMenuRequested>();
+    app.add_message::<LayoutSaveRequested>();
+    app.add_message::<LayoutSaveAsRequested>();
+    app.add_message::<LayoutLoadDialogRequested>();
+    app.add_message::<UndoMenuRequested>();
+    app.add_message::<RedoMenuRequested>();
 
     // menu_item_system → undo_redo_system の順でチェーン。
     app.add_systems(Update, (menu_item_system, undo_redo_system).chain());

@@ -2,7 +2,7 @@ use crate::widget::CosmicPadding;
 use crate::{cosmic_edit::ReadOnly, prelude::*, widget::WidgetSet};
 use crate::{cosmic_edit::*, CosmicWidgetSize};
 use bevy::render::render_resource::Extent3d;
-use cosmic_text::{Color, Edit, Editor as CosmicTextEditor, Metrics};
+use cosmic_text::{Color as CosmicColor, Edit, Editor as CosmicTextEditor, Metrics};
 use image::{imageops::FilterType, GenericImageView};
 
 /// System set for cosmic text rendering systems. Runs in [`PostUpdate`]
@@ -35,7 +35,7 @@ pub(crate) fn blink_cursor(mut q: Query<&mut CosmicEditor, Without<ReadOnly>>, t
     }
 }
 
-fn draw_pixel(buffer: &mut [u8], width: i32, height: i32, x: i32, y: i32, color: Color) {
+fn draw_pixel(buffer: &mut [u8], width: i32, height: i32, x: i32, y: i32, color: CosmicColor) {
     let a_a = color.a() as u32;
     if a_a == 0 {
         // Do not draw if alpha is zero
@@ -353,8 +353,12 @@ fn render_texture(
         }
 
         if let Some(prev_image) = images.get_mut(&canvas.0) {
-            prev_image.data.clear();
-            prev_image.data.extend_from_slice(pixels.as_slice());
+            if let Some(data) = prev_image.data.as_mut() {
+                data.clear();
+                data.extend_from_slice(pixels.as_slice());
+            } else {
+                prev_image.data = Some(pixels);
+            }
             prev_image.resize(Extent3d {
                 width: render_size.x as u32,
                 height: render_size.y as u32,

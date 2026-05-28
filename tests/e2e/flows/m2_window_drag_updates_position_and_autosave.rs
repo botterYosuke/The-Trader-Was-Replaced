@@ -13,7 +13,7 @@ use bevy::prelude::*;
 use bevy::transform::TransformPlugin;
 use bevy::picking::pointer::{Location, PointerId};
 use bevy::picking::events::{Drag, DragEnd, DragStart, Pointer};
-use bevy::render::camera::NormalizedRenderTarget;
+use bevy::camera::NormalizedRenderTarget;
 use backcast::ui::components::{
     InstrumentRegistry, PanelKind, PendingStrategyFragments, RegionKeyAllocator,
     StrategyBuffer, WindowManager,
@@ -28,7 +28,7 @@ use crate::ui_dump::dump_panels;
 /// observer 内では pointer_location を参照しないため、image target で代替する。
 fn dummy_location() -> Location {
     Location {
-        target: NormalizedRenderTarget::Image(Handle::<bevy::image::Image>::default()),
+        target: NormalizedRenderTarget::Image(Handle::<bevy::image::Image>::default().into()),
         position: Vec2::ZERO,
     }
 }
@@ -49,7 +49,7 @@ fn m2_window_drag_updates_position_and_autosave() {
 
     // Camera2d を 1 体置く（title bar drag observer が get_single() するため）。
     app.world_mut()
-        .spawn((Camera2d, Transform::default(), OrthographicProjection::default_2d()));
+        .spawn((Camera2d, Transform::default()));
 
     // 本番 spawn_floating_window で BuyingPower window を生成する。
     let (root, _content, title_bar) = {
@@ -85,24 +85,22 @@ fn m2_window_drag_updates_position_and_autosave() {
     let loc = dummy_location();
 
     // DragStart: ActiveDrag.starts に元位置を登録する。
-    app.world_mut().trigger_targets(
+    app.world_mut().entity_mut(title_bar).trigger(|entity| {
         Pointer::<DragStart>::new(
-            title_bar,
             PointerId::Mouse,
             loc.clone(),
             DragStart {
                 button: bevy::picking::pointer::PointerButton::Primary,
-                hit: bevy::picking::backend::HitData::new(Entity::from_raw(0), 0.0, None, None),
+                hit: bevy::picking::backend::HitData::new(Entity::PLACEHOLDER, 0.0, None, None),
             },
-        ),
-        title_bar,
-    );
+            entity,
+        )
+    });
 
     // Drag: title bar の Pointer<Drag> observer が親(root)の Transform を動かす。
     // delta は world-space で (+50, +30) 移動。
-    app.world_mut().trigger_targets(
+    app.world_mut().entity_mut(title_bar).trigger(|entity| {
         Pointer::<Drag>::new(
-            title_bar,
             PointerId::Mouse,
             loc.clone(),
             Drag {
@@ -110,9 +108,9 @@ fn m2_window_drag_updates_position_and_autosave() {
                 distance: Vec2::new(50.0, 30.0),
                 delta: Vec2::new(50.0, -30.0), // screen Y を反転して world Y へ
             },
-        ),
-        title_bar,
-    );
+            entity,
+        )
+    });
     app.update();
 
     // 位置が変化していること。
@@ -128,18 +126,17 @@ fn m2_window_drag_updates_position_and_autosave() {
     );
 
     // ── Phase C: DragEnd で auto_save.dirty が true になること ──
-    app.world_mut().trigger_targets(
+    app.world_mut().entity_mut(title_bar).trigger(|entity| {
         Pointer::<DragEnd>::new(
-            title_bar,
             PointerId::Mouse,
             loc.clone(),
             DragEnd {
                 button: bevy::picking::pointer::PointerButton::Primary,
                 distance: Vec2::new(50.0, 30.0),
             },
-        ),
-        title_bar,
-    );
+            entity,
+        )
+    });
     app.update();
 
     let dirty = app.world().resource::<AutoSaveState>().dirty;

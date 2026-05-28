@@ -1,0 +1,49 @@
+[package]
+name = "wasm_lsp_example"
+version = "0.0.0"
+edition = "2021"
+publish = false
+description = "Browser-hosted bevscode editor that talks to rust-analyzer via a WebSocket ↔ stdio bridge."
+
+[[bin]]
+name = "wasm_lsp"
+path = "src/main.rs"
+
+[dependencies]
+# Bevy without `multi_threaded` — wasm32-unknown-unknown is single-threaded.
+# `web` enables the time-polyfill (`web_time` in `bevy_platform::time`),
+# without which `Instant::now()` panics in the browser.
+bevy = { workspace = true, features = [
+    "bevy_render",
+    "bevy_core_pipeline",
+    "bevy_asset",
+    "bevy_text",
+    "default_font",
+    "bevy_sprite",
+    "bevy_sprite_render",
+    "bevy_color",
+    "bevy_mesh",
+    "bevy_camera",
+    "bevy_input_focus",
+    "bevy_picking",
+    "bevy_ui",
+    "ui_picking",
+    "bevy_window",
+    "bevy_winit",
+    "bevy_log",
+    "web",
+    "webgl2",
+] }
+
+bevscode = { path = "../../crates/bevscode", default-features = false, features = [
+    "clipboard-wasm",
+    "lsp",
+] }
+bevy_tree_sitter = { path = "../../crates/bevy_tree_sitter", features = ["lang-rust"] }
+bevy_lsp = { path = "../../crates/bevy_lsp" }
+lsp-types = { workspace = true }
+
+[target.'cfg(target_arch = "wasm32")'.dependencies]
+wasm-bindgen = "0.2"
+console_error_panic_hook = "0.1"
+web-sys = { version = "0.3", features = ["Window", "Location"] }

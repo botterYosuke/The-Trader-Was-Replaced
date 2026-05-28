@@ -1,0 +1,104 @@
+[package]
+name = "examples"
+version = "0.0.0"
+edition = "2021"
+publish = false
+description = "Workspace examples for the bevscode family of crates."
+
+[dependencies]
+bevy = { workspace = true, features = [
+    "bevy_render",
+    "bevy_core_pipeline",
+    "bevy_asset",
+    "bevy_text",
+    "default_font",
+    "bevy_sprite",
+    "bevy_sprite_render",
+    "bevy_color",
+    "bevy_mesh",
+    "bevy_camera",
+    "bevy_input_focus",
+    "bevy_picking",
+    "bevy_ui",
+    "bevy_window",
+    "bevy_winit",
+    "bevy_log",
+    "multi_threaded",
+] }
+bevy_camera = { workspace = true }
+
+bevy_instanced_text = { workspace = true }
+bevy_instanced_text_editor = { path = "../crates/bevy_instanced_text_editor" }
+bevscode = { path = "../crates/bevscode" }
+bevsterm = { path = "../crates/bevsterm" }
+bevy_tree_sitter = { path = "../crates/bevy_tree_sitter", features = ["lang-rust", "lang-c"] }
+bevy_lsp = { path = "../crates/bevy_lsp", optional = true }
+
+# Used by editor_lsp.
+bevy_egui = { version = "0.39", features = ["picking"], optional = true }
+armas = { git = "https://github.com/PoHsuanLai/Armas.git", default-features = false, features = ["basic"], optional = true }
+lsp-types = { workspace = true, optional = true }
+
+[features]
+default = []
+
+# LSP example. Requires `rust-analyzer` on PATH at run time.
+lsp = [
+    "dep:bevy_lsp",
+    "dep:bevy_egui",
+    "dep:armas",
+    "dep:lsp-types",
+    "bevscode/lsp",
+]
+
+# Tracy-based performance profiling with named system spans
+profile = [
+    "bevscode/profile",
+    "bevsterm/profile",
+    "bevy/trace",
+    "bevy/trace_tracy",
+    "bevy/debug",
+]
+
+# Resolve component / system names in B0001 / B0004 ECS error messages.
+# Without it, Bevy prints "<Enable the debug feature to see the name>".
+debug-names = ["bevy/debug"]
+
+[[example]]
+name = "editor"
+path = "editor.rs"
+
+
+[[example]]
+name = "editor_perf"
+path = "editor_perf.rs"
+
+[[example]]
+name = "editor_perf_screenshot"
+path = "editor_perf_screenshot.rs"
+
+[[example]]
+name = "editor_multi"
+path = "editor_multi.rs"
+
+[[example]]
+name = "editor_syntax"
+path = "editor_syntax.rs"
+
+[[example]]
+name = "editor_lsp"
+path = "editor_lsp.rs"
+required-features = ["lsp"]
+
+[[example]]
+name = "terminal"
+path = "terminal.rs"
+
+[[example]]
+name = "terminal_editor"
+path = "terminal_editor.rs"
+
+[[example]]
+name = "text_input"
+path = "text_input.rs"
+

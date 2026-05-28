@@ -1,0 +1,13 @@
+{
+  "name": "wasm-lsp-bridge",
+  "version": "0.0.0",
+  "private": true,
+  "type": "module",
+  "description": "WebSocket <-> stdio bridge for the wasm_lsp bevscode example.",
+  "scripts": {
+    "start": "node server.mjs"
+  },
+  "dependencies": {
+    "ws": "^8.18.0"
+  }
+}

@@ -138,21 +138,20 @@ fn i5_file_open_spawns_editor_and_chart() {
         .insert_resource(InstrumentTradingDataMap::default())
         .init_resource::<backcast::ui::components::ChartSizeMap>();
 
-    app.add_event::<LayoutLoadDialogRequested>()
-        .add_event::<LayoutSaveRequested>()
-        .add_event::<LayoutSaveAsRequested>()
-        .add_event::<LayoutLoadRequested>()
-        .add_event::<PanelSpawnRequested>()
-        .add_event::<StrategyFileLoadRequested>()
-        .add_event::<ScenarioLoadedFromFile>()
-        .add_event::<ScenarioClearedFromFile>();
+    app.add_message::<LayoutLoadDialogRequested>()
+        .add_message::<LayoutSaveRequested>()
+        .add_message::<LayoutSaveAsRequested>()
+        .add_message::<LayoutLoadRequested>()
+        .add_message::<PanelSpawnRequested>()
+        .add_message::<StrategyFileLoadRequested>()
+        .add_message::<ScenarioLoadedFromFile>()
+        .add_message::<ScenarioClearedFromFile>();
 
     // apply_layout_system はカメラを get_single_mut するため Camera2d を 1 体置く。
     app.world_mut().spawn((
         Camera2d,
         Transform::default(),
-        OrthographicProjection::default_2d(),
-    ));
+            ));
 
     app.add_systems(
         Update,
@@ -180,7 +179,7 @@ fn i5_file_open_spawns_editor_and_chart() {
     // Ctrl+O で本番 layout_shortcut_system がダイアログ要求を発火したこと。
     let dialog_requests = app
         .world_mut()
-        .resource_mut::<Events<LayoutLoadDialogRequested>>()
+        .resource_mut::<Messages<LayoutLoadDialogRequested>>()
         .drain()
         .count();
     assert_eq!(
@@ -202,7 +201,7 @@ fn i5_file_open_spawns_editor_and_chart() {
 
     // ── Phase B: rfd ダイアログをバイパスし「選択された path」を注入 ──
     // 1 フレームで apply_layout → 実 .py ローダ → deferred spawn → scenario → chart が連鎖する。
-    app.world_mut().send_event(LayoutLoadRequested {
+    app.world_mut().write_message(LayoutLoadRequested {
         path: json_path.clone(),
         mode: LayoutLoadMode::UserJsonOpen,
     });

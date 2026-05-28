@@ -24,7 +24,7 @@ fn make_app() -> (App, mpsc::UnboundedReceiver<TransportCommand>) {
     app.init_resource::<ModifyForm>();
     app.init_resource::<OrderFeedback>();
     app.insert_resource(TransportCommandSender { tx });
-    app.add_event::<KeyboardInput>();
+    app.add_message::<KeyboardInput>();
     app.add_systems(
         Update,
         (modify_modal_button_system, modify_modal_input_system),
@@ -127,13 +127,14 @@ fn k12_modify_modal_submit_cancel_validation() {
             f.new_price_buf = "3000".to_string();
         }
         app.world_mut()
-            .resource_mut::<Events<KeyboardInput>>()
-            .send(KeyboardInput {
+            .resource_mut::<Messages<KeyboardInput>>()
+            .write(KeyboardInput {
                 key_code: KeyCode::Escape,
                 logical_key: Key::Escape,
                 state: ButtonState::Pressed,
                 repeat: false,
                 window: Entity::PLACEHOLDER,
+            text: None,
             });
         app.update();
 
@@ -153,13 +154,14 @@ fn k12_modify_modal_submit_cancel_validation() {
             f.new_qty_buf = "100".to_string();
         }
         app.world_mut()
-            .resource_mut::<Events<KeyboardInput>>()
-            .send(KeyboardInput {
+            .resource_mut::<Messages<KeyboardInput>>()
+            .write(KeyboardInput {
                 key_code: KeyCode::Enter,
                 logical_key: Key::Enter,
                 state: ButtonState::Pressed,
                 repeat: false,
                 window: Entity::PLACEHOLDER,
+            text: None,
             });
         app.update();
 

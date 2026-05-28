@@ -18,15 +18,15 @@ fn build_app(json_path: std::path::PathBuf) -> App {
     app.insert_resource(ScenarioReadTarget(Some(json_path)));
     app.init_resource::<ScenarioMetadata>();
     app.init_resource::<ScenarioFileWatchState>();
-    app.add_event::<ScenarioLoadedFromFile>();
-    app.add_event::<ScenarioClearedFromFile>();
+    app.add_message::<ScenarioLoadedFromFile>();
+    app.add_message::<ScenarioClearedFromFile>();
     app.add_systems(Update, parse_scenario_system);
     app
 }
 
 /// イベントストアから ScenarioLoadedFromFile の件数を読む。
 fn count_loaded_events(app: &App) -> usize {
-    let events = app.world().resource::<Events<ScenarioLoadedFromFile>>();
+    let events = app.world().resource::<Messages<ScenarioLoadedFromFile>>();
     let mut reader = events.get_cursor();
     reader.read(events).count()
 }

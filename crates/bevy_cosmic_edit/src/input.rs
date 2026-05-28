@@ -86,17 +86,17 @@ pub(crate) fn input_mouse(
         CosmicWidgetSize,
     )>,
     mut font_system: ResMut<CosmicFontSystem>,
-    mut scroll_evr: EventReader<MouseWheel>,
+    mut scroll_evr: MessageReader<MouseWheel>,
     camera_q: Query<(&Camera, &GlobalTransform)>,
     mut click_timer: ResMut<ClickTimer>,
     mut click_count: Local<usize>,
     time: Res<Time>,
-    evr_mouse_motion: EventReader<MouseMotion>,
+    evr_mouse_motion: MessageReader<MouseMotion>,
 ) {
     // handle click timer and click_count
     click_timer.0.tick(time.delta());
 
-    if click_timer.0.finished() || !evr_mouse_motion.is_empty() {
+    if click_timer.0.is_finished() || !evr_mouse_motion.is_empty() {
         *click_count = 0;
     }
 
@@ -114,7 +114,7 @@ pub(crate) fn input_mouse(
         return;
     };
 
-    let Ok(primary_window) = windows.get_single() else {
+    let Ok(primary_window) = windows.single() else {
         return;
     };
 
@@ -230,22 +230,22 @@ pub(crate) fn input_mouse(
         }
 
         if scroll_disabled.should_scroll() {
+            let line_height = buffer.metrics().line_height;
             for ev in scroll_evr.read() {
                 match ev.unit {
                     MouseScrollUnit::Line => {
                         editor.action(
                             &mut font_system.0,
                             Action::Scroll {
-                                lines: -ev.y as i32,
+                                pixels: -ev.y * line_height,
                             },
                         );
                     }
                     MouseScrollUnit::Pixel => {
-                        let line_height = buffer.metrics().line_height;
                         editor.action(
                             &mut font_system.0,
                             Action::Scroll {
-                                lines: -(ev.y / line_height) as i32,
+                                pixels: -ev.y,
                             },
                         );
                     }
@@ -405,7 +405,7 @@ pub(crate) fn kb_move_cursor(
 pub(crate) fn kb_input_text(
     active_editor: Res<FocusedWidget>,
     keys: Res<ButtonInput<KeyCode>>,
-    mut char_evr: EventReader<KeyboardInput>,
+    mut char_evr: MessageReader<KeyboardInput>,
     mut cosmic_edit_query: Query<(
         &mut CosmicEditor,
         &mut CosmicEditBuffer,
@@ -414,7 +414,7 @@ pub(crate) fn kb_input_text(
         Entity,
         Option<&ReadOnly>,
     )>,
-    mut evw_changed: EventWriter<CosmicTextChanged>,
+    mut evw_changed: MessageWriter<CosmicTextChanged>,
     mut font_system: ResMut<CosmicFontSystem>,
     mut is_deleting: Local<bool>,
 ) {
@@ -515,7 +515,7 @@ pub(crate) fn kb_input_text(
             return;
         }
 
-        evw_changed.send(CosmicTextChanged((
+        evw_changed.write(CosmicTextChanged((
             entity,
             editor.with_buffer_mut(|b| b.get_text()),
         )));
@@ -525,7 +525,7 @@ pub(crate) fn kb_input_text(
 pub(crate) fn kb_clipboard(
     active_editor: Res<FocusedWidget>,
     keys: Res<ButtonInput<KeyCode>>,
-    mut evw_changed: EventWriter<CosmicTextChanged>,
+    mut evw_changed: MessageWriter<CosmicTextChanged>,
     mut font_system: ResMut<CosmicFontSystem>,
     mut cosmic_edit_query: Query<(
         &mut CosmicEditor,
@@ -622,7 +622,7 @@ pub(crate) fn kb_clipboard(
             return;
         }
 
-        evw_changed.send(CosmicTextChanged((entity, buffer.get_text())));
+        evw_changed.write(CosmicTextChanged((entity, buffer.get_text())));
     }
 }
 
@@ -675,7 +675,7 @@ pub(crate) fn poll_wasm_paste(
         ),
         Without<ReadOnly>,
     >,
-    mut evw_changed: EventWriter<CosmicTextChanged>,
+    mut evw_changed: MessageWriter<CosmicTextChanged>,
     mut font_system: ResMut<CosmicFontSystem>,
 ) {
     let inlet = channel.rx.try_recv();
@@ -696,7 +696,7 @@ pub(crate) fn poll_wasm_paste(
                     }
                 }
 
-                evw_changed.send(CosmicTextChanged((entity, buffer.get_text())));
+                evw_changed.write(CosmicTextChanged((entity, buffer.get_text())));
             }
         }
         Err(_) => {}

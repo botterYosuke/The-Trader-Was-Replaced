@@ -136,8 +136,9 @@ fn hide_password_text(
                         .to_string()
                         .repeat(text.graphemes(true).count())
                         .as_str(),
-                    attrs.as_attrs(),
+                    &attrs.as_attrs(),
                     Shaping::Advanced,
+                    None,
                 );
 
                 password.real_text = text;
@@ -216,8 +217,9 @@ fn restore_password_text(
                 buffer.set_text(
                     &mut font_system,
                     password.real_text.as_str(),
-                    attrs.as_attrs(),
+                    &attrs.as_attrs(),
                     Shaping::Advanced,
+                    None,
                 );
             });
 

@@ -23,9 +23,9 @@ fn i9_file_shortcuts_dispatch() {
 
     app.insert_resource(ButtonInput::<KeyCode>::default());
     app.insert_resource(Time::<()>::default());
-    app.add_event::<LayoutSaveRequested>();
-    app.add_event::<LayoutSaveAsRequested>();
-    app.add_event::<LayoutLoadDialogRequested>();
+    app.add_message::<LayoutSaveRequested>();
+    app.add_message::<LayoutSaveAsRequested>();
+    app.add_message::<LayoutLoadDialogRequested>();
     app.add_systems(Update, layout_shortcut_system);
 
     // 1 秒進めて cooldown を解除しつつ、コンボを just_pressed で押し直して 1 フレーム回す。
@@ -45,7 +45,7 @@ fn i9_file_shortcuts_dispatch() {
     press_combo(&mut app, &[KeyCode::ControlLeft, KeyCode::KeyS]);
     assert_eq!(
         app.world_mut()
-            .resource_mut::<Events<LayoutSaveRequested>>()
+            .resource_mut::<Messages<LayoutSaveRequested>>()
             .drain()
             .count(),
         1,
@@ -59,7 +59,7 @@ fn i9_file_shortcuts_dispatch() {
     );
     assert_eq!(
         app.world_mut()
-            .resource_mut::<Events<LayoutSaveAsRequested>>()
+            .resource_mut::<Messages<LayoutSaveAsRequested>>()
             .drain()
             .count(),
         1,
@@ -67,7 +67,7 @@ fn i9_file_shortcuts_dispatch() {
     );
     assert_eq!(
         app.world_mut()
-            .resource_mut::<Events<LayoutSaveRequested>>()
+            .resource_mut::<Messages<LayoutSaveRequested>>()
             .drain()
             .count(),
         0,
@@ -78,7 +78,7 @@ fn i9_file_shortcuts_dispatch() {
     press_combo(&mut app, &[KeyCode::ControlLeft, KeyCode::KeyO]);
     assert_eq!(
         app.world_mut()
-            .resource_mut::<Events<LayoutLoadDialogRequested>>()
+            .resource_mut::<Messages<LayoutLoadDialogRequested>>()
             .drain()
             .count(),
         1,
@@ -93,7 +93,7 @@ fn i9_file_shortcuts_dispatch() {
     app.update();
     assert_eq!(
         app.world_mut()
-            .resource_mut::<Events<LayoutLoadDialogRequested>>()
+            .resource_mut::<Messages<LayoutLoadDialogRequested>>()
             .drain()
             .count(),
         0,

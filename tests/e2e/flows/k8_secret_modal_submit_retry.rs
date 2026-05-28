@@ -2,7 +2,7 @@
 //! 提出失敗時は retry 可能な error を表示し、Escape で意図しない永続化をしないことを保証する（kind:ui）。
 //!
 //! **入力方法**: `SecretInput.push_char` は private なので外部テストは
-//! `secret_modal_input_system` が drain する `Events<KeyboardInput>` にキャラクターを
+//! `secret_modal_input_system` が drain する `Messages<KeyboardInput>` にキャラクターを
 //! 送って buffer を埋める (production と同じ経路)。
 //!
 //! **submit/retry**: `do_submit` は `prompt.error` を None にクリアしてから送信するため、
@@ -30,8 +30,8 @@ fn make_app() -> (App, mpsc::UnboundedReceiver<TransportCommand>) {
     app.init_resource::<SecretPrompt>();
     app.init_resource::<OrderFeedback>();
     app.insert_resource(TransportCommandSender { tx });
-    // keyboard drain が要求する Events<KeyboardInput>
-    app.add_event::<KeyboardInput>();
+    // keyboard drain が要求する Messages<KeyboardInput>
+    app.add_message::<KeyboardInput>();
     // input_system を先に、button_system を後に (同フレーム内の順序は任意でも OK だが明示する)
     app.add_systems(
         Update,
@@ -49,46 +49,49 @@ fn activate(app: &mut App, request_id: &str) {
     });
 }
 
-/// `Events<KeyboardInput>` に文字列を送ることで production の keyboard drain 経路を通して
+/// `Messages<KeyboardInput>` に文字列を送ることで production の keyboard drain 経路を通して
 /// SecretInput バッファを埋める。push_char は private なのでこの経路しかない。
 /// 呼び出し後に `app.update()` が必要 (input_system がその時点で drain する)。
 fn type_into_modal(app: &mut App, s: &str) {
     for c in s.chars() {
         let cs = c.to_string();
         app.world_mut()
-            .resource_mut::<Events<KeyboardInput>>()
-            .send(KeyboardInput {
+            .resource_mut::<Messages<KeyboardInput>>()
+            .write(KeyboardInput {
                 // key_code は secret_modal_input_system が参照しない。logical_key のみ使用。
                 key_code: KeyCode::F35,
                 logical_key: Key::Character(cs.as_str().into()),
                 state: ButtonState::Pressed,
                 repeat: false,
                 window: Entity::PLACEHOLDER,
+            text: None,
             });
     }
 }
 
 fn send_escape(app: &mut App) {
     app.world_mut()
-        .resource_mut::<Events<KeyboardInput>>()
-        .send(KeyboardInput {
+        .resource_mut::<Messages<KeyboardInput>>()
+        .write(KeyboardInput {
             key_code: KeyCode::Escape,
             logical_key: Key::Escape,
             state: ButtonState::Pressed,
             repeat: false,
             window: Entity::PLACEHOLDER,
+            text: None,
         });
 }
 
 fn send_enter(app: &mut App) {
     app.world_mut()
-        .resource_mut::<Events<KeyboardInput>>()
-        .send(KeyboardInput {
+        .resource_mut::<Messages<KeyboardInput>>()
+        .write(KeyboardInput {
             key_code: KeyCode::Enter,
             logical_key: Key::Enter,
             state: ButtonState::Pressed,
             repeat: false,
             window: Entity::PLACEHOLDER,
+            text: None,
         });
 }
 

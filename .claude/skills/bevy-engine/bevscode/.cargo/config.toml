@@ -1,0 +1,11 @@
+# No fast linker alternatives available on modern macOS (zld deprecated, mold dropped Mach-O).
+# Bevy's dynamic_linking feature provides the main compile-time speedup:
+#   cargo run --example basic_editor --features dynamic_linking
+
+# Disable incremental compilation to keep target/ size small (disk-space constrained env).
+[build]
+incremental = false
+
+[profile.dev]
+incremental = false
+debug = "line-tables-only"

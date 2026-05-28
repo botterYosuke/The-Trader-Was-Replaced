@@ -1,0 +1,68 @@
+[package]
+name = "bevsterm"
+version = "0.1.0"
+edition = "2021"
+authors = ["PoHsuanLai"]
+license = "MIT OR Apache-2.0"
+readme = "README.md"
+description = "Embeddable terminal widget for Bevy. PTY + VT parser via wezterm-term; rendering via bevy_instanced_text; selection and clipboard via bevy_instanced_text_interaction."
+repository = "https://github.com/PoHsuanLai/bevscode"
+keywords = ["bevy", "terminal", "pty", "vt100", "wezterm"]
+categories = ["game-development", "command-line-interface"]
+# wezterm-term and wezterm-surface are not published to crates.io (wezterm/wezterm#6663).
+# Remove this once they are available as versioned crates.
+publish = false
+
+[dependencies]
+bevy_instanced_text = { workspace = true }
+bevy_instanced_text_interaction = { workspace = true }
+
+bevy = { workspace = true, features = [
+    "bevy_render",
+    "bevy_core_pipeline",
+    "bevy_asset",
+    "bevy_text",
+    "default_font",
+    "bevy_sprite",
+    "bevy_sprite_render",
+    "bevy_color",
+    "bevy_mesh",
+    "bevy_camera",
+    "bevy_input_focus",
+    "bevy_picking",
+    "bevy_ui",
+    "bevy_window",
+] }
+
+# Pinned commit — wezterm-term does not guarantee a stable public API.
+# All wezterm imports are isolated to `crate::backend` to contain future bumps.
+wezterm-term = { workspace = true }
+wezterm-surface = { workspace = true }
+termwiz = { workspace = true }
+
+portable-pty = { version = "0.9", optional = true }
+crossbeam-channel = "0.5"
+parking_lot = "0.12"
+
+leafwing-input-manager = { workspace = true }
+
+serde = { workspace = true }
+
+[target.'cfg(unix)'.dependencies]
+libc = "0.2"
+
+[dev-dependencies]
+bevy = { workspace = true, features = ["bevy_window", "bevy_winit"] }
+bevscode = { path = "../bevscode" }
+
+[features]
+default = ["arboard", "pty"]
+# Native PTY backend (portable-pty). Disable for WASM / headless builds and
+# add `BevyTerminalPlugin` only; supply your own `TerminalSession` +
+# `TerminalEventChannel` (e.g. backed by a WebSocket).
+pty = ["dep:portable-pty"]
+# `arboard`-backed clipboard. Disable for headless/web builds and inject your
+# own `ClipboardProvider` via `insert_resource(ClipboardResource::new(...))`.
+arboard = ["bevy_instanced_text_interaction/arboard"]
+# Tracy-based performance profiling
+profile = ["bevy/trace", "bevy/trace_tracy"]

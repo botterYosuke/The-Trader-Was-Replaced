@@ -68,7 +68,7 @@ fn j16_startup_panel_field_commit() {
         .insert_resource(ScenarioWritebackPaths {
             cache_sidecar: Some(cache_sidecar.clone()),
         })
-        .add_event::<ScenarioStartupParamCommit>()
+        .add_message::<ScenarioStartupParamCommit>()
         .add_systems(
             Update,
             (
@@ -80,7 +80,7 @@ fn j16_startup_panel_field_commit() {
 
     // ── テスト 1: Start フィールドのコミット ──
     app.world_mut()
-        .send_event(ScenarioStartupParamCommit::Start("2025-01-06".into()));
+        .write_message(ScenarioStartupParamCommit::Start("2025-01-06".into()));
     app.update();
 
     {
@@ -97,7 +97,7 @@ fn j16_startup_panel_field_commit() {
 
     // ── テスト 2: End フィールドのコミット ──
     app.world_mut()
-        .send_event(ScenarioStartupParamCommit::End("2025-12-31".into()));
+        .write_message(ScenarioStartupParamCommit::End("2025-12-31".into()));
     app.update();
 
     {
@@ -108,7 +108,7 @@ fn j16_startup_panel_field_commit() {
 
     // ── テスト 3: Granularity ボタンのコミット ──
     app.world_mut()
-        .send_event(ScenarioStartupParamCommit::Granularity(GranularityChoice::Minute));
+        .write_message(ScenarioStartupParamCommit::Granularity(GranularityChoice::Minute));
     app.update();
 
     {
@@ -119,7 +119,7 @@ fn j16_startup_panel_field_commit() {
 
     // ── テスト 4: Initial cash のコミット + 全フィールド有効 → writeback_pending + 実ファイル書き込み ──
     app.world_mut()
-        .send_event(ScenarioStartupParamCommit::InitialCash("2000000".into()));
+        .write_message(ScenarioStartupParamCommit::InitialCash("2000000".into()));
     app.update();
 
     // コミット後 writeback_pending が true → write system が走ってファイル更新 → false に戻る
@@ -179,7 +179,7 @@ fn j16_startup_panel_field_commit() {
     // ── テスト 6: 無効なコミットはファイルを書き換えない ──
     let before_content = std::fs::read_to_string(&cache_sidecar).unwrap();
     app.world_mut()
-        .send_event(ScenarioStartupParamCommit::Start("bad-date".into()));
+        .write_message(ScenarioStartupParamCommit::Start("bad-date".into()));
     app.update();
 
     {

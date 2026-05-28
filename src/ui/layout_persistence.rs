@@ -116,13 +116,13 @@ impl AutoSaveState {
     }
 }
 
-#[derive(Event, Debug, Clone)]
+#[derive(Message, Debug, Clone)]
 pub struct LayoutSaveRequested;
 
-#[derive(Event, Debug, Clone)]
+#[derive(Message, Debug, Clone)]
 pub struct LayoutSaveAsRequested;
 
-#[derive(Event, Debug, Clone)]
+#[derive(Message, Debug, Clone)]
 pub struct LayoutLoadDialogRequested;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -131,7 +131,7 @@ pub enum LayoutLoadMode {
     ApplySidecarForPy,
 }
 
-#[derive(Event, Debug, Clone)]
+#[derive(Message, Debug, Clone)]
 pub struct LayoutLoadRequested {
     pub path: PathBuf,
     pub mode: LayoutLoadMode,
@@ -204,7 +204,7 @@ impl PendingFileDialog {
     }
 }
 
-#[derive(Event, Debug, Clone)]
+#[derive(Message, Debug, Clone)]
 pub struct CacheRestoreRequested {
     pub layout: SidecarLayout,
 }
@@ -244,17 +244,17 @@ fn build_layout(
         ),
         (With<WindowRoot>, Without<LayoutExcluded>),
     >,
-    camera: &Query<(&Transform, &OrthographicProjection), (With<Camera2d>, Without<WindowRoot>)>,
+    camera: &Query<(&Transform, &Projection), (With<Camera2d>, Without<WindowRoot>)>,
     buffer: &StrategyBuffer,
     chart_sizes: &ChartSizeMap,
     preserve_scenario_json: Option<&std::path::Path>,
 ) -> SidecarLayout {
     let viewport = camera
-        .get_single()
+        .single()
         .map(|(cam_tf, proj)| ViewportState {
             pan_x: cam_tf.translation.x,
             pan_y: cam_tf.translation.y,
-            zoom: proj.scale,
+            zoom: if let Projection::Orthographic(p) = proj { p.scale } else { 1.0 },
         })
         .unwrap_or_default();
 
@@ -340,7 +340,7 @@ fn build_layout_for_explicit_save(
         ),
         (With<WindowRoot>, Without<LayoutExcluded>),
     >,
-    camera: &Query<(&Transform, &OrthographicProjection), (With<Camera2d>, Without<WindowRoot>)>,
+    camera: &Query<(&Transform, &Projection), (With<Camera2d>, Without<WindowRoot>)>,
     buffer: &StrategyBuffer,
     chart_sizes: &ChartSizeMap,
     registry: &crate::ui::components::InstrumentRegistry,
@@ -492,16 +492,16 @@ fn compute_cache_restore_fallback_spawns(
 }
 
 pub fn apply_cache_restore_system(
-    mut events: EventReader<CacheRestoreRequested>,
+    mut events: MessageReader<CacheRestoreRequested>,
     mut buffer: ResMut<StrategyBuffer>,
     mut allocator: ResMut<RegionKeyAllocator>,
     mut pending_fragments: ResMut<PendingStrategyFragments>,
     mut camera: Query<
-        (&mut Transform, &mut OrthographicProjection),
+        (&mut Transform, &mut Projection),
         (With<Camera2d>, Without<WindowRoot>),
     >,
     mut pending: ResMut<PendingLayoutApply>,
-    mut spawn_ev: EventWriter<PanelSpawnRequested>,
+    mut spawn_ev: MessageWriter<PanelSpawnRequested>,
     mut scenario_target: ResMut<ScenarioReadTarget>, // ← ADD
     mut chart_sizes: ResMut<ChartSizeMap>,
 ) {
@@ -539,11 +539,13 @@ pub fn apply_cache_restore_system(
         }
 
         if let (Some(vp), Ok((mut cam_tf, mut proj))) =
-            (&event.layout.viewport, camera.get_single_mut())
+            (&event.layout.viewport, camera.single_mut())
         {
             cam_tf.translation.x = vp.pan_x;
             cam_tf.translation.y = vp.pan_y;
-            proj.scale = vp.zoom;
+            if let Projection::Orthographic(ref mut p) = *proj {
+                p.scale = vp.zoom;
+            }
         }
 
         if let Some(win_layouts) = &event.layout.windows {
@@ -579,7 +581,7 @@ pub fn apply_cache_restore_system(
                     } else {
                         None
                     };
-                    spawn_ev.send(PanelSpawnRequested {
+                    spawn_ev.write(PanelSpawnRequested {
                         kind: win_layout.kind,
                         source: PanelSpawnSource::LayoutLoad,
                         strategy_spec,
@@ -610,7 +612,7 @@ pub fn apply_cache_restore_system(
                 .spawn_requested
                 .insert((PanelKind::StrategyEditor, region_key))
             {
-                spawn_ev.send(req);
+                spawn_ev.write(req);
             }
         }
 
@@ -642,7 +644,7 @@ fn finish_layout_save(
         ),
         (With<WindowRoot>, Without<LayoutExcluded>),
     >,
-    camera: &Query<(&Transform, &OrthographicProjection), (With<Camera2d>, Without<WindowRoot>)>,
+    camera: &Query<(&Transform, &Projection), (With<Camera2d>, Without<WindowRoot>)>,
     buffer: &mut StrategyBuffer,
     fragments_q: &mut Query<(&StrategyEditorId, &mut StrategyFragment), With<WindowRoot>>,
     strategy_auto_save: &mut StrategyAutoSaveState,
@@ -750,7 +752,7 @@ fn finish_layout_save(
 
 #[allow(clippy::type_complexity)]
 pub fn handle_save_layout_system(
-    mut events: EventReader<LayoutSaveRequested>,
+    mut events: MessageReader<LayoutSaveRequested>,
     panels: Query<
         (
             &PanelKind,
@@ -762,7 +764,7 @@ pub fn handle_save_layout_system(
         ),
         (With<WindowRoot>, Without<LayoutExcluded>),
     >,
-    camera: Query<(&Transform, &OrthographicProjection), (With<Camera2d>, Without<WindowRoot>)>,
+    camera: Query<(&Transform, &Projection), (With<Camera2d>, Without<WindowRoot>)>,
     mut buffer: ResMut<StrategyBuffer>,
     mut fragments_q: Query<(&StrategyEditorId, &mut StrategyFragment), With<WindowRoot>>,
     mut strategy_auto_save: ResMut<StrategyAutoSaveState>,
@@ -771,7 +773,7 @@ pub fn handle_save_layout_system(
     scenario: Res<crate::ui::components::ScenarioMetadata>,
     chart_sizes: Res<ChartSizeMap>,
     mut scenario_target: ResMut<ScenarioReadTarget>,
-    mut save_as_writer: EventWriter<LayoutSaveAsRequested>,
+    mut save_as_writer: MessageWriter<LayoutSaveAsRequested>,
 ) {
     for _ in events.read() {
         let was_new = buffer.original_path.is_none();
@@ -780,7 +782,7 @@ pub fn handle_save_layout_system(
         // ここでは直接 rfd を起動せず、Save As フローへ委譲する（案A, Issue #21）。
         // 多重起動防止 guard は委譲先 handle_save_as_layout_system が持つため不要。
         if buffer.original_path.is_none() {
-            save_as_writer.send(LayoutSaveAsRequested);
+            save_as_writer.write(LayoutSaveAsRequested);
             continue;
         }
         let orig = buffer.original_path.as_ref().unwrap();
@@ -811,7 +813,7 @@ pub fn handle_save_layout_system(
 }
 
 fn handle_save_as_layout_system(
-    mut events: EventReader<LayoutSaveAsRequested>,
+    mut events: MessageReader<LayoutSaveAsRequested>,
     mut pending: ResMut<PendingFileDialog>,
 ) {
     for _ in events.read() {
@@ -831,7 +833,7 @@ fn handle_save_as_layout_system(
 }
 
 fn handle_load_dialog_system(
-    mut events: EventReader<LayoutLoadDialogRequested>,
+    mut events: MessageReader<LayoutLoadDialogRequested>,
     mut pending: ResMut<PendingFileDialog>,
 ) {
     for _ in events.read() {
@@ -851,14 +853,14 @@ fn handle_load_dialog_system(
 
 fn poll_load_dialog_system(
     mut pending: ResMut<PendingFileDialog>,
-    mut writer: EventWriter<LayoutLoadRequested>,
+    mut writer: MessageWriter<LayoutLoadRequested>,
 ) {
     let Some(result) = pending.poll_take(FileDialogKind::Load) else {
         return; // 別種 / 未完了
     };
     match result {
         Some(path) => {
-            writer.send(LayoutLoadRequested {
+            writer.write(LayoutLoadRequested {
                 path,
                 mode: LayoutLoadMode::UserJsonOpen,
             });
@@ -881,7 +883,7 @@ pub fn poll_save_as_dialog_system(
         ),
         (With<WindowRoot>, Without<LayoutExcluded>),
     >,
-    camera: Query<(&Transform, &OrthographicProjection), (With<Camera2d>, Without<WindowRoot>)>,
+    camera: Query<(&Transform, &Projection), (With<Camera2d>, Without<WindowRoot>)>,
     mut buffer: ResMut<StrategyBuffer>,
     mut fragments_q: Query<(&StrategyEditorId, &mut StrategyFragment), With<WindowRoot>>,
     mut strategy_auto_save: ResMut<StrategyAutoSaveState>,
@@ -1013,7 +1015,7 @@ fn poll_save_dialog_system(
         ),
         (With<WindowRoot>, Without<LayoutExcluded>),
     >,
-    camera: Query<(&Transform, &OrthographicProjection), (With<Camera2d>, Without<WindowRoot>)>,
+    camera: Query<(&Transform, &Projection), (With<Camera2d>, Without<WindowRoot>)>,
     mut buffer: ResMut<StrategyBuffer>,
     mut fragments_q: Query<(&StrategyEditorId, &mut StrategyFragment), With<WindowRoot>>,
     mut strategy_auto_save: ResMut<StrategyAutoSaveState>,
@@ -1067,7 +1069,7 @@ fn poll_save_dialog_system(
 // seam を駆動するため。本番の登録は LayoutPersistencePlugin 内のまま。
 pub fn apply_layout_system(
     mut commands: Commands,
-    mut events: EventReader<LayoutLoadRequested>,
+    mut events: MessageReader<LayoutLoadRequested>,
     mut panels: Query<
         (
             Entity,
@@ -1081,13 +1083,13 @@ pub fn apply_layout_system(
         (With<WindowRoot>, Without<LayoutExcluded>),
     >,
     mut camera: Query<
-        (&mut Transform, &mut OrthographicProjection),
+        (&mut Transform, &mut Projection),
         (With<Camera2d>, Without<WindowRoot>),
     >,
     mut wm: ResMut<WindowManager>,
-    mut spawn_ev: EventWriter<PanelSpawnRequested>,
+    mut spawn_ev: MessageWriter<PanelSpawnRequested>,
     mut pending: ResMut<PendingLayoutApply>,
-    mut load_ev: EventWriter<StrategyFileLoadRequested>,
+    mut load_ev: MessageWriter<StrategyFileLoadRequested>,
     mut pending_fragments: ResMut<PendingStrategyFragments>,
     // ワンショット loopback 抑制: 直近で scenario-only Open → sibling .py 発火 →
     // handler が同じ JSON を再発火、までの 1 サイクルだけスキップする。
@@ -1120,7 +1122,7 @@ pub fn apply_layout_system(
                     "scenario-only JSON {:?} opened directly; loading sibling strategy {:?}",
                     event.path, sibling_py
                 );
-                load_ev.send(StrategyFileLoadRequested {
+                load_ev.write(StrategyFileLoadRequested {
                     path: sibling_py,
                     mode: StrategyLoadMode::UserOpen,
                 });
@@ -1197,7 +1199,7 @@ pub fn apply_layout_system(
                     pending.spawn_requested.clear();
                     pending.waiting_for_strategy = false;
 
-                    load_ev.send(StrategyFileLoadRequested {
+                    load_ev.write(StrategyFileLoadRequested {
                         path,
                         mode: StrategyLoadMode::LayoutRestore,
                     });
@@ -1208,11 +1210,13 @@ pub fn apply_layout_system(
                     }
                     // カメラは同フレーム内で適用可能
                     if let (Some(vp), Ok((mut cam_tf, mut proj))) =
-                        (&layout.viewport, camera.get_single_mut())
+                        (&layout.viewport, camera.single_mut())
                     {
                         cam_tf.translation.x = vp.pan_x;
                         cam_tf.translation.y = vp.pan_y;
-                        proj.scale = vp.zoom;
+                        if let Projection::Orthographic(ref mut p) = *proj {
+                            p.scale = vp.zoom;
+                        }
                     }
                     info!(
                         "layout apply deferred (waiting for strategy fragments): {:?}",
@@ -1232,11 +1236,13 @@ pub fn apply_layout_system(
         }
 
         // viewport: None → カメラを触らない（F10: scenario-only JSON で camera reset を防ぐ）
-        if let (Some(vp), Ok((mut cam_tf, mut proj))) = (&layout.viewport, camera.get_single_mut())
+        if let (Some(vp), Ok((mut cam_tf, mut proj))) = (&layout.viewport, camera.single_mut())
         {
             cam_tf.translation.x = vp.pan_x;
             cam_tf.translation.y = vp.pan_y;
-            proj.scale = vp.zoom;
+            if let Projection::Orthographic(ref mut p) = *proj {
+                p.scale = vp.zoom;
+            }
         }
 
         // windows: None → despawn/spawn を一切しない（F10: 既存パネルを消さない）
@@ -1287,7 +1293,7 @@ pub fn apply_layout_system(
                             } else {
                                 None
                             };
-                            spawn_ev.send(PanelSpawnRequested {
+                            spawn_ev.write(PanelSpawnRequested {
                                 kind: win_layout.kind,
                                 source: PanelSpawnSource::LayoutLoad,
                                 strategy_spec,
@@ -1352,7 +1358,7 @@ pub fn apply_layout_system(
                 .map(|(entity, _, _, _, _, _, _)| entity)
                 .collect();
             for entity in to_despawn {
-                commands.entity(entity).despawn_recursive();
+                commands.entity(entity).despawn();
             }
         }
 
@@ -1376,7 +1382,7 @@ pub fn apply_pending_layout_system(
     >,
     mut wm: ResMut<WindowManager>,
     pending_fragments: Res<PendingStrategyFragments>,
-    mut spawn_ev: EventWriter<PanelSpawnRequested>,
+    mut spawn_ev: MessageWriter<PanelSpawnRequested>,
 ) {
     if pending.windows.is_empty() {
         return;
@@ -1431,7 +1437,7 @@ pub fn apply_pending_layout_system(
                     } else {
                         None
                     };
-                    spawn_ev.send(PanelSpawnRequested {
+                    spawn_ev.write(PanelSpawnRequested {
                         kind: win_layout.kind,
                         source: PanelSpawnSource::LayoutLoad,
                         strategy_spec,
@@ -1473,7 +1479,7 @@ pub fn apply_pending_layout_system(
 
 #[allow(clippy::type_complexity)]
 fn save_layout_on_window_close(
-    mut close_events: EventReader<WindowCloseRequested>,
+    mut close_events: MessageReader<WindowCloseRequested>,
     panels: Query<
         (
             &PanelKind,
@@ -1485,7 +1491,7 @@ fn save_layout_on_window_close(
         ),
         (With<WindowRoot>, Without<LayoutExcluded>),
     >,
-    camera: Query<(&Transform, &OrthographicProjection), (With<Camera2d>, Without<WindowRoot>)>,
+    camera: Query<(&Transform, &Projection), (With<Camera2d>, Without<WindowRoot>)>,
     mut buffer: ResMut<StrategyBuffer>,
     mut fragments_q: Query<(&StrategyEditorId, &mut StrategyFragment), With<WindowRoot>>,
     mut strategy_auto_save: ResMut<StrategyAutoSaveState>,
@@ -1552,7 +1558,7 @@ fn debounced_autosave_system(
         ),
         (With<WindowRoot>, Without<LayoutExcluded>),
     >,
-    camera: Query<(&Transform, &OrthographicProjection), (With<Camera2d>, Without<WindowRoot>)>,
+    camera: Query<(&Transform, &Projection), (With<Camera2d>, Without<WindowRoot>)>,
     buffer: Res<StrategyBuffer>,
     paths: Res<crate::ui::components::ScenarioWritebackPaths>,
     chart_sizes: Res<ChartSizeMap>,
@@ -1594,9 +1600,9 @@ pub fn layout_shortcut_system(
     keys: Res<ButtonInput<KeyCode>>,
     time: Res<Time>,
     mut cooldown: Local<f32>,
-    mut save_w: EventWriter<LayoutSaveRequested>,
-    mut save_as_w: EventWriter<LayoutSaveAsRequested>,
-    mut load_w: EventWriter<LayoutLoadDialogRequested>,
+    mut save_w: MessageWriter<LayoutSaveRequested>,
+    mut save_as_w: MessageWriter<LayoutSaveAsRequested>,
+    mut load_w: MessageWriter<LayoutLoadDialogRequested>,
 ) {
     // Alt+S/A/O は cosmic-edit が文字入力として処理し panic する。
     // Ctrl combo は cosmic-edit がテキスト入力として扱わないため安全。
@@ -1615,14 +1621,14 @@ pub fn layout_shortcut_system(
     let shift = keys.pressed(KeyCode::ShiftLeft) || keys.pressed(KeyCode::ShiftRight);
     if keys.just_pressed(KeyCode::KeyS) {
         if shift {
-            save_as_w.send(LayoutSaveAsRequested);
+            save_as_w.write(LayoutSaveAsRequested);
         } else {
-            save_w.send(LayoutSaveRequested);
+            save_w.write(LayoutSaveRequested);
         }
         *cooldown = 0.5;
     }
     if keys.just_pressed(KeyCode::KeyO) {
-        load_w.send(LayoutLoadDialogRequested);
+        load_w.write(LayoutLoadDialogRequested);
         *cooldown = 0.5;
     }
 }
@@ -1634,11 +1640,11 @@ impl Plugin for LayoutPersistencePlugin {
         app.init_resource::<PendingLayoutApply>()
             .init_resource::<PendingFileDialog>()
             .init_resource::<AutoSaveState>()
-            .add_event::<LayoutSaveRequested>()
-            .add_event::<LayoutSaveAsRequested>()
-            .add_event::<LayoutLoadDialogRequested>()
-            .add_event::<LayoutLoadRequested>()
-            .add_event::<CacheRestoreRequested>()
+            .add_message::<LayoutSaveRequested>()
+            .add_message::<LayoutSaveAsRequested>()
+            .add_message::<LayoutLoadDialogRequested>()
+            .add_message::<LayoutLoadRequested>()
+            .add_message::<CacheRestoreRequested>()
             .add_systems(
                 Update,
                 (
@@ -2023,7 +2029,7 @@ mod tests {
         app.world_mut().spawn((
             Camera2d,
             Transform::default(),
-            OrthographicProjection::default_2d(),
+
         ));
 
         app.world_mut().spawn((
@@ -2064,7 +2070,7 @@ mod tests {
                 ),
                 (With<WindowRoot>, Without<LayoutExcluded>),
             >,
-            Query<(&Transform, &OrthographicProjection), (With<Camera2d>, Without<WindowRoot>)>,
+            Query<(&Transform, &Projection), (With<Camera2d>, Without<WindowRoot>)>,
             Res<StrategyBuffer>,
         )> = SystemState::new(app.world_mut());
 
@@ -2090,7 +2096,7 @@ mod tests {
         app.world_mut().spawn((
             Camera2d,
             Transform::default(),
-            OrthographicProjection::default_2d(),
+
         ));
 
         // (a) Manual で強制 Hidden だが本来は可視（marker=Inherited）→ visible:true で保存される。
@@ -2136,7 +2142,7 @@ mod tests {
                 ),
                 (With<WindowRoot>, Without<LayoutExcluded>),
             >,
-            Query<(&Transform, &OrthographicProjection), (With<Camera2d>, Without<WindowRoot>)>,
+            Query<(&Transform, &Projection), (With<Camera2d>, Without<WindowRoot>)>,
             Res<StrategyBuffer>,
         )> = SystemState::new(app.world_mut());
 
@@ -2166,9 +2172,9 @@ mod tests {
         use bevy::prelude::*;
 
         let mut app = App::new();
-        app.add_event::<LayoutLoadRequested>();
-        app.add_event::<PanelSpawnRequested>();
-        app.add_event::<StrategyFileLoadRequested>();
+        app.add_message::<LayoutLoadRequested>();
+        app.add_message::<PanelSpawnRequested>();
+        app.add_message::<StrategyFileLoadRequested>();
         app.insert_resource(WindowManager::default());
         app.insert_resource(PendingLayoutApply::default());
         app.insert_resource(PendingStrategyFragments::default());
@@ -2176,7 +2182,7 @@ mod tests {
         app.world_mut().spawn((
             Camera2d,
             Transform::default(),
-            OrthographicProjection::default_2d(),
+
         ));
 
         let chart = app
@@ -2216,7 +2222,7 @@ mod tests {
         });
         std::fs::write(&tmp, serde_json::to_string(&layout_json).unwrap()).unwrap();
 
-        app.world_mut().send_event(LayoutLoadRequested {
+        app.world_mut().write_message(LayoutLoadRequested {
             path: tmp.clone(),
             mode: LayoutLoadMode::UserJsonOpen,
         });
@@ -2244,9 +2250,9 @@ mod tests {
         use bevy::prelude::*;
 
         let mut app = App::new();
-        app.add_event::<LayoutLoadRequested>();
-        app.add_event::<PanelSpawnRequested>();
-        app.add_event::<StrategyFileLoadRequested>();
+        app.add_message::<LayoutLoadRequested>();
+        app.add_message::<PanelSpawnRequested>();
+        app.add_message::<StrategyFileLoadRequested>();
         app.insert_resource(WindowManager::default());
         app.insert_resource(PendingLayoutApply::default());
         app.insert_resource(PendingStrategyFragments::default());
@@ -2257,7 +2263,7 @@ mod tests {
         app.world_mut().spawn((
             Camera2d,
             Transform::default(),
-            OrthographicProjection::default_2d(),
+
         ));
 
         // 既存の Strategy Editor 窓（region_001、最初は可視）。
@@ -2279,6 +2285,7 @@ mod tests {
             .id();
 
         // apply_layout → mode system の順に走らせる（mode が毎フレーム Hidden を維持する）。
+        app.insert_resource(ChartSizeMap::default());
         app.add_systems(
             Update,
             (
@@ -2314,7 +2321,7 @@ mod tests {
             }]
         });
         std::fs::write(&tmp, serde_json::to_string(&layout_json).unwrap()).unwrap();
-        app.world_mut().send_event(LayoutLoadRequested {
+        app.world_mut().write_message(LayoutLoadRequested {
             path: tmp.clone(),
             mode: LayoutLoadMode::UserJsonOpen,
         });
@@ -2358,7 +2365,7 @@ mod tests {
         use bevy::prelude::*;
 
         let mut app = App::new();
-        app.add_event::<PanelSpawnRequested>();
+        app.add_message::<PanelSpawnRequested>();
         app.insert_resource(WindowManager::default());
         app.insert_resource(PendingStrategyFragments::default());
         app.init_resource::<ExecutionModeRes>();
@@ -2450,7 +2457,7 @@ mod tests {
                 (With<WindowRoot>, Without<LayoutExcluded>),
             >,
             camera: Query<
-                (&Transform, &OrthographicProjection),
+                (&Transform, &Projection),
                 (With<Camera2d>, Without<WindowRoot>),
             >,
             buffer: Res<StrategyBuffer>,
@@ -2472,7 +2479,7 @@ mod tests {
         app.world_mut().spawn((
             Camera2d,
             Transform::default(),
-            OrthographicProjection::default_2d(),
+
         ));
         let editor = app
             .world_mut()
@@ -2526,9 +2533,9 @@ mod tests {
         use bevy::prelude::*;
 
         let mut app = App::new();
-        app.add_event::<LayoutLoadRequested>();
-        app.add_event::<PanelSpawnRequested>();
-        app.add_event::<StrategyFileLoadRequested>();
+        app.add_message::<LayoutLoadRequested>();
+        app.add_message::<PanelSpawnRequested>();
+        app.add_message::<StrategyFileLoadRequested>();
         app.insert_resource(WindowManager::default());
         app.insert_resource(PendingLayoutApply::default());
         app.insert_resource(PendingStrategyFragments::default());
@@ -2537,7 +2544,7 @@ mod tests {
         app.world_mut().spawn((
             Camera2d,
             Transform::default(),
-            OrthographicProjection::default_2d(),
+
         ));
 
         // scenario-only JSON: schema_version / windows / strategy_path いずれも無し。
@@ -2551,7 +2558,7 @@ mod tests {
             "precondition: sibling .py は存在しないこと"
         );
 
-        app.world_mut().send_event(LayoutLoadRequested {
+        app.world_mut().write_message(LayoutLoadRequested {
             path: json_path.clone(),
             mode: LayoutLoadMode::UserJsonOpen,
         });
@@ -2581,7 +2588,7 @@ mod tests {
         app.world_mut().spawn((
             Camera2d,
             Transform::default(),
-            OrthographicProjection::default_2d(),
+
         ));
 
         app.world_mut().spawn((
@@ -2620,7 +2627,7 @@ mod tests {
                 ),
                 (With<WindowRoot>, Without<LayoutExcluded>),
             >,
-            Query<(&Transform, &OrthographicProjection), (With<Camera2d>, Without<WindowRoot>)>,
+            Query<(&Transform, &Projection), (With<Camera2d>, Without<WindowRoot>)>,
             Res<StrategyBuffer>,
         )> = SystemState::new(app.world_mut());
 
@@ -2647,7 +2654,7 @@ mod tests {
         app.world_mut().spawn((
             Camera2d,
             Transform::default(),
-            OrthographicProjection::default_2d(),
+
         ));
 
         // LIVE Order window: no LayoutExcluded. scenario 所有 (restore_driver==ScenarioInstruments)
@@ -2687,7 +2694,7 @@ mod tests {
                 ),
                 (With<WindowRoot>, Without<LayoutExcluded>),
             >,
-            Query<(&Transform, &OrthographicProjection), (With<Camera2d>, Without<WindowRoot>)>,
+            Query<(&Transform, &Projection), (With<Camera2d>, Without<WindowRoot>)>,
             Res<StrategyBuffer>,
         )> = SystemState::new(app.world_mut());
 
@@ -2709,9 +2716,9 @@ mod tests {
         use bevy::prelude::*;
 
         let mut app = App::new();
-        app.add_event::<LayoutLoadRequested>();
-        app.add_event::<PanelSpawnRequested>();
-        app.add_event::<StrategyFileLoadRequested>();
+        app.add_message::<LayoutLoadRequested>();
+        app.add_message::<PanelSpawnRequested>();
+        app.add_message::<StrategyFileLoadRequested>();
         app.insert_resource(WindowManager::default());
         app.insert_resource(PendingLayoutApply::default());
         app.insert_resource(PendingStrategyFragments::default());
@@ -2719,7 +2726,7 @@ mod tests {
         app.world_mut().spawn((
             Camera2d,
             Transform::default(),
-            OrthographicProjection::default_2d(),
+
         ));
 
         let picker = app
@@ -2757,7 +2764,7 @@ mod tests {
         });
         std::fs::write(&tmp, serde_json::to_string(&layout_json).unwrap()).unwrap();
 
-        app.world_mut().send_event(LayoutLoadRequested {
+        app.world_mut().write_message(LayoutLoadRequested {
             path: tmp.clone(),
             mode: LayoutLoadMode::UserJsonOpen,
         });
@@ -2779,9 +2786,9 @@ mod tests {
         use bevy::prelude::*;
 
         let mut app = App::new();
-        app.add_event::<LayoutLoadRequested>();
-        app.add_event::<PanelSpawnRequested>();
-        app.add_event::<StrategyFileLoadRequested>();
+        app.add_message::<LayoutLoadRequested>();
+        app.add_message::<PanelSpawnRequested>();
+        app.add_message::<StrategyFileLoadRequested>();
         app.insert_resource(WindowManager::default());
         app.insert_resource(PendingLayoutApply::default());
         app.insert_resource(PendingStrategyFragments::default());
@@ -2789,7 +2796,7 @@ mod tests {
         app.world_mut().spawn((
             Camera2d,
             Transform::default(),
-            OrthographicProjection::default_2d(),
+
         ));
 
         let tmp = std::env::temp_dir().join(format!(
@@ -2812,7 +2819,7 @@ mod tests {
         });
         std::fs::write(&tmp, serde_json::to_string(&layout_json).unwrap()).unwrap();
 
-        app.world_mut().send_event(LayoutLoadRequested {
+        app.world_mut().write_message(LayoutLoadRequested {
             path: tmp.clone(),
             mode: LayoutLoadMode::UserJsonOpen,
         });
@@ -2825,7 +2832,7 @@ mod tests {
 
         let mut spawn_events = app
             .world_mut()
-            .resource_mut::<Events<PanelSpawnRequested>>();
+            .resource_mut::<Messages<PanelSpawnRequested>>();
         let order_spawns: Vec<PanelKind> = spawn_events
             .update_drain()
             .map(|ev| ev.kind)
@@ -2843,9 +2850,9 @@ mod tests {
         use bevy::prelude::*;
 
         let mut app = App::new();
-        app.add_event::<LayoutLoadRequested>();
-        app.add_event::<PanelSpawnRequested>();
-        app.add_event::<StrategyFileLoadRequested>();
+        app.add_message::<LayoutLoadRequested>();
+        app.add_message::<PanelSpawnRequested>();
+        app.add_message::<StrategyFileLoadRequested>();
         app.insert_resource(WindowManager::default());
         app.insert_resource(PendingLayoutApply::default());
         app.insert_resource(PendingStrategyFragments::default());
@@ -2853,7 +2860,7 @@ mod tests {
         app.world_mut().spawn((
             Camera2d,
             Transform::default(),
-            OrthographicProjection::default_2d(),
+
         ));
 
         // Startup root は ExecutionMode が可視性を所有する。restore 前は Inherited。
@@ -2891,7 +2898,7 @@ mod tests {
         });
         std::fs::write(&tmp, serde_json::to_string(&layout_json).unwrap()).unwrap();
 
-        app.world_mut().send_event(LayoutLoadRequested {
+        app.world_mut().write_message(LayoutLoadRequested {
             path: tmp.clone(),
             mode: LayoutLoadMode::UserJsonOpen,
         });
@@ -2919,9 +2926,9 @@ mod tests {
         use bevy::prelude::*;
 
         let mut app = App::new();
-        app.add_event::<LayoutLoadRequested>();
-        app.add_event::<PanelSpawnRequested>();
-        app.add_event::<StrategyFileLoadRequested>();
+        app.add_message::<LayoutLoadRequested>();
+        app.add_message::<PanelSpawnRequested>();
+        app.add_message::<StrategyFileLoadRequested>();
         app.insert_resource(WindowManager::default());
         app.insert_resource(PendingLayoutApply::default());
         app.insert_resource(PendingStrategyFragments::default());
@@ -2929,7 +2936,7 @@ mod tests {
         app.world_mut().spawn((
             Camera2d,
             Transform::default(),
-            OrthographicProjection::default_2d(),
+
         ));
 
         let startup = app
@@ -2960,7 +2967,7 @@ mod tests {
         });
         std::fs::write(&tmp, serde_json::to_string(&layout_json).unwrap()).unwrap();
 
-        app.world_mut().send_event(LayoutLoadRequested {
+        app.world_mut().write_message(LayoutLoadRequested {
             path: tmp.clone(),
             mode: LayoutLoadMode::UserJsonOpen,
         });
@@ -2983,9 +2990,9 @@ mod tests {
         use bevy::prelude::*;
 
         let mut app = App::new();
-        app.add_event::<LayoutLoadRequested>();
-        app.add_event::<PanelSpawnRequested>();
-        app.add_event::<StrategyFileLoadRequested>();
+        app.add_message::<LayoutLoadRequested>();
+        app.add_message::<PanelSpawnRequested>();
+        app.add_message::<StrategyFileLoadRequested>();
         app.insert_resource(WindowManager::default());
         app.insert_resource(PendingLayoutApply::default());
         app.insert_resource(PendingStrategyFragments::default());
@@ -2993,7 +3000,7 @@ mod tests {
         app.world_mut().spawn((
             Camera2d,
             Transform::default(),
-            OrthographicProjection::default_2d(),
+
         ));
 
         // 現行の窓サイズ 320×200 で spawn。
@@ -3031,7 +3038,7 @@ mod tests {
         });
         std::fs::write(&tmp, serde_json::to_string(&layout_json).unwrap()).unwrap();
 
-        app.world_mut().send_event(LayoutLoadRequested {
+        app.world_mut().write_message(LayoutLoadRequested {
             path: tmp.clone(),
             mode: LayoutLoadMode::UserJsonOpen,
         });
@@ -3087,18 +3094,18 @@ mod tests {
         app.init_resource::<StrategyAutoSaveState>();
         app.init_resource::<ScenarioReadTarget>();
 
-        app.add_event::<LayoutSaveRequested>();
-        app.add_event::<LayoutSaveAsRequested>();
+        app.add_message::<LayoutSaveRequested>();
+        app.add_message::<LayoutSaveAsRequested>();
         app.world_mut().spawn((
             Camera2d,
             Transform::default(),
-            OrthographicProjection::default_2d(),
+
         ));
 
         app.init_resource::<PendingFileDialog>();
         app.init_resource::<ChartSizeMap>();
         app.add_systems(Update, handle_save_layout_system);
-        app.world_mut().send_event(LayoutSaveRequested);
+        app.world_mut().write_message(LayoutSaveRequested);
         app.update();
 
         let body = std::fs::read_to_string(&json_path).unwrap();
@@ -3152,16 +3159,16 @@ mod tests {
         app.insert_resource(PendingLayoutApply::default());
         app.insert_resource(PendingStrategyFragments::default());
 
-        app.add_event::<LayoutSaveRequested>();
-        app.add_event::<LayoutSaveAsRequested>();
-        app.add_event::<LayoutLoadRequested>();
-        app.add_event::<PanelSpawnRequested>();
-        app.add_event::<StrategyFileLoadRequested>();
+        app.add_message::<LayoutSaveRequested>();
+        app.add_message::<LayoutSaveAsRequested>();
+        app.add_message::<LayoutLoadRequested>();
+        app.add_message::<PanelSpawnRequested>();
+        app.add_message::<StrategyFileLoadRequested>();
 
         app.world_mut().spawn((
             Camera2d,
             Transform::default(),
-            OrthographicProjection::default_2d(),
+
         ));
 
         // Orders panel: save 経路の query (With<WindowRoot>, Without<LayoutExcluded>) に拾われる。
@@ -3194,7 +3201,7 @@ mod tests {
         app.add_systems(Update, (handle_save_layout_system, apply_layout_system));
 
         // --- Save ---
-        app.world_mut().send_event(LayoutSaveRequested);
+        app.world_mut().write_message(LayoutSaveRequested);
         app.update();
 
         let body = std::fs::read_to_string(&json_path).unwrap();
@@ -3216,7 +3223,7 @@ mod tests {
         // apply_layout_system は found Some 経路に入り PanelSpawnRequested は発火しない想定。
         // ただし「picker が JSON に混ざっていた」場合は found None 経路で picker kind の
         // PanelSpawnRequested が発火するため、ここで検知できる。
-        app.world_mut().send_event(LayoutLoadRequested {
+        app.world_mut().write_message(LayoutLoadRequested {
             path: json_path.clone(),
             mode: LayoutLoadMode::UserJsonOpen,
         });
@@ -3224,7 +3231,7 @@ mod tests {
 
         let mut spawn_events = app
             .world_mut()
-            .resource_mut::<Events<PanelSpawnRequested>>();
+            .resource_mut::<Messages<PanelSpawnRequested>>();
         let kinds: Vec<PanelKind> = spawn_events.update_drain().map(|ev| ev.kind).collect();
         assert!(
             kinds.is_empty(),
@@ -3266,18 +3273,18 @@ mod tests {
         app.init_resource::<StrategyAutoSaveState>();
         app.init_resource::<ScenarioReadTarget>();
 
-        app.add_event::<LayoutSaveRequested>();
-        app.add_event::<LayoutSaveAsRequested>();
+        app.add_message::<LayoutSaveRequested>();
+        app.add_message::<LayoutSaveAsRequested>();
         app.world_mut().spawn((
             Camera2d,
             Transform::default(),
-            OrthographicProjection::default_2d(),
+
         ));
 
         app.init_resource::<PendingFileDialog>();
         app.init_resource::<ChartSizeMap>();
         app.add_systems(Update, handle_save_layout_system);
-        app.world_mut().send_event(LayoutSaveRequested);
+        app.world_mut().write_message(LayoutSaveRequested);
         app.update();
 
         let body = std::fs::read_to_string(&json_path).unwrap();
@@ -3320,18 +3327,18 @@ mod tests {
         app.init_resource::<StrategyAutoSaveState>();
         app.init_resource::<ScenarioReadTarget>();
 
-        app.add_event::<LayoutSaveRequested>();
-        app.add_event::<LayoutSaveAsRequested>();
+        app.add_message::<LayoutSaveRequested>();
+        app.add_message::<LayoutSaveAsRequested>();
         app.world_mut().spawn((
             Camera2d,
             Transform::default(),
-            OrthographicProjection::default_2d(),
+
         ));
 
         app.init_resource::<PendingFileDialog>();
         app.init_resource::<ChartSizeMap>();
         app.add_systems(Update, handle_save_layout_system);
-        app.world_mut().send_event(LayoutSaveRequested);
+        app.world_mut().write_message(LayoutSaveRequested);
         app.update();
 
         // cache_sidecar 関連 path が None のまま
@@ -3393,18 +3400,18 @@ mod tests {
         app.init_resource::<StrategyAutoSaveState>();
         app.init_resource::<ScenarioReadTarget>();
 
-        app.add_event::<LayoutSaveRequested>();
-        app.add_event::<LayoutSaveAsRequested>();
+        app.add_message::<LayoutSaveRequested>();
+        app.add_message::<LayoutSaveAsRequested>();
         app.world_mut().spawn((
             Camera2d,
             Transform::default(),
-            OrthographicProjection::default_2d(),
+
         ));
 
         app.init_resource::<PendingFileDialog>();
         app.init_resource::<ChartSizeMap>();
         app.add_systems(Update, handle_save_layout_system);
-        app.world_mut().send_event(LayoutSaveRequested);
+        app.world_mut().write_message(LayoutSaveRequested);
         app.update();
 
         // 元 sidecar 側に registry 値が反映されている
@@ -3455,18 +3462,18 @@ mod tests {
         app.init_resource::<StrategyAutoSaveState>();
         app.init_resource::<ScenarioReadTarget>();
 
-        app.add_event::<LayoutSaveRequested>();
-        app.add_event::<LayoutSaveAsRequested>();
+        app.add_message::<LayoutSaveRequested>();
+        app.add_message::<LayoutSaveAsRequested>();
         app.world_mut().spawn((
             Camera2d,
             Transform::default(),
-            OrthographicProjection::default_2d(),
+
         ));
 
         app.init_resource::<PendingFileDialog>();
         app.init_resource::<ChartSizeMap>();
         app.add_systems(Update, handle_save_layout_system);
-        app.world_mut().send_event(LayoutSaveRequested);
+        app.world_mut().write_message(LayoutSaveRequested);
         app.update();
 
         let body = std::fs::read_to_string(&json_path).unwrap();
@@ -3528,18 +3535,18 @@ mod tests {
         app.init_resource::<StrategyAutoSaveState>();
         app.insert_resource(ScenarioReadTarget(Some(cache_json_path.clone())));
 
-        app.add_event::<LayoutSaveRequested>();
-        app.add_event::<LayoutSaveAsRequested>();
+        app.add_message::<LayoutSaveRequested>();
+        app.add_message::<LayoutSaveAsRequested>();
         app.world_mut().spawn((
             Camera2d,
             Transform::default(),
-            OrthographicProjection::default_2d(),
+
         ));
 
         app.init_resource::<PendingFileDialog>();
         app.init_resource::<ChartSizeMap>();
         app.add_systems(Update, handle_save_layout_system);
-        app.world_mut().send_event(LayoutSaveRequested);
+        app.world_mut().write_message(LayoutSaveRequested);
         app.update();
 
         // ① 元 strat.json の instruments が registry の最新値で上書きされている
@@ -3603,9 +3610,9 @@ mod tests {
         use bevy::prelude::*;
 
         let mut app = App::new();
-        app.add_event::<LayoutLoadRequested>();
-        app.add_event::<PanelSpawnRequested>();
-        app.add_event::<StrategyFileLoadRequested>();
+        app.add_message::<LayoutLoadRequested>();
+        app.add_message::<PanelSpawnRequested>();
+        app.add_message::<StrategyFileLoadRequested>();
         app.insert_resource(WindowManager::default());
         app.insert_resource(PendingLayoutApply::default());
         app.insert_resource(StrategyBuffer::default());
@@ -3616,7 +3623,7 @@ mod tests {
         app.world_mut().spawn((
             Camera2d,
             Transform::default(),
-            OrthographicProjection::default_2d(),
+
         ));
 
         let dir = tempfile::tempdir().unwrap();
@@ -3640,7 +3647,7 @@ mod tests {
         app.init_resource::<ScenarioReadTarget>();
         app.init_resource::<ChartSizeMap>();
         app.add_systems(Update, apply_layout_system);
-        app.world_mut().send_event(LayoutLoadRequested {
+        app.world_mut().write_message(LayoutLoadRequested {
             path: json_path.clone(),
             mode: LayoutLoadMode::UserJsonOpen,
         });
@@ -3649,7 +3656,7 @@ mod tests {
 
         let mut load_events = app
             .world_mut()
-            .resource_mut::<Events<StrategyFileLoadRequested>>();
+            .resource_mut::<Messages<StrategyFileLoadRequested>>();
         let loads: Vec<StrategyFileLoadRequested> = load_events.update_drain().collect();
         assert_eq!(
             loads.len(),
@@ -3672,9 +3679,9 @@ mod tests {
         use bevy::prelude::*;
 
         let mut app = App::new();
-        app.add_event::<LayoutLoadRequested>();
-        app.add_event::<PanelSpawnRequested>();
-        app.add_event::<StrategyFileLoadRequested>();
+        app.add_message::<LayoutLoadRequested>();
+        app.add_message::<PanelSpawnRequested>();
+        app.add_message::<StrategyFileLoadRequested>();
         app.insert_resource(WindowManager::default());
         app.insert_resource(PendingLayoutApply::default());
         app.insert_resource(StrategyBuffer::default());
@@ -3685,7 +3692,7 @@ mod tests {
         app.world_mut().spawn((
             Camera2d,
             Transform::default(),
-            OrthographicProjection::default_2d(),
+
         ));
 
         let dir = tempfile::tempdir().unwrap();
@@ -3711,7 +3718,7 @@ mod tests {
         app.init_resource::<ScenarioReadTarget>();
         app.init_resource::<ChartSizeMap>();
         app.add_systems(Update, apply_layout_system);
-        app.world_mut().send_event(LayoutLoadRequested {
+        app.world_mut().write_message(LayoutLoadRequested {
             path: json_path.clone(),
             mode: LayoutLoadMode::UserJsonOpen,
         });
@@ -3734,9 +3741,9 @@ mod tests {
         use bevy::prelude::*;
 
         let mut app = App::new();
-        app.add_event::<LayoutLoadRequested>();
-        app.add_event::<PanelSpawnRequested>();
-        app.add_event::<StrategyFileLoadRequested>();
+        app.add_message::<LayoutLoadRequested>();
+        app.add_message::<PanelSpawnRequested>();
+        app.add_message::<StrategyFileLoadRequested>();
         app.insert_resource(WindowManager::default());
         app.insert_resource(PendingLayoutApply::default());
         app.insert_resource(StrategyBuffer::default());
@@ -3747,7 +3754,7 @@ mod tests {
         app.world_mut().spawn((
             Camera2d,
             Transform::default(),
-            OrthographicProjection::default_2d(),
+
         ));
 
         let dir = tempfile::tempdir().unwrap();
@@ -3782,7 +3789,7 @@ mod tests {
         app.init_resource::<ScenarioReadTarget>();
         app.init_resource::<ChartSizeMap>();
         app.add_systems(Update, apply_layout_system);
-        app.world_mut().send_event(LayoutLoadRequested {
+        app.world_mut().write_message(LayoutLoadRequested {
             path: json_path,
             mode: LayoutLoadMode::ApplySidecarForPy,
         });
@@ -3791,7 +3798,7 @@ mod tests {
 
         let mut load_events = app
             .world_mut()
-            .resource_mut::<Events<StrategyFileLoadRequested>>();
+            .resource_mut::<Messages<StrategyFileLoadRequested>>();
         let loads: Vec<StrategyFileLoadRequested> = load_events.update_drain().collect();
         assert!(
             loads.is_empty(),

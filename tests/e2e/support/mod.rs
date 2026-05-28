@@ -144,14 +144,14 @@ impl Harness {
             .insert_resource(SecretInput::default())
             .insert_resource(ButtonInput::<KeyCode>::default());
 
-        app.add_event::<StrategyRunRequested>()
-            .add_event::<LayoutSaveRequested>()
-            .add_event::<LayoutSaveAsRequested>()
-            .add_event::<LayoutLoadDialogRequested>()
-            .add_event::<UndoMenuRequested>()
-            .add_event::<RedoMenuRequested>()
-            .add_event::<KeyboardInput>()
-            .add_event::<OrderButtonPressed>();
+        app.add_message::<StrategyRunRequested>()
+            .add_message::<LayoutSaveRequested>()
+            .add_message::<LayoutSaveAsRequested>()
+            .add_message::<LayoutLoadDialogRequested>()
+            .add_message::<UndoMenuRequested>()
+            .add_message::<RedoMenuRequested>()
+            .add_message::<KeyboardInput>()
+            .add_message::<OrderButtonPressed>();
 
         app.add_systems(
             Update,
@@ -423,7 +423,7 @@ impl Harness {
     pub fn press_order_button(&mut self, button: OrderButton) {
         self.app
             .world_mut()
-            .send_event(OrderButtonPressed(button));
+            .write_message(OrderButtonPressed(button));
         self.tick();
     }
 
@@ -506,14 +506,15 @@ impl Harness {
     }
 
     /// Type plaintext into the open SecretModal via real keyboard events (the
-    /// modal drains `Events<KeyboardInput>`). The prompt must already be active.
+    /// modal drains `Messages<KeyboardInput>`). The prompt must already be active.
     pub fn type_secret(&mut self, text: &str) {
         {
-            let mut kb = self.app.world_mut().resource_mut::<Events<KeyboardInput>>();
+            let mut kb = self.app.world_mut().resource_mut::<Messages<KeyboardInput>>();
             for ch in text.chars() {
-                kb.send(KeyboardInput {
+                kb.write(KeyboardInput {
                     key_code: KeyCode::KeyA,
                     logical_key: Key::Character(ch.to_string().into()),
+                    text: None,
                     state: ButtonState::Pressed,
                     repeat: false,
                     window: Entity::PLACEHOLDER,

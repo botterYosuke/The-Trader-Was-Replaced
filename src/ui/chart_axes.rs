@@ -236,13 +236,13 @@ pub fn price_axis_labels_system(
                         ..default()
                     },
                     TextColor(LABEL_COLOR),
-                    Anchor::CenterLeft,
+                    Anchor::CENTER_LEFT,
                     Transform::from_xyz(label_x, y, LABEL_Z),
                     PriceLabel {
                         target_chart: chart_entity,
                     },
                 ))
-                .set_parent(gutter_ref.0);
+                .insert(ChildOf(gutter_ref.0));
             value -= step;
             count += 1;
         }
@@ -306,14 +306,14 @@ pub fn time_axis_labels_system(
                                 ..default()
                             },
                             TextColor(LABEL_COLOR),
-                            Anchor::Center,
+                            Anchor::CENTER,
                             // time gutter は chart-local (0, -y) に置いているので gutter-local x == interval_to_x。
                             Transform::from_xyz(x, 0.0, LABEL_Z),
                             TimeLabel {
                                 target_chart: chart_entity,
                             },
                         ))
-                        .set_parent(gutter_ref.0);
+                        .insert(ChildOf(gutter_ref.0));
                     last_x = Some(x);
                 }
             }
@@ -443,7 +443,7 @@ mod tests {
         };
 
         let mut app = App::new();
-        app.add_event::<RequestAutoscale>();
+        app.add_message::<RequestAutoscale>();
         app.init_resource::<InstrumentTradingDataMap>();
 
         let mut data = InstrumentTradingData::default();
@@ -500,25 +500,25 @@ mod tests {
         app.update();
 
         let world = app.world_mut();
-        let mut pq = world.query::<(&PriceLabel, &Parent)>();
+        let mut pq = world.query::<(&PriceLabel, &ChildOf)>();
         let price_labels: Vec<_> = pq.iter(world).collect();
         assert!(!price_labels.is_empty(), "price labels should be generated");
         for (label, parent) in &price_labels {
             assert_eq!(label.target_chart, chart);
             assert_eq!(
-                parent.get(),
+                parent.parent(),
                 price_gutter,
                 "price label must child of price gutter"
             );
         }
 
-        let mut tq = world.query::<(&TimeLabel, &Parent, &Transform)>();
+        let mut tq = world.query::<(&TimeLabel, &ChildOf, &Transform)>();
         let mut time_labels: Vec<_> = tq.iter(world).collect();
         assert!(!time_labels.is_empty(), "time labels should be generated");
         for (label, parent, _) in &time_labels {
             assert_eq!(label.target_chart, chart);
             assert_eq!(
-                parent.get(),
+                parent.parent(),
                 time_gutter,
                 "time label must child of time gutter"
             );
@@ -604,7 +604,7 @@ mod tests {
         use crate::ui::chart_viewstate::{ChartViewState, RequestAutoscale};
 
         let mut app = App::new();
-        app.add_event::<RequestAutoscale>();
+        app.add_message::<RequestAutoscale>();
         app.init_resource::<InstrumentTradingDataMap>();
 
         let mut data = InstrumentTradingData::default();
@@ -694,7 +694,7 @@ mod tests {
         use crate::ui::chart_viewstate::{ChartViewState, RequestAutoscale};
 
         let mut app = App::new();
-        app.add_event::<RequestAutoscale>();
+        app.add_message::<RequestAutoscale>();
         app.init_resource::<InstrumentTradingDataMap>();
 
         let mut data = InstrumentTradingData::default();

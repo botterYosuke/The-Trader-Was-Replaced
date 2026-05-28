@@ -9,8 +9,7 @@
 
 use bevy::{
     ecs::query::{QueryData, QueryFilter},
-    window::SystemCursorIcon,
-    winit::cursor::CursorIcon,
+    window::{CursorIcon, SystemCursorIcon},
 };
 
 use crate::{prelude::*, primary::CameraFilter, HoverCursor, TextHoverIn, TextHoverOut};
@@ -75,7 +74,7 @@ pub(crate) struct RenderTypeScan {
     is_ui: Has<TextEdit>,
 }
 
-impl RenderTypeScanItem<'_> {
+impl RenderTypeScanItem<'_, '_> {
     pub fn scan(&self) -> Result<SourceType> {
         match (self.is_sprite, self.is_ui) {
             (true, false) => Ok(SourceType::Sprite),
@@ -95,8 +94,8 @@ pub(crate) struct CosmicWidgetSize {
 }
 
 /// Allows `.scan()` to be called on a [`CosmicWidgetSize`] through deref
-impl<'s> std::ops::Deref for CosmicWidgetSizeItem<'s> {
-    type Target = RenderTypeScanItem<'s>;
+impl<'s, 't> std::ops::Deref for CosmicWidgetSizeItem<'s, 't> {
+    type Target = RenderTypeScanItem<'s, 't>;
 
     fn deref(&self) -> &Self::Target {
         &self.scan
@@ -120,7 +119,7 @@ impl NodeSizeExt for ComputedNode {
     }
 }
 
-impl CosmicWidgetSizeItem<'_> {
+impl CosmicWidgetSizeItem<'_, '_> {
     pub fn logical_size(&self) -> Result<Vec2> {
         let source_type = self.scan.scan()?;
         match source_type {
@@ -197,15 +196,19 @@ pub(crate) fn hover_sprites(
     camera_q: Query<(&Camera, &GlobalTransform), CameraFilter>,
     mut hovered: Local<bool>,
     mut last_hovered: Local<bool>,
-    mut evw_hover_in: EventWriter<TextHoverIn>,
-    mut evw_hover_out: EventWriter<TextHoverOut>,
+    mut evw_hover_in: MessageWriter<TextHoverIn>,
+    mut evw_hover_out: MessageWriter<TextHoverOut>,
 ) {
     *hovered = false;
     if windows.iter().len() == 0 {
         return;
     }
-    let window = windows.single();
-    let (camera, camera_transform) = camera_q.single();
+    let Ok(window) = windows.single() else {
+        return;
+    };
+    let Ok((camera, camera_transform)) = camera_q.single() else {
+        return;
+    };
 
     let mut icon = CursorIcon::System(SystemCursorIcon::Default);
 
@@ -232,9 +235,9 @@ pub(crate) fn hover_sprites(
 
     if *last_hovered != *hovered {
         if *hovered {
-            evw_hover_in.send(TextHoverIn(icon));
+            evw_hover_in.write(TextHoverIn(icon));
         } else {
-            evw_hover_out.send(TextHoverOut);
+            evw_hover_out.write(TextHoverOut);
         }
     }
 

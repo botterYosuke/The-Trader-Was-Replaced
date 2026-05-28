@@ -182,14 +182,14 @@ pub fn chart_ladder_mode_sync_system(
         // root → content_area (chart/price を子に持つ root 直下 entity) を探し、その孫を左シフト。
         let mut content_area: Option<Entity> = None;
         if let Ok(root_children) = children_q.get(root_entity) {
-            for &rc in root_children.iter() {
+            for rc in root_children.iter() {
                 let Ok(grand) = children_q.get(rc) else {
                     continue;
                 };
                 let mut matched = false;
                 // 実値が変わるときだけ書く (無条件代入は spurious な Changed<Transform> を立てる、
                 // chart_viewstate.rs::chart_autoscale_apply_system と同じ DerefMut 抑制)。
-                for &g in grand.iter() {
+                for g in grand.iter() {
                     if let Ok(mut tf) = chart_tf.get_mut(g) {
                         if tf.translation.x != chart_x {
                             tf.translation.x = chart_x;
@@ -250,7 +250,7 @@ pub fn chart_ladder_mode_sync_system(
             // Replay: この root に属する Ladder のみ despawn (子の行も含めて)。
             for (pane_entity, lp) in &ladder_panes {
                 if lp.chart_root == root_entity {
-                    commands.entity(pane_entity).despawn_recursive();
+                    commands.entity(pane_entity).despawn();
                 }
             }
         }
@@ -300,9 +300,9 @@ pub fn ladder_render_system(
 
         // この pane に属する古い行のみ despawn (行は Text2d 子を持つので recursive)。
         if let Some(children) = children {
-            for &child in children.iter() {
+            for child in children.iter() {
                 if rows_q.contains(child) {
-                    commands.entity(child).despawn_recursive();
+                    commands.entity(child).despawn();
                 }
             }
         }
@@ -356,8 +356,8 @@ fn spawn_row(
     let row_height = ladder_row_height(LADDER_CONTENT_HEIGHT);
     let y = ladder_row_y(kind, index, LADDER_CONTENT_HEIGHT);
     let (anchor, text_x) = match kind {
-        LadderRowKind::Last => (Anchor::Center, 0.0),
-        _ => (Anchor::CenterLeft, -LADDER_WIDTH / 2.0 + ROW_TEXT_PAD_X),
+        LadderRowKind::Last => (Anchor::CENTER, 0.0),
+        _ => (Anchor::CENTER_LEFT, -LADDER_WIDTH / 2.0 + ROW_TEXT_PAD_X),
     };
     let row = commands
         .spawn((
@@ -686,8 +686,8 @@ mod tests {
         app.update();
 
         let world = app.world_mut();
-        let mut rq = world.query::<(&LadderRow, &Parent)>();
-        let rows: Vec<_> = rq.iter(world).filter(|(_, p)| p.get() == pane).collect();
+        let mut rq = world.query::<(&LadderRow, &ChildOf)>();
+        let rows: Vec<_> = rq.iter(world).filter(|(_, p)| p.parent() == pane).collect();
         assert_eq!(rows.len(), 21, "ask10 + last + bid10 = 21 行");
         assert_eq!(
             rows.iter()
@@ -747,8 +747,8 @@ mod tests {
         app.update();
 
         let world = app.world_mut();
-        let mut rq = world.query::<(&LadderRow, &Parent)>();
-        let rows: Vec<_> = rq.iter(world).filter(|(_, p)| p.get() == pane).collect();
+        let mut rq = world.query::<(&LadderRow, &ChildOf)>();
+        let rows: Vec<_> = rq.iter(world).filter(|(_, p)| p.parent() == pane).collect();
         assert_eq!(rows.len(), 1, "depth 無しはプレースホルダ 1 行");
     }
 
@@ -819,10 +819,10 @@ mod tests {
         app.update();
 
         let world = app.world_mut();
-        let mut rq = world.query::<(&LadderRow, &Parent)>();
+        let mut rq = world.query::<(&LadderRow, &ChildOf)>();
         let all: Vec<_> = rq.iter(world).collect();
-        let x_rows = all.iter().filter(|(_, p)| p.get() == pane_x).count();
-        let y_rows = all.iter().filter(|(_, p)| p.get() == pane_y).count();
+        let x_rows = all.iter().filter(|(_, p)| p.parent() == pane_x).count();
+        let y_rows = all.iter().filter(|(_, p)| p.parent() == pane_y).count();
         assert_eq!(x_rows, 21, "depth ありの X は 21 行");
         assert_eq!(
             y_rows, 1,
@@ -888,8 +888,8 @@ mod tests {
         app.update();
 
         let world = app.world_mut();
-        let mut rq = world.query::<(&LadderRow, &Parent)>();
-        let rows = rq.iter(world).filter(|(_, p)| p.get() == pane).count();
+        let mut rq = world.query::<(&LadderRow, &ChildOf)>();
+        let rows = rq.iter(world).filter(|(_, p)| p.parent() == pane).count();
         assert_eq!(rows, 21, "depth 変化で再生成後も 21 行 (42 に累積しない)");
     }
 
@@ -936,9 +936,9 @@ mod tests {
         // 初回 build で行 entity の id を控える。
         let first_ids: Vec<Entity> = {
             let world = app.world_mut();
-            let mut rq = world.query::<(Entity, &LadderRow, &Parent)>();
+            let mut rq = world.query::<(Entity, &LadderRow, &ChildOf)>();
             rq.iter(world)
-                .filter(|(_, _, p)| p.get() == pane)
+                .filter(|(_, _, p)| p.parent() == pane)
                 .map(|(e, _, _)| e)
                 .collect()
         };
@@ -951,10 +951,10 @@ mod tests {
         app.update();
 
         let world = app.world_mut();
-        let mut rq = world.query::<(Entity, &LadderRow, &Parent)>();
+        let mut rq = world.query::<(Entity, &LadderRow, &ChildOf)>();
         let second_ids: Vec<Entity> = rq
             .iter(world)
-            .filter(|(_, _, p)| p.get() == pane)
+            .filter(|(_, _, p)| p.parent() == pane)
             .map(|(e, _, _)| e)
             .collect();
         assert_eq!(
@@ -1009,9 +1009,9 @@ mod tests {
         app.update();
         let first_ids: Vec<Entity> = {
             let world = app.world_mut();
-            let mut rq = world.query::<(Entity, &LadderRow, &Parent)>();
+            let mut rq = world.query::<(Entity, &LadderRow, &ChildOf)>();
             rq.iter(world)
-                .filter(|(_, _, p)| p.get() == pane)
+                .filter(|(_, _, p)| p.parent() == pane)
                 .map(|(e, _, _)| e)
                 .collect()
         };
@@ -1025,10 +1025,10 @@ mod tests {
         app.update();
 
         let world = app.world_mut();
-        let mut rq = world.query::<(Entity, &LadderRow, &Parent)>();
+        let mut rq = world.query::<(Entity, &LadderRow, &ChildOf)>();
         let second_ids: Vec<Entity> = rq
             .iter(world)
-            .filter(|(_, _, p)| p.get() == pane)
+            .filter(|(_, _, p)| p.parent() == pane)
             .map(|(e, _, _)| e)
             .collect();
         assert_eq!(second_ids.len(), 21);

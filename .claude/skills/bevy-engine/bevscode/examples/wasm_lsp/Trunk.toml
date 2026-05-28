@@ -1,0 +1,16 @@
+[build]
+target = "index.html"
+release = false
+
+[serve]
+addresses = ["127.0.0.1"]
+port = 8765
+open = false
+
+# Proxy the WebSocket the Bevy app opens at `/lsp` through to the bridge
+# script (see `bridge/server.mjs`) which forwards it to rust-analyzer's
+# stdio. `ws = true` flips trunk's reverse proxy into WebSocket mode.
+[[proxy]]
+backend = "ws://127.0.0.1:9876/"
+rewrite = "/lsp"
+ws = true

@@ -17,7 +17,7 @@
 //! 単体テストが担っている（`cargo test -p backcast chart_interaction`）。
 
 use bevy::input::mouse::{MouseScrollUnit, MouseWheel};
-use bevy::picking::focus::HoverMap;
+use bevy::picking::hover::HoverMap;
 use bevy::prelude::*;
 
 use backcast::ui::chart_interaction::chart_scroll_zoom_system;
@@ -28,7 +28,7 @@ use backcast::ui::components::ChartInstrument;
 fn k2_chart_wheel_zoom_clamps() {
     let mut app = App::new();
     // MinimalPlugins: タイマー・スケジュール等の最小セット。render / window は不要。
-    app.add_plugins(bevy::core::TaskPoolPlugin::default());
+    app.add_plugins(bevy::app::TaskPoolPlugin::default());
     app.add_plugins(bevy::app::ScheduleRunnerPlugin::default());
     app.add_plugins(bevy::time::TimePlugin);
 
@@ -36,7 +36,7 @@ fn k2_chart_wheel_zoom_clamps() {
     // 不足すると system-param バリデーションで panic するため完備させる。
     app.insert_resource(ButtonInput::<KeyCode>::default());
     app.insert_resource(HoverMap::default());
-    app.add_event::<MouseWheel>();
+    app.add_message::<MouseWheel>();
 
     // camera_q (With<Camera2d>) が 0 件だと camera の get_single() が Err を返して system が
     // continue するが、resource として Camera がないとパラメータ解決自体は成功する。
@@ -66,7 +66,7 @@ fn k2_chart_wheel_zoom_clamps() {
         .unwrap()
         .cell_width;
 
-    app.world_mut().send_event(MouseWheel {
+    app.world_mut().write_message(MouseWheel {
         unit: MouseScrollUnit::Line,
         x: 0.0,
         y: 3.0, // zoom-in 方向
@@ -91,7 +91,7 @@ fn k2_chart_wheel_zoom_clamps() {
         let mut keys = app.world_mut().resource_mut::<ButtonInput<KeyCode>>();
         keys.press(KeyCode::ControlLeft);
     }
-    app.world_mut().send_event(MouseWheel {
+    app.world_mut().write_message(MouseWheel {
         unit: MouseScrollUnit::Line,
         x: 0.0,
         y: 5.0,

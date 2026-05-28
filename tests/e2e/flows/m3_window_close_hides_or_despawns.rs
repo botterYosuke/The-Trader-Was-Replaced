@@ -10,7 +10,7 @@ use bevy::prelude::*;
 use bevy::transform::TransformPlugin;
 use bevy::picking::pointer::{Location, PointerId, PointerButton};
 use bevy::picking::events::{Click, Pointer};
-use bevy::render::camera::NormalizedRenderTarget;
+use bevy::camera::NormalizedRenderTarget;
 use std::time::Duration;
 
 use backcast::ui::components::{
@@ -28,7 +28,7 @@ use crate::ui_dump::{dump_panels, panels_of};
 /// observer 内では pointer_location を参照しないため、image target で代替する。
 fn dummy_location() -> Location {
     Location {
-        target: NormalizedRenderTarget::Image(Handle::<bevy::image::Image>::default()),
+        target: NormalizedRenderTarget::Image(Handle::<bevy::image::Image>::default().into()),
         position: Vec2::ZERO,
     }
 }
@@ -89,19 +89,18 @@ fn m3_window_close_hides_or_despawns() {
     }
 
     // CloseButton の Pointer<Click> observer を発火する。
-    app.world_mut().trigger_targets(
+    app.world_mut().entity_mut(close_btn).trigger(|entity| {
         Pointer::<Click>::new(
-            close_btn,
             PointerId::Mouse,
             dummy_location(),
             Click {
                 button: PointerButton::Primary,
-                hit: bevy::picking::backend::HitData::new(Entity::from_raw(0), 0.0, None, None),
+                hit: bevy::picking::backend::HitData::new(Entity::PLACEHOLDER, 0.0, None, None),
                 duration: Duration::from_millis(100),
             },
-        ),
-        close_btn,
-    );
+            entity,
+        )
+    });
     // observer 内の `commands.entity(root).despawn_recursive()` を flush する。
     app.update();
 

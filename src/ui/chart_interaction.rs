@@ -20,7 +20,7 @@
 use crate::ui::chart_viewstate::ChartViewState;
 use crate::ui::components::ChartInstrument;
 use bevy::input::mouse::{MouseScrollUnit, MouseWheel};
-use bevy::picking::focus::HoverMap;
+use bevy::picking::hover::HoverMap;
 use bevy::picking::pointer::{PointerId, PointerLocation};
 use bevy::prelude::*;
 use std::collections::{HashMap, HashSet};
@@ -77,27 +77,27 @@ pub fn install_chart_drag_observer(
 ) {
     for entity in &new_charts {
         commands.entity(entity).observe(
-            |mut drag: Trigger<Pointer<Drag>>,
+            |mut drag: On<Pointer<Drag>>,
              mut chart_q: Query<&mut ChartViewState>,
              mut click_state: ResMut<ChartClickState>,
              // camera scale 補正 (規約 5 / floating_window.rs:117): bevy_pancam のズーム状態でも
              // world-space の pan 量が screen-space の drag 距離と一致するように scale を掛ける。
-             camera_q: Query<&OrthographicProjection, With<Camera2d>>| {
+             camera_q: Query<&Projection, With<Camera2d>>| {
                 // ⚠️ Pointer<Drag> は全ボタンで発火する (bevy_picking 0.15 `pointer_events` が
                 //    `for button in PointerButton::iter()`)。右/中ボタンドラッグは camera.rs の
                 //    suppression が「PanCam でキャンバスをパン」と定義しているので、ここで処理すると
                 //    chart も同時にパンし auto_scale まで切れて二重挙動になる。左ボタンのみ chart pan。
-                if drag.event().button != PointerButton::Primary {
+                if drag.button != PointerButton::Primary {
                     return;
                 }
-                // Bevy 0.15: trigger.entity() (0.16+ で target() に rename — Caveat #3)。
-                let entity = drag.entity();
+                let entity = drag.entity;
                 let Ok(mut state) = chart_q.get_mut(entity) else {
                     return;
                 };
-                // Trigger は inner event を Deref しないので .event() 経由 (Caveat #23)。
-                let delta = drag.event().delta;
-                let scale = camera_q.get_single().map(|p| p.scale).unwrap_or(1.0);
+                let delta = drag.delta;
+                let scale = camera_q.single().map(|p| {
+                    if let Projection::Orthographic(proj) = p { proj.scale } else { 1.0 }
+                }).unwrap_or(1.0);
                 state.translation.x += delta.x * scale;
                 state.translation.y -= delta.y * scale; // Bevy Y は上が正、Pointer delta は下が正
                 state.auto_scale = false; // pan 開始で autoscale off
@@ -120,14 +120,14 @@ pub fn install_chart_autoscale_reset_observer(
 ) {
     for entity in &new_charts {
         commands.entity(entity).observe(
-            |mut click: Trigger<Pointer<Click>>,
+            |mut click: On<Pointer<Click>>,
              time: Res<Time>,
              mut click_state: ResMut<ChartClickState>,
              mut chart_q: Query<&mut ChartViewState>| {
-                if click.event().button != PointerButton::Primary {
+                if click.button != PointerButton::Primary {
                     return;
                 }
-                let entity = click.entity();
+                let entity = click.entity;
                 click.propagate(false); // window 移動/他パネルに bubble させない (Caveat #2)
                 // drag 由来の click は genuine click ではない (Bevy 0.15 は drag 後も Click 発火)。
                 // 印を消し、double-click 列もリセットして「pan 2 連発 = reset」の誤検出を断つ。
@@ -186,7 +186,7 @@ fn apply_cursor_zoom(state: &mut ChartViewState, cursor_local: Vec2, wheel_y: f3
 
 /// マウスホイールで hover 中の chart を cursor 中心ズームする (regular system, `ChartSet::Interaction`)。
 pub fn chart_scroll_zoom_system(
-    mut wheel: EventReader<MouseWheel>,
+    mut wheel: MessageReader<MouseWheel>,
     // Ctrl 押下中は「キャンバス全体ズーム」意図 (camera.rs の suppression と対称)。chart ズームは skip。
     keys: Res<ButtonInput<KeyCode>>,
     // Bevy 0.15.1: HoverMap は bevy::picking::focus (0.16+ で hover に rename)。
@@ -218,7 +218,7 @@ pub fn chart_scroll_zoom_system(
         else {
             continue;
         };
-        let Ok((cam, cam_t)) = camera_q.get_single() else {
+        let Ok((cam, cam_t)) = camera_q.single() else {
             continue;
         };
         // hover 中の chart に対応する pointer の座標を引く (別 pointer の座標を拾わない)。

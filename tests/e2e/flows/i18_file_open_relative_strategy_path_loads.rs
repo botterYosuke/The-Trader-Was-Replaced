@@ -121,19 +121,18 @@ fn i18_file_open_relative_strategy_path_loads() {
         .insert_resource(InstrumentTradingDataMap::default())
         .init_resource::<backcast::ui::components::ChartSizeMap>();
 
-    app.add_event::<LayoutSaveRequested>()
-        .add_event::<LayoutSaveAsRequested>()
-        .add_event::<LayoutLoadRequested>()
-        .add_event::<PanelSpawnRequested>()
-        .add_event::<StrategyFileLoadRequested>()
-        .add_event::<ScenarioLoadedFromFile>()
-        .add_event::<ScenarioClearedFromFile>();
+    app.add_message::<LayoutSaveRequested>()
+        .add_message::<LayoutSaveAsRequested>()
+        .add_message::<LayoutLoadRequested>()
+        .add_message::<PanelSpawnRequested>()
+        .add_message::<StrategyFileLoadRequested>()
+        .add_message::<ScenarioLoadedFromFile>()
+        .add_message::<ScenarioClearedFromFile>();
 
     app.world_mut().spawn((
         Camera2d,
         Transform::default(),
-        OrthographicProjection::default_2d(),
-    ));
+            ));
 
     app.add_systems(
         Update,
@@ -149,7 +148,7 @@ fn i18_file_open_relative_strategy_path_loads() {
     );
 
     // 相対パスを持つ JSON を UserJsonOpen で開く。
-    app.world_mut().send_event(LayoutLoadRequested {
+    app.world_mut().write_message(LayoutLoadRequested {
         path: json_path.clone(),
         mode: LayoutLoadMode::UserJsonOpen,
     });

@@ -1,0 +1,1 @@
+//! Editor-only selection helpers.

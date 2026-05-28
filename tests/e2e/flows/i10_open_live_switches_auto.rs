@@ -31,11 +31,11 @@ fn build_app(mode: ExecutionMode) -> (App, mpsc::UnboundedReceiver<TransportComm
     app.insert_resource(OpenMenu::default());
     app.insert_resource(TransportCommandSender { tx });
 
-    app.add_event::<LayoutSaveRequested>();
-    app.add_event::<LayoutSaveAsRequested>();
-    app.add_event::<LayoutLoadDialogRequested>();
-    app.add_event::<UndoMenuRequested>();
-    app.add_event::<RedoMenuRequested>();
+    app.add_message::<LayoutSaveRequested>();
+    app.add_message::<LayoutSaveAsRequested>();
+    app.add_message::<LayoutLoadDialogRequested>();
+    app.add_message::<UndoMenuRequested>();
+    app.add_message::<RedoMenuRequested>();
 
     app.add_systems(Update, menu_item_system);
 
@@ -74,7 +74,7 @@ fn i10_open_live_switches_auto() {
         // ダイアログ要求イベントが発火したこと。
         let dialogs = app
             .world_mut()
-            .resource_mut::<Events<LayoutLoadDialogRequested>>()
+            .resource_mut::<Messages<LayoutLoadDialogRequested>>()
             .drain()
             .count();
         assert_eq!(
@@ -110,7 +110,7 @@ fn i10_open_live_switches_auto() {
 
         let dialogs = app
             .world_mut()
-            .resource_mut::<Events<LayoutLoadDialogRequested>>()
+            .resource_mut::<Messages<LayoutLoadDialogRequested>>()
             .drain()
             .count();
         assert_eq!(dialogs, 1, "LayoutLoadDialogRequested が 1 回発火するはず");
@@ -132,7 +132,7 @@ fn i10_open_live_switches_auto() {
         // ダイアログ要求は発火する。
         let dialogs = app
             .world_mut()
-            .resource_mut::<Events<LayoutLoadDialogRequested>>()
+            .resource_mut::<Messages<LayoutLoadDialogRequested>>()
             .drain()
             .count();
         assert_eq!(

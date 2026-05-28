@@ -9,6 +9,7 @@
 use bevy::prelude::*;
 
 use backcast::ui::components::{
+    ChartSizeMap,
     PanelKind, PanelSpawnRequested, PendingStrategyFragments, ScenarioReadTarget,
     StrategyFileLoadRequested, WindowManager, WindowRoot,
 };
@@ -19,9 +20,10 @@ use backcast::ui::layout_persistence::{
 #[test]
 fn m9_startup_window_position_persists_visible_not_authoritative() {
     let mut app = App::new();
-    app.add_event::<LayoutLoadRequested>();
-    app.add_event::<PanelSpawnRequested>();
-    app.add_event::<StrategyFileLoadRequested>();
+    app.init_resource::<ChartSizeMap>();
+    app.add_message::<LayoutLoadRequested>();
+    app.add_message::<PanelSpawnRequested>();
+    app.add_message::<StrategyFileLoadRequested>();
     app.insert_resource(WindowManager::default());
     app.insert_resource(PendingLayoutApply::default());
     app.insert_resource(PendingStrategyFragments::default());
@@ -31,8 +33,7 @@ fn m9_startup_window_position_persists_visible_not_authoritative() {
     app.world_mut().spawn((
         Camera2d,
         Transform::default(),
-        OrthographicProjection::default_2d(),
-    ));
+            ));
 
     // Startup root は ExecutionMode が可視性を所有する。restore 前は Inherited。
     let startup = app
@@ -69,7 +70,7 @@ fn m9_startup_window_position_persists_visible_not_authoritative() {
     });
     std::fs::write(&tmp, serde_json::to_string(&layout_json).unwrap()).unwrap();
 
-    app.world_mut().send_event(LayoutLoadRequested {
+    app.world_mut().write_message(LayoutLoadRequested {
         path: tmp.clone(),
         mode: LayoutLoadMode::UserJsonOpen,
     });

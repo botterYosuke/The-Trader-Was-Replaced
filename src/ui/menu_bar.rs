@@ -24,7 +24,7 @@ const BTN_NORMAL: Color = Color::srgba(0.10, 0.10, 0.16, 1.0);
 const BTN_HOVER: Color = Color::srgba(0.20, 0.20, 0.30, 1.0);
 const BTN_PRESSED: Color = Color::srgba(0.30, 0.30, 0.48, 1.0);
 
-fn spawn_menu_item(parent: &mut ChildBuilder, label: &str, action: MenuItem) {
+fn spawn_menu_item(parent: &mut ChildSpawnerCommands, label: &str, action: MenuItem) {
     parent
         .spawn((
             Button,
@@ -281,7 +281,7 @@ pub fn sync_menu_popup_visibility_system(
 pub fn menu_keyboard_system(
     keys: Res<ButtonInput<KeyCode>>,
     mut open_menu: ResMut<OpenMenu>,
-    mut kb_events: ResMut<Events<KeyboardInput>>,
+    mut kb_events: ResMut<Messages<KeyboardInput>>,
 ) {
     let alt = keys.pressed(KeyCode::AltLeft) || keys.pressed(KeyCode::AltRight);
     if !alt {
@@ -401,7 +401,7 @@ pub fn gate_venue_menu_items_system(
             }
         }
         let target_text = if disabled { TEXT_DISABLED } else { TEXT_NORMAL };
-        for &child in children.iter() {
+        for child in children.iter() {
             if let Ok(mut tc) = text_q.get_mut(child) {
                 if tc.0 != target_text {
                     tc.0 = target_text;
@@ -445,11 +445,11 @@ pub fn menu_item_system(
         (Changed<Interaction>, With<Button>),
     >,
     mut open_menu: ResMut<OpenMenu>,
-    mut save_ev: EventWriter<LayoutSaveRequested>,
-    mut save_as_ev: EventWriter<LayoutSaveAsRequested>,
-    mut load_ev: EventWriter<LayoutLoadDialogRequested>,
-    mut undo_ev: EventWriter<UndoMenuRequested>,
-    mut redo_ev: EventWriter<RedoMenuRequested>,
+    mut save_ev: MessageWriter<LayoutSaveRequested>,
+    mut save_as_ev: MessageWriter<LayoutSaveAsRequested>,
+    mut load_ev: MessageWriter<LayoutLoadDialogRequested>,
+    mut undo_ev: MessageWriter<UndoMenuRequested>,
+    mut redo_ev: MessageWriter<RedoMenuRequested>,
     sender: Option<Res<TransportCommandSender>>,
     execution_mode: Res<ExecutionModeRes>,
     venue_status: Res<VenueStatusRes>,
@@ -462,11 +462,11 @@ pub fn menu_item_system(
                 match item {
                     MenuItem::SaveLayout => {
                         info!("menu: save layout requested");
-                        save_ev.send(LayoutSaveRequested);
+                        save_ev.write(LayoutSaveRequested);
                     }
                     MenuItem::SaveLayoutAs => {
                         info!("menu: save layout as requested");
-                        save_as_ev.send(LayoutSaveAsRequested);
+                        save_as_ev.write(LayoutSaveAsRequested);
                     }
                     MenuItem::LoadLayout => {
                         // Phase 8 §3.5.1 / §3.6.1「File→Open Strategy の execution_mode 連動」:
@@ -499,15 +499,15 @@ pub fn menu_item_system(
                             }
                         }
                         info!("menu: load layout requested");
-                        load_ev.send(LayoutLoadDialogRequested);
+                        load_ev.write(LayoutLoadDialogRequested);
                     }
                     MenuItem::Undo => {
                         info!("menu: undo requested");
-                        undo_ev.send(UndoMenuRequested);
+                        undo_ev.write(UndoMenuRequested);
                     }
                     MenuItem::Redo => {
                         info!("menu: redo requested");
-                        redo_ev.send(RedoMenuRequested);
+                        redo_ev.write(RedoMenuRequested);
                     }
                     MenuItem::FileNew => {
                         // Phase 8 §3.5 / §3.6「起動・New の挙動」:
@@ -599,7 +599,7 @@ pub fn menu_item_system(
 /// 起動時に固定 cache `%LocalAppData%/.../app_state.json` を読み、
 /// `CacheRestoreRequested` を発火して復元処理に流す。
 /// Startup schedule で 1 回だけ実行される。
-pub fn restore_last_strategy_system(mut events: EventWriter<CacheRestoreRequested>) {
+pub fn restore_last_strategy_system(mut events: MessageWriter<CacheRestoreRequested>) {
     let Some((cache_json, _)) = cache_state_paths() else {
         info!("restore_from_cache: cache_dir not found, skipping");
         return;
@@ -631,10 +631,10 @@ pub fn restore_last_strategy_system(mut events: EventWriter<CacheRestoreRequeste
         "restore_from_cache: firing CacheRestoreRequested from {:?}",
         cache_json
     );
-    events.send(CacheRestoreRequested { layout });
+    events.write(CacheRestoreRequested { layout });
 }
 
-pub fn log_strategy_file_load_requested_system(mut events: EventReader<StrategyFileLoadRequested>) {
+pub fn log_strategy_file_load_requested_system(mut events: MessageReader<StrategyFileLoadRequested>) {
     for event in events.read() {
         info!(
             "strategy file load requested: path={:?} mode={:?}",
@@ -723,12 +723,12 @@ pub fn update_strategy_status_label_system(
 #[allow(clippy::too_many_arguments)]
 pub fn handle_strategy_file_load_system(
     mut commands: Commands,
-    mut events: EventReader<StrategyFileLoadRequested>,
+    mut events: MessageReader<StrategyFileLoadRequested>,
     mut buffer: ResMut<StrategyBuffer>,
     mut allocator: ResMut<RegionKeyAllocator>,
     mut pending: ResMut<PendingStrategyFragments>,
-    mut spawn_ev: EventWriter<PanelSpawnRequested>,
-    mut layout_ev: EventWriter<LayoutLoadRequested>,
+    mut spawn_ev: MessageWriter<PanelSpawnRequested>,
+    mut layout_ev: MessageWriter<LayoutLoadRequested>,
     existing_roots: Query<(Entity, &PanelKind), With<WindowRoot>>,
     mut scenario_target: ResMut<ScenarioReadTarget>, // ← ADD
 ) {
@@ -781,7 +781,7 @@ pub fn handle_strategy_file_load_system(
 
         for (entity, kind) in &existing_roots {
             if matches!(kind, PanelKind::StrategyEditor) {
-                commands.entity(entity).despawn_recursive();
+                commands.entity(entity).despawn();
             }
         }
 
@@ -805,7 +805,7 @@ pub fn handle_strategy_file_load_system(
                     "strategy load: sidecar present with windows, delegating spawn to layout {:?}",
                     sidecar_path
                 );
-                layout_ev.send(LayoutLoadRequested {
+                layout_ev.write(LayoutLoadRequested {
                     path: sidecar_path,
                     mode: LayoutLoadMode::ApplySidecarForPy,
                 });
@@ -816,7 +816,7 @@ pub fn handle_strategy_file_load_system(
                     sidecar_path
                 );
                 for (key, body) in &outcome.fragments {
-                    spawn_ev.send(PanelSpawnRequested {
+                    spawn_ev.write(PanelSpawnRequested {
                         kind: PanelKind::StrategyEditor,
                         source: PanelSpawnSource::LayoutLoad,
                         strategy_spec: Some(StrategyEditorSpawnSpec {
@@ -826,14 +826,14 @@ pub fn handle_strategy_file_load_system(
                         }),
                     });
                 }
-                layout_ev.send(LayoutLoadRequested {
+                layout_ev.write(LayoutLoadRequested {
                     path: sidecar_path,
                     mode: LayoutLoadMode::ApplySidecarForPy,
                 });
             }
             (_, false, _) => {
                 for (key, body) in &outcome.fragments {
-                    spawn_ev.send(PanelSpawnRequested {
+                    spawn_ev.write(PanelSpawnRequested {
                         kind: PanelKind::StrategyEditor,
                         source: PanelSpawnSource::LayoutLoad,
                         strategy_spec: Some(StrategyEditorSpawnSpec {
@@ -857,7 +857,7 @@ pub fn handle_strategy_file_load_system(
     }
 }
 
-pub fn log_strategy_run_requested_system(mut events: EventReader<StrategyRunRequested>) {
+pub fn log_strategy_run_requested_system(mut events: MessageReader<StrategyRunRequested>) {
     for event in events.read() {
         info!("strategy run requested: {:?}", event.cache_path);
     }
@@ -865,7 +865,7 @@ pub fn log_strategy_run_requested_system(mut events: EventReader<StrategyRunRequ
 
 #[allow(clippy::too_many_arguments)]
 pub fn handle_strategy_run_system(
-    mut events: EventReader<StrategyRunRequested>,
+    mut events: MessageReader<StrategyRunRequested>,
     scenario: Res<ScenarioMetadata>,
     sender: Option<Res<TransportCommandSender>>,
     registry: Res<InstrumentRegistry>,
@@ -1154,7 +1154,7 @@ mod tests {
         app.init_resource::<ScenarioStartupParams>();
         app.insert_resource(TradingSession::default());
         app.insert_resource(CurrentRun::default());
-        app.add_event::<StrategyRunRequested>();
+        app.add_message::<StrategyRunRequested>();
         app.add_systems(Update, handle_strategy_run_system);
 
         let rx = if with_sender {
@@ -1170,7 +1170,7 @@ mod tests {
     #[test]
     fn test_handle_strategy_run_writes_progress_on_send_success() {
         let (mut app, mut rx) = build_app_for_run(make_valid_scenario(), true);
-        app.world_mut().send_event(StrategyRunRequested {
+        app.world_mut().write_message(StrategyRunRequested {
             cache_path: std::path::PathBuf::from("/tmp/foo.py"),
         });
         app.update();
@@ -1199,7 +1199,7 @@ mod tests {
     #[test]
     fn test_handle_strategy_run_no_sender_keeps_progress_idle() {
         let (mut app, _rx) = build_app_for_run(make_valid_scenario(), false);
-        app.world_mut().send_event(StrategyRunRequested {
+        app.world_mut().write_message(StrategyRunRequested {
             cache_path: std::path::PathBuf::from("/tmp/foo.py"),
         });
         app.update();
@@ -1215,7 +1215,7 @@ mod tests {
     #[test]
     fn test_handle_strategy_run_invalid_scenario_keeps_progress_idle() {
         let (mut app, _rx) = build_app_for_run(ScenarioMetadata::default(), true);
-        app.world_mut().send_event(StrategyRunRequested {
+        app.world_mut().write_message(StrategyRunRequested {
             cache_path: std::path::PathBuf::from("/tmp/foo.py"),
         });
         app.update();
@@ -1235,7 +1235,7 @@ mod tests {
             granularity: Some("unknown granularity".to_string()),
             ..Default::default()
         };
-        app.world_mut().send_event(StrategyRunRequested {
+        app.world_mut().write_message(StrategyRunRequested {
             cache_path: std::path::PathBuf::from("/tmp/foo.py"),
         });
         app.update();
@@ -1379,11 +1379,11 @@ mod tests {
             configured_venue: None,
         });
         app.insert_resource(ExecutionModeRes::default());
-        app.add_event::<LayoutSaveRequested>();
-        app.add_event::<LayoutSaveAsRequested>();
-        app.add_event::<LayoutLoadDialogRequested>();
-        app.add_event::<UndoMenuRequested>();
-        app.add_event::<RedoMenuRequested>();
+        app.add_message::<LayoutSaveRequested>();
+        app.add_message::<LayoutSaveAsRequested>();
+        app.add_message::<LayoutLoadDialogRequested>();
+        app.add_message::<UndoMenuRequested>();
+        app.add_message::<RedoMenuRequested>();
 
         let (tx, rx) = tokio::sync::mpsc::unbounded_channel::<TransportCommand>();
         app.insert_resource(TransportCommandSender { tx });

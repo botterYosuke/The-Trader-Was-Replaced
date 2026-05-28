@@ -45,8 +45,8 @@ fn build_app(source: &str) -> (App, Entity, Entity) {
         .insert_resource(StrategyAutoSaveState::default())
         .insert_resource(AppHistory::default())
         .insert_resource(ButtonInput::<KeyCode>::default())
-        .add_event::<CosmicTextChanged>()
-        .add_event::<FindActionRequested>()
+        .add_message::<CosmicTextChanged>()
+        .add_message::<FindActionRequested>()
         .add_systems(
             Update,
             (
@@ -129,7 +129,7 @@ fn j6_find_replace_current_and_all() {
 
         // Replace 実行。
         app.world_mut()
-            .send_event(FindActionRequested(FindButtonKind::Replace));
+            .write_message(FindActionRequested(FindButtonKind::Replace));
         app.update();
 
         // fragment が更新されているはず（sync_editor_to_strategy_buffer_system 経由）。
@@ -157,7 +157,7 @@ fn j6_find_replace_current_and_all() {
         setup_state(&mut app, editor_entity, "foo", "X", true, 0);
 
         app.world_mut()
-            .send_event(FindActionRequested(FindButtonKind::ReplaceAll));
+            .write_message(FindActionRequested(FindButtonKind::ReplaceAll));
         app.update();
 
         let fragment = app.world().get::<StrategyFragment>(root).unwrap();
@@ -194,7 +194,7 @@ fn j6_find_replace_current_and_all() {
         }
 
         app.world_mut()
-            .send_event(FindActionRequested(FindButtonKind::ReplaceAll));
+            .write_message(FindActionRequested(FindButtonKind::ReplaceAll));
         app.update();
 
         let fragment = app.world().get::<StrategyFragment>(root).unwrap();
@@ -215,15 +215,15 @@ fn j6_find_replace_current_and_all() {
 
         // イベントバッファをクリアしてから Replace を実行。
         app.world_mut()
-            .resource_mut::<Events<CosmicTextChanged>>()
+            .resource_mut::<Messages<CosmicTextChanged>>()
             .clear();
         app.world_mut()
-            .send_event(FindActionRequested(FindButtonKind::Replace));
+            .write_message(FindActionRequested(FindButtonKind::Replace));
         app.update();
 
         let count = app
             .world_mut()
-            .resource_mut::<Events<CosmicTextChanged>>()
+            .resource_mut::<Messages<CosmicTextChanged>>()
             .drain()
             .count();
         assert_eq!(

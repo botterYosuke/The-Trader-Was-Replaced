@@ -1,0 +1,43 @@
+[package]
+name = "bevy_instanced_text_editor"
+version = "0.1.1"
+edition = "2021"
+authors = ["PoHsuanLai"]
+license = "MIT OR Apache-2.0"
+description = "Rope-backed text editor primitives on top of bevy_instanced_text_interaction: edit history, undo/redo, cursor movement, typing observer."
+repository = "https://github.com/PoHsuanLai/bevscode"
+keywords = ["bevy", "text", "editor", "ropey", "undo"]
+categories = ["game-development"]
+
+[features]
+default = ["arboard"]
+# Forward to bevy_instanced_text_interaction so editor consumers can toggle the
+# clipboard backend through bevy_instanced_text_editor's feature flag.
+arboard = ["bevy_instanced_text_interaction/arboard"]
+clipboard-wasm = ["bevy_instanced_text_interaction/clipboard-wasm"]
+
+[dependencies]
+bevy_instanced_text = { workspace = true }
+bevy_instanced_text_interaction = { workspace = true }
+
+bevy = { workspace = true, features = [
+    "bevy_render",
+    "bevy_core_pipeline",
+    "bevy_asset",
+    "bevy_text",
+    "default_font",
+    "bevy_sprite",
+    "bevy_sprite_render",
+    "bevy_color",
+    "bevy_mesh",
+    "bevy_camera",
+    "bevy_input_focus",
+    "bevy_picking",
+    "bevy_ui",
+] }
+
+ropey = { workspace = true }
+serde = { workspace = true }
+
+[dev-dependencies]
+bevy = { workspace = true, features = ["bevy_window", "bevy_winit"] }

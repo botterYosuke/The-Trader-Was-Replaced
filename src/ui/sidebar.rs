@@ -46,7 +46,7 @@ pub fn spawn_sidebar(mut commands: Commands) {
                 ..default()
             },
             BackgroundColor(BG),
-            BorderColor(BORDER),
+            BorderColor::all(BORDER),
             SidebarRoot,
         ))
         .with_children(|parent| {
@@ -99,7 +99,7 @@ pub fn spawn_sidebar(mut commands: Commands) {
         });
 }
 
-fn spawn_section_header(parent: &mut ChildBuilder, title: &str) {
+fn spawn_section_header(parent: &mut ChildSpawnerCommands, title: &str) {
     parent
         .spawn((
             Node {
@@ -142,7 +142,7 @@ pub fn apply_order_button_visibility_system(
     }
 }
 
-fn spawn_panel_btn(parent: &mut ChildBuilder, kind: PanelKind) {
+fn spawn_panel_btn(parent: &mut ChildSpawnerCommands, kind: PanelKind) {
     parent
         .spawn((
             Button,
@@ -180,11 +180,11 @@ pub fn update_sidebar_system(
         return;
     }
 
-    let Ok(list_entity) = list_q.get_single() else {
+    let Ok(list_entity) = list_q.single() else {
         return;
     };
 
-    commands.entity(list_entity).despawn_descendants();
+    commands.entity(list_entity).despawn_related::<Children>();
 
     let editable = registry.editable;
     let row_btn_bg = if editable {
@@ -330,11 +330,11 @@ pub fn update_sidebar_system(
 
     // 警告行は毎回作り直す
     for entity in warning_q.iter() {
-        commands.entity(entity).despawn_recursive();
+        commands.entity(entity).despawn();
     }
 
     if !editable {
-        if let Ok(root) = sidebar_root_q.get_single() {
+        if let Ok(root) = sidebar_root_q.single() {
             commands.entity(root).with_children(|parent| {
                 parent.spawn((
                     Text::new("This sidecar uses 'instruments_ref' — read-only in Phase 7.5a"),
@@ -469,7 +469,7 @@ pub fn panel_button_system(
         (&Interaction, &mut BackgroundColor, &PanelKind),
         (Changed<Interaction>, With<Button>),
     >,
-    mut spawn_events: EventWriter<PanelSpawnRequested>,
+    mut spawn_events: MessageWriter<PanelSpawnRequested>,
     existing_kinds: Query<&PanelKind, With<WindowRoot>>,
 ) {
     for (interaction, mut bg, kind) in &mut query {
@@ -480,7 +480,7 @@ pub fn panel_button_system(
                 // dispatcher が allocator から region_key を払い出して空エディタを生やす。
                 let allow_multi = matches!(kind, PanelKind::StrategyEditor);
                 if allow_multi || !existing_kinds.iter().any(|k| k == kind) {
-                    spawn_events.send(PanelSpawnRequested {
+                    spawn_events.write(PanelSpawnRequested {
                         kind: *kind,
                         source: PanelSpawnSource::User,
                         strategy_spec: None,

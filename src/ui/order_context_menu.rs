@@ -129,7 +129,7 @@ pub fn spawn_order_context_menu(mut commands: Commands) {
         });
 }
 
-fn spawn_item(parent: &mut ChildBuilder, item: ContextMenuItem, label: &str) {
+fn spawn_item(parent: &mut ChildSpawnerCommands, item: ContextMenuItem, label: &str) {
     parent
         .spawn((
             Button,
@@ -170,13 +170,13 @@ pub fn context_menu_visibility_system(
     } else {
         Display::None
     };
-    if let Ok(mut node) = root_q.get_single_mut()
+    if let Ok(mut node) = root_q.single_mut()
         && node.display != target
     {
         node.display = target;
     }
     if menu.open
-        && let Ok(mut panel) = panel_q.get_single_mut()
+        && let Ok(mut panel) = panel_q.single_mut()
     {
         let left = Val::Px(menu.screen_pos.x);
         let top = Val::Px(menu.screen_pos.y);

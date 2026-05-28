@@ -81,7 +81,7 @@ pub enum FindButtonKind {
 }
 
 /// ボタン click / キーボードから発行されるアクション要求。
-#[derive(Event, Clone, Copy)]
+#[derive(Message, Clone, Copy)]
 pub struct FindActionRequested(pub FindButtonKind);
 
 // ─────────────────────────────────────────────────────────────────
@@ -309,7 +309,7 @@ pub fn manage_find_panel_lifecycle_system(
                     ..default()
                 },
                 TextColor(Color::srgb(0.7, 0.7, 0.75)),
-                bevy::sprite::Anchor::CenterLeft,
+                bevy::sprite::Anchor::CENTER_LEFT,
                 Transform::from_xyz(-205.0, -55.0, 0.2),
                 FindMatchCountText,
             ))
@@ -360,7 +360,7 @@ pub fn manage_find_panel_lifecycle_system(
     // close 遷移: despawn。
     if !state.is_open && state.panel_root.is_some() {
         let root = state.panel_root.take().unwrap();
-        commands.entity(root).despawn_recursive();
+        commands.entity(root).despawn();
         state.query_editor = None;
         state.replacement_editor = None;
         // matches のクリアは compute_find_match_spans_system が is_open=false で行う。
@@ -371,7 +371,7 @@ pub fn manage_find_panel_lifecycle_system(
 /// **history / autosave / fragment には絶対に触らない** (Caveat #28)。
 /// `Without<StrategyEditorContent>` を二重ガードに使い、マーカー取り違えを検出する。
 pub fn sync_find_editors_to_state_system(
-    mut events: EventReader<CosmicTextChanged>,
+    mut events: MessageReader<CosmicTextChanged>,
     query_q: Query<Entity, (With<FindQueryEditor>, Without<StrategyEditorContent>)>,
     replacement_q: Query<Entity, (With<FindReplacementEditor>, Without<StrategyEditorContent>)>,
     mut state: ResMut<FindReplaceState>,
@@ -499,7 +499,7 @@ pub fn compute_find_match_spans_system(
 /// query 欄に focus 中は Enter を navigation に使わない (F3 / ボタンのみ)。
 pub fn find_navigate_system(
     keys: Res<ButtonInput<KeyCode>>,
-    mut actions: EventReader<FindActionRequested>,
+    mut actions: MessageReader<FindActionRequested>,
     focused: Res<FocusedWidget>,
     mut state: ResMut<FindReplaceState>,
     mut editor_q: Query<&mut FindMatchSpans, With<StrategyEditorContent>>,
@@ -589,7 +589,7 @@ pub fn find_scroll_to_match_system(
 /// `set_text` + `CosmicTextChanged` を発行する。fragment 更新・undo 記録・autosave・
 /// 再ハイライトは Phase A パイプライン (CosmicTextChanged → fragment Changed) に委譲する。
 pub fn replace_execute_system(
-    mut actions: EventReader<FindActionRequested>,
+    mut actions: MessageReader<FindActionRequested>,
     state: Res<FindReplaceState>,
     fragments_q: Query<(&StrategyEditorId, &StrategyFragment), With<WindowRoot>>,
     mut editor_q: Query<
@@ -601,7 +601,7 @@ pub fn replace_execute_system(
         With<StrategyEditorContent>,
     >,
     mut font_system: ResMut<CosmicFontSystem>,
-    mut evw_changed: EventWriter<CosmicTextChanged>,
+    mut evw_changed: MessageWriter<CosmicTextChanged>,
 ) {
     if !state.is_open {
         return;
@@ -653,14 +653,15 @@ pub fn replace_execute_system(
             b.set_text(
                 &mut font_system.0,
                 &new_source,
-                Attrs::new(),
+                &Attrs::new(),
                 Shaping::Advanced,
+                None,
             );
             b.set_redraw(true);
         });
         editor.set_redraw(true);
     }
-    evw_changed.send(CosmicTextChanged((target, new_source)));
+    evw_changed.write(CosmicTextChanged((target, new_source)));
 }
 
 /// 件数表示 ("current/total") を state 変化時に更新する。
@@ -708,7 +709,7 @@ fn spawn_find_field(
                 Metrics::new(FIND_FONT_SIZE, FIND_LINE_HEIGHT),
             )
             .with_text(&mut font_system.0, "", Attrs::new().color(text_color)),
-            DefaultAttrs(AttrsOwned::new(Attrs::new().color(text_color))),
+            DefaultAttrs(AttrsOwned::new(&Attrs::new().color(text_color))),
             CursorColor(Color::WHITE),
             CosmicBackgroundColor(FIELD_BG),
             Transform::from_translation(pos),
@@ -728,7 +729,7 @@ fn spawn_label(commands: &mut Commands, parent: Entity, text: &str, pos: Vec3) {
                 ..default()
             },
             TextColor(Color::srgb(0.8, 0.8, 0.85)),
-            bevy::sprite::Anchor::CenterLeft,
+            bevy::sprite::Anchor::CENTER_LEFT,
             Transform::from_translation(pos),
         ))
         .id();
@@ -755,11 +756,11 @@ fn spawn_button(
             kind,
         ))
         .observe(
-            |trigger: Trigger<Pointer<Click>>,
+            |trigger: On<Pointer<Click>>,
              kind_q: Query<&FindButtonKind>,
-             mut w: EventWriter<FindActionRequested>| {
-                if let Ok(k) = kind_q.get(trigger.entity()) {
-                    w.send(FindActionRequested(*k));
+             mut w: MessageWriter<FindActionRequested>| {
+                if let Ok(k) = kind_q.get(trigger.entity) {
+                    w.write(FindActionRequested(*k));
                 }
             },
         )
@@ -909,16 +910,16 @@ mod tests {
     fn sync_find_editors_writes_query_not_replacement() {
         let mut app = App::new();
         app.init_resource::<FindReplaceState>();
-        app.add_event::<CosmicTextChanged>();
+        app.add_message::<CosmicTextChanged>();
         app.add_systems(Update, sync_find_editors_to_state_system);
 
         let query_e = app.world_mut().spawn(FindQueryEditor).id();
         let repl_e = app.world_mut().spawn(FindReplacementEditor).id();
 
         app.world_mut()
-            .send_event(CosmicTextChanged((query_e, "needle".to_string())));
+            .write_message(CosmicTextChanged((query_e, "needle".to_string())));
         app.world_mut()
-            .send_event(CosmicTextChanged((repl_e, "rep".to_string())));
+            .write_message(CosmicTextChanged((repl_e, "rep".to_string())));
         app.update();
 
         let state = app.world().resource::<FindReplaceState>();
@@ -1025,7 +1026,7 @@ mod tests {
         app.init_resource::<FindReplaceState>();
         app.init_resource::<ButtonInput<KeyCode>>();
         app.insert_resource(FocusedWidget(None));
-        app.add_event::<FindActionRequested>();
+        app.add_message::<FindActionRequested>();
         app.add_systems(
             Update,
             (compute_find_match_spans_system, find_navigate_system).chain(),
@@ -1062,7 +1063,7 @@ mod tests {
 
         // Frame 1: compute finds 3 matches (current=0), then Next advances current → 1.
         app.world_mut()
-            .send_event(FindActionRequested(FindButtonKind::Next));
+            .write_message(FindActionRequested(FindButtonKind::Next));
         app.update();
         assert_eq!(app.world().resource::<FindReplaceState>().matches.len(), 3);
         assert_eq!(

@@ -24,6 +24,7 @@ use bevy::prelude::*;
 use bevy::transform::TransformPlugin;
 
 use backcast::ui::components::{
+    ChartSizeMap,
     PanelSpawnRequested, PendingStrategyFragments, RegionKeyAllocator, ScenarioReadTarget,
     StrategyBuffer,
 };
@@ -105,16 +106,16 @@ fn i12_restore_last_strategy_cache_on_launch() {
     app.insert_resource(AppHistory::default());
     app.init_resource::<backcast::ui::components::ChartSizeMap>();
 
-    app.add_event::<CacheRestoreRequested>();
-    app.add_event::<PanelSpawnRequested>();
+    app.init_resource::<ChartSizeMap>();
+    app.add_message::<CacheRestoreRequested>();
+    app.add_message::<PanelSpawnRequested>();
 
     // Camera2d がないと apply_cache_restore_system の camera.get_single_mut が
     // 失敗するだけ（panic しない）。
     app.world_mut().spawn((
         Camera2d,
         Transform::default(),
-        OrthographicProjection::default_2d(),
-    ));
+            ));
 
     // restore → apply の順でチェーン。
     app.add_systems(
@@ -129,7 +130,7 @@ fn i12_restore_last_strategy_cache_on_launch() {
     // 発火した証拠: StrategyBuffer / ScenarioReadTarget が更新されているか確認する。
     let _ = app
         .world_mut()
-        .resource_mut::<Events<CacheRestoreRequested>>()
+        .resource_mut::<Messages<CacheRestoreRequested>>()
         .drain()
         .count();
 

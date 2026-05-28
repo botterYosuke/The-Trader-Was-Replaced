@@ -16,14 +16,14 @@ use backcast::ui::scenario_parser::parse_scenario_system;
 
 fn drain_loaded(app: &mut App) -> Vec<ScenarioLoadedFromFile> {
     app.world_mut()
-        .resource_mut::<Events<ScenarioLoadedFromFile>>()
+        .resource_mut::<Messages<ScenarioLoadedFromFile>>()
         .drain()
         .collect()
 }
 
 fn drain_cleared(app: &mut App) -> Vec<ScenarioClearedFromFile> {
     app.world_mut()
-        .resource_mut::<Events<ScenarioClearedFromFile>>()
+        .resource_mut::<Messages<ScenarioClearedFromFile>>()
         .drain()
         .collect()
 }
@@ -40,8 +40,8 @@ fn j15_scenario_file_watch_reparse() {
     app.insert_resource(ScenarioReadTarget(Some(json_path.clone())));
     app.init_resource::<ScenarioMetadata>();
     app.init_resource::<ScenarioFileWatchState>();
-    app.add_event::<ScenarioLoadedFromFile>();
-    app.add_event::<ScenarioClearedFromFile>();
+    app.add_message::<ScenarioLoadedFromFile>();
+    app.add_message::<ScenarioClearedFromFile>();
     app.add_systems(Update, parse_scenario_system);
 
     // ── tick 1: 初回パース → ScenarioLoadedFromFile 1 件 ──

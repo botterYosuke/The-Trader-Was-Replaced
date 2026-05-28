@@ -50,7 +50,7 @@ fn build_app() -> (App, mpsc::UnboundedReceiver<TransportCommand>) {
     app.insert_resource(ButtonInput::<KeyCode>::default());
     app.insert_resource(TransportCommandSender { tx });
 
-    app.add_event::<OrderButtonPressed>();
+    app.add_message::<OrderButtonPressed>();
     app.add_systems(Update, (order_submit_button_system, confirm_modal_button_system));
 
     (app, rx)
@@ -63,7 +63,7 @@ fn k7_manual_order_submit_confirm() {
         let (mut app, mut rx) = build_app();
 
         app.world_mut()
-            .send_event(OrderButtonPressed(OrderButton::Submit));
+            .write_message(OrderButtonPressed(OrderButton::Submit));
         app.update();
 
         let confirm = app.world().resource::<OrderConfirm>();
@@ -143,7 +143,7 @@ fn k7_manual_order_submit_confirm() {
         app.world_mut().resource_mut::<SelectedSymbol>().id = None;
 
         app.world_mut()
-            .send_event(OrderButtonPressed(OrderButton::Submit));
+            .write_message(OrderButtonPressed(OrderButton::Submit));
         app.update();
 
         let confirm = app.world().resource::<OrderConfirm>();
@@ -167,7 +167,7 @@ fn k7_manual_order_submit_confirm() {
         app.world_mut().resource_mut::<OrderForm>().qty = 0.0;
 
         app.world_mut()
-            .send_event(OrderButtonPressed(OrderButton::Submit));
+            .write_message(OrderButtonPressed(OrderButton::Submit));
         app.update();
 
         let confirm = app.world().resource::<OrderConfirm>();
@@ -188,7 +188,7 @@ fn k7_manual_order_submit_confirm() {
             form.price = 0.0; // 指値なのに価格なし
         }
         app.world_mut()
-            .send_event(OrderButtonPressed(OrderButton::Submit));
+            .write_message(OrderButtonPressed(OrderButton::Submit));
         app.update();
 
         let confirm = app.world().resource::<OrderConfirm>();
@@ -220,7 +220,7 @@ fn k7_manual_order_submit_confirm() {
 
         // 再度 Submit を注入 — pending は上書きされないはず。
         app.world_mut()
-            .send_event(OrderButtonPressed(OrderButton::Submit));
+            .write_message(OrderButtonPressed(OrderButton::Submit));
         app.update();
 
         let confirm = app.world().resource::<OrderConfirm>();

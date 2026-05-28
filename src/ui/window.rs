@@ -208,7 +208,7 @@ pub fn instrument_chart_sync_system(
     }
     for (id, e) in &spawned {
         if !desired.contains(id) {
-            commands.entity(*e).despawn_recursive();
+            commands.entity(*e).despawn();
             map.map.remove(*id);
             chart_sizes.map.remove(*id);
         }

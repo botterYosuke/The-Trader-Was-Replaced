@@ -272,10 +272,20 @@ mod m13_run_result_no_close_button;
 mod m14_run_result_mode_visibility;
 #[path = "e2e/flows/m15_run_result_button_absent.rs"]
 mod m15_run_result_button_absent;
-#[path = "e2e/flows/m16_run_result_stats_pnl_fallback.rs"]
-mod m16_run_result_stats_pnl_fallback;
-#[path = "e2e/flows/m17_run_result_stats_blank_in_replay.rs"]
-mod m17_run_result_stats_blank_in_replay;
+#[path = "e2e/flows/m16_run_result_visibility_follows_backend_mode.rs"]
+mod m16_run_result_visibility_follows_backend_mode;
+#[path = "e2e/flows/m17_issue41_realapp_smoke.rs"]
+mod m17_issue41_realapp_smoke;
+#[path = "e2e/flows/m18_footer_mode_visibility_follows_backend_mode.rs"]
+mod m18_footer_mode_visibility_follows_backend_mode;
+#[path = "e2e/flows/m19_strategy_editor_mode_visibility_follows_backend_mode.rs"]
+mod m19_strategy_editor_mode_visibility_follows_backend_mode;
+#[path = "e2e/flows/m20_mode_visibility_systems_run_after_status_update.rs"]
+mod m20_mode_visibility_systems_run_after_status_update;
+#[path = "e2e/flows/m21_run_result_stats_pnl_fallback.rs"]
+mod m21_run_result_stats_pnl_fallback;
+#[path = "e2e/flows/m22_run_result_stats_blank_in_replay.rs"]
+mod m22_run_result_stats_blank_in_replay;
 
 // N. Live Auto strategy execution (Phase 10: lifecycle / telemetry / safety / log)
 #[path = "e2e/flows/n1_live_strategy_event_lifecycle.rs"]

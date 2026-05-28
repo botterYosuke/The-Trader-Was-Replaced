@@ -4,8 +4,7 @@
 use crate::prelude::*;
 use bevy::{
     input::mouse::MouseMotion,
-    window::{PrimaryWindow, SystemCursorIcon},
-    winit::cursor::CursorIcon,
+    window::{CursorIcon, CursorOptions, PrimaryWindow, SystemCursorIcon},
 };
 
 pub(crate) struct CursorPlugin;
@@ -25,9 +24,9 @@ impl Plugin for CursorPlugin {
                 .chain()
                 .run_if(not(resource_exists::<CursorPluginDisabled>)),
         )
-        .add_event::<TextHoverIn>()
+        .add_message::<TextHoverIn>()
         .register_type::<TextHoverIn>()
-        .add_event::<TextHoverOut>()
+        .add_message::<TextHoverOut>()
         .register_type::<TextHoverOut>()
         .register_type::<HoverCursor>();
     }
@@ -49,26 +48,28 @@ impl Default for HoverCursor {
 ///
 /// Event is emitted when cursor enters a text widget.
 /// Event contains the cursor from the buffer's [`HoverCursor`]
-#[derive(Event, Reflect, Deref, Debug)]
+#[derive(Message, Reflect, Deref, Debug, Clone)]
 pub struct TextHoverIn(pub CursorIcon);
 
 /// For use with custom cursor control
 /// Event is emitted when cursor leaves a text widget
-#[derive(Event, Reflect, Debug)]
+#[derive(Message, Reflect, Debug, Clone)]
 pub struct TextHoverOut;
 
 pub(crate) fn change_cursor(
-    mut evr_hover_in: EventReader<TextHoverIn>,
-    evr_hover_out: EventReader<TextHoverOut>,
-    evr_text_changed: EventReader<crate::events::CosmicTextChanged>,
-    evr_mouse_motion: EventReader<MouseMotion>,
+    mut evr_hover_in: MessageReader<TextHoverIn>,
+    evr_hover_out: MessageReader<TextHoverOut>,
+    evr_text_changed: MessageReader<crate::events::CosmicTextChanged>,
+    evr_mouse_motion: MessageReader<MouseMotion>,
     mouse_buttons: Res<ButtonInput<MouseButton>>,
-    mut windows: Query<(&mut Window, &mut CursorIcon), With<PrimaryWindow>>,
+    mut windows: Query<(&mut CursorIcon, &mut CursorOptions), With<PrimaryWindow>>,
 ) {
     if windows.iter().len() == 0 {
         return;
     }
-    let (mut window, mut window_cursor_icon) = windows.single_mut();
+    let Ok((mut window_cursor_icon, mut cursor_options)) = windows.single_mut() else {
+        return;
+    };
 
     if let Some(ev) = evr_hover_in.read().last() {
         *window_cursor_icon = ev.0.clone();
@@ -77,11 +78,11 @@ pub(crate) fn change_cursor(
     }
 
     if !evr_text_changed.is_empty() {
-        window.cursor_options.visible = false;
+        cursor_options.visible = false;
     }
 
     if mouse_buttons.get_just_pressed().len() != 0 || !evr_mouse_motion.is_empty() {
-        window.cursor_options.visible = true;
+        cursor_options.visible = true;
     }
 }
 
@@ -90,16 +91,16 @@ pub(crate) fn hover_ui(
         (&Interaction, &HoverCursor),
         (With<CosmicEditBuffer>, Changed<Interaction>),
     >,
-    mut evw_hover_in: EventWriter<TextHoverIn>,
-    mut evw_hover_out: EventWriter<TextHoverOut>,
+    mut evw_hover_in: MessageWriter<TextHoverIn>,
+    mut evw_hover_out: MessageWriter<TextHoverOut>,
 ) {
     for (interaction, hover) in interaction_query.iter() {
         match interaction {
             Interaction::None => {
-                evw_hover_out.send(TextHoverOut);
+                evw_hover_out.write(TextHoverOut);
             }
             Interaction::Hovered => {
-                evw_hover_in.send(TextHoverIn(hover.0.clone()));
+                evw_hover_in.write(TextHoverIn(hover.0.clone()));
             }
             _ => {}
         }

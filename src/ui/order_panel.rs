@@ -243,7 +243,7 @@ pub fn estimated_notional(draft: &OrderDraft, last_price: Option<f64>) -> Option
 // ===========================================================================
 
 /// ボタン操作を world-space observer から systems に橋渡しするイベント。
-#[derive(Event, Debug, Clone, Copy)]
+#[derive(Message, Debug, Clone, Copy)]
 pub struct OrderButtonPressed(pub OrderButton);
 
 #[derive(Component, Clone, Copy, Debug)]
@@ -419,7 +419,7 @@ pub fn spawn_order_form_in_window(commands: &mut Commands, content_area: Entity)
                 TextFont { font_size: FONT_SZ, ..default() },
                 TextColor(COLOR_LABEL),
                 Transform::from_xyz(x, y, 0.1),
-                bevy::sprite::Anchor::CenterRight,
+                bevy::sprite::Anchor::CENTER_RIGHT,
             ));
         });
     };
@@ -444,8 +444,8 @@ pub fn spawn_order_form_in_window(commands: &mut Commands, content_area: Entity)
                 Transform::from_xyz(x, y, 0.2),
                 btn,
             ))
-            .observe(move |_trigger: Trigger<Pointer<Click>>, mut ev: EventWriter<OrderButtonPressed>| {
-                ev.send(OrderButtonPressed(btn));
+            .observe(move |_trigger: On<Pointer<Click>>, mut ev: MessageWriter<OrderButtonPressed>| {
+                ev.write(OrderButtonPressed(btn));
             })
             .with_children(|s| {
                 s.spawn((
@@ -501,8 +501,8 @@ pub fn spawn_order_form_in_window(commands: &mut Commands, content_area: Entity)
             Transform::from_xyz(0.0, Y_SUBMIT, 0.2),
             submit,
         ))
-        .observe(move |_trigger: Trigger<Pointer<Click>>, mut ev: EventWriter<OrderButtonPressed>| {
-            ev.send(OrderButtonPressed(submit));
+        .observe(move |_trigger: On<Pointer<Click>>, mut ev: MessageWriter<OrderButtonPressed>| {
+            ev.write(OrderButtonPressed(submit));
         })
         .with_children(|s| {
             s.spawn((
@@ -522,7 +522,7 @@ pub fn spawn_order_form_in_window(commands: &mut Commands, content_area: Entity)
 
 /// side/type/TIF/数量±/価格± ボタン押下を `OrderForm` に反映する。
 pub fn order_form_button_system(
-    mut events: EventReader<OrderButtonPressed>,
+    mut events: MessageReader<OrderButtonPressed>,
     mut form: ResMut<OrderForm>,
     mut confirm: ResMut<OrderConfirm>,
 ) {
@@ -556,7 +556,7 @@ pub fn order_form_button_system(
 /// `[発注]` 押下で検証 → OK なら `OrderConfirm.pending` をセット (確認モーダルが開く)。
 /// NG なら `last_error` にメッセージを入れてパネルに赤字表示する。
 pub fn order_submit_button_system(
-    mut events: EventReader<OrderButtonPressed>,
+    mut events: MessageReader<OrderButtonPressed>,
     form: Res<OrderForm>,
     selected: Res<SelectedSymbol>,
     venue: Res<VenueStatusRes>,
@@ -679,7 +679,7 @@ pub fn order_window_despawn_system(
     }
     for (entity, kind) in &panel_q {
         if matches!(kind, PanelKind::Order) {
-            commands.entity(entity).despawn_recursive();
+            commands.entity(entity).despawn();
         }
     }
 }
@@ -745,7 +745,7 @@ pub fn confirm_modal_sync_system(
     let Some(draft) = confirm.pending.as_ref() else {
         return;
     };
-    let Ok(mut text) = summary_q.get_single_mut() else {
+    let Ok(mut text) = summary_q.single_mut() else {
         return;
     };
     let price_str = match draft.price {
@@ -912,7 +912,7 @@ mod tests {
 
     fn make_app() -> App {
         let mut app = App::new();
-        app.add_event::<OrderButtonPressed>();
+        app.add_message::<OrderButtonPressed>();
         app.init_resource::<OrderForm>();
         app.init_resource::<OrderConfirm>();
         app.init_resource::<OrderFeedback>();
@@ -942,7 +942,7 @@ mod tests {
         let mut app = make_app();
         app.add_systems(Update, order_submit_button_system);
         app.world_mut()
-            .send_event(OrderButtonPressed(OrderButton::Submit));
+            .write_message(OrderButtonPressed(OrderButton::Submit));
         app.update();
         assert!(
             app.world().resource::<OrderConfirm>().pending.is_some(),
@@ -956,7 +956,7 @@ mod tests {
         app.world_mut().resource_mut::<SelectedSymbol>().id = None;
         app.add_systems(Update, order_submit_button_system);
         app.world_mut()
-            .send_event(OrderButtonPressed(OrderButton::Submit));
+            .write_message(OrderButtonPressed(OrderButton::Submit));
         app.update();
         let confirm = app.world().resource::<OrderConfirm>();
         assert!(
@@ -1129,11 +1129,11 @@ mod tests {
         let mut app = make_app();
         app.add_systems(Update, order_form_button_system);
         app.world_mut()
-            .send_event(OrderButtonPressed(OrderButton::SideSell));
+            .write_message(OrderButtonPressed(OrderButton::SideSell));
         app.world_mut()
-            .send_event(OrderButtonPressed(OrderButton::TypeLimit));
+            .write_message(OrderButtonPressed(OrderButton::TypeLimit));
         app.world_mut()
-            .send_event(OrderButtonPressed(OrderButton::QtyInc));
+            .write_message(OrderButtonPressed(OrderButton::QtyInc));
         app.update();
         let f = app.world().resource::<OrderForm>();
         assert_eq!(f.side, Side::Sell);

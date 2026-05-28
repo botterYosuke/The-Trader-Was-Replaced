@@ -125,8 +125,8 @@ fn m12_strategy_editor_hidden_in_manual() {
                 reached_root = true;
                 break;
             }
-            match app.world().get::<Parent>(cursor) {
-                Some(parent) => cursor = parent.get(),
+            match app.world().get::<ChildOf>(cursor) {
+                Some(parent) => cursor = parent.parent(),
                 None => break,
             }
         }

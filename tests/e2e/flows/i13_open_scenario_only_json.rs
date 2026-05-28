@@ -17,6 +17,7 @@ use bevy::prelude::*;
 use bevy::transform::TransformPlugin;
 
 use backcast::ui::components::{
+    ChartSizeMap,
     PanelSpawnRequested, PendingStrategyFragments, RegionKeyAllocator, ScenarioReadTarget,
     StrategyBuffer, StrategyFileLoadRequested, WindowManager,
 };
@@ -39,19 +40,19 @@ fn build_app() -> App {
     app.insert_resource(StrategyBuffer::default());
     app.init_resource::<backcast::ui::components::ChartSizeMap>();
 
-    app.add_event::<LayoutLoadRequested>();
-    app.add_event::<LayoutSaveRequested>();
-    app.add_event::<LayoutSaveAsRequested>();
-    app.add_event::<LayoutLoadDialogRequested>();
-    app.add_event::<PanelSpawnRequested>();
-    app.add_event::<StrategyFileLoadRequested>();
+    app.init_resource::<ChartSizeMap>();
+    app.add_message::<LayoutLoadRequested>();
+    app.add_message::<LayoutSaveRequested>();
+    app.add_message::<LayoutSaveAsRequested>();
+    app.add_message::<LayoutLoadDialogRequested>();
+    app.add_message::<PanelSpawnRequested>();
+    app.add_message::<StrategyFileLoadRequested>();
 
     // Camera2d: apply_layout_system の camera.get_single_mut が要求する。
     app.world_mut().spawn((
         Camera2d,
         Transform::default(),
-        OrthographicProjection::default_2d(),
-    ));
+            ));
 
     app.add_systems(Update, apply_layout_system);
 
@@ -82,7 +83,7 @@ fn i13_open_scenario_only_json() {
 
         let mut app = build_app();
 
-        app.world_mut().send_event(LayoutLoadRequested {
+        app.world_mut().write_message(LayoutLoadRequested {
             path: json_path.clone(),
             mode: LayoutLoadMode::UserJsonOpen,
         });
@@ -91,7 +92,7 @@ fn i13_open_scenario_only_json() {
         // StrategyFileLoadRequested が 1 回発火したこと。
         let load_requests: Vec<_> = app
             .world_mut()
-            .resource_mut::<Events<StrategyFileLoadRequested>>()
+            .resource_mut::<Messages<StrategyFileLoadRequested>>()
             .drain()
             .collect();
         assert_eq!(
@@ -131,7 +132,7 @@ fn i13_open_scenario_only_json() {
 
         let mut app = build_app();
 
-        app.world_mut().send_event(LayoutLoadRequested {
+        app.world_mut().write_message(LayoutLoadRequested {
             path: json_path.clone(),
             mode: LayoutLoadMode::UserJsonOpen,
         });
@@ -140,7 +141,7 @@ fn i13_open_scenario_only_json() {
         // StrategyFileLoadRequested は発火しない。
         let load_requests = app
             .world_mut()
-            .resource_mut::<Events<StrategyFileLoadRequested>>()
+            .resource_mut::<Messages<StrategyFileLoadRequested>>()
             .drain()
             .count();
         assert_eq!(

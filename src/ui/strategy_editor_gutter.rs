@@ -53,7 +53,7 @@ pub fn spawn_line_number_gutter(
                 "1",
                 Attrs::new().color(GUTTER_FG),
             ),
-            DefaultAttrs(AttrsOwned::new(Attrs::new().color(GUTTER_FG))),
+            DefaultAttrs(AttrsOwned::new(&Attrs::new().color(GUTTER_FG))),
             CosmicBackgroundColor(GUTTER_BG),
             // top padding をエディタ (TopLeft padding 8) と揃えて 1 行目の縦位置を一致させる。
             CosmicTextAlign::TopLeft { padding: 8 },

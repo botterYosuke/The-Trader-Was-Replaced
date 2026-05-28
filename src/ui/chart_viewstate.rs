@@ -343,7 +343,7 @@ pub enum ChartSet {
 }
 
 /// autoscale 再計算リクエスト。data 経路と interaction 経路を分離するための内部イベント。
-#[derive(Event, Debug, Clone, Copy)]
+#[derive(Message, Debug, Clone, Copy)]
 pub struct RequestAutoscale {
     pub chart: Entity,
 }
@@ -352,7 +352,7 @@ pub struct RequestAutoscale {
 pub fn chart_data_tick_system(
     map: Res<InstrumentTradingDataMap>,
     mut chart_q: Query<(Entity, &ChartInstrument, &mut ChartViewState)>,
-    mut req: EventWriter<RequestAutoscale>,
+    mut req: MessageWriter<RequestAutoscale>,
 ) {
     if !map.is_changed() {
         return;
@@ -370,7 +370,7 @@ pub fn chart_data_tick_system(
             state.latest_x = last.open_time_ms;
         }
         if state.auto_scale {
-            req.send(RequestAutoscale { chart: e });
+            req.write(RequestAutoscale { chart: e });
         }
     }
 }
@@ -379,11 +379,11 @@ pub fn chart_data_tick_system(
 /// `Added<T>` は `Changed<T>` を含む (Caveat #32) ので spawn フレームの初回 autoscale も拾える。
 pub fn chart_interaction_tick_system(
     interaction_q: Query<(Entity, &ChartViewState), Changed<ChartViewState>>,
-    mut req: EventWriter<RequestAutoscale>,
+    mut req: MessageWriter<RequestAutoscale>,
 ) {
     for (e, state) in &interaction_q {
         if state.auto_scale {
-            req.send(RequestAutoscale { chart: e });
+            req.write(RequestAutoscale { chart: e });
         }
     }
 }
@@ -393,7 +393,7 @@ pub fn chart_interaction_tick_system(
 /// ⚠️ 収束の load-bearing 条件 (Caveat #29): 値が変化したときのみ `&mut state` 経由代入する。
 /// 同値代入で DerefMut を踏むと `Changed` が立ち interaction_tick が再発火 → 無限 loop。
 pub fn chart_autoscale_apply_system(
-    mut events: EventReader<RequestAutoscale>,
+    mut events: MessageReader<RequestAutoscale>,
     map: Res<InstrumentTradingDataMap>,
     mut chart_q: Query<(&ChartInstrument, &mut ChartViewState)>,
 ) {
@@ -513,7 +513,7 @@ mod tests {
         struct ChangedLog(Vec<usize>);
 
         let mut app = App::new();
-        app.add_event::<RequestAutoscale>();
+        app.add_message::<RequestAutoscale>();
         app.init_resource::<InstrumentTradingDataMap>();
         app.init_resource::<ChangedLog>();
 

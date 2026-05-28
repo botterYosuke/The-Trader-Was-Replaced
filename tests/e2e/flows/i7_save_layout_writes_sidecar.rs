@@ -18,7 +18,7 @@ use bevy::prelude::*;
 use bevy::transform::TransformPlugin;
 
 use backcast::ui::components::{
-    InstrumentRegistry, ScenarioMetadata, ScenarioReadTarget, ScenarioWritebackPaths,
+    ChartSizeMap, InstrumentRegistry, ScenarioMetadata, ScenarioReadTarget, ScenarioWritebackPaths,
     StrategyBuffer,
 };
 use backcast::ui::layout_persistence::{
@@ -93,22 +93,21 @@ fn i7_save_layout_writes_sidecar() {
     app.init_resource::<StrategyAutoSaveState>();
     app.init_resource::<ScenarioReadTarget>();
     app.init_resource::<PendingFileDialog>();
-    app.init_resource::<backcast::ui::components::ChartSizeMap>();
+    app.init_resource::<ChartSizeMap>();
 
-    app.add_event::<LayoutSaveRequested>();
-    app.add_event::<LayoutSaveAsRequested>();
+    app.add_message::<LayoutSaveRequested>();
+    app.add_message::<LayoutSaveAsRequested>();
 
     // Camera2d がないと build_layout 内の camera.get_single() が空を返すだけ（panic しない）。
     app.world_mut().spawn((
         Camera2d,
         Transform::default(),
-        OrthographicProjection::default_2d(),
-    ));
+            ));
 
     app.add_systems(Update, handle_save_layout_system);
 
     // ── Save を発火 ──
-    app.world_mut().send_event(LayoutSaveRequested);
+    app.world_mut().write_message(LayoutSaveRequested);
     app.update();
 
     // ── JSON ファイルが生成・更新されたことを確認 ──

@@ -1,0 +1,59 @@
+[package]
+name = "bevscode"
+version = "0.1.1"
+edition = "2021"
+authors = ["PoHsuanLai"]
+license = "MIT OR Apache-2.0"
+readme = "README.md"
+description = "High-performance GPU-accelerated code editor plugin for Bevy"
+repository = "https://github.com/PoHsuanLai/bevscode"
+keywords = ["bevy", "editor", "code-editor", "syntax-highlighting"]
+categories = ["game-development", "text-editors"]
+
+[dependencies]
+bevy_instanced_text = { workspace = true }
+bevy_instanced_text_editor = { path = "../bevy_instanced_text_editor", version = "0.1.1", default-features = false }
+bevy_tree_sitter = { path = "../bevy_tree_sitter", version = "0.1.1" }
+bevy_markdown = { path = "../bevy_markdown", version = "0.1.0" }
+bevy_lsp = { path = "../bevy_lsp", version = "0.1.1", optional = true }
+bevy_resvg = "2.3.3"
+tempera = { git = "https://github.com/PoHsuanLai/tempera.git", rev = "b1d186f" }
+
+bevy = { workspace = true, features = [
+    "bevy_render",
+    "bevy_core_pipeline",
+    "bevy_asset",
+    "bevy_text",
+    "default_font",
+    "bevy_color",
+    "bevy_camera",
+    "bevy_input_focus",
+    "bevy_picking",
+    "bevy_ui",
+] }
+
+ropey = { workspace = true }
+serde = { workspace = true }
+leafwing-input-manager = { workspace = true, features = ["keyboard"] }
+lsp-types = { workspace = true, optional = true }
+serde_json = { workspace = true, optional = true }
+fuzzy-matcher = { version = "0.3", optional = true }
+
+[dev-dependencies]
+bevy = { workspace = true, features = ["bevy_window", "bevy_winit"] }
+bevy_tree_sitter = { path = "../bevy_tree_sitter", version = "0.1.1", features = ["lang-rust"] }
+bevy_lsp = { path = "../bevy_lsp", version = "0.1.1", features = ["test-support"] }
+lsp-types = { workspace = true }
+serde_json = { workspace = true }
+
+[features]
+default = ["clipboard"]
+
+clipboard = ["bevy_instanced_text_editor/arboard"]
+clipboard-wasm = ["bevy_instanced_text_editor/clipboard-wasm"]
+lsp = ["dep:bevy_lsp", "lsp-types", "serde_json", "fuzzy-matcher"]
+# Dynamic linking for fast dev iteration (not for release builds)
+dynamic_linking = ["bevy/dynamic_linking"]
+# Tracy-based performance profiling
+profile = ["bevy/trace", "bevy/trace_tracy"]
+

@@ -6,7 +6,7 @@ use crate::{
     HoverCursor, MaxChars, MaxLines, SelectionColor,
 };
 use bevy::{
-    ecs::{component::ComponentId, query::QueryData, world::DeferredWorld},
+    ecs::{lifecycle::HookContext, query::QueryData, world::DeferredWorld},
     window::PrimaryWindow,
 };
 use cosmic_text::{Attrs, AttrsOwned, Buffer, Edit, FontSystem, Metrics, Shaping};
@@ -80,10 +80,10 @@ impl BufferExtras for Buffer {
 )]
 pub struct CosmicEditBuffer(pub Buffer);
 
-fn remove_focus_from_entity(mut world: DeferredWorld, entity: Entity, _: ComponentId) {
+fn remove_focus_from_entity(mut world: DeferredWorld, ctx: HookContext) {
     if let Some(mut focused_widget) = world.get_resource_mut::<FocusedWidget>() {
         if let Some(focused) = focused_widget.0 {
-            if focused == entity {
+            if focused == ctx.entity {
                 focused_widget.0 = None;
             }
         }
@@ -110,7 +110,7 @@ impl<'s, 'r> CosmicEditBuffer {
         text: &'s str,
         attrs: Attrs<'r>,
     ) -> Self {
-        self.0.set_text(font_system, text, attrs, Shaping::Advanced);
+        self.0.set_text(font_system, text, &attrs, Shaping::Advanced, None);
         self
     }
 
@@ -127,7 +127,7 @@ impl<'s, 'r> CosmicEditBuffer {
         I: IntoIterator<Item = (&'s str, Attrs<'r>)>,
     {
         self.0
-            .set_rich_text(font_system, spans, attrs, Shaping::Advanced);
+            .set_rich_text(font_system, spans, &attrs, Shaping::Advanced, None);
         self
     }
 
@@ -138,7 +138,7 @@ impl<'s, 'r> CosmicEditBuffer {
         text: &'s str,
         attrs: Attrs<'r>,
     ) -> &mut Self {
-        self.0.set_text(font_system, text, attrs, Shaping::Advanced);
+        self.0.set_text(font_system, text, &attrs, Shaping::Advanced, None);
         self.set_redraw(true);
         self
     }
@@ -156,7 +156,7 @@ impl<'s, 'r> CosmicEditBuffer {
         I: IntoIterator<Item = (&'s str, Attrs<'r>)>,
     {
         self.0
-            .set_rich_text(font_system, spans, attrs, Shaping::Advanced);
+            .set_rich_text(font_system, spans, &attrs, Shaping::Advanced, None);
         self.set_redraw(true);
         self
     }
@@ -211,7 +211,7 @@ pub(crate) fn add_font_system(
         if !b.lines.is_empty() {
             continue;
         }
-        b.0.set_text(&mut font_system, "", Attrs::new(), Shaping::Advanced);
+        b.0.set_text(&mut font_system, "", &Attrs::new(), Shaping::Advanced, None);
         b.set_redraw(true);
     }
 }
@@ -228,7 +228,7 @@ pub(crate) fn set_initial_scale(
     >,
     mut font_system: ResMut<CosmicFontSystem>,
 ) {
-    if let Ok(window) = window_q.get_single() {
+    if let Ok(window) = window_q.single() {
         let w_scale = window.scale_factor();
 
         for (mut b, maybe_ed) in &mut cosmic_query.iter_mut() {
@@ -265,13 +265,13 @@ pub(crate) struct OutputToEntity {
     image_node_target: Option<&'static mut ImageNode>,
 }
 
-impl OutputToEntityItem<'_> {
+impl OutputToEntityItem<'_, '_> {
     pub fn write_image_data(&mut self, image: &Handle<Image>) {
         if let Some(sprite) = self.sprite_target.as_mut() {
-            sprite.image = image.clone_weak();
+            sprite.image = image.clone();
         }
         if let Some(image_node) = self.image_node_target.as_mut() {
-            image_node.image = image.clone_weak();
+            image_node.image = image.clone();
         }
     }
 }

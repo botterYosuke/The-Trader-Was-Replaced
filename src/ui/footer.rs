@@ -21,7 +21,7 @@ const SPEED_OPTIONS: &[u32] = &[1, 2, 5, 10, 50];
 const BUTTON_DISABLED_ALPHA: f32 = 0.35;
 const BUTTON_ENABLED_ALPHA: f32 = 1.0;
 
-fn spawn_transport_btn(parent: &mut ChildBuilder, label: &str, action: TransportButton) {
+fn spawn_transport_btn(parent: &mut ChildSpawnerCommands, label: &str, action: TransportButton) {
     parent
         .spawn((
             Button,
@@ -47,7 +47,7 @@ fn spawn_transport_btn(parent: &mut ChildBuilder, label: &str, action: Transport
         });
 }
 
-fn spawn_speed_btn(parent: &mut ChildBuilder, multiplier: u32, selected: bool) {
+fn spawn_speed_btn(parent: &mut ChildSpawnerCommands, multiplier: u32, selected: bool) {
     parent
         .spawn((
             Button,
@@ -77,7 +77,7 @@ fn spawn_speed_btn(parent: &mut ChildBuilder, multiplier: u32, selected: bool) {
         });
 }
 
-fn spawn_mode_segment(parent: &mut ChildBuilder, label: &str, mode: ExecutionMode) {
+fn spawn_mode_segment(parent: &mut ChildSpawnerCommands, label: &str, mode: ExecutionMode) {
     parent
         .spawn((
             Button,
@@ -594,7 +594,7 @@ pub fn footer_pause_resume_system(
     mut buffer: ResMut<StrategyBuffer>,
     mut current_run: ResMut<CurrentRun>,
     mut auto_save: ResMut<StrategyAutoSaveState>,
-    mut run_events: EventWriter<StrategyRunRequested>,
+    mut run_events: MessageWriter<StrategyRunRequested>,
     fragments_q: Query<(&StrategyEditorId, &StrategyFragment), With<WindowRoot>>,
     exec_mode: Res<ExecutionModeRes>,
     selected: Res<SelectedSymbol>,
@@ -646,7 +646,7 @@ pub fn footer_pause_resume_system(
                                 warn!("Run blocked: no cache_path set");
                                 continue;
                             };
-                            run_events.send(StrategyRunRequested { cache_path: path });
+                            run_events.write(StrategyRunRequested { cache_path: path });
                         }
                     },
                     ExecutionMode::LiveAuto => {
@@ -914,7 +914,7 @@ mod tests {
             .init_resource::<VenueStatusRes>()
             .init_resource::<ScenarioMetadata>()
             .init_resource::<StrategyAutoSaveState>()
-            .add_event::<StrategyRunRequested>();
+            .add_message::<StrategyRunRequested>();
         app.add_systems(
             Update,
             (
@@ -1001,7 +1001,7 @@ mod tests {
         app.world_mut().resource_mut::<StrategyBuffer>().cache_path = Some(cache_path);
         let _ = spawn_pressed_pause_resume(&mut app);
         app.update();
-        let events = app.world().resource::<Events<StrategyRunRequested>>();
+        let events = app.world().resource::<Messages<StrategyRunRequested>>();
         let mut reader = events.get_cursor();
         assert_eq!(
             reader.read(events).count(),
@@ -1022,7 +1022,7 @@ mod tests {
         app.world_mut().resource_mut::<StrategyBuffer>().cache_path = Some(cache_path);
         let _ = spawn_pressed_pause_resume(&mut app);
         app.update();
-        let events = app.world().resource::<Events<StrategyRunRequested>>();
+        let events = app.world().resource::<Messages<StrategyRunRequested>>();
         let mut reader = events.get_cursor();
         assert_eq!(
             reader.read(events).count(),

@@ -37,6 +37,7 @@ use bevy::transform::TransformPlugin;
 
 use backcast::trading::{ExecutionMode, ExecutionModeRes};
 use backcast::ui::components::{
+    ChartSizeMap,
     InstrumentRegistry, PanelSpawnRequested, PendingStrategyFragments, RegionKeyAllocator,
     ScenarioFileWatchState, ScenarioReadTarget, StrategyBuffer, StrategyFileLoadRequested,
 };
@@ -115,6 +116,7 @@ fn i16_cache_restore_replay_entry_no_inmemory_pollution() {
     app.init_resource::<backcast::ui::components::ChartSizeMap>();
     app.insert_resource(PendingLayoutApply::default());
     app.insert_resource(AppHistory::default());
+    app.init_resource::<backcast::ui::components::ChartSizeMap>();
     app.insert_resource(ExecutionModeRes {
         mode: ExecutionMode::Replay,
     });
@@ -123,16 +125,16 @@ fn i16_cache_restore_replay_entry_no_inmemory_pollution() {
         editable: false,
     });
 
-    app.add_event::<CacheRestoreRequested>();
-    app.add_event::<PanelSpawnRequested>();
-    app.add_event::<StrategyFileLoadRequested>();
-    app.add_event::<LayoutLoadRequested>();
+    app.init_resource::<ChartSizeMap>();
+    app.add_message::<CacheRestoreRequested>();
+    app.add_message::<PanelSpawnRequested>();
+    app.add_message::<StrategyFileLoadRequested>();
+    app.add_message::<LayoutLoadRequested>();
 
     app.world_mut().spawn((
         Camera2d,
         Transform::default(),
-        OrthographicProjection::default_2d(),
-    ));
+            ));
 
     app.add_systems(
         Update,
