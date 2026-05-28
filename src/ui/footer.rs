@@ -834,6 +834,35 @@ pub fn execution_mode_toggle_system(
     }
 }
 
+/// Venue 接続状態に応じて Manual / Auto セグメントボタンの `Node.display` を切り替える。
+/// Disconnected / Reconnecting 等は非表示、Connected / Subscribed は表示。
+/// Replay ボタンは対象外（常に表示）。
+pub fn apply_venue_live_button_visibility_system(
+    venue: Res<VenueStatusRes>,
+    mut live_btn_q: Query<
+        (&ExecutionModeToggleSegment, &mut Node),
+        (
+            With<Button>,
+            Without<PauseResumeButton>,
+            Without<TransportButton>,
+            Without<SpeedButton>,
+        ),
+    >,
+) {
+    if !venue.is_changed() {
+        return;
+    }
+    let live = is_venue_live(venue.state);
+    for (seg, mut node) in &mut live_btn_q {
+        if matches!(seg.0, ExecutionMode::LiveManual | ExecutionMode::LiveAuto) {
+            let target = if live { Display::Flex } else { Display::None };
+            if node.display != target {
+                node.display = target;
+            }
+        }
+    }
+}
+
 /// ExecutionMode に応じて transport / speed ボタンの `Node.display` を切り替える。
 #[allow(clippy::type_complexity)]
 pub fn apply_execution_mode_visibility_system(

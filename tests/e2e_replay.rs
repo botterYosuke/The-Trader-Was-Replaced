@@ -71,6 +71,8 @@ mod d6_venue_reconnecting;
 mod d7_live_universe_overwrite;
 #[path = "e2e/flows/d9_venue_stays_connected_on_replay_toggle.rs"]
 mod d9_venue_stays_connected_on_replay_toggle;
+#[path = "e2e/flows/d10_venue_live_buttons_visibility.rs"]
+mod d10_venue_live_buttons_visibility;
 
 // E. Execution mode
 #[path = "e2e/flows/e1_set_execution_mode.rs"]
