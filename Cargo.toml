@@ -41,6 +41,9 @@ tokio-stream = "0.1"
 # headless テストで CosmicFontSystem(FontSystem) を手構築するための直接参照
 # （bevy_cosmic_edit の transitive 依存と同版に固定）
 cosmic-text = "0.16"
+# j3 / j4 が bevscode の compute_newline_indent / Rope ベースの helpers を直接呼ぶための直接参照
+# （bevscode 経由で transitive に入っているのと同じバージョンを使う）。
+ropey = "1"
 
 [build-dependencies]
 tonic-build = "0.12"
