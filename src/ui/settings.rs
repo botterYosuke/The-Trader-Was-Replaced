@@ -15,12 +15,11 @@ pub fn spawn_settings_panel(commands: &mut Commands) {
         },
     );
     commands.entity(root).insert((PanelKind::Settings, LayoutExcluded));
-    commands.entity(content_area).with_children(|p| {
-        p.spawn((
-            Text::new("Theme: Dark\nBackend: localhost:19876\nSave Layout: —"),
-            TextFont { font_size: 11.0, ..default() },
-            TextColor(Color::srgb(0.75, 0.75, 0.85)),
-            Node { padding: UiRect::all(Val::Px(8.0)), ..default() },
-        ));
-    });
+    let text_entity = commands.spawn((
+        Text2d::new("Theme: Dark\nBackend: localhost:19876\nSave Layout: —"),
+        TextFont { font_size: 11.0, ..default() },
+        TextColor(Color::srgb(0.75, 0.75, 0.85)),
+        Transform::from_xyz(0.0, 0.0, 0.1),
+    )).id();
+    commands.entity(content_area).add_child(text_entity);
 }
