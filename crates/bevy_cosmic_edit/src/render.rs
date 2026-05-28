@@ -35,6 +35,21 @@ pub(crate) fn blink_cursor(mut q: Query<&mut CosmicEditor, Without<ReadOnly>>, t
     }
 }
 
+/// Maps the x coordinate for a draw call: translates by column offset, padding, and scroll.
+/// Uses i64 intermediate arithmetic to prevent i32 overflow on Retina/HiDPI displays
+/// where cosmic_text may return large scaled pixel coordinates (issue #60).
+fn draw_coord_x(x: i32, col: i32, pad_x: i32, scroll_x: i32) -> i32 {
+    (x as i64 + col as i64 + pad_x as i64 - scroll_x as i64)
+        .clamp(i32::MIN as i64, i32::MAX as i64) as i32
+}
+
+/// Maps the y coordinate for a draw call: translates by row offset and padding.
+/// Uses i64 intermediate arithmetic to prevent i32 overflow (issue #60).
+fn draw_coord_y(y: i32, row: i32, pad_y: i32) -> i32 {
+    (y as i64 + row as i64 + pad_y as i64)
+        .clamp(i32::MIN as i64, i32::MAX as i64) as i32
+}
+
 fn draw_pixel(buffer: &mut [u8], width: i32, height: i32, x: i32, y: i32, color: CosmicColor) {
     let a_a = color.a() as u32;
     if a_a == 0 {
@@ -235,8 +250,8 @@ fn render_texture(
                         &mut pixels,
                         render_size.x as i32,
                         render_size.y as i32,
-                        x + col + pad_x - scroll_x,
-                        y + row + pad_y,
+                        draw_coord_x(x, col, pad_x, scroll_x),
+                        draw_coord_y(y, row, pad_y),
                         color,
                     );
                 }
@@ -365,5 +380,38 @@ fn render_texture(
                 depth_or_array_layers: 1,
             });
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{draw_coord_x, draw_coord_y};
+
+    /// Regression guard for issue #60: draw_closure must not overflow i32 on Retina/HiDPI.
+    /// On macOS Retina (render_scale≈2) cosmic_text returns large pixel coords that, combined
+    /// with pad_x/col, used to exceed i32::MAX → panic in debug mode.
+    #[test]
+    fn draw_coord_x_clamps_for_large_retina_values() {
+        // (i32::MAX - 10) + 5 + 10 - 0 would exceed i32::MAX without fix
+        let px = draw_coord_x(i32::MAX - 10, 5, 10, 0);
+        assert_eq!(px, i32::MAX);
+    }
+
+    #[test]
+    fn draw_coord_y_clamps_for_large_retina_values() {
+        // (i32::MAX - 5) + 3 + 10 would exceed i32::MAX without fix
+        let py = draw_coord_y(i32::MAX - 5, 3, 10);
+        assert_eq!(py, i32::MAX);
+    }
+
+    #[test]
+    fn draw_coord_x_normal_case_unchanged() {
+        // Normal (non-overflow) values must not be affected by the fix
+        assert_eq!(draw_coord_x(10, 5, 3, 2), 16);
+    }
+
+    #[test]
+    fn draw_coord_y_normal_case_unchanged() {
+        assert_eq!(draw_coord_y(10, 5, 3), 18);
     }
 }
