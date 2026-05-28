@@ -134,6 +134,7 @@ use crate::ui::run_result_panel::{
     spawn_run_result_panel_system,
 };
 use crate::ui::safety_toast::{safety_toast_system, spawn_safety_toast};
+use crate::ui::settings::settings_modal_close_system;
 use crate::ui::scenario_parser::parse_scenario_system;
 use crate::ui::scenario_startup_panel::{
     ScenarioStartupParamCommit, commit_startup_params_to_scenario_system,
@@ -632,6 +633,8 @@ impl Plugin for UiPlugin {
             ),
         )
         // ── Phase 10 §2.10: Safety Rail violation toast ──
-        .add_systems(Update, safety_toast_system);
+        .add_systems(Update, safety_toast_system)
+        // ── Settings モーダル（on-demand spawn / × ボタン or Escape で despawn）──
+        .add_systems(Update, settings_modal_close_system);
     }
 }

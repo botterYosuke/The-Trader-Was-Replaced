@@ -4,13 +4,15 @@
 
 関連ページ: [getting-started](getting-started.md) / [venues](venues.md) / [troubleshooting](troubleshooting.md)
 
-## Help→Settings floating window
+## Help→Settings modal
 
-メニューバー **Help(&H)** → **Settings** を選択すると、Settings floating window が開きます（`src/ui/settings.rs`）。 [M24]
+メニューバー **Help(&H)** → **Settings** を選択すると、Settings modal が表示されます（`src/ui/settings.rs`）。 [M24]
 
 - `Alt+H` でも Help メニューを開閉できます。
-- Settings window は非永続（`LayoutExcluded`）のため、セーブ・ロード・再起動では復元されません。 [M24]
+- modal は backdrop + 320px カードの UI Node 構成で、canvas には乗りません。
+- **× ボタン** または **Escape キー** で閉じられます。 [M24]
 - 既に開いている場合は重複して開きません。 [M24]
+- modal はオンデマンド spawn / despawn のため、セーブ・ロード・再起動では復元されません。 [M24]
 
 | 項目 | 値 |
 |---|---|
