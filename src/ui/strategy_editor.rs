@@ -1550,6 +1550,9 @@ pub fn spawn_bevscode_peer_on_strategy_editor_added(
                 root: root_entity,
                 region_key: id.region_key.clone(),
             },
+            // Slice 5 (#50): compute_find_match_spans_system は bevscode peer 側で動くように切替済み。
+            // spawn 時から FindMatchSpans を貼り、cosmic 側の重複は Slice 6 で撤去予定。
+            FindMatchSpans::default(),
             StrategyEditorPendingSeed(fragment.source.clone()),
             Name::new("StrategyEditorNode(bevscode)"),
         ));
