@@ -3,9 +3,10 @@
 //!
 //! 起動完了後（visible=false）は通常行が "No run yet" を表示し、
 //! 起動セクションが非表示になることも検証する。
+//! エラー時（visible=true, error=Some(...)）はバー/フェーズを隠して RunState::Failed を通常行に表示する。
 
 use backcast::replay::{ReplayStartupPhase, ReplayStartupProgress};
-use backcast::trading::{CurrentRun, ExecutionModeRes};
+use backcast::trading::{CurrentRun, ExecutionModeRes, RunState};
 use backcast::ui::components::{RunResultPanelRoot, WindowManager};
 use backcast::ui::editor_history::AppHistory;
 use backcast::ui::run_result_panel::{
@@ -107,6 +108,44 @@ fn m25_startup_done_shows_normal_rows() {
     assert!(
         texts.iter().any(|t| t == "No run yet"),
         "起動完了後は State 行が 'No run yet' のはず: got {:?}",
+        texts
+    );
+}
+
+/// AC #3: 起動エラー時（progress.error=Some）はバー/フェーズが非表示になり
+/// RunState::Failed が通常行に "Failed: ..." として表示される。
+#[test]
+fn m25_startup_error_hides_bar_and_shows_failed_row() {
+    let mut app = make_app();
+    app.update(); // Startup spawn
+
+    {
+        let mut p = app.world_mut().resource_mut::<ReplayStartupProgress>();
+        p.visible = true;
+        p.phase = ReplayStartupPhase::LoadingData;
+        p.error = Some("backend timeout".to_string());
+    }
+    {
+        let mut r = app.world_mut().resource_mut::<CurrentRun>();
+        r.state = RunState::Failed { error: "backend timeout".to_string() };
+    }
+    app.update();
+
+    let world = app.world_mut();
+
+    let mut phase_vis_q = world.query_filtered::<&Visibility, With<RunResultPhaseLabel>>();
+    let phase_vis = phase_vis_q.single(world).unwrap();
+    assert_eq!(*phase_vis, Visibility::Hidden, "エラー時はフェーズラベルが非表示のはず");
+
+    let mut bar_q = world.query_filtered::<&Visibility, With<RunResultBarBg>>();
+    let bar_vis = bar_q.single(world).unwrap();
+    assert_eq!(*bar_vis, Visibility::Hidden, "エラー時はインジケータバーが非表示のはず");
+
+    let mut row_q = world.query_filtered::<&Text2d, With<RunResultLabel>>();
+    let texts: Vec<String> = row_q.iter(world).map(|t| t.0.clone()).collect();
+    assert!(
+        texts.iter().any(|t| t.contains("Failed") && t.contains("backend timeout")),
+        "エラー時は State 行に 'Failed: backend timeout' が出るはず: got {:?}",
         texts
     );
 }

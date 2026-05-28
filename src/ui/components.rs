@@ -3271,6 +3271,22 @@ pub struct ScenarioStartupFieldEditor {
     pub field: ScenarioStartupField,
 }
 
+/// Slice 6a (#50): Startup window の入力欄 focus 状態。
+/// `scenario_startup_field_input_system` が drain した KeyboardInput をこの focus に従って
+/// 各 `ScenarioStartupFieldText` に振り分ける。`find_field_input_system` (find/replace) の
+/// `FindFocusedField` と同じ流派 (cosmic FocusedWidget なしの自前 focus marker)。
+#[derive(Resource, Default, Debug, Clone, Copy, PartialEq, Eq)]
+pub struct ScenarioStartupFocus {
+    pub field: Option<ScenarioStartupField>,
+}
+
+/// Slice 6a (#50): Startup window の入力欄テキストバッファ (非 cosmic 版)。
+/// `spawn_scenario_startup_input_fields` が `(Text2d, ScenarioStartupFieldEditor,
+/// ScenarioStartupFieldText, ...)` で spawn し、`Changed<ScenarioStartupFieldText>` を
+/// `scenario_startup_field_render_system` が見て子 Text2d に転記する。
+#[derive(Component, Default, Debug, Clone)]
+pub struct ScenarioStartupFieldText(pub String);
+
 /// 銘柄 ID をキーにしたチャートパネルサイズの永続マップ。
 /// `instrument_chart_sync_system` がこのマップを参照し、再 spawn 時に保存済みサイズを使う。
 /// リサイズ DragEnd 時に更新される。
