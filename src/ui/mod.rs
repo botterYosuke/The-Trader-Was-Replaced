@@ -22,7 +22,6 @@ pub mod positions;
 pub mod reconcile_modal;
 pub mod relogin_modal;
 pub mod render_scale;
-pub mod replay_startup_window;
 pub mod restore;
 pub mod run_result_panel;
 pub mod safety_toast;
@@ -130,8 +129,8 @@ use crate::ui::relogin_modal::{
 };
 use crate::ui::restore::restore_fixed_registry_on_replay_entry_system;
 use crate::ui::run_result_panel::{
-    apply_run_result_visibility_system, run_result_panel_system,
-    spawn_run_result_panel_system,
+    animate_run_result_startup_bar_system, apply_run_result_visibility_system,
+    run_result_panel_system, spawn_run_result_panel_system,
 };
 use crate::ui::safety_toast::{safety_toast_system, spawn_safety_toast};
 use crate::ui::scenario_parser::parse_scenario_system;
@@ -329,6 +328,7 @@ impl Plugin for UiPlugin {
                 handle_strategy_file_load_system,
                 update_strategy_status_label_system,
                 run_result_panel_system,
+                animate_run_result_startup_bar_system,
                 log_strategy_run_requested_system,
                 handle_strategy_run_system
                     .after(sync_scenario_metadata_from_registry_system)

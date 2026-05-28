@@ -295,6 +295,8 @@ mod m22_run_result_stats_pnl_fallback;
 mod m23_run_result_stats_blank_in_replay;
 #[path = "e2e/flows/m24_help_settings_spawns_floating_window.rs"]
 mod m24_help_settings_spawns_floating_window;
+#[path = "e2e/flows/m25_run_result_startup_progress.rs"]
+mod m25_run_result_startup_progress;
 
 // N. Live Auto strategy execution (Phase 10: lifecycle / telemetry / safety / log)
 #[path = "e2e/flows/n1_live_strategy_event_lifecycle.rs"]

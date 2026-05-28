@@ -23,7 +23,7 @@ use backcast::backend_sync::{
     backend_event_drain_system, status_update_system, BackendEventChannel, StatusUpdateChannel,
 };
 use backcast::replay::{ReplayStartupPhase, ReplayStartupProgress};
-use backcast::ui::replay_startup_window::replay_startup_timeout_system;
+use backcast::ui::run_result_panel::replay_startup_timeout_system;
 use backcast::trading::{
     backend_update_system, AvailableInstruments, BackendChannel, BackendEvent, BackendStatus,
     BackendStatusUpdate, BackendTradingState, CurrentRun, ExecutionMode, ExecutionModeRes,
