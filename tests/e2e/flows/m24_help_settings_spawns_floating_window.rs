@@ -11,6 +11,9 @@ use bevy::prelude::*;
 fn make_app() -> App {
     let mut app = App::new();
     app.insert_resource(ButtonInput::<KeyCode>::default());
+    app.insert_resource(backcast::trading::SecretPrompt::default());
+    app.insert_resource(backcast::ui::order_panel::OrderConfirm::default());
+    app.insert_resource(backcast::ui::modify_modal::ModifyForm::default());
     app.add_systems(Update, settings_modal_close_system);
     app
 }
@@ -36,7 +39,10 @@ fn m24_help_settings_spawns_floating_window() {
     assert_eq!(modal_count(&mut app), 1, "spawn_settings_modal must create exactly 1 SettingsModalRoot");
 }
 
-// ── ケース 2: 2 回 spawn してもアプリ側 dedup で 1 件 ──────────────────
+// ── ケース 2: spawn_settings_modal を直接 2 回呼ぶと 2 件になる ───────────
+// dedup は menu_bar.rs の `if existing_settings.is_empty()` ガードが担う。
+// spawn_settings_modal 自体は dedup しないため、直接 2 回呼べば 2 件 entity が生まれる。
+// (menu_bar system レベルの dedup は menu_bar 統合テストで担保)
 
 #[test]
 fn m24_help_settings_no_duplicate_on_second_spawn() {
@@ -45,10 +51,10 @@ fn m24_help_settings_no_duplicate_on_second_spawn() {
     spawn_modal(&mut app);
     assert_eq!(modal_count(&mut app), 1);
 
-    // 2 回目は menu_bar.rs の `if existing_settings.is_empty()` ガードが防ぐ。
-    // unit test ではガード外で直接呼ぶと 2 件になるため、ここでは1件のまま確認する。
-    // (menu_bar system の dedup は i1 / menu_bar 統合テストで担保)
-    assert_eq!(modal_count(&mut app), 1, "dedup: second implicit call skipped → still 1");
+    // 2 回目: spawn_settings_modal 自体は dedup しないので 2 件になることを確認する。
+    // dedup は呼び出し元 (menu_item_system) の責務。
+    spawn_modal(&mut app);
+    assert_eq!(modal_count(&mut app), 2, "spawn_settings_modal has no self-dedup: 2 calls → 2 entities");
 }
 
 // ── ケース 3: × ボタンで close ──────────────────────────────────────────

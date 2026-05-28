@@ -2,6 +2,9 @@
 //! (reconcile_modal / secret_modal と同系統)。
 
 use bevy::prelude::*;
+use crate::trading::SecretPrompt;
+use crate::ui::modify_modal::ModifyForm;
+use crate::ui::order_panel::OrderConfirm;
 
 // ────────────────────────────────────────────────
 // Components
@@ -31,7 +34,7 @@ pub fn spawn_settings_modal(commands: &mut Commands) {
                 ..default()
             },
             BackgroundColor(Color::srgba(0.0, 0.0, 0.0, 0.5)),
-            GlobalZIndex(200),
+            GlobalZIndex(195),
             SettingsModalRoot,
             Name::new("SettingsModal"),
         ))
@@ -99,11 +102,17 @@ pub fn settings_modal_close_system(
     btn_q: Query<&Interaction, (Changed<Interaction>, With<SettingsCloseButton>)>,
     root_q: Query<Entity, With<SettingsModalRoot>>,
     keys: Res<ButtonInput<KeyCode>>,
+    secret_prompt: Res<SecretPrompt>,
+    order_confirm: Res<OrderConfirm>,
+    modify_form: Res<ModifyForm>,
 ) {
     let close_by_button = btn_q
         .iter()
         .any(|i| matches!(i, Interaction::Pressed));
-    let close_by_escape = keys.just_pressed(KeyCode::Escape);
+    // 高優先モーダルが開いている間は Escape を yield する（§3.10）。
+    let higher_priority_open =
+        secret_prompt.active.is_some() || order_confirm.pending.is_some() || modify_form.open;
+    let close_by_escape = keys.just_pressed(KeyCode::Escape) && !higher_priority_open;
 
     if close_by_button || close_by_escape {
         for entity in &root_q {

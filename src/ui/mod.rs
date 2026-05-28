@@ -635,6 +635,11 @@ impl Plugin for UiPlugin {
         // ── Phase 10 §2.10: Safety Rail violation toast ──
         .add_systems(Update, safety_toast_system)
         // ── Settings モーダル（on-demand spawn / × ボタン or Escape で despawn）──
-        .add_systems(Update, settings_modal_close_system);
+        .add_systems(
+            Update,
+            settings_modal_close_system
+                .before(secret_modal_input_system)
+                .before(confirm_modal_button_system),
+        );
     }
 }
