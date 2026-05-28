@@ -1,5 +1,5 @@
 use crate::trading::{
-    BackendStatus, ExecutionMode, ExecutionModeRes, LastRunResult, ReplaySpeed, RunState,
+    BackendStatus, CurrentRun, ExecutionMode, ExecutionModeRes, ReplaySpeed, RunState,
     SelectedSymbol, TradingSession, TradingSettings, TransportCommand, TransportCommandSender,
     VenueState, VenueStatusRes, is_venue_live,
 };
@@ -261,6 +261,7 @@ pub fn update_footer_system(
     buffer: Res<StrategyBuffer>,
     venue: Res<VenueStatusRes>,
     exec_mode: Res<ExecutionModeRes>,
+    current_run: Res<CurrentRun>,
     mut time_q: Query<
         &mut Text,
         (
@@ -325,6 +326,7 @@ pub fn update_footer_system(
         && !buffer.is_changed()
         && !venue.is_changed()
         && !exec_mode.is_changed()
+        && !current_run.is_changed()
     {
         return;
     }
@@ -441,8 +443,15 @@ pub fn update_footer_system(
     // RUNNING/PAUSED は常に enabled（Pause/Resume は cache_path 不要）。
     let run_disabled = matches!(replay, "IDLE" | "LOADED") && buffer.cache_path.is_none();
     for (mut text, mut color) in &mut pause_q {
-        let new_label = match replay {
-            "RUNNING" => "||",
+        let new_label = match exec_mode.mode {
+            ExecutionMode::Replay => match replay {
+                "RUNNING" => "||",
+                _ => "▶",
+            },
+            ExecutionMode::LiveAuto => match current_run.state {
+                RunState::Running => "||",
+                _ => "▶",
+            },
             _ => "▶",
         };
         if text.0 != new_label {
@@ -460,6 +469,7 @@ pub fn update_footer_system(
 }
 
 #[allow(clippy::type_complexity)]
+#[allow(clippy::too_many_arguments)]
 pub fn transport_button_system(
     mut query: Query<
         (&Interaction, &mut BackgroundColor, &TransportButton),
@@ -569,7 +579,7 @@ pub fn update_speed_buttons_system(
 /// - hover/press の BackgroundColor 更新もここで担当（transport_button_system からは除外済み）
 ///
 /// `transport_button_system` から分離する理由: Run フローには
-/// `StrategyBuffer` / `StrategyAutoSaveState` / `LastRunResult` / `StrategyRunRequested` という
+/// `StrategyBuffer` / `StrategyAutoSaveState` / `CurrentRun` / `StrategyRunRequested` という
 /// 別系統の依存が必要で、transport_button_system に詰め込むと責務が肥大化する。
 /// `With<PauseResumeButton>` で物理的に分離することで、関心を 1 system 1 ボタンに保つ。
 #[allow(clippy::type_complexity)]
@@ -582,7 +592,7 @@ pub fn footer_pause_resume_system(
     data: Res<TradingSession>,
     sender: Res<TransportCommandSender>,
     mut buffer: ResMut<StrategyBuffer>,
-    mut last_run: ResMut<LastRunResult>,
+    mut current_run: ResMut<CurrentRun>,
     mut auto_save: ResMut<StrategyAutoSaveState>,
     mut run_events: MessageWriter<StrategyRunRequested>,
     fragments_q: Query<(&StrategyEditorId, &StrategyFragment), With<WindowRoot>>,
@@ -611,7 +621,7 @@ pub fn footer_pause_resume_system(
                             }
                         }
                         _ => {
-                            if matches!(last_run.state, RunState::Running) {
+                            if matches!(current_run.state, RunState::Running) {
                                 warn!("Run blocked: already running");
                                 continue;
                             }
@@ -640,6 +650,41 @@ pub fn footer_pause_resume_system(
                         }
                     },
                     ExecutionMode::LiveAuto => {
+                        // Double-press guard: once a run is starting/running, ▶ must not
+                        // start a 2nd run. run_id may still be None (server RUNNING not yet
+                        // drained), so this must precede the run_id-based active-run branch.
+                        if matches!(current_run.state, RunState::Running)
+                            && current_run.run_id.is_none()
+                        {
+                            warn!("LiveAuto play blocked: run already starting/running");
+                            continue;
+                        }
+                        // Active run: ▶ toggles Pause/Resume instead of starting a new run.
+                        if let Some(run_id) = current_run.run_id.clone() {
+                            match current_run.state {
+                                RunState::Running => {
+                                    if sender
+                                        .tx
+                                        .send(TransportCommand::PauseLiveStrategy { run_id })
+                                        .is_err()
+                                    {
+                                        warn!("transport: PauseLiveStrategy send failed");
+                                    }
+                                    continue;
+                                }
+                                RunState::Paused => {
+                                    if sender
+                                        .tx
+                                        .send(TransportCommand::ResumeLiveStrategy { run_id })
+                                        .is_err()
+                                    {
+                                        warn!("transport: ResumeLiveStrategy send failed");
+                                    }
+                                    continue;
+                                }
+                                _ => {} // Idle / Stopped / Failed / Completed → start new run
+                            }
+                        }
                         // ▶ (LiveAuto): 全 pre-flight 通過時のみ StartLiveAuto を送出。
                         // SetExecutionMode は再送しない (ExecutionMode は backend 権威)。
                         // 起動銘柄は scenario（サイドカー JSON）から導出する（Replay Run と対称）。
@@ -647,7 +692,7 @@ pub fn footer_pause_resume_system(
                         let instrument_id = match scenario.instruments.as_slice() {
                             [] => {
                                 warn!("LiveAuto play: scenario has no instruments");
-                                last_run.state = RunState::Failed {
+                                current_run.state = RunState::Failed {
                                     error: "No instrument selected".into(),
                                 };
                                 continue;
@@ -662,7 +707,7 @@ pub fn footer_pause_resume_system(
                         };
                         if !is_venue_live(venue.state) {
                             warn!("LiveAuto play: venue not live");
-                            last_run.state = RunState::Failed {
+                            current_run.state = RunState::Failed {
                                 error: "Venue not connected".into(),
                             };
                             continue;
@@ -675,7 +720,7 @@ pub fn footer_pause_resume_system(
                             .or_else(|| venue.configured_venue.clone())
                         else {
                             warn!("LiveAuto play: venue identity unset");
-                            last_run.state = RunState::Failed {
+                            current_run.state = RunState::Failed {
                                 error: "Venue not configured (launch with --live-venue)".into(),
                             };
                             continue;
@@ -691,7 +736,7 @@ pub fn footer_pause_resume_system(
                             Ok(true) => {}
                             Ok(false) => {
                                 warn!("LiveAuto play: no cache_path set");
-                                last_run.state = RunState::Failed {
+                                current_run.state = RunState::Failed {
                                     error: "No strategy loaded (open a strategy file)".into(),
                                 };
                                 continue;
@@ -703,7 +748,7 @@ pub fn footer_pause_resume_system(
                         }
                         let Some(path) = buffer.cache_path.clone() else {
                             warn!("LiveAuto play: no cache_path set");
-                            last_run.state = RunState::Failed {
+                            current_run.state = RunState::Failed {
                                 error: "No strategy loaded (open a strategy file)".into(),
                             };
                             continue;
@@ -719,6 +764,11 @@ pub fn footer_pause_resume_system(
                             .is_err()
                         {
                             warn!("transport: StartLiveAuto send failed (receiver dropped)");
+                        } else {
+                            // Optimistically mark Running so a 2nd ▶ press is blocked by the
+                            // guard above. run_id stays None → backend_sync is_new_run still
+                            // accepts the authoritative RUNNING event (backend_sync.rs:180).
+                            current_run.state = RunState::Running;
                         }
                     }
                     ExecutionMode::LiveManual => {}
@@ -842,7 +892,7 @@ pub fn apply_execution_mode_visibility_system(
 mod tests {
     use super::*;
     use crate::trading::{
-        ExecutionMode, ExecutionModeRes, LastRunResult, ReplaySpeed, SelectedSymbol,
+        CurrentRun, ExecutionMode, ExecutionModeRes, ReplaySpeed, SelectedSymbol,
         TradingSession, TransportCommand, TransportCommandSender, VenueStatusRes,
     };
     use crate::ui::components::{
@@ -859,7 +909,7 @@ mod tests {
             .init_resource::<TradingSession>()
             .init_resource::<ReplaySpeed>()
             .init_resource::<StrategyBuffer>()
-            .init_resource::<LastRunResult>()
+            .init_resource::<CurrentRun>()
             .init_resource::<SelectedSymbol>()
             .init_resource::<VenueStatusRes>()
             .init_resource::<ScenarioMetadata>()

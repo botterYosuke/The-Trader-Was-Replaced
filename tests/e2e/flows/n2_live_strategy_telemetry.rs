@@ -1,18 +1,19 @@
-//! N2 live_strategy_telemetry — Live Run の PnL / order / fill カウンタが LiveRuns に乗ること。
+//! N2 live_strategy_telemetry — Live Run の PnL / order / fill カウンタが CurrentRun に乗ること。
 //!
-//! `LiveStrategyTelemetry` push が `LiveRuns` の run-scoped カウンタを更新する。lifecycle
-//! イベントより先に届いても row を作る（status は空のまま）。後続の lifecycle イベントは
-//! status だけ立て、telemetry カウンタを消さない。
+//! `LiveStrategyTelemetry` push が `CurrentRun` の run-scoped カウンタを更新する。lifecycle
+//! イベントより先に届いても（`run_id` が None でも）カウンタが書き込まれる。後続の lifecycle
+//! イベントは `state` だけ立て、telemetry カウンタを消さない。
 //! 詳細は `tests/e2e/FLOWS.md` の N2 を参照。
 
 use crate::support::Harness;
-use backcast::trading::BackendEvent;
+use backcast::trading::{BackendEvent, RunState};
 
 #[test]
 fn n2_live_strategy_telemetry() {
     let mut h = Harness::new();
 
-    // Telemetry can race ahead of the first lifecycle event — it still creates a row.
+    // Telemetry can race ahead of the first lifecycle event.
+    // CurrentRun.run_id stays None (telemetry does not set it), but counters are updated.
     h.send_event(BackendEvent::LiveStrategyTelemetry {
         run_id: "r-2".to_string(),
         strategy_id: "LIVE-002".to_string(),
@@ -23,18 +24,16 @@ fn n2_live_strategy_telemetry() {
         ts_ms: 500,
     });
 
-    let runs = h.live_runs().runs;
-    assert_eq!(runs.len(), 1);
-    let r = &runs[0];
-    assert_eq!(r.run_id, "r-2");
-    assert_eq!(r.strategy_id, "LIVE-002");
-    assert!(r.status.is_empty(), "telemetry carries no lifecycle status");
-    assert_eq!(r.realized_pnl, 100.0);
-    assert_eq!(r.unrealized_pnl, -50.0);
-    assert_eq!(r.order_count, 3);
-    assert_eq!(r.fill_count, 2);
+    let cr = h.current_run();
+    assert_eq!(cr.run_id, None, "telemetry alone does not set run_id");
+    assert_eq!(cr.strategy_name, "LIVE-002");
+    assert_eq!(cr.state, RunState::Idle, "telemetry carries no lifecycle state");
+    assert_eq!(cr.realized_pnl, 100.0);
+    assert_eq!(cr.unrealized_pnl, -50.0);
+    assert_eq!(cr.order_count, 3);
+    assert_eq!(cr.fill_count, 2);
 
-    // A later lifecycle event sets status but must not clobber the counters.
+    // A later lifecycle event sets state but must not clobber the counters.
     h.send_event(BackendEvent::LiveStrategyEvent {
         run_id: "r-2".to_string(),
         strategy_id: String::new(),
@@ -42,11 +41,10 @@ fn n2_live_strategy_telemetry() {
         ts_ms: 600,
     });
 
-    let runs = h.live_runs().runs;
-    assert_eq!(runs.len(), 1, "lifecycle event must merge, not duplicate");
-    let r = &runs[0];
-    assert_eq!(r.status, "RUNNING");
-    assert_eq!(r.order_count, 3, "lifecycle event must not reset telemetry");
-    assert_eq!(r.fill_count, 2);
-    assert_eq!(r.realized_pnl, 100.0);
+    let cr = h.current_run();
+    assert_eq!(cr.run_id, Some("r-2".to_string()));
+    assert_eq!(cr.state, RunState::Running);
+    assert_eq!(cr.order_count, 3, "lifecycle event must not reset telemetry");
+    assert_eq!(cr.fill_count, 2);
+    assert_eq!(cr.realized_pnl, 100.0);
 }

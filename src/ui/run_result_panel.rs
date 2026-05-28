@@ -1,4 +1,4 @@
-use crate::trading::{LastRunResult, RunState};
+use crate::trading::{CurrentRun, RunState};
 use crate::ui::components::{PanelKind, RunResultPanelRoot};
 use crate::ui::floating_window::{FloatingWindowSpec, spawn_floating_window};
 use bevy::prelude::*;
@@ -69,41 +69,99 @@ fn spawn_row(commands: &mut Commands, parent: Entity, kind: RunResultLabel, y: f
     commands.entity(parent).add_child(entity);
 }
 
-/// LastRunResult の現在値を 4 行のテキストに反映する。
-/// 同名の旧 egui 版から引数も中身も完全に作り直し。
+/// CurrentRun の現在値を 4 行のテキストに反映する。
+/// Replay と LiveAuto の両モードをカバーし、Running/Paused 中は live フィールドを表示する。
 pub fn run_result_panel_system(
-    last_run: Res<LastRunResult>,
+    current_run: Res<CurrentRun>,
     mut q: Query<(&RunResultLabel, &mut Text2d, &mut TextColor)>,
 ) {
     for (kind, mut text, mut color) in &mut q {
         let (new_text, new_color) = match kind {
-            RunResultLabel::State => match &last_run.state {
+            RunResultLabel::State => match &current_run.state {
                 RunState::Idle => ("No run yet".to_string(), COLOR_IDLE),
                 RunState::Running => ("Running…".to_string(), COLOR_RUNNING),
+                RunState::Paused => ("Paused".to_string(), COLOR_RUNNING),
+                RunState::Stopped => ("Stopped".to_string(), COLOR_IDLE),
                 RunState::Completed => ("Completed".to_string(), COLOR_COMPLETED),
                 RunState::Failed { error } => (format!("Failed: {}", error), COLOR_FAILED),
             },
-            RunResultLabel::RunId => match &last_run.run_id {
+            RunResultLabel::RunId => match &current_run.run_id {
                 Some(id) => (format!("run: {}", id), COLOR_RUNID),
                 None => (String::new(), COLOR_DEFAULT),
             },
-            RunResultLabel::Stats => match &last_run.parsed_summary {
-                Some(s) => (
-                    format!("fills: {}  eq_pts: {}", s.fills_count, s.equity_points),
+            RunResultLabel::Stats => match &current_run.state {
+                // Live Auto run: strategy_name is populated by LiveStrategyEvent.
+                // Replay run: strategy_name stays empty (no LiveStrategyEvent), so show nothing.
+                RunState::Running | RunState::Paused if !current_run.strategy_name.is_empty() => (
+                    format!(
+                        "strat: {}  o:{} f:{}",
+                        current_run.strategy_name, current_run.order_count, current_run.fill_count
+                    ),
                     COLOR_DEFAULT,
                 ),
-                None => (String::new(), COLOR_DEFAULT),
+                RunState::Running | RunState::Paused => (String::new(), COLOR_DEFAULT),
+                _ => match &current_run.parsed_summary {
+                    Some(s) => (
+                        format!("fills: {}  eq_pts: {}", s.fills_count, s.equity_points),
+                        COLOR_DEFAULT,
+                    ),
+                    None if current_run.order_count > 0 || current_run.fill_count > 0 => (
+                        format!(
+                            "strat: {}  o:{} f:{}",
+                            current_run.strategy_name,
+                            current_run.order_count,
+                            current_run.fill_count
+                        ),
+                        COLOR_DEFAULT,
+                    ),
+                    None => (String::new(), COLOR_DEFAULT),
+                },
             },
-            RunResultLabel::Pnl => match &last_run.parsed_summary {
-                Some(s) => {
-                    let c = if s.total_pnl >= 0.0 {
+            RunResultLabel::Pnl => match &current_run.state {
+                RunState::Running | RunState::Paused if !current_run.strategy_name.is_empty() => {
+                    let c = if current_run.realized_pnl + current_run.unrealized_pnl >= 0.0 {
                         COLOR_PNL_POS
                     } else {
                         COLOR_PNL_NEG
                     };
-                    (format!("pnl: {:.0}", s.total_pnl), c)
+                    (
+                        format!(
+                            "pnl: {:.0} / unrlz: {:.0}",
+                            current_run.realized_pnl, current_run.unrealized_pnl
+                        ),
+                        c,
+                    )
                 }
-                None => (String::new(), COLOR_DEFAULT),
+                RunState::Running | RunState::Paused => (String::new(), COLOR_DEFAULT),
+                _ => match &current_run.parsed_summary {
+                    Some(s) => {
+                        let c = if s.total_pnl >= 0.0 {
+                            COLOR_PNL_POS
+                        } else {
+                            COLOR_PNL_NEG
+                        };
+                        (format!("pnl: {:.0}", s.total_pnl), c)
+                    }
+                    None
+                        if current_run.realized_pnl != 0.0
+                            || current_run.unrealized_pnl != 0.0 =>
+                    {
+                        let c =
+                            if current_run.realized_pnl + current_run.unrealized_pnl >= 0.0 {
+                                COLOR_PNL_POS
+                            } else {
+                                COLOR_PNL_NEG
+                            };
+                        (
+                            format!(
+                                "pnl: {:.0} / unrlz: {:.0}",
+                                current_run.realized_pnl, current_run.unrealized_pnl
+                            ),
+                            c,
+                        )
+                    }
+                    None => (String::new(), COLOR_DEFAULT),
+                },
             },
         };
         if text.0 != new_text {
