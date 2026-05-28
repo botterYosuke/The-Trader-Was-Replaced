@@ -1,6 +1,7 @@
 //! M20 mode_visibility_systems_run_after_status_update — mode 可視性 system 群が
 //! **production の registration** (`backcast::ui::add_mode_visibility_systems`) の時点で
-//! `ExecutionModeRes` の唯一の writer (`status_update_system`) に対して順序付けられている
+//! `ExecutionModeRes` の主要な writer (`status_update_system`、他に
+//! `auto_replay_on_venue_disconnect_system`) に対して順序付けられている
 //! ことを保証する（kind:wiring）。
 //!
 //! # 背景

@@ -44,9 +44,14 @@ description: >-
   （LiveStrategyEvent / SafetyRailViolation / StrategyLogMessage / LiveStrategyTelemetry /
   LiveStrategyPromoteResult）は wiki が「未実装」と書く一方で flow 皆無 → N 群（`kind:state`）を新設。
   **「この挙動をテストするテストはあるか」「既にテストされているか」「テストでカバーされているか確認したい」
-  「FLOWS.md に該当 flow があるか」「カバレッジを確認」のような“テスト作成”でなく“カバレッジ照会”の問いでも必ず起動する**
+  「FLOWS.md に該当 flow があるか」「カバレッジを確認」のような”テスト作成”でなく”カバレッジ照会”の問いでも必ず起動する**
   （既存 flow / e2e_replay / Python テストを棚卸しし、足りない分だけ flow 化する。穴が headless 不可なら fake せず
   doc gap として FLOWS.md に明記する）。
+  **issue の AC / 仕様に enum バリアント（VenueState / ExecutionMode など）が列挙されているとき、そのバリアントを
+  全て網羅するテストを作ること**: 「Connected → 表示、Disconnected → 非表示」と書いてあっても、「Reconnecting」
+  「Authenticating」「Error」は明記されていないと実装時に漏れやすい。AC に「〜等」や「〜の場合も」がある場合は
+  enum の全バリアントを grep して網羅を確認し、足りないテストを flow に追加する
+  （issue #55 で `Reconnecting` テストが漏れ、code-review で事後検出された実例）。
   **既存 flow が root/枠だけを assert していて子・中身・深い不変条件を取りこぼしている『カバレッジギャップ』を
   埋める**ときも本スキルを開く（issue の [MEDIUM]/follow-up で「m12 は root の `Visibility` しか見ていない」
   「子（editor/gutter/scrollbar）まで隠れることを検証していない」「m11 のように Parent 連鎖で
@@ -350,6 +355,24 @@ backend→ECS seam だけでは十分条件にならない。
   「後」に呼ぶ**。順序を逆にすると clock push が RUNNING を消し、Pause クリックが Run 扱いになって command assert が落ちる
   （A2 で踏んだ）。`unsubscribe_removed_instruments_system` は mode 切替 frame を skip するので、削除クリックの前に
   `set_instruments` + 安定 tick を 1 回挟んで Local の prev 集合を整えてから × ボタンを押す（F2）。
+- **`is_changed()` は resource が insert されたフレームの最初の `tick()` で true になる**。`Harness::new()` は
+  resource を全部 insert してから返すため、最初の `h.tick()` 前に resource を書き換えても `is_changed()` ガード付き
+  system が**「変更あり」として発火してしまう**（insert tick > system 初回実行 tick のため）。実例: D11 テストで
+  `h.tick()` 前に `exec_mode.mode = LiveManual` を設定 → `auto_replay_on_venue_disconnect_system` が初回 tick で
+  `VenueStatusRes.is_changed() == true`（insert 起因）と判断し Disconnect 状態で LiveManual → Replay に誤切替 →
+  assert が `LiveManual` を期待するところ `Replay` が返って fail。
+  **パターン**: シナリオを「途中状態」から始めたいテストは、まず `h.tick()` を 1 回走らせて initial change を
+  消費してから resource を書き換え、次の seam 注入を行う。
+  ```rust
+  // ✗ 間違い: tick 前に状態設定 → is_changed が初回フレームで誤発火
+  h.app.world_mut().resource_mut::<ExecModeRes>().mode = LiveManual;
+  h.tick();
+  // ✓ 正解: 先に tick して initial change を吸収、その後シナリオを設定
+  h.tick();                    // initial change を消費
+  h.send_status(Connected);    // live 遷移
+  h.app.world_mut().resource_mut::<ExecModeRes>().mode = LiveManual; // ← ここで設定
+  h.send_status(Subscribed);   // live→live = 変化なし を assert
+  ```
 - **共有 runner（`tests/e2e_replay.rs`）の登録は orchestrator が一括で行う**。並行 subagent に書かせると重複登録・
   順序衝突・cargo の target ロック競合が起きる。subagent には「flow ファイルだけ書く / cargo も runner も触らない」と
   明示し、登録・コンパイル・修正は中央で回す。

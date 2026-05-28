@@ -884,9 +884,14 @@ pub fn auto_replay_on_venue_disconnect_system(
         );
         exec_mode.mode = ExecutionMode::Replay;
         if let Some(s) = sender.as_ref() {
-            let _ = s.tx.send(TransportCommand::SetExecutionMode {
-                mode: ExecutionMode::Replay,
-            });
+            if s.tx
+                .send(TransportCommand::SetExecutionMode {
+                    mode: ExecutionMode::Replay,
+                })
+                .is_err()
+            {
+                warn!("auto_replay: transport channel closed; SetExecutionMode dropped");
+            }
         }
     }
 }
