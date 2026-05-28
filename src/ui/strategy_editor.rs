@@ -1493,6 +1493,7 @@ use bevscode::types::GutterTextView;
 use bevy::ui::UiGlobalTransform;
 use bevy::window::PrimaryWindow;
 use bevy_instanced_text::DisplayLayout;
+use bevy_tree_sitter::arborium::lang_python;
 
 /// Strategy Editor の world-space root sprite に貼る marker。
 /// projection system がこれを起点に world→screen 投影し、`StrategyEditorNode` を追従させる。
@@ -1564,14 +1565,26 @@ pub fn spawn_bevscode_peer_on_strategy_editor_added(
 /// （`sync_bevscode_to_strategy_fragment_system` が autosave / AppHistory を駆動）。
 pub fn apply_pending_strategy_seed_system(
     mut commands: Commands,
-    mut writer: MessageWriter<SetTextRequested>,
+    mut text_writer: MessageWriter<SetTextRequested>,
+    mut lang_writer: MessageWriter<SetLanguageRequested>,
     mut input_focus: ResMut<bevy::input_focus::InputFocus>,
     pending: Query<(Entity, &StrategyEditorPendingSeed)>,
 ) {
     for (entity, seed) in pending.iter() {
-        writer.write(SetTextRequested {
+        text_writer.write(SetTextRequested {
             entity,
             text: seed.0.clone(),
+        });
+        // Slice 4 (#50): Python シンタックスハイライトを bevscode/bevy_tree_sitter で有効化。
+        // grammar は seed 投入と同タイミングで一度だけ流す。pending マーカーが外れるので二重発火しない。
+        // syntect 経路（`strategy_editor_highlight.rs` の SyntaxSpans）は Slice 6 で cosmic と
+        // 一緒に撤去するまで残置（cosmic editor が入力を持たない状態では空回りする）。
+        lang_writer.write(SetLanguageRequested {
+            entity,
+            grammar: Some(TreeSitterGrammar::new(
+                lang_python::language().into(),
+                lang_python::HIGHLIGHTS_QUERY,
+            )),
         });
         input_focus.set(entity);
         commands

@@ -23,6 +23,10 @@ bevscode = { git = "https://github.com/PoHsuanLai/bevscode.git", default-feature
 # bevscode の transitive 依存だが、projection system で `.before(LayoutProduceSet)` の
 # 制約に SystemSet を引くため直接依存にする（bevscode と同じ git rev = 51220b7 に固定）。
 bevy_instanced_text = { git = "https://github.com/PoHsuanLai/bevy_instanced_text.git", rev = "51220b7", default-features = false }
+# tree-sitter 系: bevscode と同じ git repo 内の crate を使う（rev は不固定で bevscode に合わせる）。
+# lang-python feature で `arborium::lang_python` への re-export を有効化し、Strategy Editor の
+# Python シンタックスハイライトを bevscode の SetLanguageRequested で流す。syntect は Slice 6 まで残置。
+bevy_tree_sitter = { git = "https://github.com/PoHsuanLai/bevscode.git", features = ["lang-python"] }
 syntect = { version = "5", default-features = false, features = ["default-fancy"] }
 undo = "0.52"
 chrono = "0.4"
