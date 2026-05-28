@@ -29,6 +29,7 @@ pub mod safety_toast;
 pub mod scenario_parser;
 pub mod scenario_startup_panel;
 pub mod secret_modal;
+pub mod settings;
 pub mod sidebar;
 pub mod strategy_editor;
 pub mod strategy_editor_compose;
@@ -189,6 +190,8 @@ pub fn add_mode_visibility_systems(app: &mut App) {
     app.add_systems(
         Update,
         (
+            crate::ui::footer::apply_venue_live_button_visibility_system
+                .after(crate::backend_sync::status_update_system),
             crate::ui::footer::apply_execution_mode_visibility_system
                 .after(crate::backend_sync::status_update_system),
             crate::ui::scenario_startup_panel::apply_startup_panel_visibility_system

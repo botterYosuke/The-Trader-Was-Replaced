@@ -27,6 +27,8 @@ mod a4_replay_force_stop;
 mod a6_replay_failed_strategy;
 #[path = "e2e/flows/a12_replay_precision_mismatch_surfaced.rs"]
 mod a12_replay_precision_mismatch_surfaced;
+#[path = "e2e/flows/a13_replay_play_pause_step_jumptostart.rs"]
+mod a13_replay_play_pause_step_jumptostart;
 #[path = "e2e/flows/a7_replay_startup_progress.rs"]
 mod a7_replay_startup_progress;
 #[path = "e2e/flows/a8_stale_startup_id_ignored.rs"]
@@ -69,6 +71,8 @@ mod d6_venue_reconnecting;
 mod d7_live_universe_overwrite;
 #[path = "e2e/flows/d9_venue_stays_connected_on_replay_toggle.rs"]
 mod d9_venue_stays_connected_on_replay_toggle;
+#[path = "e2e/flows/d10_venue_live_buttons_visibility.rs"]
+mod d10_venue_live_buttons_visibility;
 
 // E. Execution mode
 #[path = "e2e/flows/e1_set_execution_mode.rs"]
@@ -253,7 +257,6 @@ mod m3_window_close_hides_or_despawns;
 mod m4_window_focus_brings_to_front;
 #[path = "e2e/flows/m5_panel_duplicate_policy.rs"]
 mod m5_panel_duplicate_policy;
-// m6: stub のみ（settings sidebar は固定文字列で BackendStatus 等に未接続）
 #[path = "e2e/flows/m7_startup_window_has_no_close_button.rs"]
 mod m7_startup_window_has_no_close_button;
 #[path = "e2e/flows/m8_startup_window_visibility_owned_by_mode.rs"]
@@ -288,6 +291,8 @@ mod m21_floating_window_interactive_sprites_have_pickable;
 mod m22_run_result_stats_pnl_fallback;
 #[path = "e2e/flows/m23_run_result_stats_blank_in_replay.rs"]
 mod m23_run_result_stats_blank_in_replay;
+#[path = "e2e/flows/m24_help_settings_spawns_floating_window.rs"]
+mod m24_help_settings_spawns_floating_window;
 
 // N. Live Auto strategy execution (Phase 10: lifecycle / telemetry / safety / log)
 #[path = "e2e/flows/n1_live_strategy_event_lifecycle.rs"]
@@ -314,3 +319,7 @@ mod n10_live_error_status_maps_to_failed;
 mod n12_failed_status_preserves_rich_error;
 #[path = "e2e/flows/n13_footer_live_auto_pause_resume.rs"]
 mod n13_footer_live_auto_pause_resume;
+
+// O. Live venue integration (TACHIBANA / kabusapi 統合フロー)
+#[path = "e2e/flows/o1_tachibana_live_manual_add_subscribe.rs"]
+mod o1_tachibana_live_manual_add_subscribe;

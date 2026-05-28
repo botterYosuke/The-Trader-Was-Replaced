@@ -367,3 +367,46 @@ def test_master_parser_strict_decode_accepts_valid_sjis():
     )
     parser.feed(body)
     assert parser.is_complete is True
+
+
+# ---------------------------------------------------------------------------
+# Bug 1 (RED): build_instruments skips rows missing sSizyouC or sBaibaiTaniNumber
+# ---------------------------------------------------------------------------
+
+
+def test_build_instruments_skips_sizyou_missing_market_code(caplog: pytest.LogCaptureFixture):
+    """sSizyouC が欠落したレコードは KeyError を出さず skip して残りを返す。"""
+    records = [
+        {"sCLMID": "CLMIssueMstKabu", "sIssueCode": "7203", "sIssueName": "トヨタ自動車"},
+        {
+            "sCLMID": "CLMIssueSizyouMstKabu",
+            "sIssueCode": "7203",
+            # sSizyouC が欠落
+            "sYobineTaniNumber": "Y1",
+            "sBaibaiTaniNumber": "100",
+        },
+        _yobine_record("Y1", "3000", "1", 0),
+    ]
+    with caplog.at_level(logging.WARNING):
+        out = build_instruments_from_master_records(records)
+    assert out == []
+    assert any("missing market/lot_size" in r.message for r in caplog.records)
+
+
+def test_build_instruments_skips_sizyou_missing_lot_size(caplog: pytest.LogCaptureFixture):
+    """sBaibaiTaniNumber が欠落したレコードは KeyError を出さず skip して残りを返す。"""
+    records = [
+        {"sCLMID": "CLMIssueMstKabu", "sIssueCode": "9984", "sIssueName": "ソフトバンクＧ"},
+        {
+            "sCLMID": "CLMIssueSizyouMstKabu",
+            "sIssueCode": "9984",
+            "sSizyouC": "00",
+            "sYobineTaniNumber": "Y1",
+            # sBaibaiTaniNumber が欠落
+        },
+        _yobine_record("Y1", "3000", "1", 0),
+    ]
+    with caplog.at_level(logging.WARNING):
+        out = build_instruments_from_master_records(records)
+    assert out == []
+    assert any("missing market/lot_size" in r.message for r in caplog.records)

@@ -424,11 +424,11 @@ class TachibanaAdapter:
             if depth is not None:
                 ts_ns = int(depth["recv_ts_ms"]) * 1_000_000
                 bids = tuple(
-                    DepthLevel(price=float(lv["price"]), size=float(lv["qty"]))
+                    DepthLevel(price=float(lv["price"]), size=float(lv["size"]))
                     for lv in depth["bids"]
                 )
                 asks = tuple(
-                    DepthLevel(price=float(lv["price"]), size=float(lv["qty"]))
+                    DepthLevel(price=float(lv["price"]), size=float(lv["size"]))
                     for lv in depth["asks"]
                 )
                 self._queue.put_nowait(

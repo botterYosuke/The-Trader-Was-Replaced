@@ -21,7 +21,7 @@ use std::time::Duration;
 
 use bevy::prelude::*;
 
-use backcast::ui::components::{MenuItem, OpenMenu, UndoMenuRequested, RedoMenuRequested};
+use backcast::ui::components::{MenuItem, OpenMenu, PanelSpawnRequested, UndoMenuRequested, RedoMenuRequested};
 use backcast::ui::editor_history::{AppEdit, AppHistory, TextEdit};
 use backcast::ui::layout_persistence::{
     LayoutLoadDialogRequested, LayoutSaveAsRequested, LayoutSaveRequested,
@@ -46,6 +46,7 @@ fn build_app() -> App {
     app.add_message::<LayoutLoadDialogRequested>();
     app.add_message::<UndoMenuRequested>();
     app.add_message::<RedoMenuRequested>();
+    app.add_message::<PanelSpawnRequested>();
     // issue #50 Step 0 spike — menu_item_system が SpikeEditorSpawnRequested を要求。Phase B で削除。
     app.add_message::<backcast::ui::strategy_editor_spike::SpikeEditorSpawnRequested>();
 

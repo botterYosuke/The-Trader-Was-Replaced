@@ -19,7 +19,7 @@ use bevy::prelude::*;
 use tokio::sync::mpsc;
 
 use backcast::trading::{ExecutionMode, ExecutionModeRes, TransportCommand, TransportCommandSender, VenueStatusRes};
-use backcast::ui::components::{MenuItem, OpenMenu};
+use backcast::ui::components::{MenuItem, OpenMenu, PanelSpawnRequested};
 use backcast::ui::layout_persistence::{
     LayoutLoadDialogRequested, LayoutSaveAsRequested, LayoutSaveRequested,
 };
@@ -42,6 +42,7 @@ fn i6_file_new_resets_loaded_strategy() {
     app.add_message::<LayoutLoadDialogRequested>();
     app.add_message::<UndoMenuRequested>();
     app.add_message::<RedoMenuRequested>();
+    app.add_message::<PanelSpawnRequested>();
     // issue #50 Step 0 spike — menu_item_system が SpikeEditorSpawnRequested を要求。Phase B で削除。
     app.add_message::<backcast::ui::strategy_editor_spike::SpikeEditorSpawnRequested>();
 
@@ -97,6 +98,7 @@ fn i6_file_new_resets_loaded_strategy() {
         app2.add_message::<LayoutLoadDialogRequested>();
         app2.add_message::<UndoMenuRequested>();
         app2.add_message::<RedoMenuRequested>();
+        app2.add_message::<PanelSpawnRequested>();
         // issue #50 Step 0 spike — menu_item_system が SpikeEditorSpawnRequested を要求。Phase B で削除。
         app2.add_message::<backcast::ui::strategy_editor_spike::SpikeEditorSpawnRequested>();
 

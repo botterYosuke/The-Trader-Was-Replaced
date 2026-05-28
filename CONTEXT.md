@@ -18,8 +18,8 @@ _Avoid_: multi-pane layout, dashboard layout, tabbed workspace.
 **Floating window**:
 A world-space *sprite* window built by `spawn_floating_window` — draggable by its
 title bar, z-ordered among other floating windows. Chart, Strategy Editor,
-Buying Power, Run Result, Positions, and Orders are all floating windows, and
-the Startup window is built the same way. Most windows' contents are world-space
+Buying Power, Run Result, Positions, Orders, and Settings are all floating windows,
+and the Startup window is built the same way. Most windows' contents are world-space
 sprites/`Text2d`; the Strategy Editor's code buffer is the one exception — see
 **Strategy Editor (projected overlay)**.
 _Avoid_: panel, dialog.

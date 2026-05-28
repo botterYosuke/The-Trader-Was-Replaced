@@ -2,6 +2,7 @@ import argparse
 import logging
 import os
 import sys
+from . import paths as _paths
 from .server_grpc import serve
 
 
@@ -38,7 +39,9 @@ def parse_args(argv=None):
     parser.add_argument(
         "--jquants-catalog-path",
         type=str,
-        default=os.environ.get("JQUANTS_CATALOG_PATH"),
+        default=os.environ.get("JQUANTS_CATALOG_PATH") or (
+            str(_paths.jquants_catalog_path()) if os.environ.get("ARTIFACTS_PATH") else None
+        ),
         help="Path to Nautilus ParquetDataCatalog for J-Quants data (env: JQUANTS_CATALOG_PATH, ARTIFACTS_PATH)",
     )
 

@@ -40,7 +40,15 @@ description: |
     `CosmicBackgroundColor`, `CursorColor`, `CosmicTextChanged`, `set_text`, `with_buffer_mut`
     という語彙が出てきたとき、または「focused で文字が小さい」「unfocused で文字が大きい」
     「フォントサイズが 2 種類」「DPI スケールが反映されない」「set_initial_scale」
-    「Added<CosmicEditBuffer>」と言われたとき
+    「Added<CosmicEditBuffer>」と言われたとき。
+    **また `crates/bevy_cosmic_edit/src/render.rs` を触るとき、
+    `render_texture` パニック、`draw_closure` overflow、`render_scale` Retina、
+    `i32 add overflow`、`attempt to add with overflow`、`Compute Task Pool panicked`
+    という症状・語彙が出たときも本スキルを起動すること**
+    （bevy_cosmic_edit は path dep で workspace 外; standalone `cargo test` は
+    `primary.rs` の既存コンパイルエラーで通らないため、回帰ガードは
+    `crates/bevy_cosmic_edit/src/render.rs` 内 `#[cfg(test)]` と
+    `tests/e2e/flows/q*` プレースホルダーで行う）
   ⑨ フォント / グリフ / 文字化け関連: "font", "TextFont", "Handle<Font>", "AssetServer",
     "豆腐", "mojibake", "□", "▶", "■", "glyph", "BEVY_ASSET_ROOT", "Path not found",
     "assets/fonts/", "FiraMono", "NotoSansSymbols" が出たとき。
@@ -57,7 +65,19 @@ description: |
     1 コア 60% 食ってた (2026-05-18 計測)。`WinitSettings::reactive(200ms)` 化で 4.7% まで落ちる。
     ただし `WinitSettings::desktop_app()` (5s/60s) は **mpsc backend push が最大 5 秒遅延** する
     ので trading UI では使わない。詳細: `references/winit-update-mode.md`。
-  ⑪ システム実行順序・スケジューリング・deferred Commands 関連: "add_systems", ".after",
+  ⑪ **テストで `System::name()` / `sys.name()` を使う際の `debug` feature**:
+    Bevy 0.18 で `System::name()` の戻り値が `Cow<'static, str>` → `DebugName` に変わった。
+    `DebugName` は `bevy_utils/debug` feature が有効なときだけ実名を格納し、無効なときは
+    `Deref` が `"<Enable the debug feature to see the name>"` を返す（全システムで同一文字列）。
+    **`Cargo.toml` に `bevy = { ..., features = ["debug"] }` が無い状態でスケジュールのシステム名
+    チェック（`sys.name().to_string()`）をするテストを書くと、名前が全件プレースホルダーになって
+    必ず `contains("xxx_system")` が false になり assert が失敗する**。
+    fix: `Cargo.toml` の bevy features に `"debug"` を追加（`bevy_ecs/debug` → `bevy_utils/debug`）。
+    実例: `tests/e2e/flows/m20_mode_visibility_systems_run_after_status_update.rs` が issue #52 の
+    Bevy 0.18 マイグレーション後に全システムが "missing" として報告された問題（issue #45 で修正）。
+    関連: Bevy 0.18 ビルドエラー出力の `system \`<Enable the debug feature to see the name>\`` も
+    同じ原因（`SystemParamValidationError` パニック時の system 名表示）。
+  ⑫ **システム実行順序・スケジューリング・deferred Commands 関連**: "add_systems", ".after",
     ".before", ".chain", "ApplyDeferred", "sync point", "システム順序", "スケジュール",
     "schedule cycle", "サイクル", "Commands が反映されない", "marker が反映されない",
     "deferred", "Visibility 競合", "query 競合", "毎フレーム diff-write", "is_changed" と
@@ -69,7 +89,7 @@ description: |
     「新規 spawn が 1 フレーム可視で出る」race になる（issue #31 で実際に踏んだ。読者・
     save 系を mode system の前に、spawn dispatcher を後続 apply/可視性 system の前に置いて解消）。
 
-  ⑫ **コード編集系 UI**（`src/ui/strategy_editor.rs` など）の機能を作る／改修するとき:
+  ⑬ **コード編集系 UI**（`src/ui/strategy_editor.rs` など）の機能を作る／改修するとき:
     "行番号", "gutter", "ガター", "シンタックスハイライト", "syntax highlight",
     "マルチカーソル", "multi-cursor", "folding", "コード折りたたみ", "括弧マッチ",
     "bracket match", "スクロールバー", "検索置換", "find/replace", "LSP UI", "補完",
@@ -762,6 +782,11 @@ egui の中で `state.buffer` のような大きい String を編集するとき
   新規 spawn されたウィンドウも捕捉するため」が手本（`src/ui/strategy_editor.rs` L156）。
   併せて `mod.rs` で `.after(panel_spawn_dispatcher_system)` を付けて spawn 直後の 1 フレーム flash を防ぐ
   （issue #41 code review で apply_run_result_visibility_system が両方引っかかった実例）。
+  ⚠️ **`is_changed()` が安全な場面**: 対象 entity が **Startup で 1 回だけ spawn され mid-session 再 spawn が
+  起きない** 場合（footer の ExecutionModeToggleSegment ボタン・transport ボタン等）は `is_changed()` で OK。
+  `VenueStatusRes` を監視する `apply_venue_live_button_visibility_system` がその実例（issue #55）。
+  判断基準: 「この entity は layout restore / panel_spawn_dispatcher で再 spawn される可能性があるか？」
+  → Yes なら毎フレーム diff-write、No なら `is_changed()` ガード可。
 
 ## bevscode — Bevy ネイティブのコードエディタ実装を引く
 

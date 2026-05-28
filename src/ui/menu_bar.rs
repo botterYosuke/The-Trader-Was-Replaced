@@ -222,6 +222,48 @@ pub fn spawn_menu_bar(mut commands: Commands) {
                 });
             });
 
+            // [Help ▾] トップレベルボタン
+            p.spawn((
+                Button,
+                Node {
+                    overflow: Overflow::visible(),
+                    padding: UiRect::axes(Val::Px(10.0), Val::Px(2.0)),
+                    align_items: AlignItems::Center,
+                    position_type: PositionType::Relative,
+                    ..default()
+                },
+                BackgroundColor(BTN_NORMAL),
+                MenuTopLevel::Help,
+            ))
+            .with_children(|p| {
+                p.spawn((
+                    Text::new("Help(&H)"),
+                    TextFont {
+                        font_size: 12.0,
+                        ..default()
+                    },
+                    TextColor(Color::srgb(0.82, 0.82, 0.82)),
+                ));
+                // Help popup
+                p.spawn((
+                    Node {
+                        display: Display::None,
+                        position_type: PositionType::Absolute,
+                        top: Val::Px(22.0),
+                        left: Val::Px(0.0),
+                        flex_direction: FlexDirection::Column,
+                        min_width: Val::Px(160.0),
+                        ..default()
+                    },
+                    BackgroundColor(Color::srgba(0.10, 0.10, 0.16, 0.98)),
+                    GlobalZIndex(100),
+                    MenuPopup(MenuTopLevel::Help),
+                ))
+                .with_children(|p| {
+                    spawn_menu_item(p, "Settings", MenuItem::HelpSettings);
+                });
+            });
+
             // spacer
             p.spawn(Node {
                 flex_grow: 1.0,
@@ -308,6 +350,13 @@ pub fn menu_keyboard_system(
             None
         } else {
             Some(MenuTopLevel::Venue)
+        };
+        true
+    } else if keys.just_pressed(KeyCode::KeyH) {
+        open_menu.0 = if open_menu.0 == Some(MenuTopLevel::Help) {
+            None
+        } else {
+            Some(MenuTopLevel::Help)
         };
         true
     } else {
@@ -457,6 +506,7 @@ pub fn menu_item_system(
     sender: Option<Res<TransportCommandSender>>,
     execution_mode: Res<ExecutionModeRes>,
     venue_status: Res<VenueStatusRes>,
+    mut spawn_panel_ev: MessageWriter<PanelSpawnRequested>,
 ) {
     for (interaction, mut bg, item) in &mut query {
         match interaction {
@@ -573,6 +623,14 @@ pub fn menu_item_system(
                         if sender.tx.send(TransportCommand::VenueLogout).is_err() {
                             error!("menu: VenueLogout send failed (transport channel closed)");
                         }
+                    }
+                    MenuItem::HelpSettings => {
+                        info!("menu: Help→Settings requested");
+                        spawn_panel_ev.write(PanelSpawnRequested {
+                            kind: PanelKind::Settings,
+                            source: PanelSpawnSource::User,
+                            strategy_spec: None,
+                        });
                     }
                     MenuItem::SpikeBevscode => {
                         // issue #50 Step 0 spike: Projected Node PoC を spawn する。
@@ -1396,6 +1454,7 @@ mod tests {
         app.add_message::<LayoutLoadDialogRequested>();
         app.add_message::<UndoMenuRequested>();
         app.add_message::<RedoMenuRequested>();
+        app.add_message::<PanelSpawnRequested>();
         // issue #50 Step 0 spike — menu_item_system に MessageWriter<SpikeEditorSpawnRequested>
         // を追加したので、その system を踏むテスト App でも対応する add_message が必要
         // （未登録だと `Message not initialized` で param validation panic、bevy-engine skill 既知トラップ）。

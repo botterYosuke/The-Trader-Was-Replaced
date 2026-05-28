@@ -73,8 +73,15 @@ fn parse_replay_granularity(s: &str) -> Result<i32, String> {
 ///     fresh, un-logged-in backend would reject a re-dispatch anyway, and the user is
 ///     already being shown the relogin/reconcile modals. If a future command should
 ///     survive a restart, add it to `is_reconcile_command` (and document why).
+///     Currently preserved: `GetOrdersAndReconcile` (post-restart reconcile gate),
+///     `FetchAvailableInstruments` (idempotent read-only, end_date-keyed; dropping it
+///     leaves `AvailableInstruments.in_flight` permanently stuck — issue #53).
 fn is_reconcile_command(cmd: &TransportCommand) -> bool {
-    matches!(cmd, TransportCommand::GetOrdersAndReconcile { .. })
+    matches!(
+        cmd,
+        TransportCommand::GetOrdersAndReconcile { .. }
+        | TransportCommand::FetchAvailableInstruments { .. }
+    )
 }
 
 /// Partition a batch of drained transport commands across the reconnect edge: keep
@@ -1694,7 +1701,7 @@ mod tests {
         assert_eq!(
             preserved.len(),
             1,
-            "only GetOrdersAndReconcile must survive the flush"
+            "only reconcile-class commands survive the flush (input has 1 GetOrdersAndReconcile, no FetchAvailableInstruments)"
         );
         assert!(
             matches!(preserved[0], TransportCommand::GetOrdersAndReconcile { ref venue } if venue == "tachibana"),
@@ -1717,6 +1724,29 @@ mod tests {
                 .iter()
                 .any(|c| matches!(c, TransportCommand::SubmitSecret { .. })),
             "stale SubmitSecret must be dropped (§3.10 secret hygiene)"
+        );
+    }
+
+    /// §4.6.2 / issue #53 regression: FetchAvailableInstruments must survive the
+    /// reconnect flush because it is idempotent and read-only (keyed by end_date,
+    /// no side-effects unlike order or secret commands). Dropping it leaves
+    /// AvailableInstruments.in_flight permanently set, permanently blocking [+ Add].
+    #[test]
+    fn reconnect_flush_preserves_fetch_available_instruments() {
+        let end_date = chrono::NaiveDate::from_ymd_opt(2025, 5, 21).unwrap();
+        let drained = vec![
+            TransportCommand::Pause,
+            TransportCommand::FetchAvailableInstruments { end_date },
+            TransportCommand::GetOrdersAndReconcile {
+                venue: "tachibana".to_string(),
+            },
+        ];
+        let preserved = flush_stale_transport_commands(drained);
+        assert!(
+            preserved.iter().any(|c| {
+                matches!(c, TransportCommand::FetchAvailableInstruments { end_date: d } if *d == end_date)
+            }),
+            "FetchAvailableInstruments must survive the reconnect flush (idempotent read-only)"
         );
     }
 

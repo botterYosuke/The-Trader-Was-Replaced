@@ -36,9 +36,9 @@ use backcast::trading::{
 
 // Production UI input systems (mirror src/main.rs wiring).
 use backcast::ui::components::{
-    InstrumentRegistry, OpenMenu, PauseResumeButton, ScenarioMetadata, ScenarioStartupParams,
-    ScenarioWritebackPaths, StrategyBuffer, StrategyRunRequested, RedoMenuRequested,
-    UndoMenuRequested,
+    InstrumentRegistry, OpenMenu, PanelSpawnRequested, PauseResumeButton, ScenarioMetadata,
+    ScenarioStartupParams, ScenarioWritebackPaths, StrategyBuffer, StrategyRunRequested,
+    RedoMenuRequested, UndoMenuRequested,
 };
 use backcast::ui::footer::{
     execution_mode_toggle_system, footer_pause_resume_system, speed_button_system,
@@ -152,6 +152,7 @@ impl Harness {
             .add_message::<RedoMenuRequested>()
             .add_message::<KeyboardInput>()
             .add_message::<OrderButtonPressed>()
+            .add_message::<PanelSpawnRequested>()
             // issue #50 Step 0 spike: menu_item_system に SpikeEditorSpawnRequested の
             // MessageWriter を追加したので、その system を踏む e2e 全テストでも登録が必須。
             // Phase B 後（spike module 削除）に同じ行を消す。

@@ -76,26 +76,6 @@ pub fn spawn_sidebar(mut commands: Commands) {
                 spawn_panel_btn(parent, kind);
             }
 
-            // ── Settings stub ─────────────────────────────────────────
-            parent.spawn(Node {
-                flex_grow: 1.0,
-                ..default()
-            });
-
-            spawn_section_header(parent, "Settings");
-
-            parent.spawn((
-                Text::new("Theme: Dark\nBackend: localhost:19876\nSave Layout: —"),
-                TextFont {
-                    font_size: 10.0,
-                    ..default()
-                },
-                TextColor(Color::srgb(0.45, 0.45, 0.55)),
-                Node {
-                    padding: UiRect::all(Val::Px(6.0)),
-                    ..default()
-                },
-            ));
         });
 }
 
