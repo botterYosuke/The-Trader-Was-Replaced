@@ -10,7 +10,7 @@ use tokio::sync::mpsc;
 
 use backcast::replay::{ReplayStartupPhase, ReplayStartupProgress};
 use backcast::trading::{
-    LastRunResult, RunState, TradingSession, TransportCommand, TransportCommandSender,
+    CurrentRun, RunState, TradingSession, TransportCommand, TransportCommandSender,
 };
 use backcast::ui::components::{
     InstrumentRegistry, ScenarioMetadata, ScenarioStartupParams, ScenarioWritebackPaths,
@@ -46,7 +46,7 @@ fn build_app(scenario: ScenarioMetadata) -> (App, mpsc::UnboundedReceiver<Transp
     app.init_resource::<ReplayStartupProgress>();
     app.init_resource::<ScenarioStartupParams>();
     app.insert_resource(TradingSession::default());
-    app.insert_resource(LastRunResult::default());
+    app.insert_resource(CurrentRun::default());
     app.insert_resource(TransportCommandSender { tx });
     app.add_message::<StrategyRunRequested>();
     app.add_systems(Update, handle_strategy_run_system);
@@ -105,9 +105,9 @@ fn j8_startup_panel_valid_run_command() {
         assert_eq!(progress.startup_id, 0);
         assert_eq!(progress.next_startup_id, 1);
 
-        let last_run = app.world().resource::<LastRunResult>();
+        let current_run = app.world().resource::<CurrentRun>();
         assert!(
-            matches!(last_run.state, RunState::Running),
+            matches!(current_run.state, RunState::Running),
             "RunState が Running になるはず"
         );
     }
@@ -185,7 +185,7 @@ fn j8_startup_panel_valid_run_command() {
         app.init_resource::<ReplayStartupProgress>();
         app.init_resource::<ScenarioStartupParams>();
         app.insert_resource(TradingSession::default());
-        app.insert_resource(LastRunResult::default());
+        app.insert_resource(CurrentRun::default());
         // TransportCommandSender を挿入しない
         app.add_message::<StrategyRunRequested>();
         app.add_systems(Update, handle_strategy_run_system);

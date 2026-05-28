@@ -2227,7 +2227,7 @@ mod tests {
             mode: LayoutLoadMode::UserJsonOpen,
         });
         app.init_resource::<ScenarioReadTarget>();
-        app.insert_resource(ChartSizeMap::default());
+        app.init_resource::<ChartSizeMap>();
         app.add_systems(Update, apply_layout_system);
         app.update();
 
@@ -2257,6 +2257,7 @@ mod tests {
         app.insert_resource(PendingLayoutApply::default());
         app.insert_resource(PendingStrategyFragments::default());
         app.init_resource::<ScenarioReadTarget>();
+        app.init_resource::<ChartSizeMap>();
         app.init_resource::<ExecutionModeRes>(); // 既定 Replay
 
         app.world_mut().spawn((
@@ -2561,7 +2562,7 @@ mod tests {
             path: json_path.clone(),
             mode: LayoutLoadMode::UserJsonOpen,
         });
-        app.insert_resource(ChartSizeMap::default());
+        app.init_resource::<ChartSizeMap>();
         app.add_systems(Update, apply_layout_system);
         app.update();
 
@@ -2768,7 +2769,7 @@ mod tests {
             mode: LayoutLoadMode::UserJsonOpen,
         });
         app.init_resource::<ScenarioReadTarget>();
-        app.insert_resource(ChartSizeMap::default());
+        app.init_resource::<ChartSizeMap>();
         app.add_systems(Update, apply_layout_system);
         app.update();
 
@@ -2823,7 +2824,7 @@ mod tests {
             mode: LayoutLoadMode::UserJsonOpen,
         });
         app.init_resource::<ScenarioReadTarget>();
-        app.insert_resource(ChartSizeMap::default());
+        app.init_resource::<ChartSizeMap>();
         app.add_systems(Update, apply_layout_system);
         app.update();
 
@@ -2902,7 +2903,7 @@ mod tests {
             mode: LayoutLoadMode::UserJsonOpen,
         });
         app.init_resource::<ScenarioReadTarget>();
-        app.insert_resource(ChartSizeMap::default());
+        app.init_resource::<ChartSizeMap>();
         app.add_systems(Update, apply_layout_system);
         app.update();
 
@@ -2971,7 +2972,7 @@ mod tests {
             mode: LayoutLoadMode::UserJsonOpen,
         });
         app.init_resource::<ScenarioReadTarget>();
-        app.insert_resource(ChartSizeMap::default());
+        app.init_resource::<ChartSizeMap>();
         app.add_systems(Update, apply_layout_system);
         app.update();
 
@@ -3042,7 +3043,7 @@ mod tests {
             mode: LayoutLoadMode::UserJsonOpen,
         });
         app.init_resource::<ScenarioReadTarget>();
-        app.insert_resource(ChartSizeMap::default());
+        app.init_resource::<ChartSizeMap>();
         app.add_systems(Update, apply_layout_system);
         app.update();
 
@@ -3102,7 +3103,7 @@ mod tests {
         ));
 
         app.init_resource::<PendingFileDialog>();
-        app.insert_resource(ChartSizeMap::default());
+        app.init_resource::<ChartSizeMap>();
         app.add_systems(Update, handle_save_layout_system);
         app.world_mut().write_message(LayoutSaveRequested);
         app.update();
@@ -3196,7 +3197,7 @@ mod tests {
         ));
 
         app.init_resource::<PendingFileDialog>();
-        app.insert_resource(ChartSizeMap::default());
+        app.init_resource::<ChartSizeMap>();
         app.add_systems(Update, (handle_save_layout_system, apply_layout_system));
 
         // --- Save ---
@@ -3281,7 +3282,7 @@ mod tests {
         ));
 
         app.init_resource::<PendingFileDialog>();
-        app.insert_resource(ChartSizeMap::default());
+        app.init_resource::<ChartSizeMap>();
         app.add_systems(Update, handle_save_layout_system);
         app.world_mut().write_message(LayoutSaveRequested);
         app.update();
@@ -3335,7 +3336,7 @@ mod tests {
         ));
 
         app.init_resource::<PendingFileDialog>();
-        app.insert_resource(ChartSizeMap::default());
+        app.init_resource::<ChartSizeMap>();
         app.add_systems(Update, handle_save_layout_system);
         app.world_mut().write_message(LayoutSaveRequested);
         app.update();
@@ -3408,7 +3409,7 @@ mod tests {
         ));
 
         app.init_resource::<PendingFileDialog>();
-        app.insert_resource(ChartSizeMap::default());
+        app.init_resource::<ChartSizeMap>();
         app.add_systems(Update, handle_save_layout_system);
         app.world_mut().write_message(LayoutSaveRequested);
         app.update();
@@ -3470,7 +3471,7 @@ mod tests {
         ));
 
         app.init_resource::<PendingFileDialog>();
-        app.insert_resource(ChartSizeMap::default());
+        app.init_resource::<ChartSizeMap>();
         app.add_systems(Update, handle_save_layout_system);
         app.world_mut().write_message(LayoutSaveRequested);
         app.update();
@@ -3543,7 +3544,7 @@ mod tests {
         ));
 
         app.init_resource::<PendingFileDialog>();
-        app.insert_resource(ChartSizeMap::default());
+        app.init_resource::<ChartSizeMap>();
         app.add_systems(Update, handle_save_layout_system);
         app.world_mut().write_message(LayoutSaveRequested);
         app.update();
@@ -3644,7 +3645,7 @@ mod tests {
         }
 
         app.init_resource::<ScenarioReadTarget>();
-        app.insert_resource(ChartSizeMap::default());
+        app.init_resource::<ChartSizeMap>();
         app.add_systems(Update, apply_layout_system);
         app.world_mut().write_message(LayoutLoadRequested {
             path: json_path.clone(),
@@ -3715,7 +3716,7 @@ mod tests {
         }
 
         app.init_resource::<ScenarioReadTarget>();
-        app.insert_resource(ChartSizeMap::default());
+        app.init_resource::<ChartSizeMap>();
         app.add_systems(Update, apply_layout_system);
         app.world_mut().write_message(LayoutLoadRequested {
             path: json_path.clone(),
@@ -3786,7 +3787,7 @@ mod tests {
         }
 
         app.init_resource::<ScenarioReadTarget>();
-        app.insert_resource(ChartSizeMap::default());
+        app.init_resource::<ChartSizeMap>();
         app.add_systems(Update, apply_layout_system);
         app.world_mut().write_message(LayoutLoadRequested {
             path: json_path,

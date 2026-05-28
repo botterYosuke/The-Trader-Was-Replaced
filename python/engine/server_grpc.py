@@ -2510,7 +2510,10 @@ class GrpcDataEngineServer(
             )
         except StrategyRegistryError as exc:
             return engine_pb2.RegisterLiveStrategyRes(
-                success=False, request_id=request.request_id, error_code=exc.error_code
+                success=False,
+                request_id=request.request_id,
+                error_code=exc.error_code,
+                error_message=str(exc.__cause__) if exc.__cause__ else str(exc),
             )
         return engine_pb2.RegisterLiveStrategyRes(
             success=True,
@@ -2537,7 +2540,10 @@ class GrpcDataEngineServer(
             handle = self._strategy_registry.resolve(request.strategy_id)
         except StrategyRegistryError as exc:
             return engine_pb2.StartLiveStrategyRes(
-                success=False, request_id=request.request_id, error_code=exc.error_code
+                success=False,
+                request_id=request.request_id,
+                error_code=exc.error_code,
+                error_message=str(exc.__cause__) if exc.__cause__ else str(exc),
             )
         # instrument_id を **kernel 構築前** に well-formed 検証する。malformed（venue
         # サフィックス欠落など）だと controller.attach の `InstrumentId.from_str` が
@@ -2581,6 +2587,7 @@ class GrpcDataEngineServer(
                     success=False,
                     request_id=request.request_id,
                     error_code=exc.error_code,
+                    error_message=str(exc.__cause__) if exc.__cause__ else str(exc),
                 )
         # post-trade（max_daily_loss）評価用に run の rails を記録する。
         # rails dict は live loop の評価 callback と共有するので専用 lock で囲う

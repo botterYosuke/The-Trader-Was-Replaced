@@ -10,7 +10,7 @@ use tokio::sync::mpsc;
 
 use backcast::replay::{ReplayStartupPhase, ReplayStartupProgress};
 use backcast::trading::{
-    LastRunResult, RunState, TradingSession, TransportCommand, TransportCommandSender,
+    CurrentRun, RunState, TradingSession, TransportCommand, TransportCommandSender,
 };
 use backcast::ui::components::{
     InstrumentRegistry, ScenarioMetadata, ScenarioStartupParams, ScenarioStartupParamsErrors,
@@ -48,7 +48,7 @@ fn build_run_app(
     app.init_resource::<ReplayStartupProgress>();
     app.init_resource::<ScenarioStartupParams>();
     app.insert_resource(TradingSession::default());
-    app.insert_resource(LastRunResult::default());
+    app.insert_resource(CurrentRun::default());
     app.insert_resource(TransportCommandSender { tx });
     app.add_message::<StrategyRunRequested>();
     app.add_message::<ScenarioStartupParamCommit>();
@@ -206,9 +206,9 @@ fn j7_startup_panel_validation_blocks_run() {
             rx.try_recv().is_err(),
             "ケース5: errors.granularity あり → コマンドは送られないはず"
         );
-        let last_run = app.world().resource::<LastRunResult>();
+        let current_run = app.world().resource::<CurrentRun>();
         assert!(
-            matches!(last_run.state, RunState::Idle),
+            matches!(current_run.state, RunState::Idle),
             "RunState は Idle のままのはず"
         );
     }
