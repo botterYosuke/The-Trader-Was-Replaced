@@ -1,3 +1,5 @@
+pub mod theme;
+pub mod traits;
 pub mod buying_power;
 pub mod chart_axes;
 pub mod chart_crosshair;
@@ -224,6 +226,7 @@ impl Plugin for UiPlugin {
             },
             crate::ui::layout_persistence::LayoutPersistencePlugin,
         ))
+        .init_resource::<theme::Theme>()
         .init_resource::<WindowManager>()
         .init_resource::<StrategyBuffer>()
         .init_resource::<StrategyAutoSaveState>()
