@@ -29,6 +29,8 @@ mod a6_replay_failed_strategy;
 mod a12_replay_precision_mismatch_surfaced;
 #[path = "e2e/flows/a13_replay_play_pause_step_jumptostart.rs"]
 mod a13_replay_play_pause_step_jumptostart;
+#[path = "e2e/flows/a14_footer_time_advances_on_replay_step.rs"]
+mod a14_footer_time_advances_on_replay_step;
 #[path = "e2e/flows/a7_replay_startup_progress.rs"]
 mod a7_replay_startup_progress;
 #[path = "e2e/flows/a8_stale_startup_id_ignored.rs"]
@@ -295,6 +297,8 @@ mod m22_run_result_stats_pnl_fallback;
 mod m23_run_result_stats_blank_in_replay;
 #[path = "e2e/flows/m24_help_settings_spawns_floating_window.rs"]
 mod m24_help_settings_spawns_floating_window;
+#[path = "e2e/flows/m25_run_result_startup_progress.rs"]
+mod m25_run_result_startup_progress;
 
 // N. Live Auto strategy execution (Phase 10: lifecycle / telemetry / safety / log)
 #[path = "e2e/flows/n1_live_strategy_event_lifecycle.rs"]

@@ -2,7 +2,4 @@
 
 pub mod startup_progress;
 
-pub use startup_progress::{
-    ReplayStartupBarFill, ReplayStartupCloseButton, ReplayStartupPhase, ReplayStartupProgress,
-    ReplayStartupStageLabel, ReplayStartupWindow,
-};
+pub use startup_progress::{ReplayStartupPhase, ReplayStartupProgress};
