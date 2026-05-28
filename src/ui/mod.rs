@@ -663,6 +663,33 @@ impl Plugin for UiPlugin {
                     .after(bevy_instanced_text::LayoutProduceSet)
                     .before(bevy_instanced_text::TextViewRenderSet),
             ),
+        )
+        // ── Slice 1 (#50): bevscode 本実装 Projected Node 系統（cosmic と並存）──
+        // ADR 0006. spike と同じ schedule 構成で本実装 marker（StrategyEditorRoot / StrategyEditorNode）に
+        // 適用する。Slice 7 で spike 撤去後はこちらだけが残る。
+        // - spawn_bevscode_peer_on_strategy_editor_added: Added<StrategyEditorRoot> を watch し peer を生成
+        // - apply_pending_strategy_seed_system: seed を SetTextRequested で投入し pending marker を外す
+        // - cleanup_strategy_editor_node_on_root_despawn: root が消えたら peer を片付ける
+        .add_systems(
+            Update,
+            (
+                crate::ui::strategy_editor::spawn_bevscode_peer_on_strategy_editor_added,
+                crate::ui::strategy_editor::apply_pending_strategy_seed_system,
+                crate::ui::strategy_editor::cleanup_strategy_editor_node_on_root_despawn,
+            ),
+        )
+        // - project_strategy_editor_node_system: world rect → screen rect 投影で Node を毎フレーム更新
+        // - touch_strategy_text_layouts_on_position_change: drag/pan で動いた editor の DisplayLayout を
+        //   set_changed() して glyph batch キャッシュバグを回避（spike と同じ理由・同じ schedule）
+        .add_systems(
+            PostUpdate,
+            (
+                crate::ui::strategy_editor::project_strategy_editor_node_system
+                    .before(bevy::ui::UiSystems::Layout),
+                crate::ui::strategy_editor::touch_strategy_text_layouts_on_position_change
+                    .after(bevy_instanced_text::LayoutProduceSet)
+                    .before(bevy_instanced_text::TextViewRenderSet),
+            ),
         );
     }
 }
