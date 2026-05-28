@@ -255,6 +255,9 @@ pub fn spawn_strategy_editor_panel(
             source: seed.clone(),
             dirty: false,
         },
+        // Slice 1 (#50): projection system が world rect を screen rect に投影する起点。
+        // ADR 0006 の Projected Node 方式。cosmic と並存中だが bevscode 側はこの marker から root を辿る。
+        StrategyEditorRoot,
     ));
 
     let editor = commands
@@ -315,6 +318,13 @@ pub fn spawn_strategy_editor_panel(
         gutter,
         scrollbar_track,
     });
+
+    // ── Slice 1 (#50): bevscode CodeEditor peer の spawn は `spawn_bevscode_peer_on_strategy_editor_added`
+    // システムに委譲する。spawn_strategy_editor_panel は AssetServer を持たないが、bevscode のフォント
+    // 読み込みに必要なため、root 生成 → 次フレームで Added<StrategyEditorRoot> を watch する system が
+    // 拾って peer を spawn する設計にする。
+    // 同フレームに peer を建てたい欲求はあるが、Slice 1 では cosmic が引き続き draw / input を担うので
+    // 1 フレーム遅延は視覚的に許容（spike も同パターン）。
 
     let _ = title_bar;
     let _ = spec.layout_source;
@@ -1466,5 +1476,372 @@ mod tests {
             "layout が Hidden を意図していたなら Manual を抜けても Hidden のまま"
         );
         assert!(app.world().get::<StrategyEditorModeHidden>(window).is_none());
+    }
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Slice 1 (#50): bevscode CodeEditor を Projected Node として spawn / 投影する系統
+//
+// ADR 0006: cosmic_edit を bevscode に置き換える Phase B の最初のスライス。本ブロックは
+// cosmic と並存させるためのレールであり、Slice 6 で cosmic 撤去後も継続して使う。
+// 構造は `strategy_editor_spike.rs` で Go 判定済みの設計を本実装 marker で複製したもの。
+// Slice 7 で spike module を削除した後はこちらが唯一の Projected Node 経路となる。
+// ─────────────────────────────────────────────────────────────────────────────
+
+use bevscode::prelude::*;
+use bevscode::types::GutterTextView;
+use bevy::ui::UiGlobalTransform;
+use bevy::window::PrimaryWindow;
+use bevy_instanced_text::DisplayLayout;
+use bevy_tree_sitter::arborium::lang_python;
+
+/// Strategy Editor の world-space root sprite に貼る marker。
+/// projection system がこれを起点に world→screen 投影し、`StrategyEditorNode` を追従させる。
+#[derive(Component)]
+pub struct StrategyEditorRoot;
+
+/// bevscode `CodeEditor` Node entity に貼る、root への back-link + region 識別。
+#[derive(Component)]
+pub struct StrategyEditorNode {
+    pub root: Entity,
+    pub region_key: String,
+}
+
+/// spawn 直後に seed テキストを bevscode に流すための一回限りマーカー。
+/// `apply_pending_strategy_seed_system` が `SetTextRequested` を送って即外す。
+#[derive(Component)]
+pub struct StrategyEditorPendingSeed(pub String);
+
+/// Projection 用ベース定数。`EDITOR_FONT_SIZE` / `EDITOR_LINE_HEIGHT` と一致させて
+/// scale=1.0 のとき cosmic と同じ字面になるようにする（並存期間の視覚一貫性）。
+const PROJECTED_BASE_FONT_SIZE: f32 = EDITOR_FONT_SIZE;
+const PROJECTED_BASE_LINE_HEIGHT: f32 = EDITOR_LINE_HEIGHT;
+
+/// `Added<StrategyEditorRoot>` を watch して bevscode `CodeEditor` peer を spawn する。
+///
+/// spawn_strategy_editor_panel は `&AssetServer` を持たないため、root の生成だけ済ませて
+/// このシステムに peer 生成を委譲する（1 フレーム遅延、Slice 1 では cosmic が描画しているので許容）。
+/// seed テキストは root と同じ frame に `StrategyFragment` が立っているので、それを読んで
+/// `StrategyEditorPendingSeed` に積んでおく（実際の `SetTextRequested` 送信は次の system で）。
+pub fn spawn_bevscode_peer_on_strategy_editor_added(
+    mut commands: Commands,
+    asset_server: Res<AssetServer>,
+    roots: Query<(Entity, &StrategyEditorId, &StrategyFragment), Added<StrategyEditorRoot>>,
+) {
+    for (root_entity, id, fragment) in roots.iter() {
+        let font: Handle<Font> = asset_server.load("fonts/FiraMono-Regular.ttf");
+        commands.spawn((
+            CodeEditor,
+            Node {
+                position_type: PositionType::Absolute,
+                left: Val::Px(0.0),
+                top: Val::Px(0.0),
+                // 初期値はダミー（次フレームの projection system が world rect で上書きする）。
+                width: Val::Px(EDITOR_TEXT_SIZE.x),
+                height: Val::Px(EDITOR_TEXT_SIZE.y),
+                ..default()
+            },
+            TextFont::from_font_size(PROJECTED_BASE_FONT_SIZE).with_font(font),
+            MonoFontFaces::default(),
+            bevy::text::LineHeight::Px(PROJECTED_BASE_LINE_HEIGHT),
+            // Slice 2 (#50): bevscode が input を受ける（cosmic は描画専用に退く）。
+            // focus は apply_pending_strategy_seed_system が SetTextRequested 送信と同タイミングで立てる。
+            StrategyEditorNode {
+                root: root_entity,
+                region_key: id.region_key.clone(),
+            },
+            // Slice 5 (#50): compute_find_match_spans_system は bevscode peer 側で動くように切替済み。
+            // spawn 時から FindMatchSpans を貼り、cosmic 側の重複は Slice 6 で撤去予定。
+            FindMatchSpans::default(),
+            StrategyEditorPendingSeed(fragment.source.clone()),
+            Name::new("StrategyEditorNode(bevscode)"),
+        ));
+    }
+}
+
+/// `StrategyEditorPendingSeed` が立っている entity に `SetTextRequested` を送って marker を外す。
+/// `Added<TextBuffer<RopeBuffer>>` のような厳密な準備完了 wait は不要（bevscode 側が次フレーム以降で
+/// 受け取った text を rope に積む）。送信 → 即 remove で「複数フレーム送り続ける」事故を防ぐ。
+///
+/// Slice 2 (#50): 同タイミングで `InputFocus` を bevscode entity に設定する。これで cosmic は
+/// 描画専用に退き、ユーザー入力は bevscode の `TextBuffer<RopeBuffer>` に流れる
+/// （`sync_bevscode_to_strategy_fragment_system` が autosave / AppHistory を駆動）。
+pub fn apply_pending_strategy_seed_system(
+    mut commands: Commands,
+    mut text_writer: MessageWriter<SetTextRequested>,
+    mut lang_writer: MessageWriter<SetLanguageRequested>,
+    mut input_focus: ResMut<bevy::input_focus::InputFocus>,
+    pending: Query<(Entity, &StrategyEditorPendingSeed)>,
+) {
+    for (entity, seed) in pending.iter() {
+        text_writer.write(SetTextRequested {
+            entity,
+            text: seed.0.clone(),
+        });
+        // Slice 4 (#50): Python シンタックスハイライトを bevscode/bevy_tree_sitter で有効化。
+        // grammar は seed 投入と同タイミングで一度だけ流す。pending マーカーが外れるので二重発火しない。
+        // syntect 経路（`strategy_editor_highlight.rs` の SyntaxSpans）は Slice 6 で cosmic と
+        // 一緒に撤去するまで残置（cosmic editor が入力を持たない状態では空回りする）。
+        lang_writer.write(SetLanguageRequested {
+            entity,
+            grammar: Some(TreeSitterGrammar::new(
+                lang_python::language().into(),
+                lang_python::HIGHLIGHTS_QUERY,
+            )),
+        });
+        input_focus.set(entity);
+        commands
+            .entity(entity)
+            .remove::<StrategyEditorPendingSeed>();
+    }
+}
+
+/// 毎フレーム world rect → screen rect 投影で bevscode `CodeEditor` Node を追従させる。
+///
+/// 投影規約は `strategy_editor_spike.rs::project_spike_editor_node_system` と同一
+/// （ADR 0006 / spike Go 判定で確立）。差分は marker 型のみ:
+/// - root: `StrategyEditorRoot`（cosmic と並存中も常に root に貼ってある）
+/// - node: `StrategyEditorNode { root, region_key }`（bevscode peer）
+///
+/// Z=200 ピンは Slice 6 で cosmic 撤去後に有効化したい挙動だが、cosmic と並存中も Bevy UI が
+/// 常に world sprite の後に描画されるため、bevscode 側は実害なく前面に来る。z は触らない
+/// （他 floating window との z 競合は cosmic 撤去まで現状維持）。
+pub fn project_strategy_editor_node_system(
+    roots: Query<(&Transform, &Sprite), With<StrategyEditorRoot>>,
+    cam_q: Query<(&Transform, &Projection), (With<Camera2d>, Without<StrategyEditorRoot>)>,
+    windows: Query<&Window, With<PrimaryWindow>>,
+    mut editors: Query<
+        (
+            &StrategyEditorNode,
+            &mut Node,
+            &mut TextFont,
+            &mut bevy::text::LineHeight,
+        ),
+        Without<StrategyEditorRoot>,
+    >,
+) {
+    let Ok((cam_tf, projection)) = cam_q.single() else {
+        return;
+    };
+    let Projection::Orthographic(ortho) = projection else {
+        return;
+    };
+    let scale = ortho.scale.max(1e-6);
+    let Ok(window) = windows.single() else {
+        return;
+    };
+    let win_w = window.width();
+    let win_h = window.height();
+    let cam = cam_tf.translation.truncate();
+
+    for (marker, mut node, mut font, mut line_height) in editors.iter_mut() {
+        let Ok((root_tf, root_sprite)) = roots.get(marker.root) else {
+            continue;
+        };
+        let Some(root_size) = root_sprite.custom_size else {
+            continue;
+        };
+
+        let root_center = root_tf.translation.truncate();
+        let content_w_world = root_size.x;
+        let content_h_world = (root_size.y - TITLE_BAR_HEIGHT).max(10.0);
+        let content_tl_world_x = root_center.x - root_size.x / 2.0;
+        let content_tl_world_y = root_center.y + root_size.y / 2.0 - TITLE_BAR_HEIGHT;
+
+        let node_left = (content_tl_world_x - cam.x) / scale + win_w / 2.0;
+        let node_top = -(content_tl_world_y - cam.y) / scale + win_h / 2.0;
+        let node_w = content_w_world / scale;
+        let node_h = content_h_world / scale;
+
+        let new_font_size = (PROJECTED_BASE_FONT_SIZE / scale).max(1.0);
+        let new_line_height_px = (PROJECTED_BASE_LINE_HEIGHT / scale).max(2.0);
+
+        let new_left = Val::Px(node_left);
+        if node.left != new_left {
+            node.left = new_left;
+        }
+        let new_top = Val::Px(node_top);
+        if node.top != new_top {
+            node.top = new_top;
+        }
+        let new_width = Val::Px(node_w);
+        if node.width != new_width {
+            node.width = new_width;
+        }
+        let new_height = Val::Px(node_h);
+        if node.height != new_height {
+            node.height = new_height;
+        }
+        if (font.font_size - new_font_size).abs() > 0.01 {
+            font.font_size = new_font_size;
+        }
+        let new_line_height = bevy::text::LineHeight::Px(new_line_height_px);
+        if *line_height != new_line_height {
+            *line_height = new_line_height;
+        }
+    }
+}
+
+/// drag / pan で editor が動いたとき、bevy_instanced_text の glyph batch を再構築させる。
+///
+/// 詳細な背景は `strategy_editor_spike.rs::touch_spike_text_layouts_on_position_change` を参照。
+/// 本実装は marker 型のみ差し替えたクローン（`SpikeEditorNode` → `StrategyEditorNode`）。
+/// gutter は bevscode の `GutterTextView { editor }` で対応する editor entity に紐付いている。
+pub fn touch_strategy_text_layouts_on_position_change(
+    editors: Query<Entity, (With<StrategyEditorNode>, Changed<UiGlobalTransform>)>,
+    gutters: Query<(Entity, &GutterTextView)>,
+    mut layouts: Query<&mut DisplayLayout>,
+) {
+    for editor_entity in editors.iter() {
+        if let Ok(mut dl) = layouts.get_mut(editor_entity) {
+            dl.set_changed();
+        }
+        for (gutter_entity, marker) in gutters.iter() {
+            if marker.editor == editor_entity {
+                if let Ok(mut dl) = layouts.get_mut(gutter_entity) {
+                    dl.set_changed();
+                }
+            }
+        }
+    }
+}
+
+/// `StrategyEditorRoot` が despawn されたとき、紐付く bevscode peer も一緒に despawn する。
+/// 既存 close ボタン / mode visibility が root を消したときの後片付け。
+pub fn cleanup_strategy_editor_node_on_root_despawn(
+    mut removed: RemovedComponents<StrategyEditorRoot>,
+    nodes: Query<(Entity, &StrategyEditorNode)>,
+    mut commands: Commands,
+) {
+    for root_entity in removed.read() {
+        for (node_entity, marker) in nodes.iter() {
+            if marker.root == root_entity {
+                if let Ok(mut ec) = commands.get_entity(node_entity) {
+                    ec.despawn();
+                }
+            }
+        }
+    }
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Slice 2 (#50): bevscode ↔ StrategyBuffer 同期 + AppHistory undo bridge
+//
+// 役割:
+// - bevscode の TextBuffer<RopeBuffer> が変わったら `StrategyFragment` に書き戻し autosave を駆動
+// - AppHistory が `SetStrategySource` を writeback するとき bevscode entity にも `SetTextRequested` を送る
+// - File load / Undo の cosmic 経路（`sync_strategy_buffer_to_editor_system`）も同様に bevscode へ伝搬
+// - bevscode 内蔵の Ctrl+Z / Ctrl+Y を無効化（AppHistory が undo を担う設計）
+// - echo suppression を共有（cosmic と同じ `AppHistory.suppress_echo_target` を honor）
+// ─────────────────────────────────────────────────────────────────────────────
+
+use bevscode::input::EditorAction;
+use bevscode::input::keybindings::default_input_map;
+use bevscode::plugin::EditorInputManager;
+
+/// Startup で bevscode 既定の EditorInputManager より先に独自 InputMap を spawn する。
+/// `Ctrl+Z` / `Ctrl+Y` / `Ctrl+Shift+Z` を bevscode から剥がし、`AppHistory.undo_redo_system` が
+/// 唯一の undo/redo 経路になるよう一本化する。bevscode は PostStartup の `spawn_default_input_manager` で
+/// 「既に EditorInputManager 持ち entity があればスキップ」する設計なので、Startup で先取りすればよい。
+///
+/// `Find` 系は Slice 5 で独自実装の find UI を維持するため、暫定で `Find` 系 action もこの段階で剥がす
+/// （重複起動を防ぐ）。完全に剥がすかは Slice 5 着手時に再判断。
+pub fn install_strategy_editor_keybindings(mut commands: Commands) {
+    let mut input_map = default_input_map();
+    input_map.clear_action(&EditorAction::Undo);
+    input_map.clear_action(&EditorAction::Redo);
+    commands.spawn((
+        EditorInputManager,
+        input_map,
+        Name::new("StrategyEditorInputManager"),
+    ));
+}
+
+/// bevscode `CodeEditor` でユーザーが編集した内容を `StrategyFragment.source` に書き戻し、
+/// autosave / AppHistory を駆動する（片側同期: bevscode → StrategyFragment）。
+///
+/// `sync_editor_to_strategy_buffer_system` の cosmic 版と同じ役割。`Changed<TextBuffer<RopeBuffer>>`
+/// を起点に bevscode 側の最新テキストを文字列化し、`suppress_echo_target` と一致すれば echo を抑制する。
+/// 一致しなければ `mark_fragment_dirty` で fragment + autosave を更新し、replaying 中でなければ
+/// `AppHistory.push_text` で undo 履歴に積む。
+pub fn sync_bevscode_to_strategy_fragment_system(
+    editors: Query<
+        (&StrategyEditorNode, &TextBuffer<RopeBuffer>),
+        Changed<TextBuffer<RopeBuffer>>,
+    >,
+    mut fragments_q: Query<(&StrategyEditorId, &mut StrategyFragment), With<WindowRoot>>,
+    mut history: ResMut<AppHistory>,
+    mut auto_save: ResMut<StrategyAutoSaveState>,
+) {
+    for (marker, buffer) in editors.iter() {
+        let new_text = buffer.chars().collect::<String>();
+        let region_key = marker.region_key.clone();
+
+        let Some((_, mut fragment)) = fragments_q
+            .iter_mut()
+            .find(|(id, _)| id.region_key == region_key)
+        else {
+            warn!(
+                "bevscode TextBuffer changed for region '{}' but no matching WindowRoot",
+                region_key
+            );
+            continue;
+        };
+
+        if let Some((target_key, target_text)) = history.suppress_echo_target.clone() {
+            if target_key == region_key && target_text.as_str() == new_text.as_str() {
+                history.suppress_echo_target = None;
+                fragment.source = new_text;
+                continue;
+            } else {
+                history.suppress_echo_target = None;
+            }
+        }
+        if fragment.source == new_text {
+            continue;
+        }
+        if !history.is_replaying() {
+            history.push_text(
+                region_key.clone(),
+                fragment.source.clone(),
+                new_text.clone(),
+            );
+        }
+        mark_fragment_dirty(&mut fragment, &mut auto_save, new_text);
+    }
+}
+
+/// AppHistory が `SetStrategySource` を writeback したり、`StrategyFileLoadRequested` で外部 .py を
+/// 流し込んだりした直後に、bevscode 側 entity にも `SetTextRequested` を送って TextBuffer を揃える。
+///
+/// 検知は `Changed<StrategyFragment>` で行い、`AppHistory.suppress_echo_target` が立っているなら
+/// それが今回の writeback 起源と分かるので即時 SetTextRequested を流す。echo suppression は
+/// `sync_bevscode_to_strategy_fragment_system` 側で受け止めるので無限ループは起きない。
+///
+/// 注: cosmic 経路の `sync_strategy_buffer_to_editor_system` は UndoRedoApplied / FileLoad 駆動だが、
+/// bevscode は `Changed<StrategyFragment>` の方が来た契機を一発で拾えるので採用。
+pub fn sync_strategy_fragment_to_bevscode_system(
+    fragments_q: Query<
+        (&StrategyEditorId, &StrategyFragment),
+        (With<WindowRoot>, Changed<StrategyFragment>),
+    >,
+    editors: Query<(Entity, &StrategyEditorNode, &TextBuffer<RopeBuffer>)>,
+    mut writer: MessageWriter<SetTextRequested>,
+) {
+    for (id, fragment) in fragments_q.iter() {
+        for (editor_entity, marker, buffer) in editors.iter() {
+            if marker.region_key != id.region_key {
+                continue;
+            }
+            // すでに bevscode 側が同じ内容なら send 不要（無駄な Changed を立てない）。
+            let current = buffer.chars().collect::<String>();
+            if current == fragment.source {
+                continue;
+            }
+            writer.write(SetTextRequested {
+                entity: editor_entity,
+                text: fragment.source.clone(),
+            });
+        }
     }
 }
