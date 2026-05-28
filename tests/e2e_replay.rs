@@ -253,7 +253,6 @@ mod m3_window_close_hides_or_despawns;
 mod m4_window_focus_brings_to_front;
 #[path = "e2e/flows/m5_panel_duplicate_policy.rs"]
 mod m5_panel_duplicate_policy;
-// m6: stub のみ（settings sidebar は固定文字列で BackendStatus 等に未接続）
 #[path = "e2e/flows/m7_startup_window_has_no_close_button.rs"]
 mod m7_startup_window_has_no_close_button;
 #[path = "e2e/flows/m8_startup_window_visibility_owned_by_mode.rs"]
@@ -280,6 +279,8 @@ mod m18_footer_mode_visibility_follows_backend_mode;
 mod m19_strategy_editor_mode_visibility_follows_backend_mode;
 #[path = "e2e/flows/m20_mode_visibility_systems_run_after_status_update.rs"]
 mod m20_mode_visibility_systems_run_after_status_update;
+#[path = "e2e/flows/m21_help_settings_spawns_floating_window.rs"]
+mod m21_help_settings_spawns_floating_window;
 
 // N. Live Auto strategy execution (Phase 10: lifecycle / telemetry / safety / log)
 #[path = "e2e/flows/n1_live_strategy_event_lifecycle.rs"]

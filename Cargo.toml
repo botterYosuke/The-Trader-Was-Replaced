@@ -4,7 +4,7 @@ version = "0.1.0"
 edition = "2024"
 
 [dependencies]
-bevy = { version = "0.18", features = ["default", "bevy_picking", "sprite_picking"] }
+bevy = { version = "0.18", features = ["default", "bevy_picking", "sprite_picking", "debug"] }
 bevy_pancam = "0.20"
 bevy_vector_shapes = "0.12"
 rand = "0.8"

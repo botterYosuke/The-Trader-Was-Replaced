@@ -1,18 +1,22 @@
 # 設定と環境変数
 
-> 文中の `[M6]` などは、その挙動を保証する E2E flow の ID。一覧は [`tests/e2e/FLOWS.md`](../../tests/e2e/FLOWS.md) を参照。
+> 文中の `[M21]` などは、その挙動を保証する E2E flow の ID。一覧は [`tests/e2e/FLOWS.md`](../../tests/e2e/FLOWS.md) を参照。
 
 関連ページ: [getting-started](getting-started.md) / [venues](venues.md) / [troubleshooting](troubleshooting.md)
 
-## サイドバー Settings セクション
+## Help→Settings floating window
 
-サイドバー下部の **Settings** セクションに現在の設定が表示されます（`src/ui/sidebar.rs`）。 [M6]
+メニューバー **Help(&H)** → **Settings** を選択すると、Settings floating window が開きます（`src/ui/settings.rs`）。 [M21]
+
+- `Alt+H` でも Help メニューを開閉できます。
+- Settings window は非永続（`LayoutExcluded`）のため、セーブ・ロード・再起動では復元されません。 [M21]
+- 既に開いている場合は重複して開きません。 [M21]
 
 | 項目 | 値 |
 |---|---|
-| Theme | Dark [M6] |
-| Backend | localhost:19876 [M6] |
-| Save Layout | — [M6] |
+| Theme | Dark [M21] |
+| Backend | localhost:19876 [M21] |
+| Save Layout | — [M21] |
 
 ## ポートとバックエンド
 

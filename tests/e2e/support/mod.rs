@@ -36,9 +36,9 @@ use backcast::trading::{
 
 // Production UI input systems (mirror src/main.rs wiring).
 use backcast::ui::components::{
-    InstrumentRegistry, OpenMenu, PauseResumeButton, ScenarioMetadata, ScenarioStartupParams,
-    ScenarioWritebackPaths, StrategyBuffer, StrategyRunRequested, RedoMenuRequested,
-    UndoMenuRequested,
+    InstrumentRegistry, OpenMenu, PanelSpawnRequested, PauseResumeButton, ScenarioMetadata,
+    ScenarioStartupParams, ScenarioWritebackPaths, StrategyBuffer, StrategyRunRequested,
+    RedoMenuRequested, UndoMenuRequested,
 };
 use backcast::ui::footer::{
     execution_mode_toggle_system, footer_pause_resume_system, speed_button_system,
@@ -155,7 +155,8 @@ impl Harness {
             .add_message::<UndoMenuRequested>()
             .add_message::<RedoMenuRequested>()
             .add_message::<KeyboardInput>()
-            .add_message::<OrderButtonPressed>();
+            .add_message::<OrderButtonPressed>()
+            .add_message::<PanelSpawnRequested>();
 
         app.add_systems(
             Update,

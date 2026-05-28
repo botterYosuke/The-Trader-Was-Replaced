@@ -14,6 +14,7 @@ use crate::ui::run_result_panel::spawn_run_result_panel;
 use crate::ui::scenario_startup_panel::spawn_scenario_startup_window;
 use crate::ui::order_panel::spawn_order_form_in_window;
 use crate::ui::strategy_editor::spawn_strategy_editor_panel;
+use crate::ui::settings::spawn_settings_panel;
 use bevy::picking::Pickable;
 use bevy::prelude::*;
 use bevy_cosmic_edit::prelude::CosmicFontSystem;
@@ -721,6 +722,9 @@ pub fn panel_spawn_dispatcher_system(
                 );
                 commands.entity(root).insert((PanelKind::Order, LayoutExcluded));
                 spawn_order_form_in_window(&mut commands, content_area);
+            }
+            PanelKind::Settings => {
+                spawn_settings_panel(&mut commands);
             }
         }
         if event.source == PanelSpawnSource::User && !history.is_replaying() {
