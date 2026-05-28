@@ -42,6 +42,8 @@ fn i6_file_new_resets_loaded_strategy() {
     app.add_message::<LayoutLoadDialogRequested>();
     app.add_message::<UndoMenuRequested>();
     app.add_message::<RedoMenuRequested>();
+    // issue #50 Step 0 spike — menu_item_system が SpikeEditorSpawnRequested を要求。Phase B で削除。
+    app.add_message::<backcast::ui::strategy_editor_spike::SpikeEditorSpawnRequested>();
 
     app.add_systems(Update, menu_item_system);
 
@@ -95,6 +97,8 @@ fn i6_file_new_resets_loaded_strategy() {
         app2.add_message::<LayoutLoadDialogRequested>();
         app2.add_message::<UndoMenuRequested>();
         app2.add_message::<RedoMenuRequested>();
+        // issue #50 Step 0 spike — menu_item_system が SpikeEditorSpawnRequested を要求。Phase B で削除。
+        app2.add_message::<backcast::ui::strategy_editor_spike::SpikeEditorSpawnRequested>();
 
         app2.add_systems(Update, menu_item_system);
 

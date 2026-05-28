@@ -151,7 +151,11 @@ impl Harness {
             .add_message::<UndoMenuRequested>()
             .add_message::<RedoMenuRequested>()
             .add_message::<KeyboardInput>()
-            .add_message::<OrderButtonPressed>();
+            .add_message::<OrderButtonPressed>()
+            // issue #50 Step 0 spike: menu_item_system に SpikeEditorSpawnRequested の
+            // MessageWriter を追加したので、その system を踏む e2e 全テストでも登録が必須。
+            // Phase B 後（spike module 削除）に同じ行を消す。
+            .add_message::<backcast::ui::strategy_editor_spike::SpikeEditorSpawnRequested>();
 
         app.add_systems(
             Update,

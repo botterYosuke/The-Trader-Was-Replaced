@@ -16,6 +16,13 @@ serde_json = "1.0"
 rfd = "0.17.2"
 dirs = "6.0.0"
 bevy_cosmic_edit = "0.26"
+# issue #50 Step 0 spike — bevscode を導入（Projected Node PoC のため）。
+# cosmic_edit は Phase B まで並存（spike が Go になるまで撤去しない）。
+# crates.io には未公開。Phase B で rev を pin する。
+bevscode = { git = "https://github.com/PoHsuanLai/bevscode.git", default-features = false }
+# bevscode の transitive 依存だが、projection system で `.before(LayoutProduceSet)` の
+# 制約に SystemSet を引くため直接依存にする（bevscode と同じ git rev = 51220b7 に固定）。
+bevy_instanced_text = { git = "https://github.com/PoHsuanLai/bevy_instanced_text.git", rev = "51220b7", default-features = false }
 syntect = { version = "5", default-features = false, features = ["default-fancy"] }
 undo = "0.52"
 chrono = "0.4"

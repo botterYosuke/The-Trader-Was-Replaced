@@ -37,6 +37,8 @@ pub mod strategy_editor_gutter;
 pub mod strategy_editor_highlight;
 pub mod strategy_editor_input;
 pub mod strategy_editor_scrollbar;
+// issue #50 Step 0 spike — cosmic 並存の Projected Node PoC（Go/No-Go ゲート）。
+pub mod strategy_editor_spike;
 pub mod systems;
 pub mod window;
 
@@ -214,7 +216,11 @@ impl Plugin for UiPlugin {
                 font_config: CosmicFontConfig::default(),
             },
             crate::ui::layout_persistence::LayoutPersistencePlugin,
+            // issue #50 Step 0 spike: bevscode editor を Projected Node 方式で世界座標に出すための plugins。
+            // cosmic_edit と並存（spike が Go になるまで撤去しない）。
+            bevscode::prelude::CodeEditorPlugins,
         ))
+        .add_message::<crate::ui::strategy_editor_spike::SpikeEditorSpawnRequested>()
         .init_resource::<WindowManager>()
         .init_resource::<StrategyBuffer>()
         .init_resource::<StrategyAutoSaveState>()
@@ -624,6 +630,29 @@ impl Plugin for UiPlugin {
             ),
         )
         // ── Phase 10 §2.10: Safety Rail violation toast ──
-        .add_systems(Update, safety_toast_system);
+        .add_systems(Update, safety_toast_system)
+        // ── issue #50 Step 0 spike: Projected Node 方式 PoC ──
+        // ADR 0006 / plan: cosmic_edit と並存させて Go/No-Go を判定する。
+        // - handle_spike_editor_spawn_requests: メニュー / キーボードからの spawn 要求を受ける（Update）
+        // - cleanup_spike_editor_on_root_despawn: × で root が消えたら Node も連れて despawn（Update）
+        .add_systems(
+            Update,
+            (
+                crate::ui::strategy_editor_spike::handle_spike_editor_spawn_requests,
+                crate::ui::strategy_editor_spike::cleanup_spike_editor_on_root_despawn,
+            ),
+        )
+        // - project_spike_editor_node_system: world rect → screen rect 投影で Node を毎フレーム更新
+        //   `PostUpdate` の `UiSystems::Layout` の前に走らせる。これで:
+        //   ① 私たちが書いた Node を UI Layout が同フレームに読んで ComputedNode を更新
+        //   ② ガター子 Node も Layout 内で再配置（同フレーム）
+        //   ③ Layout 後の `bevy_instanced_text::LayoutProduceSet` も fresh ComputedNode を読む
+        //   テキスト本体 / ガター / 親 sprite すべて同フレーム同期する。
+        //   spike 検証で複数 schedule を試して確定した順序（Update / configure_sets では遅延が残った）。
+        .add_systems(
+            PostUpdate,
+            crate::ui::strategy_editor_spike::project_spike_editor_node_system
+                .before(bevy::ui::UiSystems::Layout),
+        );
     }
 }
