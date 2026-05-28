@@ -40,7 +40,15 @@ description: |
     `CosmicBackgroundColor`, `CursorColor`, `CosmicTextChanged`, `set_text`, `with_buffer_mut`
     という語彙が出てきたとき、または「focused で文字が小さい」「unfocused で文字が大きい」
     「フォントサイズが 2 種類」「DPI スケールが反映されない」「set_initial_scale」
-    「Added<CosmicEditBuffer>」と言われたとき
+    「Added<CosmicEditBuffer>」と言われたとき。
+    **また `crates/bevy_cosmic_edit/src/render.rs` を触るとき、
+    `render_texture` パニック、`draw_closure` overflow、`render_scale` Retina、
+    `i32 add overflow`、`attempt to add with overflow`、`Compute Task Pool panicked`
+    という症状・語彙が出たときも本スキルを起動すること**
+    （bevy_cosmic_edit は path dep で workspace 外; standalone `cargo test` は
+    `primary.rs` の既存コンパイルエラーで通らないため、回帰ガードは
+    `crates/bevy_cosmic_edit/src/render.rs` 内 `#[cfg(test)]` と
+    `tests/e2e/flows/q*` プレースホルダーで行う）
   ⑨ フォント / グリフ / 文字化け関連: "font", "TextFont", "Handle<Font>", "AssetServer",
     "豆腐", "mojibake", "□", "▶", "■", "glyph", "BEVY_ASSET_ROOT", "Path not found",
     "assets/fonts/", "FiraMono", "NotoSansSymbols" が出たとき。
