@@ -32,6 +32,8 @@ description: |
     （bevy_egui は撤去済みなので egui は選択肢にない）
   ⑦ `pair-relay` / `pair-nav` で `src/ui/**` を触る作業に入るとき（**Orchestrator 自身が
     このスキルを invoke して内容を把握してから** Navigator を spawn すること。
+    「引き継ぎ文に修正内容が詳細に書かれている」「フォローアップ名目」「コードレビュー指摘修正」
+    でも src/ui を触るなら本スキル発動は**必須**（詳細指示があっても Bevy API 確認は別）。
     読まずに進めると Bevy 0.15 固有の罠
     — `add_systems` タプル 20 上限、`app.add_observer()` vs `app.observe()`、
     `IntoObserverSystem` の import path、`CosmicEditor` 経由の `with_buffer_mut`、
