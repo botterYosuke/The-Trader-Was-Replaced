@@ -155,6 +155,16 @@ description: |
 >
 > **疑い方**: observer を attach した Sprite のドラッグ・クリックが全く反応しない → まず `Pickable` の有無を確認。
 >
+> ### ⚠️ トラップ 4: schedule 系テストで `sys.name()` が `"FEATURE_DISABLED"` を返す
+> `ScheduleSystem::name()` は `bevy_utils` の **`debug` feature** が無いと実際の関数名を返さず、定数文字列
+> `"FEATURE_DISABLED"` を返す（`bevy_utils-0.18.1/src/debug_info.rs`）。`conflicting_systems()` の system 名を
+> `contains(vis_name)` で比較する schedule-wiring テスト（M20 パターン）は `debug` feature 無しでは名前が
+> 全て `"FEATURE_DISABLED"` になり「登録されていない」と誤判定して **false-RED** になる。
+> **解決**: `[dev-dependencies]` に `bevy = { version = "0.18", features = ["debug"] }` を追加する（Cargo が
+> `[dependencies]` の features とマージし test ビルドのみ有効化。本番バイナリには影響しない）。
+> **症状**: M20 パターンで `add_mode_visibility_systems が登録すべき可視性 system が schedule に存在しない:
+> ["apply_execution_mode_visibility_system", ...]` が出たら、まずこのトラップを疑う。
+>
 > ### ⚠️ トラップ 2: `cargo build --lib` green ≠ `cargo test --lib` green ≠ test 全 pass
 > 移行検証は **3 段別物**。①`cargo build --lib` は `#[cfg(test)]` を compile しない（test 内の旧 API は素通り）。
 > ②`cargo test --lib --no-run` で初めて test モジュールの compile error が出る（`src/ui/**` の unit test が

@@ -25,6 +25,9 @@ wait-timeout = "0.2"
 zeroize = "1"
 
 [dev-dependencies]
+# `debug` feature を有効化すると `ScheduleSystem::name()` が実際の関数名を返す（M20 で必要）。
+# 本番 `[dependencies]` には付けず test ビルドでのみ有効化する。
+bevy = { version = "0.18", features = ["debug"] }
 serial_test = "3.1"
 tempfile = "3"
 tokio-stream = "0.1"

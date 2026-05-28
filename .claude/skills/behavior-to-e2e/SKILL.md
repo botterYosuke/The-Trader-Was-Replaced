@@ -25,6 +25,12 @@ description: >-
   見つかった**ときも本スキルを開く（「wiki を修正」「ドキュメントを実装に追従」と言われたら併発）: その機能は
   E2E 未カバーのことが多い（実装が先行し doc も flow も置き去り）。wiki を現行化しつつ、対応 flow が
   `tests/e2e/flows/` に無ければ追加し、wiki 本文に `[FlowID]` を引く。
+  **バグ修正で挙動が変わった（fix + behavior change）とき**も必ず発動する: `fix(xxx):` コミットで
+  transport/ECS の振る舞いを変えた場合、対応する flow（例: j17 `FetchAvailableInstruments flush`）を
+  FLOWS.md に追記し、unit/integration テストを回帰ガードとして記録する。issue ベースで RED テストを
+  書いた場合は flow を `- [ ] RED＝回帰ガード` → GREEN 後に `- [x]` に更新する
+  （CLAUDE.md「不具合修正前の E2E メンテナンス」に対応するが、**その flow を FLOWS.md に記録する作業が
+  本スキルの仕事**。実装スキルに気を取られて FLOWS.md 記載が省略されがちなため明示）。
   **「未実装扱い」だけでなく、UI 機構のリファクタで wiki が *旧機構* を記述したまま食い違っている**
   ケースも同様に本スキルの対象（例: 「サイドバーの Startup パネル」→ floating window 化、`Node.display`→`Visibility`、
   Bevy-UI → sprite 化、`×` ボタンの有無変更）。「サイドバーパネルを floating window に作り替える」「UI を

@@ -113,6 +113,7 @@ fn i16_cache_restore_replay_entry_no_inmemory_pollution() {
     app.insert_resource(ScenarioReadTarget::default());
     app.insert_resource(RegionKeyAllocator::default());
     app.init_resource::<ScenarioFileWatchState>();
+    app.init_resource::<backcast::ui::components::ChartSizeMap>();
     app.insert_resource(PendingLayoutApply::default());
     app.insert_resource(AppHistory::default());
     app.init_resource::<backcast::ui::components::ChartSizeMap>();

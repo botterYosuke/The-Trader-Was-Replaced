@@ -440,6 +440,8 @@ pub enum RunState {
     #[default]
     Idle,
     Running,
+    Paused,
+    Stopped,
     Completed,
     Failed {
         error: String,
@@ -447,12 +449,22 @@ pub enum RunState {
 }
 
 #[derive(Resource, Default, Debug, Clone)]
-pub struct LastRunResult {
+pub struct CurrentRun {
     pub run_id: Option<String>,
     pub summary_json: Option<String>,
     pub parsed_summary: Option<RunSummary>,
     pub state: RunState,
+    // Live run フィールド（LiveStrategyEvent / LiveStrategyTelemetry から書き込む）
+    pub strategy_name: String,
+    pub started_ts_ms: i64,
+    pub realized_pnl: f64,
+    pub unrealized_pnl: f64,
+    pub order_count: i64,
+    pub fill_count: i64,
 }
+
+/// 後方互換エイリアス。Slice 2 完了後に削除する。
+pub type LastRunResult = CurrentRun;
 
 #[derive(Resource, Default, Debug, Clone)]
 pub struct AvailableInstruments {
@@ -1274,118 +1286,6 @@ pub fn short_id(id: &str, n: usize) -> String {
     format!("…{tail}")
 }
 
-/// Phase 10 §2.8: one Live Auto run tracked by the UI for the Live Run Panel.
-/// Populated from `BackendEvent::LiveStrategyEvent` pushes. Run-level PnL / order
-/// / fill telemetry is NOT here yet — that needs a telemetry event (Step 7 / §2.9);
-/// Step 6 shows lifecycle status + timing only.
-#[derive(Debug, Clone, Default)]
-pub struct LiveRunRecord {
-    pub run_id: String,
-    pub strategy_id: String,
-    /// READY / RUNNING / PAUSED / STOPPING / STOPPED / ERROR.
-    pub status: String,
-    /// ts_ms of the first event seen for this run (run start).
-    pub started_ts_ms: i64,
-    /// ts_ms of the most recent event.
-    pub updated_ts_ms: i64,
-    /// Phase 10 Step 7 (§2.8 / §2.9): run-scoped telemetry from
-    /// `LiveStrategyTelemetry` pushes. Lifecycle events (`apply_event`) never
-    /// touch these; they default to 0 until the first telemetry push.
-    pub realized_pnl: f64,
-    pub unrealized_pnl: f64,
-    pub order_count: i64,
-    pub fill_count: i64,
-}
-
-/// Terminal run states — settled, so no longer controllable.
-pub fn is_terminal_run_status(status: &str) -> bool {
-    matches!(status, "STOPPED" | "ERROR")
-}
-
-/// Live Auto runs as seen by the UI, newest first. Keyed by `run_id`. Read by the
-/// Live Run Panel (§2.8). Phase 10 caps active automated runs to 1, but the list
-/// retains recent terminal runs so the user sees their final state.
-#[derive(Resource, Default, Debug, Clone)]
-pub struct LiveRuns {
-    pub runs: Vec<LiveRunRecord>,
-}
-
-const MAX_LIVE_RUNS: usize = 8;
-
-impl LiveRuns {
-    /// Upsert a run from a `LiveStrategyEvent`. `started_ts_ms` is fixed at the
-    /// first event; later events only refresh `status` / `updated_ts_ms`. An empty
-    /// `strategy_id` (older producer) never clears a known one.
-    pub fn apply_event(&mut self, run_id: &str, strategy_id: &str, status: &str, ts_ms: i64) {
-        if let Some(r) = self.runs.iter_mut().find(|r| r.run_id == run_id) {
-            r.status = status.to_string();
-            if !strategy_id.is_empty() {
-                r.strategy_id = strategy_id.to_string();
-            }
-            r.updated_ts_ms = ts_ms;
-        } else {
-            self.runs.insert(
-                0,
-                LiveRunRecord {
-                    run_id: run_id.to_string(),
-                    strategy_id: strategy_id.to_string(),
-                    status: status.to_string(),
-                    started_ts_ms: ts_ms,
-                    updated_ts_ms: ts_ms,
-                    ..Default::default()
-                },
-            );
-            self.runs.truncate(MAX_LIVE_RUNS);
-        }
-    }
-
-    /// Merge a run-scoped telemetry push (§2.8 / §2.9) into the run's counters.
-    /// Upserts the run so telemetry that races ahead of the first lifecycle event
-    /// still creates a row (status is left empty until a `LiveStrategyEvent`
-    /// arrives). The merge invariants mirror `apply_event`: a non-empty
-    /// `strategy_id` wins / an empty one never clears a known one, and
-    /// `started_ts_ms` is fixed at whichever event is seen first. Lifecycle status
-    /// is never touched here (telemetry carries no status).
-    #[allow(clippy::too_many_arguments)]
-    pub fn apply_telemetry(
-        &mut self,
-        run_id: &str,
-        strategy_id: &str,
-        realized_pnl: f64,
-        unrealized_pnl: f64,
-        order_count: i64,
-        fill_count: i64,
-        ts_ms: i64,
-    ) {
-        if let Some(r) = self.runs.iter_mut().find(|r| r.run_id == run_id) {
-            if !strategy_id.is_empty() {
-                r.strategy_id = strategy_id.to_string();
-            }
-            r.realized_pnl = realized_pnl;
-            r.unrealized_pnl = unrealized_pnl;
-            r.order_count = order_count;
-            r.fill_count = fill_count;
-            r.updated_ts_ms = ts_ms;
-        } else {
-            self.runs.insert(
-                0,
-                LiveRunRecord {
-                    run_id: run_id.to_string(),
-                    strategy_id: strategy_id.to_string(),
-                    status: String::new(),
-                    started_ts_ms: ts_ms,
-                    updated_ts_ms: ts_ms,
-                    realized_pnl,
-                    unrealized_pnl,
-                    order_count,
-                    fill_count,
-                },
-            );
-            self.runs.truncate(MAX_LIVE_RUNS);
-        }
-    }
-}
-
 /// Active `SecretRequired` prompt driving the SecretModal. Phase 9 §3.10:
 /// Tachibana-only. The drain system sets `active` when a `SecretRequired` event
 /// arrives; the modal opens while `active` is `Some` and clears it on
@@ -2137,46 +2037,6 @@ mod tests {
         assert_eq!(o.ts_ms, 20, "ts_ms always updates");
     }
 
-    #[test]
-    fn live_runs_apply_event_inserts_and_fixes_start_ts() {
-        let mut lr = LiveRuns::default();
-        lr.apply_event("run-1", "strat-a", "READY", 100);
-        lr.apply_event("run-1", "strat-a", "RUNNING", 200);
-        assert_eq!(lr.runs.len(), 1, "same run_id upserts, no dup");
-        let r = &lr.runs[0];
-        assert_eq!(r.status, "RUNNING", "status refreshes");
-        assert_eq!(r.started_ts_ms, 100, "start ts is fixed at first event");
-        assert_eq!(r.updated_ts_ms, 200, "updated ts advances");
-    }
-
-    #[test]
-    fn live_runs_blank_strategy_id_does_not_clear() {
-        let mut lr = LiveRuns::default();
-        lr.apply_event("run-1", "strat-a", "RUNNING", 100);
-        lr.apply_event("run-1", "", "PAUSED", 200);
-        assert_eq!(
-            lr.runs[0].strategy_id, "strat-a",
-            "an empty strategy_id must not wipe a known one"
-        );
-    }
-
-    #[test]
-    fn is_terminal_run_status_classifies_states() {
-        assert!(is_terminal_run_status("STOPPED"));
-        assert!(is_terminal_run_status("ERROR"));
-        assert!(!is_terminal_run_status("RUNNING"));
-        assert!(!is_terminal_run_status("PAUSED"));
-    }
-
-    #[test]
-    fn live_runs_caps_retention() {
-        let mut lr = LiveRuns::default();
-        for i in 0..(MAX_LIVE_RUNS + 5) {
-            lr.apply_event(&format!("run-{i}"), "s", "RUNNING", i as i64);
-        }
-        assert_eq!(lr.runs.len(), MAX_LIVE_RUNS, "retention is capped");
-    }
-
     // ── Phase 10 §2.9: strategy_id merge + OrdersFilter ──────────────────────
 
     #[test]
@@ -2202,52 +2062,6 @@ mod tests {
         let mut lo = LiveOrders::default();
         lo.apply_event("ghost", "V9", "ACCEPTED", 0.0, 0.0, 7, "LIVE-deadbeef");
         assert_eq!(lo.orders[0].strategy_id, "LIVE-deadbeef");
-    }
-
-    #[test]
-    fn live_runs_apply_telemetry_upserts_before_lifecycle() {
-        let mut lr = LiveRuns::default();
-        // Telemetry races ahead of any lifecycle event → creates the row.
-        lr.apply_telemetry("run-1", "LIVE-abc", 100.0, 50.0, 3, 1, 500);
-        assert_eq!(lr.runs.len(), 1);
-        let r = &lr.runs[0];
-        assert_eq!(r.realized_pnl, 100.0);
-        assert_eq!(r.order_count, 3);
-        assert_eq!(r.started_ts_ms, 500, "started fixed at first event seen");
-        assert_eq!(r.status, "", "telemetry carries no lifecycle status");
-        // A later lifecycle event fills status without clobbering started_ts_ms.
-        lr.apply_event("run-1", "LIVE-abc", "RUNNING", 600);
-        assert_eq!(lr.runs[0].status, "RUNNING");
-        assert_eq!(lr.runs[0].started_ts_ms, 500);
-        assert_eq!(
-            lr.runs[0].realized_pnl, 100.0,
-            "lifecycle must not reset PnL"
-        );
-    }
-
-    #[test]
-    fn live_runs_apply_telemetry_after_lifecycle_updates_counters_only() {
-        let mut lr = LiveRuns::default();
-        lr.apply_event("run-1", "LIVE-abc", "RUNNING", 100);
-        lr.apply_telemetry("run-1", "LIVE-abc", 2000.0, -300.0, 5, 4, 200);
-        let r = &lr.runs[0];
-        assert_eq!(r.status, "RUNNING", "telemetry must not touch status");
-        assert_eq!(r.started_ts_ms, 100);
-        assert_eq!(r.realized_pnl, 2000.0);
-        assert_eq!(r.unrealized_pnl, -300.0);
-        assert_eq!(r.order_count, 5);
-        assert_eq!(r.fill_count, 4);
-    }
-
-    #[test]
-    fn live_runs_apply_telemetry_empty_strategy_id_does_not_clear() {
-        let mut lr = LiveRuns::default();
-        lr.apply_telemetry("run-1", "LIVE-abc", 0.0, 0.0, 0, 0, 100);
-        lr.apply_telemetry("run-1", "", 10.0, 0.0, 1, 0, 200);
-        assert_eq!(
-            lr.runs[0].strategy_id, "LIVE-abc",
-            "empty strategy_id must not wipe a known one"
-        );
     }
 
     #[test]

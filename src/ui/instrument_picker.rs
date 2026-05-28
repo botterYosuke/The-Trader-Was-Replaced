@@ -724,16 +724,21 @@ pub fn auto_fetch_available_on_replay_entry_system(
     backend_status: Option<Res<BackendStatus>>,
     mut prev_mode: Local<Option<ExecutionMode>>,
     mut prev_end: Local<Option<String>>,
+    mut prev_connected: Local<Option<bool>>,
 ) {
     let cur_mode = exec_mode.mode;
     let cur_end = scenario.end.clone();
+    let cur_connected = backend_status.as_ref().map(|s| s.connected).unwrap_or(false);
     let mode_entered_replay = prev_mode.replace(cur_mode) != Some(ExecutionMode::Replay)
         && cur_mode == ExecutionMode::Replay;
     let end_changed = *prev_end != cur_end;
     if end_changed {
         *prev_end = cur_end.clone();
     }
-    if !mode_entered_replay && !end_changed {
+    // Reconnect edge (false→true): retry any stuck in_flight from a previous flush drop.
+    let just_reconnected = *prev_connected == Some(false) && cur_connected;
+    *prev_connected = Some(cur_connected);
+    if !mode_entered_replay && !end_changed && !just_reconnected {
         return;
     }
     if cur_mode != ExecutionMode::Replay {
@@ -742,8 +747,17 @@ pub fn auto_fetch_available_on_replay_entry_system(
     let Some(end) = parse_scenario_end(&scenario) else {
         return;
     };
-    if available.by_end_date.contains_key(&end) || available.in_flight.contains(&end) {
+    if available.by_end_date.contains_key(&end) {
         return;
+    }
+    // On reconnect, a previous in_flight entry may be stuck (the command was lost in
+    // the transport flush before the connection was established). Clear it so we can
+    // retry immediately rather than waiting for a response that will never arrive.
+    if available.in_flight.contains(&end) && !just_reconnected {
+        return;
+    }
+    if just_reconnected {
+        available.in_flight.remove(&end);
     }
     if backend_status
         .as_ref()

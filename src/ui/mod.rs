@@ -13,7 +13,6 @@ pub mod footer;
 pub mod instrument_picker;
 pub mod instruments_universe_prune;
 pub mod layout_persistence;
-pub mod live_run_panel;
 pub mod menu_bar;
 pub mod modify_modal;
 pub mod order_context_menu;
@@ -97,11 +96,6 @@ use crate::ui::instrument_picker::{
 use crate::ui::instruments_universe_prune::{
     invalidate_tickers_on_venue_disconnect_system, prune_instruments_outside_universe_system,
     unsubscribe_removed_instruments_system,
-};
-use crate::ui::live_run_panel::{
-    live_run_control_button_system, live_run_control_visual_system, live_run_log_sync_system,
-    live_run_panel_sync_system, live_run_panel_visibility_system, live_run_row_visibility_system,
-    spawn_live_run_panel,
 };
 use crate::ui::menu_bar::{
     gate_venue_menu_items_system, handle_strategy_file_load_system, handle_strategy_run_system,
@@ -308,8 +302,6 @@ impl Plugin for UiPlugin {
                 spawn_relogin_modal,
                 // Phase 9 Step 8 §3.8: backend 再起動後の注文 reconcile 通知モーダル
                 spawn_reconcile_modal,
-                // Phase 10 §2.8: Live Run Panel (アクティブ run + Pause/Resume/Stop)
-                spawn_live_run_panel,
                 // Phase 10 §2.10: Safety Rail violation toast (Footer 右下)
                 spawn_safety_toast,
                 spawn_run_result_panel_system,
@@ -632,19 +624,7 @@ impl Plugin for UiPlugin {
                 reconcile_modal_sync_system,
             ),
         )
-        // ── Phase 10 §2.8: Live Run Panel ──
-        .add_systems(
-            Update,
-            (
-                live_run_panel_visibility_system,
-                live_run_row_visibility_system,
-                live_run_panel_sync_system,
-                live_run_log_sync_system,
-                live_run_control_visual_system,
-                live_run_control_button_system,
-                // Phase 10 §2.10: Safety Rail violation toast lifecycle.
-                safety_toast_system,
-            ),
-        );
+        // ── Phase 10 §2.10: Safety Rail violation toast ──
+        .add_systems(Update, safety_toast_system);
     }
 }

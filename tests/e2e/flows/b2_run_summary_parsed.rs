@@ -22,7 +22,7 @@ fn b2_run_summary_parsed() {
             .to_string(),
     });
 
-    let summary = h.last_run().parsed_summary.expect("summary parsed");
+    let summary = h.current_run().parsed_summary.expect("summary parsed");
     assert_eq!(summary.fills_count, 7);
     assert_eq!(summary.equity_points, 42);
     assert_eq!(summary.total_pnl, -1500.25);

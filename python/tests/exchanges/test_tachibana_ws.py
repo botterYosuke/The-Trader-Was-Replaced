@@ -115,15 +115,31 @@ def test_depth_extracts_bid_ask_ladders():
     _trade, depth = p.process(fields, recv_ts_ms=1_700_000_000_000)
     assert depth is not None
     assert depth["bids"] == [
-        {"price": "2999", "qty": "100"},
-        {"price": "2998", "qty": "200"},
+        {"price": "2999", "size": "100"},
+        {"price": "2998", "size": "200"},
     ]
     assert depth["asks"] == [
-        {"price": "3001", "qty": "150"},
-        {"price": "3002", "qty": "250"},
+        {"price": "3001", "size": "150"},
+        {"price": "3002", "size": "250"},
     ]
     assert depth["sequence_id"] == 1
     assert depth["recv_ts_ms"] == 1_700_000_000_000
+
+
+def test_depth_skips_level_with_empty_volume():
+    """GBPi が有っても GBVi が空ならその level を生成しない (Bug2 回帰ガード)。"""
+    p = FdFrameProcessor(row="1")
+    fields = {
+        "p_1_DPP": "3000", "p_1_DV": "1000",
+        "p_1_GBP1": "2999", "p_1_GBV1": "100",
+        "p_1_GBP2": "2998", "p_1_GBV2": "",   # volume 空
+        "p_1_GAP1": "3001", "p_1_GAV1": "150",
+        "p_1_GAP2": "3002", "p_1_GAV2": "",   # volume 空
+    }
+    _trade, depth = p.process(fields, recv_ts_ms=1_700_000_000_000)
+    assert depth is not None
+    assert depth["bids"] == [{"price": "2999", "size": "100"}]
+    assert depth["asks"] == [{"price": "3001", "size": "150"}]
 
 
 # ---------------------------------------------------------------------------

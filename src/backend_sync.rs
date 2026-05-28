@@ -2,7 +2,7 @@
 //!
 //! Drains the two mpsc channels fed by the transport task (`BackendStatusUpdate`
 //! and `BackendEvent`) and applies them to the observable Bevy resources
-//! (`LastRunResult`, `PortfolioState`, `VenueStatusRes`, …). This is the heart
+//! (`CurrentRun`, `PortfolioState`, `VenueStatusRes`, …). This is the heart
 //! of the desktop app's state machine: every user-visible state transition that
 //! originates from the backend flows through `apply_status_update`.
 //!
@@ -15,8 +15,8 @@ use crate::backend_supervisor::{BackendLifecycle, BackendLifecycleHandle};
 use crate::replay::{ReplayStartupPhase, ReplayStartupProgress};
 use crate::trading::{
     AccountPosition, AvailableInstruments, BackendEvent, BackendStartupStage, BackendStatus,
-    BackendStatusUpdate, ExecutionMode, ExecutionModeRes, LastPrices, LastRunResult, LiveOrder, LiveOrders,
-    LiveRuns, OrderFeedback, PortfolioPosition, PortfolioState, ReconcilePrompt,
+    BackendStatusUpdate, CurrentRun, ExecutionMode, ExecutionModeRes, LastPrices, LiveOrder, LiveOrders,
+    OrderFeedback, PortfolioPosition, PortfolioState, ReconcilePrompt,
     ReloginPrompt, RunState, SafetyToast, SecretPrompt, SecretPromptRequest, StrategyLogs, Tickers,
     ToastKind,
     TickersStatus, TransportCommand, TransportCommandSender, VenueState, VenueStatusRes,
@@ -38,7 +38,7 @@ pub struct StatusUpdateChannel {
 pub fn status_update_system(
     mut status: ResMut<BackendStatus>,
     mut channel: ResMut<StatusUpdateChannel>,
-    mut last_run: ResMut<LastRunResult>,
+    mut current_run: ResMut<CurrentRun>,
     mut portfolio: ResMut<PortfolioState>,
     mut available: ResMut<AvailableInstruments>,
     mut progress: ResMut<ReplayStartupProgress>,
@@ -55,7 +55,7 @@ pub fn status_update_system(
         apply_status_update(
             update,
             &mut status,
-            &mut last_run,
+            &mut current_run,
             &mut portfolio,
             &mut available,
             &mut progress,
@@ -84,9 +84,9 @@ pub fn backend_event_drain_system(
     mut live_orders: ResMut<LiveOrders>,
     mut portfolio: ResMut<PortfolioState>,
     mut relogin_prompt: ResMut<ReloginPrompt>,
-    mut live_runs: ResMut<LiveRuns>,
     mut safety_toast: ResMut<SafetyToast>,
     mut strategy_logs: ResMut<StrategyLogs>,
+    mut current_run: ResMut<CurrentRun>,
 ) {
     while let Ok(event) = channel.rx.try_recv() {
         match event {
@@ -174,8 +174,55 @@ pub fn backend_event_drain_system(
                 info!(
                     "[backend-event] LiveStrategyEvent run_id={run_id} strategy_id={strategy_id} status={status} ts_ms={ts_ms}"
                 );
-                // §2.8: drive the Live Run Panel's run list.
-                live_runs.apply_event(&run_id, &strategy_id, &status, ts_ms);
+                let is_same_run = current_run.run_id.as_deref() == Some(&*run_id);
+                // Accept a new run when there is no prior run or the prior run reached a
+                // terminal state — prevents the 2nd+ Live run from being silently dropped.
+                let is_new_run = current_run.run_id.is_none()
+                    || matches!(
+                        current_run.state,
+                        RunState::Idle
+                            | RunState::Stopped
+                            | RunState::Completed
+                            | RunState::Failed { .. }
+                    );
+                if is_same_run || is_new_run {
+                    if !is_same_run {
+                        // Stale fields only need resetting when a *previous* run existed.
+                        // run_id==None means telemetry raced ahead — keep its counters.
+                        if current_run.run_id.is_some() {
+                            current_run.strategy_name  = String::new();
+                            current_run.started_ts_ms  = 0;
+                            current_run.order_count    = 0;
+                            current_run.fill_count     = 0;
+                            current_run.realized_pnl   = 0.0;
+                            current_run.unrealized_pnl = 0.0;
+                            current_run.parsed_summary = None;
+                        }
+                        current_run.run_id = Some(run_id.clone());
+                    }
+                    if !strategy_id.is_empty() {
+                        current_run.strategy_name = strategy_id.clone();
+                    }
+                    if current_run.started_ts_ms == 0 {
+                        current_run.started_ts_ms = ts_ms;
+                    }
+                    current_run.state = match status.as_str() {
+                        "RUNNING" => RunState::Running,
+                        "PAUSED"  => RunState::Paused,
+                        "STOPPED" => RunState::Stopped,
+                        // Preserve a rich error written by RunFailed (status channel) — it
+                        // arrives before the event channel drains and carries the real cause.
+                        "FAILED" | "ERROR" => {
+                            if matches!(&current_run.state, RunState::Failed { error } if !error.is_empty())
+                            {
+                                current_run.state.clone()
+                            } else {
+                                RunState::Failed { error: String::new() }
+                            }
+                        }
+                        _ => current_run.state.clone(),
+                    };
+                }
             }
             BackendEvent::SafetyRailViolation {
                 run_id,
@@ -224,15 +271,24 @@ pub fn backend_event_drain_system(
                 info!(
                     "[backend-event] LiveStrategyTelemetry run_id={run_id} strategy_id={strategy_id} realized_pnl={realized_pnl} unrealized_pnl={unrealized_pnl} order_count={order_count} fill_count={fill_count} ts_ms={ts_ms}"
                 );
-                live_runs.apply_telemetry(
-                    &run_id,
-                    &strategy_id,
-                    realized_pnl,
-                    unrealized_pnl,
-                    order_count,
-                    fill_count,
-                    ts_ms,
-                );
+                let is_same_run = current_run.run_id.as_deref() == Some(&*run_id);
+                let is_new_run = current_run.run_id.is_none()
+                    || matches!(
+                        current_run.state,
+                        RunState::Idle
+                            | RunState::Stopped
+                            | RunState::Completed
+                            | RunState::Failed { .. }
+                    );
+                if is_same_run || is_new_run {
+                    if !strategy_id.is_empty() {
+                        current_run.strategy_name = strategy_id.clone();
+                    }
+                    current_run.realized_pnl   = realized_pnl;
+                    current_run.unrealized_pnl = unrealized_pnl;
+                    current_run.order_count    = order_count;
+                    current_run.fill_count     = fill_count;
+                }
             }
         }
     }
@@ -293,7 +349,7 @@ pub fn lifecycle_status_update(
 pub fn apply_status_update(
     update: BackendStatusUpdate,
     status: &mut BackendStatus,
-    last_run: &mut LastRunResult,
+    current_run: &mut CurrentRun,
     portfolio: &mut PortfolioState,
     available: &mut AvailableInstruments,
     progress: &mut ReplayStartupProgress,
@@ -314,7 +370,7 @@ pub fn apply_status_update(
             status.connected = false;
         }
         BackendStatusUpdate::RunStarted => {
-            last_run.state = RunState::Running;
+            current_run.state = RunState::Running;
         }
         BackendStatusUpdate::ReplayStartup { startup_id, stage } => {
             if progress.visible && progress.startup_id == startup_id {
@@ -337,10 +393,10 @@ pub fn apply_status_update(
             summary_json,
         } => {
             info!("RunComplete: run_id={} summary={}", run_id, summary_json);
-            last_run.parsed_summary = parse_summary_json(&summary_json);
-            last_run.run_id = Some(run_id);
-            last_run.summary_json = Some(summary_json);
-            last_run.state = RunState::Completed;
+            current_run.parsed_summary = parse_summary_json(&summary_json);
+            current_run.run_id = Some(run_id);
+            current_run.summary_json = Some(summary_json);
+            current_run.state = RunState::Completed;
 
             if let Some(sid) = startup_id
                 && progress.visible
@@ -361,7 +417,7 @@ pub fn apply_status_update(
             {
                 progress.error = Some(error.clone());
             }
-            last_run.state = RunState::Failed { error };
+            current_run.state = RunState::Failed { error };
         }
         BackendStatusUpdate::PortfolioLoaded {
             buying_power,
@@ -671,6 +727,56 @@ pub fn apply_available_failed(
     available.in_flight.remove(&end_date);
 }
 
+/// Issue #42 (M1): build the user-visible reject message for a `RegisterLiveStrategy`
+/// response. Returns `None` when the response succeeded (nothing to surface).
+/// Empty `error_message` falls back to `error_code` as the detail; otherwise the
+/// detail reads `"{code}: {message}"`. Extracted from `main.rs` so E2E tests can
+/// assert the exact text that drives `RunState::Failed`.
+pub fn build_register_reject_message(
+    success: bool,
+    error_code: &str,
+    error_message: &str,
+    instrument_id: &str,
+    venue: &str,
+) -> Option<String> {
+    if success {
+        return None;
+    }
+    let detail = if error_message.trim().is_empty() {
+        error_code.to_string()
+    } else {
+        format!("{}: {}", error_code, error_message)
+    };
+    Some(format!(
+        "RegisterLiveStrategy rejected: instrument_id={} venue={} error={}",
+        instrument_id, venue, detail
+    ))
+}
+
+/// Issue #42 (M1): build the user-visible reject message for a `StartLiveStrategy`
+/// response. Same `None`/empty-detail rules as `build_register_reject_message`.
+pub fn build_start_reject_message(
+    success: bool,
+    error_code: &str,
+    error_message: &str,
+    strategy_id: &str,
+    instrument_id: &str,
+    venue: &str,
+) -> Option<String> {
+    if success {
+        return None;
+    }
+    let detail = if error_message.trim().is_empty() {
+        error_code.to_string()
+    } else {
+        format!("{}: {}", error_code, error_message)
+    };
+    Some(format!(
+        "StartLiveStrategy rejected: strategy_id={} instrument_id={} venue={} error={}",
+        strategy_id, instrument_id, venue, detail
+    ))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -715,9 +821,9 @@ mod tests {
         app.init_resource::<LiveOrders>();
         app.init_resource::<PortfolioState>();
         app.init_resource::<ReloginPrompt>();
-        app.init_resource::<LiveRuns>();
         app.init_resource::<SafetyToast>();
         app.init_resource::<StrategyLogs>();
+        app.init_resource::<CurrentRun>();
         app.add_systems(Update, backend_event_drain_system);
 
         tx.send(BackendEvent::VenueLogoutDetected {
@@ -744,9 +850,9 @@ mod tests {
         app.init_resource::<LiveOrders>();
         app.init_resource::<PortfolioState>();
         app.init_resource::<ReloginPrompt>();
-        app.init_resource::<LiveRuns>();
         app.init_resource::<SafetyToast>();
         app.init_resource::<StrategyLogs>();
+        app.init_resource::<CurrentRun>();
         app.add_systems(Update, backend_event_drain_system);
 
         tx.send(BackendEvent::BackendError {
@@ -826,7 +932,7 @@ mod tests {
     #[test]
     fn secret_submit_failed_sets_secret_prompt_error_not_order_feedback() {
         let mut status = BackendStatus::default();
-        let mut last_run = LastRunResult::default();
+        let mut current_run = CurrentRun::default();
         let mut portfolio = PortfolioState::default();
         let mut available = AvailableInstruments::default();
         let mut progress = ReplayStartupProgress::default();
@@ -844,7 +950,7 @@ mod tests {
                 error_code: "SECOND_SECRET_INVALID".to_string(),
             },
             &mut status,
-            &mut last_run,
+            &mut current_run,
             &mut portfolio,
             &mut available,
             &mut progress,
@@ -878,7 +984,7 @@ mod tests {
     fn instruments_list_failed_pending_maps_to_inflight_not_failed() {
         fn apply(error: &str) -> TickersStatus {
             let mut status = BackendStatus::default();
-            let mut last_run = LastRunResult::default();
+            let mut current_run = CurrentRun::default();
             let mut portfolio = PortfolioState::default();
             let mut available = AvailableInstruments::default();
             let mut progress = ReplayStartupProgress::default();
@@ -896,7 +1002,7 @@ mod tests {
                     error: error.to_string(),
                 },
                 &mut status,
-                &mut last_run,
+                &mut current_run,
                 &mut portfolio,
                 &mut available,
                 &mut progress,
@@ -935,7 +1041,7 @@ mod tests {
         // 既存の全引数組み立て helper（他テストと同形）。
         fn reduce_exec_mode_changed(portfolio: &mut PortfolioState, mode: ExecutionMode) {
             let mut status = BackendStatus::default();
-            let mut last_run = LastRunResult::default();
+            let mut current_run = CurrentRun::default();
             let mut available = AvailableInstruments::default();
             let mut progress = ReplayStartupProgress::default();
             let mut venue_status = VenueStatusRes::default();
@@ -950,7 +1056,7 @@ mod tests {
             apply_status_update(
                 BackendStatusUpdate::ExecutionModeChanged { mode },
                 &mut status,
-                &mut last_run,
+                &mut current_run,
                 portfolio,
                 &mut available,
                 &mut progress,
@@ -1018,16 +1124,16 @@ mod tests {
         app.init_resource::<LiveOrders>();
         app.init_resource::<PortfolioState>();
         app.init_resource::<ReloginPrompt>();
-        app.init_resource::<LiveRuns>();
         app.init_resource::<SafetyToast>();
         app.init_resource::<StrategyLogs>();
+        app.init_resource::<CurrentRun>();
         app.add_systems(Update, backend_event_drain_system);
         (app, tx)
     }
 
-    /// §2.8 / §2.9: a LiveStrategyTelemetry push drives the LiveRuns counters.
+    /// §2.8 / §2.9 (issue #42): a LiveStrategyTelemetry push drives CurrentRun counters.
     #[test]
-    fn telemetry_push_drives_live_runs_counters() {
+    fn telemetry_push_drives_current_run_counters() {
         let (mut app, tx) = drain_app();
         tx.send(BackendEvent::LiveStrategyTelemetry {
             run_id: "run-1".to_string(),
@@ -1040,18 +1146,12 @@ mod tests {
         })
         .unwrap();
         app.update();
-        let runs = app.world().resource::<crate::trading::LiveRuns>();
-        assert_eq!(
-            runs.runs.len(),
-            1,
-            "telemetry upserts a run even before lifecycle"
-        );
-        let r = &runs.runs[0];
-        assert_eq!(r.realized_pnl, 5000.0);
-        assert_eq!(r.unrealized_pnl, 1234.0);
-        assert_eq!(r.order_count, 4);
-        assert_eq!(r.fill_count, 2);
-        assert_eq!(r.strategy_id, "LIVE-abc12345");
+        let cr = app.world().resource::<CurrentRun>();
+        assert_eq!(cr.realized_pnl, 5000.0);
+        assert_eq!(cr.unrealized_pnl, 1234.0);
+        assert_eq!(cr.order_count, 4);
+        assert_eq!(cr.fill_count, 2);
+        assert_eq!(cr.strategy_name, "LIVE-abc12345");
     }
 
     /// §2.9 merge invariant through the drain: an OrderEvent's non-empty strategy_id

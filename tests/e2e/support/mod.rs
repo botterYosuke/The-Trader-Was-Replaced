@@ -26,8 +26,8 @@ use backcast::replay::{ReplayStartupPhase, ReplayStartupProgress};
 use backcast::ui::replay_startup_window::replay_startup_timeout_system;
 use backcast::trading::{
     backend_update_system, AvailableInstruments, BackendChannel, BackendEvent, BackendStatus,
-    BackendStatusUpdate, BackendTradingState, ExecutionMode, ExecutionModeRes,
-    InstrumentTradingDataMap, LastPrices, LastRunResult, LiveOrders, LiveRuns, OrderFeedback,
+    BackendStatusUpdate, BackendTradingState, CurrentRun, ExecutionMode, ExecutionModeRes,
+    InstrumentTradingDataMap, LastPrices, LiveOrders, OrderFeedback,
     PortfolioState, ReconcilePrompt, ReloginPrompt, ReplaySpeed, RunState,
     SafetyToast, SecretPrompt, SelectedSymbol, StrategyLogs, Tickers, TradingSession,
     TradingSettings, TransportCommand,
@@ -106,7 +106,7 @@ impl Harness {
         app.insert_resource(BackendEventChannel { rx: event_rx });
 
         app.insert_resource(BackendStatus::default())
-            .insert_resource(LastRunResult::default())
+            .insert_resource(CurrentRun::default())
             .insert_resource(ReplayStartupProgress::default())
             .insert_resource(AvailableInstruments::default())
             .insert_resource(PortfolioState::default())
@@ -117,10 +117,6 @@ impl Harness {
             .insert_resource(TradingSession::default())
             .insert_resource(InstrumentTradingDataMap::default())
             .insert_resource(LiveOrders::default())
-            // Phase 10: backend_event_drain_system mutates LiveRuns / SafetyToast /
-            // StrategyLogs. Without these the headless schedule panics
-            // ("could not access system parameter").
-            .insert_resource(LiveRuns::default())
             .insert_resource(SafetyToast::default())
             .insert_resource(StrategyLogs::default())
             .insert_resource(OrderFeedback::default())
@@ -239,11 +235,11 @@ impl Harness {
     }
 
     pub fn run_state(&self) -> RunState {
-        self.app.world().resource::<LastRunResult>().state.clone()
+        self.app.world().resource::<CurrentRun>().state.clone()
     }
 
-    pub fn last_run(&self) -> LastRunResult {
-        self.app.world().resource::<LastRunResult>().clone()
+    pub fn current_run(&self) -> CurrentRun {
+        self.app.world().resource::<CurrentRun>().clone()
     }
 
     pub fn portfolio(&self) -> PortfolioState {
@@ -292,10 +288,6 @@ impl Harness {
 
     pub fn reconcile_prompt(&self) -> ReconcilePrompt {
         self.app.world().resource::<ReconcilePrompt>().clone()
-    }
-
-    pub fn live_runs(&self) -> LiveRuns {
-        self.app.world().resource::<LiveRuns>().clone()
     }
 
     pub fn safety_toast(&self) -> SafetyToast {

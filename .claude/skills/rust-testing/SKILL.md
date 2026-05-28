@@ -1,6 +1,6 @@
 ---
 name: rust-testing
-description: Rust testing patterns including unit tests, integration tests, async testing, property-based testing, mocking, and coverage. Follows TDD methodology. Trigger: "cargo test", "Rust テスト", "テストブロック修正", "test fails", "#[test]", "テスト破損", "旧テストを新 API に合わせる", "init_resource が欠落", "Bevy App テスト", "app.add_systems テスト", "serial_test", "env var test", "RAII guard", "EnvGuard", "環境変数テスト", "std::env::set_var", "serial", "headless E2E ハーネス", "tests/e2e_replay", "tests/e2e/FLOWS.md", "FLOWS.md の flow 追加", "MinimalPlugins resource 駆動テスト", "backend→ECS seam テスト", "BackendStatusUpdate を注入して resource を assert", "テストごとにファイルを分けて", "1テスト1ファイル", "テストファイルを分割", "テストの数が分かりにくい", "#[path] mod でテストを分ける", "テストバイナリが遅い", "private function をテストから呼びたい", "pub(crate) が e2e から見えない", "テストバイナリから fn が見えない", "E0603 private function", "headless test から production system を呼ぶ", "fn を pub にする", "save system をテストから駆動したい", "cache restore をテストで検証したい", "menu_item_system を注入する", "FileNew ボタンをテストで押す", "undo_redo_system をテストで走らせる", "AppHistory をテストで操作する", "CacheDirGuard RAII", "BACKCAST_CACHE_DIR を隔離", "sidecar JSON を書いてテスト", "apply_cache_restore_system", "handle_save_layout_system", "restore_last_strategy_system チェーン", "scenario-only JSON を開く テスト", "system のシグネチャに Res<T> を追加した", "system シグネチャを拡張した", "新しい Resource を system に追加した", "EventWriter を system に追加した", "EventReader を system に追加した", "Res<ChartSizeMap>", "system param 追加後にテストが落ちた", "could not access system parameter", "init_resource を追加したらテストが通った". 注: ここでの「E2E」は **ヘッドレスな Rust テスト**（`cargo test --test e2e_replay`）であり、GUI 目視検証の `e2e-testing` スキルとは別物。 pair-relay の Navigator が Rust テストを書く前にこのスキルを参照すると、RAII guard パターン・serial_test 直列化・unsafe env var 操作の落とし穴を回避できる。 **system シグネチャ拡張時の追従漏れ**: `Res<T>` / `ResMut<T>` / `EventWriter<E>` / `EventReader<E>` を system に追加したら、その system を `app.add_systems` で使う **全テスト App**（`#[cfg(test)] mod tests` + `tests/e2e/flows/*.rs` の両方）に `app.init_resource::<T>()` / `app.add_event::<E>()` を追加しないと `could not access system parameter` で panic する。実例: `instrument_chart_sync_system` に `Res<ChartSizeMap>` を追加した際、e2e 4 ファイル + lib 内テストモジュール合計 10+ 箇所の追従が必要になった。**対策**: 追加後は `cargo test --lib` と `cargo test --test e2e_replay` の両方を必ず回す。
+description: Rust testing patterns including unit tests, integration tests, async testing, property-based testing, mocking, and coverage. Follows TDD methodology. Trigger: "cargo test", "Rust テスト", "テストブロック修正", "test fails", "#[test]", "テスト破損", "旧テストを新 API に合わせる", "init_resource が欠落", "Bevy App テスト", "app.add_systems テスト", "serial_test", "env var test", "RAII guard", "EnvGuard", "環境変数テスト", "std::env::set_var", "serial", "headless E2E ハーネス", "tests/e2e_replay", "tests/e2e/FLOWS.md", "FLOWS.md の flow 追加", "MinimalPlugins resource 駆動テスト", "backend→ECS seam テスト", "BackendStatusUpdate を注入して resource を assert", "テストごとにファイルを分けて", "1テスト1ファイル", "テストファイルを分割", "テストの数が分かりにくい", "#[path] mod でテストを分ける", "テストバイナリが遅い", "private function をテストから呼びたい", "pub(crate) が e2e から見えない", "テストバイナリから fn が見えない", "E0603 private function", "headless test から production system を呼ぶ", "fn を pub にする", "save system をテストから駆動したい", "cache restore をテストで検証したい", "menu_item_system を注入する", "FileNew ボタンをテストで押す", "undo_redo_system をテストで走らせる", "AppHistory をテストで操作する", "CacheDirGuard RAII", "BACKCAST_CACHE_DIR を隔離", "sidecar JSON を書いてテスト", "apply_cache_restore_system", "handle_save_layout_system", "restore_last_strategy_system チェーン", "scenario-only JSON を開く テスト", "system のシグネチャに Res<T> を追加した", "system シグネチャを拡張した", "新しい Resource を system に追加した", "EventWriter を system に追加した", "EventReader を system に追加した", "Res<ChartSizeMap>", "system param 追加後にテストが落ちた", "could not access system parameter", "init_resource を追加したらテストが通った", "kind:render テスト", "Text2d を assert したい", "world_mut().query_filtered で Text2d を読む", "render harness", "spawn_panel_system をテストで呼ぶ", "PanelRoot を spawn してから system を回す", "Text2d と Text の違い", "E0596 cannot borrow App as mutable", "world_mut().query_filtered の使い方". 注: ここでの「E2E」は **ヘッドレスな Rust テスト**（`cargo test --test e2e_replay`）であり、GUI 目視検証の `e2e-testing` スキルとは別物。 pair-relay の Navigator が Rust テストを書く前にこのスキルを参照すると、RAII guard パターン・serial_test 直列化・unsafe env var 操作の落とし穴を回避できる。 **system シグネチャ拡張時の追従漏れ**: `Res<T>` / `ResMut<T>` / `EventWriter<E>` / `EventReader<E>` を system に追加したら、その system を `app.add_systems` で使う **全テスト App**（`#[cfg(test)] mod tests` + `tests/e2e/flows/*.rs` の両方）に `app.init_resource::<T>()` / `app.add_event::<E>()` を追加しないと `could not access system parameter` で panic する。実例1: `instrument_chart_sync_system` に `Res<ChartSizeMap>` を追加した際、e2e 4 ファイル + lib 内テストモジュール合計 10+ 箇所の追従が必要になった。実例2: issue #43 が `apply_layout_system` / `handle_save_layout_system` に `ResMut<ChartSizeMap>` を追加するブランチをマージした後、`cargo test --lib` で 18 本・`cargo test --test e2e_replay` で 8 本が「could not access system parameter」で全落ちした（#42 Slice 2 セッション再開時に判明）。**対策**: 追加後は `cargo test --lib` と `cargo test --test e2e_replay` の両方を必ず回す。**マージ後のテスト全本落ち（lib/e2e どちらか、または両方）はまずこの追従漏れを疑う**。
 origin: ECC
 ---
 
@@ -592,6 +592,70 @@ history.pending.queue.clear(); // 通常入力時は push_text が clear する
 ```
 
 undo 後は `history.pending.queue[0]` に `SetStrategySource { text: "old" }` が積まれる。
+
+### kind:render ハーネス — world-space パネルの Text2d を assert する
+
+`run_result_panel` や `floating_window` など、`Text2d` コンポーネントを使う world-space パネルは `Bevy UI Node` の `Text` とは別物。`kind:render` テストは以下のパターンで書く：
+
+```rust
+use bevy::prelude::*;
+use bevy::asset::AssetPlugin;
+use serial_test::serial;
+
+fn make_app() -> App {
+    let mut app = App::new();
+    app.add_plugins((MinimalPlugins, TransformPlugin, AssetPlugin::default()));
+    app.init_asset::<Font>();
+    // パネルが必要とする resource を insert
+    app.insert_resource(CurrentRun::default());
+    app.add_systems(Startup, spawn_run_result_panel_system);
+    app.add_systems(Update, run_result_panel_system);
+    app
+}
+
+fn read_label(app: &mut App) -> String {
+    app.world_mut()
+        .query_filtered::<&Text2d, With<RunResultLabel>>()  // ← &mut App が必要
+        .iter(app.world())
+        .next()
+        .map(|t| t.0.clone())
+        .unwrap_or_default()
+}
+
+#[test]
+#[serial]  // AssetServer を使う場合は serial_test で直列化する
+fn panel_shows_blank_when_running_without_strategy() {
+    let mut app = make_app();
+    app.update(); // Startup: spawn panel
+
+    app.world_mut().resource_mut::<CurrentRun>().state = RunState::Running;
+    app.update();
+
+    assert_eq!(read_label(&mut app), "");
+}
+```
+
+**⚠️ `query_filtered` は `app.world_mut()` が必要 — `app.world()` では E0596**:
+
+```rust
+// NG: cannot borrow `*app` as mutable because it is also borrowed as immutable
+let text = app.world()
+    .query_filtered::<&Text2d, With<Marker>>()  // ← &mut World が必要
+    .iter(app.world())
+    .next();
+
+// OK:
+let text = app.world_mut()
+    .query_filtered::<&Text2d, With<Marker>>()
+    .iter(app.world())
+    .next();
+```
+
+**`Text`（Bevy UI Node）vs `Text2d`（world-space）の使い分け**:
+- `Text` — `Node`/`Button` 上のテキスト（footer、sidebar 等の UI ウィジェット）
+- `Text2d` — ワールド座標のスプライト/パネル上のテキスト（`run_result_panel`, `floating_window` 内のラベル）
+
+**`serial_test::serial` が必要な条件**: `AssetPlugin` を使う（`AssetServer` がグローバル状態を持つ）テストは並列実行すると衝突する。`spawn_footer` / `spawn_run_result_panel_system` 等を含む render harness は `#[serial]` を付ける。
 
 ### What NOT to test in unit tests
 

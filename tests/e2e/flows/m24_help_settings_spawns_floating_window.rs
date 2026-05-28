@@ -1,4 +1,4 @@
-//! M21 help_settings_spawns_floating_window — Help メニューから Settings を選択すると
+//! M24 help_settings_spawns_floating_window — Help メニューから Settings を選択すると
 //! Settings floating window が 1 枚 spawn され、2 回選択しても重複しないことを保証する。
 //!
 //! `panel_spawn_dispatcher_system` が `PanelSpawnRequested { kind: PanelKind::Settings }` を
