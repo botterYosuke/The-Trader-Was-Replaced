@@ -214,7 +214,6 @@ pub enum TransportCommand {
     /// IDLE 状態からの "1 ステップだけ実行": ForceStop → LoadReplayData → StepReplay (#61)。
     /// StartEngine を呼ばないため、LOADED 状態のまま停止する。
     LoadAndStep {
-        strategy_file: std::path::PathBuf,
         config: StrategyRunConfig,
         startup_id: u64,
     },

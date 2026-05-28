@@ -582,7 +582,7 @@ fn setup_backend_connection(
                             Err(e) => error!("SetReplaySpeed {}x failed: {}", mult, e),
                         }
                     }
-                    TransportCommand::LoadAndStep { strategy_file: _, config, startup_id } => {
+                    TransportCommand::LoadAndStep { config, startup_id } => {
                         // #61: IDLE → ForceStop → LoadReplayData → StepReplay (StartEngine 無し)
                         let mut run_client = client.clone();
                         let run_token = token.clone();
@@ -668,7 +668,13 @@ fn setup_backend_connection(
                             });
                             match run_client.step_replay(req).await {
                                 Ok(r) => info!("LoadAndStep: step ok, state={:?}", r.into_inner().current_state),
-                                Err(e) => error!("LoadAndStep: step_replay failed: {}", e),
+                                Err(e) => {
+                                    let msg = format!("LoadAndStep: step_replay failed: {}", e);
+                                    error!("{}", msg);
+                                    let _ = run_status_tx.send(BackendStatusUpdate::RunFailed {
+                                        startup_id: Some(startup_id), error: msg,
+                                    });
+                                }
                             }
                         });
                     }
