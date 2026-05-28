@@ -98,6 +98,7 @@ description: >-
   account_sync 存続、dedup 保証など「Python サービス内の状態機械」は pytest でカバーできる（Rust seam は不要）。
   **この場合も FLOWS.md への flow 追加・wiki の [FlowID] 引用は必須**（Rust E2E に限らない）。
   **「verify first」パターン（issue に「まず混入するか確認してから修正」「RED が立つか先に検証」「本当に再現するか確かめてから直す」と書かれているとき）でも本スキルを発動する**: verify-first はテストを先に書いて問題を実証するアプローチであり、RED テスト + FLOWS.md 追記 + wiki [FlowID] が必要。issue の Acceptance Criteria に「verify first」が含まれていれば、実装の説明が詳細でもスキルを invoke する（#39 Slice 2 の「verify first: live 接続状態で Replay に切替えたとき混入するか確認（RED が立つか）」が典型）。
+  **E2E テスト調査中に「この AC にテストが無い」「この挙動が自動テストでカバーされていない」というカバレッジ gap を自分で発見したとき**も本スキルを発動する（ユーザーが明示的に「テストを追加して」と言わなくても同様）: gap を発見→即テスト追加という流れでも FLOWS.md エントリの品質確認（doc stub になっていないか、FlowID が wiki と合っているか）と wiki の現行化は本スキルの担当。実例: issue #54 の E2E テスト調査で AC #3 のエラー表示に自動テストが無いことを発見 → テスト追加したが behavior-to-e2e を invoke せず wiki 確認がスキップされた。
 ---
 
 # behavior-to-e2e — 挙動の言葉を E2E テストに変える

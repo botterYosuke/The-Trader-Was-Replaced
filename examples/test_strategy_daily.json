@@ -1,65 +1,23 @@
 {
   "schema_version": 1,
   "viewport": {
-    "pan_x": 66.32971,
-    "pan_y": 98.13926,
-    "zoom": 1.442566
+    "pan_x": 0.0,
+    "pan_y": 0.0,
+    "zoom": 1.0
   },
   "windows": [
     {
       "kind": "StrategyEditor",
       "visible": true,
       "position": [
-        195.52142,
-        40.62332
-      ],
-      "size": [
-        500.0,
-        400.0
-      ],
-      "z": 38.0,
-      "region_key": "region_002"
-    },
-    {
-      "kind": "StrategyEditor",
-      "visible": true,
-      "position": [
-        -300.0,
-        50.0
+        100.0,
+        80.0
       ],
       "size": [
         500.0,
         400.0
       ],
       "z": 10.0,
-      "region_key": "region_004"
-    },
-    {
-      "kind": "StrategyEditor",
-      "visible": true,
-      "position": [
-        -180.26703,
-        -179.368
-      ],
-      "size": [
-        500.0,
-        400.0
-      ],
-      "z": 20.0,
-      "region_key": "region_003"
-    },
-    {
-      "kind": "StrategyEditor",
-      "visible": true,
-      "position": [
-        -168.7265,
-        236.81229
-      ],
-      "size": [
-        500.0,
-        400.0
-      ],
-      "z": 16.0,
       "region_key": "region_001"
     }
   ],
