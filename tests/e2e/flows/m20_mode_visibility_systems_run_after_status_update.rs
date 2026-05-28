@@ -14,7 +14,7 @@
 //! `.after(status_update_system)` を付けると flattened 依存グラフで接続され衝突対から外れる。
 //!
 //! 3 段で検証する:
-//! - (0) 対象 5 system が全て登録されていること（登録漏れだと (1)(2) が素通りするため）。
+//! - (0) 対象 6 system が全て登録されていること（登録漏れだと (1)(2) が素通りするため）。
 //! - (1) 衝突対の不在＝順序付け済みであること（`.after` 欠落だと衝突対に現れる → RED）。
 //! - (2) 実行（topsort）順の向き＝`status_update_system` が各可視性 system より前に走ること
 //!   （`.before` 等で逆向きに付けると (1) は通ってしまうので向きを別に固定する）。
@@ -65,15 +65,16 @@ fn m20_mode_visibility_systems_run_after_status_update() {
             .unwrap_or("")
     };
 
-    const VISIBILITY_SYSTEMS: [&str; 5] = [
+    const VISIBILITY_SYSTEMS: [&str; 6] = [
         "apply_execution_mode_visibility_system",
         "apply_startup_panel_visibility_system",
         "apply_run_result_visibility_system",
         "apply_strategy_editor_mode_visibility_system",
         "apply_order_button_visibility_system",
+        "apply_venue_live_button_visibility_system",
     ];
 
-    // (0) 登録漏れの検出: 対象 5 system が全て schedule に存在すること。これが無いと
+    // (0) 登録漏れの検出: 対象 6 system が全て schedule に存在すること。これが無いと
     //     `add_mode_visibility_systems` が system を登録し忘れても (1)(2) は素通りする
     //     （衝突対にも現れず、order 検索も Some にならないため）。
     let missing: Vec<&str> = VISIBILITY_SYSTEMS

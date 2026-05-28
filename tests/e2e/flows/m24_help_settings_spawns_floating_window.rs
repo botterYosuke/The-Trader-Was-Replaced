@@ -44,7 +44,7 @@ fn settings_panel_count(app: &mut App) -> usize {
 }
 
 #[test]
-fn m21_help_settings_spawns_floating_window() {
+fn m24_help_settings_spawns_floating_window() {
     let mut app = settings_app();
     app.world_mut().write_message(PanelSpawnRequested {
         kind: PanelKind::Settings,
@@ -61,7 +61,7 @@ fn m21_help_settings_spawns_floating_window() {
 }
 
 #[test]
-fn m21_help_settings_no_duplicate_on_second_spawn() {
+fn m24_help_settings_no_duplicate_on_second_spawn() {
     let mut app = settings_app();
     for _ in 0..2 {
         app.world_mut().write_message(PanelSpawnRequested {

@@ -148,6 +148,38 @@ fn d10_venue_live_buttons_rehide_on_disconnect() {
 }
 
 #[test]
+fn d10_venue_live_buttons_hidden_on_reconnecting() {
+    let (mut h, _replay, manual, auto_btn) = setup_harness();
+    h.tick();
+
+    // Connected にして表示させる
+    h.send_status(BackendStatusUpdate::VenueChanged {
+        state: VenueState::Connected,
+        venue_id: Some("tachibana".to_string()),
+        instruments_loaded: 0,
+    });
+    assert_eq!(h.app.world().get::<Node>(manual).unwrap().display, Display::Flex);
+
+    // Reconnecting に遷移 → 非表示に戻る（is_venue_live は false）
+    h.send_status(BackendStatusUpdate::VenueChanged {
+        state: VenueState::Reconnecting,
+        venue_id: Some("tachibana".to_string()),
+        instruments_loaded: 0,
+    });
+
+    assert_eq!(
+        h.app.world().get::<Node>(manual).unwrap().display,
+        Display::None,
+        "Reconnecting: Manual ボタンは非表示になるはず"
+    );
+    assert_eq!(
+        h.app.world().get::<Node>(auto_btn).unwrap().display,
+        Display::None,
+        "Reconnecting: Auto ボタンは非表示になるはず"
+    );
+}
+
+#[test]
 fn d10_replay_button_unaffected_by_venue_state() {
     let (mut h, replay, _manual, _auto_btn) = setup_harness();
     h.tick();

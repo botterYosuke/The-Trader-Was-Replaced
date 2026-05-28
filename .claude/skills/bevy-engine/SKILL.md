@@ -774,6 +774,11 @@ egui の中で `state.buffer` のような大きい String を編集するとき
   新規 spawn されたウィンドウも捕捉するため」が手本（`src/ui/strategy_editor.rs` L156）。
   併せて `mod.rs` で `.after(panel_spawn_dispatcher_system)` を付けて spawn 直後の 1 フレーム flash を防ぐ
   （issue #41 code review で apply_run_result_visibility_system が両方引っかかった実例）。
+  ⚠️ **`is_changed()` が安全な場面**: 対象 entity が **Startup で 1 回だけ spawn され mid-session 再 spawn が
+  起きない** 場合（footer の ExecutionModeToggleSegment ボタン・transport ボタン等）は `is_changed()` で OK。
+  `VenueStatusRes` を監視する `apply_venue_live_button_visibility_system` がその実例（issue #55）。
+  判断基準: 「この entity は layout restore / panel_spawn_dispatcher で再 spawn される可能性があるか？」
+  → Yes なら毎フレーム diff-write、No なら `is_changed()` ガード可。
 
 ## bevscode — Bevy ネイティブのコードエディタ実装を引く
 
