@@ -320,7 +320,7 @@ impl Plugin for UiPlugin {
             (
                 update_price_display,
                 update_status_indicator,
-                update_footer_system,
+                update_footer_system.after(crate::trading::backend_update_system),
                 transport_button_system,
                 footer_pause_resume_system.before(handle_strategy_run_system),
                 speed_button_system,
