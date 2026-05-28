@@ -15,9 +15,12 @@
 
 use crate::ui::floating_window::{FloatingWindowSpec, TITLE_BAR_HEIGHT, spawn_floating_window};
 use bevscode::prelude::*;
+use bevscode::types::GutterTextView;
 use bevy::input_focus::InputFocus;
 use bevy::prelude::*;
+use bevy::ui::UiGlobalTransform;
 use bevy::window::PrimaryWindow;
+use bevy_instanced_text::DisplayLayout;
 
 /// Spike floating window root sprite に貼る marker。z=200 ピンの識別と、cleanup の追跡に使う。
 #[derive(Component)]
@@ -256,5 +259,155 @@ pub fn cleanup_spike_editor_on_root_despawn(
                 }
             }
         }
+    }
+}
+
+/// drag / pan で editor が動いたとき、bevy_instanced_text の glyph batch を再構築させるためのフックシステム。
+///
+/// 必要な理由（bevy_instanced_text 51220b7 + bevy_ui 0.18.1 で検証）:
+/// 1. `ui_layout_system` は `ComputedNode` の change detection を `size` / `unrounded_size`
+///    / `inverse_scale_factor` の変化でしか立てない（位置は `UiGlobalTransform` 側）。
+///    → `bevy_ui-0.18.1/src/layout/mod.rs:244-251`
+/// 2. `bevy_instanced_text::produce_layouts` は `Changed<ComputedNode>` 等で発火するが
+///    `Changed<UiGlobalTransform>` をフィルタに含めない。
+///    → `bevy_instanced_text/src/view/text_access.rs:95-123`
+/// 3. `update_text_views` は `DisplayLayout` / underlays / overlays いずれも未変化なら
+///    早期 return し、`BatchTransform.affine`（screen 位置を保持）を再合成しない。
+///    → `bevy_instanced_text/src/view/plugin.rs:280-285`
+///
+/// その結果、editor を「動かすだけ（リサイズ・内容変更なし）」では glyph batch のキャッシュが
+/// 効いてしまい、テキスト本体・ガター行番号が前フレームの screen 位置で描画され続ける。
+/// 本システムは `Changed<UiGlobalTransform>` を検知し、editor 本体 entity と対応するガター
+/// `TextView` entity の `DisplayLayout` に `set_changed()` を呼ぶことで、`update_text_views` の
+/// 早期 return を回避して `BatchTransform.affine` を fresh `UiGlobalTransform` から再合成させる。
+///
+/// `SpikeEditorNode` marker で gate しているので、将来 spike 以外の `bevy_instanced_text` 利用者を
+/// 増やしても巻き込まない。スケジュールは mod.rs で
+/// `PostUpdate.after(LayoutProduceSet).before(TextViewRenderSet)` に登録する
+/// （`produce_layouts` が `DisplayLayout` を書き戻した後、`update_text_views` が読む前）。
+///
+/// ⚠️ **Phase B 移行時の注意**: cosmic_edit から bevscode への置き換えで Strategy Editor が
+/// この marker を持たないと、同じ glyph-batch キャッシュバグが silently 再発する。
+/// Phase B では (a) `SpikeEditorNode` gate を本実装用 marker に拡張する、または
+/// (b) gate を外して全 `TextBuffer` 持ち entity に適用する（bevy_instanced_text 本家への
+/// 上流修正提案までの代替）、のどちらかを必ず行うこと。
+pub fn touch_spike_text_layouts_on_position_change(
+    editors: Query<Entity, (With<SpikeEditorNode>, Changed<UiGlobalTransform>)>,
+    gutters: Query<(Entity, &GutterTextView)>,
+    mut layouts: Query<&mut DisplayLayout>,
+) {
+    // 各 editor を独立に処理する。spike は handle_spike_editor_spawn_requests で 1 個に dedup 済だが、
+    // dedup が将来回帰しても editor / gutter ペアごとに正しく再構築させたいので、両ループを共有しない。
+    for editor_entity in editors.iter() {
+        if let Ok(mut dl) = layouts.get_mut(editor_entity) {
+            dl.set_changed();
+        }
+        for (gutter_entity, marker) in gutters.iter() {
+            if marker.editor == editor_entity {
+                if let Ok(mut dl) = layouts.get_mut(gutter_entity) {
+                    dl.set_changed();
+                }
+            }
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use bevy::MinimalPlugins;
+    use bevy::math::{Affine2, Vec2};
+    use std::collections::HashSet;
+
+    /// `Changed<DisplayLayout>` を見て、その frame で「変わった」と判定された entity を記録する。
+    /// テストはこの Resource を読んで「touch system が editor / gutter の DisplayLayout を
+    /// 確かに Changed にしたか」を assert する。
+    #[derive(Resource, Default)]
+    struct ObservedChanges(HashSet<Entity>);
+
+    fn record_changes(
+        q: Query<Entity, Changed<DisplayLayout>>,
+        mut log: ResMut<ObservedChanges>,
+    ) {
+        log.0.clear();
+        for e in q.iter() {
+            log.0.insert(e);
+        }
+    }
+
+    /// drag / pan 相当の挙動 = editor の `UiGlobalTransform` だけが変わるケースで、
+    /// `touch_spike_text_layouts_on_position_change` が
+    /// - editor 本体の `DisplayLayout` を Changed に
+    /// - `GutterTextView { editor }` で繋がるガター entity の `DisplayLayout` も Changed に
+    /// することを担保する。
+    ///
+    /// このアサートが落ちていると、bevy_instanced_text の glyph batch キャッシュにより
+    /// 「枠は動くがテキスト本体・行番号が取り残される」現象が再発する（issue #50 Step 0 spike #2 / #3）。
+    #[test]
+    fn touch_system_marks_editor_and_gutter_display_layouts_when_position_changes() {
+        let mut app = App::new();
+        app.add_plugins(MinimalPlugins)
+            .init_resource::<ObservedChanges>()
+            .add_systems(
+                Update,
+                (
+                    touch_spike_text_layouts_on_position_change,
+                    record_changes.after(touch_spike_text_layouts_on_position_change),
+                ),
+            );
+
+        let root = app.world_mut().spawn(SpikeEditorRoot).id();
+        let editor = app
+            .world_mut()
+            .spawn((
+                SpikeEditorNode { root },
+                DisplayLayout::default(),
+                UiGlobalTransform::default(),
+            ))
+            .id();
+        let gutter = app
+            .world_mut()
+            .spawn((
+                GutterTextView { editor },
+                DisplayLayout::default(),
+                UiGlobalTransform::default(),
+            ))
+            .id();
+
+        // 1) 初回 update: 全コンポーネントが Added 扱いで Changed になるため、計測対象外。
+        //    drain だけして次フレームの assert を準備する。
+        app.update();
+        app.world_mut().resource_mut::<ObservedChanges>().0.clear();
+
+        // 2) 何も触らずに update: spurious な Changed が出ない（毎フレーム batch 再構築を誘発しない）。
+        app.update();
+        assert!(
+            app.world().resource::<ObservedChanges>().0.is_empty(),
+            "no UiGlobalTransform change should leave DisplayLayout untouched, got {:?}",
+            app.world().resource::<ObservedChanges>().0,
+        );
+
+        // 3) editor の UiGlobalTransform だけ変更（= drag / pan で projected node が動いた状況）。
+        {
+            let mut tf = app
+                .world_mut()
+                .get_mut::<UiGlobalTransform>(editor)
+                .expect("editor entity should have UiGlobalTransform");
+            *tf = UiGlobalTransform::from(Affine2::from_translation(Vec2::new(50.0, 0.0)));
+        }
+
+        app.update();
+
+        let observed = app.world().resource::<ObservedChanges>().0.clone();
+        assert!(
+            observed.contains(&editor),
+            "editor DisplayLayout must be marked Changed when its UiGlobalTransform moves; observed = {:?}",
+            observed,
+        );
+        assert!(
+            observed.contains(&gutter),
+            "gutter DisplayLayout must be marked Changed (via GutterTextView back-link) when the editor moves; observed = {:?}",
+            observed,
+        );
     }
 }

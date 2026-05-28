@@ -646,16 +646,23 @@ impl Plugin for UiPlugin {
             ),
         )
         // - project_spike_editor_node_system: world rect → screen rect 投影で Node を毎フレーム更新
-        //   `PostUpdate` の `UiSystems::Layout` の前に走らせる。これで:
-        //   ① 私たちが書いた Node を UI Layout が同フレームに読んで ComputedNode を更新
-        //   ② ガター子 Node も Layout 内で再配置（同フレーム）
-        //   ③ Layout 後の `bevy_instanced_text::LayoutProduceSet` も fresh ComputedNode を読む
-        //   テキスト本体 / ガター / 親 sprite すべて同フレーム同期する。
-        //   spike 検証で複数 schedule を試して確定した順序（Update / configure_sets では遅延が残った）。
+        //   （`UiSystems::Layout` の前 = 同フレーム ComputedNode に反映）。
+        // - touch_spike_text_layouts_on_position_change: drag/pan で editor が動くだけ
+        //   （size 不変）のケースで bevy_instanced_text の `produce_layouts` / `update_text_views`
+        //   がキャッシュで早期 return するのを回避するため、`Changed<UiGlobalTransform>` を検知
+        //   して editor / gutter の `DisplayLayout` を `set_changed()` する。詳細は spike module
+        //   の docstring（issue #50 Step 0 / ADR 0006 / bevy_instanced_text 51220b7 の挙動）。
+        //   順序は `LayoutProduceSet.after`（produce_layouts の上書きを避ける）/
+        //   `TextViewRenderSet.before`（update_text_views が拾えるタイミング）。
         .add_systems(
             PostUpdate,
-            crate::ui::strategy_editor_spike::project_spike_editor_node_system
-                .before(bevy::ui::UiSystems::Layout),
+            (
+                crate::ui::strategy_editor_spike::project_spike_editor_node_system
+                    .before(bevy::ui::UiSystems::Layout),
+                crate::ui::strategy_editor_spike::touch_spike_text_layouts_on_position_change
+                    .after(bevy_instanced_text::LayoutProduceSet)
+                    .before(bevy_instanced_text::TextViewRenderSet),
+            ),
         );
     }
 }
