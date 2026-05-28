@@ -197,10 +197,10 @@ class FdFrameProcessor:
             bv = fields.get(f"p_{row}_GBV{i}", "")
             ap = fields.get(f"p_{row}_GAP{i}", "")
             av = fields.get(f"p_{row}_GAV{i}", "")
-            if bp:
-                bids.append({"price": bp, "qty": bv})
-            if ap:
-                asks.append({"price": ap, "qty": av})
+            if bp and bv:
+                bids.append({"price": bp, "size": bv})
+            if ap and av:
+                asks.append({"price": ap, "size": av})
 
         if not bids and not asks:
             return None
