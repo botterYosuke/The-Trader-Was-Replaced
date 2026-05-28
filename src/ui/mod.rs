@@ -140,8 +140,9 @@ use crate::ui::scenario_parser::parse_scenario_system;
 use crate::ui::scenario_startup_panel::{
     ScenarioStartupParamCommit, commit_startup_params_to_scenario_system,
     enforce_scenario_startup_panel_readonly_system,
-    scenario_startup_param_input_system, spawn_scenario_startup_input_fields,
-    spawn_scenario_startup_window_system, sync_startup_param_editors_text_system,
+    scenario_startup_field_render_system, scenario_startup_param_input_system,
+    spawn_scenario_startup_input_fields, spawn_scenario_startup_window_system,
+    sync_startup_param_editors_text_system,
     sync_startup_params_from_scenario_system, update_scenario_startup_param_ui_system,
     write_startup_params_to_cache_sidecar_system,
 };
@@ -239,6 +240,7 @@ impl Plugin for UiPlugin {
         .init_resource::<ActiveDrag>()
         .init_resource::<PendingStrategySnapshotRestore>()
         .init_resource::<FindReplaceState>()
+        .init_resource::<crate::ui::components::ScenarioStartupFocus>()
         .add_message::<FindActionRequested>()
         .add_message::<OrderButtonPressed>()
         // ⚠️ 必須: chart_data_tick_system が EventWriter<RequestAutoscale> を取るので
@@ -439,6 +441,7 @@ impl Plugin for UiPlugin {
                     commit_startup_params_to_scenario_system,
                     write_startup_params_to_cache_sidecar_system,
                     sync_startup_param_editors_text_system,
+                    scenario_startup_field_render_system,
                     update_scenario_startup_param_ui_system,
                     enforce_scenario_startup_panel_readonly_system,
                 )
