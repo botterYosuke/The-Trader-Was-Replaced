@@ -161,7 +161,11 @@ impl Harness {
                 status_update_system,
                 backend_event_drain_system,
                 replay_startup_timeout_system,
-                update_footer_system.after(backend_update_system),
+                update_footer_system
+                    .after(backend_update_system)
+                    .run_if(|mode: Res<ExecutionModeRes>| {
+                        matches!(mode.mode, ExecutionMode::Replay)
+                    }),
             ),
         );
 

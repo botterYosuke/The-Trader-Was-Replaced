@@ -322,7 +322,9 @@ impl Plugin for UiPlugin {
                 update_status_indicator,
                 update_footer_system.after(crate::trading::backend_update_system),
                 transport_button_system,
-                footer_pause_resume_system.before(handle_strategy_run_system),
+                footer_pause_resume_system
+                    .before(handle_strategy_run_system)
+                    .after(crate::trading::backend_update_system),
                 speed_button_system,
                 update_speed_buttons_system,
                 execution_mode_toggle_system,
