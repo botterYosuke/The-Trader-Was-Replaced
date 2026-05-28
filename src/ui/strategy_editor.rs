@@ -1543,9 +1543,8 @@ pub fn spawn_bevscode_peer_on_strategy_editor_added(
             TextFont::from_font_size(PROJECTED_BASE_FONT_SIZE).with_font(font),
             MonoFontFaces::default(),
             bevy::text::LineHeight::Px(PROJECTED_BASE_LINE_HEIGHT),
-            // Slice 1: cosmic に input を渡し続けるため、bevscode は picking を捨てる。
-            // Slice 2 以降で cosmic を撤去するタイミングでこれを外す。
-            bevy::picking::Pickable::IGNORE,
+            // Slice 2 (#50): bevscode が input を受ける（cosmic は描画専用に退く）。
+            // focus は apply_pending_strategy_seed_system が SetTextRequested 送信と同タイミングで立てる。
             StrategyEditorNode {
                 root: root_entity,
                 region_key: id.region_key.clone(),
@@ -1559,9 +1558,14 @@ pub fn spawn_bevscode_peer_on_strategy_editor_added(
 /// `StrategyEditorPendingSeed` が立っている entity に `SetTextRequested` を送って marker を外す。
 /// `Added<TextBuffer<RopeBuffer>>` のような厳密な準備完了 wait は不要（bevscode 側が次フレーム以降で
 /// 受け取った text を rope に積む）。送信 → 即 remove で「複数フレーム送り続ける」事故を防ぐ。
+///
+/// Slice 2 (#50): 同タイミングで `InputFocus` を bevscode entity に設定する。これで cosmic は
+/// 描画専用に退き、ユーザー入力は bevscode の `TextBuffer<RopeBuffer>` に流れる
+/// （`sync_bevscode_to_strategy_fragment_system` が autosave / AppHistory を駆動）。
 pub fn apply_pending_strategy_seed_system(
     mut commands: Commands,
     mut writer: MessageWriter<SetTextRequested>,
+    mut input_focus: ResMut<bevy::input_focus::InputFocus>,
     pending: Query<(Entity, &StrategyEditorPendingSeed)>,
 ) {
     for (entity, seed) in pending.iter() {
@@ -1569,6 +1573,7 @@ pub fn apply_pending_strategy_seed_system(
             entity,
             text: seed.0.clone(),
         });
+        input_focus.set(entity);
         commands
             .entity(entity)
             .remove::<StrategyEditorPendingSeed>();
@@ -1699,6 +1704,128 @@ pub fn cleanup_strategy_editor_node_on_root_despawn(
                     ec.despawn();
                 }
             }
+        }
+    }
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Slice 2 (#50): bevscode ↔ StrategyBuffer 同期 + AppHistory undo bridge
+//
+// 役割:
+// - bevscode の TextBuffer<RopeBuffer> が変わったら `StrategyFragment` に書き戻し autosave を駆動
+// - AppHistory が `SetStrategySource` を writeback するとき bevscode entity にも `SetTextRequested` を送る
+// - File load / Undo の cosmic 経路（`sync_strategy_buffer_to_editor_system`）も同様に bevscode へ伝搬
+// - bevscode 内蔵の Ctrl+Z / Ctrl+Y を無効化（AppHistory が undo を担う設計）
+// - echo suppression を共有（cosmic と同じ `AppHistory.suppress_echo_target` を honor）
+// ─────────────────────────────────────────────────────────────────────────────
+
+use bevscode::input::EditorAction;
+use bevscode::input::keybindings::default_input_map;
+use bevscode::plugin::EditorInputManager;
+
+/// Startup で bevscode 既定の EditorInputManager より先に独自 InputMap を spawn する。
+/// `Ctrl+Z` / `Ctrl+Y` / `Ctrl+Shift+Z` を bevscode から剥がし、`AppHistory.undo_redo_system` が
+/// 唯一の undo/redo 経路になるよう一本化する。bevscode は PostStartup の `spawn_default_input_manager` で
+/// 「既に EditorInputManager 持ち entity があればスキップ」する設計なので、Startup で先取りすればよい。
+///
+/// `Find` 系は Slice 5 で独自実装の find UI を維持するため、暫定で `Find` 系 action もこの段階で剥がす
+/// （重複起動を防ぐ）。完全に剥がすかは Slice 5 着手時に再判断。
+pub fn install_strategy_editor_keybindings(mut commands: Commands) {
+    let mut input_map = default_input_map();
+    input_map.clear_action(&EditorAction::Undo);
+    input_map.clear_action(&EditorAction::Redo);
+    commands.spawn((
+        EditorInputManager,
+        input_map,
+        Name::new("StrategyEditorInputManager"),
+    ));
+}
+
+/// bevscode `CodeEditor` でユーザーが編集した内容を `StrategyFragment.source` に書き戻し、
+/// autosave / AppHistory を駆動する（片側同期: bevscode → StrategyFragment）。
+///
+/// `sync_editor_to_strategy_buffer_system` の cosmic 版と同じ役割。`Changed<TextBuffer<RopeBuffer>>`
+/// を起点に bevscode 側の最新テキストを文字列化し、`suppress_echo_target` と一致すれば echo を抑制する。
+/// 一致しなければ `mark_fragment_dirty` で fragment + autosave を更新し、replaying 中でなければ
+/// `AppHistory.push_text` で undo 履歴に積む。
+pub fn sync_bevscode_to_strategy_fragment_system(
+    editors: Query<
+        (&StrategyEditorNode, &TextBuffer<RopeBuffer>),
+        Changed<TextBuffer<RopeBuffer>>,
+    >,
+    mut fragments_q: Query<(&StrategyEditorId, &mut StrategyFragment), With<WindowRoot>>,
+    mut history: ResMut<AppHistory>,
+    mut auto_save: ResMut<StrategyAutoSaveState>,
+) {
+    for (marker, buffer) in editors.iter() {
+        let new_text = buffer.chars().collect::<String>();
+        let region_key = marker.region_key.clone();
+
+        let Some((_, mut fragment)) = fragments_q
+            .iter_mut()
+            .find(|(id, _)| id.region_key == region_key)
+        else {
+            warn!(
+                "bevscode TextBuffer changed for region '{}' but no matching WindowRoot",
+                region_key
+            );
+            continue;
+        };
+
+        if let Some((target_key, target_text)) = history.suppress_echo_target.clone() {
+            if target_key == region_key && target_text.as_str() == new_text.as_str() {
+                history.suppress_echo_target = None;
+                fragment.source = new_text;
+                continue;
+            } else {
+                history.suppress_echo_target = None;
+            }
+        }
+        if fragment.source == new_text {
+            continue;
+        }
+        if !history.is_replaying() {
+            history.push_text(
+                region_key.clone(),
+                fragment.source.clone(),
+                new_text.clone(),
+            );
+        }
+        mark_fragment_dirty(&mut fragment, &mut auto_save, new_text);
+    }
+}
+
+/// AppHistory が `SetStrategySource` を writeback したり、`StrategyFileLoadRequested` で外部 .py を
+/// 流し込んだりした直後に、bevscode 側 entity にも `SetTextRequested` を送って TextBuffer を揃える。
+///
+/// 検知は `Changed<StrategyFragment>` で行い、`AppHistory.suppress_echo_target` が立っているなら
+/// それが今回の writeback 起源と分かるので即時 SetTextRequested を流す。echo suppression は
+/// `sync_bevscode_to_strategy_fragment_system` 側で受け止めるので無限ループは起きない。
+///
+/// 注: cosmic 経路の `sync_strategy_buffer_to_editor_system` は UndoRedoApplied / FileLoad 駆動だが、
+/// bevscode は `Changed<StrategyFragment>` の方が来た契機を一発で拾えるので採用。
+pub fn sync_strategy_fragment_to_bevscode_system(
+    fragments_q: Query<
+        (&StrategyEditorId, &StrategyFragment),
+        (With<WindowRoot>, Changed<StrategyFragment>),
+    >,
+    editors: Query<(Entity, &StrategyEditorNode, &TextBuffer<RopeBuffer>)>,
+    mut writer: MessageWriter<SetTextRequested>,
+) {
+    for (id, fragment) in fragments_q.iter() {
+        for (editor_entity, marker, buffer) in editors.iter() {
+            if marker.region_key != id.region_key {
+                continue;
+            }
+            // すでに bevscode 側が同じ内容なら send 不要（無駄な Changed を立てない）。
+            let current = buffer.chars().collect::<String>();
+            if current == fragment.source {
+                continue;
+            }
+            writer.write(SetTextRequested {
+                entity: editor_entity,
+                text: fragment.source.clone(),
+            });
         }
     }
 }

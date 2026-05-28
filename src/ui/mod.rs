@@ -678,6 +678,22 @@ impl Plugin for UiPlugin {
                 crate::ui::strategy_editor::cleanup_strategy_editor_node_on_root_despawn,
             ),
         )
+        // ── Slice 2 (#50): bevscode ↔ StrategyBuffer 同期 + AppHistory undo bridge ──
+        // - install_strategy_editor_keybindings: bevscode 既定の Ctrl+Z/Y を剥がした InputMap を
+        //   Startup で先取り spawn（PostStartup の `spawn_default_input_manager` は既存があればスキップ）
+        // - sync_bevscode_to_strategy_fragment_system: bevscode 入力 → StrategyFragment + autosave + AppHistory
+        // - sync_strategy_fragment_to_bevscode_system: AppHistory writeback / file load → bevscode SetTextRequested
+        .add_systems(
+            Startup,
+            crate::ui::strategy_editor::install_strategy_editor_keybindings,
+        )
+        .add_systems(
+            Update,
+            (
+                crate::ui::strategy_editor::sync_bevscode_to_strategy_fragment_system,
+                crate::ui::strategy_editor::sync_strategy_fragment_to_bevscode_system,
+            ),
+        )
         // - project_strategy_editor_node_system: world rect → screen rect 投影で Node を毎フレーム更新
         // - touch_strategy_text_layouts_on_position_change: drag/pan で動いた editor の DisplayLayout を
         //   set_changed() して glyph batch キャッシュバグを回避（spike と同じ理由・同じ schedule）
