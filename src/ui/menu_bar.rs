@@ -1558,4 +1558,47 @@ mod tests {
             Display::Flex
         );
     }
+
+    #[test]
+    fn test_help_settings_spawns_modal() {
+        let (mut app, _btn, _rx) =
+            build_app_for_menu_press(VenueState::Disconnected, MenuItem::HelpSettings);
+        let count = app
+            .world_mut()
+            .query_filtered::<Entity, With<SettingsModalRoot>>()
+            .iter(app.world())
+            .count();
+        assert_eq!(count, 1, "HelpSettings press must spawn exactly one SettingsModalRoot");
+    }
+
+    #[test]
+    fn test_help_settings_dedup_prevents_second_spawn() {
+        let (mut app, _btn, _rx) =
+            build_app_for_menu_press(VenueState::Disconnected, MenuItem::HelpSettings);
+        let count = app
+            .world_mut()
+            .query_filtered::<Entity, With<SettingsModalRoot>>()
+            .iter(app.world())
+            .count();
+        assert_eq!(count, 1, "after first press, exactly one SettingsModalRoot expected");
+
+        // 2 回目: Changed<Interaction> を確実に発火させるため新エンティティで模擬
+        app.world_mut().spawn((
+            Button,
+            Interaction::Pressed,
+            BackgroundColor(BTN_NORMAL),
+            MenuItem::HelpSettings,
+        ));
+        app.update();
+
+        let count = app
+            .world_mut()
+            .query_filtered::<Entity, With<SettingsModalRoot>>()
+            .iter(app.world())
+            .count();
+        assert_eq!(
+            count, 1,
+            "dedup guard must prevent second SettingsModalRoot from spawning"
+        );
+    }
 }
