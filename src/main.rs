@@ -582,6 +582,96 @@ fn setup_backend_connection(
                             Err(e) => error!("SetReplaySpeed {}x failed: {}", mult, e),
                         }
                     }
+                    TransportCommand::LoadAndStep { strategy_file: _, config, startup_id } => {
+                        // #61: IDLE → ForceStop → LoadReplayData → StepReplay (StartEngine 無し)
+                        let mut run_client = client.clone();
+                        let run_token = token.clone();
+                        let run_catalog = catalog_path.clone();
+                        let run_status_tx = status_tx.clone();
+                        tokio::spawn(async move {
+                            let _ = run_status_tx.send(BackendStatusUpdate::ReplayStartup {
+                                startup_id, stage: BackendStartupStage::ResettingReplay,
+                            });
+                            match run_client.force_stop_replay(tonic::Request::new(ForceStopReplayRequest {
+                                request_id: String::new(),
+                                token: run_token.clone(),
+                            })).await {
+                                Ok(r) => {
+                                    let inner = r.into_inner();
+                                    if !inner.success {
+                                        let msg = format!("LoadAndStep ForceStop: {} {}", inner.error_code, inner.error_message);
+                                        error!("{}", msg);
+                                        let _ = run_status_tx.send(BackendStatusUpdate::RunFailed {
+                                            startup_id: Some(startup_id), error: msg,
+                                        });
+                                        return;
+                                    }
+                                }
+                                Err(e) => {
+                                    let msg = format!("LoadAndStep ForceStop gRPC error: {}", e);
+                                    error!("{}", msg);
+                                    let _ = run_status_tx.send(BackendStatusUpdate::RunFailed {
+                                        startup_id: Some(startup_id), error: msg,
+                                    });
+                                    return;
+                                }
+                            }
+
+                            let granularity_i32 = match parse_replay_granularity(&config.granularity) {
+                                Ok(v) => Some(v),
+                                Err(msg) => {
+                                    error!("LoadAndStep: {}, aborting", msg);
+                                    let _ = run_status_tx.send(BackendStatusUpdate::RunFailed {
+                                        startup_id: Some(startup_id), error: msg,
+                                    });
+                                    return;
+                                }
+                            };
+
+                            let _ = run_status_tx.send(BackendStatusUpdate::ReplayStartup {
+                                startup_id, stage: BackendStartupStage::LoadingData,
+                            });
+                            match run_client.load_replay_data(tonic::Request::new(LoadReplayDataRequest {
+                                request_id: String::new(),
+                                instrument_ids: config.instruments.clone(),
+                                start_date: config.start.clone(),
+                                end_date: config.end.clone(),
+                                granularity: granularity_i32,
+                                token: run_token.clone(),
+                                catalog_path: run_catalog.clone(),
+                            })).await {
+                                Ok(r) => {
+                                    let inner = r.into_inner();
+                                    if !inner.success {
+                                        let msg = format!("LoadAndStep LoadReplayData: {} {}", inner.error_code, inner.error_message);
+                                        error!("{}", msg);
+                                        let _ = run_status_tx.send(BackendStatusUpdate::RunFailed {
+                                            startup_id: Some(startup_id), error: msg,
+                                        });
+                                        return;
+                                    }
+                                    info!("LoadAndStep: LoadReplayData ok");
+                                }
+                                Err(e) => {
+                                    let msg = format!("LoadAndStep LoadReplayData gRPC error: {}", e);
+                                    error!("{}", msg);
+                                    let _ = run_status_tx.send(BackendStatusUpdate::RunFailed {
+                                        startup_id: Some(startup_id), error: msg,
+                                    });
+                                    return;
+                                }
+                            }
+
+                            let req = tonic::Request::new(StepReplayRequest {
+                                request_id: String::new(),
+                                token: run_token.clone(),
+                            });
+                            match run_client.step_replay(req).await {
+                                Ok(r) => info!("LoadAndStep: step ok, state={:?}", r.into_inner().current_state),
+                                Err(e) => error!("LoadAndStep: step_replay failed: {}", e),
+                            }
+                        });
+                    }
                     TransportCommand::RunStrategy { strategy_file, config, startup_id } => {
                         // Spawn on a separate task so the main loop can process
                         // Pause/Resume/StepForward while StartEngine is running.

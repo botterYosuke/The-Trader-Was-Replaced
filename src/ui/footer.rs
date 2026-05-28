@@ -6,7 +6,8 @@ use crate::trading::{
 use crate::ui::components::{
     ExecutionModeToggleSegment, FooterRoot, GrpcStatusLabel, PauseResumeButton, PauseResumeLabel,
     ReplayStateBadge, ReplayTimeLabel, ScenarioMetadata, SpeedButton, StrategyBuffer, StrategyEditorId,
-    StrategyFragment, StrategyRunRequested, TransportButton, VenueStateBadge, WindowRoot,
+    StrategyFragment, StrategyRunRequested, StepFromIdleRequested, TransportButton, VenueStateBadge,
+    WindowRoot,
 };
 use crate::ui::strategy_editor::{StrategyAutoSaveState, flush_strategy_cache, merge_fragments};
 use bevy::prelude::*;
@@ -482,6 +483,11 @@ pub fn transport_button_system(
     data: Res<TradingSession>,
     sender: Res<TransportCommandSender>,
     exec_mode: Res<ExecutionModeRes>,
+    // #61: IDLE からの StepForward に必要な追加パラメータ
+    fragments_q: Query<(&StrategyEditorId, &StrategyFragment), With<WindowRoot>>,
+    mut buffer: ResMut<StrategyBuffer>,
+    mut auto_save: ResMut<StrategyAutoSaveState>,
+    mut step_events: MessageWriter<StepFromIdleRequested>,
 ) {
     if !matches!(exec_mode.mode, ExecutionMode::Replay) {
         return;
@@ -499,6 +505,25 @@ pub fn transport_button_system(
                     TransportButton::StepForward => {
                         if replay == "PAUSED" {
                             let _ = sender.tx.send(TransportCommand::StepForward);
+                        } else if replay == "IDLE" {
+                            // #61: IDLE から ▶| → 策略フラッシュして StepFromIdleRequested を発行。
+                            // handle_strategy_run_system が LoadAndStep コマンドに変換する。
+                            let mut items: Vec<(String, String)> = fragments_q
+                                .iter()
+                                .map(|(id, f)| (id.region_key.clone(), f.source.clone()))
+                                .collect();
+                            items.sort_by(|a, b| a.0.cmp(&b.0));
+                            items.retain(|(_, src)| !src.trim().is_empty());
+                            let merged = merge_fragments(&items);
+                            match flush_strategy_cache(&merged, &mut buffer, &mut auto_save) {
+                                Ok(true) => {
+                                    if let Some(path) = buffer.cache_path.clone() {
+                                        step_events.write(StepFromIdleRequested { cache_path: path });
+                                    }
+                                }
+                                Ok(false) => warn!("transport: step_from_idle blocked: no cache_path set"),
+                                Err(e) => error!("transport: step_from_idle flush failed: {}", e),
+                            }
                         } else {
                             info!("transport: step_forward ignored (state={})", replay);
                         }
@@ -630,6 +655,7 @@ pub fn footer_pause_resume_system(
                                 .map(|(id, f)| (id.region_key.clone(), f.source.clone()))
                                 .collect();
                             items.sort_by(|a, b| a.0.cmp(&b.0));
+                            items.retain(|(_, src)| !src.trim().is_empty());
                             let merged = merge_fragments(&items);
                             match flush_strategy_cache(&merged, &mut buffer, &mut auto_save) {
                                 Ok(true) => {}
@@ -731,6 +757,7 @@ pub fn footer_pause_resume_system(
                             .map(|(id, f)| (id.region_key.clone(), f.source.clone()))
                             .collect();
                         items.sort_by(|a, b| a.0.cmp(&b.0));
+                        items.retain(|(_, src)| !src.trim().is_empty());
                         let merged = merge_fragments(&items);
                         match flush_strategy_cache(&merged, &mut buffer, &mut auto_save) {
                             Ok(true) => {}
@@ -976,7 +1003,8 @@ mod tests {
             .init_resource::<VenueStatusRes>()
             .init_resource::<ScenarioMetadata>()
             .init_resource::<StrategyAutoSaveState>()
-            .add_message::<StrategyRunRequested>();
+            .add_message::<StrategyRunRequested>()
+            .add_message::<StepFromIdleRequested>();
         app.add_systems(
             Update,
             (

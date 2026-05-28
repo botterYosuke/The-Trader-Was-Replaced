@@ -113,6 +113,13 @@ pub struct StrategyRunRequested {
     pub cache_path: std::path::PathBuf,
 }
 
+/// IDLE 状態から ▶| を押したときに `transport_button_system` が発行するメッセージ。
+/// `handle_strategy_run_system` が `LoadAndStep` コマンドに変換する (#61)。
+#[derive(Message, Debug, Clone)]
+pub struct StepFromIdleRequested {
+    pub cache_path: std::path::PathBuf,
+}
+
 #[derive(Component)]
 pub struct SidebarRoot;
 

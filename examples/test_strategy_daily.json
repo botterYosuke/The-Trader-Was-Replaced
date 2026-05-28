@@ -63,7 +63,7 @@
       "region_key": "region_001"
     }
   ],
-  "strategy_path": "C:\\Users\\sasai\\Documents\\The-Trader-Was-Replaced\\python\\tests\\data\\test_strategy_daily.py",
+  "strategy_path": "C:\\Users\\sasai\\Documents\\_blacksheep\\The-Trader-Was-Replaced\\examples\\test_strategy_daily.py",
   "scenario": {
     "end": "2025-03-31",
     "granularity": "Daily",

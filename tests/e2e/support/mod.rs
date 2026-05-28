@@ -38,7 +38,7 @@ use backcast::trading::{
 use backcast::ui::components::{
     InstrumentRegistry, OpenMenu, PanelSpawnRequested, PauseResumeButton, ReplayTimeLabel,
     ScenarioMetadata, ScenarioStartupParams, ScenarioWritebackPaths, StrategyBuffer,
-    StrategyRunRequested, RedoMenuRequested, UndoMenuRequested,
+    StrategyRunRequested, StepFromIdleRequested, RedoMenuRequested, UndoMenuRequested,
 };
 use backcast::ui::footer::{
     execution_mode_toggle_system, footer_pause_resume_system, speed_button_system,
@@ -145,6 +145,7 @@ impl Harness {
             .insert_resource(ButtonInput::<KeyCode>::default());
 
         app.add_message::<StrategyRunRequested>()
+            .add_message::<StepFromIdleRequested>()
             .add_message::<LayoutSaveRequested>()
             .add_message::<LayoutSaveAsRequested>()
             .add_message::<LayoutLoadDialogRequested>()
@@ -177,7 +178,7 @@ impl Harness {
             Update,
             (
                 (footer_pause_resume_system, handle_strategy_run_system).chain(),
-                transport_button_system,
+                transport_button_system.before(handle_strategy_run_system),
                 speed_button_system,
                 execution_mode_toggle_system,
                 instrument_row_click_system,
