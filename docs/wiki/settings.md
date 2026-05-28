@@ -6,17 +6,17 @@
 
 ## Help→Settings floating window
 
-メニューバー **Help(&H)** → **Settings** を選択すると、Settings floating window が開きます（`src/ui/settings.rs`）。 [M21]
+メニューバー **Help(&H)** → **Settings** を選択すると、Settings floating window が開きます（`src/ui/settings.rs`）。 [M24]
 
 - `Alt+H` でも Help メニューを開閉できます。
-- Settings window は非永続（`LayoutExcluded`）のため、セーブ・ロード・再起動では復元されません。 [M21]
-- 既に開いている場合は重複して開きません。 [M21]
+- Settings window は非永続（`LayoutExcluded`）のため、セーブ・ロード・再起動では復元されません。 [M24]
+- 既に開いている場合は重複して開きません。 [M24]
 
 | 項目 | 値 |
 |---|---|
-| Theme | Dark [M21] |
-| Backend | localhost:19876 [M21] |
-| Save Layout | — [M21] |
+| Theme | Dark [M24] |
+| Backend | localhost:19876 [M24] |
+| Save Layout | — [M24] |
 
 ## ポートとバックエンド
 
