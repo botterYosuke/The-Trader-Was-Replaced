@@ -190,8 +190,13 @@ pub fn add_mode_visibility_systems(app: &mut App) {
         (
             crate::ui::footer::apply_venue_live_button_visibility_system
                 .after(crate::backend_sync::status_update_system),
-            crate::ui::footer::apply_execution_mode_visibility_system
+            // venue 切断時に LiveManual/LiveAuto → Replay 自動切り替え。
+            // apply_execution_mode_visibility_system より前に走らせ、同フレームで可視性に反映させる。
+            crate::ui::footer::auto_replay_on_venue_disconnect_system
                 .after(crate::backend_sync::status_update_system),
+            crate::ui::footer::apply_execution_mode_visibility_system
+                .after(crate::backend_sync::status_update_system)
+                .after(crate::ui::footer::auto_replay_on_venue_disconnect_system),
             crate::ui::scenario_startup_panel::apply_startup_panel_visibility_system
                 .after(crate::backend_sync::status_update_system),
             apply_run_result_visibility_system
