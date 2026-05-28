@@ -36,13 +36,13 @@ use backcast::trading::{
 
 // Production UI input systems (mirror src/main.rs wiring).
 use backcast::ui::components::{
-    InstrumentRegistry, OpenMenu, PanelSpawnRequested, PauseResumeButton, ScenarioMetadata,
-    ScenarioStartupParams, ScenarioWritebackPaths, StrategyBuffer, StrategyRunRequested,
-    RedoMenuRequested, UndoMenuRequested,
+    InstrumentRegistry, OpenMenu, PanelSpawnRequested, PauseResumeButton, ReplayTimeLabel,
+    ScenarioMetadata, ScenarioStartupParams, ScenarioWritebackPaths, StrategyBuffer,
+    StrategyRunRequested, RedoMenuRequested, UndoMenuRequested,
 };
 use backcast::ui::footer::{
     execution_mode_toggle_system, footer_pause_resume_system, speed_button_system,
-    transport_button_system,
+    transport_button_system, update_footer_system,
 };
 use backcast::ui::instrument_picker::{
     auto_fetch_available_on_replay_entry_system, auto_fetch_live_universe_on_connect_system,
@@ -161,6 +161,11 @@ impl Harness {
                 status_update_system,
                 backend_event_drain_system,
                 replay_startup_timeout_system,
+                update_footer_system
+                    .after(backend_update_system)
+                    .run_if(|mode: Res<ExecutionModeRes>| {
+                        matches!(mode.mode, ExecutionMode::Replay)
+                    }),
             ),
         );
 
@@ -191,6 +196,10 @@ impl Harness {
                 auto_fetch_available_on_replay_entry_system,
             ),
         );
+
+        // Minimal footer label so update_footer_system has a target entity.
+        app.world_mut()
+            .spawn((Text::new("time: --"), ReplayTimeLabel));
 
         Self {
             app,
@@ -248,6 +257,17 @@ impl Harness {
 
     pub fn timestamp_ms(&self) -> i64 {
         self.app.world().resource::<TradingSession>().timestamp_ms
+    }
+
+    /// Read the footer's `time:` label text (the `ReplayTimeLabel` entity).
+    pub fn footer_time_text(&mut self) -> String {
+        let world = self.app.world_mut();
+        let mut q = world.query_filtered::<&Text, With<ReplayTimeLabel>>();
+        q.iter(world)
+            .next()
+            .expect("ReplayTimeLabel entity not found")
+            .0
+            .clone()
     }
 
     pub fn venue(&self) -> VenueStatusRes {

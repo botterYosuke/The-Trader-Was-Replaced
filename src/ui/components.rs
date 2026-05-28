@@ -228,7 +228,6 @@ pub enum PanelKind {
     Orders,
     Order,
     Startup,
-    Settings,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -251,7 +250,6 @@ impl PanelKind {
             PanelKind::Orders => "Orders",
             PanelKind::Order => "Order",
             PanelKind::Startup => "Startup",
-            PanelKind::Settings => "Settings",
         }
     }
 
@@ -267,7 +265,7 @@ impl PanelKind {
     /// restore owner explicitly.
     pub fn restore_driver(self) -> PanelRestoreDriver {
         match self {
-            PanelKind::Chart | PanelKind::Order | PanelKind::Settings => PanelRestoreDriver::ScenarioInstruments,
+            PanelKind::Chart | PanelKind::Order => PanelRestoreDriver::ScenarioInstruments,
             PanelKind::StrategyEditor
             | PanelKind::BuyingPower
             | PanelKind::RunResult
@@ -3136,10 +3134,6 @@ mod tests {
             PanelKind::Chart.restore_driver(),
             PanelRestoreDriver::ScenarioInstruments
         );
-        assert_eq!(
-            PanelKind::Settings.restore_driver(),
-            PanelRestoreDriver::ScenarioInstruments
-        );
         for kind in [
             PanelKind::StrategyEditor,
             PanelKind::BuyingPower,
@@ -3155,11 +3149,6 @@ mod tests {
     #[test]
     fn order_panel_label_is_order() {
         assert_eq!(PanelKind::Order.label(), "Order");
-    }
-
-    #[test]
-    fn settings_panel_label_is_settings() {
-        assert_eq!(PanelKind::Settings.label(), "Settings");
     }
 
     #[test]

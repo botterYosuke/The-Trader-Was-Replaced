@@ -16,6 +16,7 @@ use crate::ui::layout_persistence::{
     CacheRestoreRequested, LayoutLoadDialogRequested, LayoutLoadMode, LayoutLoadRequested,
     LayoutSaveAsRequested, LayoutSaveRequested, SidecarLayout,
 };
+use crate::ui::settings::{SettingsModalRoot, spawn_settings_modal};
 use crate::ui::strategy_editor::split_py_into_fragments;
 use bevy::input::keyboard::KeyboardInput;
 use bevy::prelude::*;
@@ -502,7 +503,8 @@ pub fn menu_item_system(
     sender: Option<Res<TransportCommandSender>>,
     execution_mode: Res<ExecutionModeRes>,
     venue_status: Res<VenueStatusRes>,
-    mut spawn_panel_ev: MessageWriter<PanelSpawnRequested>,
+    mut commands: Commands,
+    existing_settings: Query<(), With<SettingsModalRoot>>,
 ) {
     for (interaction, mut bg, item) in &mut query {
         match interaction {
@@ -622,11 +624,9 @@ pub fn menu_item_system(
                     }
                     MenuItem::HelpSettings => {
                         info!("menu: Help→Settings requested");
-                        spawn_panel_ev.write(PanelSpawnRequested {
-                            kind: PanelKind::Settings,
-                            source: PanelSpawnSource::User,
-                            strategy_spec: None,
-                        });
+                        if existing_settings.is_empty() {
+                            spawn_settings_modal(&mut commands);
+                        }
                     }
                 }
             }
@@ -1442,7 +1442,6 @@ mod tests {
         app.add_message::<LayoutLoadDialogRequested>();
         app.add_message::<UndoMenuRequested>();
         app.add_message::<RedoMenuRequested>();
-        app.add_message::<PanelSpawnRequested>();
 
         let (tx, rx) = tokio::sync::mpsc::unbounded_channel::<TransportCommand>();
         app.insert_resource(TransportCommandSender { tx });
@@ -1557,6 +1556,49 @@ mod tests {
         assert_eq!(
             app.world().get::<Node>(btn_k).unwrap().display,
             Display::Flex
+        );
+    }
+
+    #[test]
+    fn test_help_settings_spawns_modal() {
+        let (mut app, _btn, _rx) =
+            build_app_for_menu_press(VenueState::Disconnected, MenuItem::HelpSettings);
+        let count = app
+            .world_mut()
+            .query_filtered::<Entity, With<SettingsModalRoot>>()
+            .iter(app.world())
+            .count();
+        assert_eq!(count, 1, "HelpSettings press must spawn exactly one SettingsModalRoot");
+    }
+
+    #[test]
+    fn test_help_settings_dedup_prevents_second_spawn() {
+        let (mut app, _btn, _rx) =
+            build_app_for_menu_press(VenueState::Disconnected, MenuItem::HelpSettings);
+        let count = app
+            .world_mut()
+            .query_filtered::<Entity, With<SettingsModalRoot>>()
+            .iter(app.world())
+            .count();
+        assert_eq!(count, 1, "after first press, exactly one SettingsModalRoot expected");
+
+        // 2 回目: Changed<Interaction> を確実に発火させるため新エンティティで模擬
+        app.world_mut().spawn((
+            Button,
+            Interaction::Pressed,
+            BackgroundColor(BTN_NORMAL),
+            MenuItem::HelpSettings,
+        ));
+        app.update();
+
+        let count = app
+            .world_mut()
+            .query_filtered::<Entity, With<SettingsModalRoot>>()
+            .iter(app.world())
+            .count();
+        assert_eq!(
+            count, 1,
+            "dedup guard must prevent second SettingsModalRoot from spawning"
         );
     }
 }

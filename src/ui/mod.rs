@@ -133,6 +133,7 @@ use crate::ui::run_result_panel::{
     run_result_panel_system, spawn_run_result_panel_system,
 };
 use crate::ui::safety_toast::{safety_toast_system, spawn_safety_toast};
+use crate::ui::settings::settings_modal_close_system;
 use crate::ui::scenario_parser::parse_scenario_system;
 use crate::ui::scenario_startup_panel::{
     ScenarioStartupParamCommit, commit_startup_params_to_scenario_system,
@@ -318,9 +319,11 @@ impl Plugin for UiPlugin {
             (
                 update_price_display,
                 update_status_indicator,
-                update_footer_system,
+                update_footer_system.after(crate::trading::backend_update_system),
                 transport_button_system,
-                footer_pause_resume_system.before(handle_strategy_run_system),
+                footer_pause_resume_system
+                    .before(handle_strategy_run_system)
+                    .after(crate::trading::backend_update_system),
                 speed_button_system,
                 update_speed_buttons_system,
                 execution_mode_toggle_system,
@@ -632,6 +635,13 @@ impl Plugin for UiPlugin {
             ),
         )
         // ── Phase 10 §2.10: Safety Rail violation toast ──
-        .add_systems(Update, safety_toast_system);
+        .add_systems(Update, safety_toast_system)
+        // ── Settings モーダル（on-demand spawn / × ボタン or Escape で despawn）──
+        .add_systems(
+            Update,
+            settings_modal_close_system
+                .before(secret_modal_input_system)
+                .before(confirm_modal_button_system),
+        );
     }
 }
