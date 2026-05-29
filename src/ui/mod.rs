@@ -122,8 +122,8 @@ use crate::ui::reconcile_modal::{
     spawn_reconcile_modal,
 };
 use crate::ui::relogin_modal::{
-    relogin_modal_button_system, relogin_modal_sync_system, relogin_modal_visibility_system,
-    spawn_relogin_modal,
+    relogin_modal_button_system, relogin_modal_reconcile_system, relogin_modal_sync_system,
+    relogin_modal_visibility_system, spawn_relogin_modal,
 };
 use crate::ui::restore::restore_fixed_registry_on_replay_entry_system;
 use crate::ui::run_result_panel::{
@@ -611,6 +611,10 @@ impl Plugin for UiPlugin {
                     .before(secret_modal_input_system)
                     .before(confirm_modal_button_system),
                 relogin_modal_sync_system,
+                // B2-4 step 1 (#46): mechanism A — mirror ModalLayer.stack to
+                // ReloginPrompt.active only (no stack-driven dismissal yet =
+                // behavior unchanged). Runs before the esc system.
+                relogin_modal_reconcile_system,
                 // B2-3 (#46): generic modal-layer Esc handler. No-op while the
                 // ModalLayer stack is empty (early-returns), so behavior is
                 // unchanged until B2-4 migrates relogin onto it. Same Escape-yield

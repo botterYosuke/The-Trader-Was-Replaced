@@ -17,6 +17,7 @@
 use bevy::prelude::*;
 
 use crate::trading::{ReloginPrompt, SecretPrompt};
+use crate::ui::component::modal_layer::{ActiveModal, DismissDecision, ModalLayer};
 use crate::ui::modify_modal::ModifyForm;
 use crate::ui::order_panel::OrderConfirm;
 
@@ -216,6 +217,43 @@ pub fn relogin_modal_sync_system(
         && t.0 != info
     {
         t.0 = info;
+    }
+}
+
+/// relogin notice の `on_before_dismiss` フック。通知モーダルは work-in-flight を
+/// 持たないので常に [`DismissDecision::Dismiss`] を返す（prod 用 free fn。
+/// modal_layer の `dismiss` テストヘルパは `#[cfg(test)]` なので prod から使えない）。
+fn relogin_dismiss() -> DismissDecision {
+    DismissDecision::Dismiss
+}
+
+/// `ModalLayer.stack` を `ReloginPrompt.active` にミラーする（mechanism A, B2-4 step 1）。
+///
+/// **この step では観測挙動は不変**: stack を読んで relogin を消す経路はまだ無く
+/// (esc system の relogin pop 配線は step 2)、relogin 自身は従来どおり
+/// `relogin_modal_button_system` + `relogin_modal_visibility_system` で開閉する。
+/// reconcile は stack に自分の entry を出し入れするだけで、旧 Esc 経路と争わない。
+pub fn relogin_modal_reconcile_system(
+    prompt: Res<ReloginPrompt>,
+    root_q: Query<Entity, With<ReloginModalRoot>>,
+    mut layer: ResMut<ModalLayer>,
+) {
+    if !prompt.is_changed() {
+        return;
+    }
+    let Ok(root) = root_q.single() else {
+        return;
+    };
+    let on_stack = layer.stack.iter().any(|m| m.root == root);
+    match (prompt.active.is_some(), on_stack) {
+        (true, false) => layer.push(ActiveModal {
+            root,
+            backdrop: root,
+            previous_focus: None,
+            on_before_dismiss: relogin_dismiss,
+        }),
+        (false, true) => layer.stack.retain(|m| m.root != root),
+        _ => {}
     }
 }
 
