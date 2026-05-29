@@ -314,9 +314,9 @@ pub struct ColorScales {
     pub blue: ColorScale,
 }
 
-impl Default for ColorScales {
-    /// `Default` builds the dark variant; light variant lands later (out of scope for #48).
-    fn default() -> Self {
+impl ColorScales {
+    /// Dark variant (Radix `*_dark` scales).
+    pub fn dark() -> Self {
         Self {
             neutral: ColorScale::neutral_dark(),
             accent: ColorScale::accent_dark(),
@@ -325,6 +325,20 @@ impl Default for ColorScales {
             yellow: ColorScale::yellow_dark(),
             blue: ColorScale::blue_dark(),
         }
+    }
+
+    /// Light variant. TODO(#48 M7): real Radix `*_light` scales — currently returns dark
+    /// so `Theme::light()` is structurally wired but visually identical to dark.
+    /// Light palette content is out of scope for #48.
+    pub fn light() -> Self {
+        Self::dark()
+    }
+}
+
+impl Default for ColorScales {
+    /// `Default` builds the dark variant; light variant lands later (out of scope for #48).
+    fn default() -> Self {
+        Self::dark()
     }
 }
 
@@ -581,9 +595,26 @@ impl Theme {
     }
 }
 
+impl Theme {
+    /// Dark theme. Sets `appearance = Dark` after `from_scales` (which defaults Dark).
+    pub fn dark() -> Self {
+        let mut t = Self::from_scales(ColorScales::dark());
+        t.appearance = Appearance::Dark;
+        t
+    }
+
+    /// Light theme. Sets `appearance = Light` after `from_scales`. Palette is the
+    /// dark stub until `ColorScales::light()` ships real scales — see TODO there.
+    pub fn light() -> Self {
+        let mut t = Self::from_scales(ColorScales::light());
+        t.appearance = Appearance::Light;
+        t
+    }
+}
+
 impl Default for Theme {
     fn default() -> Self {
-        Self::from_scales(ColorScales::default())
+        Self::dark()
     }
 }
 
