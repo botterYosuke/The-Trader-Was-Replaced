@@ -17,8 +17,10 @@
 //! `Appearance` のいずれかに `#[serde(skip)]` が混入) を検知できないため、
 //! `serde_json::Value` で全 tree 比較する gate を追加する。
 //! 既存の `colors.background` assert は意図表明用 anchor として残す。
+//! codex Medium 対応: non-default fixture (`Light` + `Compact`) で
+//! `#[serde(skip)]` 混入 silent pass を gate。
 
-use backcast::ui::theme::Theme;
+use backcast::ui::theme::{Appearance, Theme, spacing::UiDensity};
 
 #[test]
 fn q3_theme_serde_roundtrip() {
@@ -43,5 +45,44 @@ fn q3_theme_serde_roundtrip() {
         restored_value, theme_value,
         "Theme JSON round-trip should preserve every sub-struct tree \
          (scale/spacing/typography/elevation/players/status/syntax/radius/layout/appearance)"
+    );
+}
+
+/// codex Medium finding 対応: Theme::default() 固定 fixture では
+/// `#[serde(skip)]` が混入しても両側が同じ default fallback に落ち、
+/// Value 比較も silent pass する。non-default value を 2 field 載せて
+/// drift を gate する。
+///
+/// - `appearance = Light` (Default::default() は Dark): Appearance enum / Theme.appearance
+///   フィールドが skip されたら restored.appearance は Dark に戻り fail。
+/// - `spacing.density = Compact` (Default::default() は Default): SpacingTokens /
+///   UiDensity / Theme.spacing が skip されたら restored.spacing.density は
+///   Default に戻り fail。
+#[test]
+fn q3_theme_serde_roundtrip_non_default_fields() {
+    let mut theme = Theme::default();
+    theme.appearance = Appearance::Light;
+    theme.spacing.density = UiDensity::Compact;
+
+    let json = serde_json::to_string(&theme).expect("serialize non-default Theme");
+    let restored: Theme = serde_json::from_str(&json).expect("deserialize non-default Theme");
+
+    assert_eq!(
+        restored.appearance,
+        Appearance::Light,
+        "Theme.appearance must survive serde round-trip (gate against #[serde(skip)] on appearance / Appearance)"
+    );
+    assert_eq!(
+        restored.spacing.density,
+        UiDensity::Compact,
+        "Theme.spacing.density must survive serde round-trip (gate against #[serde(skip)] on spacing / SpacingTokens / UiDensity)"
+    );
+
+    // 全 tree も Value 比較で非デフォルト値を含めて gate。
+    let theme_value = serde_json::to_value(&theme).expect("Theme -> Value");
+    let restored_value = serde_json::to_value(&restored).expect("restored -> Value");
+    assert_eq!(
+        restored_value, theme_value,
+        "non-default Theme JSON round-trip should preserve every sub-struct tree"
     );
 }
