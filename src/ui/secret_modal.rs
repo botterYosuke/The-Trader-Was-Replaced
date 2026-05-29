@@ -25,6 +25,7 @@ use zeroize::Zeroizing;
 use crate::trading::{
     OrderFeedback, RedactedSecret, SecretPrompt, TransportCommand, TransportCommandSender,
 };
+use crate::ui::component::keyboard_drain::drain_keyboard;
 use crate::ui::component::modal_layer::{
     DismissDecision, ModalHandle, ModalLayer, ModalSkeleton, reconcile_modal_stack, spawn_modal,
 };
@@ -330,29 +331,14 @@ pub fn secret_modal_input_system(
     if prompt.active.is_none() {
         return;
     }
-    let mut submit = false;
-    let mut saw_escape = false;
-    for ev in kb_events.drain() {
-        if !ev.state.is_pressed() {
-            continue;
-        }
-        match &ev.logical_key {
-            Key::Character(s) => {
-                for ch in s.chars() {
-                    input.push_char(ch);
-                }
-            }
-            Key::Space => input.push_char(' '),
-            Key::Backspace => input.backspace(),
-            Key::Enter => submit = true,
-            // Escape は drain でここで消費し (picker/menu への漏れ防止)、同一フレームの
-            // submit を抑止する。dismiss 自体は modal_layer_esc_system →
-            // secret_modal_reconcile_system に委譲する (#46 Slice B 5d / B2 回帰修正)。
-            Key::Escape => saw_escape = true,
-            _ => {}
-        }
+    // Escape は drain でここで消費し (picker/menu への漏れ防止)、同一フレームの
+    // submit を抑止する。dismiss 自体は modal_layer_esc_system →
+    // secret_modal_reconcile_system に委譲する (#46 Slice B 5d / B2 回帰修正)。
+    let result = drain_keyboard(&mut kb_events, |_| true, |ch| input.push_char(ch));
+    for _ in 0..result.backspace_count {
+        input.backspace();
     }
-    if submit && !saw_escape {
+    if result.enter && !result.escape {
         do_submit(&mut input, &mut prompt, sender.as_deref());
     }
 }

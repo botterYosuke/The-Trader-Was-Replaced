@@ -167,28 +167,6 @@ use crate::ui::window::{chart_content_layout_system, instrument_chart_sync_syste
 use bevy::prelude::*;
 use bevy_vector_shapes::Shape2dPlugin;
 
-/// 入力処理 system 群の決定的順序を保証する SystemSet（issue #48 H5）。
-///
-/// 順序: `KeyboardDrain` → `ModalInput` → `WidgetInput`（`.chain()` で設定）。
-/// - `KeyboardDrain`: 生の `EventReader<KeyboardInput>` / `ButtonInput<KeyCode>` を読む
-///   収集系。現状は明示メンバなし（将来移行用に variant のみ保持）。
-/// - `ModalInput`: モーダル（secret / confirm / modify / relogin / reconcile / settings）が
-///   keystroke を最優先で消費する phase。
-/// - `WidgetInput`: 通常 widget の Button Interaction / keyboard 受け（footer / menu bar / picker）。
-///
-/// TODO(#48 後続): `confirm_modal_button_system` / `modify_modal_input_system` /
-/// `relogin_modal_button_system` / `reconcile_modal_button_system` /
-/// `settings_modal_close_system` を `ModalInput` へ、`picker_searchbox_input_system` /
-/// `menu_top_level_system` / `menu_item_system` / `footer_pause_resume_system` /
-/// `speed_button_system` / `execution_mode_toggle_system` / `find_field_input_system` /
-/// `find_button_interaction_system` を `WidgetInput` へ段階移行する。
-#[derive(SystemSet, Clone, Debug, Eq, PartialEq, Hash)]
-pub enum InputPhase {
-    KeyboardDrain,
-    ModalInput,
-    WidgetInput,
-}
-
 pub struct UiPlugin;
 
 /// mode 可視性 system 群の登録。production と RED ガード (M20) が同一 registration を共有する。
@@ -269,15 +247,6 @@ impl Plugin for UiPlugin {
                     .after(ChartSet::Autoscale)
                     .after(ChartSet::Interaction),
             ),
-        )
-        .configure_sets(
-            Update,
-            (
-                InputPhase::KeyboardDrain,
-                InputPhase::ModalInput,
-                InputPhase::WidgetInput,
-            )
-                .chain(),
         )
         .init_resource::<OpenMenu>()
         .init_resource::<crate::ui::instrument_picker::InstrumentPickerState>()
@@ -434,7 +403,8 @@ impl Plugin for UiPlugin {
             Update,
             (
                 (
-                    scenario_startup_param_input_system,
+                    scenario_startup_param_input_system
+                        .in_set(input_phase::InputPhase::KeyboardDrain),
                     parse_scenario_system,
                     sync_registry_from_scenario_loaded_system,
                     sync_registry_from_scenario_cleared_system,
@@ -480,11 +450,12 @@ impl Plugin for UiPlugin {
             (
                 menu_top_level_system,
                 menu_item_system,
-                menu_keyboard_system.in_set(InputPhase::WidgetInput),
+                menu_keyboard_system.in_set(input_phase::InputPhase::WidgetInput),
                 sync_menu_popup_visibility_system,
                 gate_venue_menu_items_system,
                 hide_unconfigured_venue_items_system,
-                picker_searchbox_input_system,
+                picker_searchbox_input_system
+                    .in_set(input_phase::InputPhase::KeyboardDrain),
                 picker_list_rebuild_system
                     .after(picker_searchbox_input_system)
                     .after(force_close_picker_on_lock_system)
@@ -521,6 +492,7 @@ impl Plugin for UiPlugin {
                 // 触る他 system と決定的順序を持つ必要がある。secret / modify (topmost modals)
                 // の後・picker / menu / scenario_startup の前で固定する。
                 find_field_input_system
+                    .in_set(input_phase::InputPhase::KeyboardDrain)
                     .after(manage_find_panel_lifecycle_system)
                     .after(secret_modal_input_system)
                     .after(modify_modal_input_system)
@@ -571,7 +543,7 @@ impl Plugin for UiPlugin {
                 secret_modal_lifecycle_system,
                 secret_modal_visibility_system,
                 secret_modal_input_system
-                    .in_set(InputPhase::ModalInput)
+                    .in_set(input_phase::InputPhase::KeyboardDrain)
                     .before(picker_searchbox_input_system)
                     .before(menu_keyboard_system),
                 secret_modal_button_system,
@@ -608,6 +580,7 @@ impl Plugin for UiPlugin {
                 // を付け、決定的にする (両者が同じ keyboard event を奪い合うのを防ぐ)。
                 modify_modal_visibility_system,
                 modify_modal_input_system
+                    .in_set(input_phase::InputPhase::KeyboardDrain)
                     .after(secret_modal_input_system)
                     .before(picker_searchbox_input_system)
                     .before(menu_keyboard_system),

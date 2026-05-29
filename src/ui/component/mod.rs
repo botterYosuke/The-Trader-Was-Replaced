@@ -13,6 +13,7 @@
 
 pub mod button;
 pub mod modal_layer;
+pub mod keyboard_drain;
 
 pub use button::{
     button_colors, button_interaction_system, ButtonColors, ButtonDisabled, ButtonSelected,
