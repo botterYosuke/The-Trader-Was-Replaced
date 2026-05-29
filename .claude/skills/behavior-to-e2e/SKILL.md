@@ -414,6 +414,7 @@ backend→ECS seam だけでは十分条件にならない。
 - **headless 不可 / 未実装の flow は fake せず doc stub（`//!` のみ・`#[test]` 無し）にして runner 未登録のまま残す**。
   `kind:render`（ShapePainter+Text2d=GPU 必要）、Windows 専用 PowerShell、実ウィンドウ smoke、production 未実装機能が該当。
   外部データ依存（catalog / J-Quants）や OS dialog（rfd 直呼び）は `#[test] #[ignore]` + 理由 doc にする。
+- **`MessageWriter` を使う system のテストは `app.update()` を 2 回呼ぶ**。`Messages<T>` はダブルバッファ方式で、system 内の `MessageWriter::write` は `messages_b` に書き込む。1 回目の `app.update()` では `message_update_system`（First schedule）が swap を行い書き込みが完了するが、その後すぐ `update_drain()` を呼んでも旧 `messages_a`（空）側をドレインしてしまう。2 回目の `app.update()` で再 swap されて初めて `update_drain()` が書き込まれた内容を読める。同パターンは既存テスト（`test_user_json_open_reloads_strategy_path_even_if_already_loaded` 等）でも `app.update()` 2 回呼びを使っている。`write_message` 経由の直接書き込みも同様。実例: I21 テスト（#69）で 1 回だけ呼んだところ spawn 数 0 が返り、2 回に変更して GREEN になった。
 - **既存 warning は触らない**（`main.rs:33 UnsubscribeRequest` 等、本作業と無関係）。新規 warning は増やさない。
 - **コメントは「なぜ」だけ**。何をしているかの説明やタスク言及は書かない（プロジェクト規約）。
 - **モジュール/シンボルを撤去した後の現行化 grep は `docs/wiki/` だけでなく `docs/` ツリー全体を当たる**。

@@ -662,6 +662,86 @@ mod tests {
         assert_eq!(outcome.fragments, items);
     }
 
+    // ── #67-followup: File→Open over an existing editor must not leave a stale
+    // tree-sitter tree on the reused bevscode peer ───────────────────────────
+    //
+    // Repro (manual E2E, FLOWS.md I20): with a Strategy Editor already present
+    // (e.g. restored from cache), File→Open replaced the peer's rope via
+    // `SetTextRequested` while its previously-parsed `SyntaxTree` still held the
+    // OLD byte offsets. For one frame bevscode's `produce_line_styles` ran
+    // `highlight_range(tree=stale, rope=replaced/empty)` and tree-sitter sliced a
+    // node byte range past the rope length → ropey panic ("byte index N, rope
+    // length 0"), crashing the app.
+    //
+    // Zed avoids this in `language/src/syntax_map.rs::interpolate`, which edits
+    // the tree on every buffer change so the invariant `tree.end_byte() <=
+    // text.len()` always holds before highlighting. bevscode has no interpolate
+    // step, so we restore the invariant from our side: when re-seeding an
+    // existing peer (content replace), drop the stale `SyntaxTree` and re-issue
+    // `SetLanguageRequested` so highlight falls back to plain text until the new
+    // rope is reparsed.
+    #[test]
+    fn reseed_existing_editor_invalidates_stale_syntax_tree() {
+        let mut app = App::new();
+        app.add_message::<SetTextRequested>();
+        app.add_message::<SetLanguageRequested>();
+        app.add_systems(Update, sync_strategy_fragment_to_bevscode_system);
+
+        let region = "region_001".to_string();
+        // Existing bevscode peer: OLD content + a (now stale) parsed syntax tree.
+        let peer = app
+            .world_mut()
+            .spawn((
+                StrategyEditorNode {
+                    root: Entity::PLACEHOLDER,
+                    region_key: region.clone(),
+                },
+                TextBuffer::<RopeBuffer>::new(RopeBuffer::new("old = 1\n")),
+                bevy_tree_sitter::SyntaxTree::default(),
+            ))
+            .id();
+        // Fragment root carrying the NEW source (a content replace, as on File→Open).
+        app.world_mut().spawn((
+            WindowRoot,
+            StrategyEditorId {
+                region_key: region.clone(),
+            },
+            StrategyFragment {
+                source: "new = 2\n".to_string(),
+                dirty: false,
+            },
+        ));
+
+        app.update();
+
+        // Content differs → exactly one re-seed SetTextRequested to the peer.
+        let texts = app.world().resource::<Messages<SetTextRequested>>();
+        let mut tc = texts.get_cursor();
+        assert_eq!(
+            tc.read(texts).count(),
+            1,
+            "expected one re-seed SetTextRequested for the content replace",
+        );
+
+        // The stale tree must be gone so highlight can't slice a mismatched rope.
+        assert!(
+            app.world()
+                .get::<bevy_tree_sitter::SyntaxTree>(peer)
+                .is_none(),
+            "stale SyntaxTree must be dropped on content re-seed \
+             (Zed interpolate invariant: tree.end_byte() <= text.len())",
+        );
+
+        // Language must be re-issued so the new rope gets reparsed.
+        let langs = app.world().resource::<Messages<SetLanguageRequested>>();
+        let mut lc = langs.get_cursor();
+        assert_eq!(
+            lc.read(langs).count(),
+            1,
+            "expected SetLanguageRequested re-issue to reparse the new rope",
+        );
+    }
+
     #[test]
     fn split_py_handles_no_markers_returns_single_region() {
         let py = "x = 1\ny = 2\n";
@@ -1265,6 +1345,18 @@ pub fn spawn_bevscode_peer_on_strategy_editor_added(
 /// Slice 2 (#50): 同タイミングで `InputFocus` を bevscode entity に設定する。これで cosmic は
 /// 描画専用に退き、ユーザー入力は bevscode の `TextBuffer<RopeBuffer>` に流れる
 /// （`sync_bevscode_to_strategy_fragment_system` が autosave / AppHistory を駆動）。
+/// Python 文法での `SetLanguageRequested` を組む。seed 投入時（初回パース）と
+/// content replace 後の再パースで同じ grammar を流すため、構築を一箇所に集約する。
+fn python_language_request(entity: Entity) -> SetLanguageRequested {
+    SetLanguageRequested {
+        entity,
+        grammar: Some(TreeSitterGrammar::new(
+            lang_python::language().into(),
+            lang_python::HIGHLIGHTS_QUERY,
+        )),
+    }
+}
+
 pub fn apply_pending_strategy_seed_system(
     mut commands: Commands,
     mut text_writer: MessageWriter<SetTextRequested>,
@@ -1279,13 +1371,7 @@ pub fn apply_pending_strategy_seed_system(
         });
         // Slice 4 (#50): Python シンタックスハイライトを bevscode/bevy_tree_sitter で有効化。
         // grammar は seed 投入と同タイミングで一度だけ流す。pending マーカーが外れるので二重発火しない。
-        lang_writer.write(SetLanguageRequested {
-            entity,
-            grammar: Some(TreeSitterGrammar::new(
-                lang_python::language().into(),
-                lang_python::HIGHLIGHTS_QUERY,
-            )),
-        });
+        lang_writer.write(python_language_request(entity));
         // NOTE (#50-followup): Iter2 A5/N5 で `is_none()` guard を入れたが、explicit user
         // spawn (menu New / file open) でも focus が取れなくなる回帰を生んだため revert。
         // 元の cosmic 時代と同じく seed 適用時は無条件に focus を claim する
@@ -1538,12 +1624,14 @@ pub fn sync_bevscode_to_strategy_fragment_system(
 /// 注: cosmic 経路の `sync_strategy_buffer_to_editor_system` は UndoRedoApplied / FileLoad 駆動だが、
 /// bevscode は `Changed<StrategyFragment>` の方が来た契機を一発で拾えるので採用。
 pub fn sync_strategy_fragment_to_bevscode_system(
+    mut commands: Commands,
     fragments_q: Query<
         (&StrategyEditorId, &StrategyFragment),
         (With<WindowRoot>, Changed<StrategyFragment>),
     >,
     editors: Query<(Entity, &StrategyEditorNode, &TextBuffer<RopeBuffer>)>,
     mut writer: MessageWriter<SetTextRequested>,
+    mut lang_writer: MessageWriter<SetLanguageRequested>,
 ) {
     // NOTE (#50-followup): Iter3 N8 で suppress_echo gate を前置短絡したが、
     // suppress_echo は undo/snapshot writeback 側で立つため writeback そのものを潰す bug
@@ -1563,6 +1651,20 @@ pub fn sync_strategy_fragment_to_bevscode_system(
                 entity: editor_entity,
                 text: fragment.source.clone(),
             });
+            // #67-followup: この経路は File→Open / undo writeback で「既存 peer の rope を
+            // まるごと差し替える」content replace。bevscode には Zed の SyntaxMap::interpolate
+            // 相当（編集のたびに tree.edit で node 範囲を新 rope 長へシフト/縮約し
+            // `tree.end_byte() <= text.len()` を保つ段）が無い。よって rope を差し替えた直後・
+            // 再パース前のフレームで `produce_line_styles` が stale tree の古い byte 範囲で
+            // 新（または空）rope を slice して panic する（manual E2E FLOWS.md I20、ropey
+            // "byte index N, rope length 0"）。Zed の不変条件を我々側で回復するため、
+            // 再 seed と同フレームで stale な SyntaxTree を drop し（→ highlight は tree=None で
+            // plain fallback、slice しない）、SetLanguageRequested を再送して新 rope を
+            // 再パースさせる。
+            commands
+                .entity(editor_entity)
+                .remove::<bevy_tree_sitter::SyntaxTree>();
+            lang_writer.write(python_language_request(editor_entity));
         }
     }
 }
