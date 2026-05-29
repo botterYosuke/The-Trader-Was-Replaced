@@ -1474,15 +1474,12 @@ struct RustEventSink {
 #[pyo3::pymethods]
 impl RustEventSink {
     /// Called from Python: `sink.push(event.SerializeToString())`
-    fn push(&self, py: pyo3::Python<'_>, data: &[u8]) -> pyo3::PyResult<()> {
+    fn push(&self, data: &[u8]) -> pyo3::PyResult<()> {
         use prost::Message as _;
         let proto = engine::BackendEvent::decode(data)
             .map_err(|e| pyo3::exceptions::PyValueError::new_err(e.to_string()))?;
         if let Some(payload) = proto.payload {
-            let ev = map_backend_event_payload(payload);
-            py.allow_threads(|| {
-                let _ = self.event_tx.send(ev);
-            });
+            let _ = self.event_tx.send(map_backend_event_payload(payload));
         }
         Ok(())
     }
