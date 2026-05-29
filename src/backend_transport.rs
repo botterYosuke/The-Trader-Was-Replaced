@@ -1661,6 +1661,16 @@ fn inproc_python_worker(
         let path_list = path.downcast::<PyList>()?;
         path_list.insert(0, &python_engine_path)?;
 
+        // Windows: disable bytecode writes. Python's FileFinder re-scans PYTHON_ENGINE_PATH
+        // between with_gil blocks when __pycache__ directories exist (the dir mtime changes
+        // trigger cache invalidation). The re-scan calls Windows filesystem APIs that fail
+        // with WinError 6714 (ERROR_RM_NOT_CONNECTED) when a TxF filter driver is active
+        // (Windows Defender / VSS). By disabling bytecode writes, no new __pycache__ entries
+        // are created, so directory mtimes stay unchanged and the re-scan never triggers.
+        // Prerequisite: delete python/**/__pycache__ before the first run (the startup
+        // script scripts/run_inproc.ps1 handles this automatically).
+        sys.setattr("dont_write_bytecode", true)?;
+
         let module = py.import_bound("engine.core")?;
         let cls = module.getattr("DataEngine")?;
 

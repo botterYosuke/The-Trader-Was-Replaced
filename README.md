@@ -58,9 +58,19 @@ Start-Process -FilePath ".\target\debug\backcast.exe" -WorkingDirectory $PWD.Pat
   -RedirectStandardError  "$env:TEMP\backcast_err.txt" -PassThru
 ```
 
-### In-proc モード（PyO3 直接呼び出し）
+### In-proc モード（PyO3 直接呼び出し）— **推奨起動方法**
 
-`BACKEND_TRANSPORT=inproc` を設定すると gRPC を経由せず Python エンジンを in-process で呼び出す。
+`BACKEND_TRANSPORT=inproc` を設定すると Python エンジンを Rust プロセスに **直接埋め込み**、
+gRPC も別途 Python プロセスも不要になる。
+
+#### gRPC モードとの違い
+
+| | gRPC モード（旧来） | In-proc モード（推奨） |
+|---|---|---|
+| Python backend プロセス | **必要**（別途起動） | **不要** |
+| `BACKEND_TOKEN` | 必要 | 不要 |
+| ネットワーク通信 | TCP 127.0.0.1:19876 | なし（関数呼び出し） |
+| 起動コマンド数 | 2（backend + GUI） | 1（GUI のみ） |
 
 #### ビルド前提
 
@@ -70,35 +80,62 @@ Start-Process -FilePath ".\target\debug\backcast.exe" -WorkingDirectory $PWD.Pat
 | 動作確認済み Python | 3.13 / 3.14（ABI3 前方互換モード） |
 | `PYO3_USE_ABI3_FORWARD_COMPATIBILITY` | `.cargo/config.toml` で `"1"` に設定済み（手動不要） |
 
-#### Windows（Python 3.14 venv の場合）
+#### Windows セットアップ（初回のみ）
 
-`cargo build/test` は `PATH` 上の Python インタープリタを自動検出するが、
-Windows の `WindowsApps\python.exe` エイリアスは検出できない。
-`.venv` を作成後、`PYO3_PYTHON` を明示する。
+1. uv で venv を作成
+2. `PYO3_PYTHON` を `.venv` に向けてビルド
 
 ```powershell
-# 1. uv で venv を作成（初回のみ）
-uv venv
-
-# 2. PYO3_PYTHON を .venv に向ける（シェルセッションごとに設定）
+uv venv                          # .venv 作成
 $env:PYO3_PYTHON = "$PWD\.venv\Scripts\python.exe"
-
-# 3. ビルド（PYO3_USE_ABI3_FORWARD_COMPATIBILITY は .cargo/config.toml で自動設定）
 cargo build
 ```
 
 > **注意 (pyo3 0.22 + Python 3.14)**: ABI3 前方互換フラグは「バージョンチェックを抑止する」
 > 暫定措置。pyo3 を 0.23 以上にアップグレードすれば不要になる（issue #64 フォロータスク②）。
 
-#### 起動方法
+#### 起動（推奨: スクリプト使用）
 
 ```powershell
+.\scripts\run_inproc.ps1
+# artifacts を別ドライブに置く場合:
+.\scripts\run_inproc.ps1 -ArtifactsPath S:\artifacts
+```
+
+スクリプトは `__pycache__` 削除・環境変数設定・GUI 起動を一括実行する。
+
+#### 起動（手動）
+
+```powershell
+# 1. __pycache__ を削除（WinError 6714 回避 — 初回と __pycache__ が作られたとき）
+Get-ChildItem .\python -Recurse -Directory -Filter "__pycache__" | Remove-Item -Recurse -Force
+
+# 2. Python DLL と venv site-packages を環境変数に設定
+$pybase = & .\.venv\Scripts\python.exe -c "import sys; print(sys.base_prefix)"
+$env:PATH    = "$pybase;$env:PATH"
+$env:PYTHONPATH = "$PWD\.venv\Lib\site-packages"
+
+# 3. In-proc 起動（Python バックエンドを別途起動する必要はない）
 $env:BACKEND_ENABLED    = "true"
 $env:BACKEND_TRANSPORT  = "inproc"
-$env:PYTHON_ENGINE_PATH = "python"   # engine/ パッケージの親ディレクトリ
-$env:ARTIFACTS_PATH     = "S:/artifacts"
-$env:PYO3_PYTHON        = "$PWD\.venv\Scripts\python.exe"
-cargo run
+$env:PYTHON_ENGINE_PATH = "python"
+$env:ARTIFACTS_PATH     = "$PWD\artifacts"
+$env:BEVY_ASSET_ROOT    = $PWD.Path
+$env:RUST_LOG           = "info"
+.\target\debug\backcast.exe
+```
+
+> **Windows WinError 6714**: Python の `FileFinder` は `__pycache__` 存在時にディレクトリを
+> 再スキャンし、Windows TxF フィルタードライバ (Windows Defender / VSS) に引っかかる。
+> 起動前に `__pycache__` を削除することで回避。`sys.dont_write_bytecode = True` が
+> Rust 側で設定されるため、削除後は `__pycache__` が再作成されず以降の起動も問題なし。
+
+起動後のログで以下が出れば正常:
+```
+[inproc] Python worker thread starting
+[inproc] DataEngine initialized
+[inproc] RustEventSink registered on DataEngine
+[inproc] InprocLiveServer initialized (live_venue_id=None)
 ```
 
 ## ドキュメント
