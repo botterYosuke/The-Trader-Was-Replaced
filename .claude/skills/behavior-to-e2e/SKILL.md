@@ -40,6 +40,11 @@ description: >-
   他スキル（`/pair-relay` / `/tdd` / `bevy-engine` など）と同時に本スキルを併発する。ユーザーが明示しなくても
   `gh issue view` の本文を読んで自律的に発動する（issue #67: /plan /pair-relay /tdd が明示されたが、
   対処案に「RED E2E + FLOWS.md + wiki」が揃っており behavior-to-e2e が見落とされた実例）。
+  **issue の「Slice N」形式のタスク（e.g. Slice 3 — Orders パネル）で新しい UI 可観測挙動が生まれるとき**も
+  必ず本スキルを発動する。Slice 完了後に b3 / b4 などの新 flow が生まれるが、pair-relay ループが FLOWS.md
+  追記と wiki 更新を置き去りにしやすい（issue #68 Slice 3/4/7 で b3 プレースホルダー作成にとどまり
+  FLOWS.md 追記・wiki 更新が未実施だった実例）。`RustBacktestSink.push_order` / `push_portfolio` など
+  新しい sink メソッドを実装した直後も同様（BackendStatusUpdate が新しく UI に届く = 新 flow が生まれる）。
   **「RED のつもりで書いたテストが最初から GREEN」＝fix 既適用パターン**: コードを直す前に書いた
   テストが即 GREEN になる場合は「バグが既に修正済み（別 PR / 別コミットで先に入った）」か
   「テストの assert が誤っていて実は bug を捕捉できていない」のどちらか。前者（例: issue #57 で
