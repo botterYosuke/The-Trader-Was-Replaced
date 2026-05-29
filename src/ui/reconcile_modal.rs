@@ -14,6 +14,7 @@
 use bevy::prelude::*;
 
 use crate::trading::{ReconcilePrompt, SecretPrompt};
+use crate::ui::component::modal_layer::{ActiveModal, DismissDecision, ModalLayer};
 use crate::ui::modify_modal::ModifyForm;
 use crate::ui::order_panel::OrderConfirm;
 
@@ -202,6 +203,50 @@ pub fn reconcile_modal_sync_system(
     {
         t.0 = body;
     }
+}
+
+/// reconcile notice の on_before_dismiss フック。通知モーダルは
+/// work-in-flight を持たないので常に Dismiss。
+fn reconcile_dismiss() -> DismissDecision {
+    DismissDecision::Dismiss
+}
+
+/// ModalLayer.stack ⇄ ReconcilePrompt.unknown を双方向同期する（mechanism A、relogin と同形）。
+/// FORWARD: open(!unknown.is_empty()) かつ未登録 → push。CLOSE: 空 & on_stack → 除去。
+/// REVERSE: 前フレーム on_stack で今 off かつ open → unknown.clear()（esc pop の逆反映）。
+pub fn reconcile_modal_reconcile_system(
+    mut prompt: ResMut<ReconcilePrompt>,
+    root_q: Query<Entity, With<ReconcileModalRoot>>,
+    mut layer: ResMut<ModalLayer>,
+    mut was_on_stack: Local<bool>,
+) {
+    let Ok(root) = root_q.single() else {
+        return;
+    };
+    let on_stack = layer.stack.iter().any(|m| m.root == root);
+
+    if prompt.is_changed() && !prompt.unknown.is_empty() && !on_stack {
+        layer.push(ActiveModal {
+            root,
+            backdrop: root,
+            previous_focus: None,
+            on_before_dismiss: reconcile_dismiss,
+        });
+        *was_on_stack = true;
+        return;
+    }
+
+    if prompt.unknown.is_empty() && on_stack {
+        layer.stack.retain(|m| m.root != root);
+        *was_on_stack = false;
+        return;
+    }
+
+    if *was_on_stack && !on_stack && !prompt.unknown.is_empty() {
+        prompt.unknown.clear();
+    }
+
+    *was_on_stack = on_stack;
 }
 
 /// 不明注文を「symbol id (status)」の行リストに整形する純関数（テスト用に分離）。
