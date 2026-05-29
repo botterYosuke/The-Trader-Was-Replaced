@@ -1537,6 +1537,17 @@ impl RustBacktestSink {
         }));
         Ok(())
     }
+
+    /// Called from the backtest background thread when the run fails (Slice 2).
+    /// Mirrors the synchronous RunFailed path in inproc_dispatch so the UI shows
+    /// the error even though start_nautilus_replay() returned immediately.
+    fn push_run_failed(&self, error: &str) -> pyo3::PyResult<()> {
+        let _ = self.resp_tx.send(InProcResp::Status(BackendStatusUpdate::RunFailed {
+            startup_id: Some(self.startup_id),
+            error: error.to_string(),
+        }));
+        Ok(())
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -2049,6 +2060,19 @@ fn inproc_json_dumps(
     serde_json::from_str(&json_str).map_err(|e| format!("{}: json parse: {}", context, e))
 }
 
+/// Call a no-argument method on InprocLiveServer for backtest Pause/Step/Resume control.
+/// Returns true on success so callers can gate follow-up actions (e.g. StepForward
+/// must not poll state when the step itself failed).
+fn inproc_nautilus_control(live_server: &pyo3::Py<pyo3::PyAny>, method: &str) -> bool {
+    use pyo3::prelude::*;
+    Python::with_gil(|py| {
+        match live_server.bind(py).call_method0(method) {
+            Ok(_) => { info!("[inproc] {} ok", method); true }
+            Err(e) => { error!("[inproc] {} failed: {}", method, e); false }
+        }
+    })
+}
+
 /// Seed orders from backend via InprocLiveServer.get_orders().
 fn inproc_seed_orders(
     live_server: &Py<PyAny>,
@@ -2152,31 +2176,20 @@ fn inproc_dispatch(
     use pyo3::types::{PyDictMethods, PyListMethods};
     match cmd {
         // ---------------------------------------------------------------
-        // Replay commands — delegate to DataEngine directly (Phase 2)
+        // Replay commands — routed to BacktestEngine via threading.Event
+        // (Slice 2: live_server.pause/resume/step_backtest() manipulate the
+        //  shared threading.Event inside GuiBridgeActor._on_bar() so the
+        //  backtest background thread pauses/steps without holding the GIL)
         // ---------------------------------------------------------------
         TransportCommand::Pause => {
-            let (ok, err) = inproc_call_replay(engine, "pause_replay");
-            if ok {
-                info!("[inproc] PauseReplay ok");
-            } else {
-                error!("[inproc] PauseReplay failed: {:?}", err);
-            }
+            let _ = inproc_nautilus_control(live_server, "pause_backtest");
         }
         TransportCommand::Resume => {
-            let (ok, err) = inproc_call_replay(engine, "resume_replay");
-            if ok {
-                info!("[inproc] ResumeReplay ok");
-            } else {
-                error!("[inproc] ResumeReplay failed: {:?}", err);
-            }
+            let _ = inproc_nautilus_control(live_server, "resume_backtest");
         }
         TransportCommand::StepForward => {
-            let (ok, err) = inproc_call_replay(engine, "step_replay");
-            if ok {
-                info!("[inproc] StepReplay ok");
+            if inproc_nautilus_control(live_server, "step_backtest") {
                 inproc_poll_state(live_server, resp_tx);
-            } else {
-                error!("[inproc] StepReplay failed: {:?}", err);
             }
         }
         TransportCommand::ForceStop => {
@@ -2274,8 +2287,10 @@ fn inproc_dispatch(
             }));
 
             // Build RustBacktestSink and call InprocLiveServer.start_nautilus_replay().
-            // The call blocks until BacktestEngine.run() completes; bars arrive via
-            // RustBacktestSink.push_bar() callbacks during execution.
+            // Slice 2: start_nautilus_replay() returns immediately after launching a
+            // background thread; bars arrive via RustBacktestSink.push_bar() callbacks.
+            // Completion is signalled by push_run_complete() or push_run_failed() from
+            // the background thread.
             let result = {
                 use pyo3::prelude::*;
                 use pyo3::types::{PyDict, PyList};
@@ -2321,10 +2336,11 @@ fn inproc_dispatch(
                 Ok(r) => {
                     let success = r.get("success").and_then(|v| v.as_bool()).unwrap_or(false);
                     if success {
-                        let run_id = r.get("run_id").and_then(|v| v.as_str()).unwrap_or("").to_string();
-                        info!("[inproc] RunStrategy start_nautilus_replay ok run_id={}", run_id);
-                        // push_run_complete was already sent via RustBacktestSink on success.
+                        // Background thread started; completion arrives via
+                        // push_run_complete() or push_run_failed() from Python.
+                        info!("[inproc] RunStrategy start_nautilus_replay: background thread started");
                     } else {
+                        // Validation failed synchronously (no strategy file, no catalog, etc.)
                         let msg = format!(
                             "start_nautilus_replay: {} {}",
                             r.get("error_code").and_then(|v| v.as_str()).unwrap_or(""),
