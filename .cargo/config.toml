@@ -1,0 +1,13 @@
+# .cargo/config.toml — backcast プロジェクト共通ビルド設定
+#
+# PyO3 ビルド環境: pyo3 0.22 は Python 3.13 までを正式サポートする。
+# Python 3.14 以降の venv では ABI3 前方互換フラグを立てることでビルドできる。
+# これにより Python 3.13 用 stable ABI (abi3) バイナリとして扱われ、
+# 3.14+ インタープリタ上で実行できる。
+#
+# 残作業: pyo3 を 0.23+ にアップグレードすれば 3.14 を正式サポートでき、
+# このフラグは不要になる。issue #64 フォロータスク②参照。
+
+[env]
+# Python 3.14 以降でビルドするときに必要なフラグ (pyo3 0.22 対策)
+PYO3_USE_ABI3_FORWARD_COMPATIBILITY = "1"

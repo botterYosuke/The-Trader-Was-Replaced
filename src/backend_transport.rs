@@ -1464,8 +1464,9 @@ pub fn parse_replay_granularity(s: &str) -> Result<i32, String> {
 ///
 /// GIL design: `push()` is called from Python (GIL already held by the caller —
 /// typically the live-loop asyncio thread).  We decode the proto while holding the
-/// GIL (cheap, in-memory), then release it with `py.allow_threads` for the
-/// non-blocking channel send.
+/// GIL (cheap, in-memory) and send it on the unbounded channel without releasing
+/// the GIL — the send is non-blocking, so there is nothing to overlap by calling
+/// `py.allow_threads`.
 #[pyo3::pyclass]
 struct RustEventSink {
     event_tx: mpsc::UnboundedSender<BackendEvent>,
@@ -1660,6 +1661,16 @@ fn inproc_python_worker(
         let path_list = path.downcast::<PyList>()?;
         path_list.insert(0, &python_engine_path)?;
 
+        // Windows: disable bytecode writes. Python's FileFinder re-scans PYTHON_ENGINE_PATH
+        // between with_gil blocks when __pycache__ directories exist (the dir mtime changes
+        // trigger cache invalidation). The re-scan calls Windows filesystem APIs that fail
+        // with WinError 6714 (ERROR_RM_NOT_CONNECTED) when a TxF filter driver is active
+        // (Windows Defender / VSS). By disabling bytecode writes, no new __pycache__ entries
+        // are created, so directory mtimes stay unchanged and the re-scan never triggers.
+        // Prerequisite: delete python/**/__pycache__ before the first run (the startup
+        // script scripts/run_inproc.ps1 handles this automatically).
+        sys.setattr("dont_write_bytecode", true)?;
+
         let module = py.import_bound("engine.core")?;
         let cls = module.getattr("DataEngine")?;
 
@@ -1674,8 +1685,6 @@ fn inproc_python_worker(
     }) {
         Ok(e) => {
             info!("[inproc] DataEngine initialized");
-            let _ = resp_tx.send(InProcResp::Status(BackendStatusUpdate::Connected(true)));
-            let _ = resp_tx.send(InProcResp::Status(BackendStatusUpdate::Running(true)));
             e
         }
         Err(e) => {
@@ -1714,12 +1723,35 @@ fn inproc_python_worker(
     }) {
         Ok(s) => {
             info!("[inproc] InprocLiveServer initialized (live_venue_id={:?})", live_venue_id);
+            // #2 fix: startup is complete only once live commands are available.
+            // Route through the pure helper so its regression test guards this arm.
+            for update in inproc_startup_status_sequence(/*live_server_ok=*/ true) {
+                let _ = resp_tx.send(InProcResp::Status(update));
+            }
+            // #7 fix: mirror the gRPC transport's initial ListInstruments on startup
+            // (see fire_list_instruments at the connect path) so the instrument-dependent
+            // UI is seeded in in-proc mode too. The TickersSource is the single source of
+            // truth in inproc_startup_instrument_fetch(); reuse the dispatch arm so the
+            // emitted status sequence (InstrumentsListStarted/Listed/Failed) is identical.
+            if let Some(source) = inproc_startup_instrument_fetch() {
+                inproc_dispatch(
+                    &engine,
+                    &s,
+                    TransportCommand::ListInstruments { source },
+                    &resp_tx,
+                    &catalog_path,
+                );
+            }
             s
         }
         Err(e) => {
-            error!("[inproc] InprocLiveServer init failed: {}; live commands will be unavailable", e);
-            // Fall back: create a Python None so live commands log warnings instead of crashing.
-            Python::with_gil(|py| py.None().into())
+            error!("[inproc] InprocLiveServer init failed: {}; aborting worker", e);
+            // #2 fix: do NOT continue with a None sentinel. Report disconnect + error and exit.
+            // Route through the pure helper so its regression test guards this arm.
+            for update in inproc_startup_status_sequence(/*live_server_ok=*/ false) {
+                let _ = resp_tx.send(InProcResp::Status(update));
+            }
+            return;
         }
     };
 
@@ -1738,23 +1770,98 @@ fn inproc_python_worker(
             }
             Err(std::sync::mpsc::RecvTimeoutError::Disconnected) => {
                 info!("[inproc] command channel closed; Python worker exiting");
+                // #64 finding #6: tear down the live loop thread / runner /
+                // account-sync that InprocLiveServer wraps before the worker
+                // exits, otherwise they leak. live_server only exists on the
+                // successful-init path (init failure early-returns above).
+                Python::with_gil(|py| {
+                    if let Err(e) = live_server.bind(py).call_method0("close") {
+                        error!("[inproc] live_server.close() failed: {}", e);
+                    }
+                });
                 break;
             }
         }
     }
 }
 
+/// Pure helper: the status updates the InProc worker emits **after DataEngine init
+/// succeeds**, gated on whether InprocLiveServer init then succeeded. The worker
+/// calls this from both live-init arms so the helper is the single source of truth
+/// for the live-init status sequence (issue #64 finding #2 regression guard).
+///
+/// DataEngine-init failure is NOT modeled here: it early-returns inline with an
+/// `Error("InProc DataEngine init failed: {e}")` that carries the exception detail.
+fn inproc_startup_status_sequence(live_server_ok: bool) -> Vec<BackendStatusUpdate> {
+    if !live_server_ok {
+        // #2 fix: live commands are unavailable, so we are NOT truly connected.
+        return vec![
+            BackendStatusUpdate::Connected(false),
+            BackendStatusUpdate::Error("InprocLiveServer init failed".to_string()),
+        ];
+    }
+    vec![
+        BackendStatusUpdate::Connected(true),
+        BackendStatusUpdate::Running(true),
+    ]
+}
+
+/// Pure helper: the instrument-list fetch the InProc worker performs at startup,
+/// expressed as its `TickersSource` (or `None` if it performs no startup fetch).
+///
+/// The gRPC transport fires `fire_list_instruments(.., TickersSource::ReplayCatalogFallback, ..)`
+/// once on connect (see `:185`), so the UI is seeded with an instrument universe at
+/// startup. The InProc worker must do the same. (issue #64 finding #7.)
+///
+/// NOTE: the InProc worker now performs the same startup instrument fetch as the
+/// gRPC transport — it fires ListInstruments(ReplayCatalogFallback) once on startup
+/// (see the `Ok(s) =>` arm after InprocLiveServer init). This helper is the single
+/// source of truth the worker consults to decide that fetch. (issue #64 finding #7 fixed.)
+fn inproc_startup_instrument_fetch() -> Option<crate::trading::TickersSource> {
+    Some(crate::trading::TickersSource::ReplayCatalogFallback)
+}
+
 /// Poll state via InprocLiveServer.get_state_json() (live mode returns price/depth enriched state).
 fn inproc_poll_state(live_server: &Py<PyAny>, resp_tx: &mpsc::UnboundedSender<InProcResp>) {
     use pyo3::prelude::*;
 
-    let result = Python::with_gil(|py| -> Option<String> {
-        live_server.bind(py).call_method0("get_state_json").ok()?
-            .extract::<String>().ok()
+    let state_json = Python::with_gil(|py| -> Result<String, ()> {
+        live_server.bind(py).call_method0("get_state_json")
+            .map_err(|_| ())?
+            .extract::<String>().map_err(|_| ())
     });
 
-    if let Some(json) = result {
-        let _ = resp_tx.send(InProcResp::StateJson(json));
+    match inproc_poll_state_outcome(state_json) {
+        PollStateOutcome::Forward(json) => {
+            let _ = resp_tx.send(InProcResp::StateJson(json));
+        }
+        PollStateOutcome::LogAndSkip => {
+            warn!("InProc get_state_json() poll failed; skipping this tick");
+        }
+    }
+}
+
+/// Classify the outcome of an InProc `get_state_json()` poll.
+/// `Forward(json)` = success → send StateJson. `LogAndSkip` = a call/extract
+/// failure is surfaced (warn!) before skipping, matching the gRPC GetState
+/// path which always makes a failure visible (Error status / warn!; see
+/// :1182-1196). (issue #64 finding #3 fixed.)
+#[derive(Debug, PartialEq, Eq)]
+enum PollStateOutcome {
+    Forward(String),
+    LogAndSkip,
+}
+
+/// Pure classifier for `inproc_poll_state`. `Err(())` collapses either a
+/// `get_state_json` call failure or a non-String extract failure.
+///
+/// A poll failure is surfaced (`LogAndSkip`) so `inproc_poll_state` can
+/// `warn!` before skipping, rather than dropping it silently. (issue #64
+/// finding #3 fixed.)
+fn inproc_poll_state_outcome(state_json: Result<String, ()>) -> PollStateOutcome {
+    match state_json {
+        Ok(json) => PollStateOutcome::Forward(json),
+        Err(()) => PollStateOutcome::LogAndSkip,
     }
 }
 
@@ -2668,8 +2775,67 @@ fn inproc_dispatch(
 
 #[cfg(test)]
 mod tests {
-    use super::{flush_stale_transport_commands, map_backend_event_payload, parse_replay_granularity};
+    use super::{
+        flush_stale_transport_commands, inproc_startup_status_sequence, map_backend_event_payload,
+        parse_replay_granularity,
+    };
     use crate::trading::TransportCommand;
+
+    /// issue #64 finding #2 (RED): when InprocLiveServer init fails *after* DataEngine
+    /// init succeeded, the worker must NOT report Connected(true)/Running(true). It must
+    /// surface the failure as Connected(false) + Error so the UI does not show a healthy
+    /// connection while every live command hits `None.method`.
+    #[test]
+    fn inproc_live_server_init_failure_reports_disconnect_not_connected() {
+        use crate::trading::BackendStatusUpdate;
+        let seq = super::inproc_startup_status_sequence(/*live_server_ok=*/ false);
+        assert!(
+            !seq.iter().any(|u| matches!(u, BackendStatusUpdate::Connected(true))),
+            "must not report Connected(true) when live server init fails: {:?}",
+            seq
+        );
+        assert!(
+            seq.iter().any(|u| matches!(u, BackendStatusUpdate::Connected(false))),
+            "must report Connected(false) on live server init failure: {:?}",
+            seq
+        );
+        assert!(
+            seq.iter().any(|u| matches!(u, BackendStatusUpdate::Error(_))),
+            "must surface an Error on live server init failure: {:?}",
+            seq
+        );
+    }
+
+    /// issue #64 finding #7 (RED): the gRPC transport fires an initial
+    /// ListInstruments(ReplayCatalogFallback) on connect so the instrument-dependent
+    /// UI is seeded at startup. The InProc worker must perform the SAME startup fetch,
+    /// otherwise the universe is empty only in in-proc mode (a regression).
+    #[test]
+    fn inproc_startup_fetches_instruments_like_grpc() {
+        use crate::trading::TickersSource;
+        assert_eq!(
+            super::inproc_startup_instrument_fetch(),
+            Some(TickersSource::ReplayCatalogFallback),
+            "InProc startup must fetch instruments with the same source as gRPC \
+             (fire_list_instruments at backend_transport.rs:185)"
+        );
+    }
+
+    /// issue #64 finding #3 (RED): the InProc `inproc_poll_state` swallows a
+    /// `get_state_json()` failure with `.ok()?`/`.ok()` — no log, no status.
+    /// The gRPC GetState path always surfaces a failure (Error status or warn!,
+    /// :1182-1196). InProc must NOT silently drop: a poll error must be logged
+    /// before skipping.
+    #[test]
+    fn inproc_poll_state_failure_is_not_silent() {
+        use super::PollStateOutcome;
+        assert_eq!(
+            super::inproc_poll_state_outcome(Err(())),
+            PollStateOutcome::LogAndSkip,
+            "a get_state_json() failure must be surfaced (warn!) before skipping, \
+             not silently dropped — matching gRPC GetState (:1182-1196)"
+        );
+    }
 
     /// §3.8 regression: the reconnect flush must PRESERVE only
     /// `GetOrdersAndReconcile` / `FetchAvailableInstruments` and DROP everything else.

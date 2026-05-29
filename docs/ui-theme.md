@@ -4,7 +4,7 @@
 
 ## 1. 概要
 
-- `Theme` Bevy `Resource` が dark variant の全トークンを保持します（`src/ui/mod.rs` で `init_resource::<Theme>()`）。
+- `Theme` Bevy `Resource` が dark variant の全トークンを保持します（`src/ui/mod.rs` で `app.add_plugins(theme::ThemePlugin)`。`ThemePlugin` が内部で `init_resource::<Theme>()` を呼ぶ単一窓口です — `init_resource::<Theme>()` を呼び出し側で直書きしないこと）。
 - system からは `Res<Theme>` で読み、`theme.colors.*` / `theme.status.*` / `theme.typography.*` / `theme.layout.*` 経由でアクセスしてください。
 - 直接 `Color::srgb(...)` / `padding: 8.0` / `Transform z = 100.0` を書かない、が大原則です（§8 アンチパターン参照）。
 
@@ -53,6 +53,8 @@
 
 使い分け: **gap / 細かい inset には `Base04`〜`Base06`、container padding には `Base08`** が指針。旧 footer の `padding: 10.0` は Comfortable density のとき `Base08` (=10) に吸収されます。
 
+呼び出し規約: 実コードでは `theme.spacing.px(DynamicSpacing::Base08)` 経由で引いてください。`DynamicSpacing::Base08.px(density)` を直接呼ぶことは禁止（density 引数を call site に漏らさないため）。`SpacingTokens` wrapper が density を保持しているので、call site は variant だけ渡せば済みます（#48 M5）。
+
 ## 5. `Typography`
 
 `src/ui/theme/typography.rs`。`HeadlineSize {XSmall, Small, Medium, Large, XLarge}` と `LabelSize {XSmall, Small, Default, Large}` の 2 軸。
@@ -77,10 +79,12 @@
 
 裁定: modal は `ModalSurface`、toast は `Notification`、popover は `ElevatedSurface` を使ってください。`background(theme)` は `ElevationIndex` から `ThemeColors` フィールドへの透過 lookup を提供します（z 値と背景色を同じ tier 概念で引けるようにするため）。
 
+呼び出し規約: 実コードでは `theme.elevation.background(ElevationIndex::Surface)` 経由で引いてください。`ElevationIndex::background_for_colors(&theme.colors)` を直接呼ぶことは禁止（`ElevationTokens` wrapper が `&Theme` を保持しているので call site は tier だけ渡せば済む）。
+
 ## 7. `Radius` / `Layout` / `Appearance`
 
 - `Radius { sm, md, lg, full }` — `border_radius` 用。
-- `Layout { toolbar_h, footer_h, sidebar_w, inspector_w, density }` — UI レイアウトの基本寸法。**注意**: 現時点で footer.rs の生コードは `Val::Px(28.0)` を持ち、`theme.layout.footer_h` のデフォルトは `24.0` です。値の食い違いは #46 Slice B で統一する余地が残っています。
+- `Layout { toolbar_h, footer_h, sidebar_w, inspector_w, footer_button_h, footer_transport_button_w, footer_speed_button_w, footer_mode_button_w }` — UI レイアウトの基本寸法（footer 寸法 4 つは #48 H6 で追加）。UI density は `SpacingTokens::density`（`theme.spacing.density`）が single source of truth で、`Layout` 側には持たせません。`footer_h` は 28.0 に統一済み（旧 24/28 食い違いは H6 で解消）。
 - `Appearance` — Light/Dark 等のテーマ識別（将来 JSON load 用）。
 
 ## 8. アンチパターン集
@@ -126,19 +130,22 @@
    **再定義せず流用**する。
 5. **`order_panel.rs` 1,219 行の実コード分割** … `docs/ui-refactor-plan.md` に**計画のみ**。実装は **#46 Slice B**。
 6. **`footer.rs` 以外（menu_bar / sidebar / order_panel / modify_modal / scenario_startup / strategy_editor_*）の token 化** … **#46**。
-7. **`theme.layout.footer_h = 24.0` と footer.rs 生 `Val::Px(28.0)` の値の食い違い** … 将来統一の余地。
-8. **Light theme 完成 / JSON ロード** … 将来。
-9. **`strategy_editor.rs` の token 化** … #50 内で `bevscode` 上に乗ったタイミングで実施（#48 範囲外、`Color::srgba` 直書き残存は観測のみ。`strategy_editor_spike.rs` は #50 Slice 7 で撤去済み）。
+7. **Light theme 完成 / JSON ロード** … 将来。
+8. **`strategy_editor.rs` の token 化** … #50 内で `bevscode` 上に乗ったタイミングで実施（#48 範囲外、`Color::srgba` 直書き残存は観測のみ。`strategy_editor_spike.rs` は #50 Slice 7 で撤去済み）。
 
-## 11. footer で touch しなかったもの（明示）
+## 11. footer 寸法 token（#48 H6 で完全 token 化）
 
-#48 Step 9 の footer.rs token 化では、以下を**意図的に残しました**:
+`docs/ui-theme.md` 旧 §11 の carve-out（`Val::Px(28.0)` / `34.0` / `30.0` / `50.0` / `20.0` を #46 まで温存）は **#48 H6 で撤回** しました。footer.rs は raw `Val::Px(<数値>)` を持たず、すべて `theme.layout.*` 経由です:
 
-- `Val::Px(28.0)` — footer 自身の高さ。
-- `Val::Px(0.0)` — sticky anchor 用。
-- `Val::Px(34.0)` / `30.0` / `50.0` / `20.0` — transport / speed / mode toggle ボタン寸法。
+- `theme.layout.footer_h` (28.0) — footer 高さ
+- `theme.layout.footer_button_h` (20.0) — 全 footer ボタン共通高さ
+- `theme.layout.footer_transport_button_w` (34.0) — transport ボタン幅
+- `theme.layout.footer_speed_button_w` (30.0) — speed ボタン幅
+- `theme.layout.footer_mode_button_w` (50.0) — ExecutionMode toggle 幅
 
-これらはすべて **#46 component helper 課題**（`Button::transport()` / `Button::speed()` などの helper API）で集約します。token 化を先行させるとボタン helper の設計を縛ってしまうため、寸法だけは温存しました。
+sticky anchor (`bottom/left/right = 0`) は design token ではなく positional constant なので `Val::ZERO` を使います。
+
+#46 の component helper（`Button::transport()` 等）は、本 token を default 値として参照するラッパとして後日設計します。token 自体は本 issue で確定。
 
 ## 12. Button component (#46 Slice A)
 
@@ -202,3 +209,22 @@ spawn_button(&mut commands, &theme, "Run")
   色味が変わるため Slice A では現状維持。token 化は **Slice H**。
 - **`order_panel` の confirm / submit ボタン** … world-space Sprite + observer 方式で UI-Node の
   `button_interaction_system` の対象外。**Slice B**（`order_panel` 分割 + `ModalSkeleton`）で扱う。
+
+## 13. Issue #48 review followup（fix/#48-review-followup ブランチ）
+
+#48 マージ後の Navigator + codex レビューで挙がった Medium 以上の指摘 13 件に対応したセッションで以下が landed しました。本文の他章はこの変更を反映済みなので、差分の history としてのみ記載します:
+
+- **M2**: `DynamicSpacing` に `Base01` / `Base03` / `Base10` variant を追加（spec §4 で言及されていたが欠落していた 3 step）。
+- **H1 + H2**: `accent_dark` (Radix iris) / `red_dark` / `green_dark` (Radix grass) / `yellow_dark` (Radix amber) / `blue_dark` を Radix 12-step フル値で埋める（旧実装は step 9/11/12 だけが hue 固有、残りは neutral 流用だった）。これにより `accent` と `blue` (info) が同一 RGB だった視覚衝突も解消。
+- **H3**: `ThemeColors::from_scales(&ColorScales)` / `StatusColors::from_scales` / `SyntaxColors::from_scales` / `PlayerColors::from_scales` / `Theme::from_scales(ColorScales)` に refactor。`Theme::default()` は scale 再構築を二重持ちせず `Self::from_scales(ColorScales::default())` に集約。AC §8「`ColorScales` 差し替えで Light を組める」契約を回復。
+- **H7**: Zed-style `ThemeColors` 役割フィールド 29 件追加（`panel_focused_border`, `ghost_element_{background,hover,active,selected,disabled}`, `border_{selected,disabled,transparent}`, `element_{disabled,selection_background}`, `drop_target_{background,border}`, `status_bar_background`, `title_bar_background`, `toolbar_background`, `tab_bar_background`, `tab_{active,inactive}_background`, `search_{match,active_match}_background`, `scrollbar_thumb_{background,hover_background,active_background}`, `scrollbar_track_background`, `gutter_background`, `line_{number,number_active}`, `icon_placeholder`）。すべて per-field `///` doc で `(scale.X.step_N)` を引用。
+- **H4**: `ElevationIndex` の `ModalSurface` / `Notification` / `DragOverlay` / `ElevatedSurface` が同じ `elevated_surface_background` に潰れていた問題を解消。`modal_background` / `notification_background` / `drag_overlay_background` を `ThemeColors` に追加し、`background_for_colors` を tier 別 routing に書き換え。
+- **M7**: `Theme::dark()` / `Theme::light()` constructors + `ColorScales::dark()` / `ColorScales::light()`。`Default for Theme` は `Self::dark()` に。`Light` palette 本体は `ColorScales::light() == Self::dark()` の stub（実 Light scale 値は本 issue 範囲外）。
+- **M5**: footer.rs 4 箇所を `DynamicSpacing::Base<N>.px(theme.spacing.density)` 直叩きから `theme.spacing.px(DynamicSpacing::Base<N>)` wrapper 経由に統一。
+- **H6**: footer.rs を完全 token 化。raw `Val::Px(34/30/50/20/28/0)` を `theme.layout.footer_{transport,speed,mode}_button_w` / `footer_button_h` / `footer_h` / `Val::ZERO` に置換。docs §11 の carve-out を撤回。`Layout::default().footer_h` を 24.0 → 28.0 に bump。Q2 lint flow が raw `Val::Px(<数値>)` を ban するよう強化。
+- **H5**: `InputPhase { KeyboardDrain, ModalInput, WidgetInput }` SystemSet を `src/ui/mod.rs` に定義し、`UiPlugin` で `.chain()` 設定。代表 2 system (`secret_modal_input_system` → `ModalInput`, `menu_keyboard_system` → `WidgetInput`) を migrate。残り systems は doc TODO で段階移行リスト化。
+- **M6**: `Clickable::on_click` を `FnMut()` から `FnMut(&mut Commands)` ベースに再設計。`OnClick(Box<dyn FnMut(&mut Commands) + Send + Sync>)` Component を追加。#46 helper が `Commands::send` / `MessageWriter::write` を closure 内で実行できるように。
+- **M1**: `q3_theme_serde_roundtrip_non_default_fields` を comprehensive fixture に置換。`backcast::ui::theme::non_default_theme()` で全 sub-struct の全 serializable field を non-default 値に mutate し、`#[serde(skip)]` 混入を PartialEq round-trip assert で gate。private `Typography.headline` / `Typography.label` は同 module 内の `non_default_typography()` helper で生成。両 helper は integration test target が `cfg(test)` を継承しない制約のため `#[doc(hidden)] pub fn` で公開。
+- **M3**: `tests/e2e/FLOWS.md` への Q3 entry（既に landed）。
+- **M4**: 本 §13 を含む docs/ui-theme.md drift 修正（density は SpacingTokens、ThemePlugin 経由 init、wrapper-as-sole-API 規約）。
+- **wrapper-as-sole-API**: `DynamicSpacing::px(density)` / `ElevationIndex::background_for_colors(&ThemeColors)` の直接呼び出しを禁止し、`theme.spacing.px(...)` / `theme.elevation.background(...)` を唯一の窓口に統一（§4 / §6 参照）。

@@ -314,7 +314,7 @@ fn node_for_size(size: ComponentSize, density: UiDensity) -> Node {
 ///     .style(ButtonStyle::Tinted(TintColor::Success))
 ///     .size(ComponentSize::Default)
 ///     .elevation(ElevationIndex::Surface)
-///     .on_click(|| info!("run!"));
+///     .on_click(|_commands| info!("run!"));
 /// ```
 pub fn spawn_button<'a, 'w, 's>(
     commands: &'a mut Commands<'w, 's>,
@@ -370,11 +370,13 @@ impl<'a, 'w, 's> ButtonBuilder<'a, 'w, 's> {
 impl<'a, 'w, 's> Clickable for ButtonBuilder<'a, 'w, 's> {
     fn on_click<F>(self, mut on_click: F) -> Self
     where
-        F: FnMut() + Send + Sync + 'static,
+        F: FnMut(&mut Commands) + Send + Sync + 'static,
     {
         self.commands
             .entity(self.entity)
-            .observe(move |_: On<Pointer<Click>>| on_click());
+            .observe(move |_: On<Pointer<Click>>, mut commands: Commands| {
+                on_click(&mut commands)
+            });
         self
     }
 }
@@ -626,7 +628,7 @@ mod tests {
         world.insert_resource(Theme::default());
         world
             .run_system_once(|mut commands: Commands, theme: Res<Theme>| {
-                spawn_button(&mut commands, &theme, "X").on_click(|| {});
+                spawn_button(&mut commands, &theme, "X").on_click(|_: &mut Commands| {});
             })
             .unwrap();
         let mut q = world.query_filtered::<Entity, With<ButtonStyle>>();

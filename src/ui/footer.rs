@@ -28,8 +28,8 @@ fn spawn_transport_btn(
         .spawn((
             Button,
             Node {
-                width: Val::Px(34.0),
-                height: Val::Px(20.0),
+                width: Val::Px(theme.layout.footer_transport_button_w),
+                height: Val::Px(theme.layout.footer_button_h),
                 justify_content: JustifyContent::Center,
                 align_items: AlignItems::Center,
                 ..default()
@@ -58,8 +58,8 @@ fn spawn_speed_btn(
         .spawn((
             Button,
             Node {
-                width: Val::Px(30.0),
-                height: Val::Px(20.0),
+                width: Val::Px(theme.layout.footer_speed_button_w),
+                height: Val::Px(theme.layout.footer_button_h),
                 justify_content: JustifyContent::Center,
                 align_items: AlignItems::Center,
                 ..default()
@@ -92,8 +92,8 @@ fn spawn_mode_segment(
         .spawn((
             Button,
             Node {
-                width: Val::Px(50.0),
-                height: Val::Px(20.0),
+                width: Val::Px(theme.layout.footer_mode_button_w),
+                height: Val::Px(theme.layout.footer_button_h),
                 justify_content: JustifyContent::Center,
                 align_items: AlignItems::Center,
                 ..default()
@@ -126,17 +126,17 @@ pub fn spawn_footer(
         .spawn((
             Node {
                 position_type: PositionType::Absolute,
-                bottom: Val::Px(0.0),
-                left: Val::Px(0.0),
-                right: Val::Px(0.0),
-                height: Val::Px(28.0),
+                bottom: Val::ZERO,
+                left: Val::ZERO,
+                right: Val::ZERO,
+                height: Val::Px(theme.layout.footer_h),
                 flex_direction: FlexDirection::Row,
                 align_items: AlignItems::Center,
                 column_gap: Val::Px(
-                    crate::ui::theme::DynamicSpacing::Base06.px(theme.spacing.density),
+                    theme.spacing.px(crate::ui::theme::DynamicSpacing::Base06),
                 ),
                 padding: UiRect::horizontal(Val::Px(
-                    crate::ui::theme::DynamicSpacing::Base08.px(theme.spacing.density),
+                    theme.spacing.px(crate::ui::theme::DynamicSpacing::Base08),
                 )),
                 ..default()
             },
@@ -150,7 +150,7 @@ pub fn spawn_footer(
             spawn_mode_segment(p, &theme, "Auto", ExecutionMode::LiveAuto);
 
             p.spawn(Node {
-                width: Val::Px(crate::ui::theme::DynamicSpacing::Base08.px(theme.spacing.density)),
+                width: Val::Px(theme.spacing.px(crate::ui::theme::DynamicSpacing::Base08)),
                 ..default()
             });
 
@@ -164,8 +164,8 @@ pub fn spawn_footer(
             p.spawn((
                 Button,
                 Node {
-                    width: Val::Px(34.0),
-                    height: Val::Px(20.0),
+                    width: Val::Px(theme.layout.footer_transport_button_w),
+                    height: Val::Px(theme.layout.footer_button_h),
                     justify_content: JustifyContent::Center,
                     align_items: AlignItems::Center,
                     ..default()
@@ -193,8 +193,8 @@ pub fn spawn_footer(
             p.spawn((
                 Button,
                 Node {
-                    width: Val::Px(34.0),
-                    height: Val::Px(20.0),
+                    width: Val::Px(theme.layout.footer_transport_button_w),
+                    height: Val::Px(theme.layout.footer_button_h),
                     justify_content: JustifyContent::Center,
                     align_items: AlignItems::Center,
                     ..default()
@@ -216,7 +216,7 @@ pub fn spawn_footer(
 
             // Separator
             p.spawn(Node {
-                width: Val::Px(crate::ui::theme::DynamicSpacing::Base06.px(theme.spacing.density)),
+                width: Val::Px(theme.spacing.px(crate::ui::theme::DynamicSpacing::Base06)),
                 ..default()
             });
 
