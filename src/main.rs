@@ -35,6 +35,7 @@ struct TokioHandle(tokio::runtime::Handle);
 
 #[tokio::main]
 async fn main() {
+    backcast::python_env::setup_python_dll_search_path();
     let tokio_handle = TokioHandle(tokio::runtime::Handle::current());
     App::new()
         .add_plugins(DefaultPlugins.set(WindowPlugin {

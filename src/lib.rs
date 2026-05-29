@@ -7,3 +7,4 @@ pub mod replay;
 pub mod trading;
 pub mod ui;
 pub mod venue_capabilities;
+pub mod python_env;
