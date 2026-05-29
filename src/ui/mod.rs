@@ -311,6 +311,7 @@ impl Plugin for UiPlugin {
         // Phase 9 §3.11 / §3.12 (Step 4): right-click context menu + Modify modal.
         .init_resource::<OrderContextMenu>()
         .init_resource::<ModifyForm>()
+        .init_resource::<crate::ui::component::modal_layer::ModalLayer>()
         // Phase 10 §2.9: OrdersPanel strategy_id filter (All / Manual / Strategy).
         .init_resource::<crate::trading::OrdersFilter>()
         // Phase 10 §2.10 / log Open Question: violation toast + strategy log buffer.
@@ -610,6 +611,13 @@ impl Plugin for UiPlugin {
                     .before(secret_modal_input_system)
                     .before(confirm_modal_button_system),
                 relogin_modal_sync_system,
+                // B2-3 (#46): generic modal-layer Esc handler. No-op while the
+                // ModalLayer stack is empty (early-returns), so behavior is
+                // unchanged until B2-4 migrates relogin onto it. Same Escape-yield
+                // ordering as relogin so the handoff preserves determinism.
+                crate::ui::component::modal_layer::modal_layer_esc_system
+                    .before(secret_modal_input_system)
+                    .before(confirm_modal_button_system),
             ),
         )
         // ── Phase 9 Step 8 §3.8: backend 再起動後の注文 reconcile 通知モーダル ──
