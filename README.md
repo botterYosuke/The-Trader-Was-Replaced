@@ -58,6 +58,49 @@ Start-Process -FilePath ".\target\debug\backcast.exe" -WorkingDirectory $PWD.Pat
   -RedirectStandardError  "$env:TEMP\backcast_err.txt" -PassThru
 ```
 
+### In-proc モード（PyO3 直接呼び出し）
+
+`BACKEND_TRANSPORT=inproc` を設定すると gRPC を経由せず Python エンジンを in-process で呼び出す。
+
+#### ビルド前提
+
+| 項目 | 内容 |
+|---|---|
+| pyo3 バージョン | 0.22（Python 3.13 まで正式サポート） |
+| 動作確認済み Python | 3.13 / 3.14（ABI3 前方互換モード） |
+| `PYO3_USE_ABI3_FORWARD_COMPATIBILITY` | `.cargo/config.toml` で `"1"` に設定済み（手動不要） |
+
+#### Windows（Python 3.14 venv の場合）
+
+`cargo build/test` は `PATH` 上の Python インタープリタを自動検出するが、
+Windows の `WindowsApps\python.exe` エイリアスは検出できない。
+`.venv` を作成後、`PYO3_PYTHON` を明示する。
+
+```powershell
+# 1. uv で venv を作成（初回のみ）
+uv venv
+
+# 2. PYO3_PYTHON を .venv に向ける（シェルセッションごとに設定）
+$env:PYO3_PYTHON = "$PWD\.venv\Scripts\python.exe"
+
+# 3. ビルド（PYO3_USE_ABI3_FORWARD_COMPATIBILITY は .cargo/config.toml で自動設定）
+cargo build
+```
+
+> **注意 (pyo3 0.22 + Python 3.14)**: ABI3 前方互換フラグは「バージョンチェックを抑止する」
+> 暫定措置。pyo3 を 0.23 以上にアップグレードすれば不要になる（issue #64 フォロータスク②）。
+
+#### 起動方法
+
+```powershell
+$env:BACKEND_ENABLED    = "true"
+$env:BACKEND_TRANSPORT  = "inproc"
+$env:PYTHON_ENGINE_PATH = "python"   # engine/ パッケージの親ディレクトリ
+$env:ARTIFACTS_PATH     = "S:/artifacts"
+$env:PYO3_PYTHON        = "$PWD\.venv\Scripts\python.exe"
+cargo run
+```
+
 ## ドキュメント
 
 | ドキュメント | 内容 |
