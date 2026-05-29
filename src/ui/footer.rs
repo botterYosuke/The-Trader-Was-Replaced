@@ -127,10 +127,10 @@ pub fn spawn_footer(
                 flex_direction: FlexDirection::Row,
                 align_items: AlignItems::Center,
                 column_gap: Val::Px(
-                    crate::ui::theme::DynamicSpacing::Base06.px(theme.spacing.density),
+                    theme.spacing.px(crate::ui::theme::DynamicSpacing::Base06),
                 ),
                 padding: UiRect::horizontal(Val::Px(
-                    crate::ui::theme::DynamicSpacing::Base08.px(theme.spacing.density),
+                    theme.spacing.px(crate::ui::theme::DynamicSpacing::Base08),
                 )),
                 ..default()
             },
@@ -144,7 +144,7 @@ pub fn spawn_footer(
             spawn_mode_segment(p, &theme, "Auto", ExecutionMode::LiveAuto);
 
             p.spawn(Node {
-                width: Val::Px(crate::ui::theme::DynamicSpacing::Base08.px(theme.spacing.density)),
+                width: Val::Px(theme.spacing.px(crate::ui::theme::DynamicSpacing::Base08)),
                 ..default()
             });
 
@@ -208,7 +208,7 @@ pub fn spawn_footer(
 
             // Separator
             p.spawn(Node {
-                width: Val::Px(crate::ui::theme::DynamicSpacing::Base06.px(theme.spacing.density)),
+                width: Val::Px(theme.spacing.px(crate::ui::theme::DynamicSpacing::Base06)),
                 ..default()
             });
 
