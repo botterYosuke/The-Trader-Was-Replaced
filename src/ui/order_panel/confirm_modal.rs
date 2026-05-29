@@ -6,15 +6,10 @@ use bevy::prelude::*;
 use crate::trading::{
     LastPrices, OrderFeedback, SecretPrompt, TransportCommand, TransportCommandSender,
 };
+use crate::ui::component::modal_layer::{ModalHandle, ModalSkeleton, spawn_modal};
+use crate::ui::theme::{LabelSize, Theme};
 
 use super::form::{OrderDraft, estimated_notional};
-use super::{COLOR_BTN_SUBMIT, COLOR_VALUE};
-
-// ── 配色 ───────────────────────────────────────────────────────────────────
-const COLOR_PANEL_BG: Color = Color::srgba(0.07, 0.07, 0.12, 0.96);
-const COLOR_HEADER: Color = Color::srgb(0.0, 0.81, 1.0);
-const COLOR_BTN_CANCEL: Color = Color::srgba(0.30, 0.16, 0.20, 1.0);
-const COLOR_MODAL_BACKDROP: Color = Color::srgba(0.0, 0.0, 0.0, 0.55);
 
 /// 2 段階確認の状態。`pending` が `Some` の間だけ確認モーダルを出す。
 #[derive(Resource, Default, Debug, Clone)]
@@ -37,112 +32,101 @@ pub enum ConfirmButton {
 pub struct ConfirmSummary;
 
 /// 2 段階確認モーダル (中央オーバーレイ) を spawn する (Startup)。初期 Display は None。
-pub fn spawn_confirm_modal(mut commands: Commands) {
-    commands
+/// modal skeleton (spawn_modal) の上に建てるので card は ElevationIndex::ModalSurface を
+/// 持ち、backdrop / card 背景は theme トークン由来になる (#46 Slice B Step 2)。
+pub fn spawn_confirm_modal(mut commands: Commands, theme: Res<Theme>) {
+    let ModalHandle { root, card } = spawn_modal(
+        &mut commands,
+        &theme,
+        ModalSkeleton {
+            width: 320.0,
+            z_index: 200,
+            name: "OrderConfirmModal",
+        },
+    );
+
+    commands.entity(root).insert(ConfirmModalRoot);
+
+    let header = commands
         .spawn((
             Node {
-                display: Display::None,
-                position_type: PositionType::Absolute,
-                top: Val::Px(0.0),
-                left: Val::Px(0.0),
-                width: Val::Percent(100.0),
-                height: Val::Percent(100.0),
+                margin: UiRect::bottom(Val::Px(10.0)),
+                ..default()
+            },
+            Text::new("発注内容の確認"),
+            theme.typography.label_font(LabelSize::Large),
+            TextColor(theme.colors.text_accent),
+        ))
+        .id();
+
+    // 内容サマリ (sync system が書き換える)
+    let summary = commands
+        .spawn((
+            Text::new(""),
+            theme.typography.label_font(LabelSize::Default),
+            TextColor(theme.colors.text),
+            ConfirmSummary,
+        ))
+        .id();
+
+    let cancel_label = commands
+        .spawn((
+            Text::new("キャンセル"),
+            theme.typography.label_font(LabelSize::Default),
+            TextColor(theme.colors.text),
+        ))
+        .id();
+    let cancel_btn = commands
+        .spawn((
+            Button,
+            Node {
+                flex_grow: 1.0,
+                height: Val::Px(30.0),
                 align_items: AlignItems::Center,
                 justify_content: JustifyContent::Center,
                 ..default()
             },
-            BackgroundColor(COLOR_MODAL_BACKDROP),
-            GlobalZIndex(200),
-            ConfirmModalRoot,
-            Name::new("OrderConfirmModal"),
+            BackgroundColor(theme.colors.element_selection_background),
+            ConfirmButton::Cancel,
         ))
-        .with_children(|p| {
-            p.spawn((
-                Node {
-                    width: Val::Px(320.0),
-                    flex_direction: FlexDirection::Column,
-                    padding: UiRect::all(Val::Px(16.0)),
-                    ..default()
-                },
-                BackgroundColor(COLOR_PANEL_BG),
-            ))
-            .with_children(|card| {
-                card.spawn((
-                    Node {
-                        margin: UiRect::bottom(Val::Px(10.0)),
-                        ..default()
-                    },
-                    Text::new("発注内容の確認"),
-                    TextFont {
-                        font_size: 15.0,
-                        ..default()
-                    },
-                    TextColor(COLOR_HEADER),
-                ));
-                // 内容サマリ (sync system が書き換える)
-                card.spawn((
-                    Text::new(""),
-                    TextFont {
-                        font_size: 13.0,
-                        ..default()
-                    },
-                    TextColor(COLOR_VALUE),
-                    ConfirmSummary,
-                ));
-                // ボタン行
-                card.spawn((Node {
-                    margin: UiRect::top(Val::Px(14.0)),
-                    column_gap: Val::Px(10.0),
-                    ..default()
-                },))
-                    .with_children(|btns| {
-                        btns.spawn((
-                            Button,
-                            Node {
-                                flex_grow: 1.0,
-                                height: Val::Px(30.0),
-                                align_items: AlignItems::Center,
-                                justify_content: JustifyContent::Center,
-                                ..default()
-                            },
-                            BackgroundColor(COLOR_BTN_CANCEL),
-                            ConfirmButton::Cancel,
-                        ))
-                        .with_children(|b| {
-                            b.spawn((
-                                Text::new("キャンセル"),
-                                TextFont {
-                                    font_size: 13.0,
-                                    ..default()
-                                },
-                                TextColor(COLOR_VALUE),
-                            ));
-                        });
-                        btns.spawn((
-                            Button,
-                            Node {
-                                flex_grow: 1.0,
-                                height: Val::Px(30.0),
-                                align_items: AlignItems::Center,
-                                justify_content: JustifyContent::Center,
-                                ..default()
-                            },
-                            BackgroundColor(COLOR_BTN_SUBMIT),
-                            ConfirmButton::Confirm,
-                        ))
-                        .with_children(|b| {
-                            b.spawn((
-                                Text::new("Confirm"),
-                                TextFont {
-                                    font_size: 13.0,
-                                    ..default()
-                                },
-                                TextColor(COLOR_VALUE),
-                            ));
-                        });
-                    });
-            });
-        });
+        .add_child(cancel_label)
+        .id();
+
+    let confirm_label = commands
+        .spawn((
+            Text::new("Confirm"),
+            theme.typography.label_font(LabelSize::Default),
+            TextColor(theme.colors.text),
+        ))
+        .id();
+    let confirm_btn = commands
+        .spawn((
+            Button,
+            Node {
+                flex_grow: 1.0,
+                height: Val::Px(30.0),
+                align_items: AlignItems::Center,
+                justify_content: JustifyContent::Center,
+                ..default()
+            },
+            BackgroundColor(theme.colors.element_selection_background),
+            ConfirmButton::Confirm,
+        ))
+        .add_child(confirm_label)
+        .id();
+
+    let btn_row = commands
+        .spawn(Node {
+            margin: UiRect::top(Val::Px(14.0)),
+            column_gap: Val::Px(10.0),
+            ..default()
+        })
+        .add_children(&[cancel_btn, confirm_btn])
+        .id();
+
+    commands
+        .entity(card)
+        .add_children(&[header, summary, btn_row]);
 }
 
 /// 確認モーダル root の Display を `OrderConfirm.pending` の有無に同期する。
@@ -480,6 +464,28 @@ mod tests {
         assert!(
             app.world().resource::<OrderConfirm>().pending.is_some(),
             "confirm modal must survive Escape consumed by the SecretModal"
+        );
+    }
+
+    use bevy::ecs::system::RunSystemOnce;
+
+    /// Slice 2a RED: 確認モーダルは modal skeleton の上に建てる。card に
+    /// ElevationIndex::ModalSurface が付くことを要求する（現状 spawn_confirm_modal は
+    /// ElevationIndex を一切付けないので runtime で fail する → 2b で GREEN）。
+    #[test]
+    fn confirm_modal_card_uses_modal_surface_elevation() {
+        use crate::ui::theme::ElevationIndex;
+        let mut world = World::new();
+        world.insert_resource(crate::ui::theme::Theme::default());
+        world.run_system_once(spawn_confirm_modal).unwrap();
+
+        let found = world
+            .query::<&ElevationIndex>()
+            .iter(&world)
+            .any(|e| *e == ElevationIndex::ModalSurface);
+        assert!(
+            found,
+            "confirm modal card must carry ElevationIndex::ModalSurface (built via spawn_modal)"
         );
     }
 }
