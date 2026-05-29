@@ -275,15 +275,27 @@ pub struct Layout {
     pub sidebar_w: f32,
     /// Default inspector / right panel width in px.
     pub inspector_w: f32,
+    /// Footer button height (px). All footer buttons (transport / speed / mode toggle) share this.
+    pub footer_button_h: f32,
+    /// Transport button width (px) — play / pause / step / jump-to-start / force-stop.
+    pub footer_transport_button_w: f32,
+    /// Speed selector button width (px) — 1x / 2x / 5x / 10x / 50x.
+    pub footer_speed_button_w: f32,
+    /// ExecutionMode toggle segment width (px) — Replay / Manual / Auto.
+    pub footer_mode_button_w: f32,
 }
 
 impl Default for Layout {
     fn default() -> Self {
         Self {
             toolbar_h: 32.0,
-            footer_h: 24.0,
+            footer_h: 28.0,
             sidebar_w: 240.0,
             inspector_w: 280.0,
+            footer_button_h: 20.0,
+            footer_transport_button_w: 34.0,
+            footer_speed_button_w: 30.0,
+            footer_mode_button_w: 50.0,
         }
     }
 }

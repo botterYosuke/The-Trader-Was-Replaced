@@ -122,16 +122,19 @@
 4. **`InputPhase` SystemSet 化** … `bevy_cosmic_edit` は #50 Slice 6 で撤去済み。今後 `bevscode` の input set にラップする際に同時導入。
 5. **`order_panel.rs` 1,219 行の実コード分割** … `docs/ui-refactor-plan.md` に**計画のみ**。実装は **#46 Slice B**。
 6. **`footer.rs` 以外（menu_bar / sidebar / order_panel / modify_modal / scenario_startup / strategy_editor_*）の token 化** … **#46**。
-7. **`theme.layout.footer_h = 24.0` と footer.rs 生 `Val::Px(28.0)` の値の食い違い** … 将来統一の余地。
-8. **Light theme 完成 / JSON ロード** … 将来。
-9. **`strategy_editor.rs` の token 化** … #50 内で `bevscode` 上に乗ったタイミングで実施（#48 範囲外、`Color::srgba` 直書き残存は観測のみ。`strategy_editor_spike.rs` は #50 Slice 7 で撤去済み）。
+7. **Light theme 完成 / JSON ロード** … 将来。
+8. **`strategy_editor.rs` の token 化** … #50 内で `bevscode` 上に乗ったタイミングで実施（#48 範囲外、`Color::srgba` 直書き残存は観測のみ。`strategy_editor_spike.rs` は #50 Slice 7 で撤去済み）。
 
-## 11. footer で touch しなかったもの（明示）
+## 11. footer 寸法 token（#48 H6 で完全 token 化）
 
-#48 Step 9 の footer.rs token 化では、以下を**意図的に残しました**:
+`docs/ui-theme.md` 旧 §11 の carve-out（`Val::Px(28.0)` / `34.0` / `30.0` / `50.0` / `20.0` を #46 まで温存）は **#48 H6 で撤回** しました。footer.rs は raw `Val::Px(<数値>)` を持たず、すべて `theme.layout.*` 経由です:
 
-- `Val::Px(28.0)` — footer 自身の高さ。
-- `Val::Px(0.0)` — sticky anchor 用。
-- `Val::Px(34.0)` / `30.0` / `50.0` / `20.0` — transport / speed / mode toggle ボタン寸法。
+- `theme.layout.footer_h` (28.0) — footer 高さ
+- `theme.layout.footer_button_h` (20.0) — 全 footer ボタン共通高さ
+- `theme.layout.footer_transport_button_w` (34.0) — transport ボタン幅
+- `theme.layout.footer_speed_button_w` (30.0) — speed ボタン幅
+- `theme.layout.footer_mode_button_w` (50.0) — ExecutionMode toggle 幅
 
-これらはすべて **#46 component helper 課題**（`Button::transport()` / `Button::speed()` などの helper API）で集約します。token 化を先行させるとボタン helper の設計を縛ってしまうため、寸法だけは温存しました。
+sticky anchor (`bottom/left/right = 0`) は design token ではなく positional constant なので `Val::ZERO` を使います。
+
+#46 の component helper（`Button::transport()` 等）は、本 token を default 値として参照するラッパとして後日設計します。token 自体は本 issue で確定。
