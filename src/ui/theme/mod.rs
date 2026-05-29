@@ -319,16 +319,16 @@ pub struct Theme {
     pub appearance: Appearance,
 }
 
-impl Default for Theme {
-    fn default() -> Self {
-        let neutral = ColorScale::neutral_dark();
-        let accent = ColorScale::accent_dark();
-        let red = ColorScale::red_dark();
-        let green = ColorScale::green_dark();
-        let yellow = ColorScale::yellow_dark();
-        let blue = ColorScale::blue_dark();
-
-        let colors = ThemeColors {
+impl ThemeColors {
+    /// Derive every semantic UI color from a [`ColorScales`] palette.
+    ///
+    /// Issue #48 H3: this is the single source of truth for the
+    /// scale-step → semantic-role mapping. `Theme::dark()` / `Theme::light()`
+    /// (M7) will reuse this by passing a different `ColorScales`.
+    pub fn from_scales(s: &ColorScales) -> Self {
+        let neutral = &s.neutral;
+        let accent = &s.accent;
+        Self {
             background: neutral.step_1(),
             surface_background: neutral.step_2(),
             elevated_surface_background: neutral.step_3(),
@@ -356,9 +356,19 @@ impl Default for Theme {
             icon_muted: neutral.step_8(),
             icon_disabled: neutral.step_7(),
             icon_accent: accent.step_11(),
-        };
+        }
+    }
+}
 
-        let status = StatusColors {
+impl StatusColors {
+    /// Derive info / warning / error / success / long / short / bid / ask
+    /// from a [`ColorScales`] palette.
+    pub fn from_scales(s: &ColorScales) -> Self {
+        let blue = &s.blue;
+        let yellow = &s.yellow;
+        let red = &s.red;
+        let green = &s.green;
+        Self {
             info: blue.step_9(),
             info_background: blue.step_3(),
             info_border: blue.step_7(),
@@ -390,11 +400,20 @@ impl Default for Theme {
             ask: red.step_11(),
             ask_background: red.step_2(),
             ask_border: red.step_6(),
-        };
+        }
+    }
+}
 
-        // SyntaxColors: placeholder dark palette. Real values land in #50
-        // alongside the syntect / tree-sitter integration.
-        let syntax = SyntaxColors {
+impl SyntaxColors {
+    /// Placeholder dark palette derived from [`ColorScales`]. Real values
+    /// land in #50 alongside the syntect / tree-sitter integration.
+    pub fn from_scales(s: &ColorScales) -> Self {
+        let neutral = &s.neutral;
+        let accent = &s.accent;
+        let green = &s.green;
+        let yellow = &s.yellow;
+        let blue = &s.blue;
+        Self {
             comment: neutral.step_8(),
             keyword: accent.step_11(),
             string: green.step_11(),
@@ -403,11 +422,19 @@ impl Default for Theme {
             function: blue.step_11(),
             variable: neutral.step_12(),
             operator: neutral.step_11(),
-        };
+        }
+    }
+}
 
-        // Chart series palette: mix of step 9 (strong) and step 11 (muted)
-        // across accent / green / yellow / red / blue for 8 distinct hues.
-        let players = PlayerColors([
+impl PlayerColors {
+    /// Chart series palette: mix of step 9 (strong) and step 11 (muted)
+    /// across accent / green / yellow / red for 8 distinct hues.
+    pub fn from_scales(s: &ColorScales) -> Self {
+        let accent = &s.accent;
+        let green = &s.green;
+        let yellow = &s.yellow;
+        let red = &s.red;
+        Self([
             accent.step_9(),
             green.step_9(),
             yellow.step_9(),
@@ -416,14 +443,25 @@ impl Default for Theme {
             green.step_11(),
             yellow.step_11(),
             red.step_11(),
-        ]);
+        ])
+    }
+}
 
+impl Theme {
+    /// Build a [`Theme`] from a single [`ColorScales`] palette. Swapping
+    /// `ColorScales::dark()` ↔ `ColorScales::light()` (M7) is the only
+    /// switch needed for appearance.
+    ///
+    /// Note: `appearance` is set to [`Appearance::Dark`] here because the
+    /// scale identity cannot be inferred at the type level. `Theme::dark()`
+    /// / `Theme::light()` (M7) override this after `from_scales`.
+    pub fn from_scales(scales: ColorScales) -> Self {
         Self {
-            colors,
-            status,
-            syntax,
-            players,
-            scale: ColorScales::default(),
+            colors: ThemeColors::from_scales(&scales),
+            status: StatusColors::from_scales(&scales),
+            syntax: SyntaxColors::from_scales(&scales),
+            players: PlayerColors::from_scales(&scales),
+            scale: scales,
             spacing: SpacingTokens::default(),
             typography: Typography::default(),
             elevation: ElevationTokens::default(),
@@ -431,6 +469,12 @@ impl Default for Theme {
             layout: Layout::default(),
             appearance: Appearance::Dark,
         }
+    }
+}
+
+impl Default for Theme {
+    fn default() -> Self {
+        Self::from_scales(ColorScales::default())
     }
 }
 
