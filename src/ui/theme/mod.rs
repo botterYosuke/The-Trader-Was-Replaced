@@ -148,6 +148,13 @@ pub struct ThemeColors {
     pub line_number: Color,
     /// Active line number text (neutral.step_12).
     pub line_number_active: Color,
+
+    /// Modal dialog body background (neutral.step_4 — one step above elevated_surface).
+    pub modal_background: Color,
+    /// Toast / notification background (neutral.step_5 — pops above modals).
+    pub notification_background: Color,
+    /// Drag-and-drop preview background (neutral.step_6 — highest elevated tier).
+    pub drag_overlay_background: Color,
 }
 
 // -- StatusColors -----------------------------------------------------------
@@ -454,6 +461,10 @@ impl ThemeColors {
             gutter_background: neutral.step_1(),
             line_number: neutral.step_8(),
             line_number_active: neutral.step_12(),
+
+            modal_background: neutral.step_4(),
+            notification_background: neutral.step_5(),
+            drag_overlay_background: neutral.step_6(),
         }
     }
 }
