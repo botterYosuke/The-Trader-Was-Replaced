@@ -33,6 +33,8 @@ mod a13_replay_play_pause_step_jumptostart;
 mod a14_footer_time_advances_on_replay_step;
 #[path = "e2e/flows/a15_replay_step_from_idle.rs"]
 mod a15_replay_step_from_idle;
+#[path = "e2e/flows/a16_replay_step_from_loaded.rs"]
+mod a16_replay_step_from_loaded;
 #[path = "e2e/flows/a7_replay_startup_progress.rs"]
 mod a7_replay_startup_progress;
 #[path = "e2e/flows/a8_stale_startup_id_ignored.rs"]

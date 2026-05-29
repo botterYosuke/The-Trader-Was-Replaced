@@ -667,7 +667,18 @@ fn setup_backend_connection(
                                 token: run_token.clone(),
                             });
                             match run_client.step_replay(req).await {
-                                Ok(r) => info!("LoadAndStep: step ok, state={:?}", r.into_inner().current_state),
+                                Ok(r) => {
+                                    let inner = r.into_inner();
+                                    if !inner.success {
+                                        let msg = format!("LoadAndStep StepReplay: {} {}", inner.error_code, inner.error_message);
+                                        error!("{}", msg);
+                                        let _ = run_status_tx.send(BackendStatusUpdate::RunFailed {
+                                            startup_id: Some(startup_id), error: msg,
+                                        });
+                                    } else {
+                                        info!("LoadAndStep: step ok, state={:?}", inner.current_state);
+                                    }
+                                }
                                 Err(e) => {
                                     let msg = format!("LoadAndStep: step_replay failed: {}", e);
                                     error!("{}", msg);
