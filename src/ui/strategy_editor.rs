@@ -205,8 +205,9 @@ pub fn spawn_strategy_editor_panel(
     // システムに委譲する。spawn_strategy_editor_panel は AssetServer を持たないが、bevscode のフォント
     // 読み込みに必要なため、root 生成 → 次フレームで Added<StrategyEditorRoot> を watch する system が
     // 拾って peer を spawn する設計にする。
-    // 同フレームに peer を建てたい欲求はあるが、Slice 1 では cosmic が引き続き draw / input を担うので
-    // 1 フレーム遅延は視覚的に許容（spike も同パターン）。
+    // 同フレームに peer を建てたい欲求はあるが、root 生成と peer spawn を分けることで
+    // AssetServer 依存を `spawn_bevscode_peer_on_strategy_editor_added` 側に隔離できる。
+    // 1 フレーム遅延は視覚的に許容。
 
     let _ = title_bar;
     let _ = spec.layout_source;
@@ -1182,10 +1183,8 @@ mod tests {
 // ─────────────────────────────────────────────────────────────────────────────
 // Slice 1 (#50): bevscode CodeEditor を Projected Node として spawn / 投影する系統
 //
-// ADR 0006: cosmic_edit を bevscode に置き換える Phase B の最初のスライス。本ブロックは
-// cosmic と並存させるためのレールであり、Slice 6 で cosmic 撤去後も継続して使う。
-// 構造は `strategy_editor_spike.rs` で Go 判定済みの設計を本実装 marker で複製したもの。
-// Slice 7 で spike module を削除した後はこちらが唯一の Projected Node 経路となる。
+// ADR 0006: cosmic_edit を bevscode に置き換える Phase B の最初のスライス。Slice 6 で cosmic を
+// 撤去した後は、本ブロックが唯一の Projected Node 経路となる。
 // ─────────────────────────────────────────────────────────────────────────────
 
 use bevscode::prelude::*;
@@ -1296,9 +1295,8 @@ pub fn apply_pending_strategy_seed_system(
 
 /// 毎フレーム world rect → screen rect 投影で bevscode `CodeEditor` Node を追従させる。
 ///
-/// 投影規約は `strategy_editor_spike.rs::project_spike_editor_node_system` と同一
-/// （ADR 0006 / spike Go 判定で確立）。差分は marker 型のみ:
-/// - root: `StrategyEditorRoot`（cosmic と並存中も常に root に貼ってある）
+/// 投影規約は ADR 0006 で確立。marker 型:
+/// - root: `StrategyEditorRoot`（floating window root に常に貼ってある）
 /// - node: `StrategyEditorNode { root, region_key }`（bevscode peer）
 ///
 /// Z=200 ピンは Slice 6 で cosmic 撤去後に有効化したい挙動だが、cosmic と並存中も Bevy UI が
@@ -1382,8 +1380,10 @@ pub fn project_strategy_editor_node_system(
 
 /// drag / pan で editor が動いたとき、bevy_instanced_text の glyph batch を再構築させる。
 ///
-/// 詳細な背景は `strategy_editor_spike.rs::touch_spike_text_layouts_on_position_change` を参照。
-/// 本実装は marker 型のみ差し替えたクローン（`SpikeEditorNode` → `StrategyEditorNode`）。
+/// `ui_layout_system` は `ComputedNode` の change detection を size 変化でしか立てず、位置変化
+/// （`UiGlobalTransform`）では `bevy_instanced_text` の glyph batch キャッシュが効いて editor 本体・
+/// 行番号ガターが前フレームの screen 位置に取り残される。`Changed<UiGlobalTransform>` を検知して
+/// editor 本体と対応ガターの `DisplayLayout` を `set_changed()` し、batch 再合成を強制する（ADR 0006）。
 /// gutter は bevscode の `GutterTextView { editor }` で対応する editor entity に紐付いている。
 pub fn touch_strategy_text_layouts_on_position_change(
     editors: Query<Entity, (With<StrategyEditorNode>, Changed<UiGlobalTransform>)>,

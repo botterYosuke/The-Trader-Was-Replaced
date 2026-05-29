@@ -33,8 +33,6 @@ pub mod settings;
 pub mod sidebar;
 pub mod strategy_editor;
 pub mod strategy_editor_find;
-// issue #50 Step 0 spike — cosmic 並存の Projected Node PoC（Go/No-Go ゲート）。
-pub mod strategy_editor_spike;
 pub mod systems;
 pub mod window;
 
@@ -209,7 +207,6 @@ impl Plugin for UiPlugin {
             bevscode::prelude::CodeEditorPlugins,
             theme::ThemePlugin,
         ))
-        .add_message::<crate::ui::strategy_editor_spike::SpikeEditorSpawnRequested>()
         .init_resource::<WindowManager>()
         .init_resource::<StrategyBuffer>()
         .init_resource::<StrategyAutoSaveState>()
@@ -575,39 +572,9 @@ impl Plugin for UiPlugin {
         )
         // ── Phase 10 §2.10: Safety Rail violation toast ──
         .add_systems(Update, safety_toast_system)
-        // ── issue #50 Step 0 spike: Projected Node 方式 PoC ──
-        // ADR 0006 / plan: cosmic_edit と並存させて Go/No-Go を判定する。
-        // - handle_spike_editor_spawn_requests: メニュー / キーボードからの spawn 要求を受ける（Update）
-        // - cleanup_spike_editor_on_root_despawn: × で root が消えたら Node も連れて despawn（Update）
-        .add_systems(
-            Update,
-            (
-                crate::ui::strategy_editor_spike::handle_spike_editor_spawn_requests,
-                crate::ui::strategy_editor_spike::cleanup_spike_editor_on_root_despawn,
-            ),
-        )
-        // - project_spike_editor_node_system: world rect → screen rect 投影で Node を毎フレーム更新
-        //   （`UiSystems::Layout` の前 = 同フレーム ComputedNode に反映）。
-        // - touch_spike_text_layouts_on_position_change: drag/pan で editor が動くだけ
-        //   （size 不変）のケースで bevy_instanced_text の `produce_layouts` / `update_text_views`
-        //   がキャッシュで早期 return するのを回避するため、`Changed<UiGlobalTransform>` を検知
-        //   して editor / gutter の `DisplayLayout` を `set_changed()` する。詳細は spike module
-        //   の docstring（issue #50 Step 0 / ADR 0006 / bevy_instanced_text 51220b7 の挙動）。
-        //   順序は `LayoutProduceSet.after`（produce_layouts の上書きを避ける）/
-        //   `TextViewRenderSet.before`（update_text_views が拾えるタイミング）。
-        .add_systems(
-            PostUpdate,
-            (
-                crate::ui::strategy_editor_spike::project_spike_editor_node_system
-                    .before(bevy::ui::UiSystems::Layout),
-                crate::ui::strategy_editor_spike::touch_spike_text_layouts_on_position_change
-                    .after(bevy_instanced_text::LayoutProduceSet)
-                    .before(bevy_instanced_text::TextViewRenderSet),
-            ),
-        )
-        // ── Slice 1 (#50): bevscode 本実装 Projected Node 系統（cosmic と並存）──
-        // ADR 0006. spike と同じ schedule 構成で本実装 marker（StrategyEditorRoot / StrategyEditorNode）に
-        // 適用する。Slice 7 で spike 撤去後はこちらだけが残る。
+        // ── Slice 1 (#50): bevscode 本実装 Projected Node 系統 ──
+        // ADR 0006. bevscode `CodeEditor` を world-space marker（StrategyEditorRoot / StrategyEditorNode）に
+        // 投影する唯一の Projected Node 経路。
         // - spawn_bevscode_peer_on_strategy_editor_added: Added<StrategyEditorRoot> を watch し peer を生成
         // - apply_pending_strategy_seed_system: seed を SetTextRequested で投入し pending marker を外す
         // - cleanup_strategy_editor_node_on_root_despawn: root が消えたら peer を片付ける
@@ -637,7 +604,7 @@ impl Plugin for UiPlugin {
         )
         // - project_strategy_editor_node_system: world rect → screen rect 投影で Node を毎フレーム更新
         // - touch_strategy_text_layouts_on_position_change: drag/pan で動いた editor の DisplayLayout を
-        //   set_changed() して glyph batch キャッシュバグを回避（spike と同じ理由・同じ schedule）
+        //   set_changed() して glyph batch キャッシュバグを回避
         .add_systems(
             PostUpdate,
             (
