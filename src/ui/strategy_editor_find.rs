@@ -241,6 +241,11 @@ pub fn find_keyboard_system(
             // focus 中が bevscode Strategy editor ならそれを対象に。そうでなければ None。
             state.target_editor = input_focus.0.filter(|e| editor_q.contains(*e));
             state.focused_field = FindFocusedField::Query;
+            // N1 (#50 followup): bevscode は `On<FocusedInput<KeyboardInput>>` 経由で
+            // InputFocus の entity にキーを配送する。Find 入力欄に入れた文字が同フレームに
+            // strategy ソースへも挿入されるのを防ぐため、ここで InputFocus をクリアして
+            // bevscode への配送を止める (Esc / 復元は target_editor から)。
+            input_focus.0 = None;
         } else {
             // 既に開いている: 別の Strategy editor に focus 中ならそれへ retarget。
             // query 欄へ focus を戻す (panel 内 enum focus)。
@@ -248,6 +253,8 @@ pub fn find_keyboard_system(
                 state.target_editor = Some(new_target);
             }
             state.focused_field = FindFocusedField::Query;
+            // N1 (#50 followup): retarget 時も InputFocus を外す。
+            input_focus.0 = None;
         }
         *cooldown = 0.5;
     }
@@ -548,6 +555,8 @@ pub fn find_button_interaction_system(
 pub fn find_field_input_system(
     mut kb_events: ResMut<Messages<KeyboardInput>>,
     mut state: ResMut<FindReplaceState>,
+    mut input_focus: ResMut<bevy::input_focus::InputFocus>,
+    keys: Res<ButtonInput<KeyCode>>,
 ) {
     if !state.is_open || state.focused_field == FindFocusedField::None {
         return;
@@ -558,6 +567,21 @@ pub fn find_field_input_system(
         }
         match &ev.logical_key {
             Key::Character(s) => {
+                // N4 (#50 followup): Ctrl+F / Cmd+X 等のショートカットを Find 入力欄から
+                // 弾く。Alt は除外しない: 欧州配列の AltGr (Windows=Ctrl+Alt / Linux=Alt) で
+                // '@' '{' '|' 等の印字文字を入力する経路を潰さないため。Shift は元から許可
+                // (大文字)。Ctrl+Alt (AltGr) は Ctrl 一致で skip されるが、これは Windows
+                // 環境で AltGr が混入する稀ケースの妥協 (TODO: `ev.text` を見て OS 解決済み
+                // テキストを尊重する形に置換)。
+                let mod_held = keys.any_pressed([
+                    KeyCode::ControlLeft,
+                    KeyCode::ControlRight,
+                    KeyCode::SuperLeft,
+                    KeyCode::SuperRight,
+                ]);
+                if mod_held {
+                    continue;
+                }
                 let buf = match state.focused_field {
                     FindFocusedField::Query => &mut state.query,
                     FindFocusedField::Replacement => &mut state.replacement,
@@ -587,6 +611,12 @@ pub fn find_field_input_system(
             Key::Escape => {
                 state.is_open = false;
                 state.focused_field = FindFocusedField::None;
+                // N3 (#50 followup): N1 で InputFocus=None にしたまま panel を閉じると
+                // strategy editor に typing が戻らない。target_editor へ focus を復元する
+                // (find_keyboard_system の Esc 経路と対称)。
+                if let Some(target) = state.target_editor {
+                    input_focus.0 = Some(target);
+                }
             }
             _ => {}
         }
@@ -1338,6 +1368,8 @@ mod tests {
     fn find_field_input_escape_closes_panel() {
         let mut app = App::new();
         app.init_resource::<FindReplaceState>();
+        app.init_resource::<bevy::input_focus::InputFocus>();
+        app.init_resource::<ButtonInput<KeyCode>>();
         app.add_message::<KeyboardInput>();
         app.add_systems(Update, find_field_input_system);
 
@@ -1364,6 +1396,8 @@ mod tests {
     fn find_field_input_tab_cycles_focus_between_query_and_replacement() {
         let mut app = App::new();
         app.init_resource::<FindReplaceState>();
+        app.init_resource::<bevy::input_focus::InputFocus>();
+        app.init_resource::<ButtonInput<KeyCode>>();
         app.add_message::<KeyboardInput>();
         app.add_systems(Update, find_field_input_system);
 
@@ -1393,6 +1427,8 @@ mod tests {
     fn find_field_input_backspace_removes_last_char_from_focused_field() {
         let mut app = App::new();
         app.init_resource::<FindReplaceState>();
+        app.init_resource::<bevy::input_focus::InputFocus>();
+        app.init_resource::<ButtonInput<KeyCode>>();
         app.add_message::<KeyboardInput>();
         app.add_systems(Update, find_field_input_system);
 
@@ -1415,6 +1451,8 @@ mod tests {
     fn find_field_input_appends_char_to_query_when_query_focused() {
         let mut app = App::new();
         app.init_resource::<FindReplaceState>();
+        app.init_resource::<bevy::input_focus::InputFocus>();
+        app.init_resource::<ButtonInput<KeyCode>>();
         app.add_message::<KeyboardInput>();
         app.add_systems(Update, find_field_input_system);
 
