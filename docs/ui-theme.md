@@ -167,7 +167,7 @@ spawn_button(&mut commands, &theme, "Run")
     .style(ButtonStyle::Tinted(TintColor::Success))
     .size(ComponentSize::Default)
     .elevation(ElevationIndex::Surface)
-    .on_click(|| info!("run clicked"));   // FnMut closure → On<Pointer<Click>> observer
+    .on_click(|_commands| info!("run clicked"));   // FnMut(&mut Commands) closure → On<Pointer<Click>> observer
 ```
 
 既存ボタンの移行は spawn タプルに `ButtonStyle` + `ElevationIndex` を足し、各 system から
