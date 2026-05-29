@@ -17,8 +17,10 @@ use crate::ui::layout_persistence::{
     CacheRestoreRequested, LayoutLoadDialogRequested, LayoutLoadMode, LayoutLoadRequested,
     LayoutSaveAsRequested, LayoutSaveRequested, SidecarLayout,
 };
+use crate::ui::component::ButtonStyle;
 use crate::ui::settings::{SettingsModalRoot, spawn_settings_modal};
 use crate::ui::strategy_editor::split_py_into_fragments;
+use crate::ui::theme::ElevationIndex;
 use bevy::input::keyboard::KeyboardInput;
 use bevy::prelude::*;
 
@@ -83,6 +85,8 @@ pub fn spawn_menu_bar(mut commands: Commands) {
                     ..default()
                 },
                 BackgroundColor(BTN_NORMAL),
+                ButtonStyle::Filled,
+                ElevationIndex::Surface,
                 MenuTopLevel::File,
             ))
             .with_children(|p| {
@@ -128,6 +132,8 @@ pub fn spawn_menu_bar(mut commands: Commands) {
                     ..default()
                 },
                 BackgroundColor(BTN_NORMAL),
+                ButtonStyle::Filled,
+                ElevationIndex::Surface,
                 MenuTopLevel::Edit,
             ))
             .with_children(|p| {
@@ -171,6 +177,8 @@ pub fn spawn_menu_bar(mut commands: Commands) {
                     ..default()
                 },
                 BackgroundColor(BTN_NORMAL),
+                ButtonStyle::Filled,
+                ElevationIndex::Surface,
                 MenuTopLevel::Venue,
             ))
             .with_children(|p| {
@@ -233,6 +241,8 @@ pub fn spawn_menu_bar(mut commands: Commands) {
                     ..default()
                 },
                 BackgroundColor(BTN_NORMAL),
+                ButtonStyle::Filled,
+                ElevationIndex::Surface,
                 MenuTopLevel::Help,
             ))
             .with_children(|p| {
@@ -284,24 +294,18 @@ pub fn spawn_menu_bar(mut commands: Commands) {
 }
 
 pub fn menu_top_level_system(
-    mut query: Query<
-        (&Interaction, &mut BackgroundColor, &MenuTopLevel),
-        (Changed<Interaction>, With<Button>),
-    >,
+    query: Query<(&Interaction, &MenuTopLevel), (Changed<Interaction>, With<Button>)>,
     mut open_menu: ResMut<OpenMenu>,
 ) {
-    for (interaction, mut bg, top) in &mut query {
-        match interaction {
-            Interaction::Pressed => {
-                bg.0 = BTN_PRESSED;
-                open_menu.0 = if open_menu.0 == Some(*top) {
-                    None
-                } else {
-                    Some(*top)
-                };
-            }
-            Interaction::Hovered => bg.0 = BTN_HOVER,
-            Interaction::None => bg.0 = BTN_NORMAL,
+    // Color is owned by `button_interaction_system` (Filled style); this
+    // system keeps only the open/close toggle. #46 Slice A.
+    for (interaction, top) in &query {
+        if *interaction == Interaction::Pressed {
+            open_menu.0 = if open_menu.0 == Some(*top) {
+                None
+            } else {
+                Some(*top)
+            };
         }
     }
 }

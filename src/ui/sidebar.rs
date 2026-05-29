@@ -19,10 +19,8 @@ const BG: Color = Color::srgba(0.05, 0.05, 0.09, 0.95);
 const SECTION_HEADER_BG: Color = Color::srgba(0.10, 0.10, 0.16, 1.0);
 const BORDER: Color = Color::srgba(0.18, 0.18, 0.28, 1.0);
 
-// パネルボタンの状態色（menu_bar.rs と同値、Step 1 完了後に共通化検討）
+// パネルボタンの初期背景（spawn 時のみ。状態色は button_interaction_system が所有 / #46 Slice A）
 const BTN_NORMAL: Color = Color::srgba(0.10, 0.10, 0.16, 1.0);
-const BTN_HOVER: Color = Color::srgba(0.20, 0.20, 0.30, 1.0);
-const BTN_PRESSED: Color = Color::srgba(0.30, 0.30, 0.48, 1.0);
 const BTN_TEXT: Color = Color::srgb(0.78, 0.82, 0.92);
 
 // Instrument 行用の色
@@ -134,6 +132,8 @@ fn spawn_panel_btn(parent: &mut ChildSpawnerCommands, kind: PanelKind) {
                 ..default()
             },
             BackgroundColor(BTN_NORMAL),
+            crate::ui::component::ButtonStyle::Filled,
+            crate::ui::theme::ElevationIndex::Surface,
             kind, // PanelKind 自身をマーカーとして付ける
         ))
         .with_children(|p| {
@@ -445,30 +445,24 @@ pub fn clamp_scroll_offset(offset: usize, filtered_len: usize, visible: usize) -
 /// 実際のスポーンは `panel_spawn_dispatcher_system` 側で処理。
 #[allow(clippy::type_complexity)]
 pub fn panel_button_system(
-    mut query: Query<
-        (&Interaction, &mut BackgroundColor, &PanelKind),
-        (Changed<Interaction>, With<Button>),
-    >,
+    query: Query<(&Interaction, &PanelKind), (Changed<Interaction>, With<Button>)>,
     mut spawn_events: MessageWriter<PanelSpawnRequested>,
     existing_kinds: Query<&PanelKind, With<WindowRoot>>,
 ) {
-    for (interaction, mut bg, kind) in &mut query {
-        match interaction {
-            Interaction::Pressed => {
-                bg.0 = BTN_PRESSED;
-                // StrategyEditor は複数開けるので duplicate チェックを skip。
-                // dispatcher が allocator から region_key を払い出して空エディタを生やす。
-                let allow_multi = matches!(kind, PanelKind::StrategyEditor);
-                if allow_multi || !existing_kinds.iter().any(|k| k == kind) {
-                    spawn_events.write(PanelSpawnRequested {
-                        kind: *kind,
-                        source: PanelSpawnSource::User,
-                        strategy_spec: None,
-                    });
-                }
+    // Color is owned by `button_interaction_system` (Filled style); this
+    // system keeps only the spawn dispatch. #46 Slice A.
+    for (interaction, kind) in &query {
+        if *interaction == Interaction::Pressed {
+            // StrategyEditor は複数開けるので duplicate チェックを skip。
+            // dispatcher が allocator から region_key を払い出して空エディタを生やす。
+            let allow_multi = matches!(kind, PanelKind::StrategyEditor);
+            if allow_multi || !existing_kinds.iter().any(|k| k == kind) {
+                spawn_events.write(PanelSpawnRequested {
+                    kind: *kind,
+                    source: PanelSpawnSource::User,
+                    strategy_spec: None,
+                });
             }
-            Interaction::Hovered => bg.0 = BTN_HOVER,
-            Interaction::None => bg.0 = BTN_NORMAL,
         }
     }
 }
