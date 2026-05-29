@@ -809,9 +809,16 @@ pub fn handle_strategy_file_load_system(
 
         allocator.bump_to_at_least(outcome.max_numeric_suffix);
 
-        for (entity, kind) in &existing_roots {
-            if matches!(kind, PanelKind::StrategyEditor) {
-                commands.entity(entity).despawn();
+        // LayoutRestore 経路では apply_pending_layout_system がフラグメントを in-place 更新する。
+        // 先に despawn すると apply_pending_layout_system が `found = Some(root)` を見て
+        // pending.windows を消費した後に root だけ消え、新 root が spawn されないまま終わる
+        // （コマンド遅延適用による race condition、issue #69 followup）。
+        // UserOpen / 他モードでは従来どおり despawn して再 spawn する。
+        if !matches!(event.mode, StrategyLoadMode::LayoutRestore) {
+            for (entity, kind) in &existing_roots {
+                if matches!(kind, PanelKind::StrategyEditor) {
+                    commands.entity(entity).despawn();
+                }
             }
         }
 
