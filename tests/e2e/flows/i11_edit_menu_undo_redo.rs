@@ -47,6 +47,8 @@ fn build_app() -> App {
     app.add_message::<UndoMenuRequested>();
     app.add_message::<RedoMenuRequested>();
     app.add_message::<PanelSpawnRequested>();
+    // issue #50 Step 0 spike — menu_item_system が SpikeEditorSpawnRequested を要求。Phase B で削除。
+    app.add_message::<backcast::ui::strategy_editor_spike::SpikeEditorSpawnRequested>();
 
     // menu_item_system → undo_redo_system の順でチェーン。
     app.add_systems(Update, (menu_item_system, undo_redo_system).chain());

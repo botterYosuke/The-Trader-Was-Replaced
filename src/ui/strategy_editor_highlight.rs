@@ -42,30 +42,14 @@ pub struct SpanStyle {
     pub fg: Option<cosmic_text::Color>,
 }
 
-/// Find マッチ 1 件 (行 + 行内 byte range)。
-/// Clone は `FindReplaceState.matches` (ナビ用) と `FindMatchSpans.matches` (描画用) の
-/// 両方へ同じマッチ列を書き込むために必要 (compute_find_match_spans_system)。
-#[derive(Clone, Debug, PartialEq)]
-pub struct MatchSpan {
-    pub line: usize,
-    pub byte_range: std::ops::Range<usize>,
-}
+// Slice 5 (#50): MatchSpan / FindMatchSpans の定義は `strategy_editor_find` 側に move 済み。
+// 旧 path 経由の参照を壊さないよう shim re-export だけ残す。Slice 6 で _highlight.rs ごと削除予定。
+pub use crate::ui::strategy_editor_find::{FindMatchSpans, MatchSpan};
 
 /// syntect トークナイズ結果。`compute_syntax_spans_system` が書き込む。
 #[derive(Component, Default)]
 pub struct SyntaxSpans {
     pub lines: Vec<Vec<SpanStyle>>,
-}
-
-/// Find マッチ結果。find/replace の検索 system が書き込み、composer がレンダリングに使う。
-#[derive(Component, Default)]
-pub struct FindMatchSpans {
-    pub matches: Vec<MatchSpan>,
-    /// 現在マッチの index。`FindReplaceState.current` の **描画側ミラー** で、
-    /// composer はこの entity だけ見れば現在マッチを別色にできる (Resource を読まずに済む)。
-    /// nav 側 (`FindReplaceState.current`) と更新は常に lockstep。
-    pub current_idx: Option<usize>,
-    pub prev_match_lines: Vec<usize>,
 }
 
 /// bracket 対応ペア。`compute_bracket_spans_system` が書き込む。

@@ -105,6 +105,16 @@ description: >-
   account_sync 存続、dedup 保証など「Python サービス内の状態機械」は pytest でカバーできる（Rust seam は不要）。
   **この場合も FLOWS.md への flow 追加・wiki の [FlowID] 引用は必須**（Rust E2E に限らない）。
   **「verify first」パターン（issue に「まず混入するか確認してから修正」「RED が立つか先に検証」「本当に再現するか確かめてから直す」と書かれているとき）でも本スキルを発動する**: verify-first はテストを先に書いて問題を実証するアプローチであり、RED テスト + FLOWS.md 追記 + wiki [FlowID] が必要。issue の Acceptance Criteria に「verify first」が含まれていれば、実装の説明が詳細でもスキルを invoke する（#39 Slice 2 の「verify first: live 接続状態で Replay に切替えたとき混入するか確認（RED が立つか）」が典型）。
+  **`spike` / `PoC` / `throwaway prototype` / `Go-No-Go gate` の実装でも必ず本スキルを invoke する**:
+  ADR / plan が「spike は throwaway なので E2E 自動化は次フェーズに送る」と明記していても、その**skip 判断を
+  本スキル内で取る**こと（plan の段階で skip を即決すると flow ID 採番・FLOWS.md への `kind:manual-gate` 記載・
+  Phase B 完了時の積み残し追跡が落ちる）。例: issue #50 Step 0 spike（bevscode CodeEditor の Projected Node
+  動作確認）は throwaway PoC で screenshot 自動化を Phase B 送りにする判断は妥当だが、`kind:manual-gate` flow
+  として 5 デモ目視（描画 / drag / pan / zoom / click→typing）を FLOWS.md に明記しないと「いつ Go と判定したか」
+  「次 Step に何を引き継ぐか」が記録から落ちる。**spike / PoC を実装した瞬間に invoke して、manual-gate flow を
+  起こすか / Phase B 送りで延期するか / 単体 unit test だけで十分かを本スキルで判定する**（実例: issue #50
+  Step 0 で本スキルを invoke せず、unit test 1 本だけ書いて完了扱いにしたが、5 デモ目視結果が FLOWS.md に
+  残らず Phase B 引き継ぎ時に「どの demo が PASS だったか」を会話履歴から発掘する羽目になった）。
   **E2E テスト調査中に「この AC にテストが無い」「この挙動が自動テストでカバーされていない」というカバレッジ gap を自分で発見したとき**も本スキルを発動する（ユーザーが明示的に「テストを追加して」と言わなくても同様）: gap を発見→即テスト追加という流れでも FLOWS.md エントリの品質確認（doc stub になっていないか、FlowID が wiki と合っているか）と wiki の現行化は本スキルの担当。実例: issue #54 の E2E テスト調査で AC #3 のエラー表示に自動テストが無いことを発見 → テスト追加したが behavior-to-e2e を invoke せず wiki 確認がスキップされた。
 ---
 

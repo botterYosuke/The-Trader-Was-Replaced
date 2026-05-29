@@ -41,6 +41,7 @@ Zed は Rust 製の production-grade デスクトップアプリで、我々が 
 - bevy_egui で雑に作る一発もの debug HUD で Zed を参照する価値がないもの
 - Rust テスト戦略 → `rust-testing` / `tdd-workflow` スキルへ
 - E2E 手動検証 → `e2e-testing` スキルへ
+- **`src/ui/**` を触ってもエディタ/IDE 機能の設計ではない場合** — 例: スケジュール登録 (`add_systems` / `configure_sets`)、change detection の調整、`bevy_instanced_text` / Bevy UI のキャッシュ・rebuild gate plumbing、`UiGlobalTransform` ↔ `ComputedNode` 周辺、`PostUpdate` の `LayoutProduceSet` / `TextViewRenderSet` の前後関係修正など、エディタ affordance（gutter、scrollbar、find/replace、fuzzy picker、command palette、theme）ではなく **Bevy/render pipeline の plumbing** が本体の修正は `bevy-engine` だけで十分 — Zed ソースを引いても答えが出ない（Zed は GPUI ベースで Bevy UI の change-detection 仕様を持たない）。実例: issue #50 Step 0 spike の drag/pan follow 修正は `src/ui/strategy_editor_spike.rs` + `src/ui/mod.rs` を編集したが、本体は `bevy_instanced_text` の `update_text_views` 早期 return を回避するための `DisplayLayout::set_changed()` 呼び出しであり、エディタ機能とは無関係 → zed スキル invoke は不要だった。
 
 ## 前提知識 (これは先に把握すること)
 

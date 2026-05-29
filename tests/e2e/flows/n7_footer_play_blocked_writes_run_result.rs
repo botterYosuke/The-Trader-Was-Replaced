@@ -72,6 +72,7 @@ fn make_app() -> (App, mpsc::UnboundedReceiver<TransportCommand>) {
         .insert_resource(ScenarioMetadata::default())
         .insert_resource(StrategyAutoSaveState::default())
         .add_message::<StrategyRunRequested>();
+    app.add_plugins(backcast::ui::theme::ThemePlugin);
 
     // spawn_footer は Startup で 1 回だけ実 footer ツリーを生成する。
     app.add_systems(Startup, spawn_footer);

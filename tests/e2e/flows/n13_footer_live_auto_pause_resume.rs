@@ -111,6 +111,7 @@ fn make_label_app() -> (App, mpsc::UnboundedReceiver<TransportCommand>) {
         .insert_resource(ScenarioMetadata::default())
         .insert_resource(StrategyAutoSaveState::default())
         .add_message::<StrategyRunRequested>();
+    app.add_plugins(backcast::ui::theme::ThemePlugin);
 
     app.add_systems(Startup, spawn_footer);
     app.add_systems(

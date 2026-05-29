@@ -1,101 +1,73 @@
-//! J2 strategy_editor_tab_indent — Strategy Editor で Tab を押すと tab 文字ではなく
-//! 4 スペースが挿入されることを保証する（kind:ui）。
+//! J2 strategy_editor_tab_indent — Strategy Editor で Tab が `InsertTab` action として
+//! bevscode に届くことを保証する（kind:ui）。
 //!
-//! `tab_input_system` は `ButtonInput<KeyCode>` に Tab が `just_pressed` のとき、
-//! focused な `StrategyEditorContent` entity の `CosmicEditor` に 4 回スペースを挿入し
-//! `CosmicTextChanged` を発行する。本テストはその経路を headless で走らせる。
-//!
-//! 注: `CosmicEditor` は通常 bevy_cosmic_edit の focus system が `CosmicEditBuffer` から
-//! 自動生成するが、headless テストでは `Editor::new(buf.clone())` で手動で構築する。
+//! Slice 3 (#50): cosmic_edit 撤去にあわせて、自前 `tab_input_system` の検証から
+//! 「bevscode が Tab を InsertTab にマップした InputMap を持つ」+「我々が install する
+//! InputMap が Undo を剥がしつつ InsertTab は残す」という wiring contract に変更。
+//! 実際の "Tab → 4 スペース挿入" 動作は bevscode の `input::auto_indent` /
+//! `input::actions::should_skip_auto_close` などが担い、bevscode 側の単体テストで
+//! `tab_indented_input_yields_tab_indent_string` などが上流コアレッジを与える。
+//! ここでは我々の側の「正しい InputMap を spawn しているか」だけを担保する。
 
-use bevy::input::keyboard::KeyboardInput;
+use bevscode::input::{EditorAction, InputMap};
+use bevy::input::keyboard::KeyCode;
+
+use backcast::ui::strategy_editor::install_strategy_editor_keybindings;
 use bevy::prelude::*;
-use bevy_cosmic_edit::cosmic_text::{Attrs, Editor, Metrics};
-use bevy_cosmic_edit::prelude::FocusedWidget;
-use bevy_cosmic_edit::{CosmicEditBuffer, CosmicEditor, CosmicFontSystem, CosmicTextChanged};
-use cosmic_text::{Edit, FontSystem};
-
-use backcast::ui::strategy_editor::StrategyEditorContent;
-use backcast::ui::strategy_editor_input::tab_input_system;
+use bevscode::plugin::EditorInputManager;
 
 #[test]
-fn j2_strategy_editor_tab_indent() {
+fn j2_strategy_editor_keybindings_have_insert_tab_without_undo() {
     let mut app = App::new();
-
-    let mut font_system = FontSystem::new();
-    let metrics = Metrics::new(14.0, 18.0);
-
-    // "def foo():\n" をシード。Tab はカーソル位置 (末尾) に 4 スペースを挿入する。
-    let seed_text = "def foo():";
-
-    // CosmicEditBuffer を作成し、そこから Editor を構築して CosmicEditor に wrap する。
-    // これは bevy_cosmic_edit の focus system が行う `Editor::new(b.0.clone())` と同じ手順。
-    let buf = CosmicEditBuffer::new(&mut font_system, metrics)
-        .with_text(&mut font_system, seed_text, Attrs::new());
-    let inner_buf_clone = buf.0.clone();
-    let mut editor = Editor::new(inner_buf_clone);
-    editor.set_redraw(true);
-    let cosmic_editor = CosmicEditor::new(editor);
-
-    app.insert_resource(CosmicFontSystem(font_system))
-        .insert_resource(FocusedWidget(None))
-        .insert_resource(ButtonInput::<KeyCode>::default())
-        .add_message::<CosmicTextChanged>()
-        .add_message::<KeyboardInput>()
-        .add_systems(Update, tab_input_system);
-
-    // StrategyEditorContent entity (CosmicEditor を持つ editor)。
-    let editor_entity = app
-        .world_mut()
-        .spawn((StrategyEditorContent, buf, cosmic_editor))
-        .id();
-
-    // FocusedWidget を editor entity に向ける。
-    app.world_mut().resource_mut::<FocusedWidget>().0 = Some(editor_entity);
-
-    // ── Tab キーを just_pressed に設定 ──
-    {
-        let mut keys = app.world_mut().resource_mut::<ButtonInput<KeyCode>>();
-        keys.press(KeyCode::Tab);
-    }
+    app.add_systems(Startup, install_strategy_editor_keybindings);
     app.update();
 
-    // ── CosmicTextChanged が発火したか確認 ──
-    let changed_events: Vec<(Entity, String)> = app
+    // install_strategy_editor_keybindings は Startup で EditorInputManager + 独自 InputMap を spawn する。
+    // その entity から InputMap<EditorAction> を取り出し、Tab / Undo / Redo の含有を確認する。
+    let mut q = app
         .world_mut()
-        .resource_mut::<Messages<CosmicTextChanged>>()
-        .drain()
-        .map(|CosmicTextChanged(pair)| pair)
-        .collect();
+        .query_filtered::<&InputMap<EditorAction>, With<EditorInputManager>>();
+    let input_map = q
+        .iter(app.world())
+        .next()
+        .expect("install_strategy_editor_keybindings が EditorInputManager を spawn していない");
 
-    assert_eq!(
-        changed_events.len(),
-        1,
-        "Tab 入力で CosmicTextChanged が 1 件発火するはず (got {})",
-        changed_events.len()
-    );
-
-    let new_text = &changed_events[0].1;
-    // 4 スペースが挿入されていること (tab 文字 '\t' ではない)。
+    // Tab → InsertTab が登録されている（bevscode default を継承）
+    let buttons_for_tab = input_map.get_buttonlike(&EditorAction::InsertTab);
     assert!(
-        !new_text.contains('\t'),
-        "Tab は tab 文字ではなくスペースに変換されるはず (text={:?})",
-        new_text
+        buttons_for_tab.is_some_and(|v| !v.is_empty()),
+        "InsertTab が Tab に bind されていない: {:?}",
+        buttons_for_tab,
     );
-    // seed "def foo():" のどこかに 4 スペース分が入っているはず。
-    let space_count = new_text.chars().filter(|c| *c == ' ').count();
+    let any_tab = buttons_for_tab.unwrap().iter().any(|b| {
+        format!("{b:?}").contains("Tab")
+    });
     assert!(
-        space_count >= 4,
-        "Tab 1 回で 4 スペースが挿入されるはず (space_count={space_count}, text={:?})",
-        new_text
+        any_tab,
+        "InsertTab の binding に KeyCode::Tab が含まれない: {:?}",
+        buttons_for_tab,
     );
 
-    // Tab キーは reset されているはず (二重発火防止)。
-    {
-        let keys = app.world().resource::<ButtonInput<KeyCode>>();
-        assert!(
-            !keys.just_pressed(KeyCode::Tab),
-            "tab_input_system が Tab キーを reset するはず"
-        );
-    }
+    // Undo / Redo は剥がされている（AppHistory が undo/redo を担う設計）
+    let undo = input_map.get_buttonlike(&EditorAction::Undo);
+    assert!(
+        undo.is_none() || undo.unwrap().is_empty(),
+        "Undo を剥がし切れていない: {:?} — AppHistory との undo 二重化が起きる",
+        undo,
+    );
+    let redo = input_map.get_buttonlike(&EditorAction::Redo);
+    assert!(
+        redo.is_none() || redo.unwrap().is_empty(),
+        "Redo を剥がし切れていない: {:?}",
+        redo,
+    );
+
+    // 念のため: 他の編集アクション（InsertNewline）は残っていることだけ軽く確認
+    let newline = input_map.get_buttonlike(&EditorAction::InsertNewline);
+    assert!(
+        newline.is_some_and(|v| !v.is_empty()),
+        "InsertNewline まで剥げている: bevscode default が壊れているか install 関数が default_input_map を呼んでいない",
+    );
+
+    let _ = KeyCode::Tab; // ensure import is used in cfg gates
 }

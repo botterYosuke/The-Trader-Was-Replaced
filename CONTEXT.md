@@ -18,10 +18,27 @@ _Avoid_: multi-pane layout, dashboard layout, tabbed workspace.
 **Floating window**:
 A world-space *sprite* window built by `spawn_floating_window` — draggable by its
 title bar, z-ordered among other floating windows. Chart, Strategy Editor,
-Buying Power, Run Result, Positions, Orders, and Settings are all floating windows, and
-the Startup window is built the same way. Editable text lives in world space too
-(the Strategy Editor hosts its code buffer this way).
+Buying Power, Run Result, Positions, Orders, and Settings are all floating windows,
+and the Startup window is built the same way. Most windows' contents are world-space
+sprites/`Text2d`; the Strategy Editor's code buffer is the one exception — see
+**Strategy Editor (projected overlay)**.
 _Avoid_: panel, dialog.
+
+**Strategy Editor (projected overlay)**:
+The Strategy Editor's editable code buffer is a Bevy UI `Node` (bevscode's
+`CodeEditor`) **projected** over the floating window's world rect each frame:
+the editor's `left/top/width/height` and `TextFont.font_size` are recomputed
+from the window's world transform and the camera's zoom so the editor follows
+pan / zoom / drag and stays crisp at any zoom. The floating window shell
+(title bar, × button, resize handles, rim light) remains a world-space sprite
+exactly like every other floating window. Two domain consequences flow from
+this: (a) the editor content always renders **in front of** other floating
+windows (UI is drawn after world sprites), and (b) the editor's world-space
+root sprite is pinned to a high baseline `z ≈ 200` so its own affordances
+(title bar / × / resize) also stay above the world z-stack. See
+[ADR 0006](docs/adr/0006-strategy-editor-projected-ui-overlay.md).
+_Avoid_: "embedded editor", "world-space editor" (the buffer is no longer
+world-space after issue #50).
 
 **Startup window**:
 The form for configuring a replay run — Start date, End date, Granularity, and
