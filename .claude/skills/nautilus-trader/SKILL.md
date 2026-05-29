@@ -17,16 +17,24 @@ description: |
   source rebuild (`build.py` Cargo feature) used to match a standard-precision shared catalog. Precision
   mode is compiled into the wheel, so wheels differ per platform even at the same version — confirm with
   `nautilus_pyo3.PRECISION_BYTES`, never the version string.
-  Also trigger on **PyO3 in-process embedding** of the Python engine (issue #64 Phase 2+):
+  Also trigger on **PyO3 in-process embedding** of the Python engine (issue #64 Phase 2–4):
   "InProcTransport", "PyO3", "pyo3", "Python::with_gil", "Py<PyAny>", "GIL strategy",
   "embed Python", "in-proc call", "DataEngine を直接呼ぶ", "PyO3 経由", "in-process transport",
-  "BACKEND_TRANSPORT=inproc". When working with the `DataEngine` in `python/engine/core.py`
-  via PyO3 (not just nautilus_trader APIs), this skill provides key context: `DataEngine`
-  instantiation kwargs (`nautilus_catalog_path`, `max_history_len`), replay method signatures
-  (`load_replay_data` / `step_replay` / `pause_replay` / `resume_replay` / `force_stop_replay`),
+  "BACKEND_TRANSPORT=inproc", "InprocLiveServer", "inproc_dispatch", "inproc_live_call",
+  "GrpcDataEngineServer を直接呼ぶ", "live RPC を inproc 化", "Phase 4", "_NullContext",
+  "live 系コマンドを inproc", "inproc_python_worker", "live_venue_id".
+  When working with the `DataEngine` in `python/engine/core.py` or the live facade
+  `python/engine/inproc_server.py` via PyO3 (not just nautilus_trader APIs), this skill
+  provides key context: `DataEngine` instantiation kwargs, replay method signatures,
   `TradingState.model_dump_json()` round-trip to `BackendTradingState`, and GIL design
   (dedicated Python thread + `std::sync::mpsc` bridge; GIL released between calls via
   `cmd_rx.recv_timeout` outside `Python::with_gil`).
+  Phase 4 key facts: `InprocLiveServer` wraps `GrpcDataEngineServer` with `token=""`
+  (`hmac.compare_digest("","")=True`); `_NullContext.abort()` raises `RuntimeError`;
+  `inproc_live_call` closure takes `&Bound<PyDict>` and needs `use pyo3::types::PyDictMethods`
+  in scope; `inproc_json_dumps` serializes Python dict → JSON string → `serde_json::Value`
+  (necessary since return dicts have per-method shapes); `inproc_poll_state` now calls
+  `live_server.get_state_json()` (includes live price/depth cache).
   Also trigger on related vocabulary: "msgbus", "ts_event",
   "ts_init", "InstrumentId", "ClientId", "Venue", "BarSpec", "OrderFactory", "ExecAlgorithm",
   "PositionEvent", "OrderEvent", "cache" in a trading sense, "Cython .pyx".
