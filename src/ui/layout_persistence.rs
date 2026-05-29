@@ -2439,6 +2439,8 @@ mod tests {
         app.init_resource::<ExecutionModeRes>();
         app.world_mut().resource_mut::<ExecutionModeRes>().mode = ExecutionMode::LiveManual;
 
+        app.init_resource::<bevy::input_focus::InputFocus>();
+        app.init_resource::<crate::ui::strategy_editor_find::FindReplaceState>();
         // production と同じ順序: mode は apply_pending の後。
         app.add_systems(
             Update,
@@ -3933,6 +3935,8 @@ mod tests {
         // root を despawn して orphan 状態を作る（fix 前はここで cleanup が走らない）。
         app.world_mut().despawn(dead_root);
 
+        app.init_resource::<bevy::input_focus::InputFocus>();
+        app.init_resource::<crate::ui::strategy_editor_find::FindReplaceState>();
         app.add_systems(Update, apply_pending_layout_system);
         app.update();
         app.update();
