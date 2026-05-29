@@ -611,17 +611,18 @@ impl Plugin for UiPlugin {
                     .before(secret_modal_input_system)
                     .before(confirm_modal_button_system),
                 relogin_modal_sync_system,
-                // B2-4 step 1 (#46): mechanism A — mirror ModalLayer.stack to
-                // ReloginPrompt.active only (no stack-driven dismissal yet =
-                // behavior unchanged). Runs before the esc system.
-                relogin_modal_reconcile_system,
                 // B2-3 (#46): generic modal-layer Esc handler. No-op while the
-                // ModalLayer stack is empty (early-returns), so behavior is
-                // unchanged until B2-4 migrates relogin onto it. Same Escape-yield
+                // ModalLayer stack is empty (early-returns). Same Escape-yield
                 // ordering as relogin so the handoff preserves determinism.
                 crate::ui::component::modal_layer::modal_layer_esc_system
                     .before(secret_modal_input_system)
                     .before(confirm_modal_button_system),
+                // B2-4 step 2+3 (#46): mechanism A — bidirectional sync of
+                // ReloginPrompt.active <-> ModalLayer.stack. Runs AFTER the esc
+                // system so a same-frame Escape pop is reflected back into
+                // ReloginPrompt.active this frame (prod/test parity with k13).
+                relogin_modal_reconcile_system
+                    .after(crate::ui::component::modal_layer::modal_layer_esc_system),
             ),
         )
         // ── Phase 9 Step 8 §3.8: backend 再起動後の注文 reconcile 通知モーダル ──

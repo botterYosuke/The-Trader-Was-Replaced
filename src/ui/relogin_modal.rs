@@ -16,10 +16,8 @@
 
 use bevy::prelude::*;
 
-use crate::trading::{ReloginPrompt, SecretPrompt};
+use crate::trading::ReloginPrompt;
 use crate::ui::component::modal_layer::{ActiveModal, DismissDecision, ModalLayer};
-use crate::ui::modify_modal::ModifyForm;
-use crate::ui::order_panel::OrderConfirm;
 
 const COLOR_PANEL_BG: Color = Color::srgba(0.07, 0.07, 0.12, 0.98);
 const COLOR_BACKDROP: Color = Color::srgba(0.0, 0.0, 0.0, 0.6);
@@ -175,27 +173,18 @@ pub fn relogin_modal_visibility_system(
     }
 }
 
-/// [閉じる] ボタン / Esc で通知を消す (prompt をクリア)。
+/// [閉じる] ボタンで通知を消す (prompt をクリア)。
+///
+/// Escape による dismiss は B2-4 step 2 で `modal_layer_esc_system` に移管した。
+/// ここはボタンクリック専用。Escape は reconcile の REVERSE sync 経由で prompt を消す。
 pub fn relogin_modal_button_system(
     interactions: Query<&Interaction, (Changed<Interaction>, With<ReloginDismissButton>)>,
-    keys: Res<ButtonInput<KeyCode>>,
     mut prompt: ResMut<ReloginPrompt>,
-    secret_prompt: Res<SecretPrompt>,
-    order_confirm: Res<OrderConfirm>,
-    modify_form: Res<ModifyForm>,
 ) {
     if prompt.active.is_none() {
         return;
     }
-    let pressed = interactions.iter().any(|i| *i == Interaction::Pressed);
-    // A button click is unambiguous. But Escape is read via ButtonInput (NOT the
-    // SecretModal's event drain), so a single Escape could close BOTH this notice
-    // and a higher-priority input modal (burning a one-shot Tachibana request_id).
-    // Yield the Escape to the higher-priority modal when one is open (§3.10).
-    let higher_priority_open =
-        secret_prompt.active.is_some() || order_confirm.pending.is_some() || modify_form.open;
-    let escape = keys.just_pressed(KeyCode::Escape) && !higher_priority_open;
-    if pressed || escape {
+    if interactions.iter().any(|i| *i == Interaction::Pressed) {
         prompt.active = None;
     }
 }
@@ -227,34 +216,45 @@ fn relogin_dismiss() -> DismissDecision {
     DismissDecision::Dismiss
 }
 
-/// `ModalLayer.stack` を `ReloginPrompt.active` にミラーする（mechanism A, B2-4 step 1）。
+/// `ModalLayer.stack` ⇄ `ReloginPrompt.active` を双方向同期する (mechanism A, B2-4 step 2)。
 ///
-/// **この step では観測挙動は不変**: stack を読んで relogin を消す経路はまだ無く
-/// (esc system の relogin pop 配線は step 2)、relogin 自身は従来どおり
-/// `relogin_modal_button_system` + `relogin_modal_visibility_system` で開閉する。
-/// reconcile は stack に自分の entry を出し入れするだけで、旧 Esc 経路と争わない。
+/// - FORWARD (open): `prompt.is_changed()` で active=Some かつ未登録 → stack に push。
+/// - REVERSE (esc dismiss): `modal_layer_esc_system` が自分の entry を pop すると
+///   prompt は変化しない。`was_on_stack` Local で「前フレーム stack に居た → 今フレーム
+///   居ない (active はまだ Some)」を検出し prompt をクリアする (visibility が hide する)。
 pub fn relogin_modal_reconcile_system(
-    prompt: Res<ReloginPrompt>,
+    mut prompt: ResMut<ReloginPrompt>,
     root_q: Query<Entity, With<ReloginModalRoot>>,
     mut layer: ResMut<ModalLayer>,
+    mut was_on_stack: Local<bool>,
 ) {
-    if !prompt.is_changed() {
-        return;
-    }
     let Ok(root) = root_q.single() else {
         return;
     };
     let on_stack = layer.stack.iter().any(|m| m.root == root);
-    match (prompt.active.is_some(), on_stack) {
-        (true, false) => layer.push(ActiveModal {
+
+    if prompt.is_changed() && prompt.active.is_some() && !on_stack {
+        layer.push(ActiveModal {
             root,
             backdrop: root,
             previous_focus: None,
             on_before_dismiss: relogin_dismiss,
-        }),
-        (false, true) => layer.stack.retain(|m| m.root != root),
-        _ => {}
+        });
+        *was_on_stack = true;
+        return;
     }
+
+    if prompt.active.is_none() && on_stack {
+        layer.stack.retain(|m| m.root != root);
+        *was_on_stack = false;
+        return;
+    }
+
+    if *was_on_stack && !on_stack && prompt.active.is_some() {
+        prompt.active = None;
+    }
+
+    *was_on_stack = on_stack;
 }
 
 #[cfg(test)]
@@ -264,10 +264,6 @@ mod tests {
     fn make_app() -> App {
         let mut app = App::new();
         app.init_resource::<ReloginPrompt>();
-        app.init_resource::<SecretPrompt>();
-        app.init_resource::<OrderConfirm>();
-        app.init_resource::<ModifyForm>();
-        app.insert_resource(ButtonInput::<KeyCode>::default());
         app
     }
 
@@ -282,68 +278,6 @@ mod tests {
         assert!(
             app.world().resource::<ReloginPrompt>().active.is_none(),
             "閉じる must clear the relogin prompt"
-        );
-    }
-
-    #[test]
-    fn escape_clears_prompt() {
-        let mut app = make_app();
-        app.world_mut().resource_mut::<ReloginPrompt>().active = Some("TACHIBANA".to_string());
-        app.world_mut()
-            .resource_mut::<ButtonInput<KeyCode>>()
-            .press(KeyCode::Escape);
-        app.add_systems(Update, relogin_modal_button_system);
-        app.update();
-        assert!(app.world().resource::<ReloginPrompt>().active.is_none());
-    }
-
-    #[test]
-    fn escape_yields_to_open_secret_prompt() {
-        // §3.10 cross-talk regression: a SecretModal is open (one-shot Tachibana
-        // request_id). A single Escape must close ONLY the secret modal — the
-        // relogin notice must survive so the user still sees the venue dropped.
-        use crate::trading::SecretPromptRequest;
-        let mut app = make_app();
-        app.world_mut().resource_mut::<ReloginPrompt>().active = Some("TACHIBANA".to_string());
-        app.world_mut().resource_mut::<SecretPrompt>().active = Some(SecretPromptRequest {
-            request_id: "r1".to_string(),
-            venue: "TACHIBANA".to_string(),
-            kind: "second_password".to_string(),
-            purpose: "new_order".to_string(),
-        });
-        app.world_mut()
-            .resource_mut::<ButtonInput<KeyCode>>()
-            .press(KeyCode::Escape);
-        app.add_systems(Update, relogin_modal_button_system);
-        app.update();
-        assert!(
-            app.world().resource::<ReloginPrompt>().active.is_some(),
-            "relogin notice must survive the Escape consumed by the SecretModal"
-        );
-    }
-
-    #[test]
-    fn escape_yields_to_open_order_confirm() {
-        let mut app = make_app();
-        app.world_mut().resource_mut::<ReloginPrompt>().active = Some("KABU".to_string());
-        app.world_mut().resource_mut::<OrderConfirm>().pending =
-            Some(crate::ui::order_panel::OrderDraft {
-                venue: "kabu".to_string(),
-                symbol: "7203.T".to_string(),
-                side: crate::ui::order_panel::Side::Buy,
-                order_type: crate::ui::order_panel::OrderType::Market,
-                qty: 100.0,
-                price: None,
-                tif: crate::ui::order_panel::TimeInForce::Day,
-            });
-        app.world_mut()
-            .resource_mut::<ButtonInput<KeyCode>>()
-            .press(KeyCode::Escape);
-        app.add_systems(Update, relogin_modal_button_system);
-        app.update();
-        assert!(
-            app.world().resource::<ReloginPrompt>().active.is_some(),
-            "relogin notice must survive Escape while the order-confirm modal is open"
         );
     }
 
