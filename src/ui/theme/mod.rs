@@ -11,7 +11,7 @@
 //!   impls are deferred to #50.
 //! * Light variant and JSON loading are out of scope; `Default for Theme`
 //!   builds the dark variant from `ColorScale::*_dark()`.
-//! * `InputPhase` SystemSet and `mono` editor wiring are out of scope (#50).
+//! * `mono` editor wiring is out of scope (#50). `InputPhase` SystemSet は `crate::ui::InputPhase` で定義済み（#48 H5）。
 
 use bevy::prelude::*;
 
