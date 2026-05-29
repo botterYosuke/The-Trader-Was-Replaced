@@ -209,6 +209,7 @@ fn setup_backend_connection(
             max_history_len: settings.max_history_points,
             python_engine_path: settings.python_engine_path.clone(),
             poll_interval_ms: settings.poll_interval_ms,
+            live_venue_id: settings.live_venue_id.clone(),
         })
     } else {
         Box::new(GrpcTransport {

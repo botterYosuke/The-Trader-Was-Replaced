@@ -144,6 +144,8 @@ pub struct TradingSettings {
     pub use_inproc: bool,
     /// Directory added to Python sys.path so `import engine` resolves. Default: "python".
     pub python_engine_path: String,
+    /// Live venue id forwarded to InProcTransport (mirrors LIVE_VENUE env var).
+    pub live_venue_id: Option<String>,
 }
 
 impl TradingSettings {
@@ -179,6 +181,7 @@ impl TradingSettings {
                 .unwrap_or(false),
             python_engine_path: std::env::var("PYTHON_ENGINE_PATH")
                 .unwrap_or_else(|_| "python".to_string()),
+            live_venue_id: std::env::var("LIVE_VENUE").ok().filter(|s| !s.is_empty()),
         }
     }
 }
