@@ -22,8 +22,9 @@ pub(crate) const COLOR_VALUE: Color = Color::srgb(0.88, 0.91, 0.96);
 pub(crate) const COLOR_BTN_SUBMIT: Color = Color::srgba(0.10, 0.45, 0.30, 1.0);
 
 pub use confirm_modal::{
-    ConfirmButton, OrderConfirm, confirm_modal_button_system, confirm_modal_sync_system,
-    confirm_modal_visibility_system, spawn_confirm_modal,
+    ConfirmButton, ConfirmModalRoot, OrderConfirm, confirm_modal_button_system,
+    confirm_modal_reconcile_system, confirm_modal_sync_system, confirm_modal_visibility_system,
+    spawn_confirm_modal,
 };
 pub use form::{
     OrderButton, OrderButtonPressed, OrderDraft, OrderForm, OrderType, OrderValidationError,

@@ -13,7 +13,6 @@
 
 use crate::trading::SecretPrompt;
 use crate::ui::modify_modal::ModifyForm;
-use crate::ui::order_panel::OrderConfirm;
 use crate::ui::theme::{DynamicSpacing, ElevationIndex, Theme};
 use bevy::prelude::*;
 
@@ -33,9 +32,9 @@ pub struct ActiveModal {
     pub backdrop: Entity,
     /// Entity that held focus before this modal opened (record-only this pass).
     pub previous_focus: Option<Entity>,
-    /// Stacking order (matches the modal's GlobalZIndex): higher = frontmost.
-    /// Used by [`ModalLayer::try_dismiss_highest_z`] to target the top-most modal
-    /// by z rather than by push order.
+    /// Escape-dismiss priority (highest wins one Escape), NOT the visual
+    /// GlobalZIndex. Used by [`ModalLayer::try_dismiss_highest_z`] to target the
+    /// most-prioritized modal by z rather than by push order.
     pub z: i32,
     /// Veto hook consulted by [`ModalLayer::try_dismiss_top`].
     pub on_before_dismiss: fn() -> DismissDecision,
@@ -152,22 +151,25 @@ pub fn reconcile_modal_stack(
     *was_on_stack = on_stack;
 }
 
-/// Whether Esc is clear to dismiss the top modal-layer entry. Mirrors the
+/// Whether Esc is clear to dismiss the highest-z modal-layer entry. Mirrors the
 /// relogin notice's yield guard (relogin_modal_button_system): a single
 /// Escape must defer to any higher-priority input modal that is open, so the
-/// one-shot Escape isn't consumed twice.
-fn esc_yield_clear(secret_active: bool, confirm_pending: bool, modify_open: bool) -> bool {
-    !(secret_active || confirm_pending || modify_open)
+/// one-shot Escape isn't consumed twice. The order-confirm modal is now a
+/// stack entry (z 280) dismissed via `try_dismiss_highest_z`, so it is no
+/// longer a yield input here.
+fn esc_yield_clear(secret_active: bool, modify_open: bool) -> bool {
+    !(secret_active || modify_open)
 }
 
-/// Consume Escape and dismiss the frontmost modal — but only when no
-/// higher-priority input modal (secret / order-confirm / modify) is open.
-/// `try_dismiss_top` itself respects each entry's `on_before_dismiss` veto.
+/// Consume Escape and dismiss the highest-z modal entry — but only when no
+/// higher-priority input modal (secret / modify) is open.
+/// `try_dismiss_highest_z` itself respects each entry's `on_before_dismiss`
+/// veto. The order-confirm modal participates as a stack entry (z 280) rather
+/// than a yield input.
 pub fn modal_layer_esc_system(
     keys: Res<ButtonInput<KeyCode>>,
     mut layer: ResMut<ModalLayer>,
     secret_prompt: Res<SecretPrompt>,
-    order_confirm: Res<OrderConfirm>,
     modify_form: Res<ModifyForm>,
 ) {
     if layer.stack.is_empty() {
@@ -176,14 +178,10 @@ pub fn modal_layer_esc_system(
     if !keys.just_pressed(KeyCode::Escape) {
         return;
     }
-    if !esc_yield_clear(
-        secret_prompt.active.is_some(),
-        order_confirm.pending.is_some(),
-        modify_form.open,
-    ) {
+    if !esc_yield_clear(secret_prompt.active.is_some(), modify_form.open) {
         return;
     }
-    layer.try_dismiss_top();
+    layer.try_dismiss_highest_z();
 }
 
 /// Declarative spec for a standard modal: a full-screen backdrop with a
@@ -361,11 +359,10 @@ mod tests {
 
     #[test]
     fn m_modal_06_esc_yield_clear_truth_table() {
-        assert!(esc_yield_clear(false, false, false));
-        assert!(!esc_yield_clear(true, false, false));
-        assert!(!esc_yield_clear(false, true, false));
-        assert!(!esc_yield_clear(false, false, true));
-        assert!(!esc_yield_clear(true, true, true));
+        assert!(esc_yield_clear(false, false));
+        assert!(!esc_yield_clear(true, false));
+        assert!(!esc_yield_clear(false, true));
+        assert!(!esc_yield_clear(true, true));
     }
 
     fn esc_app() -> App {

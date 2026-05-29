@@ -111,8 +111,8 @@ use crate::ui::order_context_menu::{
 };
 use crate::ui::order_panel::{
     OrderButtonPressed, OrderConfirm, OrderForm, confirm_modal_button_system,
-    confirm_modal_sync_system, confirm_modal_visibility_system, order_form_button_system,
-    order_panel_sync_system, order_submit_button_system,
+    confirm_modal_reconcile_system, confirm_modal_sync_system, confirm_modal_visibility_system,
+    order_form_button_system, order_panel_sync_system, order_submit_button_system,
     order_window_despawn_system, spawn_confirm_modal,
 };
 use crate::ui::orders::orders_panel_system;
@@ -559,6 +559,11 @@ impl Plugin for UiPlugin {
                 // BEFORE the drain clears it — so run `.before(secret_modal_input_system)`.
                 confirm_modal_button_system.before(secret_modal_input_system),
                 confirm_modal_sync_system,
+                // #46 Slice B 5b: mechanism A — OrderConfirm.pending <-> ModalLayer.stack
+                // (dismiss-priority z=280). Runs AFTER the esc system so a same-frame
+                // Escape pop is reflected back into pending this frame (parity with k11).
+                confirm_modal_reconcile_system
+                    .after(crate::ui::component::modal_layer::modal_layer_esc_system),
                 // SecretModal — input は keystroke を消費する
                 // (picker_searchbox と同じ drain パターン)。最前面オーバーレイ (z=300) なので
                 // picker / menu の drain より先に走らせ、同フレーム共存時もモーダルが入力を得る。

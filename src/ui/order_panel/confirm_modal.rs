@@ -4,9 +4,11 @@
 use bevy::prelude::*;
 
 use crate::trading::{
-    LastPrices, OrderFeedback, SecretPrompt, TransportCommand, TransportCommandSender,
+    LastPrices, OrderFeedback, TransportCommand, TransportCommandSender,
 };
-use crate::ui::component::modal_layer::{ModalHandle, ModalSkeleton, spawn_modal};
+use crate::ui::component::modal_layer::{
+    DismissDecision, ModalHandle, ModalLayer, ModalSkeleton, reconcile_modal_stack, spawn_modal,
+};
 use crate::ui::theme::{LabelSize, Theme};
 
 use super::form::{OrderDraft, estimated_notional};
@@ -150,8 +152,6 @@ pub fn confirm_modal_visibility_system(
 /// `[Cancel]` → pending クリア (発注しない)。
 pub fn confirm_modal_button_system(
     interactions: Query<(&Interaction, &ConfirmButton), (Changed<Interaction>, With<Button>)>,
-    keys: Res<ButtonInput<KeyCode>>,
-    secret_prompt: Res<SecretPrompt>,
     mut confirm: ResMut<OrderConfirm>,
     mut feedback: ResMut<OrderFeedback>,
     sender: Option<Res<TransportCommandSender>>,
@@ -161,16 +161,6 @@ pub fn confirm_modal_button_system(
     // `ConfirmButton` when no order is pending (mirrors modify/context-menu
     // systems; the Display::None zero-size invariant is the only other latch).
     if confirm.pending.is_none() {
-        return;
-    }
-
-    // Item 9: Esc cancels the confirm modal (clears pending, fires nothing),
-    // consistent with every other Phase 9 modal. Escape is read via ButtonInput
-    // (not the SecretModal event drain), so yield to an open SecretModal so one
-    // keystroke can't close both (§3.10 / item 7 prioritization). The confirm
-    // modal is otherwise high priority — it does NOT yield to notice modals.
-    if keys.just_pressed(KeyCode::Escape) && secret_prompt.active.is_none() {
-        confirm.pending = None;
         return;
     }
 
@@ -244,6 +234,39 @@ pub fn confirm_modal_sync_system(
     }
 }
 
+/// 確認モーダルの `on_before_dismiss` フック。常に [`DismissDecision::Dismiss`]
+/// を返し、esc-pop は reconcile system 側で pending をクリアする (relogin 同型)。
+fn confirm_dismiss() -> DismissDecision {
+    DismissDecision::Dismiss
+}
+
+/// `ModalLayer.stack` ⇄ `OrderConfirm.pending` を双方向同期する (mechanism A)。
+/// FORWARD: pending=Some かつ未登録 → stack に push (z 280)。
+/// REVERSE: `modal_layer_esc_system` が entry を pop → `was_on_stack` Local で
+/// 検出し pending をクリアする (visibility が hide する)。
+pub fn confirm_modal_reconcile_system(
+    mut confirm: ResMut<OrderConfirm>,
+    root_q: Query<Entity, With<ConfirmModalRoot>>,
+    mut layer: ResMut<ModalLayer>,
+    mut was_on_stack: Local<bool>,
+) {
+    let Ok(root) = root_q.single() else {
+        return;
+    };
+    let is_open = confirm.pending.is_some();
+    let prompt_changed = confirm.is_changed();
+    reconcile_modal_stack(
+        &mut layer,
+        root,
+        280,
+        &mut was_on_stack,
+        is_open,
+        prompt_changed,
+        confirm_dismiss,
+        || confirm.pending = None,
+    );
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -259,7 +282,6 @@ mod tests {
         app.init_resource::<OrderForm>();
         app.init_resource::<OrderConfirm>();
         app.init_resource::<OrderFeedback>();
-        app.init_resource::<SecretPrompt>();
         app.init_resource::<ButtonInput<KeyCode>>();
         app.insert_resource(SelectedSymbol {
             id: Some("7203.T".to_string()),
@@ -405,66 +427,6 @@ mod tests {
             "no PlaceOrder may be sent when nothing is pending"
         );
         assert!(app.world().resource::<OrderConfirm>().pending.is_none());
-    }
-
-    /// Item 9 regression: Esc cancels the confirm modal — clears pending, fires
-    /// nothing — consistent with the other Phase 9 modals.
-    #[test]
-    fn escape_cancels_confirm_modal() {
-        let mut app = make_app();
-        let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel();
-        app.insert_resource(TransportCommandSender { tx });
-        app.world_mut().resource_mut::<OrderConfirm>().pending = Some(OrderDraft {
-            venue: "MOCK".to_string(),
-            symbol: "7203.T".to_string(),
-            side: Side::Buy,
-            order_type: OrderType::Market,
-            qty: 100.0,
-            price: None,
-            tif: TimeInForce::Day,
-        });
-        app.world_mut()
-            .resource_mut::<ButtonInput<KeyCode>>()
-            .press(KeyCode::Escape);
-        app.add_systems(Update, confirm_modal_button_system);
-        app.update();
-        assert!(
-            app.world().resource::<OrderConfirm>().pending.is_none(),
-            "Esc must clear pending (cancel)"
-        );
-        assert!(rx.try_recv().is_err(), "Esc must not fire a command");
-    }
-
-    /// Item 9 + item 7: while a SecretModal is open, Esc is consumed by the secret
-    /// modal — the confirm modal must NOT also close on the same keystroke.
-    #[test]
-    fn escape_on_confirm_yields_to_open_secret_prompt() {
-        use crate::trading::SecretPromptRequest;
-        let mut app = make_app();
-        app.world_mut().resource_mut::<OrderConfirm>().pending = Some(OrderDraft {
-            venue: "MOCK".to_string(),
-            symbol: "7203.T".to_string(),
-            side: Side::Buy,
-            order_type: OrderType::Market,
-            qty: 100.0,
-            price: None,
-            tif: TimeInForce::Day,
-        });
-        app.world_mut().resource_mut::<SecretPrompt>().active = Some(SecretPromptRequest {
-            request_id: "r1".to_string(),
-            venue: "MOCK".to_string(),
-            kind: "second_password".to_string(),
-            purpose: "new_order".to_string(),
-        });
-        app.world_mut()
-            .resource_mut::<ButtonInput<KeyCode>>()
-            .press(KeyCode::Escape);
-        app.add_systems(Update, confirm_modal_button_system);
-        app.update();
-        assert!(
-            app.world().resource::<OrderConfirm>().pending.is_some(),
-            "confirm modal must survive Escape consumed by the SecretModal"
-        );
     }
 
     use bevy::ecs::system::RunSystemOnce;
