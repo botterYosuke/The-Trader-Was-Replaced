@@ -200,6 +200,7 @@ async fn l5_backend_process_launch_and_grpc_ready() {
         cwd: None,
         python_bin: None,
         live_venue: None,
+        inproc: false,
     };
 
     let outcome = attach_and_await_terminal(config).await;

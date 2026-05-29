@@ -43,6 +43,11 @@ _ENV_API_PASSWORD = "DEV_KABU_API_PASSWORD"
 _INFO_RATE_PER_SEC = 10
 _ORDER_RATE_PER_SEC = 5
 _WALLET_RATE_PER_SEC = 10
+# PUT /register は info 系 (10/s) だが、subscribe() は 1 銘柄ごとに register set 全体を
+# 再送するため 50 銘柄 universe を立て続けに subscribe すると burst で kabu の
+# `4001006 API実行回数エラー` を踏む。register は startup の一回限りで board GET と重ならない
+# ので、専用 bucket を 5/s・no-burst (capacity=1) にして 10/s 上限に大きな安全マージンを取る。
+_REGISTER_RATE_PER_SEC = 5
 
 # kabuステーション本体がログアウト / 未ログインのときに REST が返す Code (R7、
 # ptal/error.html)。`4001007`=ログイン認証エラー / `4001017`=ログイン認証エラー
@@ -113,10 +118,13 @@ class _TokenBucket:
         *,
         time_source: Callable[[], float],
         sleep: Callable[[float], Awaitable[None]],
+        capacity: Optional[int] = None,
     ) -> None:
         self._rate = float(rate)
-        self._capacity = float(rate)
-        self._tokens = float(rate)
+        # capacity = max burst. Default == rate (preserves order/wallet/info burst
+        # behavior). capacity=1 => strict spacing (no burst), used for /register.
+        self._capacity = float(capacity) if capacity is not None else float(rate)
+        self._tokens = self._capacity
         self._last = time_source()
         self._time = time_source
         self._sleep = sleep
@@ -179,6 +187,15 @@ class KabuStationAdapter:
             _WALLET_RATE_PER_SEC,
             time_source=self._time_source,
             sleep=lambda d: self._rate_limit_sleep(d),
+        )
+        # /register 専用 (no-burst, 5/s)。50 銘柄 universe の subscribe burst が kabu の
+        # 4001006 を踏むのを防ぐ。capacity=1 で瞬間 burst を消し、startup の一括登録を
+        # ~5/s に均す (50 銘柄 ~ 10s)。
+        self._register_bucket = _TokenBucket(
+            _REGISTER_RATE_PER_SEC,
+            time_source=self._time_source,
+            sleep=lambda d: self._rate_limit_sleep(d),
+            capacity=1,
         )
         # Phase 9 Step 6: 発注経路 (set_execution_hooks で注入)。kabu は Password 不要
         # (R3) のため secret_resolver は使わない。約定通知は GET /orders polling (§3.3.2)。
@@ -301,7 +318,7 @@ class KabuStationAdapter:
 
         Returns True on success (Code == 0).
         """
-        await self._info_bucket.acquire()
+        await self._register_bucket.acquire()
         resp = await self._client.put(
             endpoint("register", env=self._env),
             headers={"X-API-KEY": self._token},

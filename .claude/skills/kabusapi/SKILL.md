@@ -1,6 +1,6 @@
 ---
 name: kabusapi
-description: 三菱UFJ eスマート証券（旧 auカブコム）kabuステーションAPI（v1.5）を使ったコーディング規約と運用クイックスタート。ローカル REST サーバ（localhost:18080 本番 / 18081 検証）への接続、トークン発行、X-API-KEY ヘッダ運用、PUSH 配信（WebSocket）、銘柄登録（50 銘柄上限）、流量制限、注文・余力・板情報の不変条件、kabuステーション本体プロセスの起動依存・OS 制約・ポート衝突の落とし穴を定義する。「kabu」「カブコム」「kabusapi」「kabuステーション」「auカブコム」「eスマート」と言われたら起動する。
+description: 三菱UFJ eスマート証券（旧 auカブコム）kabuステーションAPI（v1.5）を使ったコーディング規約と運用クイックスタート。ローカル REST サーバ（localhost:18080 本番 / 18081 検証）への接続、トークン発行、X-API-KEY ヘッダ運用、PUSH 配信（WebSocket）、銘柄登録（50 銘柄上限）、流量制限、注文・余力・板情報の不変条件、kabuステーション本体プロセスの起動依存・OS 制約・ポート衝突の落とし穴を定義する。「kabu」「カブコム」「kabusapi」「kabuステーション」「auカブコム」「eスマート」と言われたら起動する。**kabu venue を live/headless で動かす作業の開始時には必ず先に起動する**（コードを書く前・bug を踏む前に R5 流量制限/R6 50銘柄上限を確認するため）: 「kabu で本番運用」「kabu live を回す」「headless で kabu」「_kabu_live_driver」「start_ttwr_kabu_prod_backend / demo_backend」「VenueLogin が失敗」「PUSH 銘柄を大量 subscribe」「universe を一括 subscribe」「kabu backend を起動」「kabu の prod/verify パスワード」、およびエラーコード「4001006（API実行回数エラー）」「4002006（レジスト数 50 上限）」「4001013（トークン取得失敗）」「4001017（本体未ログイン）」「API実行回数エラー」「スロットリング」「レート制限」「register が 200 にならない」に触れたとき。多数銘柄を立て続けに subscribe する設計（50銘柄 universe など）では burst で `4001006` を踏むため、起動時に register 経路を no-burst throttle してあるか必ず確認する。
 ---
 
 # kabuステーションＡＰＩ スキル

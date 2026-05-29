@@ -189,6 +189,7 @@ async fn l7a_attach_live_venue_mismatch_reaches_venue_mismatch() {
         cwd: None,
         python_bin: None,
         live_venue: Some("TACHIBANA".to_string()),
+        inproc: false,
     };
 
     let outcome = attach_and_await_terminal(config).await;
@@ -234,6 +235,7 @@ async fn l7b_attach_live_venue_match_reaches_ready() {
         cwd: None,
         python_bin: None,
         live_venue: Some("TACHIBANA".to_string()),
+        inproc: false,
     };
 
     let outcome = attach_and_await_terminal(config).await;

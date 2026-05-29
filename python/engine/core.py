@@ -66,6 +66,8 @@ class DataEngine:
         # D9/D24: multi-instrument replay support
         self._replay_providers: dict[str, NautilusBarsReplayProvider] = {}
         self._replay_primary_id: str = ""
+        # Phase 3: in-proc Rust event sink (set by inproc_python_worker via set_rust_event_sink)
+        self._rust_event_sink = None
 
         # Initialize the first visible state.
         if self._mode == "replay" and self._replay_provider:
@@ -89,6 +91,10 @@ class DataEngine:
     def attach_mode_manager(self, mm: "ModeManager") -> None:
         """ModeManager の循環参照回避のため setter で後付け注入する"""
         self.mode_manager = mm
+
+    def set_rust_event_sink(self, sink) -> None:
+        """Phase 3: register in-proc Rust mpsc sender for live event delivery."""
+        self._rust_event_sink = sink
 
     @property
     def is_running(self) -> bool:
