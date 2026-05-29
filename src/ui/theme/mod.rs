@@ -34,7 +34,7 @@ pub use typography::{
 /// Field naming mirrors Zed's `ThemeColors`. Each field has a single
 /// canonical use site; do not reach into [`ColorScale`] directly from UI code
 /// unless a new semantic role is being added here.
-#[derive(Debug, Clone, Copy)]
+#[derive(Debug, Clone, Copy, serde::Serialize, serde::Deserialize)]
 pub struct ThemeColors {
     /// Root window / app background (scale step 1).
     pub background: Color,
@@ -92,7 +92,7 @@ pub struct ThemeColors {
 /// Status / semantic colors (info / warning / error / success) and trading-
 /// specific roles (long / short / bid / ask). Each role exposes a solid color
 /// plus matching `_background` and `_border` variants.
-#[derive(Debug, Clone, Copy)]
+#[derive(Debug, Clone, Copy, serde::Serialize, serde::Deserialize)]
 pub struct StatusColors {
     pub info: Color,
     pub info_background: Color,
@@ -137,7 +137,7 @@ pub struct StatusColors {
 /// from `syntect::Theme` (or tree-sitter highlight queries) lands in #50.
 ///
 /// NOTE: `type_` has a trailing underscore to avoid the reserved word `type`.
-#[derive(Debug, Clone, Copy)]
+#[derive(Debug, Clone, Copy, serde::Serialize, serde::Deserialize)]
 pub struct SyntaxColors {
     /// Line / block comments.
     pub comment: Color,
@@ -161,7 +161,7 @@ pub struct SyntaxColors {
 
 /// Distinct chart / series palette (8 colors). Index by series number; wrap
 /// modulo `8` for more than 8 series.
-#[derive(Debug, Clone, Copy)]
+#[derive(Debug, Clone, Copy, serde::Serialize, serde::Deserialize)]
 pub struct PlayerColors(pub [Color; 8]);
 
 impl PlayerColors {
@@ -174,7 +174,7 @@ impl PlayerColors {
 // -- Radius -----------------------------------------------------------------
 
 /// Border-radius tokens, in pixels.
-#[derive(Debug, Clone, Copy)]
+#[derive(Debug, Clone, Copy, serde::Serialize, serde::Deserialize)]
 pub struct Radius {
     /// Small (2 px) — chips, tags.
     pub sm: f32,
@@ -194,8 +194,8 @@ impl Default for Radius {
 
 // -- Layout -----------------------------------------------------------------
 
-/// Layout tokens that are global to the whole app (chrome sizes, density).
-#[derive(Debug, Clone, Copy)]
+/// Layout tokens that are global to the whole app (chrome sizes).
+#[derive(Debug, Clone, Copy, serde::Serialize, serde::Deserialize)]
 pub struct Layout {
     /// Toolbar / menu bar height in px.
     pub toolbar_h: f32,
@@ -205,8 +205,6 @@ pub struct Layout {
     pub sidebar_w: f32,
     /// Default inspector / right panel width in px.
     pub inspector_w: f32,
-    /// Active UI density (drives `DynamicSpacing::px`).
-    pub density: UiDensity,
 }
 
 impl Default for Layout {
@@ -216,7 +214,6 @@ impl Default for Layout {
             footer_h: 24.0,
             sidebar_w: 240.0,
             inspector_w: 280.0,
-            density: UiDensity::Default,
         }
     }
 }
@@ -224,24 +221,99 @@ impl Default for Layout {
 // -- Appearance -------------------------------------------------------------
 
 /// Light / dark appearance flag. Only `Dark` is fully populated in #48.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, serde::Serialize, serde::Deserialize)]
 pub enum Appearance {
     #[default]
     Dark,
     Light,
 }
 
+// -- ColorScales -----------------------------------------------------------
+
+/// All Radix-style 12-step scales used by the theme. Wraps six [`ColorScale`]
+/// instances under semantic names so call sites can write
+/// `theme.scale.accent.step_9()` instead of reaching into [`ColorScale::*_dark`]
+/// constructors directly.
+#[derive(Debug, Clone, Copy, serde::Serialize, serde::Deserialize)]
+pub struct ColorScales {
+    pub neutral: ColorScale,
+    pub accent: ColorScale,
+    pub red: ColorScale,
+    pub green: ColorScale,
+    pub yellow: ColorScale,
+    pub blue: ColorScale,
+}
+
+impl Default for ColorScales {
+    /// `Default` builds the dark variant; light variant lands later (out of scope for #48).
+    fn default() -> Self {
+        Self {
+            neutral: ColorScale::neutral_dark(),
+            accent: ColorScale::accent_dark(),
+            red: ColorScale::red_dark(),
+            green: ColorScale::green_dark(),
+            yellow: ColorScale::yellow_dark(),
+            blue: ColorScale::blue_dark(),
+        }
+    }
+}
+
+// -- SpacingTokens ----------------------------------------------------------
+
+/// Density-aware spacing resolver. Owns the active [`UiDensity`] and exposes
+/// `px(t)` so call sites can write `theme.spacing.px(DynamicSpacing::Base08)`
+/// without threading density through every signature.
+///
+/// `SpacingTokens::density` is the single source of truth for UI density;
+/// `Layout` no longer carries a density field.
+#[derive(Debug, Clone, Copy, Default, serde::Serialize, serde::Deserialize)]
+pub struct SpacingTokens {
+    pub density: UiDensity,
+}
+
+impl SpacingTokens {
+    #[inline]
+    pub fn px(&self, t: DynamicSpacing) -> f32 {
+        t.px(self.density)
+    }
+}
+
+// -- ElevationTokens --------------------------------------------------------
+
+/// Zero-sized handle that re-exposes [`ElevationIndex::z`] and
+/// [`ElevationIndex::background`] through the theme so call sites can write
+/// `theme.elevation.z(ElevationIndex::ModalSurface)` and
+/// `theme.elevation.background(ElevationIndex::Surface, &theme.colors)`
+/// without importing `ElevationIndex` separately at every site.
+#[derive(Debug, Clone, Copy, Default, serde::Serialize, serde::Deserialize)]
+pub struct ElevationTokens;
+
+impl ElevationTokens {
+    #[inline]
+    pub fn z(&self, tier: ElevationIndex) -> f32 {
+        tier.z()
+    }
+
+    #[inline]
+    pub fn background(&self, tier: ElevationIndex, colors: &ThemeColors) -> Color {
+        tier.background_for_colors(colors)
+    }
+}
+
 // -- Theme ------------------------------------------------------------------
 
 /// Design-system root Resource. Built by `Default::default()` (dark variant);
 /// runtime theme swapping lands later.
-#[derive(Resource, Debug, Clone)]
+#[derive(Resource, Debug, Clone, serde::Serialize, serde::Deserialize)]
 pub struct Theme {
     pub colors: ThemeColors,
     pub status: StatusColors,
     pub syntax: SyntaxColors,
     pub players: PlayerColors,
+    pub scale: ColorScales,
+    pub spacing: SpacingTokens,
     pub typography: Typography,
+    pub elevation: ElevationTokens,
     pub radius: Radius,
     pub layout: Layout,
     pub appearance: Appearance,
@@ -351,7 +423,10 @@ impl Default for Theme {
             status,
             syntax,
             players,
+            scale: ColorScales::default(),
+            spacing: SpacingTokens::default(),
             typography: Typography::default(),
+            elevation: ElevationTokens::default(),
             radius: Radius::default(),
             layout: Layout::default(),
             appearance: Appearance::Dark,
@@ -380,5 +455,47 @@ impl ActiveTheme for App {
     #[inline]
     fn theme(&self) -> &Theme {
         self.world().resource::<Theme>()
+    }
+}
+
+/// Issue #48 Finding 3: 単一のテスト/本番配線ポイントで `Theme` Resource を
+/// 初期化するための薄い Plugin。`UiPlugin` と各 footer e2e harness から
+/// 同一の `app.add_plugins(ThemePlugin)` で参照する。
+///
+/// Theme 依存 system が追加された際は、このプラグインに集約する
+/// （`init_resource::<Theme>()` を各所で直書きしない）。
+pub struct ThemePlugin;
+
+impl Plugin for ThemePlugin {
+    fn build(&self, app: &mut App) {
+        app.init_resource::<Theme>();
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// Slice 3a RED: `theme.scale.accent` must carry the real
+    /// `ColorScale::accent_dark()` palette, not the neutral stub. Step 9 of
+    /// accent is brand-blue `srgb(0.235, 0.510, 0.965)`; neutral step 9 is
+    /// `srgb(0.4314, 0.4627, 0.5020)`. Slice 3b flips this to green by
+    /// implementing the real `ColorScales::default`.
+    #[test]
+    fn theme_scale_accent_step_9_is_brand_blue() {
+        let theme = Theme::default();
+        assert_eq!(
+            theme.scale.accent.step_9(),
+            ColorScale::accent_dark().step_9(),
+            "Theme::default().scale.accent should expose ColorScale::accent_dark, not the neutral stub"
+        );
+    }
+
+    /// `Theme::default().spacing.density` defaults to `UiDensity::Default`.
+    /// `SpacingTokens::density` is the single source of truth for UI density.
+    #[test]
+    fn theme_spacing_density_defaults_to_default() {
+        let theme = Theme::default();
+        assert_eq!(theme.spacing.density, UiDensity::Default);
     }
 }

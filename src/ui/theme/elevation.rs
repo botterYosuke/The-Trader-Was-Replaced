@@ -5,16 +5,8 @@
 //! than writing a raw `z` literal. Gaps between tiers (10 → 100 → 300 …)
 //! leave room for child z-offsets inside the same elevation tier.
 //!
-//! NOTE (issue #48): a `fn background(theme: &Theme) -> Color` accessor is
-//! intentionally NOT defined here — `Theme` / `ThemeColors` does not exist
-//! yet. It will be added in Step 6 once `ThemeColors` lands, then call sites
-//! can do `ElevationIndex::ModalSurface.background(theme)`.
-//
-// TODO(#48 Step 6): add `pub fn background(&self, theme: &Theme) -> Color`
-// returning the canonical surface color for this elevation tier.
-
 /// Z-order tier for UI surfaces. Pass `.z()` to the renderer at spawn time.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub enum ElevationIndex {
     /// Root app background. Behind everything.
     Background,
@@ -43,5 +35,74 @@ impl ElevationIndex {
             ElevationIndex::Notification    => 500.0,
             ElevationIndex::DragOverlay     => 700.0,
         }
+    }
+
+    /// Canonical surface color for this elevation tier, resolved against the
+    /// active `Theme`. Pair with `.z()` when spawning a surface so color and
+    /// stacking stay in sync.
+    #[inline]
+    pub fn background(&self, theme: &crate::ui::theme::Theme) -> bevy::color::Color {
+        self.background_for_colors(&theme.colors)
+    }
+
+    /// Lower-level form of [`background`] that takes a `ThemeColors` directly.
+    /// Used by `ElevationTokens::background` so the tier → color match table
+    /// lives in exactly one place.
+    pub fn background_for_colors(
+        &self,
+        colors: &crate::ui::theme::ThemeColors,
+    ) -> bevy::color::Color {
+        match self {
+            ElevationIndex::Background      => colors.background,
+            ElevationIndex::Surface         => colors.surface_background,
+            ElevationIndex::ElevatedSurface => colors.elevated_surface_background,
+            ElevationIndex::ModalSurface    => colors.elevated_surface_background,
+            ElevationIndex::Notification    => colors.elevated_surface_background,
+            ElevationIndex::DragOverlay     => colors.elevated_surface_background,
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::ui::theme::Theme;
+
+    /// RED until `ElevationIndex::background` is implemented in Slice 1 GREEN.
+    /// We assert the tier → ThemeColors mapping from plan §Step 2.
+    #[test]
+    fn background_returns_theme_colors_for_each_tier() {
+        let theme = Theme::default();
+
+        assert_eq!(
+            ElevationIndex::Background.background(&theme),
+            theme.colors.background,
+            "Background tier should map to colors.background"
+        );
+        assert_eq!(
+            ElevationIndex::Surface.background(&theme),
+            theme.colors.surface_background,
+            "Surface tier should map to colors.surface_background"
+        );
+        assert_eq!(
+            ElevationIndex::ElevatedSurface.background(&theme),
+            theme.colors.elevated_surface_background,
+            "ElevatedSurface tier should map to colors.elevated_surface_background"
+        );
+        assert_eq!(
+            ElevationIndex::ModalSurface.background(&theme),
+            theme.colors.elevated_surface_background,
+            "ModalSurface tier should map to colors.elevated_surface_background (modal card)"
+        );
+        assert_eq!(
+            ElevationIndex::Notification.background(&theme),
+            theme.colors.elevated_surface_background,
+            "Notification tier should map to colors.elevated_surface_background"
+        );
+        assert_eq!(
+            ElevationIndex::DragOverlay.background(&theme),
+            theme.colors.elevated_surface_background,
+            "DragOverlay tier should map to colors.elevated_surface_background"
+        );
     }
 }

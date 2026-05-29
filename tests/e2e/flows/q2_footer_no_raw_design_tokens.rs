@@ -18,6 +18,12 @@
 //!
 //! padding 数値直書きは誤検知が多いため smoke の対象外（ボタン寸法 `Val::Px(34.0)` 等は #46
 //! component helper 課題で寸法 token を導入する際に別途整理）。
+//!
+//! ## #48 AC §J との差分
+//! footer.rs の `Val::Px(28.0)` 等の **数値 padding/高さは #46 component helper で吸収する**
+//! 方針（`docs/ui-theme.md §11` で明示的に温存と宣言）。本テストはその方針下での **raw
+//! color** と **直書き z (`GlobalZIndex(`)** の混入だけをガードする。`GlobalZIndex` は
+//! 現状 footer.rs で 0 件のため将来の再混入ガード（characterization）。
 
 #[test]
 fn q2_footer_no_raw_design_tokens() {
@@ -32,6 +38,7 @@ fn q2_footer_no_raw_design_tokens() {
         "BTN_HOVER",
         "BTN_PRESSED",
         "BTN_SPEED_SELECTED",
+        "GlobalZIndex(",
     ];
 
     let mut hits: Vec<&str> = Vec::new();

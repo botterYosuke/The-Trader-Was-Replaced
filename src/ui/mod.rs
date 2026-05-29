@@ -231,8 +231,8 @@ impl Plugin for UiPlugin {
             // issue #50 Step 0 spike: bevscode editor を Projected Node 方式で世界座標に出すための plugins。
             // cosmic_edit と並存（spike が Go になるまで撤去しない）。
             bevscode::prelude::CodeEditorPlugins,
+            theme::ThemePlugin,
         ))
-        .init_resource::<theme::Theme>()
         .add_message::<crate::ui::strategy_editor_spike::SpikeEditorSpawnRequested>()
         .init_resource::<WindowManager>()
         .init_resource::<StrategyBuffer>()

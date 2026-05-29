@@ -143,6 +143,7 @@ impl Harness {
             .insert_resource(OrderConfirm::default())
             .insert_resource(SecretInput::default())
             .insert_resource(ButtonInput::<KeyCode>::default());
+        app.add_plugins(backcast::ui::theme::ThemePlugin);
 
         app.add_message::<StrategyRunRequested>()
             .add_message::<LayoutSaveRequested>()

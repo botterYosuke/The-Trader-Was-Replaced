@@ -66,16 +66,16 @@
 
 `src/ui/theme/elevation.rs`。`Transform.translation.z` の直書きを根絶するための tier:
 
-| Variant | z | 用途 |
-|---|---|---|
-| `Background` | 0 | root 背景 |
-| `Surface` | 10 | footer / sidebar / menu / 通常パネル |
-| `ElevatedSurface` | 100 | popover / dropdown / tooltip |
-| `ModalSurface` | 300 | モーダルダイアログ |
-| `Notification` | 500 | toast / safety rail violation |
-| `DragOverlay` | 700 | drag preview |
+| Variant | z | `background(theme)` 戻り値 | 用途 |
+|---|---|---|---|
+| `Background` | 0 | `theme.colors.background` | root 背景 |
+| `Surface` | 10 | `theme.colors.surface_background` | footer / sidebar / menu / 通常パネル |
+| `ElevatedSurface` | 100 | `theme.colors.elevated_surface_background` | popover / dropdown / tooltip |
+| `ModalSurface` | 300 | `theme.colors.elevated_surface_background` | モーダルダイアログ |
+| `Notification` | 500 | `theme.colors.elevated_surface_background` | toast / safety rail violation |
+| `DragOverlay` | 700 | `theme.colors.elevated_surface_background` | drag preview |
 
-裁定: modal は `ModalSurface`、toast は `Notification`、popover は `ElevatedSurface` を使ってください。
+裁定: modal は `ModalSurface`、toast は `Notification`、popover は `ElevatedSurface` を使ってください。`background(theme)` は `ElevationIndex` から `ThemeColors` フィールドへの透過 lookup を提供します（z 値と背景色を同じ tier 概念で引けるようにするため）。
 
 ## 7. `Radius` / `Layout` / `Appearance`
 
@@ -101,7 +101,20 @@
 
 ## 10. 本 issue (#48) で先送りした Design decisions deferred
 
-#48 のスコープは「token 基盤の確立 + footer のみ token 化」です。以下は意図的に先送り:
+#48 のスコープは「token 基盤の確立 + footer のみ token 化」です。
+
+### 10.0 本 #48 セッションで実装済み（B / E / F / O）
+
+以下の AC 項目は本 `refac/#48-step0` セッションの Slice 1–4b で実装されました:
+
+- **F**: `ElevationIndex::background(&Theme) -> Color` 実装済み（`src/ui/theme/elevation.rs`、Slice 1）。z 値と並ぶ tier → 背景色 lookup を提供。
+- **E**: `TypeStyle::text_font() -> (TextFont, LineHeight)` および `Typography::label_font(LabelSize) / headline_font(HeadlineSize)` helper 実装済み（Slice 2）。Bevy 0.18 で `TextFont.line_height` field が廃止され `LineHeight` が独立 Component になった都合上、tuple-of-Components 返しを採用。footer.rs の `TextFont { font_size, ..default() }` 9 箇所が helper 経由に置換済み。
+- **B**: `Theme` に `scale: ColorScales` / `spacing: SpacingTokens` / `elevation: ElevationTokens` フィールドを追加し、`Layout::density` を `SpacingTokens::density` へ一本化済み（Slice 3）。
+- **O**: `Theme` 配下の struct/enum に `serde::Serialize` / `serde::Deserialize` derive を追加し、`tests/e2e/flows/q3_theme_serde_roundtrip.rs` で `Theme::default()` の JSON round-trip ガードを追加済み（Slice 4 / 4b）。
+
+### 10.1 引き続き先送り
+
+以下は意図的に先送り:
 
 1. **ボタン寸法 / footer 高さ / anchor 0** … footer.rs の `Val::Px(34.0)` 等の数値は token 化スコープ外。component helper（`Button::new(...)` 型 API）に集約するのは **#46 component helper 課題**。
 2. **`SyntaxColors` の syntect / tree-sitter 連携** … 構造体宣言のみ。実装は **#50**（`bevscode` 置換）。
@@ -111,6 +124,7 @@
 6. **`footer.rs` 以外（menu_bar / sidebar / order_panel / modify_modal / scenario_startup / strategy_editor_*）の token 化** … **#46**。
 7. **`theme.layout.footer_h = 24.0` と footer.rs 生 `Val::Px(28.0)` の値の食い違い** … 将来統一の余地。
 8. **Light theme 完成 / JSON ロード** … 将来。
+9. **`strategy_editor.rs` / `strategy_editor_spike.rs` の token 化** … #50 内で `bevscode` 上に乗ったタイミングで実施（#48 範囲外、`Color::srgba` 直書き残存は観測のみ）。
 
 ## 11. footer で touch しなかったもの（明示）
 

@@ -11,10 +11,13 @@
 //! NOTE: Not a Bevy Resource. `Theme` (Step 6) will own a `Typography` field
 //! and accessors below take `&self`.
 
+use bevy::asset::Handle;
+use bevy::text::{Font, LineHeight, TextFont};
+
 /// Font weight. Numeric repr matches CSS conventions; kept as an internal
 /// enum (rather than `bevy::text::FontWeight`) to avoid coupling to Bevy
 /// 0.18's evolving text API.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 #[repr(u16)]
 pub enum FontWeight {
     Normal = 400,
@@ -25,14 +28,14 @@ pub enum FontWeight {
 
 /// Logical font family. Resolution to a concrete `Handle<Font>` happens in
 /// the renderer layer (Step 6+).
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub enum FontFamily {
     Sans,
     Mono,
 }
 
 /// Headline tier. Maps to fixed indices in `Typography::headline`.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub enum HeadlineSize {
     XSmall,
     Small,
@@ -42,7 +45,7 @@ pub enum HeadlineSize {
 }
 
 /// Label tier. Maps to fixed indices in `Typography::label`.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub enum LabelSize {
     XSmall,
     Small,
@@ -51,7 +54,7 @@ pub enum LabelSize {
 }
 
 /// A single text style token: size, line height, weight, family.
-#[derive(Debug, Clone, Copy)]
+#[derive(Debug, Clone, Copy, serde::Serialize, serde::Deserialize)]
 pub struct TypeStyle {
     pub size: f32,
     pub line_height: f32,
@@ -64,13 +67,33 @@ impl TypeStyle {
     pub const fn new(size: f32, line_height: f32, weight: FontWeight, family: FontFamily) -> Self {
         Self { size, line_height, weight, family }
     }
+
+    /// Returns this token's `size` as `TextFont::font_size` and `line_height`
+    /// as `LineHeight::Px`. The font handle is left default; concrete font
+    /// face resolution lands in #50 (bevscode replacement).
+    pub fn text_font(&self) -> (TextFont, LineHeight) {
+        (
+            TextFont { font_size: self.size, ..Default::default() },
+            LineHeight::Px(self.line_height),
+        )
+    }
+
+    /// Same as `text_font` but binds the given font handle. Used by symbol-only
+    /// surfaces (e.g. footer ▶/■) where the default font lacks the glyph but
+    /// size / line height must still come from the label token.
+    pub fn text_font_with_font(&self, font: Handle<Font>) -> (TextFont, LineHeight) {
+        (
+            TextFont { font, font_size: self.size, ..Default::default() },
+            LineHeight::Px(self.line_height),
+        )
+    }
 }
 
 /// All typography tokens for the active theme.
 ///
 /// Built from `Default::default()` (dark theme baseline). Look up styles via
 /// the accessors below; do not index the arrays directly from call sites.
-#[derive(Debug, Clone, Copy)]
+#[derive(Debug, Clone, Copy, serde::Serialize, serde::Deserialize)]
 pub struct Typography {
     /// XSmall, Small, Medium, Large, XLarge (5 tiers).
     headline: [TypeStyle; 5],
@@ -91,6 +114,28 @@ impl Typography {
     #[inline]
     pub fn label(&self, size: LabelSize) -> &TypeStyle {
         &self.label[size as usize]
+    }
+
+    /// Delegates to `TypeStyle::text_font` for the requested headline tier.
+    #[inline]
+    pub fn headline_font(&self, size: HeadlineSize) -> (TextFont, LineHeight) {
+        self.headline(size).text_font()
+    }
+
+    /// Delegates to `TypeStyle::text_font` for the requested label tier.
+    #[inline]
+    pub fn label_font(&self, size: LabelSize) -> (TextFont, LineHeight) {
+        self.label(size).text_font()
+    }
+
+    /// Delegates to `TypeStyle::text_font_with_font` for the requested label tier.
+    #[inline]
+    pub fn label_font_with_font(
+        &self,
+        size: LabelSize,
+        font: Handle<Font>,
+    ) -> (TextFont, LineHeight) {
+        self.label(size).text_font_with_font(font)
     }
 }
 
@@ -115,5 +160,37 @@ impl Default for Typography {
             body: TypeStyle::new(13.0, 18.0, FontWeight::Normal, FontFamily::Sans),
             mono: TypeStyle::new(12.0, 17.0, FontWeight::Normal, FontFamily::Mono),
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use bevy::text::LineHeight;
+
+    #[test]
+    fn label_font_small_carries_declared_size_and_line_height() {
+        let typo = Typography::default();
+        let (tf, lh) = typo.label_font(LabelSize::Small);
+        assert_eq!(tf.font_size, 11.0);
+        assert_eq!(lh, LineHeight::Px(15.0));
+    }
+
+    #[test]
+    fn headline_font_medium_carries_declared_size_and_line_height() {
+        let typo = Typography::default();
+        let (tf, lh) = typo.headline_font(HeadlineSize::Medium);
+        assert_eq!(tf.font_size, 16.0);
+        assert_eq!(lh, LineHeight::Px(20.0));
+    }
+
+    #[test]
+    fn label_font_with_font_small_carries_size_line_height_and_font() {
+        let typo = Typography::default();
+        let handle = Handle::<bevy::text::Font>::default();
+        let (tf, lh) = typo.label_font_with_font(LabelSize::Small, handle.clone());
+        assert_eq!(tf.font_size, 11.0);
+        assert_eq!(lh, LineHeight::Px(15.0));
+        assert_eq!(tf.font, handle);
     }
 }

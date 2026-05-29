@@ -14,7 +14,7 @@
 //! will own the active `UiDensity` and call `DynamicSpacing::px` at draw time.
 
 /// UI density preset. Controls the active column of `DynamicSpacing::px`.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, serde::Serialize, serde::Deserialize)]
 pub enum UiDensity {
     Compact,
     #[default]
@@ -27,7 +27,7 @@ pub enum UiDensity {
 /// Numeric suffix encodes the Default-density pixel value (e.g. `Base08` = 8 px
 /// at Default density). Use these tokens in UI code instead of raw `Val::Px`
 /// literals.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub enum DynamicSpacing {
     Base00,
     Base02,

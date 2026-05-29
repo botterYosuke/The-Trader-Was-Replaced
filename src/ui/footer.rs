@@ -39,13 +39,7 @@ fn spawn_transport_btn(
         .with_children(|p| {
             p.spawn((
                 Text::new(label),
-                TextFont {
-                    font_size: theme
-                        .typography
-                        .label(crate::ui::theme::LabelSize::Small)
-                        .size,
-                    ..default()
-                },
+                theme.typography.label_font(crate::ui::theme::LabelSize::Small),
                 TextColor(theme.colors.text),
             ));
         });
@@ -77,13 +71,7 @@ fn spawn_speed_btn(
         .with_children(|p| {
             p.spawn((
                 Text::new(format!("{}x", multiplier)),
-                TextFont {
-                    font_size: theme
-                        .typography
-                        .label(crate::ui::theme::LabelSize::XSmall)
-                        .size,
-                    ..default()
-                },
+                theme.typography.label_font(crate::ui::theme::LabelSize::XSmall),
                 TextColor(theme.colors.text_accent),
             ));
         });
@@ -111,13 +99,7 @@ fn spawn_mode_segment(
         .with_children(|p| {
             p.spawn((
                 Text::new(label),
-                TextFont {
-                    font_size: theme
-                        .typography
-                        .label(crate::ui::theme::LabelSize::Small)
-                        .size,
-                    ..default()
-                },
+                theme.typography.label_font(crate::ui::theme::LabelSize::Small),
                 TextColor(theme.colors.text),
             ));
         });
@@ -144,10 +126,10 @@ pub fn spawn_footer(
                 flex_direction: FlexDirection::Row,
                 align_items: AlignItems::Center,
                 column_gap: Val::Px(
-                    crate::ui::theme::DynamicSpacing::Base06.px(theme.layout.density),
+                    crate::ui::theme::DynamicSpacing::Base06.px(theme.spacing.density),
                 ),
                 padding: UiRect::horizontal(Val::Px(
-                    crate::ui::theme::DynamicSpacing::Base08.px(theme.layout.density),
+                    crate::ui::theme::DynamicSpacing::Base08.px(theme.spacing.density),
                 )),
                 ..default()
             },
@@ -161,7 +143,7 @@ pub fn spawn_footer(
             spawn_mode_segment(p, &theme, "Auto", ExecutionMode::LiveAuto);
 
             p.spawn(Node {
-                width: Val::Px(crate::ui::theme::DynamicSpacing::Base08.px(theme.layout.density)),
+                width: Val::Px(crate::ui::theme::DynamicSpacing::Base08.px(theme.spacing.density)),
                 ..default()
             });
 
@@ -186,16 +168,13 @@ pub fn spawn_footer(
                 PauseResumeButton,
             ))
             .with_children(|pp| {
+                let (symbol_tf, symbol_lh) = theme
+                    .typography
+                    .label_font_with_font(crate::ui::theme::LabelSize::Small, symbol_font.clone());
                 pp.spawn((
                     Text::new("▶"),
-                    TextFont {
-                        font: symbol_font.clone(),
-                        font_size: theme
-                            .typography
-                            .label(crate::ui::theme::LabelSize::Small)
-                            .size,
-                        ..default()
-                    },
+                    symbol_tf,
+                    symbol_lh,
                     TextColor(theme.colors.text),
                     PauseResumeLabel,
                 ));
@@ -215,23 +194,20 @@ pub fn spawn_footer(
                 TransportButton::ForceStop,
             ))
             .with_children(|pp| {
+                let (symbol_tf, symbol_lh) = theme
+                    .typography
+                    .label_font_with_font(crate::ui::theme::LabelSize::Small, symbol_font.clone());
                 pp.spawn((
                     Text::new("■"),
-                    TextFont {
-                        font: symbol_font.clone(),
-                        font_size: theme
-                            .typography
-                            .label(crate::ui::theme::LabelSize::Small)
-                            .size,
-                        ..default()
-                    },
+                    symbol_tf,
+                    symbol_lh,
                     TextColor(theme.colors.text),
                 ));
             });
 
             // Separator
             p.spawn(Node {
-                width: Val::Px(crate::ui::theme::DynamicSpacing::Base06.px(theme.layout.density)),
+                width: Val::Px(crate::ui::theme::DynamicSpacing::Base06.px(theme.spacing.density)),
                 ..default()
             });
 
@@ -249,49 +225,25 @@ pub fn spawn_footer(
             // Status labels
             p.spawn((
                 Text::new("time: --"),
-                TextFont {
-                    font_size: theme
-                        .typography
-                        .label(crate::ui::theme::LabelSize::Default)
-                        .size,
-                    ..default()
-                },
+                theme.typography.label_font(crate::ui::theme::LabelSize::Default),
                 TextColor(theme.colors.text_muted),
                 ReplayTimeLabel,
             ));
             p.spawn((
                 Text::new("state: IDLE"),
-                TextFont {
-                    font_size: theme
-                        .typography
-                        .label(crate::ui::theme::LabelSize::Default)
-                        .size,
-                    ..default()
-                },
+                theme.typography.label_font(crate::ui::theme::LabelSize::Default),
                 TextColor(theme.colors.text_disabled),
                 ReplayStateBadge,
             ));
             p.spawn((
                 Text::new("Venue: DISCONNECTED"),
-                TextFont {
-                    font_size: theme
-                        .typography
-                        .label(crate::ui::theme::LabelSize::Default)
-                        .size,
-                    ..default()
-                },
+                theme.typography.label_font(crate::ui::theme::LabelSize::Default),
                 TextColor(theme.colors.text_muted),
                 VenueStateBadge,
             ));
             p.spawn((
                 Text::new("grpc: DISABLED"),
-                TextFont {
-                    font_size: theme
-                        .typography
-                        .label(crate::ui::theme::LabelSize::Default)
-                        .size,
-                    ..default()
-                },
+                theme.typography.label_font(crate::ui::theme::LabelSize::Default),
                 TextColor(theme.colors.text_disabled),
                 GrpcStatusLabel,
             ));
@@ -1036,8 +988,8 @@ mod tests {
             .init_resource::<VenueStatusRes>()
             .init_resource::<ScenarioMetadata>()
             .init_resource::<StrategyAutoSaveState>()
-            .init_resource::<crate::ui::theme::Theme>()
             .add_message::<StrategyRunRequested>();
+        app.add_plugins(crate::ui::theme::ThemePlugin);
         app.add_systems(
             Update,
             (
