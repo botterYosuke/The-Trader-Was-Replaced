@@ -154,6 +154,8 @@ format / restore の判断も Navigator に任せます。
 
 実例（issue #64 レビュー）: Navigator はコードレビューのみで「Medium 以上なし」と結論したが、司令塔が裏取りで `pytest` を回したところ 1 件が赤（`assert success is False` だが実装は `True` を返す）。Navigator 再判定で「register は mode gate なし＝実装が正、テストの期待が stale」と切り分けられ、テスト側を直して解決した。**司令塔がテストを回さなければこの赤は完了報告をすり抜けていた。**
 
+⚠️ **独立セカンドオピニオン（codex 代替の Claude レビュー Agent）は必ず read-only agent type（`Explore`）で spawn する**。`general-purpose` は Bash/Edit/Write を持つため、レビュー中に作業ツリーを触りうる。実例（#46 Slice B2 Step7）: `general-purpose` のレビュー Agent が「baseline 比較」のため `git stash pop` を実行 → conflict → `git reset --hard` で復旧、という**破壊的 git をレビュー名目で実行**した（幸い tree/stash は無傷で復旧）。レビューは静的観察に徹するべきで、`Explore`（read-only）なら構造的に不可能になる。cargo/git の裏取りは従来どおり司令塔が代行し raw 出力を渡す。これは「Navigator/Driver に破壊的 git をやらせない」原則の **レビュー Agent への拡張**。
+
 ## 完了報告（司令塔 → Human）
 
 完了時、司令塔Agentは事実を短く並べます。
