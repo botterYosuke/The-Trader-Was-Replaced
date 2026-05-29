@@ -24,9 +24,9 @@ use crate::ui::theme::ElevationIndex;
 use bevy::input::keyboard::KeyboardInput;
 use bevy::prelude::*;
 
+// Initial spawn background only; interactive state color is owned by
+// button_interaction_system (Filled). #46 Slice A.
 const BTN_NORMAL: Color = Color::srgba(0.10, 0.10, 0.16, 1.0);
-const BTN_HOVER: Color = Color::srgba(0.20, 0.20, 0.30, 1.0);
-const BTN_PRESSED: Color = Color::srgba(0.30, 0.30, 0.48, 1.0);
 
 fn spawn_menu_item(parent: &mut ChildSpawnerCommands, label: &str, action: MenuItem) {
     parent
@@ -40,6 +40,8 @@ fn spawn_menu_item(parent: &mut ChildSpawnerCommands, label: &str, action: MenuI
                 ..default()
             },
             BackgroundColor(BTN_NORMAL),
+            ButtonStyle::Filled,
+            ElevationIndex::Surface,
             action,
         ))
         .with_children(|p| {
@@ -403,10 +405,6 @@ fn send_venue_login(
     }
 }
 
-const BTN_DISABLED: Color = Color::srgba(0.20, 0.20, 0.20, 0.5);
-const TEXT_NORMAL: Color = Color::srgb(0.82, 0.82, 0.82);
-const TEXT_DISABLED: Color = Color::srgba(0.40, 0.40, 0.40, 0.5);
-
 fn venue_connect_is_tachibana(item: &MenuItem) -> bool {
     matches!(
         item,
@@ -421,47 +419,36 @@ fn venue_connect_is_kabu(item: &MenuItem) -> bool {
     )
 }
 
-/// Returns true if the given Venue→Connect MenuItem should be disabled in the
-/// current VenueStatusRes (occupied slot — same or opposite venue is busy).
-fn venue_connect_disabled(item: &MenuItem, status: &VenueStatusRes) -> bool {
-    let is_connect = venue_connect_is_tachibana(item) || venue_connect_is_kabu(item);
-    if !is_connect {
-        return false;
-    }
-    is_venue_busy_for_menu(status.state)
-}
-
-/// Drives the disabled / normal background+text color of Venue→Connect buttons.
-///
-/// Runs every frame (no `is_changed()` gate) so that the Hover/None color
-/// updates inside `menu_item_system` — which fire on `Changed<Interaction>` —
-/// cannot leave a disabled button stuck on the hover color on later frames.
+/// Toggles the `ButtonDisabled` marker on Venue→Connect buttons when the venue
+/// is busy; `button_interaction_system` then paints the disabled bg + label.
+/// #46 Slice A (replaces the former bg/text color writes). Gated on
+/// `VenueStatusRes` change and on the current marker state so it does not dirty
+/// the buttons every frame.
 pub fn gate_venue_menu_items_system(
-    mut btn_q: Query<(&MenuItem, &Interaction, &mut BackgroundColor, &Children), With<Button>>,
-    mut text_q: Query<&mut TextColor>,
+    mut commands: Commands,
+    btn_q: Query<
+        (Entity, &MenuItem, Has<crate::ui::component::ButtonDisabled>),
+        With<Button>,
+    >,
     status: Res<VenueStatusRes>,
 ) {
-    for (item, interaction, mut bg, children) in &mut btn_q {
+    if !status.is_changed() {
+        return;
+    }
+    let disabled = is_venue_busy_for_menu(status.state);
+    for (entity, item, has_disabled) in &btn_q {
         let is_connect = venue_connect_is_tachibana(item) || venue_connect_is_kabu(item);
         if !is_connect {
             continue;
         }
-        let disabled = is_venue_busy_for_menu(status.state);
-        // Pressed lasts one frame and is handled by `menu_item_system`; leave
-        // its visual indicator (BTN_PRESSED) alone here.
-        if !matches!(interaction, Interaction::Pressed) {
-            let target_bg = if disabled { BTN_DISABLED } else { BTN_NORMAL };
-            if bg.0 != target_bg {
-                bg.0 = target_bg;
-            }
-        }
-        let target_text = if disabled { TEXT_DISABLED } else { TEXT_NORMAL };
-        for child in children.iter() {
-            if let Ok(mut tc) = text_q.get_mut(child) {
-                if tc.0 != target_text {
-                    tc.0 = target_text;
-                }
-            }
+        if disabled && !has_disabled {
+            commands
+                .entity(entity)
+                .insert(crate::ui::component::ButtonDisabled);
+        } else if !disabled && has_disabled {
+            commands
+                .entity(entity)
+                .remove::<crate::ui::component::ButtonDisabled>();
         }
     }
 }
@@ -495,10 +482,7 @@ pub fn hide_unconfigured_venue_items_system(
 }
 
 pub fn menu_item_system(
-    mut query: Query<
-        (&Interaction, &mut BackgroundColor, &MenuItem),
-        (Changed<Interaction>, With<Button>),
-    >,
+    query: Query<(&Interaction, &MenuItem), (Changed<Interaction>, With<Button>)>,
     mut open_menu: ResMut<OpenMenu>,
     mut save_ev: MessageWriter<LayoutSaveRequested>,
     mut save_as_ev: MessageWriter<LayoutSaveAsRequested>,
@@ -511,10 +495,12 @@ pub fn menu_item_system(
     mut commands: Commands,
     existing_settings: Query<(), With<SettingsModalRoot>>,
 ) {
-    for (interaction, mut bg, item) in &mut query {
+    // Color is owned by button_interaction_system (Filled) + the ButtonDisabled
+    // toggle in gate_venue_menu_items_system; this keeps only the actions.
+    // #46 Slice A. The venue-busy press guard below is unchanged.
+    for (interaction, item) in &query {
         match interaction {
             Interaction::Pressed => {
-                bg.0 = BTN_PRESSED;
                 open_menu.0 = None;
                 match item {
                     MenuItem::SaveLayout => {
@@ -635,26 +621,7 @@ pub fn menu_item_system(
                     }
                 }
             }
-            Interaction::Hovered => {
-                let target = if venue_connect_disabled(item, &venue_status) {
-                    BTN_DISABLED
-                } else {
-                    BTN_HOVER
-                };
-                if bg.0 != target {
-                    bg.0 = target;
-                }
-            }
-            Interaction::None => {
-                let target = if venue_connect_disabled(item, &venue_status) {
-                    BTN_DISABLED
-                } else {
-                    BTN_NORMAL
-                };
-                if bg.0 != target {
-                    bg.0 = target;
-                }
-            }
+            Interaction::Hovered | Interaction::None => {}
         }
     }
 }
@@ -1415,7 +1382,7 @@ mod tests {
             .world_mut()
             .spawn((
                 Text::new("Connect Tachibana (Demo)"),
-                TextColor(TEXT_NORMAL),
+                TextColor(Color::WHITE),
             ))
             .id();
         let btn_t = app
@@ -1433,7 +1400,7 @@ mod tests {
             .world_mut()
             .spawn((
                 Text::new("Connect kabuStation (Verify)"),
-                TextColor(TEXT_NORMAL),
+                TextColor(Color::WHITE),
             ))
             .id();
         let btn_k = app
@@ -1451,13 +1418,20 @@ mod tests {
         (app, btn_t, btn_k)
     }
 
+    // #46 Slice A: the gate now toggles the `ButtonDisabled` marker; color is
+    // applied by `button_interaction_system`. These assert the marker.
+    fn is_disabled(app: &App, e: Entity) -> bool {
+        app.world()
+            .get::<crate::ui::component::ButtonDisabled>(e)
+            .is_some()
+    }
+
     #[test]
     fn test_gate_venue_menu_disables_kabu_when_tachibana_authenticating() {
         let (app, _btn_t, btn_k) =
             build_app_for_menu_gating(VenueState::Authenticating, Some("tachibana"));
-        let bg = app.world().get::<BackgroundColor>(btn_k).unwrap();
-        assert_eq!(
-            bg.0, BTN_DISABLED,
+        assert!(
+            is_disabled(&app, btn_k),
             "kabu Connect should be disabled while tachibana is AUTHENTICATING"
         );
     }
@@ -1466,9 +1440,8 @@ mod tests {
     fn test_gate_venue_menu_disables_kabu_when_tachibana_connected() {
         let (app, _btn_t, btn_k) =
             build_app_for_menu_gating(VenueState::Connected, Some("tachibana"));
-        let bg = app.world().get::<BackgroundColor>(btn_k).unwrap();
-        assert_eq!(
-            bg.0, BTN_DISABLED,
+        assert!(
+            is_disabled(&app, btn_k),
             "kabu Connect should be disabled while tachibana is CONNECTED"
         );
     }
@@ -1477,9 +1450,8 @@ mod tests {
     fn test_gate_venue_menu_disables_same_venue_when_authenticating() {
         let (app, btn_t, _btn_k) =
             build_app_for_menu_gating(VenueState::Authenticating, Some("tachibana"));
-        let bg = app.world().get::<BackgroundColor>(btn_t).unwrap();
-        assert_eq!(
-            bg.0, BTN_DISABLED,
+        assert!(
+            is_disabled(&app, btn_t),
             "same-venue Connect (tachibana) must also be disabled while AUTHENTICATING"
         );
     }
@@ -1487,15 +1459,13 @@ mod tests {
     #[test]
     fn test_gate_venue_menu_enables_all_when_disconnected() {
         let (app, btn_t, btn_k) = build_app_for_menu_gating(VenueState::Disconnected, None);
-        let bg_t = app.world().get::<BackgroundColor>(btn_t).unwrap();
-        let bg_k = app.world().get::<BackgroundColor>(btn_k).unwrap();
-        assert_eq!(
-            bg_t.0, BTN_NORMAL,
-            "tachibana Connect should be normal when DISCONNECTED"
+        assert!(
+            !is_disabled(&app, btn_t),
+            "tachibana Connect should be enabled when DISCONNECTED"
         );
-        assert_eq!(
-            bg_k.0, BTN_NORMAL,
-            "kabu Connect should be normal when DISCONNECTED"
+        assert!(
+            !is_disabled(&app, btn_k),
+            "kabu Connect should be enabled when DISCONNECTED"
         );
     }
 
