@@ -36,11 +36,10 @@ pub fn setup_python_dll_search_path() {
     }
 
     if let Some(dir) = find_python_dll_dir() {
-        // NUL 終端の UTF-16 に変換
-        let mut wide: Vec<u16> = dir.as_os_str().encode_wide().collect();
-        wide.push(0);
-        unsafe {
-            set_dll_directory_w(wide.as_ptr());
+        let wide: Vec<u16> = dir.as_os_str().encode_wide().chain(std::iter::once(0)).collect();
+        let ok = unsafe { set_dll_directory_w(wide.as_ptr()) };
+        if ok == 0 {
+            bevy::log::warn!("[python_env] SetDllDirectoryW({:?}) failed", dir);
         }
     }
 }
@@ -53,16 +52,12 @@ pub fn setup_python_dll_search_path() {
 #[cfg(test)]
 mod tests {
     use super::find_python_dll_dir;
+    use serial_test::serial;
 
-    /// P12 (RED): `PYTHON_DLL_DIR` 環境変数が設定されているとき
-    /// `find_python_dll_dir()` は `Some` を返すこと。
-    ///
-    /// スタブは `None` を返すためこのテストは runtime FAIL（assert で落ちる）。
-    /// issue #66 の fix（`std::env::var("PYTHON_DLL_DIR")` を読む実装）後に GREEN になる。
+    /// P12: `PYTHON_DLL_DIR` 環境変数が設定されているとき `find_python_dll_dir()` は `Some` を返すこと。
     #[test]
+    #[serial]
     fn python_dll_dir_returns_some_when_env_set() {
-        // SAFETY: このテストは cargo test の並列スレッドで動く可能性があるため、
-        // 環境変数の書き換えは最小限にする。
         unsafe {
             std::env::set_var("PYTHON_DLL_DIR", r"C:\fake\python");
         }
@@ -70,11 +65,6 @@ mod tests {
         unsafe {
             std::env::remove_var("PYTHON_DLL_DIR");
         }
-        assert!(
-            result.is_some(),
-            "find_python_dll_dir() must return Some(path) when PYTHON_DLL_DIR env is set \
-             — currently returns None (stub). Fix: read std::env::var(\"PYTHON_DLL_DIR\") \
-             and return Some(PathBuf::from(v)). (issue #66)"
-        );
+        assert!(result.is_some(), "find_python_dll_dir() must return Some when PYTHON_DLL_DIR is set (issue #66)");
     }
 }
