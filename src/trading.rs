@@ -140,6 +140,10 @@ pub struct TradingSettings {
     pub max_history_points: usize,
     /// Path to ParquetDataCatalog used by LoadReplayData. Derived from ARTIFACTS_PATH env var as `{ARTIFACTS_PATH}/jquants-catalog`.
     pub catalog_path: Option<String>,
+    /// Use PyO3 in-process transport instead of gRPC. Set BACKEND_TRANSPORT=inproc.
+    pub use_inproc: bool,
+    /// Directory added to Python sys.path so `import engine` resolves. Default: "python".
+    pub python_engine_path: String,
 }
 
 impl TradingSettings {
@@ -170,6 +174,11 @@ impl TradingSettings {
                 let p = std::path::Path::new(&base).join("jquants-catalog");
                 Some(p.to_string_lossy().to_string())
             },
+            use_inproc: std::env::var("BACKEND_TRANSPORT")
+                .map(|v| v.to_lowercase() == "inproc")
+                .unwrap_or(false),
+            python_engine_path: std::env::var("PYTHON_ENGINE_PATH")
+                .unwrap_or_else(|_| "python".to_string()),
         }
     }
 }

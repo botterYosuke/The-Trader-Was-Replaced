@@ -17,9 +17,19 @@ description: |
   source rebuild (`build.py` Cargo feature) used to match a standard-precision shared catalog. Precision
   mode is compiled into the wheel, so wheels differ per platform even at the same version — confirm with
   `nautilus_pyo3.PRECISION_BYTES`, never the version string.
+  Also trigger on **PyO3 in-process embedding** of the Python engine (issue #64 Phase 2+):
+  "InProcTransport", "PyO3", "pyo3", "Python::with_gil", "Py<PyAny>", "GIL strategy",
+  "embed Python", "in-proc call", "DataEngine を直接呼ぶ", "PyO3 経由", "in-process transport",
+  "BACKEND_TRANSPORT=inproc". When working with the `DataEngine` in `python/engine/core.py`
+  via PyO3 (not just nautilus_trader APIs), this skill provides key context: `DataEngine`
+  instantiation kwargs (`nautilus_catalog_path`, `max_history_len`), replay method signatures
+  (`load_replay_data` / `step_replay` / `pause_replay` / `resume_replay` / `force_stop_replay`),
+  `TradingState.model_dump_json()` round-trip to `BackendTradingState`, and GIL design
+  (dedicated Python thread + `std::sync::mpsc` bridge; GIL released between calls via
+  `cmd_rx.recv_timeout` outside `Python::with_gil`).
   Also trigger on related vocabulary: "msgbus", "ts_event",
   "ts_init", "InstrumentId", "ClientId", "Venue", "BarSpec", "OrderFactory", "ExecAlgorithm",
-  "PositionEvent", "OrderEvent", "cache" in a trading sense, "Cython .pyx", "PyO3".
+  "PositionEvent", "OrderEvent", "cache" in a trading sense, "Cython .pyx".
   Also trigger on the **kernel-on-background-loop / signal seam** (live attach in
   `engine_controller.py`): "signal only works in main thread", `_setup_loop`,
   `add_signal_handler`, `NautilusKernel(loop=...)`, "kernel on non-main thread",

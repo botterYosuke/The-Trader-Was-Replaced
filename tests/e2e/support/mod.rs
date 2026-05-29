@@ -99,6 +99,8 @@ impl Harness {
             poll_interval_ms: 500,
             max_history_points: 1000,
             catalog_path: None,
+            use_inproc: false,
+            python_engine_path: "python".to_string(),
         });
 
         app.insert_resource(StatusUpdateChannel { rx: status_rx });

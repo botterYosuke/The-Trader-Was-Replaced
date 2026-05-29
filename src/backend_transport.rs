@@ -2,6 +2,7 @@ use std::pin::Pin;
 use std::future::Future;
 use tokio::sync::mpsc;
 use bevy::log::{error, info, warn};
+use pyo3::prelude::{Py, PyAny};
 
 use crate::backend_supervisor::BackendLifecycle;
 use crate::backend_sync::lifecycle_status_update;
@@ -1453,6 +1454,425 @@ pub fn parse_replay_granularity(s: &str) -> Result<i32, String> {
         "Daily" => Ok(ReplayGranularity::Daily as i32),
         "Minute" => Ok(ReplayGranularity::Minute as i32),
         other => Err(format!("unknown granularity: {:?}", other)),
+    }
+}
+
+// ---------------------------------------------------------------------------
+// InProcTransport — PyO3 direct call implementation (Phase 2)
+// ---------------------------------------------------------------------------
+
+/// Response messages from the Python dedicated thread back to the tokio world.
+enum InProcResp {
+    StateJson(String),
+    Status(BackendStatusUpdate),
+}
+
+pub struct InProcTransport {
+    pub catalog_path: Option<String>,
+    pub max_history_len: usize,
+    /// Directory inserted at sys.path[0] so `import engine` resolves.
+    pub python_engine_path: String,
+    pub poll_interval_ms: u64,
+}
+
+impl BackendTransport for InProcTransport {
+    fn run(
+        self: Box<Self>,
+        mut transport_rx: mpsc::UnboundedReceiver<TransportCommand>,
+        state_tx: mpsc::UnboundedSender<BackendTradingState>,
+        status_tx: mpsc::UnboundedSender<BackendStatusUpdate>,
+        event_tx: mpsc::UnboundedSender<BackendEvent>,
+        mut lifecycle_rx: tokio::sync::watch::Receiver<BackendLifecycle>,
+    ) -> Pin<Box<dyn Future<Output = ()> + Send + 'static>> {
+        let catalog_path = self.catalog_path;
+        let max_history_len = self.max_history_len;
+        let python_engine_path = self.python_engine_path;
+        let poll_interval_ms = self.poll_interval_ms;
+
+        Box::pin(async move {
+            // Supervisor emits Ready immediately in inproc mode; wait for it.
+            if lifecycle_rx
+                .wait_for(|s| matches!(s, BackendLifecycle::Ready))
+                .await
+                .is_err()
+            {
+                return;
+            }
+
+            // Bridge: tokio UnboundedReceiver → std::sync::mpsc (Python thread is synchronous).
+            // Unbounded variant: Sender::send() never blocks, so the tokio worker thread is
+            // never parked even when the Python thread is busy processing a long Python call.
+            let (cmd_tx, cmd_rx) = std::sync::mpsc::channel::<TransportCommand>();
+            tokio::spawn(async move {
+                while let Some(cmd) = transport_rx.recv().await {
+                    if cmd_tx.send(cmd).is_err() {
+                        break;
+                    }
+                }
+            });
+
+            // Response channel: Python thread → tokio world.
+            let (resp_tx, mut resp_rx) = mpsc::unbounded_channel::<InProcResp>();
+
+            // Spawn the dedicated Python thread.
+            if let Err(e) = std::thread::Builder::new()
+                .name("python-engine".to_string())
+                .spawn(move || {
+                    inproc_python_worker(
+                        cmd_rx,
+                        resp_tx,
+                        catalog_path,
+                        max_history_len,
+                        python_engine_path,
+                        poll_interval_ms,
+                    );
+                })
+            {
+                error!("[inproc] failed to spawn Python thread: {}", e);
+                let _ = status_tx.send(BackendStatusUpdate::Connected(false));
+                let _ = status_tx.send(BackendStatusUpdate::Error(format!(
+                    "InProc thread spawn failed: {}", e
+                )));
+                return;
+            }
+
+            // State diffing state (mirrors GrpcTransport inner loop).
+            let mut prev_venue: Option<String> = None;
+            let mut prev_mode: Option<String> = None;
+            let mut prev_configured_venue: Option<Option<String>> = None;
+
+            // Response handler — runs until Python thread exits (resp_rx closes).
+            while let Some(resp) = resp_rx.recv().await {
+                match resp {
+                    InProcResp::StateJson(json) => {
+                        match serde_json::from_str::<BackendTradingState>(&json) {
+                            Ok(state) => {
+                                if state.venue_state != prev_venue {
+                                    if let Some(ref s) = state.venue_state {
+                                        match parse_venue_state(s) {
+                                            Some(vs) => {
+                                                let _ = status_tx.send(BackendStatusUpdate::VenueChanged {
+                                                    state: vs,
+                                                    venue_id: state.venue_id.clone(),
+                                                    instruments_loaded: state.instruments_loaded.unwrap_or(0),
+                                                });
+                                            }
+                                            None => warn!("[inproc] unknown venue_state: {:?}", s),
+                                        }
+                                    }
+                                    prev_venue = state.venue_state.clone();
+                                }
+                                if state.execution_mode != prev_mode {
+                                    if let Some(ref m) = state.execution_mode {
+                                        match parse_execution_mode(m) {
+                                            Some(em) => {
+                                                let _ = status_tx.send(BackendStatusUpdate::ExecutionModeChanged { mode: em });
+                                            }
+                                            None => warn!("[inproc] unknown execution_mode: {:?}", m),
+                                        }
+                                    }
+                                    prev_mode = state.execution_mode.clone();
+                                }
+                                if prev_configured_venue.as_ref() != Some(&state.configured_venue) {
+                                    let _ = status_tx.send(BackendStatusUpdate::ConfiguredVenueDiscovered {
+                                        venue_id: state.configured_venue.clone(),
+                                    });
+                                    prev_configured_venue = Some(state.configured_venue.clone());
+                                }
+                                let _ = status_tx.send(BackendStatusUpdate::LastPricesUpdated {
+                                    prices: state.last_prices.clone(),
+                                });
+                                let _ = status_tx.send(BackendStatusUpdate::Connected(true));
+                                let _ = state_tx.send(state);
+                            }
+                            Err(e) => {
+                                error!("[inproc] state JSON parse error: {}; dropping state", e);
+                            }
+                        }
+                    }
+                    InProcResp::Status(upd) => {
+                        let _ = status_tx.send(upd);
+                    }
+                }
+            }
+            // Python thread exited — signal disconnected.
+            let _ = status_tx.send(BackendStatusUpdate::Connected(false));
+            // Suppress unused warning: event_tx is kept alive until this drop.
+            drop(event_tx);
+        })
+    }
+}
+
+/// The dedicated Python thread.  GIL is acquired only for the duration of each
+/// Python call; between calls the thread blocks on `cmd_rx.recv_timeout` with no
+/// GIL held, so other Python threads (if any) can run freely.
+fn inproc_python_worker(
+    cmd_rx: std::sync::mpsc::Receiver<TransportCommand>,
+    resp_tx: mpsc::UnboundedSender<InProcResp>,
+    catalog_path: Option<String>,
+    max_history_len: usize,
+    python_engine_path: String,
+    poll_interval_ms: u64,
+) {
+    use pyo3::prelude::*;
+    use pyo3::types::{PyDict, PyList};
+
+    info!("[inproc] Python worker thread starting");
+
+    // Initialize DataEngine — hold GIL only during setup.
+    let engine: Py<PyAny> = match Python::with_gil(|py| -> PyResult<Py<PyAny>> {
+        // Add engine package directory to sys.path.
+        let sys = py.import_bound("sys")?;
+        let path = sys.getattr("path")?;
+        let path_list = path.downcast::<PyList>()?;
+        path_list.insert(0, &python_engine_path)?;
+
+        let module = py.import_bound("engine.core")?;
+        let cls = module.getattr("DataEngine")?;
+
+        let kwargs = PyDict::new_bound(py);
+        if let Some(ref cp) = catalog_path {
+            kwargs.set_item("nautilus_catalog_path", cp)?;
+        }
+        kwargs.set_item("max_history_len", max_history_len)?;
+
+        let engine = cls.call((), Some(&kwargs))?;
+        Ok(engine.into())
+    }) {
+        Ok(e) => {
+            info!("[inproc] DataEngine initialized");
+            let _ = resp_tx.send(InProcResp::Status(BackendStatusUpdate::Connected(true)));
+            let _ = resp_tx.send(InProcResp::Status(BackendStatusUpdate::Running(true)));
+            e
+        }
+        Err(e) => {
+            error!("[inproc] DataEngine init failed: {}", e);
+            let _ = resp_tx.send(InProcResp::Status(BackendStatusUpdate::Error(format!(
+                "InProc DataEngine init failed: {}", e
+            ))));
+            return;
+        }
+    };
+
+    let poll_duration = std::time::Duration::from_millis(poll_interval_ms);
+
+    loop {
+        // Wait for a command; on timeout, poll GetState.  GIL is NOT held here.
+        let cmd = cmd_rx.recv_timeout(poll_duration);
+
+        match cmd {
+            Ok(cmd) => {
+                inproc_dispatch(&engine, cmd, &resp_tx, &catalog_path);
+            }
+            Err(std::sync::mpsc::RecvTimeoutError::Timeout) => {
+                inproc_poll_state(&engine, &resp_tx);
+            }
+            Err(std::sync::mpsc::RecvTimeoutError::Disconnected) => {
+                info!("[inproc] command channel closed; Python worker exiting");
+                break;
+            }
+        }
+    }
+}
+
+/// Call `engine.get_current_state().model_dump_json()` and forward the JSON.
+fn inproc_poll_state(engine: &Py<PyAny>, resp_tx: &mpsc::UnboundedSender<InProcResp>) {
+    use pyo3::prelude::*;
+
+    let result = Python::with_gil(|py| -> Option<String> {
+        let state = engine.bind(py).call_method0("get_current_state").ok()?;
+        let json = state.call_method0("model_dump_json").ok()?;
+        json.extract::<String>().ok()
+    });
+
+    if let Some(json) = result {
+        let _ = resp_tx.send(InProcResp::StateJson(json));
+    }
+}
+
+/// Call a zero-argument replay method that returns `(bool, str | None)`.
+fn inproc_call_replay(
+    engine: &Py<PyAny>,
+    method: &str,
+) -> (bool, Option<String>) {
+    use pyo3::prelude::*;
+
+    Python::with_gil(|py| {
+        match engine.bind(py).call_method0(method) {
+            Ok(val) => val
+                .extract::<(bool, Option<String>)>()
+                .unwrap_or((false, Some(format!("{}: extract failed", method)))),
+            Err(e) => (false, Some(format!("{}: PyO3 error: {}", method, e))),
+        }
+    })
+}
+
+/// Call `engine.set_replay_speed(multiplier)`.
+fn inproc_set_speed(engine: &Py<PyAny>, multiplier: u32) {
+    use pyo3::prelude::*;
+
+    Python::with_gil(|py| {
+        if let Err(e) = engine.bind(py).call_method1("set_replay_speed", (multiplier,)) {
+            warn!("[inproc] set_replay_speed error: {}", e);
+        }
+    });
+}
+
+/// Call `engine.load_replay_data(...)`.
+fn inproc_load_replay_data(
+    engine: &Py<PyAny>,
+    instrument_ids: &[String],
+    start_date: &str,
+    end_date: &str,
+    granularity: &str,
+    catalog_path: Option<&str>,
+) -> (bool, Option<String>) {
+    use pyo3::prelude::*;
+    use pyo3::types::{PyDict, PyList};
+
+    Python::with_gil(|py| {
+        let kwargs = PyDict::new_bound(py);
+        let py_ids = PyList::new_bound(py, instrument_ids.iter().map(|s| s.as_str()));
+        if let Err(e) = kwargs.set_item("instrument_ids", py_ids) {
+            return (false, Some(format!("kwargs set_item error: {}", e)));
+        }
+        let _ = kwargs.set_item("start_date", start_date);
+        let _ = kwargs.set_item("end_date", end_date);
+        let _ = kwargs.set_item("granularity", granularity);
+        if let Some(cp) = catalog_path {
+            let _ = kwargs.set_item("catalog_path", cp);
+        }
+
+        match engine.bind(py).call_method("load_replay_data", (), Some(&kwargs)) {
+            Ok(val) => val
+                .extract::<(bool, Option<String>)>()
+                .unwrap_or((false, Some("load_replay_data: extract failed".to_string()))),
+            Err(e) => (false, Some(format!("load_replay_data PyO3 error: {}", e))),
+        }
+    })
+}
+
+/// Dispatch a single `TransportCommand` to the appropriate Python call.
+fn inproc_dispatch(
+    engine: &Py<PyAny>,
+    cmd: TransportCommand,
+    resp_tx: &mpsc::UnboundedSender<InProcResp>,
+    default_catalog: &Option<String>,
+) {
+    match cmd {
+        TransportCommand::Pause => {
+            let (ok, err) = inproc_call_replay(engine, "pause_replay");
+            if ok {
+                info!("[inproc] PauseReplay ok");
+            } else {
+                error!("[inproc] PauseReplay failed: {:?}", err);
+            }
+        }
+        TransportCommand::Resume => {
+            let (ok, err) = inproc_call_replay(engine, "resume_replay");
+            if ok {
+                info!("[inproc] ResumeReplay ok");
+            } else {
+                error!("[inproc] ResumeReplay failed: {:?}", err);
+            }
+        }
+        TransportCommand::StepForward => {
+            let (ok, err) = inproc_call_replay(engine, "step_replay");
+            if ok {
+                info!("[inproc] StepReplay ok");
+                // Immediately push updated state after a step.
+                inproc_poll_state(engine, resp_tx);
+            } else {
+                error!("[inproc] StepReplay failed: {:?}", err);
+            }
+        }
+        TransportCommand::ForceStop => {
+            let (ok, err) = inproc_call_replay(engine, "force_stop_replay");
+            if ok {
+                info!("[inproc] ForceStopReplay ok");
+            } else {
+                error!("[inproc] ForceStopReplay failed: {:?}", err);
+            }
+        }
+        TransportCommand::SetSpeed(mult) => {
+            inproc_set_speed(engine, mult);
+        }
+        TransportCommand::LoadAndStep { config, startup_id } => {
+            let _ = resp_tx.send(InProcResp::Status(BackendStatusUpdate::ReplayStartup {
+                startup_id,
+                stage: crate::trading::BackendStartupStage::ResettingReplay,
+            }));
+            let (ok, err) = inproc_call_replay(engine, "force_stop_replay");
+            if !ok {
+                let msg = format!("LoadAndStep ForceStop: {:?}", err);
+                error!("[inproc] {}", msg);
+                let _ = resp_tx.send(InProcResp::Status(BackendStatusUpdate::RunFailed {
+                    startup_id: Some(startup_id),
+                    error: msg,
+                }));
+                return;
+            }
+
+            let granularity = match parse_replay_granularity(&config.granularity) {
+                Ok(_) => config.granularity.as_str(),
+                Err(msg) => {
+                    error!("[inproc] LoadAndStep: {}", msg);
+                    let _ = resp_tx.send(InProcResp::Status(BackendStatusUpdate::RunFailed {
+                        startup_id: Some(startup_id),
+                        error: msg,
+                    }));
+                    return;
+                }
+            };
+
+            let _ = resp_tx.send(InProcResp::Status(BackendStatusUpdate::ReplayStartup {
+                startup_id,
+                stage: crate::trading::BackendStartupStage::LoadingData,
+            }));
+
+            let (ok, err) = inproc_load_replay_data(
+                engine,
+                &config.instruments,
+                &config.start,
+                &config.end,
+                granularity,
+                default_catalog.as_deref(),
+            );
+            if !ok {
+                let msg = format!("LoadAndStep LoadReplayData: {:?}", err);
+                error!("[inproc] {}", msg);
+                let _ = resp_tx.send(InProcResp::Status(BackendStatusUpdate::RunFailed {
+                    startup_id: Some(startup_id),
+                    error: msg,
+                }));
+                return;
+            }
+            info!("[inproc] LoadReplayData ok");
+
+            let _ = resp_tx.send(InProcResp::Status(BackendStatusUpdate::ReplayStartup {
+                startup_id,
+                stage: crate::trading::BackendStartupStage::WaitingForFirstTick,
+            }));
+
+            let (ok, err) = inproc_call_replay(engine, "step_replay");
+            if !ok {
+                let msg = format!("LoadAndStep StepReplay: {:?}", err);
+                error!("[inproc] {}", msg);
+                let _ = resp_tx.send(InProcResp::Status(BackendStatusUpdate::RunFailed {
+                    startup_id: Some(startup_id),
+                    error: msg,
+                }));
+            } else {
+                info!("[inproc] LoadAndStep complete (step ok)");
+                inproc_poll_state(engine, resp_tx);
+            }
+        }
+        TransportCommand::RunStrategy { .. } => {
+            warn!("[inproc] RunStrategy not supported in Phase 2 InProc; use GrpcTransport for full strategy runs");
+        }
+        other => {
+            warn!("[inproc] command {:?} not supported in Phase 2 InProc (replay-only)", other);
+        }
     }
 }
 
