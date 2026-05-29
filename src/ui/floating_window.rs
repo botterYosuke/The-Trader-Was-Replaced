@@ -1,4 +1,5 @@
 use crate::ui::buying_power::spawn_buying_power_panel;
+use crate::ui::theme::Theme;
 use crate::ui::components::{
     ChartInstrument, ChartSizeMap, CloseButton, InstrumentRegistry, LayoutExcluded, PanelKind,
     PanelSpawnRequested, PanelSpawnSource, PendingStrategyFragments, RegionKeyAllocator,
@@ -644,6 +645,7 @@ pub fn panel_spawn_dispatcher_system(
     mut history: ResMut<AppHistory>,
     mut pending_fragments: ResMut<PendingStrategyFragments>,
     mut buffer: ResMut<StrategyBuffer>,
+    theme: Res<Theme>,
 ) {
     for event in events.read() {
         let already = existing.iter().any(|k| *k == event.kind);
@@ -653,10 +655,10 @@ pub fn panel_spawn_dispatcher_system(
         }
         let mut spawned_region_key: Option<String> = None;
         match event.kind {
-            PanelKind::BuyingPower => spawn_buying_power_panel(&mut commands),
-            PanelKind::RunResult => spawn_run_result_panel(&mut commands),
-            PanelKind::Positions => spawn_positions_panel(&mut commands),
-            PanelKind::Orders => spawn_orders_panel(&mut commands),
+            PanelKind::BuyingPower => spawn_buying_power_panel(&mut commands, &theme),
+            PanelKind::RunResult => spawn_run_result_panel(&mut commands, &theme),
+            PanelKind::Positions => spawn_positions_panel(&mut commands, &theme),
+            PanelKind::Orders => spawn_orders_panel(&mut commands, &theme),
             PanelKind::Startup => spawn_scenario_startup_window(&mut commands),
             PanelKind::Chart => {
                 warn!("PanelKind::Chart spawn requested but Chart is deprecated; ignored");
@@ -801,6 +803,7 @@ mod order_dispatcher_tests {
         app.init_resource::<AppHistory>();
         app.init_resource::<PendingStrategyFragments>();
         app.init_resource::<StrategyBuffer>();
+        app.init_resource::<Theme>();
         app.add_message::<PanelSpawnRequested>();
         app.add_systems(Update, panel_spawn_dispatcher_system);
         app

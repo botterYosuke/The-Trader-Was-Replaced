@@ -12,6 +12,7 @@ use backcast::ui::run_result_panel::{
     RunResultBarBg, RunResultLabel, RunResultPhaseLabel,
     run_result_panel_system, spawn_run_result_panel,
 };
+use backcast::ui::theme::Theme;
 use bevy::prelude::*;
 use bevy::transform::TransformPlugin;
 
@@ -24,7 +25,7 @@ fn make_app() -> App {
     app.insert_resource(WindowManager::default());
     app.insert_resource(AppHistory::default());
     app.add_systems(Startup, |mut commands: Commands| {
-        spawn_run_result_panel(&mut commands);
+        spawn_run_result_panel(&mut commands, &Theme::default());
     });
     app.add_systems(Update, run_result_panel_system);
     app

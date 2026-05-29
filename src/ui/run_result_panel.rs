@@ -2,6 +2,7 @@ use crate::replay::{ReplayStartupPhase, ReplayStartupProgress};
 use crate::trading::{CurrentRun, RunState};
 use crate::ui::components::{PanelKind, RunResultPanelRoot};
 use crate::ui::floating_window::{FloatingWindowSpec, spawn_floating_window};
+use crate::ui::theme::Theme;
 use bevy::prelude::*;
 
 // ── レイアウト & 配色 ─────────────────────────────────────────
@@ -42,7 +43,7 @@ pub struct RunResultBarBg;
 pub struct RunResultBarFill;
 
 // ── Spawn ────────────────────────────────────────────────────
-pub fn spawn_run_result_panel(commands: &mut Commands) {
+pub fn spawn_run_result_panel(commands: &mut Commands, _theme: &Theme) {
     let (root, content_area, _title_bar) = spawn_floating_window(
         commands,
         FloatingWindowSpec {
@@ -56,10 +57,23 @@ pub fn spawn_run_result_panel(commands: &mut Commands) {
     );
     commands.entity(root).insert((PanelKind::RunResult, RunResultPanelRoot));
 
-    spawn_row(commands, content_area, RunResultLabel::State, 33.0);
-    spawn_row(commands, content_area, RunResultLabel::RunId, 11.0);
-    spawn_row(commands, content_area, RunResultLabel::Stats, -11.0);
-    spawn_row(commands, content_area, RunResultLabel::Pnl, -33.0);
+    for (kind, y) in [
+        (RunResultLabel::State, 33.0_f32),
+        (RunResultLabel::RunId, 11.0),
+        (RunResultLabel::Stats, -11.0),
+        (RunResultLabel::Pnl, -33.0),
+    ] {
+        let e = commands
+            .spawn((
+                Text2d::new(""),
+                TextFont { font_size: 12.0, ..default() },
+                TextColor(COLOR_DEFAULT),
+                Transform::from_xyz(0.0, y, 0.1),
+                kind,
+            ))
+            .id();
+        commands.entity(content_area).add_child(e);
+    }
 
     let phase_label = commands
         .spawn((
@@ -101,21 +115,8 @@ pub fn spawn_run_result_panel(commands: &mut Commands) {
     commands.entity(bar_bg).add_child(bar_fill);
 }
 
-pub fn spawn_run_result_panel_system(mut commands: Commands) {
-    spawn_run_result_panel(&mut commands);
-}
-
-fn spawn_row(commands: &mut Commands, parent: Entity, kind: RunResultLabel, y: f32) {
-    let entity = commands
-        .spawn((
-            Text2d::new(""),
-            TextFont { font_size: 12.0, ..default() },
-            TextColor(COLOR_DEFAULT),
-            Transform::from_xyz(0.0, y, 0.1),
-            kind,
-        ))
-        .id();
-    commands.entity(parent).add_child(entity);
+pub fn spawn_run_result_panel_system(mut commands: Commands, theme: Res<Theme>) {
+    spawn_run_result_panel(&mut commands, &theme);
 }
 
 pub fn run_result_panel_system(
