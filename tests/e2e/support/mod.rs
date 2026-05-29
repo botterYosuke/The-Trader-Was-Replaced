@@ -199,6 +199,8 @@ impl Harness {
                 secret_modal_button_system,
                 auto_fetch_live_universe_on_connect_system,
                 auto_fetch_available_on_replay_entry_system,
+                // Issue #46 Slice A: generic themed-button color system.
+                backcast::ui::component::button_interaction_system,
             ),
         );
 

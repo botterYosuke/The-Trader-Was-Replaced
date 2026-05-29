@@ -175,6 +175,93 @@ pub fn button_colors(
     ButtonColors { background, border, label, icon }
 }
 
+// -- State markers ----------------------------------------------------------
+
+/// Marks a themed button as currently selected / toggled-on. Action systems
+/// insert / remove this; [`button_interaction_system`] reads it (overriding the
+/// hover / rest states) so the selected highlight no longer lives in each
+/// per-button color system.
+#[derive(Component, Default, Clone, Copy, Debug)]
+pub struct ButtonSelected;
+
+/// Marks a themed button as disabled (non-interactive, muted styling). Takes
+/// priority over every other state in [`button_interaction_system`].
+#[derive(Component, Default, Clone, Copy, Debug)]
+pub struct ButtonDisabled;
+
+// -- button_interaction_system ----------------------------------------------
+
+/// Single generic system that paints every themed button (`With<ButtonStyle>`).
+///
+/// Derives the [`ButtonState`] from `Interaction` plus the [`ButtonDisabled`] /
+/// [`ButtonSelected`] markers, looks up [`button_colors`], and writes the
+/// background, border, and child label color (diff-write to avoid spurious
+/// change detection). This replaces the ~13 scattered per-button color
+/// systems; their action logic stays in place.
+///
+/// The `Or<(Changed…, Added…)>` filter repaints on an interaction change, a
+/// marker toggle, or the first frame a button is spawned. Buttons without a
+/// `ButtonStyle` (legacy, not-yet-migrated, and bare test harness entities)
+/// never match, so behavior is unchanged for them.
+#[allow(clippy::type_complexity)]
+pub fn button_interaction_system(
+    mut q: Query<
+        (
+            &ButtonStyle,
+            &ElevationIndex,
+            &Interaction,
+            Has<ButtonSelected>,
+            Has<ButtonDisabled>,
+            &mut BackgroundColor,
+            &mut BorderColor,
+            Option<&Children>,
+        ),
+        (
+            With<Button>,
+            Or<(
+                Changed<Interaction>,
+                Changed<ButtonSelected>,
+                Changed<ButtonDisabled>,
+                Added<ButtonStyle>,
+            )>,
+        ),
+    >,
+    mut text_q: Query<&mut TextColor>,
+    theme: Res<Theme>,
+) {
+    for (style, elevation, interaction, selected, disabled, mut bg, mut border, children) in &mut q {
+        let state = if disabled {
+            ButtonState::Disabled
+        } else if selected {
+            ButtonState::Selected
+        } else {
+            match interaction {
+                Interaction::Pressed => ButtonState::Active,
+                Interaction::Hovered => ButtonState::Hovered,
+                Interaction::None => ButtonState::Enabled,
+            }
+        };
+
+        let colors = button_colors(*style, state, *elevation, &theme);
+
+        if bg.0 != colors.background {
+            bg.0 = colors.background;
+        }
+        if border.top != colors.border {
+            border.set_all(colors.border);
+        }
+        if let Some(children) = children {
+            for child in children.iter() {
+                if let Ok(mut tc) = text_q.get_mut(child) {
+                    if tc.0 != colors.label {
+                        tc.0 = colors.label;
+                    }
+                }
+            }
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -255,5 +342,79 @@ mod tests {
         assert_eq!(bc(ButtonStyle::Filled, ButtonState::Disabled).icon, t.colors.icon_disabled);
         assert_eq!(bc(ButtonStyle::Subtle, ButtonState::Enabled).icon, t.colors.icon_muted);
         assert_eq!(bc(ButtonStyle::Filled, ButtonState::Enabled).icon, t.colors.icon);
+    }
+
+    // -- button_interaction_system (A3–A6) ----------------------------------
+
+    use bevy::ecs::system::RunSystemOnce;
+
+    /// Spawn a themed button (Filled) with a label child, set its interaction,
+    /// optionally insert markers, run the generic system once, and return the
+    /// resulting (background, border.top, label) colors.
+    fn run_button(
+        interaction: Interaction,
+        selected: bool,
+        disabled: bool,
+    ) -> (Color, Color, Color, Theme) {
+        let mut world = World::new();
+        let theme = Theme::default();
+        world.insert_resource(theme.clone());
+
+        let child = world.spawn((Text::new("Run"), TextColor(Color::WHITE))).id();
+        let mut btn = world.spawn((
+            Button,
+            ButtonStyle::Filled,
+            ElevationIndex::Surface,
+            BackgroundColor(Color::WHITE),
+            BorderColor::all(Color::WHITE),
+            interaction,
+        ));
+        btn.add_child(child);
+        if selected {
+            btn.insert(ButtonSelected);
+        }
+        if disabled {
+            btn.insert(ButtonDisabled);
+        }
+        let btn = btn.id();
+
+        world.run_system_once(button_interaction_system).unwrap();
+
+        let bg = world.entity(btn).get::<BackgroundColor>().unwrap().0;
+        let border = world.entity(btn).get::<BorderColor>().unwrap().top;
+        let label = world.entity(child).get::<TextColor>().unwrap().0;
+        (bg, border, label, theme)
+    }
+
+    /// A3: a Hovered button is painted with the Filled/Hovered background.
+    #[test]
+    fn system_paints_background_on_hover() {
+        let (bg, _, _, t) = run_button(Interaction::Hovered, false, false);
+        assert_eq!(bg, t.colors.element_hover);
+    }
+
+    /// A4: the system also paints the border and the child label color.
+    /// Filled/Selected has a visible border; the label is the high-contrast text.
+    #[test]
+    fn system_paints_border_and_label() {
+        let (_, border, label, t) = run_button(Interaction::None, true, false);
+        assert_eq!(border, t.colors.border_selected);
+        assert_eq!(label, t.colors.text);
+    }
+
+    /// A5: ButtonSelected overrides Interaction::None → element_selected.
+    #[test]
+    fn selected_marker_overrides_rest_state() {
+        let (bg, _, _, t) = run_button(Interaction::None, true, false);
+        assert_eq!(bg, t.colors.element_selected);
+    }
+
+    /// A6: ButtonDisabled overrides everything (even Pressed + Selected).
+    #[test]
+    fn disabled_marker_takes_priority() {
+        let (bg, border, label, t) = run_button(Interaction::Pressed, true, true);
+        assert_eq!(bg, t.colors.element_disabled);
+        assert_eq!(border, t.colors.border_disabled);
+        assert_eq!(label, t.colors.text_disabled);
     }
 }

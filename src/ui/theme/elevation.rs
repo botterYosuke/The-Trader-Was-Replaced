@@ -5,8 +5,13 @@
 //! than writing a raw `z` literal. Gaps between tiers (10 → 100 → 300 …)
 //! leave room for child z-offsets inside the same elevation tier.
 //!
+//! Issue #46: derives `Component` so a UI surface can carry its tier directly
+//! (themed buttons query `&ElevationIndex`; the component layer reuses it).
+
+use bevy::prelude::Component;
+
 /// Z-order tier for UI surfaces. Pass `.z()` to the renderer at spawn time.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[derive(Component, Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub enum ElevationIndex {
     /// Root app background. Behind everything.
     Background,

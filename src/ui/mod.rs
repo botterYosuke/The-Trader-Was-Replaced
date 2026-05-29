@@ -1,6 +1,7 @@
 pub mod theme;
 pub mod traits;
 pub mod component;
+pub mod input_phase;
 pub mod buying_power;
 pub mod chart_axes;
 pub mod chart_crosshair;
@@ -200,6 +201,15 @@ pub fn add_mode_visibility_systems(app: &mut App) {
 
 impl Plugin for UiPlugin {
     fn build(&self, app: &mut App) {
+        // Issue #46 Slice A: ordered input phases + the single generic button
+        // color system (replaces the scattered per-button Changed<Interaction>
+        // color systems). Registered in InputPhase::WidgetInput.
+        input_phase::InputPhase::configure(app);
+        app.add_systems(
+            Update,
+            component::button_interaction_system.in_set(input_phase::InputPhase::WidgetInput),
+        );
+
         app.add_plugins((
             Shape2dPlugin::default(),
             crate::ui::layout_persistence::LayoutPersistencePlugin,
