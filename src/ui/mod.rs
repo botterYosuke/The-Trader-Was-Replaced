@@ -21,7 +21,6 @@ pub mod orders;
 pub mod positions;
 pub mod reconcile_modal;
 pub mod relogin_modal;
-pub mod render_scale;
 pub mod restore;
 pub mod run_result_panel;
 pub mod safety_toast;
@@ -41,7 +40,6 @@ pub use components::{
     ChartInstrument, InstrumentRegistry, ScenarioFileWatchState, ScenarioInstrumentsWritebackState,
     ScenarioLoadedFromFile, ScenarioReadTarget, ScenarioWritebackPaths,
 };
-// render_scale.rs は Slice 6e で削除予定。Slice 6c で全 callsite を消したので pub use も外す。
 
 use crate::ui::buying_power::buying_power_panel_system;
 use crate::ui::chart_axes::{price_axis_labels_system, time_axis_labels_system};

@@ -15,19 +15,16 @@ serde = { version = "1.0", features = ["derive"] }
 serde_json = "1.0"
 rfd = "0.17.2"
 dirs = "6.0.0"
-bevy_cosmic_edit = "0.26"
-# issue #50 Step 0 spike — bevscode を導入（Projected Node PoC のため）。
-# cosmic_edit は Phase B まで並存（spike が Go になるまで撤去しない）。
-# crates.io には未公開。Phase B で rev を pin する。
+# issue #50 — bevscode を導入（Projected Node 方式で cosmic_edit を全面置換済み）。
+# crates.io には未公開。Phase B 完了時に rev を pin する。
 bevscode = { git = "https://github.com/PoHsuanLai/bevscode.git", default-features = false }
 # bevscode の transitive 依存だが、projection system で `.before(LayoutProduceSet)` の
 # 制約に SystemSet を引くため直接依存にする（bevscode と同じ git rev = 51220b7 に固定）。
 bevy_instanced_text = { git = "https://github.com/PoHsuanLai/bevy_instanced_text.git", rev = "51220b7", default-features = false }
 # tree-sitter 系: bevscode と同じ git repo 内の crate を使う（rev は不固定で bevscode に合わせる）。
 # lang-python feature で `arborium::lang_python` への re-export を有効化し、Strategy Editor の
-# Python シンタックスハイライトを bevscode の SetLanguageRequested で流す。syntect は Slice 6 まで残置。
+# Python シンタックスハイライトを bevscode の SetLanguageRequested で流す。
 bevy_tree_sitter = { git = "https://github.com/PoHsuanLai/bevscode.git", features = ["lang-python"] }
-syntect = { version = "5", default-features = false, features = ["default-fancy"] }
 undo = "0.52"
 chrono = "0.4"
 url = "2"
@@ -42,9 +39,6 @@ bevy = { version = "0.18", features = ["debug"] }
 serial_test = "3.1"
 tempfile = "3"
 tokio-stream = "0.1"
-# headless テストで CosmicFontSystem(FontSystem) を手構築するための直接参照
-# （bevy_cosmic_edit の transitive 依存と同版に固定）
-cosmic-text = "0.16"
 # j3 / j4 が bevscode の compute_newline_indent / Rope ベースの helpers を直接呼ぶための直接参照
 # （bevscode 経由で transitive に入っているのと同じバージョンを使う）。
 ropey = "1"
@@ -53,12 +47,9 @@ ropey = "1"
 tonic-build = "0.12"
 protoc-bin-vendored = "3.0"
 
-[patch.crates-io]
-bevy_cosmic_edit = { path = "crates/bevy_cosmic_edit" }
-
 # dev ビルドの実行時パフォーマンス対策（Bevy 公式推奨）。
 # 自分のクレートは opt-level=1 に留めてインクリメンタルコンパイルを速く保ちつつ、
-# 依存（Bevy / bevy_cosmic_edit / cosmic_text 等）だけ opt-level=3 で最適化する。
+# 依存（Bevy / bevscode / bevy_instanced_text 等）だけ opt-level=3 で最適化する。
 # 「debug ビルドが重くて使えない」問題に対する単一で最大の効果。初回のみ依存の
 # 再コンパイルで時間がかかるが、以降の自コード変更のビルドは速いまま。
 [profile.dev]

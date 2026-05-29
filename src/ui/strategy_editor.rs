@@ -1279,8 +1279,6 @@ pub fn apply_pending_strategy_seed_system(
         });
         // Slice 4 (#50): Python シンタックスハイライトを bevscode/bevy_tree_sitter で有効化。
         // grammar は seed 投入と同タイミングで一度だけ流す。pending マーカーが外れるので二重発火しない。
-        // syntect 経路（`strategy_editor_highlight.rs` の SyntaxSpans）は Slice 6 で cosmic と
-        // 一緒に撤去するまで残置（cosmic editor が入力を持たない状態では空回りする）。
         lang_writer.write(SetLanguageRequested {
             entity,
             grammar: Some(TreeSitterGrammar::new(
