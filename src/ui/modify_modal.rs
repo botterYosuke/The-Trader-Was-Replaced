@@ -414,6 +414,7 @@ pub fn modify_modal_input_system(
         return;
     }
     let mut submit = false;
+    let mut saw_escape = false;
     for ev in kb_events.drain() {
         if !ev.state.is_pressed() {
             continue;
@@ -436,10 +437,14 @@ pub fn modify_modal_input_system(
                 };
             }
             Key::Enter => submit = true,
+            // Escape は drain でここで消費し (picker/menu への漏れ防止)、同一フレームの
+            // Confirm を抑止する。dismiss 自体は modal_layer_esc_system →
+            // modify_modal_reconcile_system に委譲する (#46 Slice B 5c / B2 回帰修正)。
+            Key::Escape => saw_escape = true,
             _ => {}
         }
     }
-    if submit {
+    if submit && !saw_escape {
         do_confirm(&mut form, &mut feedback, sender.as_deref());
     }
 }
@@ -859,6 +864,57 @@ mod tests {
             count >= 3,
             "card must also carry ElevationIndex::ModalSurface (built via spawn_modal); \
              only the 2 buttons carry it today, got {count}"
+        );
+    }
+
+    /// #46 Slice B2 回帰 RED: 同一フレームに Enter と Escape が両方届いたとき、
+    /// Escape が Confirm に勝つ (cancel-wins) こと。5c 前は Escape 分岐で破棄していたが、
+    /// 5c で Escape 分岐を撤去した結果 submit が走り、誤って ModifyOrder が飛ぶ回帰が
+    /// 入った。RED→fix で GREEN。
+    #[test]
+    fn escape_suppresses_same_frame_enter_confirm() {
+        use bevy::input::ButtonState;
+        use bevy::input::keyboard::KeyCode;
+
+        let mut app = make_app();
+        // rx を観測するためローカルに作り直して上書きする (make_app の rx は握り潰し)。
+        let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel();
+        app.insert_resource(TransportCommandSender { tx });
+        app.add_message::<KeyboardInput>();
+        {
+            let mut f = app.world_mut().resource_mut::<ModifyForm>();
+            *f = open_form("MOCK");
+            // can_confirm() を true にして do_confirm が早期 return しない条件にする。
+            f.new_qty_buf = "200".to_string();
+        }
+        app.add_systems(Update, modify_modal_input_system);
+
+        // Enter と Escape を同一フレームで投入する。
+        app.world_mut().write_message(KeyboardInput {
+            key_code: KeyCode::Enter,
+            logical_key: Key::Enter,
+            state: ButtonState::Pressed,
+            text: None,
+            repeat: false,
+            window: Entity::PLACEHOLDER,
+        });
+        app.world_mut().write_message(KeyboardInput {
+            key_code: KeyCode::Escape,
+            logical_key: Key::Escape,
+            state: ButtonState::Pressed,
+            text: None,
+            repeat: false,
+            window: Entity::PLACEHOLDER,
+        });
+        app.update();
+
+        assert!(
+            rx.try_recv().is_err(),
+            "same-frame Escape must suppress Confirm (no ModifyOrder); dismiss is the layer's job"
+        );
+        assert!(
+            app.world().resource::<ModifyForm>().open,
+            "form stays open; Escape dismiss is reconcile's job, not this system"
         );
     }
 }

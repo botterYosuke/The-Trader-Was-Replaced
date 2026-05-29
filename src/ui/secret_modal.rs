@@ -331,6 +331,7 @@ pub fn secret_modal_input_system(
         return;
     }
     let mut submit = false;
+    let mut saw_escape = false;
     for ev in kb_events.drain() {
         if !ev.state.is_pressed() {
             continue;
@@ -344,12 +345,14 @@ pub fn secret_modal_input_system(
             Key::Space => input.push_char(' '),
             Key::Backspace => input.backspace(),
             Key::Enter => submit = true,
-            // Escape は drain でここで消費し (picker/menu への漏れ防止)、dismiss は
-            // modal_layer_esc_system → secret_modal_reconcile_system に委譲する (#46 Slice B 5d)。
+            // Escape は drain でここで消費し (picker/menu への漏れ防止)、同一フレームの
+            // submit を抑止する。dismiss 自体は modal_layer_esc_system →
+            // secret_modal_reconcile_system に委譲する (#46 Slice B 5d / B2 回帰修正)。
+            Key::Escape => saw_escape = true,
             _ => {}
         }
     }
-    if submit {
+    if submit && !saw_escape {
         do_submit(&mut input, &mut prompt, sender.as_deref());
     }
 }
@@ -657,6 +660,53 @@ mod tests {
         assert!(
             found,
             "secret modal card must carry ElevationIndex::ModalSurface (built via spawn_modal)"
+        );
+    }
+
+    /// #46 Slice B2 回帰 RED: 同一フレームに Enter と Escape が両方届いたとき、
+    /// Escape が submit に勝つ (cancel-wins) こと。5d 前は `if cancel {..} else if submit`
+    /// で cancel が優先されたが、5d で Escape 分岐を撤去した結果 submit が走り、
+    /// one-shot な SubmitSecret が消費される回帰が入った。RED→fix で GREEN。
+    #[test]
+    fn escape_suppresses_same_frame_enter_submit() {
+        use bevy::input::ButtonState;
+        use bevy::input::keyboard::KeyCode;
+
+        let mut app = make_app();
+        let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel();
+        app.insert_resource(TransportCommandSender { tx });
+        app.add_message::<KeyboardInput>();
+        activate(&mut app, "r1");
+        // buffer を非空にしておく (空だと do_submit が早期 return して
+        // fix の有無で差が出ず RED にならない)。
+        {
+            let mut input = app.world_mut().resource_mut::<SecretInput>();
+            input.push_char('1');
+        }
+        app.add_systems(Update, secret_modal_input_system);
+
+        // Enter と Escape を同一フレームで投入する。
+        app.world_mut().write_message(KeyboardInput {
+            key_code: KeyCode::Enter,
+            logical_key: Key::Enter,
+            state: ButtonState::Pressed,
+            text: None,
+            repeat: false,
+            window: Entity::PLACEHOLDER,
+        });
+        app.world_mut().write_message(KeyboardInput {
+            key_code: KeyCode::Escape,
+            logical_key: Key::Escape,
+            state: ButtonState::Pressed,
+            text: None,
+            repeat: false,
+            window: Entity::PLACEHOLDER,
+        });
+        app.update();
+
+        assert!(
+            rx.try_recv().is_err(),
+            "same-frame Escape must suppress submit (no SubmitSecret); dismiss is the layer's job"
         );
     }
 }
