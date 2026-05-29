@@ -20,14 +20,11 @@ use bevy::prelude::*;
 
 use crate::trading::{OrderFeedback, TransportCommand, TransportCommandSender};
 use crate::venue_capabilities::for_venue;
+use crate::ui::component::modal_layer::{
+    DismissDecision, ModalHandle, ModalLayer, ModalSkeleton, reconcile_modal_stack, spawn_modal,
+};
+use crate::ui::theme::{LabelSize, Theme};
 
-const COLOR_PANEL_BG: Color = Color::srgba(0.07, 0.07, 0.12, 0.98);
-const COLOR_BACKDROP: Color = Color::srgba(0.0, 0.0, 0.0, 0.55);
-const COLOR_HEADER: Color = Color::srgb(0.0, 0.81, 1.0);
-const COLOR_LABEL: Color = Color::srgb(0.65, 0.70, 0.78);
-const COLOR_VALUE: Color = Color::srgb(0.88, 0.91, 0.96);
-const COLOR_WARN_BG: Color = Color::srgba(0.35, 0.22, 0.05, 1.0);
-const COLOR_WARN_TEXT: Color = Color::srgb(1.0, 0.78, 0.35);
 const COLOR_FIELD_BG: Color = Color::srgba(0.04, 0.04, 0.08, 1.0);
 const COLOR_FIELD_BG_ACTIVE: Color = Color::srgba(0.10, 0.14, 0.22, 1.0);
 // Confirm button initial bg (starts disabled); active/disabled color is owned
@@ -154,241 +151,232 @@ pub enum ModifyButton {
 // Spawn (Startup)
 // ===========================================================================
 
-pub fn spawn_modify_modal(mut commands: Commands) {
-    commands
+pub fn spawn_modify_modal(mut commands: Commands, theme: Res<Theme>) {
+    let ModalHandle { root, card } = spawn_modal(
+        &mut commands,
+        &theme,
+        ModalSkeleton {
+            width: 340.0,
+            // 確認モーダル (200) より前面、secret modal (300) より背面。
+            z_index: 250,
+            name: "ModifyModal",
+        },
+    );
+
+    commands.entity(root).insert(ModifyModalRoot);
+
+    let header = commands
+        .spawn((
+            Node {
+                margin: UiRect::bottom(Val::Px(8.0)),
+                ..default()
+            },
+            Text::new("注文の訂正"),
+            theme.typography.label_font(LabelSize::Large),
+            TextColor(theme.colors.text_accent),
+            ModifyTitleText,
+        ))
+        .id();
+
+    // kabu 警告バナー (Display で出し入れ、初期は None)。
+    let warn_text = commands
+        .spawn((
+            Text::new(KABU_WARNING),
+            theme.typography.label_font(LabelSize::Small),
+            TextColor(theme.status.warning),
+        ))
+        .id();
+    let warn_row = commands
         .spawn((
             Node {
                 display: Display::None,
-                position_type: PositionType::Absolute,
-                top: Val::Px(0.0),
-                left: Val::Px(0.0),
                 width: Val::Percent(100.0),
-                height: Val::Percent(100.0),
+                padding: UiRect::all(Val::Px(8.0)),
+                margin: UiRect::bottom(Val::Px(8.0)),
+                ..default()
+            },
+            BackgroundColor(theme.status.warning_background),
+            ModifyWarnRow,
+        ))
+        .add_child(warn_text)
+        .id();
+
+    let qty_row = spawn_input_row(
+        &mut commands,
+        &theme,
+        "新数量:",
+        ModifyField::Qty,
+        ModifyButton::FocusQty,
+    );
+    let price_row = spawn_input_row(
+        &mut commands,
+        &theme,
+        "新価格:",
+        ModifyField::Price,
+        ModifyButton::FocusPrice,
+    );
+
+    // kabu 同意チェックボックス行 (kabu のときだけ可視: sync system が制御、初期 None)。
+    let checkbox = commands
+        .spawn((
+            Node {
+                width: Val::Px(16.0),
+                height: Val::Px(16.0),
+                ..default()
+            },
+            BackgroundColor(COLOR_CHECK_OFF),
+            ModifyAckCheckbox,
+        ))
+        .id();
+    let ack_text = commands
+        .spawn((
+            Text::new("理解した上で訂正する"),
+            theme.typography.label_font(LabelSize::Small),
+            TextColor(theme.colors.text),
+            ModifyAckText,
+        ))
+        .id();
+    let ack_row = commands
+        .spawn((
+            Button,
+            Node {
+                display: Display::None,
+                flex_direction: FlexDirection::Row,
+                align_items: AlignItems::Center,
+                margin: UiRect::top(Val::Px(8.0)),
+                column_gap: Val::Px(8.0),
+                ..default()
+            },
+            BackgroundColor(Color::srgba(0.0, 0.0, 0.0, 0.0)),
+            ModifyButton::AckToggle,
+            ModifyWarnAckRow,
+        ))
+        .add_children(&[checkbox, ack_text])
+        .id();
+
+    let cancel_label = commands
+        .spawn((
+            Text::new("キャンセル"),
+            theme.typography.label_font(LabelSize::Default),
+            TextColor(theme.colors.text),
+        ))
+        .id();
+    let cancel_btn = commands
+        .spawn((
+            Button,
+            Node {
+                flex_grow: 1.0,
+                height: Val::Px(30.0),
                 align_items: AlignItems::Center,
                 justify_content: JustifyContent::Center,
                 ..default()
             },
-            BackgroundColor(COLOR_BACKDROP),
-            // 確認モーダル (200) より前面、secret modal (300) より背面。
-            GlobalZIndex(250),
-            ModifyModalRoot,
-            Name::new("ModifyModal"),
+            BackgroundColor(COLOR_BTN_CANCEL),
+            crate::ui::component::ButtonStyle::Tinted(crate::ui::component::TintColor::Error),
+            crate::ui::theme::ElevationIndex::ModalSurface,
+            ModifyButton::Cancel,
         ))
-        .with_children(|p| {
-            p.spawn((
-                Node {
-                    width: Val::Px(340.0),
-                    flex_direction: FlexDirection::Column,
-                    padding: UiRect::all(Val::Px(16.0)),
-                    ..default()
-                },
-                BackgroundColor(COLOR_PANEL_BG),
-            ))
-            .with_children(|card| {
-                card.spawn((
-                    Node {
-                        margin: UiRect::bottom(Val::Px(8.0)),
-                        ..default()
-                    },
-                    Text::new("注文の訂正"),
-                    TextFont {
-                        font_size: 15.0,
-                        ..default()
-                    },
-                    TextColor(COLOR_HEADER),
-                    ModifyTitleText,
-                ));
+        .add_child(cancel_label)
+        .id();
 
-                // kabu 警告バナー (Display で出し入れ)
-                card.spawn((
-                    Node {
-                        display: Display::None,
-                        width: Val::Percent(100.0),
-                        padding: UiRect::all(Val::Px(8.0)),
-                        margin: UiRect::bottom(Val::Px(8.0)),
-                        ..default()
-                    },
-                    BackgroundColor(COLOR_WARN_BG),
-                    ModifyWarnRow,
-                ))
-                .with_children(|w| {
-                    w.spawn((
-                        Text::new(KABU_WARNING),
-                        TextFont {
-                            font_size: 11.0,
-                            ..default()
-                        },
-                        TextColor(COLOR_WARN_TEXT),
-                    ));
-                });
+    let confirm_label = commands
+        .spawn((
+            Text::new("Confirm"),
+            theme.typography.label_font(LabelSize::Default),
+            TextColor(theme.colors.text),
+        ))
+        .id();
+    let confirm_btn = commands
+        .spawn((
+            Button,
+            Node {
+                flex_grow: 1.0,
+                height: Val::Px(30.0),
+                align_items: AlignItems::Center,
+                justify_content: JustifyContent::Center,
+                ..default()
+            },
+            BackgroundColor(COLOR_BTN_DISABLED),
+            crate::ui::component::ButtonStyle::Tinted(crate::ui::component::TintColor::Success),
+            crate::ui::theme::ElevationIndex::ModalSurface,
+            ModifyButton::Confirm,
+        ))
+        .add_child(confirm_label)
+        .id();
 
-                // 数量入力欄
-                spawn_input_row(card, "新数量:", ModifyField::Qty, ModifyButton::FocusQty);
-                // 価格入力欄
-                spawn_input_row(
-                    card,
-                    "新価格:",
-                    ModifyField::Price,
-                    ModifyButton::FocusPrice,
-                );
+    let btn_row = commands
+        .spawn(Node {
+            margin: UiRect::top(Val::Px(14.0)),
+            column_gap: Val::Px(10.0),
+            ..default()
+        })
+        .add_children(&[cancel_btn, confirm_btn])
+        .id();
 
-                // kabu 同意チェックボックス行 (kabu のときだけ可視: visibility system が制御)
-                card.spawn((
-                    Button,
-                    Node {
-                        display: Display::None,
-                        flex_direction: FlexDirection::Row,
-                        align_items: AlignItems::Center,
-                        margin: UiRect::top(Val::Px(8.0)),
-                        column_gap: Val::Px(8.0),
-                        ..default()
-                    },
-                    BackgroundColor(Color::srgba(0.0, 0.0, 0.0, 0.0)),
-                    ModifyButton::AckToggle,
-                    ModifyWarnAckRow,
-                ))
-                .with_children(|row| {
-                    row.spawn((
-                        Node {
-                            width: Val::Px(16.0),
-                            height: Val::Px(16.0),
-                            ..default()
-                        },
-                        BackgroundColor(COLOR_CHECK_OFF),
-                        ModifyAckCheckbox,
-                    ));
-                    row.spawn((
-                        Text::new("理解した上で訂正する"),
-                        TextFont {
-                            font_size: 11.0,
-                            ..default()
-                        },
-                        TextColor(COLOR_LABEL),
-                        ModifyAckText,
-                    ));
-                });
-
-                // ボタン行
-                card.spawn((Node {
-                    margin: UiRect::top(Val::Px(14.0)),
-                    column_gap: Val::Px(10.0),
-                    ..default()
-                },))
-                    .with_children(|btns| {
-                        btns.spawn((
-                            Button,
-                            Node {
-                                flex_grow: 1.0,
-                                height: Val::Px(30.0),
-                                align_items: AlignItems::Center,
-                                justify_content: JustifyContent::Center,
-                                ..default()
-                            },
-                            BackgroundColor(COLOR_BTN_CANCEL),
-                            crate::ui::component::ButtonStyle::Tinted(
-                                crate::ui::component::TintColor::Error,
-                            ),
-                            crate::ui::theme::ElevationIndex::ModalSurface,
-                            ModifyButton::Cancel,
-                        ))
-                        .with_children(|b| {
-                            b.spawn((
-                                Text::new("キャンセル"),
-                                TextFont {
-                                    font_size: 13.0,
-                                    ..default()
-                                },
-                                TextColor(COLOR_VALUE),
-                            ));
-                        });
-                        btns.spawn((
-                            Button,
-                            Node {
-                                flex_grow: 1.0,
-                                height: Val::Px(30.0),
-                                align_items: AlignItems::Center,
-                                justify_content: JustifyContent::Center,
-                                ..default()
-                            },
-                            BackgroundColor(COLOR_BTN_DISABLED),
-                            crate::ui::component::ButtonStyle::Tinted(
-                                crate::ui::component::TintColor::Success,
-                            ),
-                            crate::ui::theme::ElevationIndex::ModalSurface,
-                            ModifyButton::Confirm,
-                        ))
-                        .with_children(|b| {
-                            b.spawn((
-                                Text::new("Confirm"),
-                                TextFont {
-                                    font_size: 13.0,
-                                    ..default()
-                                },
-                                TextColor(COLOR_VALUE),
-                            ));
-                        });
-                    });
-            });
-        });
+    commands
+        .entity(card)
+        .add_children(&[header, warn_row, qty_row, price_row, ack_row, btn_row]);
 }
 
-/// ラベル + クリックでフォーカスする入力欄 (背景に focus 色) を 1 行 spawn する。
+/// ラベル + クリックでフォーカスする入力欄 (背景に focus 色) を 1 行 spawn し、行 Entity を返す。
 fn spawn_input_row(
-    parent: &mut ChildSpawnerCommands,
+    commands: &mut Commands,
+    theme: &Theme,
     label: &str,
     field: ModifyField,
     focus: ModifyButton,
-) {
-    parent
-        .spawn((Node {
+) -> Entity {
+    let label_text = commands
+        .spawn((
+            Node {
+                width: Val::Px(64.0),
+                ..default()
+            },
+            Text::new(label.to_string()),
+            theme.typography.label_font(LabelSize::Default),
+            TextColor(theme.colors.text),
+        ))
+        .id();
+
+    let focus_kind = match field {
+        ModifyField::Qty => ModifyFocus::Qty,
+        ModifyField::Price => ModifyFocus::Price,
+    };
+    let value_text = commands
+        .spawn((
+            Text::new(""),
+            theme.typography.label_font(LabelSize::Default),
+            TextColor(theme.colors.text),
+            field,
+        ))
+        .id();
+    let field_entity = commands
+        .spawn((
+            Button,
+            Node {
+                flex_grow: 1.0,
+                height: Val::Px(26.0),
+                padding: UiRect::axes(Val::Px(8.0), Val::Px(3.0)),
+                align_items: AlignItems::Center,
+                ..default()
+            },
+            BackgroundColor(COLOR_FIELD_BG),
+            focus,
+            ModifyFieldBg(focus_kind),
+        ))
+        .add_child(value_text)
+        .id();
+
+    commands
+        .spawn(Node {
             width: Val::Percent(100.0),
             margin: UiRect::bottom(Val::Px(6.0)),
             align_items: AlignItems::Center,
             column_gap: Val::Px(8.0),
             ..default()
-        },))
-        .with_children(|row| {
-            row.spawn((
-                Node {
-                    width: Val::Px(64.0),
-                    ..default()
-                },
-                Text::new(label.to_string()),
-                TextFont {
-                    font_size: 12.0,
-                    ..default()
-                },
-                TextColor(COLOR_LABEL),
-            ));
-            let focus_kind = match field {
-                ModifyField::Qty => ModifyFocus::Qty,
-                ModifyField::Price => ModifyFocus::Price,
-            };
-            row.spawn((
-                Button,
-                Node {
-                    flex_grow: 1.0,
-                    height: Val::Px(26.0),
-                    padding: UiRect::axes(Val::Px(8.0), Val::Px(3.0)),
-                    align_items: AlignItems::Center,
-                    ..default()
-                },
-                BackgroundColor(COLOR_FIELD_BG),
-                focus,
-                ModifyFieldBg(focus_kind),
-            ))
-            .with_children(|f| {
-                f.spawn((
-                    Text::new(""),
-                    TextFont {
-                        font_size: 13.0,
-                        ..default()
-                    },
-                    TextColor(COLOR_VALUE),
-                    field,
-                ));
-            });
-        });
+        })
+        .add_children(&[label_text, field_entity])
+        .id()
 }
 
 // ===========================================================================
@@ -414,7 +402,8 @@ pub fn modify_modal_visibility_system(
 
 /// 表示中だけ keyboard を drain して、フォーカス中の数値バッファに反映する。
 /// drain により cosmic_edit / picker / menu への二重配送を防ぐ。
-/// Tab = フォーカス切替、Enter = Confirm (可能なら)、Esc = 破棄。数字 / `.` のみ受ける。
+/// Tab = フォーカス切替、Enter = Confirm (可能なら)。数字 / `.` のみ受ける。
+/// Escape は drain で消費するが破棄はしない (modal_layer_esc_system に委譲, #46 Slice B 5c)。
 pub fn modify_modal_input_system(
     mut form: ResMut<ModifyForm>,
     mut kb_events: ResMut<Messages<KeyboardInput>>,
@@ -425,7 +414,7 @@ pub fn modify_modal_input_system(
         return;
     }
     let mut submit = false;
-    let mut cancel = false;
+    let mut saw_escape = false;
     for ev in kb_events.drain() {
         if !ev.state.is_pressed() {
             continue;
@@ -448,13 +437,14 @@ pub fn modify_modal_input_system(
                 };
             }
             Key::Enter => submit = true,
-            Key::Escape => cancel = true,
+            // Escape は drain でここで消費し (picker/menu への漏れ防止)、同一フレームの
+            // Confirm を抑止する。dismiss 自体は modal_layer_esc_system →
+            // modify_modal_reconcile_system に委譲する (#46 Slice B 5c / B2 回帰修正)。
+            Key::Escape => saw_escape = true,
             _ => {}
         }
     }
-    if cancel {
-        form.close();
-    } else if submit {
+    if submit && !saw_escape {
         do_confirm(&mut form, &mut feedback, sender.as_deref());
     }
 }
@@ -623,6 +613,37 @@ pub fn modify_modal_sync_system(
             }
         }
     }
+}
+
+fn modify_dismiss() -> DismissDecision {
+    DismissDecision::Dismiss
+}
+
+/// `ModalLayer.stack` ⇄ `ModifyForm.open` を双方向同期する (mechanism A, #46 Slice B 5c)。
+/// FORWARD: open かつ未登録 → stack に push (dismiss 優先度 z=270)。
+/// REVERSE: `modal_layer_esc_system` が entry を pop → `was_on_stack` Local で
+/// 検出し form をクリアする (Cancel と同じ cleanup, visibility が hide する)。
+pub fn modify_modal_reconcile_system(
+    mut form: ResMut<ModifyForm>,
+    root_q: Query<Entity, With<ModifyModalRoot>>,
+    mut layer: ResMut<ModalLayer>,
+    mut was_on_stack: Local<bool>,
+) {
+    let Ok(root) = root_q.single() else {
+        return;
+    };
+    let is_open = form.open;
+    let prompt_changed = form.is_changed();
+    reconcile_modal_stack(
+        &mut layer,
+        root,
+        270,
+        &mut was_on_stack,
+        is_open,
+        prompt_changed,
+        modify_dismiss,
+        || form.close(),
+    );
 }
 
 #[cfg(test)]
@@ -819,5 +840,81 @@ mod tests {
             .spawn((Button, Interaction::Pressed, ModifyButton::AckToggle));
         app.update();
         assert!(app.world().resource::<ModifyForm>().ack_kabu);
+    }
+
+    use bevy::ecs::system::RunSystemOnce;
+
+    /// Slice 4a RED: modify モーダルも modal skeleton の上に建てる。card に
+    /// ElevationIndex::ModalSurface が付くことを要求する。現状 Confirm/Cancel
+    /// ボタン 2 個だけが ModalSurface を持つので 2 < 3 で fail → 4b で card が
+    /// 3 個目を足して GREEN になる。
+    #[test]
+    fn modify_modal_card_uses_modal_surface_elevation() {
+        use crate::ui::theme::ElevationIndex;
+        let mut world = World::new();
+        world.insert_resource(crate::ui::theme::Theme::default());
+        world.run_system_once(spawn_modify_modal).unwrap();
+
+        let count = world
+            .query::<&ElevationIndex>()
+            .iter(&world)
+            .filter(|e| **e == ElevationIndex::ModalSurface)
+            .count();
+        assert!(
+            count >= 3,
+            "card must also carry ElevationIndex::ModalSurface (built via spawn_modal); \
+             only the 2 buttons carry it today, got {count}"
+        );
+    }
+
+    /// #46 Slice B2 回帰 RED: 同一フレームに Enter と Escape が両方届いたとき、
+    /// Escape が Confirm に勝つ (cancel-wins) こと。5c 前は Escape 分岐で破棄していたが、
+    /// 5c で Escape 分岐を撤去した結果 submit が走り、誤って ModifyOrder が飛ぶ回帰が
+    /// 入った。RED→fix で GREEN。
+    #[test]
+    fn escape_suppresses_same_frame_enter_confirm() {
+        use bevy::input::ButtonState;
+        use bevy::input::keyboard::KeyCode;
+
+        let mut app = make_app();
+        // rx を観測するためローカルに作り直して上書きする (make_app の rx は握り潰し)。
+        let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel();
+        app.insert_resource(TransportCommandSender { tx });
+        app.add_message::<KeyboardInput>();
+        {
+            let mut f = app.world_mut().resource_mut::<ModifyForm>();
+            *f = open_form("MOCK");
+            // can_confirm() を true にして do_confirm が早期 return しない条件にする。
+            f.new_qty_buf = "200".to_string();
+        }
+        app.add_systems(Update, modify_modal_input_system);
+
+        // Enter と Escape を同一フレームで投入する。
+        app.world_mut().write_message(KeyboardInput {
+            key_code: KeyCode::Enter,
+            logical_key: Key::Enter,
+            state: ButtonState::Pressed,
+            text: None,
+            repeat: false,
+            window: Entity::PLACEHOLDER,
+        });
+        app.world_mut().write_message(KeyboardInput {
+            key_code: KeyCode::Escape,
+            logical_key: Key::Escape,
+            state: ButtonState::Pressed,
+            text: None,
+            repeat: false,
+            window: Entity::PLACEHOLDER,
+        });
+        app.update();
+
+        assert!(
+            rx.try_recv().is_err(),
+            "same-frame Escape must suppress Confirm (no ModifyOrder); dismiss is the layer's job"
+        );
+        assert!(
+            app.world().resource::<ModifyForm>().open,
+            "form stays open; Escape dismiss is reconcile's job, not this system"
+        );
     }
 }

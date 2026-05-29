@@ -216,21 +216,23 @@ spawn_button(&mut commands, &theme, "Run")
 
 ### `ModalLayer` スタック
 
-`ModalLayer`（Bevy `Resource`）は開いているモーダルの LIFO スタック（`Vec<ActiveModal>`、末尾が frontmost）を持ちます。
+`ModalLayer`（Bevy `Resource`）は開いているモーダルのスタック（`Vec<ActiveModal>`）を持ちます。
 
-- `push(ActiveModal)` — 新しいモーダルを frontmost として積む。
-- `pop() -> Option<ActiveModal>` — frontmost を取り出す。
-- `try_dismiss_top() -> bool` — frontmost の `on_before_dismiss` を引いて、`DismissDecision::Dismiss` のときだけ pop し `true` を返す。`DismissDecision::Pending`（処理中などで dismiss を拒否）なら積んだまま `false`。
+- `push(ActiveModal)` — 新しいモーダルを積む。
+- `pop() -> Option<ActiveModal>` — 末尾（最後に積んだもの）を取り出す。
+- `try_dismiss_top() -> bool` — 末尾の `on_before_dismiss` を引いて、`DismissDecision::Dismiss` のときだけ pop し `true` を返す。`DismissDecision::Pending`（処理中などで dismiss を拒否）なら積んだまま `false`。push 順（LIFO）依存の互換 API。
+- `try_dismiss_highest_z() -> bool` — **dismiss 優先度 `z` が最大**の OPEN エントリを対象に同じ veto を引いて dismiss する（同 z は後勝ち）。Escape の正規ディスパッチ経路（#46 Slice B 5a 以降）。
 
-`ActiveModal { root, backdrop, previous_focus, on_before_dismiss }`:
+`ActiveModal { root, backdrop, previous_focus, z, on_before_dismiss }`:
 
 - `root` / `backdrop` … モーダル本体と背後のバックドロップ entity。
 - `previous_focus: Option<Entity>` … モーダルを開く前に focus を持っていた entity。**本パスでは記録のみ（record-only）** で、復元はしません（グローバル focus リソースが未導入のため）。
+- `z: i32` … **Escape-dismiss 優先度**（最大が 1 回の Escape を勝ち取る）。視覚 `GlobalZIndex` とは分離した別概念（#46 Slice B 5b で decouple）。優先度: secret 300 > confirm 280 > modify 270 > reconcile 262 > relogin 260。
 - `on_before_dismiss: fn() -> DismissDecision` … dismiss 前に引かれる veto フック。
 
 ### Escape での dismiss（`modal_layer_esc_system`）
 
-`modal_layer_esc_system` が Escape を消化し、frontmost モーダルを `try_dismiss_top` で閉じます。ただし、より優先度の高い入力モーダル（secret / order-confirm / modify）が開いているときは Esc を譲ります（`esc_yield_clear(secret_active, confirm_pending, modify_open)` が `false` のとき早期 return）。スタックが空 / Escape 未押下のときも no-op。本 system は relogin 通知の旧 yield ガードと同じ「一度の Escape を二重消費させない」契約を引き継ぎます。
+`modal_layer_esc_system(keys, layer)` が Escape を消化し、`try_dismiss_highest_z` で**最高 z のモーダル**を閉じます。スタックが空 / Escape 未押下のときは no-op。#46 Slice B 5d 以降は **5 つのモーダル全て（secret / confirm / modify / reconcile / relogin）が stack entry** なので、旧 `esc_yield_clear`（secret / confirm / modify の open フラグを読む yield ガード）は撤去され、単一 Escape は一律に最高 z を dismiss します（低 z は survive）。secret / modify は keyboard イベント drain も持つため、reconcile system を入力 drain の後に走らせ、raw な Escape イベントが picker/menu に漏れないよう同フレームで消費します。
 
 ### `ModalSkeleton` / `spawn_modal`
 
@@ -252,12 +254,14 @@ let ModalHandle { root, card } = spawn_modal(
 - `card` … `width` 指定・`padding = DynamicSpacing::Base16`・`BackgroundColor = ElevationIndex::ModalSurface.background(theme)`・`ElevationIndex::ModalSurface` 付き（生値ゼロ）。
 - `root`（バックドロップ）… full-screen・spawn 時 `Display::None`・`BackgroundColor = theme.colors.background.with_alpha(0.6)`・`GlobalZIndex(z_index)`・`Name`。`card` を子に持つ。
 
-`z_index` は per-modal の重なり（relogin 260 / reconcile 262 …）を当面そのまま保持します（`ElevationIndex` が z を完全に所有するまでの暫定）。
+`ModalSkeleton.z_index` は **視覚的な重なり**（`GlobalZIndex`、secret 300 / reconcile 262 / relogin 260 / modify 250 / confirm 200）を担います。これは `ActiveModal.z`（Escape-dismiss 優先度）とは別概念で、両者は #46 Slice B 5b で意図的に分離されました（視覚順と Esc 優先順が confirm/modify で逆転するため）。
 
 ### 移行状況
 
-- **relogin / reconcile モーダルは本パス（Slice B）で移行済み**：spawn は `spawn_modal` + theme トークン（生値ゼロ）に組み直し、Escape dismiss は汎用 `modal_layer_esc_system` を通ります（per-modal の双方向 stack↔trigger 同期 system を併設）。各モーダル固有の system には Close/confirm クリックだけが残ります。観測可能挙動の回帰ガードは `[k13]`（relogin Esc 優先）/ `[k14]`（reconcile Esc 優先）、`ModalLayer` 基盤そのものは `modal_layer.rs` の in-src ユニットテスト `m_modal_01..09` が担保します。
-- **secret / modify / order-confirm モーダルは本パス未移行**（まだ legacy spawn / 個別 Esc 経路）。`previous_focus` の復元もグローバル focus リソース導入後の後続スライスで扱います。
+- **5 つのモーダル全て（relogin / reconcile / confirm / modify / secret）が `ModalLayer` スタックに移行済み**（#46 Slice B）。spawn は `spawn_modal` + theme トークン（生値ゼロ）に組み直し、Escape dismiss は汎用 `modal_layer_esc_system`（→ `try_dismiss_highest_z`）を通ります。各モーダルは双方向 stack↔trigger 同期 system（mechanism A: `*_modal_reconcile_system`）を持ち、固有 system には Close/confirm クリックだけが残ります。secret は esc-pop 時に `do_cancel`（Zeroizing バッファの 0 埋め + close）を clear クロージャで再現します。
+  - 移行スライス: relogin/reconcile（Slice B 1st pass）、confirm（5b, dismiss z=280）、modify（5c, z=270）、secret（5d, z=300）。`esc_yield_clear` は 5d で撤去。
+  - 観測可能挙動の回帰ガード: `[k7]`/`[k11]`（confirm）/`[k12]`（modify）/`[k8]`/`[k15]`（secret）/`[k13]`（relogin）/`[k14]`（reconcile）。`ModalLayer` 基盤は `modal_layer.rs` の in-src ユニットテスト（push/pop/`try_dismiss_top`/`try_dismiss_highest_z`/veto/`spawn_modal`/reconcile）が担保します。
+- `previous_focus` の復元はグローバル focus リソース導入後の後続スライスで扱います（現状 record-only）。
 
 ## 13. Issue #48 review followup（fix/#48-review-followup ブランチ）
 

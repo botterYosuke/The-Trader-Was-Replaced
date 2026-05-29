@@ -1487,6 +1487,59 @@ impl RustEventSink {
 }
 
 // ---------------------------------------------------------------------------
+// RustBacktestSink — PyO3 callable for BacktestEngine → Rust bridge (issue #68)
+// ---------------------------------------------------------------------------
+
+/// Python-callable sink passed to `InprocLiveServer.start_nautilus_replay()`.
+/// Python calls `push_bar(state_json)` for every bar processed by BacktestEngine;
+/// the JSON is forwarded as an `InProcResp::StateJson` so the chart updates in
+/// real-time without polling.
+///
+/// GIL design: all methods are called from the Python worker thread (GIL held by
+/// the caller). The channel sends are non-blocking (unbounded), so we never need
+/// `py.allow_threads`.
+#[pyo3::pyclass]
+struct RustBacktestSink {
+    resp_tx: mpsc::UnboundedSender<InProcResp>,
+    startup_id: u64,
+}
+
+#[pyo3::pymethods]
+impl RustBacktestSink {
+    /// Called once per bar: `sink.push_bar(state_json_str)`.
+    /// `state_json_str` must deserialise as `BackendTradingState`.
+    fn push_bar(&self, state_json: &str) -> pyo3::PyResult<()> {
+        let _ = self.resp_tx.send(InProcResp::StateJson(state_json.to_string()));
+        Ok(())
+    }
+
+    /// Placeholder for Slice 3 (orders panel).
+    fn push_order(&self, _json: &str) -> pyo3::PyResult<()> {
+        Ok(())
+    }
+
+    /// Placeholder for Slice 4 (positions / buying power).
+    fn push_portfolio(&self, _json: &str) -> pyo3::PyResult<()> {
+        Ok(())
+    }
+
+    /// Placeholder for Slice 6 (run-result telemetry).
+    fn push_telemetry(&self, _json: &str) -> pyo3::PyResult<()> {
+        Ok(())
+    }
+
+    /// Called once when BacktestEngine.run() completes successfully.
+    fn push_run_complete(&self, run_id: &str, summary_json: &str) -> pyo3::PyResult<()> {
+        let _ = self.resp_tx.send(InProcResp::Status(BackendStatusUpdate::RunComplete {
+            startup_id: Some(self.startup_id),
+            run_id: run_id.to_string(),
+            summary_json: summary_json.to_string(),
+        }));
+        Ok(())
+    }
+}
+
+// ---------------------------------------------------------------------------
 // InProcTransport — PyO3 direct call implementation (Phase 2)
 // ---------------------------------------------------------------------------
 
@@ -1958,6 +2011,7 @@ where
 
 /// Call a method on `InprocLiveServer` with a single positional Python dict arg.
 /// The closure builds the dict by calling `.set_item()` on the provided `&Bound<PyDict>`.
+#[allow(dead_code)] // used by Slice 2–8; RunStrategy now uses start_nautilus_replay directly
 fn inproc_live_call_positional_dict<F>(
     live_server: &Py<PyAny>,
     method: &str,
@@ -2041,6 +2095,7 @@ fn inproc_seed_orders(
 }
 
 /// Load portfolio from InprocLiveServer.get_portfolio() and emit PortfolioLoaded.
+#[allow(dead_code)] // used by Slice 4 (portfolio push); kept for future use
 fn inproc_get_portfolio(live_server: &Py<PyAny>, resp_tx: &mpsc::UnboundedSender<InProcResp>) {
     match inproc_live_call(live_server, "get_portfolio", |_py, _kwargs| Ok(())) {
         Ok(r) => {
@@ -2207,93 +2262,71 @@ fn inproc_dispatch(
         }
 
         // ---------------------------------------------------------------
-        // Strategy run (calls GrpcDataEngineServer.StartEngine via InprocLiveServer)
+        // Strategy run — nautilus BacktestEngine path (issue #68 Slice 1)
         // ---------------------------------------------------------------
         TransportCommand::RunStrategy { strategy_file, config, startup_id } => {
             let strategy_file_str = strategy_file.to_string_lossy().to_string();
-            let _ = resp_tx.send(InProcResp::Status(BackendStatusUpdate::ReplayStartup {
-                startup_id, stage: crate::trading::BackendStartupStage::ResettingReplay,
-            }));
-            let (ok, err) = inproc_call_replay(engine, "force_stop_replay");
-            if !ok {
-                let msg = format!("RunStrategy ForceStop: {:?}", err);
-                error!("[inproc] {}", msg);
-                let _ = resp_tx.send(InProcResp::Status(BackendStatusUpdate::RunFailed {
-                    startup_id: Some(startup_id), error: msg,
-                }));
-                return;
-            }
-            let granularity = match parse_replay_granularity(&config.granularity) {
-                Ok(_) => config.granularity.as_str(),
-                Err(msg) => {
-                    error!("[inproc] RunStrategy: {}", msg);
-                    let _ = resp_tx.send(InProcResp::Status(BackendStatusUpdate::RunFailed {
-                        startup_id: Some(startup_id), error: msg,
-                    }));
-                    return;
-                }
-            };
+
             let _ = resp_tx.send(InProcResp::Status(BackendStatusUpdate::RunStarted));
             let _ = resp_tx.send(InProcResp::Status(BackendStatusUpdate::ReplayStartup {
-                startup_id, stage: crate::trading::BackendStartupStage::LoadingData,
+                startup_id,
+                stage: crate::trading::BackendStartupStage::StartingStrategy,
             }));
-            let (ok, err) = inproc_load_replay_data(
-                engine,
-                &config.instruments,
-                &config.start,
-                &config.end,
-                granularity,
-                default_catalog.as_deref(),
-            );
-            if !ok {
-                let msg = format!("RunStrategy LoadReplayData: {:?}", err);
-                error!("[inproc] {}", msg);
-                let _ = resp_tx.send(InProcResp::Status(BackendStatusUpdate::RunFailed {
-                    startup_id: Some(startup_id), error: msg,
-                }));
-                return;
-            }
-            info!("[inproc] RunStrategy LoadReplayData ok");
-            let _ = resp_tx.send(InProcResp::Status(BackendStatusUpdate::ReplayStartup {
-                startup_id, stage: crate::trading::BackendStartupStage::StartingStrategy,
-            }));
-            // Build cfg dict for InprocLiveServer.start_engine()
-            let granularity_int = match parse_replay_granularity(&config.granularity) {
-                Ok(v) => v,
-                Err(_) => 0,
+
+            // Build RustBacktestSink and call InprocLiveServer.start_nautilus_replay().
+            // The call blocks until BacktestEngine.run() completes; bars arrive via
+            // RustBacktestSink.push_bar() callbacks during execution.
+            let result = {
+                use pyo3::prelude::*;
+                use pyo3::types::{PyDict, PyList};
+                let resp_tx_clone = resp_tx.clone();
+                Python::with_gil(|py| {
+                    let sink = pyo3::Py::new(py, RustBacktestSink {
+                        resp_tx: resp_tx_clone,
+                        startup_id,
+                    }).map_err(|e| format!("RustBacktestSink::new: {}", e))?;
+
+                    let cfg = PyDict::new_bound(py);
+                    cfg.set_item("strategy_file", &strategy_file_str)
+                        .map_err(|e| e.to_string())?;
+                    let py_ids = PyList::new_bound(py, config.instruments.iter().map(|s| s.as_str()));
+                    cfg.set_item("instruments", py_ids)
+                        .map_err(|e| e.to_string())?;
+                    cfg.set_item("start_date", &config.start)
+                        .map_err(|e| e.to_string())?;
+                    cfg.set_item("end_date", &config.end)
+                        .map_err(|e| e.to_string())?;
+                    cfg.set_item("granularity", &config.granularity)
+                        .map_err(|e| e.to_string())?;
+                    cfg.set_item("rust_sink", sink.bind(py))
+                        .map_err(|e| e.to_string())?;
+                    if let Some(cp) = default_catalog.as_deref() {
+                        cfg.set_item("catalog_path", cp)
+                            .map_err(|e| e.to_string())?;
+                    }
+                    if let Some(ic) = config.initial_cash {
+                        cfg.set_item("initial_cash", ic)
+                            .map_err(|e| e.to_string())?;
+                    }
+
+                    let result = live_server
+                        .bind(py)
+                        .call_method1("start_nautilus_replay", (cfg,))
+                        .map_err(|e| format!("start_nautilus_replay PyO3: {}", e))?;
+                    inproc_json_dumps(py, result, "start_nautilus_replay")
+                })
             };
-            let result = inproc_live_call_positional_dict(live_server, "start_engine", |_py, cfg| {
-                cfg.set_item("instrument_id", config.instruments.first().cloned().unwrap_or_default())?;
-                cfg.set_item("instrument_ids", config.instruments.clone())?;
-                cfg.set_item("start_date", config.start.clone())?;
-                cfg.set_item("end_date", config.end.clone())?;
-                cfg.set_item("strategy_file", strategy_file_str.clone())?;
-                cfg.set_item("granularity", granularity_int)?;
-                if let Some(ic) = config.initial_cash {
-                    cfg.set_item("initial_cash", ic)?;
-                }
-                Ok(())
-            });
+
             match result {
                 Ok(r) => {
                     let success = r.get("success").and_then(|v| v.as_bool()).unwrap_or(false);
                     if success {
                         let run_id = r.get("run_id").and_then(|v| v.as_str()).unwrap_or("").to_string();
-                        let summary_json = r.get("summary_json").and_then(|v| v.as_str()).unwrap_or("{}").to_string();
-                        info!("[inproc] RunStrategy StartEngine ok run_id={}", run_id);
-                        let _ = resp_tx.send(InProcResp::Status(BackendStatusUpdate::ReplayStartup {
-                            startup_id, stage: crate::trading::BackendStartupStage::WaitingForFirstTick,
-                        }));
-                        let _ = resp_tx.send(InProcResp::Status(BackendStatusUpdate::RunComplete {
-                            startup_id: Some(startup_id),
-                            run_id: run_id.clone(),
-                            summary_json,
-                        }));
-                        // Load portfolio
-                        inproc_get_portfolio(live_server, resp_tx);
+                        info!("[inproc] RunStrategy start_nautilus_replay ok run_id={}", run_id);
+                        // push_run_complete was already sent via RustBacktestSink on success.
                     } else {
                         let msg = format!(
-                            "StartEngine: {} {}",
+                            "start_nautilus_replay: {} {}",
                             r.get("error_code").and_then(|v| v.as_str()).unwrap_or(""),
                             r.get("error_message").and_then(|v| v.as_str()).unwrap_or(""),
                         );
@@ -2304,7 +2337,7 @@ fn inproc_dispatch(
                     }
                 }
                 Err(msg) => {
-                    error!("[inproc] RunStrategy start_engine error: {}", msg);
+                    error!("[inproc] RunStrategy start_nautilus_replay error: {}", msg);
                     let _ = resp_tx.send(InProcResp::Status(BackendStatusUpdate::RunFailed {
                         startup_id: Some(startup_id), error: msg,
                     }));

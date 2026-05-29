@@ -102,8 +102,9 @@ use crate::ui::menu_bar::{
     sync_menu_popup_visibility_system, update_strategy_status_label_system,
 };
 use crate::ui::modify_modal::{
-    ModifyForm, modify_modal_button_system, modify_modal_input_system, modify_modal_sync_system,
-    modify_modal_visibility_system, spawn_modify_modal,
+    ModifyForm, modify_modal_button_system, modify_modal_input_system,
+    modify_modal_reconcile_system, modify_modal_sync_system, modify_modal_visibility_system,
+    spawn_modify_modal,
 };
 use crate::ui::order_context_menu::{
     OrderContextMenu, context_menu_hover_system, context_menu_item_system,
@@ -111,8 +112,8 @@ use crate::ui::order_context_menu::{
 };
 use crate::ui::order_panel::{
     OrderButtonPressed, OrderConfirm, OrderForm, confirm_modal_button_system,
-    confirm_modal_sync_system, confirm_modal_visibility_system, order_form_button_system,
-    order_panel_sync_system, order_submit_button_system,
+    confirm_modal_reconcile_system, confirm_modal_sync_system, confirm_modal_visibility_system,
+    order_form_button_system, order_panel_sync_system, order_submit_button_system,
     order_window_despawn_system, spawn_confirm_modal,
 };
 use crate::ui::orders::orders_panel_system;
@@ -144,8 +145,8 @@ use crate::ui::scenario_startup_panel::{
 };
 use crate::ui::secret_modal::{
     SecretInput, secret_modal_button_system, secret_modal_input_system,
-    secret_modal_lifecycle_system, secret_modal_sync_system, secret_modal_timeout_system,
-    secret_modal_visibility_system, spawn_secret_modal,
+    secret_modal_lifecycle_system, secret_modal_reconcile_system, secret_modal_sync_system,
+    secret_modal_timeout_system, secret_modal_visibility_system, spawn_secret_modal,
 };
 use crate::ui::sidebar::{
     instrument_remove_button_system, instrument_row_click_system, panel_button_system,
@@ -559,6 +560,11 @@ impl Plugin for UiPlugin {
                 // BEFORE the drain clears it — so run `.before(secret_modal_input_system)`.
                 confirm_modal_button_system.before(secret_modal_input_system),
                 confirm_modal_sync_system,
+                // #46 Slice B 5b: mechanism A — OrderConfirm.pending <-> ModalLayer.stack
+                // (dismiss-priority z=280). Runs AFTER the esc system so a same-frame
+                // Escape pop is reflected back into pending this frame (parity with k11).
+                confirm_modal_reconcile_system
+                    .after(crate::ui::component::modal_layer::modal_layer_esc_system),
                 // SecretModal — input は keystroke を消費する
                 // (picker_searchbox と同じ drain パターン)。最前面オーバーレイ (z=300) なので
                 // picker / menu の drain より先に走らせ、同フレーム共存時もモーダルが入力を得る。
@@ -571,6 +577,14 @@ impl Plugin for UiPlugin {
                 secret_modal_button_system,
                 secret_modal_timeout_system,
                 secret_modal_sync_system,
+                // #46 Slice B 5d: mechanism A — SecretPrompt.active <-> ModalLayer.stack
+                // (dismiss-priority z=300, frontmost). Runs AFTER the esc system so a
+                // same-frame Escape pop is reflected this frame, and AFTER
+                // secret_modal_input_system so the raw Escape event is drained (consumed)
+                // while the prompt is still open — it never leaks to the picker/menu.
+                secret_modal_reconcile_system
+                    .after(crate::ui::component::modal_layer::modal_layer_esc_system)
+                    .after(secret_modal_input_system),
             ),
         )
         // ── Phase 9 Step 4: OrdersPanel 右クリックメニュー + Modify モーダル ──
@@ -599,6 +613,15 @@ impl Plugin for UiPlugin {
                     .before(menu_keyboard_system),
                 modify_modal_button_system,
                 modify_modal_sync_system,
+                // #46 Slice B 5c: mechanism A — ModifyForm.open <-> ModalLayer.stack
+                // (dismiss-priority z=270). Runs AFTER the esc system so a same-frame
+                // Escape pop is reflected back into the form this frame (parity with
+                // confirm/relogin/reconcile).
+                modify_modal_reconcile_system
+                    .after(crate::ui::component::modal_layer::modal_layer_esc_system)
+                    // 5d HP1: input の後に置き、Escape フレームで reconcile が先に
+                    // form を閉じて input が early-return → Escape leak、を防ぐ。
+                    .after(modify_modal_input_system),
             ),
         )
         // ── Phase 9 Step 7: 再ログイン通知モーダル (venue 本体ログアウト検知, §3.5) ──

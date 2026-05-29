@@ -11,9 +11,11 @@ use bevy::input::keyboard::{Key, KeyboardInput};
 use bevy::prelude::*;
 use tokio::sync::mpsc;
 
-use backcast::trading::{OrderFeedback, TransportCommand, TransportCommandSender};
+use backcast::trading::{OrderFeedback, SecretPrompt, TransportCommand, TransportCommandSender};
+use backcast::ui::component::modal_layer::{ModalLayer, modal_layer_esc_system};
 use backcast::ui::modify_modal::{
-    ModifyButton, ModifyForm, ModifyFocus, modify_modal_button_system, modify_modal_input_system,
+    ModifyButton, ModifyForm, ModifyFocus, ModifyModalRoot, modify_modal_button_system,
+    modify_modal_input_system, modify_modal_reconcile_system,
 };
 
 // ── ヘルパー ──────────────────────────────────────────────────────────────────
@@ -23,11 +25,20 @@ fn make_app() -> (App, mpsc::UnboundedReceiver<TransportCommand>) {
     let mut app = App::new();
     app.init_resource::<ModifyForm>();
     app.init_resource::<OrderFeedback>();
+    app.init_resource::<ModalLayer>();
+    app.init_resource::<SecretPrompt>();
     app.insert_resource(TransportCommandSender { tx });
+    app.insert_resource(ButtonInput::<KeyCode>::default());
     app.add_message::<KeyboardInput>();
+    app.world_mut().spawn(ModifyModalRoot);
     app.add_systems(
         Update,
-        (modify_modal_button_system, modify_modal_input_system),
+        (
+            modify_modal_button_system,
+            modify_modal_input_system,
+            modal_layer_esc_system,
+            modify_modal_reconcile_system.after(modal_layer_esc_system),
+        ),
     );
     (app, rx)
 }
@@ -118,7 +129,10 @@ fn k12_modify_modal_submit_cancel_validation() {
         assert!(!app.world().resource::<ModifyForm>().open);
     }
 
-    // ── ケース 4: Escape キーで cancel — keyboard drain 経由 ──
+    // ── ケース 4: Escape キーで cancel — modal-layer 経路 (z=270 stack entry) ──
+    // 5c 以降 ModifyForm は esc-drain で閉じず、reconcile が open=true を z=270 で stack に
+    // push する。warm-up update で push 済みにしてから Escape を打つと、
+    // highest-z=modify(270) が dismiss され REVERSE で form.close() が走る。
     {
         let (mut app, mut rx) = make_app();
         open_form(&mut app, "MOCK");
@@ -126,16 +140,10 @@ fn k12_modify_modal_submit_cancel_validation() {
             let mut f = app.world_mut().resource_mut::<ModifyForm>();
             f.new_price_buf = "3000".to_string();
         }
+        app.update(); // warm-up: modify を z=270 で stack に push。
         app.world_mut()
-            .resource_mut::<Messages<KeyboardInput>>()
-            .write(KeyboardInput {
-                key_code: KeyCode::Escape,
-                logical_key: Key::Escape,
-                state: ButtonState::Pressed,
-                repeat: false,
-                window: Entity::PLACEHOLDER,
-            text: None,
-            });
+            .resource_mut::<ButtonInput<KeyCode>>()
+            .press(KeyCode::Escape);
         app.update();
 
         assert!(rx.try_recv().is_err(), "Escape must not fire a command");

@@ -19,11 +19,17 @@ use backcast::trading::{
     ReconcilePrompt, ReconcileUnknownOrder, SecretPrompt, SecretPromptRequest,
 };
 use backcast::ui::component::modal_layer::{ModalLayer, modal_layer_esc_system};
-use backcast::ui::modify_modal::ModifyForm;
-use backcast::ui::order_panel::{OrderConfirm, OrderDraft, OrderType, Side, TimeInForce};
+use backcast::ui::modify_modal::{ModifyForm, ModifyModalRoot, modify_modal_reconcile_system};
+use backcast::ui::order_panel::{
+    confirm_modal_reconcile_system, ConfirmModalRoot, OrderConfirm, OrderDraft, OrderType, Side,
+    TimeInForce,
+};
 use backcast::ui::reconcile_modal::{
     ReconcileDismissButton, ReconcileModalRoot, reconcile_modal_button_system,
     reconcile_modal_reconcile_system,
+};
+use backcast::ui::secret_modal::{
+    SecretInput, SecretModalRoot, secret_modal_reconcile_system,
 };
 
 fn make_app() -> App {
@@ -32,15 +38,22 @@ fn make_app() -> App {
     app.init_resource::<SecretPrompt>();
     app.init_resource::<OrderConfirm>();
     app.init_resource::<ModifyForm>();
+    app.init_resource::<SecretInput>();
     app.init_resource::<ModalLayer>();
     app.insert_resource(ButtonInput::<KeyCode>::default());
     app.world_mut().spawn(ReconcileModalRoot);
+    app.world_mut().spawn(ConfirmModalRoot);
+    app.world_mut().spawn(ModifyModalRoot);
+    app.world_mut().spawn(SecretModalRoot);
     app.add_systems(
         Update,
         (
             reconcile_modal_button_system,
             modal_layer_esc_system,
             reconcile_modal_reconcile_system.after(modal_layer_esc_system),
+            confirm_modal_reconcile_system.after(modal_layer_esc_system),
+            modify_modal_reconcile_system.after(modal_layer_esc_system),
+            secret_modal_reconcile_system.after(modal_layer_esc_system),
         ),
     );
     app
@@ -102,15 +115,19 @@ fn k14_reconcile_modal_dismiss_escape_priority() {
             kind: "second_password".to_string(),
             purpose: "new_order".to_string(),
         });
+        app.update(); // warm-up: secret を z=300 で stack に push。
         press_escape(&mut app);
         app.update();
         assert!(
             !app.world().resource::<ReconcilePrompt>().unknown.is_empty(),
-            "Escape must yield to open SecretModal — reconcile notice must survive"
+            "Escape must dismiss the front SecretModal (z=300) — reconcile notice (z=262) must survive"
         );
     }
 
-    // ── ケース 4: OrderConfirm 開 → Escape を譲る ──
+    // ── ケース 4: OrderConfirm 開 → Escape は前面の確認モーダル (z=280) を閉じ reconcile (z=262) は残す ──
+    // 5b 以降 OrderConfirm は esc_yield 入力ではなく stack entry (z=280)。warm-up update で
+    // confirm を push 済みにしてから Escape を打つと、highest-z=confirm が dismiss され、
+    // 背面の reconcile notice (z=262) は survive する（観測は reconcile survive で不変）。
     {
         let mut app = make_app();
         activate(&mut app);
@@ -123,24 +140,29 @@ fn k14_reconcile_modal_dismiss_escape_priority() {
             price: Some(2500.0),
             tif: TimeInForce::Day,
         });
+        app.update(); // warm-up: confirm を z=280 で stack に push。
         press_escape(&mut app);
         app.update();
         assert!(
             !app.world().resource::<ReconcilePrompt>().unknown.is_empty(),
-            "Escape must yield to open OrderConfirm — reconcile notice must survive"
+            "Escape must dismiss the front OrderConfirm (z=280) — reconcile notice (z=262) must survive"
         );
     }
 
-    // ── ケース 5: ModifyForm 開 → Escape を譲る ──
+    // ── ケース 5: ModifyForm 開 → Escape は前面の訂正モーダル (z=270) を閉じ reconcile (z=262) は残す ──
+    // 5c 以降 ModifyForm は esc_yield 入力ではなく stack entry (z=270)。warm-up update で
+    // modify を push 済みにしてから Escape を打つと、highest-z=modify が dismiss され、
+    // 背面の reconcile notice (z=262) は survive する（観測は reconcile survive で不変）。
     {
         let mut app = make_app();
         activate(&mut app);
         app.world_mut().resource_mut::<ModifyForm>().open = true;
+        app.update(); // warm-up: modify を z=270 で stack に push。
         press_escape(&mut app);
         app.update();
         assert!(
             !app.world().resource::<ReconcilePrompt>().unknown.is_empty(),
-            "Escape must yield to open ModifyModal — reconcile notice must survive"
+            "Escape must dismiss the front ModifyModal (z=270) — reconcile notice (z=262) must survive"
         );
     }
 
@@ -181,6 +203,7 @@ fn k14_reconcile_modal_dismiss_escape_priority() {
             kind: "second_password".to_string(),
             purpose: "new_order".to_string(),
         });
+        app.update(); // warm-up: secret を z=300 で stack に push。
         press_escape(&mut app);
         app.update();
         assert!(

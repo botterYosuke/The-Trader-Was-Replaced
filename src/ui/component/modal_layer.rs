@@ -11,9 +11,6 @@
 //! this pass (no global focus resource exists yet). The `ModalSkeleton` spawn
 //! helper and the Esc-driven dismissal system arrive in Slice B2.
 
-use crate::trading::SecretPrompt;
-use crate::ui::modify_modal::ModifyForm;
-use crate::ui::order_panel::OrderConfirm;
 use crate::ui::theme::{DynamicSpacing, ElevationIndex, Theme};
 use bevy::prelude::*;
 
@@ -33,6 +30,10 @@ pub struct ActiveModal {
     pub backdrop: Entity,
     /// Entity that held focus before this modal opened (record-only this pass).
     pub previous_focus: Option<Entity>,
+    /// Escape-dismiss priority (highest wins one Escape), NOT the visual
+    /// GlobalZIndex. Used by [`ModalLayer::try_dismiss_highest_z`] to target the
+    /// most-prioritized modal by priority rather than by push order.
+    pub dismiss_priority: i32,
     /// Veto hook consulted by [`ModalLayer::try_dismiss_top`].
     pub on_before_dismiss: fn() -> DismissDecision,
 }
@@ -70,6 +71,34 @@ impl ModalLayer {
             None => false,
         }
     }
+
+    /// Attempt to dismiss the modal with the highest `z` (frontmost by stacking
+    /// order, not by push order), consulting its `on_before_dismiss` veto.
+    ///
+    /// Selects the entry with the maximum `z`; on ties, the last-pushed wins
+    /// (matching the `try_dismiss_top` last-element semantics). The veto applies
+    /// to that single entry only: on [`DismissDecision::Pending`] nothing is
+    /// removed and `false` is returned, just like `try_dismiss_top`.
+    pub fn try_dismiss_highest_z(&mut self) -> bool {
+        // `max_by_key` returns the LAST element among equal keys, so equal-z
+        // ties resolve to the last-pushed entry (same as `try_dismiss_top`).
+        let target = self
+            .stack
+            .iter()
+            .enumerate()
+            .max_by_key(|(_, m)| m.dismiss_priority)
+            .map(|(i, _)| i);
+        match target {
+            Some(i) => match (self.stack[i].on_before_dismiss)() {
+                DismissDecision::Dismiss => {
+                    self.stack.remove(i);
+                    true
+                }
+                DismissDecision::Pending => false,
+            },
+            None => false,
+        }
+    }
 }
 
 /// Generic `ModalLayer.stack` ⇄ owning-prompt reconcile step shared by the
@@ -86,6 +115,7 @@ impl ModalLayer {
 pub fn reconcile_modal_stack(
     layer: &mut ModalLayer,
     root: Entity,
+    dismiss_priority: i32,
     was_on_stack: &mut bool,
     is_open: bool,
     prompt_changed: bool,
@@ -99,6 +129,7 @@ pub fn reconcile_modal_stack(
             root,
             backdrop: root,
             previous_focus: None,
+            dismiss_priority,
             on_before_dismiss,
         });
         *was_on_stack = true;
@@ -118,38 +149,24 @@ pub fn reconcile_modal_stack(
     *was_on_stack = on_stack;
 }
 
-/// Whether Esc is clear to dismiss the top modal-layer entry. Mirrors the
-/// relogin notice's yield guard (relogin_modal_button_system): a single
-/// Escape must defer to any higher-priority input modal that is open, so the
-/// one-shot Escape isn't consumed twice.
-fn esc_yield_clear(secret_active: bool, confirm_pending: bool, modify_open: bool) -> bool {
-    !(secret_active || confirm_pending || modify_open)
-}
-
-/// Consume Escape and dismiss the frontmost modal — but only when no
-/// higher-priority input modal (secret / order-confirm / modify) is open.
-/// `try_dismiss_top` itself respects each entry's `on_before_dismiss` veto.
-pub fn modal_layer_esc_system(
-    keys: Res<ButtonInput<KeyCode>>,
-    mut layer: ResMut<ModalLayer>,
-    secret_prompt: Res<SecretPrompt>,
-    order_confirm: Res<OrderConfirm>,
-    modify_form: Res<ModifyForm>,
-) {
+/// Consume Escape and dismiss the highest-z modal-layer entry.
+///
+/// As of #46 Slice B 5d every modal (secret z=300, confirm 280, modify 270,
+/// reconcile 262, relogin 260) is a stack entry, so a single Escape uniformly
+/// targets the frontmost-by-z modal via [`ModalLayer::try_dismiss_highest_z`],
+/// which still respects each entry's `on_before_dismiss` veto. The secret
+/// modal's event-drain input system (`secret_modal_input_system`) consumes the
+/// raw `KeyboardInput` Escape in the same frame so it never leaks to the
+/// picker/menu; the actual close is driven by `secret_modal_reconcile_system`'s
+/// REVERSE arm once this system pops the entry.
+pub fn modal_layer_esc_system(keys: Res<ButtonInput<KeyCode>>, mut layer: ResMut<ModalLayer>) {
     if layer.stack.is_empty() {
         return;
     }
     if !keys.just_pressed(KeyCode::Escape) {
         return;
     }
-    if !esc_yield_clear(
-        secret_prompt.active.is_some(),
-        order_confirm.pending.is_some(),
-        modify_form.open,
-    ) {
-        return;
-    }
-    layer.try_dismiss_top();
+    layer.try_dismiss_highest_z();
 }
 
 /// Declarative spec for a standard modal: a full-screen backdrop with a
@@ -235,6 +252,7 @@ mod tests {
             root: e(1),
             backdrop: e(2),
             previous_focus: None,
+            dismiss_priority: 100,
             on_before_dismiss: dismiss,
         });
         assert_eq!(layer.stack.len(), 1);
@@ -249,6 +267,7 @@ mod tests {
             root: e(10),
             backdrop: e(11),
             previous_focus: Some(e(99)),
+            dismiss_priority: 110,
             on_before_dismiss: dismiss,
         });
         let popped = layer.pop().expect("pop should return the pushed entry");
@@ -264,6 +283,7 @@ mod tests {
             root: e(20),
             backdrop: e(21),
             previous_focus: None,
+            dismiss_priority: 260,
             on_before_dismiss: dismiss,
         });
         // ... then reconcile modal (frontmost).
@@ -271,6 +291,7 @@ mod tests {
             root: e(30),
             backdrop: e(31),
             previous_focus: None,
+            dismiss_priority: 262,
             on_before_dismiss: dismiss,
         });
         assert!(layer.try_dismiss_top());
@@ -285,6 +306,7 @@ mod tests {
             root: e(40),
             backdrop: e(41),
             previous_focus: None,
+            dismiss_priority: 200,
             on_before_dismiss: pending,
         });
         assert!(!layer.try_dismiss_top());
@@ -320,21 +342,9 @@ mod tests {
         assert_eq!(card_bg.0, ElevationIndex::ModalSurface.background(&Theme::default()));
     }
 
-    #[test]
-    fn m_modal_06_esc_yield_clear_truth_table() {
-        assert!(esc_yield_clear(false, false, false));
-        assert!(!esc_yield_clear(true, false, false));
-        assert!(!esc_yield_clear(false, true, false));
-        assert!(!esc_yield_clear(false, false, true));
-        assert!(!esc_yield_clear(true, true, true));
-    }
-
     fn esc_app() -> App {
         let mut app = App::new();
         app.init_resource::<ModalLayer>();
-        app.init_resource::<crate::trading::SecretPrompt>();
-        app.init_resource::<crate::ui::order_panel::OrderConfirm>();
-        app.init_resource::<crate::ui::modify_modal::ModifyForm>();
         app.insert_resource(ButtonInput::<KeyCode>::default());
         app.add_systems(Update, modal_layer_esc_system);
         app
@@ -347,6 +357,7 @@ mod tests {
             root: e(1),
             backdrop: e(2),
             previous_focus: None,
+            dismiss_priority: 210,
             on_before_dismiss: dismiss,
         });
         app.world_mut()
@@ -357,48 +368,20 @@ mod tests {
     }
 
     #[test]
-    fn m_modal_08_esc_yields_to_open_secret_prompt() {
-        use crate::trading::SecretPromptRequest;
-        let mut app = esc_app();
-        app.world_mut().resource_mut::<ModalLayer>().push(ActiveModal {
-            root: e(1),
-            backdrop: e(2),
-            previous_focus: None,
-            on_before_dismiss: dismiss,
-        });
-        app.world_mut().resource_mut::<crate::trading::SecretPrompt>().active =
-            Some(SecretPromptRequest {
-                request_id: "r1".to_string(),
-                venue: "TACHIBANA".to_string(),
-                kind: "second_password".to_string(),
-                purpose: "new_order".to_string(),
-            });
-        app.world_mut()
-            .resource_mut::<ButtonInput<KeyCode>>()
-            .press(KeyCode::Escape);
-        app.update();
-        assert_eq!(
-            app.world().resource::<ModalLayer>().stack.len(),
-            1,
-            "Esc must yield to the open secret modal; the stack entry survives"
-        );
-    }
-
-    #[test]
     fn m_modal_10_reconcile_stack_forward_then_reverse_clears() {
         let mut layer = ModalLayer::default();
         let root = e(50);
         let mut was = false;
         let mut cleared = false;
 
-        reconcile_modal_stack(&mut layer, root, &mut was, true, true, dismiss, || {});
+        reconcile_modal_stack(&mut layer, root, 262, &mut was, true, true, dismiss, || {});
         assert!(was);
         assert_eq!(layer.stack.len(), 1);
 
         layer.try_dismiss_top();
         assert!(layer.stack.is_empty());
 
-        reconcile_modal_stack(&mut layer, root, &mut was, true, false, dismiss, || {
+        reconcile_modal_stack(&mut layer, root, 262, &mut was, true, false, dismiss, || {
             cleared = true;
         });
         assert!(cleared, "esc pop must trigger the clear closure");
@@ -413,5 +396,38 @@ mod tests {
             .press(KeyCode::Escape);
         app.update();
         assert!(app.world().resource::<ModalLayer>().stack.is_empty());
+    }
+
+    #[test]
+    fn m_modal_11_dismiss_targets_highest_z() {
+        // High-z entry is pushed FIRST, low-z SECOND, so push order (LIFO) and
+        // z order disagree: a correct max-z dismissal must remove the high-z A,
+        // not the last-pushed B.
+        let mut layer = ModalLayer::default();
+        // A: frontmost by z (300), pushed first.
+        layer.push(ActiveModal {
+            root: e(1),
+            backdrop: e(1),
+            previous_focus: None,
+            dismiss_priority: 300,
+            on_before_dismiss: dismiss,
+        });
+        // B: lower z (200), pushed last.
+        layer.push(ActiveModal {
+            root: e(2),
+            backdrop: e(2),
+            previous_focus: None,
+            dismiss_priority: 200,
+            on_before_dismiss: dismiss,
+        });
+
+        assert!(layer.try_dismiss_highest_z());
+        assert_eq!(layer.stack.len(), 1);
+        // The high-z A (e(1)) must be gone; the low-z B (e(2)) must remain.
+        assert_eq!(
+            layer.stack[0].root,
+            e(2),
+            "dismissal must target the highest-z modal, not the last-pushed one"
+        );
     }
 }

@@ -15,7 +15,7 @@ use bevy::prelude::*;
 
 use crate::trading::ReconcilePrompt;
 use crate::ui::component::modal_layer::{
-    ActiveModal, DismissDecision, ModalHandle, ModalLayer, ModalSkeleton, spawn_modal,
+    DismissDecision, ModalHandle, ModalLayer, ModalSkeleton, spawn_modal,
 };
 use crate::ui::theme::{DynamicSpacing, LabelSize, Theme};
 
@@ -200,6 +200,7 @@ pub fn reconcile_modal_reconcile_system(
     crate::ui::component::modal_layer::reconcile_modal_stack(
         &mut layer,
         root,
+        262,
         &mut was_on_stack,
         is_open,
         prompt_changed,

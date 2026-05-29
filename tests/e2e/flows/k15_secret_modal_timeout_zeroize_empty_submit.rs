@@ -22,9 +22,10 @@ use tokio::sync::mpsc;
 use backcast::trading::{
     OrderFeedback, SecretPrompt, SecretPromptRequest, TransportCommand, TransportCommandSender,
 };
+use backcast::ui::component::modal_layer::{ModalLayer, modal_layer_esc_system};
 use backcast::ui::secret_modal::{
-    SecretButton, SecretInput, secret_modal_button_system, secret_modal_input_system,
-    secret_modal_lifecycle_system,
+    SecretButton, SecretInput, SecretModalRoot, secret_modal_button_system,
+    secret_modal_input_system, secret_modal_lifecycle_system, secret_modal_reconcile_system,
 };
 
 // ── ヘルパー ──────────────────────────────────────────────────────────────────
@@ -35,8 +36,11 @@ fn make_app() -> (App, mpsc::UnboundedReceiver<TransportCommand>) {
     app.init_resource::<SecretInput>();
     app.init_resource::<SecretPrompt>();
     app.init_resource::<OrderFeedback>();
+    app.init_resource::<ModalLayer>();
+    app.insert_resource(ButtonInput::<KeyCode>::default());
     app.insert_resource(TransportCommandSender { tx });
     app.add_message::<KeyboardInput>();
+    app.world_mut().spawn(SecretModalRoot);
     (app, rx)
 }
 
@@ -66,19 +70,6 @@ fn queue_chars(app: &mut App, s: &str) {
             text: None,
             });
     }
-}
-
-fn queue_escape(app: &mut App) {
-    app.world_mut()
-        .resource_mut::<Messages<KeyboardInput>>()
-        .write(KeyboardInput {
-            key_code: KeyCode::Escape,
-            logical_key: Key::Escape,
-            state: ButtonState::Pressed,
-            repeat: false,
-            window: Entity::PLACEHOLDER,
-            text: None,
-        });
 }
 
 #[test]
@@ -142,13 +133,24 @@ fn k15_secret_modal_timeout_zeroize_empty_submit() {
     // ── ケース 3: Escape キーで cancel — keyboard drain 経由の zeroize ──
     {
         let (mut app, mut rx) = make_app();
-        app.add_systems(Update, secret_modal_input_system);
+        app.add_systems(
+            Update,
+            (
+                secret_modal_input_system,
+                modal_layer_esc_system,
+                secret_modal_reconcile_system
+                    .after(modal_layer_esc_system)
+                    .after(secret_modal_input_system),
+            ),
+        );
 
         activate(&mut app, "req-k15-escape");
         queue_chars(&mut app, "partial");
-        app.update(); // drain chars
-        queue_escape(&mut app);
-        app.update(); // drain Escape → do_cancel
+        app.update(); // drain chars + secret を z=300 で stack に push
+        app.world_mut()
+            .resource_mut::<ButtonInput<KeyCode>>()
+            .press(KeyCode::Escape);
+        app.update(); // modal_layer_esc_system が secret(z=300) を pop → reconcile が do_cancel
 
         assert!(rx.try_recv().is_err(), "Escape must not fire SubmitSecret");
         assert!(

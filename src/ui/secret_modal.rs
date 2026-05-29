@@ -25,18 +25,13 @@ use zeroize::Zeroizing;
 use crate::trading::{
     OrderFeedback, RedactedSecret, SecretPrompt, TransportCommand, TransportCommandSender,
 };
+use crate::ui::component::modal_layer::{
+    DismissDecision, ModalHandle, ModalLayer, ModalSkeleton, reconcile_modal_stack, spawn_modal,
+};
+use crate::ui::theme::{LabelSize, Theme};
 
 /// バックエンドの 30s タイムアウトより少し短く設定し、先に UI を畳む (§3.10)。
 const SECRET_INPUT_TIMEOUT: Duration = Duration::from_secs(25);
-
-const COLOR_PANEL_BG: Color = Color::srgba(0.07, 0.07, 0.12, 0.98);
-const COLOR_BACKDROP: Color = Color::srgba(0.0, 0.0, 0.0, 0.6);
-const COLOR_HEADER: Color = Color::srgb(0.0, 0.81, 1.0);
-const COLOR_INFO: Color = Color::srgb(0.65, 0.70, 0.78);
-const COLOR_VALUE: Color = Color::srgb(0.88, 0.91, 0.96);
-const COLOR_BTN_SUBMIT: Color = Color::srgba(0.10, 0.45, 0.30, 1.0);
-const COLOR_BTN_CANCEL: Color = Color::srgba(0.30, 0.16, 0.20, 1.0);
-const COLOR_FIELD_BG: Color = Color::srgba(0.04, 0.04, 0.08, 1.0);
 
 // ===========================================================================
 // Resource — 平文バッファ (Zeroizing) + 開始時刻 (timeout 用)
@@ -153,142 +148,129 @@ fn do_cancel(input: &mut SecretInput, prompt: &mut SecretPrompt, reason: &str) {
 // Spawn (Startup)
 // ===========================================================================
 
-pub fn spawn_secret_modal(mut commands: Commands) {
-    commands
+pub fn spawn_secret_modal(mut commands: Commands, theme: Res<Theme>) {
+    let ModalHandle { root, card } = spawn_modal(
+        &mut commands,
+        &theme,
+        ModalSkeleton {
+            width: 320.0,
+            z_index: 300,
+            name: "SecretModal",
+        },
+    );
+
+    commands.entity(root).insert(SecretModalRoot);
+
+    let header = commands
         .spawn((
             Node {
-                display: Display::None,
-                position_type: PositionType::Absolute,
-                top: Val::Px(0.0),
-                left: Val::Px(0.0),
+                margin: UiRect::bottom(Val::Px(8.0)),
+                ..default()
+            },
+            Text::new("第二暗証番号を入力"),
+            theme.typography.label_font(LabelSize::Large),
+            TextColor(theme.colors.text_accent),
+        ))
+        .id();
+
+    // venue / purpose 情報行（失敗時はここに \n でエラーを追記、§3.10）。
+    // width 100% で 320px カード内に折り返す。
+    let info = commands
+        .spawn((
+            Node {
                 width: Val::Percent(100.0),
-                height: Val::Percent(100.0),
+                margin: UiRect::bottom(Val::Px(8.0)),
+                ..default()
+            },
+            Text::new(""),
+            theme.typography.label_font(LabelSize::Small),
+            TextColor(theme.colors.text_muted),
+            SecretInfoText,
+        ))
+        .id();
+
+    // マスク表示テキスト（sync system が • を書く）。
+    let masked = commands
+        .spawn((
+            Text::new(""),
+            theme.typography.label_font(LabelSize::Default),
+            TextColor(theme.colors.text),
+            SecretMaskedText,
+        ))
+        .id();
+    // マスクフィールドの枠。
+    let field = commands
+        .spawn((
+            Node {
+                width: Val::Percent(100.0),
+                height: Val::Px(30.0),
+                padding: UiRect::axes(Val::Px(8.0), Val::Px(4.0)),
+                align_items: AlignItems::Center,
+                ..default()
+            },
+            BackgroundColor(theme.colors.element_background),
+        ))
+        .add_child(masked)
+        .id();
+
+    let cancel_label = commands
+        .spawn((
+            Text::new("キャンセル"),
+            theme.typography.label_font(LabelSize::Default),
+            TextColor(theme.colors.text),
+        ))
+        .id();
+    let cancel_btn = commands
+        .spawn((
+            Button,
+            Node {
+                flex_grow: 1.0,
+                height: Val::Px(30.0),
                 align_items: AlignItems::Center,
                 justify_content: JustifyContent::Center,
                 ..default()
             },
-            BackgroundColor(COLOR_BACKDROP),
-            // 確認モーダル (200) より前面に。secret 収集は最優先。
-            GlobalZIndex(300),
-            SecretModalRoot,
-            Name::new("SecretModal"),
+            BackgroundColor(theme.colors.element_selection_background),
+            SecretButton::Cancel,
         ))
-        .with_children(|p| {
-            p.spawn((
-                Node {
-                    width: Val::Px(320.0),
-                    flex_direction: FlexDirection::Column,
-                    padding: UiRect::all(Val::Px(16.0)),
-                    ..default()
-                },
-                BackgroundColor(COLOR_PANEL_BG),
-            ))
-            .with_children(|card| {
-                card.spawn((
-                    Node {
-                        margin: UiRect::bottom(Val::Px(8.0)),
-                        ..default()
-                    },
-                    Text::new("第二暗証番号を入力"),
-                    TextFont {
-                        font_size: 15.0,
-                        ..default()
-                    },
-                    TextColor(COLOR_HEADER),
-                ));
-                card.spawn((
-                    Node {
-                        // Bound the width to the card's content box so a long
-                        // SubmitSecret error line (§3.10, appended after a `\n`)
-                        // wraps inside the 320px card instead of overflowing.
-                        width: Val::Percent(100.0),
-                        margin: UiRect::bottom(Val::Px(8.0)),
-                        ..default()
-                    },
-                    Text::new(""),
-                    TextFont {
-                        font_size: 11.0,
-                        ..default()
-                    },
-                    TextColor(COLOR_INFO),
-                    SecretInfoText,
-                ));
-                // マスクフィールド
-                card.spawn((
-                    Node {
-                        width: Val::Percent(100.0),
-                        height: Val::Px(30.0),
-                        padding: UiRect::axes(Val::Px(8.0), Val::Px(4.0)),
-                        align_items: AlignItems::Center,
-                        ..default()
-                    },
-                    BackgroundColor(COLOR_FIELD_BG),
-                ))
-                .with_children(|field| {
-                    field.spawn((
-                        Text::new(""),
-                        TextFont {
-                            font_size: 16.0,
-                            ..default()
-                        },
-                        TextColor(COLOR_VALUE),
-                        SecretMaskedText,
-                    ));
-                });
-                // ボタン行
-                card.spawn((Node {
-                    margin: UiRect::top(Val::Px(14.0)),
-                    column_gap: Val::Px(10.0),
-                    ..default()
-                },))
-                    .with_children(|btns| {
-                        btns.spawn((
-                            Button,
-                            Node {
-                                flex_grow: 1.0,
-                                height: Val::Px(30.0),
-                                align_items: AlignItems::Center,
-                                justify_content: JustifyContent::Center,
-                                ..default()
-                            },
-                            BackgroundColor(COLOR_BTN_CANCEL),
-                            SecretButton::Cancel,
-                        ))
-                        .with_children(|b| {
-                            b.spawn((
-                                Text::new("キャンセル"),
-                                TextFont {
-                                    font_size: 13.0,
-                                    ..default()
-                                },
-                                TextColor(COLOR_VALUE),
-                            ));
-                        });
-                        btns.spawn((
-                            Button,
-                            Node {
-                                flex_grow: 1.0,
-                                height: Val::Px(30.0),
-                                align_items: AlignItems::Center,
-                                justify_content: JustifyContent::Center,
-                                ..default()
-                            },
-                            BackgroundColor(COLOR_BTN_SUBMIT),
-                            SecretButton::Submit,
-                        ))
-                        .with_children(|b| {
-                            b.spawn((
-                                Text::new("送信"),
-                                TextFont {
-                                    font_size: 13.0,
-                                    ..default()
-                                },
-                                TextColor(COLOR_VALUE),
-                            ));
-                        });
-                    });
-            });
-        });
+        .add_child(cancel_label)
+        .id();
+
+    let submit_label = commands
+        .spawn((
+            Text::new("送信"),
+            theme.typography.label_font(LabelSize::Default),
+            TextColor(theme.colors.text),
+        ))
+        .id();
+    let submit_btn = commands
+        .spawn((
+            Button,
+            Node {
+                flex_grow: 1.0,
+                height: Val::Px(30.0),
+                align_items: AlignItems::Center,
+                justify_content: JustifyContent::Center,
+                ..default()
+            },
+            BackgroundColor(theme.colors.element_selection_background),
+            SecretButton::Submit,
+        ))
+        .add_child(submit_label)
+        .id();
+
+    let btn_row = commands
+        .spawn(Node {
+            margin: UiRect::top(Val::Px(14.0)),
+            column_gap: Val::Px(10.0),
+            ..default()
+        })
+        .add_children(&[cancel_btn, submit_btn])
+        .id();
+
+    commands
+        .entity(card)
+        .add_children(&[header, info, field, btn_row]);
 }
 
 // ===========================================================================
@@ -349,7 +331,7 @@ pub fn secret_modal_input_system(
         return;
     }
     let mut submit = false;
-    let mut cancel = false;
+    let mut saw_escape = false;
     for ev in kb_events.drain() {
         if !ev.state.is_pressed() {
             continue;
@@ -363,15 +345,14 @@ pub fn secret_modal_input_system(
             Key::Space => input.push_char(' '),
             Key::Backspace => input.backspace(),
             Key::Enter => submit = true,
-            Key::Escape => cancel = true,
+            // Escape は drain でここで消費し (picker/menu への漏れ防止)、同一フレームの
+            // submit を抑止する。dismiss 自体は modal_layer_esc_system →
+            // secret_modal_reconcile_system に委譲する (#46 Slice B 5d / B2 回帰修正)。
+            Key::Escape => saw_escape = true,
             _ => {}
         }
     }
-    // drain 後に判定 (同フレームに複数キーが来ても最後の意図を優先しない単純化:
-    // Esc が来ていれば cancel を優先する)。
-    if cancel {
-        do_cancel(&mut input, &mut prompt, "SECRET_INPUT_CANCELED (escape)");
-    } else if submit {
+    if submit && !saw_escape {
         do_submit(&mut input, &mut prompt, sender.as_deref());
     }
 }
@@ -446,6 +427,41 @@ pub fn secret_modal_sync_system(
     {
         t.0 = info;
     }
+}
+
+/// secret モーダルは在庫 (work-in-flight) を持たないので常に dismiss を許可する。
+fn secret_dismiss() -> DismissDecision {
+    DismissDecision::Dismiss
+}
+
+/// `ModalLayer.stack` ⇄ `SecretPrompt.active` を双方向同期する (mechanism A, #46 Slice B 5d)。
+/// FORWARD: open かつ未登録 → stack に push (dismiss 優先度 z=300、最前面)。
+/// REVERSE: `modal_layer_esc_system` が entry を pop → `was_on_stack` Local で検出し
+/// `do_cancel` で zeroize + prompt.close() を行う (既存の Escape do_cancel と同一の cleanup)。
+/// Escape イベント自体は `secret_modal_input_system` が drain で先に消費するので
+/// (mod.rs ordering)、picker/menu には漏れない。
+pub fn secret_modal_reconcile_system(
+    mut prompt: ResMut<SecretPrompt>,
+    mut input: ResMut<SecretInput>,
+    root_q: Query<Entity, With<SecretModalRoot>>,
+    mut layer: ResMut<ModalLayer>,
+    mut was_on_stack: Local<bool>,
+) {
+    let Ok(root) = root_q.single() else {
+        return;
+    };
+    let is_open = prompt.active.is_some();
+    let prompt_changed = prompt.is_changed();
+    reconcile_modal_stack(
+        &mut layer,
+        root,
+        300,
+        &mut was_on_stack,
+        is_open,
+        prompt_changed,
+        secret_dismiss,
+        || do_cancel(&mut input, &mut prompt, "SECRET_INPUT_CANCELED (escape)"),
+    );
 }
 
 #[cfg(test)]
@@ -622,6 +638,75 @@ mod tests {
         assert!(
             app.world().resource::<SecretPrompt>().active.is_some(),
             "fresh prompt must stay open"
+        );
+    }
+
+    use bevy::ecs::system::RunSystemOnce;
+
+    /// Slice 3a RED: secret モーダルも modal skeleton の上に建てる。card に
+    /// ElevationIndex::ModalSurface が付くことを要求する（現状 spawn_secret_modal は
+    /// ElevationIndex を一切付けないので fail → 3b で GREEN）。
+    #[test]
+    fn secret_modal_card_uses_modal_surface_elevation() {
+        use crate::ui::theme::ElevationIndex;
+        let mut world = World::new();
+        world.insert_resource(crate::ui::theme::Theme::default());
+        world.run_system_once(spawn_secret_modal).unwrap();
+
+        let found = world
+            .query::<&ElevationIndex>()
+            .iter(&world)
+            .any(|e| *e == ElevationIndex::ModalSurface);
+        assert!(
+            found,
+            "secret modal card must carry ElevationIndex::ModalSurface (built via spawn_modal)"
+        );
+    }
+
+    /// #46 Slice B2 回帰 RED: 同一フレームに Enter と Escape が両方届いたとき、
+    /// Escape が submit に勝つ (cancel-wins) こと。5d 前は `if cancel {..} else if submit`
+    /// で cancel が優先されたが、5d で Escape 分岐を撤去した結果 submit が走り、
+    /// one-shot な SubmitSecret が消費される回帰が入った。RED→fix で GREEN。
+    #[test]
+    fn escape_suppresses_same_frame_enter_submit() {
+        use bevy::input::ButtonState;
+        use bevy::input::keyboard::KeyCode;
+
+        let mut app = make_app();
+        let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel();
+        app.insert_resource(TransportCommandSender { tx });
+        app.add_message::<KeyboardInput>();
+        activate(&mut app, "r1");
+        // buffer を非空にしておく (空だと do_submit が早期 return して
+        // fix の有無で差が出ず RED にならない)。
+        {
+            let mut input = app.world_mut().resource_mut::<SecretInput>();
+            input.push_char('1');
+        }
+        app.add_systems(Update, secret_modal_input_system);
+
+        // Enter と Escape を同一フレームで投入する。
+        app.world_mut().write_message(KeyboardInput {
+            key_code: KeyCode::Enter,
+            logical_key: Key::Enter,
+            state: ButtonState::Pressed,
+            text: None,
+            repeat: false,
+            window: Entity::PLACEHOLDER,
+        });
+        app.world_mut().write_message(KeyboardInput {
+            key_code: KeyCode::Escape,
+            logical_key: Key::Escape,
+            state: ButtonState::Pressed,
+            text: None,
+            repeat: false,
+            window: Entity::PLACEHOLDER,
+        });
+        app.update();
+
+        assert!(
+            rx.try_recv().is_err(),
+            "same-frame Escape must suppress submit (no SubmitSecret); dismiss is the layer's job"
         );
     }
 }
