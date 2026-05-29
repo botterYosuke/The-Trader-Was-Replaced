@@ -15,8 +15,9 @@
 //! `OrderEvent` は qty/price を運ばないため、qty/price は本コマンド由来の値をマージ側
 //! (transport task → `OrderModified`) で使う (§3.2)。
 
-use bevy::input::keyboard::{Key, KeyboardInput};
+use bevy::input::keyboard::KeyboardInput;
 use bevy::prelude::*;
+use crate::ui::component::keyboard_drain::drain_keyboard;
 
 use crate::trading::{OrderFeedback, TransportCommand, TransportCommandSender};
 use crate::venue_capabilities::for_venue;
@@ -413,38 +414,31 @@ pub fn modify_modal_input_system(
     if !form.open {
         return;
     }
-    let mut submit = false;
-    let mut saw_escape = false;
-    for ev in kb_events.drain() {
-        if !ev.state.is_pressed() {
-            continue;
-        }
-        match &ev.logical_key {
-            Key::Character(s) => {
-                for ch in s.chars() {
-                    if ch.is_ascii_digit() || ch == '.' {
-                        push_focused(&mut form, ch);
-                    }
-                }
-            }
-            Key::Backspace => {
-                backspace_focused(&mut form);
-            }
-            Key::Tab => {
-                form.focus = match form.focus {
-                    ModifyFocus::Qty => ModifyFocus::Price,
-                    ModifyFocus::Price => ModifyFocus::Qty,
-                };
-            }
-            Key::Enter => submit = true,
-            // Escape は drain でここで消費し (picker/menu への漏れ防止)、同一フレームの
-            // Confirm を抑止する。dismiss 自体は modal_layer_esc_system →
-            // modify_modal_reconcile_system に委譲する (#46 Slice B 5c / B2 回帰修正)。
-            Key::Escape => saw_escape = true,
-            _ => {}
-        }
+    // Escape は drain でここで消費し (picker/menu への漏れ防止)、同一フレームの
+    // Confirm を抑止する。dismiss 自体は modal_layer_esc_system →
+    // modify_modal_reconcile_system に委譲する (#46 Slice B 5c / B2 回帰修正)。
+    //
+    // on_char クロージャで form を借用したまま同フレームで push_focused を呼ぶと
+    // 二重借用になるため、chars_to_push バッファ経由で後処理する。
+    let mut chars_to_push: Vec<char> = Vec::new();
+    let result = drain_keyboard(
+        &mut kb_events,
+        |c| c.is_ascii_digit() || c == '.',
+        |ch| chars_to_push.push(ch),
+    );
+    for ch in chars_to_push {
+        push_focused(&mut form, ch);
     }
-    if submit && !saw_escape {
+    for _ in 0..result.backspace_count {
+        backspace_focused(&mut form);
+    }
+    if result.tab {
+        form.focus = match form.focus {
+            ModifyFocus::Qty => ModifyFocus::Price,
+            ModifyFocus::Price => ModifyFocus::Qty,
+        };
+    }
+    if result.enter && !result.escape {
         do_confirm(&mut form, &mut feedback, sender.as_deref());
     }
 }
@@ -874,7 +868,7 @@ mod tests {
     #[test]
     fn escape_suppresses_same_frame_enter_confirm() {
         use bevy::input::ButtonState;
-        use bevy::input::keyboard::KeyCode;
+        use bevy::input::keyboard::{Key, KeyCode};
 
         let mut app = make_app();
         // rx を観測するためローカルに作り直して上書きする (make_app の rx は握り潰し)。

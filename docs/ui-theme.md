@@ -125,9 +125,8 @@
 3. **Typography `mono` の editor / gutter / 板への配線** … 宣言のみ。**#50**。
 4. **`InputPhase` SystemSet 化** … **#46 Slice A で最小導入済み**（`src/ui/input_phase.rs`:
    `InputPhase::{KeyboardDrain, ModalInput, WidgetInput, CosmicEdit}` を `.chain()` 順序固定）。
-   現状メンバは `WidgetInput`（`button_interaction_system`）のみ。`KeyboardDrain` は #46 Slice E、
-   `ModalInput` は #46 Slice B、`CosmicEdit`（bevscode 連携）は #50 で投入。#50 はこの set を
-   **再定義せず流用**する。
+   `KeyboardDrain`（`keyboard_drain.rs` の `drain_keyboard` ラッパ）は **#46 Slice E で実装済み**（secret / modify / instrument_picker の 3 系統が移行済み）。
+   `ModalInput` は #46 Slice B 実装済み。`CosmicEdit`（bevscode 連携）は #50 で投入予定。#50 はこの set を **再定義せず流用**する。
 5. **`order_panel.rs` 1,219 行の実コード分割** … `docs/ui-refactor-plan.md` に**計画のみ**。実装は **#46 Slice B**。
 6. **`footer.rs` 以外（menu_bar / sidebar / order_panel / modify_modal / scenario_startup / strategy_editor_*）の token 化** … **#46**。
 7. **Light theme 完成 / JSON ロード** … 将来。
@@ -281,3 +280,47 @@ let ModalHandle { root, card } = spawn_modal(
 - **M3**: `tests/e2e/FLOWS.md` への Q3 entry（既に landed）。
 - **M4**: 本 §13 を含む docs/ui-theme.md drift 修正（density は SpacingTokens、ThemePlugin 経由 init、wrapper-as-sole-API 規約）。
 - **wrapper-as-sole-API**: `DynamicSpacing::px(density)` / `ElevationIndex::background_for_colors(&ThemeColors)` の直接呼び出しを禁止し、`theme.spacing.px(...)` / `theme.elevation.background(...)` を唯一の窓口に統一（§4 / §6 参照）。
+
+## 14. keyboard_drain component (#46 Slice E)
+
+`src/ui/component/keyboard_drain.rs` が、modal / picker 系の keyboard イベント消費ロジックを
+**純粋関数 `process_key_events` + Bevy system ラッパ `drain_keyboard`** に集約します。
+
+### 役割
+
+`InputPhase::KeyboardDrain` フェーズの system から呼び、modal が開いているフレームで
+`KeyboardInput` イベントを同フレーム内に消費（drain）します。
+これにより Enter / Escape / Tab / Backspace / 文字キーが picker / menu 等の後続系に漏れなくなります。
+
+### 利用例
+
+```rust
+use crate::ui::component::keyboard_drain::drain_keyboard;
+
+fn secret_modal_input_system(
+    mut kb_events: ResMut<Messages<KeyboardInput>>,
+    // ...
+) {
+    let result = drain_keyboard(&mut kb_events, |_| true, |ch| input.push_char(ch));
+    if result.escape { /* dismiss */ }
+    if result.enter  { /* submit  */ }
+}
+```
+
+`drain_keyboard` の第 2 引数は文字フィルタ（`|c| !c.is_control()` 等）、第 3 引数は
+`on_char` コールバックです。`Key::Escape` / `Key::Enter` / `Key::Tab` / `Key::Backspace`
+はフィルタを通らず `KeyDrainResult` のフラグで返します。
+
+### 移行済み system
+
+| system | filter |
+|---|---|
+| `secret_modal_input_system` | `\|_\| true`（全文字） |
+| `modify_modal_input_system` | `\|c\| c.is_ascii_digit() \|\| c == '.'` |
+| `picker_searchbox_input_system` | `\|c\| !c.is_control()`（制御文字除外） |
+
+### テスト
+
+`src/ui/component/keyboard_drain.rs` の `#[cfg(test)]` ユニットテストが
+`process_key_events` の不変条件を担保（純粋関数のため headless App 不要）。
+`drain_keyboard` の E2E 観測は [k7]/[k8]/[k12] の modal 系 flow が担います。

@@ -15,8 +15,8 @@ use crate::ui::components::{
 };
 use crate::ui::menu_bar::{cache_state_paths, sync_to_cache};
 use crate::ui::strategy_editor::{
-    StrategyAutoSaveState, StrategyEditorModeHidden, flush_strategy_cache, merge_fragments,
-    split_py_into_fragments,
+    StrategyAutoSaveState, StrategyEditorModeHidden, StrategyEditorNode,
+    flush_strategy_cache, merge_fragments, split_py_into_fragments,
 };
 
 pub const SCHEMA_VERSION: u32 = 1;
@@ -1411,6 +1411,7 @@ pub fn apply_layout_system(
 
 // pub: headless integration test（i5_*）が strategy_path 経由の deferred spawn を駆動するため。
 pub fn apply_pending_layout_system(
+    mut commands: Commands,
     mut pending: ResMut<PendingLayoutApply>,
     mut panels: Query<
         (
@@ -1426,6 +1427,9 @@ pub fn apply_pending_layout_system(
     mut wm: ResMut<WindowManager>,
     pending_fragments: Res<PendingStrategyFragments>,
     mut spawn_ev: MessageWriter<PanelSpawnRequested>,
+    orphan_peers: Query<(Entity, &StrategyEditorNode)>,
+    mut input_focus: ResMut<bevy::input_focus::InputFocus>,
+    mut find_state: ResMut<crate::ui::strategy_editor_find::FindReplaceState>,
 ) {
     if pending.windows.is_empty() {
         return;
@@ -1455,6 +1459,26 @@ pub fn apply_pending_layout_system(
         });
         match found {
             None => {
+                // orphan peer（旧 root が despawn 済みで StrategyEditorNode だけ残っている）を
+                // 新 root spawn 前に除去する。found == Some(root) のときは生存中なので触らない。
+                if win_layout.kind == PanelKind::StrategyEditor {
+                    // region_key が None の旧フォーマット sidecar も "region_001" として処理する。
+                    let want_key = win_layout.region_key.as_deref().unwrap_or("region_001");
+                    for (peer_entity, peer) in orphan_peers.iter() {
+                        if peer.region_key == want_key {
+                            if input_focus.0 == Some(peer_entity) {
+                                input_focus.0 = None;
+                            }
+                            if find_state.target_editor == Some(peer_entity) {
+                                find_state.target_editor = None;
+                                find_state.is_open = false;
+                            }
+                            if let Ok(mut ec) = commands.get_entity(peer_entity) {
+                                ec.despawn();
+                            }
+                        }
+                    }
+                }
                 // boot-spawned/mode-owned パネルは layout から spawn しない。
                 if win_layout.kind.is_boot_spawned_mode_owned() {
                     continue;
@@ -2415,6 +2439,8 @@ mod tests {
         app.init_resource::<ExecutionModeRes>();
         app.world_mut().resource_mut::<ExecutionModeRes>().mode = ExecutionMode::LiveManual;
 
+        app.init_resource::<bevy::input_focus::InputFocus>();
+        app.init_resource::<crate::ui::strategy_editor_find::FindReplaceState>();
         // production と同じ順序: mode は apply_pending の後。
         app.add_systems(
             Update,
@@ -3854,6 +3880,87 @@ mod tests {
         assert_eq!(
             pf.by_region_key.get("region_001").map(String::as_str),
             Some("user")
+        );
+    }
+
+    /// I21 RED 回帰ガード（#69）: File→Open で既存エディタを再 Open したとき、
+    /// apply_pending_layout_system が orphan peer（StrategyEditorNode）を
+    /// spawn 前に despawn すること。
+    ///
+    /// 現状（fix 前）は orphan peer を放置して PanelSpawnRequested を発火するため、
+    /// 旧 peer と新 peer が同時に存在してチカチカする。fix 後は despawn してから spawn する。
+    ///
+    /// RED＝回帰ガード・fix は #69 後に green
+    #[test]
+    fn i21_apply_pending_despawns_orphan_peer_before_new_spawn() {
+        use crate::ui::strategy_editor::{StrategyEditorNode, StrategyEditorRoot};
+        use bevy::prelude::*;
+
+        let mut app = App::new();
+        app.add_message::<PanelSpawnRequested>();
+        app.insert_resource(WindowManager::default());
+        app.insert_resource(PendingStrategyFragments::default());
+
+        // region_001 の fragment を「既に読み込み済み」状態にする。
+        {
+            let mut pf = app.world_mut().resource_mut::<PendingStrategyFragments>();
+            pf.by_region_key
+                .insert("region_001".to_string(), "pass\n".to_string());
+        }
+
+        // PendingLayoutApply: region_001 エディタを spawn すべき window が pending。
+        // waiting_for_strategy=false（fragment 既準備済み）。
+        let mut pending = PendingLayoutApply::default();
+        pending.windows.push(WindowLayout {
+            kind: PanelKind::StrategyEditor,
+            visible: true,
+            position: [0.0, 0.0],
+            size: [800.0, 600.0],
+            z: 1.0,
+            region_key: Some("region_001".to_string()),
+        });
+        pending.waiting_for_strategy = false;
+        app.insert_resource(pending);
+
+        // orphan peer: handle_strategy_file_load_system が旧 root を despawn した後に
+        // cleanup が間に合わず残った状態を再現する。
+        let dead_root = app.world_mut().spawn(StrategyEditorRoot).id();
+        let orphan_peer = app
+            .world_mut()
+            .spawn(StrategyEditorNode {
+                root: dead_root,
+                region_key: "region_001".to_string(),
+            })
+            .id();
+        // root を despawn して orphan 状態を作る（fix 前はここで cleanup が走らない）。
+        app.world_mut().despawn(dead_root);
+
+        app.init_resource::<bevy::input_focus::InputFocus>();
+        app.init_resource::<crate::ui::strategy_editor_find::FindReplaceState>();
+        app.add_systems(Update, apply_pending_layout_system);
+        app.update();
+        app.update();
+
+        // fix 後: orphan peer は despawn されているはず（RED: 現状は alive のまま）。
+        assert!(
+            app.world().get_entity(orphan_peer).is_err(),
+            "apply_pending_layout_system は同一 region_key の orphan StrategyEditorNode を \
+             新 root spawn 前に despawn すべき（現状チカチカを引き起こす）"
+        );
+
+        // PanelSpawnRequested は 1 件だけ発火されるべき（既存 root 不在 → 新規 spawn は正当）。
+        let mut spawn_msgs = app
+            .world_mut()
+            .resource_mut::<Messages<PanelSpawnRequested>>();
+        let spawns: Vec<_> = spawn_msgs.update_drain().collect();
+        assert_eq!(
+            spawns.len(),
+            1,
+            "apply_pending_layout_system は region_001 に対し PanelSpawnRequested を 1 件発火すべき"
+        );
+        assert!(
+            matches!(spawns[0].kind, PanelKind::StrategyEditor),
+            "発火された spawn は StrategyEditor のはず"
         );
     }
 }

@@ -8,7 +8,7 @@
 //! - picker root には必ず `LayoutExcluded` を同時に付与すること（§3.6 / R10）。
 //! - `InstrumentPickerState` は `UiPlugin::build` で `init_resource` される。
 
-use bevy::input::keyboard::{Key, KeyboardInput};
+use bevy::input::keyboard::KeyboardInput;
 use bevy::prelude::Interaction;
 use bevy::prelude::*;
 use chrono::NaiveDate;
@@ -19,6 +19,7 @@ use crate::trading::{
     TickersStatus, TransportCommand, TransportCommandSender, VenueState, VenueStatusRes,
     is_live_mode, is_venue_live,
 };
+use crate::ui::component::keyboard_drain::drain_keyboard;
 use crate::ui::components::{InstrumentRegistry, ScenarioMetadata, SidebarAddInstrumentButton};
 use std::collections::HashSet;
 
@@ -339,44 +340,21 @@ pub fn picker_searchbox_input_system(
     if !picker.visible {
         return;
     }
-    let mut consumed = false;
     let mut changed = false;
-    // drain して読む（後段への配送を止めるため）
-    for ev in kb_events.drain() {
-        if !ev.state.is_pressed() {
-            continue;
-        }
-        match &ev.logical_key {
-            Key::Character(s) => {
-                for ch in s.chars() {
-                    if !ch.is_control() {
-                        picker.query.push(ch);
-                        changed = true;
-                    }
-                }
-                consumed = true;
-            }
-            Key::Backspace => {
-                if picker.query.pop().is_some() {
-                    changed = true;
-                }
-                consumed = true;
-            }
-            Key::Escape => {
-                picker.visible = false;
-                picker.query.clear();
-                changed = true;
-                consumed = true;
-            }
-            Key::Space => {
-                picker.query.push(' ');
-                changed = true;
-                consumed = true;
-            }
-            _ => {}
+    let result = drain_keyboard(&mut kb_events, |c| !c.is_control(), |c| {
+        picker.query.push(c);
+        changed = true;
+    });
+    for _ in 0..result.backspace_count {
+        if picker.query.pop().is_some() {
+            changed = true;
         }
     }
-    let _ = consumed; // drain 自体が消費。明示変数は将来 modifier 対応の足場
+    if result.escape {
+        picker.visible = false;
+        picker.query.clear();
+        changed = true;
+    }
     if changed {
         if let Ok(mut text) = searchbox_q.single_mut() {
             if text.0 != picker.query {
