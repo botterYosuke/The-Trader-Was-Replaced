@@ -1,12 +1,13 @@
-"""NautilusBacktestRunner — BacktestEngine streaming runner for GUI (issue #68 Slice 1).
+"""NautilusBacktestRunner — BacktestEngine streaming runner for GUI (issue #68).
 
-Mirrors engine_runner.py streaming approach but delivers each bar to
-RustBacktestSink.push_bar() so the Rust/Bevy side can render OHLC in real-time.
+Slice 1: bars only streaming.
+Slice 2: pause_event / step_event threading.Event control passed to GuiBridgeActor.
 
 Public API:
     NautilusBacktestRunner(*, catalog_path, strategy_file, instruments,
                            start_date, end_date, granularity,
-                           initial_cash, rust_sink)
+                           initial_cash, rust_sink,
+                           pause_event=None, step_event=None)
     .run() -> {"success": bool, "run_id": str, "error": str}
 """
 from __future__ import annotations
@@ -35,6 +36,8 @@ class NautilusBacktestRunner:
         granularity: str = "Daily",
         initial_cash: float = 10_000_000.0,
         rust_sink: Any,
+        pause_event: Any = None,
+        step_event: Any = None,
     ) -> None:
         self._catalog_path = catalog_path
         self._strategy_file = strategy_file
@@ -44,6 +47,8 @@ class NautilusBacktestRunner:
         self._granularity = granularity
         self._initial_cash = int(initial_cash)
         self._rust_sink = rust_sink
+        self._pause_event = pause_event
+        self._step_event = step_event
 
     def run(self) -> dict:
         """Execute the backtest synchronously.
@@ -121,7 +126,12 @@ class NautilusBacktestRunner:
             engine.add_strategy(strategy)
 
             # Subscribe GuiBridgeActor to bar events via msgbus
-            bridge = GuiBridgeActor(self._rust_sink, instrument_id="")
+            bridge = GuiBridgeActor(
+                self._rust_sink,
+                instrument_id="",
+                pause_event=self._pause_event,
+                step_event=self._step_event,
+            )
             bar_handler = bridge.make_bar_handler()
             for symbol in instruments:
                 bar_type_str = bar_type_for_instrument(symbol, granularity)
