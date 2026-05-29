@@ -36,6 +36,13 @@ description: >-
   書いた場合は flow を `- [ ] RED＝回帰ガード` → GREEN 後に `- [x]` に更新する
   （CLAUDE.md「不具合修正前の E2E メンテナンス」に対応するが、**その flow を FLOWS.md に記録する作業が
   本スキルの仕事**。実装スキルに気を取られて FLOWS.md 記載が省略されがちなため明示）。
+  **「RED のつもりで書いたテストが最初から GREEN」＝fix 既適用パターン**: コードを直す前に書いた
+  テストが即 GREEN になる場合は「バグが既に修正済み（別 PR / 別コミットで先に入った）」か
+  「テストの assert が誤っていて実は bug を捕捉できていない」のどちらか。前者（例: issue #57 で
+  `ChartSet::DataTick.after(backend_update_system)` が既に配置済みだった）は、コードを変えずに
+  そのまま FLOWS.md へ `[x]` 回帰ガードとして記録し、commit message と FLOWS.md エントリに
+  「fix は既適用・これは回帰ガード」と明記する。後者（テストが bug を捕捉できていない）は assert の
+  設計を見直し、実際に壊れた状態で RED になる assert を書き直してから進む。
   **「未実装扱い」だけでなく、UI 機構のリファクタで wiki が *旧機構* を記述したまま食い違っている**
   ケースも同様に本スキルの対象（例: 「サイドバーの Startup パネル」→ floating window 化、`Node.display`→`Visibility`、
   Bevy-UI → sprite 化、`×` ボタンの有無変更）。「サイドバーパネルを floating window に作り替える」「UI を
