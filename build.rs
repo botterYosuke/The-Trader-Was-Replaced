@@ -12,5 +12,10 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     }
 
     tonic_build::compile_protos("python/proto/engine.proto")?;
+
+    // NOTE: /DELAYLOAD:python3.dll は MSVC では使えない。
+    // python3.dll はデータシンボル (Py_None 等) を持つため、MSVC の delay-load
+    // はリンク時 LNK1194 で失敗する。
+    // DLL の検索パス設定は実行時に setup_python_dll_search_path() が担う。
     Ok(())
 }

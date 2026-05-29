@@ -75,6 +75,8 @@ $psi.EnvironmentVariables["ARTIFACTS_PATH"] = $PWD.Path + "\artifacts"
 > `cargo run` 単体や `Start-Process` 単体では `.env` が読まれず `grpc: DISABLED` になります。`ProcessStartInfo.EnvironmentVariables` で直接渡すのが確実です。
 > `ARTIFACTS_PATH` は catalog のベースディレクトリで、GUI が `{ARTIFACTS_PATH}/jquants-catalog` を参照します。省略するとリポジトリ直下の `artifacts/` が既定になります。
 
+> **Python DLL について**: Windows 環境では `python3.dll` が検索できないと起動時に `0xC0000135` でクラッシュします。`PYTHON_DLL_DIR` 環境変数で DLL のあるディレクトリを明示するか、Python を PATH に入れてください。詳細は [`docs/strategy-replay.md` §DLL パス設定](../strategy-replay.md#dll-パス設定) を参照 [P12]。
+
 事前に debug ビルドを作るには `cargo build`、開発時に env を注入しない簡易起動なら `cargo run` を使えますが、後者はバックエンドに接続せず `grpc: DISABLED` になります。
 
 ## 3. 接続を確認

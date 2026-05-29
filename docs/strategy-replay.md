@@ -129,6 +129,33 @@ $psi.EnvironmentVariables["ARTIFACTS_PATH"] = $PWD.Path + "\artifacts"
 > `cargo run` 単体や `Start-Process` 単体では `.env` が読まれず `grpc: DISABLED` になる。`ProcessStartInfo.EnvironmentVariables` で直接渡すのが確実。
 > `ARTIFACTS_PATH` は catalog のベースディレクトリ（Rust が `{ARTIFACTS_PATH}/jquants-catalog` を自動構築する）。省略するとリポジトリ直下の `artifacts/` がデフォルト。
 
+#### DLL パス設定
+
+`backcast.exe` は PyO3 embedding により `python3.dll` にリンクしています。
+uv 管理の Python を使っている場合、`python3.dll` は `Scripts/` ではなく **base Python ディレクトリ**（`uv python dir` で確認できる場所の直下）に置かれています。
+Windows のローダーがこのディレクトリを探せないと `0xC0000135` でクラッシュします。 [P12]
+
+解決策は 2 通りあります。どちらか一方で OK です。
+
+**A. `PYTHON_DLL_DIR` 環境変数で指定する（推奨）**
+
+次の行を `ProcessStartInfo.EnvironmentVariables` に追加するか、起動前に設定してください:
+
+```powershell
+# uv が管理する Python の base dir を取得する例
+$pyBase = Split-Path (uv run python -c "import sys; print(sys.executable)")
+$psi.EnvironmentVariables["PYTHON_DLL_DIR"] = $pyBase
+```
+
+**B. PATH に追加する**
+
+```powershell
+$pyBase = Split-Path (uv run python -c "import sys; print(sys.executable)")
+$env:PATH = "$pyBase;" + $env:PATH
+```
+
+> `PYTHON_DLL_DIR` は `backcast.exe` 起動時に読み取り、DLL 検索パスに追加します。`ProcessStartInfo.EnvironmentVariables` 経由で渡しても有効です。
+
 ### 3. 正常起動の確認
 
 フッター（画面右下）に以下が表示されれば接続成功：
@@ -156,6 +183,7 @@ state: IDLE  grpc: OK
 | フッターの ▶ ボタンが半透明 / 反応しない | `cache_path` 未設定、または `grpc: DISABLED` | Strategy Editor で cache を保存 → 必要なら backend 起動 → Rust アプリ再起動 |
 | 起動直後から `state: RUNNING` | `auto_start=True` になっている | `python/engine/__main__.py` を `auto_start=False` に修正 |
 | candle が表示されない | `open_time_ms` が backend から届いていない | `python/engine/core.py` の `KlineUpdate` に `open_time_ms=ts_ms` があるか確認 |
+| 起動直後に `0xC0000135` でクラッシュ | `python3.dll` が見つからない | `PYTHON_DLL_DIR` 環境変数に Python base ディレクトリを設定するか、同ディレクトリを `PATH` に追加する（§ DLL パス設定 参照） |
 
 ---
 
