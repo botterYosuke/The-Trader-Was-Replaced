@@ -54,11 +54,10 @@ impl ColorScale {
 
 // -- Dark scales ------------------------------------------------------------
 //
-// `neutral_dark` is filled with Radix `slate` dark values (approximated to
-// sRGB). Other accent scales currently only define steps 9/11/12 with real
-// brand values; steps 1..=8 and 10 fall back to neutral_dark so the API is
-// usable today. Step 9 of this issue (footer token-isation) will surface the
-// exact accent values it needs; we will tighten the scales then.
+// All scales are fully populated from Radix dark palettes:
+//   neutral_dark → slate, accent_dark → iris, red_dark → red,
+//   green_dark → grass, yellow_dark → amber, blue_dark → blue.
+// sRGB floats are the published hex values divided by 255 to ~4 sig figs.
 
 impl ColorScale {
     /// Neutral (slate) dark scale.
@@ -79,64 +78,94 @@ impl ColorScale {
         ])
     }
 
-    /// Accent (blue) dark scale — only steps 9/11/12 are brand-coloured;
-    /// other steps mirror `neutral_dark` until Step 9 of #48 needs them.
+    /// Accent (iris) dark scale — full 12-step palette from Radix iris dark.
     pub const fn accent_dark() -> Self {
-        let n = Self::neutral_dark();
         Self::new([
-            n.0[0], n.0[1], n.0[2], n.0[3], n.0[4], n.0[5], n.0[6], n.0[7],
-            Color::srgb(0.235, 0.510, 0.965), //  9 brand solid (Radix blue 9)
-            n.0[9],
-            Color::srgb(0.451, 0.682, 1.000), // 11 brand text (Radix blue 11)
-            Color::srgb(0.792, 0.890, 1.000), // 12 brand high-contrast
+            Color::srgb(0.0745, 0.0745, 0.1176), //  1  #13131e app bg
+            Color::srgb(0.0902, 0.0863, 0.1451), //  2  #171625 subtle bg
+            Color::srgb(0.1255, 0.1255, 0.2392), //  3  #20203d ui bg
+            Color::srgb(0.1490, 0.1490, 0.3216), //  4  #262652 ui hover
+            Color::srgb(0.1765, 0.1725, 0.4000), //  5  #2d2c66 ui pressed
+            Color::srgb(0.2196, 0.2118, 0.4745), //  6  #383679 subtle border
+            Color::srgb(0.2706, 0.2627, 0.5373), //  7  #454389 ui border
+            Color::srgb(0.3412, 0.3255, 0.7765), //  8  #5753c6 strong border
+            Color::srgb(0.3569, 0.3569, 0.8392), //  9  #5b5bd6 brand solid
+            Color::srgb(0.4314, 0.4157, 0.8706), // 10  #6e6ade solid hover
+            Color::srgb(0.6941, 0.6627, 1.0000), // 11  #b1a9ff low-contrast text
+            Color::srgb(0.8784, 0.8745, 1.0000), // 12  #e0dfff high-contrast text
         ])
     }
 
-    /// Red (danger) dark scale.
+    /// Red (danger) dark scale — full 12-step palette from Radix red dark.
     pub const fn red_dark() -> Self {
-        let n = Self::neutral_dark();
         Self::new([
-            n.0[0], n.0[1], n.0[2], n.0[3], n.0[4], n.0[5], n.0[6], n.0[7],
-            Color::srgb(0.882, 0.235, 0.314), //  9 red 9
-            n.0[9],
-            Color::srgb(1.000, 0.467, 0.510), // 11
-            Color::srgb(1.000, 0.792, 0.804), // 12
+            Color::srgb(0.0980, 0.0667, 0.0667), //  1  #191111 app bg
+            Color::srgb(0.1255, 0.0745, 0.0784), //  2  #201314 subtle bg
+            Color::srgb(0.2314, 0.0706, 0.0980), //  3  #3b1219 ui bg
+            Color::srgb(0.3137, 0.0588, 0.1098), //  4  #500f1c ui hover
+            Color::srgb(0.3804, 0.0863, 0.1373), //  5  #611623 ui pressed
+            Color::srgb(0.4471, 0.1373, 0.1765), //  6  #72232d subtle border
+            Color::srgb(0.5490, 0.2000, 0.2275), //  7  #8c333a ui border
+            Color::srgb(0.7098, 0.2706, 0.2824), //  8  #b54548 strong border
+            Color::srgb(0.8980, 0.2824, 0.3020), //  9  #e5484d brand solid
+            Color::srgb(0.9255, 0.3647, 0.3686), // 10  #ec5d5e solid hover
+            Color::srgb(1.0000, 0.5843, 0.5725), // 11  #ff9592 low-contrast text
+            Color::srgb(1.0000, 0.8196, 0.8510), // 12  #ffd1d9 high-contrast text
         ])
     }
 
-    /// Green (success) dark scale.
+    /// Green (success) dark scale — full 12-step palette from Radix grass dark.
     pub const fn green_dark() -> Self {
-        let n = Self::neutral_dark();
         Self::new([
-            n.0[0], n.0[1], n.0[2], n.0[3], n.0[4], n.0[5], n.0[6], n.0[7],
-            Color::srgb(0.180, 0.706, 0.439), //  9 green 9
-            n.0[9],
-            Color::srgb(0.392, 0.851, 0.580), // 11
-            Color::srgb(0.745, 0.949, 0.812), // 12
+            Color::srgb(0.0549, 0.0824, 0.0667), //  1  #0e1511 app bg
+            Color::srgb(0.0784, 0.1020, 0.0824), //  2  #141a15 subtle bg
+            Color::srgb(0.1059, 0.1647, 0.1176), //  3  #1b2a1e ui bg
+            Color::srgb(0.1137, 0.2275, 0.1412), //  4  #1d3a24 ui hover
+            Color::srgb(0.1451, 0.2824, 0.1765), //  5  #25482d ui pressed
+            Color::srgb(0.1765, 0.3412, 0.2118), //  6  #2d5736 subtle border
+            Color::srgb(0.2118, 0.4039, 0.2510), //  7  #366740 ui border
+            Color::srgb(0.2431, 0.4745, 0.2863), //  8  #3e7949 strong border
+            Color::srgb(0.2745, 0.6549, 0.3451), //  9  #46a758 brand solid
+            Color::srgb(0.3255, 0.7020, 0.3961), // 10  #53b365 solid hover
+            Color::srgb(0.4431, 0.8157, 0.5137), // 11  #71d083 low-contrast text
+            Color::srgb(0.7608, 0.9412, 0.7608), // 12  #c2f0c2 high-contrast text
         ])
     }
 
-    /// Yellow (warning) dark scale.
+    /// Yellow (warning) dark scale — full 12-step palette from Radix amber dark.
     pub const fn yellow_dark() -> Self {
-        let n = Self::neutral_dark();
         Self::new([
-            n.0[0], n.0[1], n.0[2], n.0[3], n.0[4], n.0[5], n.0[6], n.0[7],
-            Color::srgb(0.961, 0.792, 0.090), //  9 yellow 9
-            n.0[9],
-            Color::srgb(0.965, 0.851, 0.349), // 11
-            Color::srgb(1.000, 0.945, 0.749), // 12
+            Color::srgb(0.0863, 0.0706, 0.0471), //  1  #16120c app bg
+            Color::srgb(0.1137, 0.0941, 0.0588), //  2  #1d180f subtle bg
+            Color::srgb(0.1882, 0.1255, 0.0314), //  3  #302008 ui bg
+            Color::srgb(0.2471, 0.1529, 0.0000), //  4  #3f2700 ui hover
+            Color::srgb(0.3020, 0.1882, 0.0000), //  5  #4d3000 ui pressed
+            Color::srgb(0.3608, 0.2392, 0.0196), //  6  #5c3d05 subtle border
+            Color::srgb(0.4431, 0.3098, 0.0980), //  7  #714f19 ui border
+            Color::srgb(0.5608, 0.3922, 0.1412), //  8  #8f6424 strong border
+            Color::srgb(1.0000, 0.7725, 0.2392), //  9  #ffc53d brand solid
+            Color::srgb(1.0000, 0.8392, 0.0392), // 10  #ffd60a solid hover
+            Color::srgb(1.0000, 0.7922, 0.0863), // 11  #ffca16 low-contrast text
+            Color::srgb(1.0000, 0.9059, 0.7020), // 12  #ffe7b3 high-contrast text
         ])
     }
 
-    /// Blue (info) dark scale — distinct from `accent_dark` for status use.
+    /// Blue (info) dark scale — full 12-step palette from Radix blue dark.
+    /// Distinct from `accent_dark` (iris) so info status doesn't collide with brand.
     pub const fn blue_dark() -> Self {
-        let n = Self::neutral_dark();
         Self::new([
-            n.0[0], n.0[1], n.0[2], n.0[3], n.0[4], n.0[5], n.0[6], n.0[7],
-            Color::srgb(0.235, 0.510, 0.965), //  9
-            n.0[9],
-            Color::srgb(0.451, 0.682, 1.000), // 11
-            Color::srgb(0.792, 0.890, 1.000), // 12
+            Color::srgb(0.0510, 0.0824, 0.1255), //  1  #0d1520 app bg
+            Color::srgb(0.0667, 0.0980, 0.1529), //  2  #111927 subtle bg
+            Color::srgb(0.0510, 0.1569, 0.2784), //  3  #0d2847 ui bg
+            Color::srgb(0.0000, 0.2000, 0.3843), //  4  #003362 ui hover
+            Color::srgb(0.0000, 0.2510, 0.4549), //  5  #004074 ui pressed
+            Color::srgb(0.0627, 0.3020, 0.5294), //  6  #104d87 subtle border
+            Color::srgb(0.1255, 0.3647, 0.6196), //  7  #205d9e ui border
+            Color::srgb(0.1569, 0.4392, 0.7412), //  8  #2870bd strong border
+            Color::srgb(0.0000, 0.5647, 1.0000), //  9  #0090ff brand solid
+            Color::srgb(0.2314, 0.6196, 1.0000), // 10  #3b9eff solid hover
+            Color::srgb(0.4392, 0.7216, 1.0000), // 11  #70b8ff low-contrast text
+            Color::srgb(0.7608, 0.9020, 1.0000), // 12  #c2e6ff high-contrast text
         ])
     }
 }

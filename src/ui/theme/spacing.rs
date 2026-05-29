@@ -30,10 +30,13 @@ pub enum UiDensity {
 #[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub enum DynamicSpacing {
     Base00,
+    Base01,
     Base02,
+    Base03,
     Base04,
     Base06,
     Base08,
+    Base10,
     Base12,
     Base16,
     Base20,
@@ -51,10 +54,13 @@ impl DynamicSpacing {
         // Compact ≈ default × 0.75, Comfortable ≈ default × 1.25, rounded.
         let (compact, default, comfortable) = match self {
             DynamicSpacing::Base00 => (0.0, 0.0, 0.0),
+            DynamicSpacing::Base01 => (1.0, 1.0, 1.0),
             DynamicSpacing::Base02 => (2.0, 2.0, 3.0),
+            DynamicSpacing::Base03 => (2.0, 3.0, 4.0),
             DynamicSpacing::Base04 => (3.0, 4.0, 5.0),
             DynamicSpacing::Base06 => (4.0, 6.0, 8.0),
             DynamicSpacing::Base08 => (6.0, 8.0, 10.0),
+            DynamicSpacing::Base10 => (8.0, 10.0, 12.0),
             DynamicSpacing::Base12 => (9.0, 12.0, 15.0),
             DynamicSpacing::Base16 => (12.0, 16.0, 20.0),
             DynamicSpacing::Base20 => (15.0, 20.0, 25.0),
