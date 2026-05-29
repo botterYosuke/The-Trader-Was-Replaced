@@ -555,6 +555,65 @@ class InprocLiveServer:
             ],
         }
 
+    # ------------------------------------------------------------------
+    # Nautilus BacktestEngine replay (issue #68 Slice 1)
+    # ------------------------------------------------------------------
+
+    def start_nautilus_replay(self, cfg: dict) -> dict:
+        """Run a strategy via nautilus BacktestEngine and stream bars to RustBacktestSink.
+
+        cfg keys:
+            strategy_file   str   — path to strategy .py
+            instruments     list  — e.g. ["1301.TSE"]
+            start_date      str   — "YYYY-MM-DD"
+            end_date        str   — "YYYY-MM-DD"
+            granularity     str   — "Daily" | "Minute"
+            initial_cash    float — optional, default 10_000_000
+            catalog_path    str   — parquet catalog root
+            rust_sink       obj   — RustBacktestSink PyO3 object
+
+        Returns {"success": bool, "error_code": str, "error_message": str, "run_id": str}.
+        Blocks until the backtest completes; bars arrive via rust_sink.push_bar() callbacks.
+        """
+        from .nautilus_backtest_runner import NautilusBacktestRunner
+
+        strategy_file = cfg.get("strategy_file", "")
+        if not strategy_file:
+            return {"success": False, "error_code": "NO_STRATEGY", "error_message": "strategy_file is required", "run_id": ""}
+
+        instruments = list(cfg.get("instruments") or [])
+        if not instruments:
+            return {"success": False, "error_code": "NO_INSTRUMENTS", "error_message": "instruments list is required", "run_id": ""}
+
+        rust_sink = cfg.get("rust_sink")
+        if rust_sink is None:
+            return {"success": False, "error_code": "NO_SINK", "error_message": "rust_sink is required", "run_id": ""}
+
+        catalog_path = cfg.get("catalog_path") or ""
+        if not catalog_path:
+            return {"success": False, "error_code": "NO_CATALOG", "error_message": "catalog_path is required", "run_id": ""}
+
+        runner = NautilusBacktestRunner(
+            catalog_path=catalog_path,
+            strategy_file=strategy_file,
+            instruments=instruments,
+            start_date=cfg.get("start_date") or "",
+            end_date=cfg.get("end_date") or "",
+            granularity=cfg.get("granularity") or "Daily",
+            initial_cash=float(cfg.get("initial_cash") or 10_000_000),
+            rust_sink=rust_sink,
+        )
+
+        result = runner.run()
+        if result["success"]:
+            return {"success": True, "error_code": "", "error_message": "", "run_id": result.get("run_id", "")}
+        return {
+            "success": False,
+            "error_code": "RUN_FAILED",
+            "error_message": result.get("error", "unknown error"),
+            "run_id": "",
+        }
+
     def close(self) -> None:
         """Tear down the underlying live server (loop/runner/account-sync).
 
