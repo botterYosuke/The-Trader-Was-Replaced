@@ -656,7 +656,7 @@ pub fn panel_spawn_dispatcher_system(
         let mut spawned_region_key: Option<String> = None;
         match event.kind {
             PanelKind::BuyingPower => spawn_buying_power_panel(&mut commands, &theme),
-            PanelKind::RunResult => spawn_run_result_panel(&mut commands, &theme),
+            PanelKind::RunResult => spawn_run_result_panel(&mut commands),
             PanelKind::Positions => spawn_positions_panel(&mut commands, &theme),
             PanelKind::Orders => spawn_orders_panel(&mut commands, &theme),
             PanelKind::Startup => spawn_scenario_startup_window(&mut commands),

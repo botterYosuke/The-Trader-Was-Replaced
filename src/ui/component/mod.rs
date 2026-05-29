@@ -21,6 +21,5 @@ pub use button::{
     ButtonState, ButtonStyle, TintColor,
 };
 pub use label::{
-    spawn_divider, spawn_indicator, spawn_labeled_value_row, spawn_table_headers,
-    spawn_table_headers_at,
+    spawn_divider, spawn_indicator, spawn_labeled_value_row, spawn_table_headers_at,
 };

@@ -2,7 +2,6 @@ use crate::replay::{ReplayStartupPhase, ReplayStartupProgress};
 use crate::trading::{CurrentRun, RunState};
 use crate::ui::components::{PanelKind, RunResultPanelRoot};
 use crate::ui::floating_window::{FloatingWindowSpec, spawn_floating_window};
-use crate::ui::theme::Theme;
 use bevy::prelude::*;
 
 // ── レイアウト & 配色 ─────────────────────────────────────────
@@ -43,7 +42,7 @@ pub struct RunResultBarBg;
 pub struct RunResultBarFill;
 
 // ── Spawn ────────────────────────────────────────────────────
-pub fn spawn_run_result_panel(commands: &mut Commands, _theme: &Theme) {
+pub fn spawn_run_result_panel(commands: &mut Commands) {
     let (root, content_area, _title_bar) = spawn_floating_window(
         commands,
         FloatingWindowSpec {
@@ -115,8 +114,8 @@ pub fn spawn_run_result_panel(commands: &mut Commands, _theme: &Theme) {
     commands.entity(bar_bg).add_child(bar_fill);
 }
 
-pub fn spawn_run_result_panel_system(mut commands: Commands, theme: Res<Theme>) {
-    spawn_run_result_panel(&mut commands, &theme);
+pub fn spawn_run_result_panel_system(mut commands: Commands) {
+    spawn_run_result_panel(&mut commands);
 }
 
 pub fn run_result_panel_system(

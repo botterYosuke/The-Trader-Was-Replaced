@@ -10,7 +10,6 @@ use backcast::trading::{ExecutionMode, ExecutionModeRes};
 use backcast::ui::components::{RunResultPanelRoot, WindowManager};
 use backcast::ui::editor_history::AppHistory;
 use backcast::ui::run_result_panel::{apply_run_result_visibility_system, spawn_run_result_panel};
-use backcast::ui::theme::Theme;
 
 #[test]
 fn m14_run_result_mode_visibility() {
@@ -22,7 +21,7 @@ fn m14_run_result_mode_visibility() {
     app.add_systems(Update, apply_run_result_visibility_system);
 
     app.add_systems(Startup, |mut commands: Commands| {
-        spawn_run_result_panel(&mut commands, &Theme::default());
+        spawn_run_result_panel(&mut commands);
     });
     app.update();
 

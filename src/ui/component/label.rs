@@ -56,6 +56,7 @@ pub fn spawn_labeled_value_row(
 /// - 全ヘッダーは `theme.colors.text_muted` で描画される。
 /// - `x_start` から `x_step` ずつ右に並ぶ。
 /// - 返り値は spawn した entity のリスト（順序は `headers` と同じ）。
+#[allow(dead_code)]
 pub fn spawn_table_headers(
     commands: &mut Commands,
     parent: Entity,
@@ -76,7 +77,7 @@ pub fn spawn_table_headers(
                     Text2d::new(header),
                     text_font.clone(),
                     TextColor(theme.colors.text_muted),
-                    Transform::from_xyz(x_start + x_step * i as f32, y, 0.0),
+                    Transform::from_xyz(x_start + x_step * i as f32, y, 0.1),
                 ))
                 .id();
             commands.entity(parent).add_child(e);

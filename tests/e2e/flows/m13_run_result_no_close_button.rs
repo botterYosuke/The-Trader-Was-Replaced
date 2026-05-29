@@ -9,7 +9,6 @@ use bevy::transform::TransformPlugin;
 use backcast::ui::components::{CloseButton, RunResultPanelRoot, WindowManager};
 use backcast::ui::editor_history::AppHistory;
 use backcast::ui::run_result_panel::spawn_run_result_panel;
-use backcast::ui::theme::Theme;
 
 #[test]
 fn m13_run_result_no_close_button() {
@@ -19,7 +18,7 @@ fn m13_run_result_no_close_button() {
     app.insert_resource(AppHistory::default());
 
     app.add_systems(Startup, |mut commands: Commands| {
-        spawn_run_result_panel(&mut commands, &Theme::default());
+        spawn_run_result_panel(&mut commands);
     });
     app.update();
 
