@@ -1,15 +1,4 @@
-//! A15 — `per_instrument` OHLC data from `BackendTradingState` flows into
-//! `InstrumentTradingDataMap` on each replay step.
-//!
-//! Root cause (issue #57): chart bars did not advance during StepForward
-//! because `chart_data_tick_system` checked `InstrumentTradingDataMap.is_changed()`
-//! but the map was never populated — either the ordering race
-//! (system ran before `backend_update_system`) or the data not reaching the map.
-//! Fix: `ChartSet::DataTick.after(backend_update_system)` in `src/ui/mod.rs`
-//! ensures the map is written first. This test guards the state seam:
-//! `BackendTradingState.per_instrument` → `InstrumentTradingDataMap.map`.
-//!
-//! See `tests/e2e/FLOWS.md` A15.
+//! A15 — `per_instrument` OHLC seam: BackendTradingState → InstrumentTradingDataMap (issue #57).
 
 use crate::support::Harness;
 use backcast::trading::{BackendTradingState, InstrumentTradingDataMap};
