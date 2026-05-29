@@ -1,47 +1,61 @@
-//! Phase 7.2 Phase E — Find / Replace パネル。
+//! Find / Replace パネル (Slice 5 #50: cosmic 撤去・Bevy UI Node 化済み)。
 //!
 //! 設計原則:
 //! - Find マッチの **計算と描画は分離**: 計算は `compute_find_match_spans_system` が
 //!   `FindReplaceState.matches` (ナビ用) と editor entity の `FindMatchSpans` (描画用) を
-//!   同時に更新するだけ。色付けは Phase A の composer (`apply_highlight_layers_system`)
-//!   が固定順序で行う。本モジュールは `set_attrs_list` を **絶対に呼ばない**。
-//! - Find パネルの 2 つの入力欄には専用マーカー (`FindQueryEditor` / `FindReplacementEditor`)
-//!   を付け、`StrategyEditorContent` は **絶対に付けない** (Caveat #21)。これにより
-//!   既存 `sync_editor_to_strategy_buffer_system` が Find 入力を Strategy 本文に書き込む
-//!   事故を構造的に防ぐ。
-//! - Replace は純粋関数 `apply_replacement` で新ソースを計算し、editor へ `set_text` +
-//!   `CosmicTextChanged` を発行するだけ。再ハイライト / undo 記録 / autosave は Phase A
-//!   パイプライン (Changed<StrategyFragment> 駆動) に丸投げする (新しい attrs 経路を作らない)。
+//!   同時に更新する。描画 overlay は Phase B+1 で `bevy_instanced_text::Overlays` に乗せる予定。
+//! - パネル本体は **Bevy UI Node** (`FindPanelRoot`)。入力欄は自前の Text + Events<KeyboardInput>
+//!   drain (`find_field_input_system`)、ボタンは `Button + Interaction` から
+//!   `FindActionRequested` を emit (`find_button_interaction_system`)。
+//! - Replace は純粋関数 `apply_replacement` で新ソースを計算し、bevscode editor entity へ
+//!   `SetTextRequested { entity, text }` を 1 件 flush する。fragment 更新・undo 記録・autosave・
+//!   再ハイライトは bevscode の `TextBuffer<RopeBuffer>` 経由
+//!   (`sync_bevscode_to_strategy_fragment_system`) に委譲する。
 
 use crate::ui::components::{StrategyEditorId, StrategyFragment, WindowRoot};
-use crate::ui::floating_window::{FloatingWindowSpec, spawn_floating_window};
-use crate::ui::strategy_editor::StrategyEditorContent;
-use crate::ui::strategy_editor_highlight::{FindMatchSpans, MatchSpan};
+use crate::ui::strategy_editor::StrategyEditorNode;
+use bevscode::prelude::SetTextRequested;
+use bevy::input::ButtonState;
+use bevy::input::keyboard::{Key, KeyboardInput};
 use bevy::prelude::*;
-use bevy_cosmic_edit::cosmic_text::{self, Attrs, AttrsOwned, Edit, Metrics, Shaping};
-use bevy_cosmic_edit::prelude::{
-    CosmicColor, CosmicEditBuffer, CosmicEditor, DefaultAttrs, FocusedWidget, TextEdit2d,
-};
-use bevy_cosmic_edit::{
-    CosmicBackgroundColor, CosmicFontSystem, CosmicTextAlign, CosmicTextChanged, CursorColor,
-    MaxLines,
-};
 
-// ── レイアウト定数 ──────────────────────────────────────────────
-const FIND_PANEL_SIZE: Vec2 = Vec2::new(440.0, 210.0);
-const FIND_PANEL_POSITION: Vec2 = Vec2::new(260.0, 160.0);
-const FIND_ACCENT: Color = Color::srgba(1.0, 0.7, 0.2, 0.4); // orange rim
-const FIND_FONT_SIZE: f32 = 14.0;
-const FIND_LINE_HEIGHT: f32 = 18.0;
-// ⚠️ 高さは line_height(18) の DPI 2x ダブリング(=36)を超える必要がある。
-// 24px だと retina で `shape_until_scroll` が layout_runs=0 を返し glyph が出ない
-// (bevy-engine skill の DPI トラップ)。44px で 1x/2x 両対応。
-const FIELD_SIZE: Vec2 = Vec2::new(300.0, 44.0);
-const FIELD_BG: Color = Color::srgba(0.05, 0.05, 0.08, 1.0);
+// ─────────────────────────────────────────────────────────────────
+// Match types (Slice 5 (#50): _highlight.rs から move。_highlight.rs 側は shim re-export のみ)
+// ─────────────────────────────────────────────────────────────────
+
+/// Find マッチ 1 件 (行 + 行内 byte range)。
+/// Clone は `FindReplaceState.matches` (ナビ用) と `FindMatchSpans.matches` (描画用) の
+/// 両方へ同じマッチ列を書き込むために必要 (compute_find_match_spans_system)。
+#[derive(Clone, Debug, PartialEq)]
+pub struct MatchSpan {
+    pub line: usize,
+    pub byte_range: std::ops::Range<usize>,
+}
+
+/// Find マッチ結果。find/replace の検索 system が書き込み、composer がレンダリングに使う。
+#[derive(Component, Default)]
+pub struct FindMatchSpans {
+    pub matches: Vec<MatchSpan>,
+    /// 現在マッチの index。`FindReplaceState.current` の **描画側ミラー** で、
+    /// composer はこの entity だけ見れば現在マッチを別色にできる (Resource を読まずに済む)。
+    /// nav 側 (`FindReplaceState.current`) と更新は常に lockstep。
+    pub current_idx: Option<usize>,
+    pub prev_match_lines: Vec<usize>,
+}
 
 // ─────────────────────────────────────────────────────────────────
 // 状態 / マーカー / イベント
 // ─────────────────────────────────────────────────────────────────
+
+/// Slice 5 (#50): Find パネルの入力欄 focus 状態。
+/// Bevy UI Node 化に伴い cosmic `FocusedWidget` を使わず内部 enum で focus を管理する。
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum FindFocusedField {
+    #[default]
+    None,
+    Query,
+    Replacement,
+}
 
 /// Find/Replace のグローバル状態 (multi-spawn でも単一: 最後に focus した editor が対象)。
 #[derive(Resource, Default)]
@@ -57,19 +71,27 @@ pub struct FindReplaceState {
     pub panel_root: Option<Entity>,
     pub query_editor: Option<Entity>,
     pub replacement_editor: Option<Entity>,
+    /// Slice 5 (#50): 現在 focus 中の入力欄。`find_field_input_system` が drain した
+    /// KeyboardInput をこのフィールドに従って query / replacement に振り分ける。
+    pub focused_field: FindFocusedField,
 }
 
-/// Find パネルの query 入力欄マーカー (StrategyEditorContent は付けない)。
+/// Slice 5 (#50): Bevy UI Node 化した Find パネルの root marker。
+/// `manage_find_panel_lifecycle_system` が `Display::Flex / None` を toggle するときの query 対象。
 #[derive(Component)]
-pub struct FindQueryEditor;
+pub struct FindPanelRoot;
 
-/// Find パネルの replacement 入力欄マーカー (StrategyEditorContent は付けない)。
+/// Slice 5 (#50): Find パネル内の query 入力 Text node マーカー (Bevy UI Node 版)。
 #[derive(Component)]
-pub struct FindReplacementEditor;
+pub struct FindQueryFieldUi;
 
-/// マッチ件数表示用 Text2d マーカー。
+/// Slice 5 (#50): Find パネル内の replacement 入力 Text node マーカー (Bevy UI Node 版)。
 #[derive(Component)]
-pub struct FindMatchCountText;
+pub struct FindReplacementFieldUi;
+
+/// Slice 5 (#50): match 件数表示の Text node マーカー (Bevy UI Node 版、旧 Text2d 版は world-space)。
+#[derive(Component)]
+pub struct FindMatchCountUi;
 
 /// Find パネルのボタン種別 (entity に貼って observer から引く)。
 #[derive(Component, Clone, Copy, PartialEq, Eq, Debug)]
@@ -199,14 +221,16 @@ fn abs_range(line_starts: &[usize], m: &MatchSpan) -> Option<std::ops::Range<usi
 // システム
 // ─────────────────────────────────────────────────────────────────
 
-/// Ctrl+F で開く / Esc で閉じる。`target_editor` には押下時に focus 中の Strategy editor を保存する。
+/// Ctrl+F で開く / Esc で閉じる。`target_editor` には押下時に focus 中の bevscode Strategy editor
+/// (StrategyEditorNode) を保存する。Slice 5 (#50): cosmic `FocusedWidget` から Bevy native
+/// `InputFocus` + `StrategyEditorNode` 経路に切替。
 pub fn find_keyboard_system(
     keys: Res<ButtonInput<KeyCode>>,
     time: Res<Time>,
     mut cooldown: Local<f32>,
     mut state: ResMut<FindReplaceState>,
-    mut focused: ResMut<FocusedWidget>,
-    editor_q: Query<(), With<StrategyEditorContent>>,
+    mut input_focus: ResMut<bevy::input_focus::InputFocus>,
+    editor_q: Query<(), With<StrategyEditorNode>>,
 ) {
     *cooldown = (*cooldown - time.delta_secs()).max(0.0);
 
@@ -214,175 +238,69 @@ pub fn find_keyboard_system(
     if ctrl && keys.just_pressed(KeyCode::KeyF) && *cooldown <= 0.0 {
         if !state.is_open {
             state.is_open = true;
-            // focus 中が Strategy editor ならそれを対象に。そうでなければ None
-            // (パネルは開くが、対象が無ければマッチ計算は no-op)。
-            state.target_editor = focused.0.filter(|e| editor_q.contains(*e));
+            // focus 中が bevscode Strategy editor ならそれを対象に。そうでなければ None。
+            state.target_editor = input_focus.0.filter(|e| editor_q.contains(*e));
+            state.focused_field = FindFocusedField::Query;
         } else {
-            // 既に開いている: 別の Strategy editor に focus 中ならそれへ retarget
-            // (旧 target のハイライトは compute_find_match_spans_system が target 切替検知で clear)。
-            // query 欄に focus 中 (= 通常) は filter→None で retarget せず、query 欄へ戻すだけ。
-            if let Some(new_target) = focused.0.filter(|e| editor_q.contains(*e)) {
+            // 既に開いている: 別の Strategy editor に focus 中ならそれへ retarget。
+            // query 欄へ focus を戻す (panel 内 enum focus)。
+            if let Some(new_target) = input_focus.0.filter(|e| editor_q.contains(*e)) {
                 state.target_editor = Some(new_target);
             }
-            if let Some(qe) = state.query_editor {
-                focused.0 = Some(qe);
-            }
+            state.focused_field = FindFocusedField::Query;
         }
         *cooldown = 0.5;
     }
 
     if keys.just_pressed(KeyCode::Escape) && state.is_open {
         state.is_open = false;
+        state.focused_field = FindFocusedField::None;
         if let Some(target) = state.target_editor {
-            focused.0 = Some(target);
+            input_focus.0 = Some(target);
         }
     }
 }
 
-/// `is_open` の false↔true 遷移で Find パネルを 1 度だけ spawn / despawn する (Caveat #27)。
-/// 親パネルが外部から despawn された場合 (× ボタン等) は孤児チェックで state をリセットする。
+/// Slice 5 (#50): Bevy UI Node 版 Find パネルのライフサイクル。
+/// 初回 open で 1 度だけ spawn → 以降は `Display::Flex / None` で開閉する (despawn しない)。
+/// 旧 cosmic + spawn_floating_window 経路 (world-space sprite) を撤去。
+///
+/// 孤児チェック: panel root が外部から despawn されたら panel_root を None に戻し、次の open で再 spawn する。
 pub fn manage_find_panel_lifecycle_system(
     mut commands: Commands,
     mut state: ResMut<FindReplaceState>,
-    mut font_system: ResMut<CosmicFontSystem>,
-    mut focused: ResMut<FocusedWidget>,
-    // 孤児チェックは `With<WindowRoot>` を使う (Caveat #31)。panel_root は WindowRoot を持つ。
-    existence_q: Query<(), With<WindowRoot>>,
+    existence_q: Query<(), With<FindPanelRoot>>,
+    mut node_q: Query<&mut Node, With<FindPanelRoot>>,
 ) {
-    // 孤児チェック: panel_root が外から消えていたら state をリセット (= 開き直し可能に)。
+    // 孤児チェック: panel_root の Entity が消えていたら、panel handles だけ None に戻す。
     if let Some(root) = state.panel_root
         && existence_q.get(root).is_err()
     {
-        let restore = state.target_editor;
-        *state = FindReplaceState::default();
-        if let Some(t) = restore {
-            focused.0 = Some(t);
-        }
-        return;
-    }
-
-    // open 遷移: spawn。
-    if state.is_open && state.panel_root.is_none() {
-        let (root, content, _title) = spawn_floating_window(
-            &mut commands,
-            FloatingWindowSpec {
-                title: "FIND / REPLACE".to_string(),
-                size: FIND_PANEL_SIZE,
-                position: FIND_PANEL_POSITION,
-                accent: FIND_ACCENT,
-                closeable: true,
-                resizable: false,
-            },
-        );
-
-        // 入力欄 2 つ。
-        let query_editor = spawn_find_field(
-            &mut commands,
-            &mut font_system,
-            FIELD_SIZE,
-            Vec3::new(15.0, 50.0, 0.2),
-        );
-        commands.entity(query_editor).insert(FindQueryEditor);
-        commands.entity(content).add_child(query_editor);
-
-        let replacement_editor = spawn_find_field(
-            &mut commands,
-            &mut font_system,
-            FIELD_SIZE,
-            Vec3::new(15.0, 0.0, 0.2),
-        );
-        commands
-            .entity(replacement_editor)
-            .insert(FindReplacementEditor);
-        commands.entity(content).add_child(replacement_editor);
-
-        // ラベル。
-        spawn_label(&mut commands, content, "Find", Vec3::new(-205.0, 50.0, 0.2));
-        spawn_label(&mut commands, content, "Repl", Vec3::new(-205.0, 0.0, 0.2));
-
-        // 件数表示。
-        let count = commands
-            .spawn((
-                Text2d::new("0/0"),
-                TextFont {
-                    font_size: 12.0,
-                    ..default()
-                },
-                TextColor(Color::srgb(0.7, 0.7, 0.75)),
-                bevy::sprite::Anchor::CENTER_LEFT,
-                Transform::from_xyz(-205.0, -55.0, 0.2),
-                FindMatchCountText,
-            ))
-            .id();
-        commands.entity(content).add_child(count);
-
-        // ボタン (Prev / Next / Replace / Replace All)。
-        spawn_button(
-            &mut commands,
-            content,
-            FindButtonKind::Prev,
-            "<",
-            Vec3::new(-120.0, -55.0, 0.2),
-            Vec2::new(36.0, 24.0),
-        );
-        spawn_button(
-            &mut commands,
-            content,
-            FindButtonKind::Next,
-            ">",
-            Vec3::new(-78.0, -55.0, 0.2),
-            Vec2::new(36.0, 24.0),
-        );
-        spawn_button(
-            &mut commands,
-            content,
-            FindButtonKind::Replace,
-            "Repl",
-            Vec3::new(-10.0, -55.0, 0.2),
-            Vec2::new(56.0, 24.0),
-        );
-        spawn_button(
-            &mut commands,
-            content,
-            FindButtonKind::ReplaceAll,
-            "Repl All",
-            Vec3::new(80.0, -55.0, 0.2),
-            Vec2::new(90.0, 24.0),
-        );
-
-        state.panel_root = Some(root);
-        state.query_editor = Some(query_editor);
-        state.replacement_editor = Some(replacement_editor);
-        // query 欄にフォーカスを移す (open 直後 1 度だけ)。
-        focused.0 = Some(query_editor);
-    }
-
-    // close 遷移: despawn。
-    if !state.is_open && state.panel_root.is_some() {
-        let root = state.panel_root.take().unwrap();
-        commands.entity(root).despawn();
+        state.panel_root = None;
         state.query_editor = None;
         state.replacement_editor = None;
-        // matches のクリアは compute_find_match_spans_system が is_open=false で行う。
     }
-}
 
-/// Find 入力欄 (query / replacement) の `CosmicTextChanged` を `FindReplaceState` に書き戻す。
-/// **history / autosave / fragment には絶対に触らない** (Caveat #28)。
-/// `Without<StrategyEditorContent>` を二重ガードに使い、マーカー取り違えを検出する。
-pub fn sync_find_editors_to_state_system(
-    mut events: MessageReader<CosmicTextChanged>,
-    query_q: Query<Entity, (With<FindQueryEditor>, Without<StrategyEditorContent>)>,
-    replacement_q: Query<Entity, (With<FindReplacementEditor>, Without<StrategyEditorContent>)>,
-    mut state: ResMut<FindReplaceState>,
-) {
-    for CosmicTextChanged((entity, new_text)) in events.read() {
-        if query_q.contains(*entity) {
-            if state.query != *new_text {
-                state.query = new_text.clone();
-            }
-        } else if replacement_q.contains(*entity) && state.replacement != *new_text {
-            state.replacement = new_text.clone();
+    // 初回 open: Bevy UI Node panel を spawn。
+    if state.is_open && state.panel_root.is_none() {
+        let (root, query_field, replacement_field) = spawn_find_panel(&mut commands);
+        state.panel_root = Some(root);
+        state.query_editor = Some(query_field);
+        state.replacement_editor = Some(replacement_field);
+        state.focused_field = FindFocusedField::Query;
+    }
+
+    // Display::Flex / None の toggle (差分書き込みで spurious Change を立てない)。
+    if let Some(root) = state.panel_root
+        && let Ok(mut node) = node_q.get_mut(root)
+    {
+        let target = if state.is_open {
+            Display::Flex
+        } else {
+            Display::None
+        };
+        if node.display != target {
+            node.display = target;
         }
     }
 }
@@ -397,7 +315,9 @@ pub fn compute_find_match_spans_system(
     mut state: ResMut<FindReplaceState>,
     changed_frags: Query<(), (With<WindowRoot>, Changed<StrategyFragment>)>,
     fragments_q: Query<(&StrategyEditorId, &StrategyFragment), With<WindowRoot>>,
-    mut editor_q: Query<(&StrategyEditorId, &mut FindMatchSpans), With<StrategyEditorContent>>,
+    // Slice 5 (#50): cosmic 側 (StrategyEditorContent) ではなく bevscode peer 側
+    // (StrategyEditorNode) の FindMatchSpans を更新する。region_key は StrategyEditorNode が直接持つ。
+    mut editor_q: Query<(&StrategyEditorNode, &mut FindMatchSpans)>,
     mut last: Local<(String, bool, bool, Option<Entity>)>,
 ) {
     // 孤児チェック: target_editor が despawn 済み (× で閉じられた等) なら state をリセット。
@@ -455,10 +375,10 @@ pub fn compute_find_match_spans_system(
     let Some(target) = state.target_editor else {
         return;
     };
-    let Ok((target_id, mut spans)) = editor_q.get_mut(target) else {
+    let Ok((target_node, mut spans)) = editor_q.get_mut(target) else {
         return;
     };
-    let region_key = target_id.region_key.clone();
+    let region_key = target_node.region_key.clone();
 
     // 旧マッチ行を保存 (クリア時に composer の dirty 行へ含めるため、上書き前に)。
     spans.prev_match_lines = spans.matches.iter().map(|m| m.line).collect();
@@ -500,9 +420,9 @@ pub fn compute_find_match_spans_system(
 pub fn find_navigate_system(
     keys: Res<ButtonInput<KeyCode>>,
     mut actions: MessageReader<FindActionRequested>,
-    focused: Res<FocusedWidget>,
+    input_focus: Res<bevy::input_focus::InputFocus>,
     mut state: ResMut<FindReplaceState>,
-    mut editor_q: Query<&mut FindMatchSpans, With<StrategyEditorContent>>,
+    mut editor_q: Query<&mut FindMatchSpans, With<StrategyEditorNode>>,
 ) {
     if !state.is_open || state.matches.is_empty() {
         return;
@@ -511,11 +431,12 @@ pub fn find_navigate_system(
     let shift = keys.any_pressed([KeyCode::ShiftLeft, KeyCode::ShiftRight]);
     let f3 = keys.just_pressed(KeyCode::F3);
     let enter = keys.just_pressed(KeyCode::Enter);
-    let query_focused = state.query_editor.is_some_and(|qe| focused.0 == Some(qe));
-    // ⚠️ 対象エディタに focus 中の Enter は enter_autoindent_system が改行として処理する。
-    // ここでも navigation に使うと「改行 + 次マッチ移動」の二重発火になる (両 system 間に
-    // 順序指定が無く非決定的)。target editor に focus 中は Enter-nav を無効化し、F3 のみで移動する。
-    let target_focused = state.target_editor.is_some_and(|t| focused.0 == Some(t));
+    // Slice 5 (#50): query 欄の focus は panel 内 enum 経路で判定 (cosmic FocusedWidget なし)。
+    let query_focused = state.focused_field == FindFocusedField::Query;
+    // ⚠️ 対象 bevscode editor に focus 中の Enter は bevscode 内蔵の改行処理が走るため、
+    // ここで navigation に使うと「改行 + 次マッチ」の二重発火になる。target editor に focus 中は
+    // Enter-nav を無効化し、F3 のみで移動する。
+    let target_focused = state.target_editor.is_some_and(|t| input_focus.0 == Some(t));
     let enter_nav = enter && !query_focused && !target_focused;
 
     let mut forward = (f3 && !shift) || (enter_nav && !shift);
@@ -545,63 +466,16 @@ pub fn find_navigate_system(
     }
 }
 
-/// `current_idx` が変わったら対象行を画面中央付近へスクロールする。
-#[allow(clippy::type_complexity)]
-pub fn find_scroll_to_match_system(
-    state: Res<FindReplaceState>,
-    mut editor_q: Query<
-        (
-            Option<&mut CosmicEditor>,
-            &mut CosmicEditBuffer,
-            &FindMatchSpans,
-        ),
-        (With<StrategyEditorContent>, Changed<FindMatchSpans>),
-    >,
-) {
-    if !state.is_open {
-        return;
-    }
-    for (editor_opt, mut buffer, spans) in editor_q.iter_mut() {
-        let Some(current_idx) = spans.current_idx else {
-            continue;
-        };
-        let Some(m) = spans.matches.get(current_idx) else {
-            continue;
-        };
-        let viewport_lines = 16usize; // 粗い近似で十分。
-        let target_line = m.line.saturating_sub(viewport_lines / 2);
-        let scroll = cosmic_text::Scroll {
-            line: target_line,
-            vertical: 0.0,
-            horizontal: 0.0,
-        };
-        if let Some(mut editor) = editor_opt {
-            editor.with_buffer_mut(|b| b.set_scroll(scroll));
-            editor.set_redraw(true);
-        } else {
-            buffer.0.set_scroll(scroll);
-            buffer.0.set_redraw(true);
-        }
-    }
-}
-
-/// Replace / Replace All ボタンで `apply_replacement` を実行し、対象 editor へ
-/// `set_text` + `CosmicTextChanged` を発行する。fragment 更新・undo 記録・autosave・
-/// 再ハイライトは Phase A パイプライン (CosmicTextChanged → fragment Changed) に委譲する。
+/// Replace / Replace All ボタンで `apply_replacement` を実行し、対象 bevscode editor entity へ
+/// `SetTextRequested { entity, text }` を 1 件 flush する。fragment 更新・undo 記録・autosave・
+/// 再ハイライトは bevscode の `TextBuffer<RopeBuffer>` 経由 (`sync_bevscode_to_strategy_fragment_system`)
+/// に委譲する (Slice 5 #50)。
 pub fn replace_execute_system(
     mut actions: MessageReader<FindActionRequested>,
     state: Res<FindReplaceState>,
     fragments_q: Query<(&StrategyEditorId, &StrategyFragment), With<WindowRoot>>,
-    mut editor_q: Query<
-        (
-            &StrategyEditorId,
-            &mut CosmicEditBuffer,
-            Option<&mut CosmicEditor>,
-        ),
-        With<StrategyEditorContent>,
-    >,
-    mut font_system: ResMut<CosmicFontSystem>,
-    mut evw_changed: MessageWriter<CosmicTextChanged>,
+    editor_q: Query<&StrategyEditorNode>,
+    mut writer: MessageWriter<SetTextRequested>,
 ) {
     if !state.is_open {
         return;
@@ -623,10 +497,10 @@ pub fn replace_execute_system(
     let Some(target) = state.target_editor else {
         return;
     };
-    let Ok((editor_id, mut edit_buffer, editor_opt)) = editor_q.get_mut(target) else {
+    let Ok(node) = editor_q.get(target) else {
         return;
     };
-    let region_key = editor_id.region_key.clone();
+    let region_key = node.region_key.clone();
     let Some(source) = fragments_q
         .iter()
         .find(|(id, _)| id.region_key == region_key)
@@ -646,28 +520,83 @@ pub fn replace_execute_system(
         return;
     }
 
-    // 表示バッファを更新し、CosmicTextChanged で fragment/undo/autosave/再ハイライトを駆動する。
-    edit_buffer.set_text(&mut font_system, &new_source, Attrs::new());
-    if let Some(mut editor) = editor_opt {
-        editor.with_buffer_mut(|b| {
-            b.set_text(
-                &mut font_system.0,
-                &new_source,
-                &Attrs::new(),
-                Shaping::Advanced,
-                None,
-            );
-            b.set_redraw(true);
-        });
-        editor.set_redraw(true);
-    }
-    evw_changed.write(CosmicTextChanged((target, new_source)));
+    writer.write(SetTextRequested {
+        entity: target,
+        text: new_source,
+    });
 }
 
-/// 件数表示 ("current/total") を state 変化時に更新する。
+/// Slice 5 (#50): Find パネルの入力欄が focus 中のとき `Messages<KeyboardInput>` を drain し、
+/// `state.query` または `state.replacement` に typing を書き込む。
+/// `instrument_picker::picker_searchbox_input_system` と同じ「drain して後段へ流さない」流派。
+/// is_open=false または focused_field=None のときは何もしない (bevscode editor 側の typing と
+/// 競合しないため必須)。
+/// Slice 5 (#50): Bevy UI Node ボタン (`Button` + `FindButtonKind` marker) の
+/// `Interaction::Pressed` エッジで `FindActionRequested(kind)` を発火する。
+/// 旧 Sprite + observer 経路の置換 (操作系 UI = Bevy UI Node ルール; `menu_bar::menu_item_system` 流派)。
+pub fn find_button_interaction_system(
+    q: Query<(&Interaction, &FindButtonKind), Changed<Interaction>>,
+    mut writer: MessageWriter<FindActionRequested>,
+) {
+    for (interaction, kind) in q.iter() {
+        if *interaction == Interaction::Pressed {
+            writer.write(FindActionRequested(*kind));
+        }
+    }
+}
+
+pub fn find_field_input_system(
+    mut kb_events: ResMut<Messages<KeyboardInput>>,
+    mut state: ResMut<FindReplaceState>,
+) {
+    if !state.is_open || state.focused_field == FindFocusedField::None {
+        return;
+    }
+    for ev in kb_events.drain() {
+        if ev.state != ButtonState::Pressed {
+            continue;
+        }
+        match &ev.logical_key {
+            Key::Character(s) => {
+                let buf = match state.focused_field {
+                    FindFocusedField::Query => &mut state.query,
+                    FindFocusedField::Replacement => &mut state.replacement,
+                    FindFocusedField::None => continue,
+                };
+                for ch in s.chars() {
+                    if !ch.is_control() {
+                        buf.push(ch);
+                    }
+                }
+            }
+            Key::Backspace => {
+                let buf = match state.focused_field {
+                    FindFocusedField::Query => &mut state.query,
+                    FindFocusedField::Replacement => &mut state.replacement,
+                    FindFocusedField::None => continue,
+                };
+                buf.pop();
+            }
+            Key::Tab => {
+                state.focused_field = match state.focused_field {
+                    FindFocusedField::Query => FindFocusedField::Replacement,
+                    FindFocusedField::Replacement => FindFocusedField::Query,
+                    FindFocusedField::None => FindFocusedField::None,
+                };
+            }
+            Key::Escape => {
+                state.is_open = false;
+                state.focused_field = FindFocusedField::None;
+            }
+            _ => {}
+        }
+    }
+}
+
+/// 件数表示 ("current/total") を state 変化時に更新する (Slice 5 #50: Bevy UI Node 版 Text に切替)。
 pub fn update_find_count_text_system(
     state: Res<FindReplaceState>,
-    mut q: Query<&mut Text2d, With<FindMatchCountText>>,
+    mut q: Query<&mut Text, With<FindMatchCountUi>>,
 ) {
     if !state.is_changed() {
         return;
@@ -685,100 +614,201 @@ pub fn update_find_count_text_system(
 }
 
 // ─────────────────────────────────────────────────────────────────
-// spawn ヘルパ
+// spawn ヘルパ (Slice 5 #50: Bevy UI Node ベース)
 // ─────────────────────────────────────────────────────────────────
 
-/// Find パネル内の 1 行入力欄 (cosmic editor) を spawn する。役割マーカーは呼び出し側で insert。
-fn spawn_find_field(
-    commands: &mut Commands,
-    font_system: &mut CosmicFontSystem,
-    size: Vec2,
-    pos: Vec3,
-) -> Entity {
-    let text_color = CosmicColor::rgb(230, 230, 230);
-    commands
+const PANEL_BG: Color = Color::srgba(0.08, 0.08, 0.10, 0.95);
+const FIELD_BG_UI: Color = Color::srgba(0.05, 0.05, 0.08, 1.0);
+const BTN_BG: Color = Color::srgba(0.2, 0.2, 0.32, 1.0);
+const TEXT_FG: Color = Color::srgb(0.9, 0.9, 0.92);
+const LABEL_FG: Color = Color::srgb(0.7, 0.7, 0.75);
+
+/// Find / Replace パネルの Bevy UI Node ツリーを spawn する。
+/// 返り値: (panel_root, query_field_text, replacement_field_text)
+///
+/// 視覚要素は最小限の skeleton (操作系 UI の機能配線が目的、polish は Phase B+1)。
+/// 位置・寸法は screen 固定 (画面右上)、`GlobalZIndex(200)` で menu_bar(100) より前面へ。
+fn spawn_find_panel(commands: &mut Commands) -> (Entity, Entity, Entity) {
+    // Panel root.
+    let root = commands
         .spawn((
-            TextEdit2d,
-            Sprite {
-                custom_size: Some(size),
-                color: Color::WHITE,
+            FindPanelRoot,
+            Node {
+                position_type: PositionType::Absolute,
+                top: Val::Px(60.0),
+                right: Val::Px(20.0),
+                width: Val::Px(380.0),
+                padding: UiRect::all(Val::Px(8.0)),
+                flex_direction: FlexDirection::Column,
+                row_gap: Val::Px(4.0),
+                display: Display::Flex,
                 ..default()
             },
-            CosmicEditBuffer::new(
-                &mut font_system.0,
-                Metrics::new(FIND_FONT_SIZE, FIND_LINE_HEIGHT),
-            )
-            .with_text(&mut font_system.0, "", Attrs::new().color(text_color)),
-            DefaultAttrs(AttrsOwned::new(&Attrs::new().color(text_color))),
-            CursorColor(Color::WHITE),
-            CosmicBackgroundColor(FIELD_BG),
-            Transform::from_translation(pos),
-            MaxLines(1),
-            CosmicTextAlign::TopLeft { padding: 4 },
+            BackgroundColor(PANEL_BG),
+            GlobalZIndex(200),
         ))
-        .id()
-}
+        .id();
 
-/// 左寄せの説明ラベルを content の子として spawn する。
-fn spawn_label(commands: &mut Commands, parent: Entity, text: &str, pos: Vec3) {
-    let label = commands
+    // Title.
+    let title = commands
         .spawn((
-            Text2d::new(text),
+            Text::new("FIND / REPLACE"),
             TextFont {
                 font_size: 13.0,
                 ..default()
             },
-            TextColor(Color::srgb(0.8, 0.8, 0.85)),
-            bevy::sprite::Anchor::CENTER_LEFT,
-            Transform::from_translation(pos),
+            TextColor(LABEL_FG),
         ))
         .id();
-    commands.entity(parent).add_child(label);
-}
+    commands.entity(root).add_child(title);
 
-/// ボタン (Sprite + ラベル + Pointer<Click> observer) を content の子として spawn する。
-fn spawn_button(
-    commands: &mut Commands,
-    parent: Entity,
-    kind: FindButtonKind,
-    label: &str,
-    pos: Vec3,
-    size: Vec2,
-) {
-    let btn = commands
-        .spawn((
-            Sprite {
-                custom_size: Some(size),
-                color: Color::srgba(0.2, 0.2, 0.32, 1.0),
-                ..default()
-            },
-            Transform::from_translation(pos),
-            kind,
-        ))
-        .observe(
-            |trigger: On<Pointer<Click>>,
-             kind_q: Query<&FindButtonKind>,
-             mut w: MessageWriter<FindActionRequested>| {
-                if let Ok(k) = kind_q.get(trigger.entity) {
-                    w.write(FindActionRequested(*k));
-                }
-            },
-        )
+    // Find row.
+    let find_row = spawn_field_row(commands, "Find", FindFieldKind::Query);
+    let query_field_text = find_row.text_node;
+    commands.entity(root).add_child(find_row.row);
+
+    // Replacement row.
+    let repl_row = spawn_field_row(commands, "Repl", FindFieldKind::Replacement);
+    let replacement_field_text = repl_row.text_node;
+    commands.entity(root).add_child(repl_row.row);
+
+    // Match count + buttons row.
+    let bottom_row = commands
+        .spawn(Node {
+            flex_direction: FlexDirection::Row,
+            align_items: AlignItems::Center,
+            column_gap: Val::Px(4.0),
+            margin: UiRect::top(Val::Px(4.0)),
+            ..default()
+        })
         .id();
-
-    let txt = commands
+    let count = commands
         .spawn((
-            Text2d::new(label),
+            Text::new("0/0"),
             TextFont {
                 font_size: 12.0,
                 ..default()
             },
-            TextColor(Color::WHITE),
-            Transform::from_xyz(0.0, 0.0, 0.1),
+            TextColor(LABEL_FG),
+            Node {
+                width: Val::Px(50.0),
+                ..default()
+            },
+            FindMatchCountUi,
+        ))
+        .id();
+    commands.entity(bottom_row).add_child(count);
+    for (kind, label) in [
+        (FindButtonKind::Prev, "<"),
+        (FindButtonKind::Next, ">"),
+        (FindButtonKind::Replace, "Repl"),
+        (FindButtonKind::ReplaceAll, "Repl All"),
+    ] {
+        let btn = spawn_find_button(commands, kind, label);
+        commands.entity(bottom_row).add_child(btn);
+    }
+    commands.entity(root).add_child(bottom_row);
+
+    (root, query_field_text, replacement_field_text)
+}
+
+enum FindFieldKind {
+    Query,
+    Replacement,
+}
+
+struct FieldRow {
+    row: Entity,
+    text_node: Entity,
+}
+
+fn spawn_field_row(commands: &mut Commands, label: &str, kind: FindFieldKind) -> FieldRow {
+    let row = commands
+        .spawn(Node {
+            flex_direction: FlexDirection::Row,
+            align_items: AlignItems::Center,
+            column_gap: Val::Px(8.0),
+            ..default()
+        })
+        .id();
+    let label_e = commands
+        .spawn((
+            Text::new(label),
+            TextFont {
+                font_size: 12.0,
+                ..default()
+            },
+            TextColor(LABEL_FG),
+            Node {
+                width: Val::Px(40.0),
+                ..default()
+            },
+        ))
+        .id();
+    let field_container = commands
+        .spawn((
+            Node {
+                width: Val::Px(300.0),
+                height: Val::Px(22.0),
+                padding: UiRect::all(Val::Px(4.0)),
+                ..default()
+            },
+            BackgroundColor(FIELD_BG_UI),
+        ))
+        .id();
+    let text_node = commands
+        .spawn((
+            Text::new(""),
+            TextFont {
+                font_size: 14.0,
+                ..default()
+            },
+            TextColor(TEXT_FG),
+        ))
+        .id();
+    match kind {
+        FindFieldKind::Query => {
+            commands.entity(text_node).insert(FindQueryFieldUi);
+        }
+        FindFieldKind::Replacement => {
+            commands.entity(text_node).insert(FindReplacementFieldUi);
+        }
+    }
+    commands.entity(field_container).add_child(text_node);
+    commands.entity(row).add_child(label_e);
+    commands.entity(row).add_child(field_container);
+    FieldRow { row, text_node }
+}
+
+fn spawn_find_button(commands: &mut Commands, kind: FindButtonKind, label: &str) -> Entity {
+    let btn = commands
+        .spawn((
+            Button,
+            Node {
+                width: Val::Auto,
+                height: Val::Px(22.0),
+                padding: UiRect::axes(Val::Px(8.0), Val::Px(2.0)),
+                margin: UiRect::right(Val::Px(4.0)),
+                justify_content: JustifyContent::Center,
+                align_items: AlignItems::Center,
+                ..default()
+            },
+            BackgroundColor(BTN_BG),
+            kind,
+        ))
+        .id();
+    let txt = commands
+        .spawn((
+            Text::new(label),
+            TextFont {
+                font_size: 12.0,
+                ..default()
+            },
+            TextColor(TEXT_FG),
         ))
         .id();
     commands.entity(btn).add_child(txt);
-    commands.entity(parent).add_child(btn);
+    btn
 }
 
 // ─────────────────────────────────────────────────────────────────
@@ -904,28 +934,7 @@ mod tests {
 
     // ── systems (Bevy App) ─────────────────────────────────────
 
-    use crate::ui::strategy_editor_highlight::FindMatchSpans;
-
-    #[test]
-    fn sync_find_editors_writes_query_not_replacement() {
-        let mut app = App::new();
-        app.init_resource::<FindReplaceState>();
-        app.add_message::<CosmicTextChanged>();
-        app.add_systems(Update, sync_find_editors_to_state_system);
-
-        let query_e = app.world_mut().spawn(FindQueryEditor).id();
-        let repl_e = app.world_mut().spawn(FindReplacementEditor).id();
-
-        app.world_mut()
-            .write_message(CosmicTextChanged((query_e, "needle".to_string())));
-        app.world_mut()
-            .write_message(CosmicTextChanged((repl_e, "rep".to_string())));
-        app.update();
-
-        let state = app.world().resource::<FindReplaceState>();
-        assert_eq!(state.query, "needle");
-        assert_eq!(state.replacement, "rep");
-    }
+    // FindMatchSpans / MatchSpan は同モジュール定義 (super 経由)。
 
     #[test]
     fn compute_find_match_spans_writes_matches_to_target_editor() {
@@ -934,21 +943,26 @@ mod tests {
         app.add_systems(Update, compute_find_match_spans_system);
 
         let region = "region_001".to_string();
-        app.world_mut().spawn((
-            WindowRoot,
-            StrategyEditorId {
-                region_key: region.clone(),
-            },
-            StrategyFragment {
-                source: "def foo():\n    def bar(): pass".to_string(),
-                dirty: false,
-            },
-        ));
+        let root = app
+            .world_mut()
+            .spawn((
+                WindowRoot,
+                StrategyEditorId {
+                    region_key: region.clone(),
+                },
+                StrategyFragment {
+                    source: "def foo():\n    def bar(): pass".to_string(),
+                    dirty: false,
+                },
+            ))
+            .id();
+        // Slice 5 (#50): target は bevscode peer (StrategyEditorNode 持ち) entity に切替。
+        // cosmic 側 (StrategyEditorContent) は Slice 6 で消えるので新コードからは触らない。
         let editor = app
             .world_mut()
             .spawn((
-                StrategyEditorContent,
-                StrategyEditorId {
+                StrategyEditorNode {
+                    root,
                     region_key: region.clone(),
                 },
                 FindMatchSpans::default(),
@@ -978,21 +992,24 @@ mod tests {
         app.add_systems(Update, compute_find_match_spans_system);
 
         let region = "region_001".to_string();
-        app.world_mut().spawn((
-            WindowRoot,
-            StrategyEditorId {
-                region_key: region.clone(),
-            },
-            StrategyFragment {
-                source: "def foo()".to_string(),
-                dirty: false,
-            },
-        ));
+        let root = app
+            .world_mut()
+            .spawn((
+                WindowRoot,
+                StrategyEditorId {
+                    region_key: region.clone(),
+                },
+                StrategyFragment {
+                    source: "def foo()".to_string(),
+                    dirty: false,
+                },
+            ))
+            .id();
         let editor = app
             .world_mut()
             .spawn((
-                StrategyEditorContent,
-                StrategyEditorId {
+                StrategyEditorNode {
+                    root,
                     region_key: region.clone(),
                 },
                 FindMatchSpans {
@@ -1025,7 +1042,7 @@ mod tests {
         let mut app = App::new();
         app.init_resource::<FindReplaceState>();
         app.init_resource::<ButtonInput<KeyCode>>();
-        app.insert_resource(FocusedWidget(None));
+        app.init_resource::<bevy::input_focus::InputFocus>();
         app.add_message::<FindActionRequested>();
         app.add_systems(
             Update,
@@ -1033,21 +1050,24 @@ mod tests {
         );
 
         let region = "region_001".to_string();
-        app.world_mut().spawn((
-            WindowRoot,
-            StrategyEditorId {
-                region_key: region.clone(),
-            },
-            StrategyFragment {
-                source: "x x x".to_string(), // 3 single-char matches at bytes 0,2,4
-                dirty: false,
-            },
-        ));
+        let root = app
+            .world_mut()
+            .spawn((
+                WindowRoot,
+                StrategyEditorId {
+                    region_key: region.clone(),
+                },
+                StrategyFragment {
+                    source: "x x x".to_string(), // 3 single-char matches at bytes 0,2,4
+                    dirty: false,
+                },
+            ))
+            .id();
         let editor = app
             .world_mut()
             .spawn((
-                StrategyEditorContent,
-                StrategyEditorId {
+                StrategyEditorNode {
+                    root,
                     region_key: region.clone(),
                 },
                 FindMatchSpans::default(),
@@ -1092,21 +1112,24 @@ mod tests {
         app.add_systems(Update, compute_find_match_spans_system);
 
         let region = "region_001".to_string();
-        app.world_mut().spawn((
-            WindowRoot,
-            StrategyEditorId {
-                region_key: region.clone(),
-            },
-            StrategyFragment {
-                source: "x x".to_string(),
-                dirty: false,
-            },
-        ));
+        let root = app
+            .world_mut()
+            .spawn((
+                WindowRoot,
+                StrategyEditorId {
+                    region_key: region.clone(),
+                },
+                StrategyFragment {
+                    source: "x x".to_string(),
+                    dirty: false,
+                },
+            ))
+            .id();
         let editor = app
             .world_mut()
             .spawn((
-                StrategyEditorContent,
-                StrategyEditorId {
+                StrategyEditorNode {
+                    root,
                     region_key: region.clone(),
                 },
                 FindMatchSpans::default(),
@@ -1149,20 +1172,23 @@ mod tests {
         app.add_systems(Update, compute_find_match_spans_system);
 
         let spawn_pair = |app: &mut App, region: &str| -> Entity {
-            app.world_mut().spawn((
-                WindowRoot,
-                StrategyEditorId {
-                    region_key: region.to_string(),
-                },
-                StrategyFragment {
-                    source: "x x".to_string(),
-                    dirty: false,
-                },
-            ));
+            let root = app
+                .world_mut()
+                .spawn((
+                    WindowRoot,
+                    StrategyEditorId {
+                        region_key: region.to_string(),
+                    },
+                    StrategyFragment {
+                        source: "x x".to_string(),
+                        dirty: false,
+                    },
+                ))
+                .id();
             app.world_mut()
                 .spawn((
-                    StrategyEditorContent,
-                    StrategyEditorId {
+                    StrategyEditorNode {
+                        root,
                         region_key: region.to_string(),
                     },
                     FindMatchSpans::default(),
@@ -1210,5 +1236,274 @@ mod tests {
                 .len(),
             2
         );
+    }
+
+    // ── manage_find_panel_lifecycle_system (Slice 5 #50) ───────
+    //
+    // open=true で初回に FindPanelRoot Node が spawn され Display::Flex、
+    // open=false に切り替えると同じ Node の Display::None に toggle (despawn しない)。
+
+    fn count_find_panel_roots(app: &mut App) -> Vec<Entity> {
+        let world = app.world_mut();
+        let mut q = world.query_filtered::<Entity, With<FindPanelRoot>>();
+        q.iter(world).collect()
+    }
+
+    #[test]
+    fn lifecycle_spawns_panel_on_open_and_toggles_display() {
+        let mut app = App::new();
+        app.init_resource::<FindReplaceState>();
+        app.add_systems(Update, manage_find_panel_lifecycle_system);
+
+        // 初期状態は閉。Node は存在しない。
+        app.update();
+        assert_eq!(count_find_panel_roots(&mut app).len(), 0);
+
+        // open → Node spawn + Display::Flex
+        app.world_mut().resource_mut::<FindReplaceState>().is_open = true;
+        app.update();
+        let panel_entities = count_find_panel_roots(&mut app);
+        assert_eq!(panel_entities.len(), 1, "open で 1 個 spawn");
+        let root = panel_entities[0];
+        let node = app.world().get::<Node>(root).expect("FindPanelRoot に Node");
+        assert_eq!(node.display, Display::Flex);
+
+        // close → 同じ Node が Display::None に
+        app.world_mut().resource_mut::<FindReplaceState>().is_open = false;
+        app.update();
+        let panel_entities2 = count_find_panel_roots(&mut app);
+        assert_eq!(panel_entities2.len(), 1, "close でも entity は残る");
+        let node = app.world().get::<Node>(root).unwrap();
+        assert_eq!(node.display, Display::None);
+
+        // 再度 open → 同じ Node が Display::Flex に戻る
+        app.world_mut().resource_mut::<FindReplaceState>().is_open = true;
+        app.update();
+        let node = app.world().get::<Node>(root).unwrap();
+        assert_eq!(node.display, Display::Flex);
+    }
+
+    // ── find_button_interaction_system (Slice 5 #50) ───────────
+    //
+    // `(Button, Interaction::Pressed, FindButtonKind::Next)` を spawn → app.update() →
+    // `FindActionRequested(Next)` が 1 件 flush される。
+
+    #[test]
+    fn find_button_interaction_emits_action_on_pressed_edge() {
+        let mut app = App::new();
+        app.add_message::<FindActionRequested>();
+        app.add_systems(Update, find_button_interaction_system);
+
+        app.world_mut()
+            .spawn((Button, Interaction::Pressed, FindButtonKind::Next));
+        app.update();
+
+        let drained: Vec<FindActionRequested> = app
+            .world_mut()
+            .resource_mut::<Messages<FindActionRequested>>()
+            .drain()
+            .collect();
+        assert_eq!(drained.len(), 1);
+        assert_eq!(drained[0].0, FindButtonKind::Next);
+    }
+
+    // ── find_field_input_system (Slice 5 #50) ──────────────────
+    //
+    // focused_field=Query で `Key::Character("a")` を送ると `state.query` が "a" になる。
+    // is_open=false / focused_field=None のときは drain しても state を触らない。
+
+    fn make_key_char(s: &str) -> KeyboardInput {
+        KeyboardInput {
+            key_code: KeyCode::KeyA,
+            logical_key: Key::Character(s.into()),
+            state: ButtonState::Pressed,
+            text: Some(s.into()),
+            repeat: false,
+            window: Entity::PLACEHOLDER,
+        }
+    }
+
+    fn make_key(key_code: KeyCode, logical: Key) -> KeyboardInput {
+        KeyboardInput {
+            key_code,
+            logical_key: logical,
+            state: ButtonState::Pressed,
+            text: None,
+            repeat: false,
+            window: Entity::PLACEHOLDER,
+        }
+    }
+
+    #[test]
+    fn find_field_input_escape_closes_panel() {
+        let mut app = App::new();
+        app.init_resource::<FindReplaceState>();
+        app.add_message::<KeyboardInput>();
+        app.add_systems(Update, find_field_input_system);
+
+        {
+            let mut state = app.world_mut().resource_mut::<FindReplaceState>();
+            state.is_open = true;
+            state.focused_field = FindFocusedField::Query;
+        }
+
+        app.world_mut()
+            .write_message(make_key(KeyCode::Escape, Key::Escape));
+        app.update();
+
+        let state = app.world().resource::<FindReplaceState>();
+        assert!(!state.is_open, "Esc で is_open=false");
+        assert_eq!(
+            state.focused_field,
+            FindFocusedField::None,
+            "Esc で focus も外れる"
+        );
+    }
+
+    #[test]
+    fn find_field_input_tab_cycles_focus_between_query_and_replacement() {
+        let mut app = App::new();
+        app.init_resource::<FindReplaceState>();
+        app.add_message::<KeyboardInput>();
+        app.add_systems(Update, find_field_input_system);
+
+        // Query → Tab → Replacement
+        {
+            let mut state = app.world_mut().resource_mut::<FindReplaceState>();
+            state.is_open = true;
+            state.focused_field = FindFocusedField::Query;
+        }
+        app.world_mut().write_message(make_key(KeyCode::Tab, Key::Tab));
+        app.update();
+        assert_eq!(
+            app.world().resource::<FindReplaceState>().focused_field,
+            FindFocusedField::Replacement
+        );
+
+        // Replacement → Tab → Query
+        app.world_mut().write_message(make_key(KeyCode::Tab, Key::Tab));
+        app.update();
+        assert_eq!(
+            app.world().resource::<FindReplaceState>().focused_field,
+            FindFocusedField::Query
+        );
+    }
+
+    #[test]
+    fn find_field_input_backspace_removes_last_char_from_focused_field() {
+        let mut app = App::new();
+        app.init_resource::<FindReplaceState>();
+        app.add_message::<KeyboardInput>();
+        app.add_systems(Update, find_field_input_system);
+
+        {
+            let mut state = app.world_mut().resource_mut::<FindReplaceState>();
+            state.is_open = true;
+            state.focused_field = FindFocusedField::Query;
+            state.query = "ab".to_string();
+        }
+
+        app.world_mut()
+            .write_message(make_key(KeyCode::Backspace, Key::Backspace));
+        app.update();
+
+        let state = app.world().resource::<FindReplaceState>();
+        assert_eq!(state.query, "a");
+    }
+
+    #[test]
+    fn find_field_input_appends_char_to_query_when_query_focused() {
+        let mut app = App::new();
+        app.init_resource::<FindReplaceState>();
+        app.add_message::<KeyboardInput>();
+        app.add_systems(Update, find_field_input_system);
+
+        {
+            let mut state = app.world_mut().resource_mut::<FindReplaceState>();
+            state.is_open = true;
+            state.focused_field = FindFocusedField::Query;
+        }
+
+        app.world_mut().write_message(make_key_char("a"));
+        app.update();
+
+        let state = app.world().resource::<FindReplaceState>();
+        assert_eq!(state.query, "a");
+        assert_eq!(state.replacement, "");
+    }
+
+    // ── replace_execute_system (Slice 5 #50) ───────────────────
+    //
+    // bevscode 切替後の不変条件:
+    //   ReplaceAll action を投げると `SetTextRequested { entity: target, text: new_source }`
+    //   が **1 件だけ** flush される (bevscode 側 sync system が fragment/autosave/AppHistory を駆動)。
+    //   cosmic 経路 (`CosmicTextChanged`) はもう使わない。
+
+    #[test]
+    fn replace_execute_emits_set_text_requested_on_replace_all() {
+        let mut app = App::new();
+        app.init_resource::<FindReplaceState>();
+        app.add_message::<FindActionRequested>();
+        app.add_message::<SetTextRequested>();
+        app.add_systems(Update, replace_execute_system);
+
+        let region = "region_001".to_string();
+        let root = app
+            .world_mut()
+            .spawn((
+                WindowRoot,
+                StrategyEditorId {
+                    region_key: region.clone(),
+                },
+                StrategyFragment {
+                    source: "foo bar foo".to_string(),
+                    dirty: false,
+                },
+            ))
+            .id();
+        let editor = app
+            .world_mut()
+            .spawn(StrategyEditorNode {
+                root,
+                region_key: region.clone(),
+            })
+            .id();
+
+        {
+            let mut state = app.world_mut().resource_mut::<FindReplaceState>();
+            state.is_open = true;
+            state.target_editor = Some(editor);
+            state.query = "foo".to_string();
+            state.replacement = "X".to_string();
+            // compute は走らせないので matches は直接注入
+            state.matches = vec![
+                MatchSpan {
+                    line: 0,
+                    byte_range: 0..3,
+                },
+                MatchSpan {
+                    line: 0,
+                    byte_range: 8..11,
+                },
+            ];
+            state.current = 0;
+        }
+
+        app.world_mut()
+            .write_message(FindActionRequested(FindButtonKind::ReplaceAll));
+        app.update();
+
+        let drained: Vec<SetTextRequested> = app
+            .world_mut()
+            .resource_mut::<Messages<SetTextRequested>>()
+            .drain()
+            .collect();
+        assert_eq!(
+            drained.len(),
+            1,
+            "ReplaceAll で SetTextRequested が 1 件だけ flush される"
+        );
+        assert_eq!(drained[0].entity, editor);
+        assert_eq!(drained[0].text, "X bar X");
     }
 }

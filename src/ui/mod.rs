@@ -1,3 +1,5 @@
+pub mod theme;
+pub mod traits;
 pub mod buying_power;
 pub mod chart_axes;
 pub mod chart_crosshair;
@@ -37,6 +39,8 @@ pub mod strategy_editor_gutter;
 pub mod strategy_editor_highlight;
 pub mod strategy_editor_input;
 pub mod strategy_editor_scrollbar;
+// issue #50 Step 0 spike — cosmic 並存の Projected Node PoC（Go/No-Go ゲート）。
+pub mod strategy_editor_spike;
 pub mod systems;
 pub mod window;
 
@@ -138,8 +142,9 @@ use crate::ui::scenario_parser::parse_scenario_system;
 use crate::ui::scenario_startup_panel::{
     ScenarioStartupParamCommit, commit_startup_params_to_scenario_system,
     enforce_scenario_startup_panel_readonly_system,
-    scenario_startup_param_input_system, spawn_scenario_startup_input_fields,
-    spawn_scenario_startup_window_system, sync_startup_param_editors_text_system,
+    scenario_startup_field_render_system, scenario_startup_param_input_system,
+    spawn_scenario_startup_input_fields, spawn_scenario_startup_window_system,
+    sync_startup_param_editors_text_system,
     sync_startup_params_from_scenario_system, update_scenario_startup_param_ui_system,
     write_startup_params_to_cache_sidecar_system,
 };
@@ -159,9 +164,10 @@ use crate::ui::strategy_editor::{
 };
 use crate::ui::strategy_editor_compose::apply_highlight_layers_system;
 use crate::ui::strategy_editor_find::{
-    FindActionRequested, FindReplaceState, compute_find_match_spans_system, find_keyboard_system,
-    find_navigate_system, find_scroll_to_match_system, manage_find_panel_lifecycle_system,
-    replace_execute_system, sync_find_editors_to_state_system, update_find_count_text_system,
+    FindActionRequested, FindReplaceState, compute_find_match_spans_system,
+    find_button_interaction_system, find_field_input_system, find_keyboard_system,
+    find_navigate_system, manage_find_panel_lifecycle_system, replace_execute_system,
+    update_find_count_text_system,
 };
 use crate::ui::strategy_editor_gutter::{sync_gutter_scroll_system, update_gutter_text_system};
 use crate::ui::strategy_editor_highlight::{
@@ -222,7 +228,12 @@ impl Plugin for UiPlugin {
                 font_config: CosmicFontConfig::default(),
             },
             crate::ui::layout_persistence::LayoutPersistencePlugin,
+            // issue #50 Step 0 spike: bevscode editor を Projected Node 方式で世界座標に出すための plugins。
+            // cosmic_edit と並存（spike が Go になるまで撤去しない）。
+            bevscode::prelude::CodeEditorPlugins,
+            theme::ThemePlugin,
         ))
+        .add_message::<crate::ui::strategy_editor_spike::SpikeEditorSpawnRequested>()
         .init_resource::<WindowManager>()
         .init_resource::<StrategyBuffer>()
         .init_resource::<StrategyAutoSaveState>()
@@ -232,6 +243,7 @@ impl Plugin for UiPlugin {
         .init_resource::<ActiveDrag>()
         .init_resource::<PendingStrategySnapshotRestore>()
         .init_resource::<FindReplaceState>()
+        .init_resource::<crate::ui::components::ScenarioStartupFocus>()
         .add_message::<FindActionRequested>()
         .add_message::<OrderButtonPressed>()
         // ⚠️ 必須: chart_data_tick_system が EventWriter<RequestAutoscale> を取るので
@@ -433,6 +445,7 @@ impl Plugin for UiPlugin {
                     commit_startup_params_to_scenario_system,
                     write_startup_params_to_cache_sidecar_system,
                     sync_startup_param_editors_text_system,
+                    scenario_startup_field_render_system,
                     update_scenario_startup_param_ui_system,
                     enforce_scenario_startup_panel_readonly_system,
                 )
@@ -528,24 +541,29 @@ impl Plugin for UiPlugin {
                 bracket_autoclose_system.after(bevy_cosmic_edit::InputSet),
             ),
         )
-        // ── Find / Replace パネル (Phase E) ──
-        // マッチ計算は composer の前 (FindMatchSpans を書く)。色付けは composer。
+        // ── Find / Replace パネル (Slice 5 #50: Bevy UI Node 化、cosmic 経路撤去) ──
+        // マッチ計算は composer の前 (FindMatchSpans を書く)。色付けは composer (Slice 6 で削除)。
         .add_systems(
             Update,
             (
                 find_keyboard_system.before(manage_find_panel_lifecycle_system),
                 manage_find_panel_lifecycle_system,
-                sync_find_editors_to_state_system.after(sync_strategy_buffer_to_editor_system),
+                // Bevy UI Node 入力: keyboard drain (focused_field=Query/Replacement 時)
+                find_field_input_system.after(manage_find_panel_lifecycle_system),
+                // ボタン Interaction エッジ → FindActionRequested
+                find_button_interaction_system.after(manage_find_panel_lifecycle_system),
                 compute_find_match_spans_system
-                    .after(sync_find_editors_to_state_system)
+                    .after(find_field_input_system)
                     .before(apply_highlight_layers_system),
                 find_navigate_system
                     .after(compute_find_match_spans_system)
+                    .after(find_button_interaction_system)
                     .before(apply_highlight_layers_system),
-                find_scroll_to_match_system.after(find_navigate_system),
-                // replace は composer の後。先に走ると set_text 済みの新 buffer に
-                // 旧 fragment/旧 spans 由来の attrs を当ててしまう (色は次フレームに再計算)。
-                replace_execute_system.after(apply_highlight_layers_system),
+                // replace は composer の後。bevscode SetTextRequested を発行するだけ
+                // (TextBuffer ↔ fragment/autosave は sync_bevscode_to_strategy_fragment_system が駆動)。
+                replace_execute_system
+                    .after(find_button_interaction_system)
+                    .after(apply_highlight_layers_system),
                 // 件数表示はマッチ確定 (compute) とナビ確定 (navigate) の後に読む。
                 update_find_count_text_system
                     .after(compute_find_match_spans_system)
@@ -637,6 +655,79 @@ impl Plugin for UiPlugin {
         )
         // ── Phase 10 §2.10: Safety Rail violation toast ──
         .add_systems(Update, safety_toast_system)
+        // ── issue #50 Step 0 spike: Projected Node 方式 PoC ──
+        // ADR 0006 / plan: cosmic_edit と並存させて Go/No-Go を判定する。
+        // - handle_spike_editor_spawn_requests: メニュー / キーボードからの spawn 要求を受ける（Update）
+        // - cleanup_spike_editor_on_root_despawn: × で root が消えたら Node も連れて despawn（Update）
+        .add_systems(
+            Update,
+            (
+                crate::ui::strategy_editor_spike::handle_spike_editor_spawn_requests,
+                crate::ui::strategy_editor_spike::cleanup_spike_editor_on_root_despawn,
+            ),
+        )
+        // - project_spike_editor_node_system: world rect → screen rect 投影で Node を毎フレーム更新
+        //   （`UiSystems::Layout` の前 = 同フレーム ComputedNode に反映）。
+        // - touch_spike_text_layouts_on_position_change: drag/pan で editor が動くだけ
+        //   （size 不変）のケースで bevy_instanced_text の `produce_layouts` / `update_text_views`
+        //   がキャッシュで早期 return するのを回避するため、`Changed<UiGlobalTransform>` を検知
+        //   して editor / gutter の `DisplayLayout` を `set_changed()` する。詳細は spike module
+        //   の docstring（issue #50 Step 0 / ADR 0006 / bevy_instanced_text 51220b7 の挙動）。
+        //   順序は `LayoutProduceSet.after`（produce_layouts の上書きを避ける）/
+        //   `TextViewRenderSet.before`（update_text_views が拾えるタイミング）。
+        .add_systems(
+            PostUpdate,
+            (
+                crate::ui::strategy_editor_spike::project_spike_editor_node_system
+                    .before(bevy::ui::UiSystems::Layout),
+                crate::ui::strategy_editor_spike::touch_spike_text_layouts_on_position_change
+                    .after(bevy_instanced_text::LayoutProduceSet)
+                    .before(bevy_instanced_text::TextViewRenderSet),
+            ),
+        )
+        // ── Slice 1 (#50): bevscode 本実装 Projected Node 系統（cosmic と並存）──
+        // ADR 0006. spike と同じ schedule 構成で本実装 marker（StrategyEditorRoot / StrategyEditorNode）に
+        // 適用する。Slice 7 で spike 撤去後はこちらだけが残る。
+        // - spawn_bevscode_peer_on_strategy_editor_added: Added<StrategyEditorRoot> を watch し peer を生成
+        // - apply_pending_strategy_seed_system: seed を SetTextRequested で投入し pending marker を外す
+        // - cleanup_strategy_editor_node_on_root_despawn: root が消えたら peer を片付ける
+        .add_systems(
+            Update,
+            (
+                crate::ui::strategy_editor::spawn_bevscode_peer_on_strategy_editor_added,
+                crate::ui::strategy_editor::apply_pending_strategy_seed_system,
+                crate::ui::strategy_editor::cleanup_strategy_editor_node_on_root_despawn,
+            ),
+        )
+        // ── Slice 2 (#50): bevscode ↔ StrategyBuffer 同期 + AppHistory undo bridge ──
+        // - install_strategy_editor_keybindings: bevscode 既定の Ctrl+Z/Y を剥がした InputMap を
+        //   Startup で先取り spawn（PostStartup の `spawn_default_input_manager` は既存があればスキップ）
+        // - sync_bevscode_to_strategy_fragment_system: bevscode 入力 → StrategyFragment + autosave + AppHistory
+        // - sync_strategy_fragment_to_bevscode_system: AppHistory writeback / file load → bevscode SetTextRequested
+        .add_systems(
+            Startup,
+            crate::ui::strategy_editor::install_strategy_editor_keybindings,
+        )
+        .add_systems(
+            Update,
+            (
+                crate::ui::strategy_editor::sync_bevscode_to_strategy_fragment_system,
+                crate::ui::strategy_editor::sync_strategy_fragment_to_bevscode_system,
+            ),
+        )
+        // - project_strategy_editor_node_system: world rect → screen rect 投影で Node を毎フレーム更新
+        // - touch_strategy_text_layouts_on_position_change: drag/pan で動いた editor の DisplayLayout を
+        //   set_changed() して glyph batch キャッシュバグを回避（spike と同じ理由・同じ schedule）
+        .add_systems(
+            PostUpdate,
+            (
+                crate::ui::strategy_editor::project_strategy_editor_node_system
+                    .before(bevy::ui::UiSystems::Layout),
+                crate::ui::strategy_editor::touch_strategy_text_layouts_on_position_change
+                    .after(bevy_instanced_text::LayoutProduceSet)
+                    .before(bevy_instanced_text::TextViewRenderSet),
+            ),
+        )
         // ── Settings モーダル（on-demand spawn / × ボタン or Escape で despawn）──
         .add_systems(
             Update,

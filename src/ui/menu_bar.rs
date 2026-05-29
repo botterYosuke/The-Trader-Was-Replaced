@@ -157,6 +157,8 @@ pub fn spawn_menu_bar(mut commands: Commands) {
                 .with_children(|p| {
                     spawn_menu_item(p, "Undo (Ctrl+Z)", MenuItem::Undo);
                     spawn_menu_item(p, "Redo (Ctrl+Y)", MenuItem::Redo);
+                    // issue #50 Step 0 spike — Projected Node PoC (cosmic 並存)。Phase B で削除。
+                    spawn_menu_item(p, "PoC: Bevscode", MenuItem::SpikeBevscode);
                 });
             });
 
@@ -501,6 +503,8 @@ pub fn menu_item_system(
     mut load_ev: MessageWriter<LayoutLoadDialogRequested>,
     mut undo_ev: MessageWriter<UndoMenuRequested>,
     mut redo_ev: MessageWriter<RedoMenuRequested>,
+    // issue #50 Step 0 spike — Phase B で削除予定。
+    mut spike_ev: MessageWriter<crate::ui::strategy_editor_spike::SpikeEditorSpawnRequested>,
     sender: Option<Res<TransportCommandSender>>,
     execution_mode: Res<ExecutionModeRes>,
     venue_status: Res<VenueStatusRes>,
@@ -628,6 +632,14 @@ pub fn menu_item_system(
                         if existing_settings.is_empty() {
                             spawn_settings_modal(&mut commands);
                         }
+                    }
+                    MenuItem::SpikeBevscode => {
+                        // issue #50 Step 0 spike: Projected Node PoC を spawn する。
+                        // dispatcher（PanelSpawnRequested）は経由せず、専用 Message で spike module に渡す。
+                        info!("menu: PoC: Bevscode spawn requested");
+                        spike_ev.write(
+                            crate::ui::strategy_editor_spike::SpikeEditorSpawnRequested,
+                        );
                     }
                 }
             }
@@ -1517,6 +1529,11 @@ mod tests {
         app.add_message::<LayoutLoadDialogRequested>();
         app.add_message::<UndoMenuRequested>();
         app.add_message::<RedoMenuRequested>();
+        app.add_message::<PanelSpawnRequested>();
+        // issue #50 Step 0 spike — menu_item_system に MessageWriter<SpikeEditorSpawnRequested>
+        // を追加したので、その system を踏むテスト App でも対応する add_message が必要
+        // （未登録だと `Message not initialized` で param validation panic、bevy-engine skill 既知トラップ）。
+        app.add_message::<crate::ui::strategy_editor_spike::SpikeEditorSpawnRequested>();
 
         let (tx, rx) = tokio::sync::mpsc::unbounded_channel::<TransportCommand>();
         app.insert_resource(TransportCommandSender { tx });
