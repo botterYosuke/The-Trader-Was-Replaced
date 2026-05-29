@@ -34,7 +34,7 @@ pub use typography::{
 /// Field naming mirrors Zed's `ThemeColors`. Each field has a single
 /// canonical use site; do not reach into [`ColorScale`] directly from UI code
 /// unless a new semantic role is being added here.
-#[derive(Debug, Clone, Copy, serde::Serialize, serde::Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, serde::Serialize, serde::Deserialize)]
 pub struct ThemeColors {
     /// Root window / app background (scale step 1).
     pub background: Color,
@@ -92,7 +92,7 @@ pub struct ThemeColors {
 /// Status / semantic colors (info / warning / error / success) and trading-
 /// specific roles (long / short / bid / ask). Each role exposes a solid color
 /// plus matching `_background` and `_border` variants.
-#[derive(Debug, Clone, Copy, serde::Serialize, serde::Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, serde::Serialize, serde::Deserialize)]
 pub struct StatusColors {
     pub info: Color,
     pub info_background: Color,
@@ -137,7 +137,7 @@ pub struct StatusColors {
 /// from `syntect::Theme` (or tree-sitter highlight queries) lands in #50.
 ///
 /// NOTE: `type_` has a trailing underscore to avoid the reserved word `type`.
-#[derive(Debug, Clone, Copy, serde::Serialize, serde::Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, serde::Serialize, serde::Deserialize)]
 pub struct SyntaxColors {
     /// Line / block comments.
     pub comment: Color,
@@ -161,7 +161,7 @@ pub struct SyntaxColors {
 
 /// Distinct chart / series palette (8 colors). Index by series number; wrap
 /// modulo `8` for more than 8 series.
-#[derive(Debug, Clone, Copy, serde::Serialize, serde::Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, serde::Serialize, serde::Deserialize)]
 pub struct PlayerColors(pub [Color; 8]);
 
 impl PlayerColors {
@@ -174,7 +174,7 @@ impl PlayerColors {
 // -- Radius -----------------------------------------------------------------
 
 /// Border-radius tokens, in pixels.
-#[derive(Debug, Clone, Copy, serde::Serialize, serde::Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, serde::Serialize, serde::Deserialize)]
 pub struct Radius {
     /// Small (2 px) — chips, tags.
     pub sm: f32,
@@ -195,7 +195,7 @@ impl Default for Radius {
 // -- Layout -----------------------------------------------------------------
 
 /// Layout tokens that are global to the whole app (chrome sizes).
-#[derive(Debug, Clone, Copy, serde::Serialize, serde::Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, serde::Serialize, serde::Deserialize)]
 pub struct Layout {
     /// Toolbar / menu bar height in px.
     pub toolbar_h: f32,
@@ -234,7 +234,7 @@ pub enum Appearance {
 /// instances under semantic names so call sites can write
 /// `theme.scale.accent.step_9()` instead of reaching into [`ColorScale::*_dark`]
 /// constructors directly.
-#[derive(Debug, Clone, Copy, serde::Serialize, serde::Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, serde::Serialize, serde::Deserialize)]
 pub struct ColorScales {
     pub neutral: ColorScale,
     pub accent: ColorScale,
@@ -266,7 +266,7 @@ impl Default for ColorScales {
 ///
 /// `SpacingTokens::density` is the single source of truth for UI density;
 /// `Layout` no longer carries a density field.
-#[derive(Debug, Clone, Copy, Default, serde::Serialize, serde::Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Default, serde::Serialize, serde::Deserialize)]
 pub struct SpacingTokens {
     pub density: UiDensity,
 }
@@ -285,7 +285,7 @@ impl SpacingTokens {
 /// `theme.elevation.z(ElevationIndex::ModalSurface)` and
 /// `theme.elevation.background(ElevationIndex::Surface, &theme.colors)`
 /// without importing `ElevationIndex` separately at every site.
-#[derive(Debug, Clone, Copy, Default, serde::Serialize, serde::Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Default, serde::Serialize, serde::Deserialize)]
 pub struct ElevationTokens;
 
 impl ElevationTokens {
@@ -304,7 +304,7 @@ impl ElevationTokens {
 
 /// Design-system root Resource. Built by `Default::default()` (dark variant);
 /// runtime theme swapping lands later.
-#[derive(Resource, Debug, Clone, serde::Serialize, serde::Deserialize)]
+#[derive(Resource, Debug, Clone, PartialEq, serde::Serialize, serde::Deserialize)]
 pub struct Theme {
     pub colors: ThemeColors,
     pub status: StatusColors,

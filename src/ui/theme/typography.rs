@@ -54,7 +54,7 @@ pub enum LabelSize {
 }
 
 /// A single text style token: size, line height, weight, family.
-#[derive(Debug, Clone, Copy, serde::Serialize, serde::Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, serde::Serialize, serde::Deserialize)]
 pub struct TypeStyle {
     pub size: f32,
     pub line_height: f32,
@@ -93,7 +93,7 @@ impl TypeStyle {
 ///
 /// Built from `Default::default()` (dark theme baseline). Look up styles via
 /// the accessors below; do not index the arrays directly from call sites.
-#[derive(Debug, Clone, Copy, serde::Serialize, serde::Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, serde::Serialize, serde::Deserialize)]
 pub struct Typography {
     /// XSmall, Small, Medium, Large, XLarge (5 tiers).
     headline: [TypeStyle; 5],

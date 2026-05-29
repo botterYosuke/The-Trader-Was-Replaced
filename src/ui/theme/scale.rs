@@ -22,7 +22,7 @@ use bevy::prelude::*;
 
 /// 12-step Radix-style color scale. Indexing is 1-based externally,
 /// 0-based internally. Construct via [`ColorScale::neutral_dark`] etc.
-#[derive(Debug, Clone, Copy, serde::Serialize, serde::Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, serde::Serialize, serde::Deserialize)]
 pub struct ColorScale([Color; 12]);
 
 impl ColorScale {
