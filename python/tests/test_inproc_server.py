@@ -3,6 +3,8 @@
 Verifies that InprocLiveServer correctly wraps GrpcDataEngineServer and routes
 each live command to the corresponding Python method without gRPC overhead.
 """
+from pathlib import Path
+
 import pytest
 
 from engine.core import DataEngine
@@ -194,14 +196,23 @@ def test_get_portfolio_before_run():
 # live strategy operations — no session → LIVE_VENUE_NOT_LOGGED_IN / LIVE_ADAPTER_NOT_CONFIGURED
 # ---------------------------------------------------------------------------
 
-def test_register_live_strategy_no_adapter():
+def test_start_live_strategy_no_adapter():
+    """register は venue 非依存で strategy_id を発行する。venue precondition は
+    start_live_strategy 側で効く（EXECUTION_MODE_PRECONDITION）."""
     from engine.inproc_server import InprocLiveServer
 
     engine = DataEngine()
     srv = InprocLiveServer(engine, live_venue_id=None)
-    result = srv.register_live_strategy("examples/test_strategy_minute.py")
+
+    strategy_file = Path(__file__).parents[2] / "examples/test_strategy_minute.py"
+    result = srv.register_live_strategy(str(strategy_file))
     assert isinstance(result, dict)
-    assert result["success"] is False
+    assert result["success"] is True
+    assert result["strategy_id"]
+
+    start = srv.start_live_strategy(result["strategy_id"], "7203.TSE", "MOCK")
+    assert isinstance(start, dict)
+    assert start["success"] is False
 
 
 def test_stop_live_strategy_no_run():

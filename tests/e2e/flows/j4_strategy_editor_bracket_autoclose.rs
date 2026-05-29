@@ -41,3 +41,44 @@ fn j4_quote_autoclose_returns_none_for_non_quote() {
     assert_eq!(get_closing_quote('('), None);
     assert_eq!(get_closing_quote('a'), None);
 }
+
+/// J4b wiring guard — bracket autoclose runs inside bevscode's character-insert pipeline,
+/// so there's no dedicated EditorAction for it. Guard the wiring by asserting that
+/// `install_strategy_editor_keybindings` actually spawns an EditorInputManager + InputMap
+/// retaining the default-action spread (a future blank InputMap would silently disable
+/// bracket autoclose because typing actions would be unbound).
+#[test]
+fn j4_install_keybindings_retains_default_actions() {
+    use backcast::ui::strategy_editor::install_strategy_editor_keybindings;
+    use bevscode::input::EditorAction;
+    use bevscode::plugin::EditorInputManager;
+    use bevy::prelude::*;
+    use bevscode::input::InputMap;
+
+    let mut app = App::new();
+    app.add_systems(Startup, install_strategy_editor_keybindings);
+    app.update();
+
+    let mut q = app
+        .world_mut()
+        .query_filtered::<&InputMap<EditorAction>, With<EditorInputManager>>();
+    let input_map = q
+        .iter(app.world())
+        .next()
+        .expect("install_strategy_editor_keybindings did not spawn EditorInputManager");
+
+    for action in [
+        EditorAction::InsertNewline,
+        EditorAction::InsertTab,
+        EditorAction::DeleteBackward,
+        EditorAction::MoveCursorLeft,
+        EditorAction::MoveCursorRight,
+    ] {
+        let bound = input_map.get_buttonlike(&action);
+        assert!(
+            bound.is_some_and(|v| !v.is_empty()),
+            "default action {:?} was unbound by install_strategy_editor_keybindings",
+            action,
+        );
+    }
+}

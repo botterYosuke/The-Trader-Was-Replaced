@@ -142,6 +142,18 @@ format / restore の判断も Navigator に任せます。
 
 司令塔Agentは、Navigator が示した restore 対象だけ Driver または Human に渡します。
 
+## 「Medium 以上なし」を確定する前に必ずテストを回す
+
+レビュー＆修正ループ（「Medium が無くなるまで」）で Navigator が **コードレビューだけで「Medium 以上なし」と結論しても、司令塔はそれを最終確定にしない**。コードレビューは静的観察であり、実際に落ちるテストを見落とすことがある。
+
+ルール:
+
+- Navigator が「Medium 以上なし」と返したら、司令塔は **完了宣言の前に必ず該当範囲の `cargo test` / `pytest` を回す**（Navigator/Driver に Bash が無い harness では司令塔が代行する原則どおり）。回す対象は Navigator が起草した検証コマンド、無ければ変更ファイルに対応するユニット/統合テスト。
+- テストが赤なら、その raw 出力を **判定せずに Navigator へ verbatim で渡す**。Navigator が「実装バグ（Medium 以上）か / stale テスト（実装は正・テストが誤り）か」を切り分け、次の 1 手を起草する。
+- 「コミットメッセージに GREEN と書いてある」「前任 Navigator が健全と言った」だけで緑とみなさない。実際に回して確かめる。
+
+実例（issue #64 レビュー）: Navigator はコードレビューのみで「Medium 以上なし」と結論したが、司令塔が裏取りで `pytest` を回したところ 1 件が赤（`assert success is False` だが実装は `True` を返す）。Navigator 再判定で「register は mode gate なし＝実装が正、テストの期待が stale」と切り分けられ、テスト側を直して解決した。**司令塔がテストを回さなければこの赤は完了報告をすり抜けていた。**
+
 ## 完了報告（司令塔 → Human）
 
 完了時、司令塔Agentは事実を短く並べます。
