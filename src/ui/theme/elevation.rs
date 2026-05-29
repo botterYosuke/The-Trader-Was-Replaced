@@ -56,9 +56,9 @@ impl ElevationIndex {
             ElevationIndex::Background      => colors.background,
             ElevationIndex::Surface         => colors.surface_background,
             ElevationIndex::ElevatedSurface => colors.elevated_surface_background,
-            ElevationIndex::ModalSurface    => colors.elevated_surface_background,
-            ElevationIndex::Notification    => colors.elevated_surface_background,
-            ElevationIndex::DragOverlay     => colors.elevated_surface_background,
+            ElevationIndex::ModalSurface    => colors.modal_background,
+            ElevationIndex::Notification    => colors.notification_background,
+            ElevationIndex::DragOverlay     => colors.drag_overlay_background,
         }
     }
 }
@@ -91,18 +91,18 @@ mod tests {
         );
         assert_eq!(
             ElevationIndex::ModalSurface.background(&theme),
-            theme.colors.elevated_surface_background,
-            "ModalSurface tier should map to colors.elevated_surface_background (modal card)"
+            theme.colors.modal_background,
+            "ModalSurface tier should map to colors.modal_background"
         );
         assert_eq!(
             ElevationIndex::Notification.background(&theme),
-            theme.colors.elevated_surface_background,
-            "Notification tier should map to colors.elevated_surface_background"
+            theme.colors.notification_background,
+            "Notification tier should map to colors.notification_background"
         );
         assert_eq!(
             ElevationIndex::DragOverlay.background(&theme),
-            theme.colors.elevated_surface_background,
-            "DragOverlay tier should map to colors.elevated_surface_background"
+            theme.colors.drag_overlay_background,
+            "DragOverlay tier should map to colors.drag_overlay_background"
         );
     }
 }
