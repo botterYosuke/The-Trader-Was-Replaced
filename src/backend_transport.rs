@@ -81,71 +81,71 @@ impl BackendTransport for GrpcTransport {
         let mode_seq = std::sync::Arc::new(std::sync::atomic::AtomicU64::new(0));
         let mode_gate = std::sync::Arc::new(tokio::sync::Mutex::new(()));
 
-        // Backend event subscriber runs on its own task (cannot share the command
-        // task's client, which is busy in its select! loop).
-        let ev_url = url.clone();
-        let ev_token = token.clone();
-        let ev_event_tx = event_tx.clone();
-        let mut ev_lifecycle_rx = lifecycle_rx.clone();
-        tokio::spawn(async move {
-            loop {
-                if ev_lifecycle_rx
-                    .wait_for(|s| matches!(s, BackendLifecycle::Ready))
-                    .await
-                    .is_err()
-                {
-                    return; // supervisor dropped = app exit
-                }
-                let mut client = match DataEngineClient::connect(ev_url.clone()).await {
-                    Ok(c) => c,
-                    Err(e) => {
-                        error!("[backend-events] connect failed after Ready: {}", e);
-                        if !events_reconnect_backoff(&mut ev_lifecycle_rx).await {
-                            return;
-                        }
-                        continue;
-                    }
-                };
-                let req = tonic::Request::new(SubscribeBackendEventsReq {
-                    token: ev_token.clone(),
-                });
-                let mut stream = match client.subscribe_backend_events(req).await {
-                    Ok(resp) => resp.into_inner(),
-                    Err(e) => {
-                        error!("[backend-events] subscribe failed: {}", e);
-                        if !events_reconnect_backoff(&mut ev_lifecycle_rx).await {
-                            return;
-                        }
-                        continue;
-                    }
-                };
-                info!("[backend-events] stream established.");
-                loop {
-                    match stream.message().await {
-                        Ok(Some(ev)) => {
-                            let Some(payload) = ev.payload else {
-                                warn!("[backend-events] event with empty payload; skipping");
-                                continue;
-                            };
-                            let _ = ev_event_tx.send(map_backend_event_payload(payload));
-                        }
-                        Ok(None) => {
-                            info!("[backend-events] server closed stream; reconnecting.");
-                            break;
-                        }
-                        Err(e) => {
-                            error!("[backend-events] stream error: {}; reconnecting.", e);
-                            break;
-                        }
-                    }
-                }
-                if !events_reconnect_backoff(&mut ev_lifecycle_rx).await {
-                    return;
-                }
-            }
-        });
-
         Box::pin(async move {
+            // Backend event subscriber runs on its own task (cannot share the command
+            // task's client, which is busy in its select! loop).
+            let ev_url = url.clone();
+            let ev_token = token.clone();
+            let ev_event_tx = event_tx.clone();
+            let mut ev_lifecycle_rx = lifecycle_rx.clone();
+            tokio::spawn(async move {
+                loop {
+                    if ev_lifecycle_rx
+                        .wait_for(|s| matches!(s, BackendLifecycle::Ready))
+                        .await
+                        .is_err()
+                    {
+                        return; // supervisor dropped = app exit
+                    }
+                    let mut client = match DataEngineClient::connect(ev_url.clone()).await {
+                        Ok(c) => c,
+                        Err(e) => {
+                            error!("[backend-events] connect failed after Ready: {}", e);
+                            if !events_reconnect_backoff(&mut ev_lifecycle_rx).await {
+                                return;
+                            }
+                            continue;
+                        }
+                    };
+                    let req = tonic::Request::new(SubscribeBackendEventsReq {
+                        token: ev_token.clone(),
+                    });
+                    let mut stream = match client.subscribe_backend_events(req).await {
+                        Ok(resp) => resp.into_inner(),
+                        Err(e) => {
+                            error!("[backend-events] subscribe failed: {}", e);
+                            if !events_reconnect_backoff(&mut ev_lifecycle_rx).await {
+                                return;
+                            }
+                            continue;
+                        }
+                    };
+                    info!("[backend-events] stream established.");
+                    loop {
+                        match stream.message().await {
+                            Ok(Some(ev)) => {
+                                let Some(payload) = ev.payload else {
+                                    warn!("[backend-events] event with empty payload; skipping");
+                                    continue;
+                                };
+                                let _ = ev_event_tx.send(map_backend_event_payload(payload));
+                            }
+                            Ok(None) => {
+                                info!("[backend-events] server closed stream; reconnecting.");
+                                break;
+                            }
+                            Err(e) => {
+                                error!("[backend-events] stream error: {}; reconnecting.", e);
+                                break;
+                            }
+                        }
+                    }
+                    if !events_reconnect_backoff(&mut ev_lifecycle_rx).await {
+                        return;
+                    }
+                }
+            });
+
             // Ready-driven reconnect loop. We do not connect until the supervisor
             // signals Ready.
             loop {
@@ -2988,5 +2988,41 @@ mod tests {
                 if source == "test" && ts_ms == 9999),
             "BackendError payload should map correctly"
         );
+    }
+
+    /// issue #64 finding #2 (RED): `GrpcTransport::run()` must build its future
+    /// *without* eagerly calling `tokio::spawn` in the synchronous body. At startup
+    /// `main.rs` evaluates `transport.run(...)` on the Bevy compute pool (no Tokio
+    /// reactor) before handing the future to `handle.spawn`. An eager `tokio::spawn`
+    /// there panics with "no reactor running". This test calls `run()` with NO
+    /// runtime and only constructs the future (never polls it); it must not panic.
+    #[test]
+    fn grpc_run_does_not_spawn_eagerly_outside_runtime() {
+        use super::BackendTransport;
+        use crate::backend_supervisor::BackendLifecycle;
+        use crate::trading::{
+            BackendEvent, BackendStatusUpdate, BackendTradingState, TransportCommand,
+        };
+        use tokio::sync::mpsc;
+
+        let transport = Box::new(super::GrpcTransport {
+            url: "http://127.0.0.1:1".to_string(),
+            token: "test-token".to_string(),
+            poll_interval_ms: 1000,
+            catalog_path: None,
+        });
+
+        let (_cmd_tx, cmd_rx) = mpsc::unbounded_channel::<TransportCommand>();
+        let (state_tx, _state_rx) = mpsc::unbounded_channel::<BackendTradingState>();
+        let (status_tx, _status_rx) = mpsc::unbounded_channel::<BackendStatusUpdate>();
+        let (event_tx, _event_rx) = mpsc::unbounded_channel::<BackendEvent>();
+        let (_life_tx, life_rx) =
+            tokio::sync::watch::channel(BackendLifecycle::NotStarted);
+
+        // Constructing the future must not require a Tokio runtime. Currently the
+        // events subscriber `tokio::spawn` lives in the synchronous body (~:90) and
+        // panics here; after the fix it moves inside `Box::pin(async move { ... })`.
+        let _fut = transport.run(cmd_rx, state_tx, status_tx, event_tx, life_rx);
+        // We deliberately do NOT poll `_fut`; dropping it is enough for this guard.
     }
 }
