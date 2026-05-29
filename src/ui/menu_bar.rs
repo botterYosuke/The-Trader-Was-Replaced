@@ -1062,7 +1062,6 @@ pub fn handle_strategy_run_system(
 
         let startup_id = progress.next_startup_id;
         let cmd = TransportCommand::LoadAndStep {
-            strategy_file: event.cache_path.clone(),
             config: run_config,
             startup_id,
         };
