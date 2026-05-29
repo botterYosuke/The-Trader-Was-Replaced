@@ -1266,9 +1266,13 @@ pub fn apply_layout_system(
                     warn!("layout load: strategy_path {:?} not found, skipping", path);
                     // UserJsonOpen で存在しない strategy_path（例: 別 OS の絶対パス）を開いたとき、
                     // 前セッションの stale な fragments が editor に残らないよう破棄する。
+                    // また pending.windows / spawn_requested も破棄する（連続 Open での誤適用防止）。
                     if event.mode == LayoutLoadMode::UserJsonOpen {
                         pending_fragments.by_region_key.clear();
                         pending_fragments.loaded_for_path = None;
+                        pending.windows.clear();
+                        pending.spawn_requested.clear();
+                        pending.waiting_for_strategy = false;
                     }
                 }
             }
