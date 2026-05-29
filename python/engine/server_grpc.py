@@ -640,6 +640,29 @@ class GrpcDataEngineServer(
         if self.venue_sm is not None and self.venue_sm.current != "DISCONNECTED":
             self.venue_sm.reset()
 
+    def stop_live_loop(self, timeout: float | None = None) -> None:
+        """Stop the live asyncio loop thread spawned by _ensure_live_loop().
+
+        issue #64 finding #6: _teardown_live_components() stops runner/bridge/
+        account-sync but leaves the loop thread in run_forever(). On InProc
+        worker shutdown the thread would otherwise leak. Safe to call when the
+        loop was never started (None guard).
+        """
+        loop = self._live_loop
+        thread = self._live_thread
+        if loop is not None:
+            try:
+                loop.call_soon_threadsafe(loop.stop)
+            except Exception:
+                logging.exception("stop_live_loop: failed to signal loop.stop()")
+        if thread is not None:
+            try:
+                thread.join(timeout=timeout if timeout is not None else self._live_timeout_s)
+            except Exception:
+                logging.exception("stop_live_loop: failed to join loop thread")
+        self._live_loop = None
+        self._live_thread = None
+
     def Shutdown(self, request, context):
         # C-6: token 一致確認 → start_shutdown() 戻り値で 4 段判定
         if not self._token_ok(request):

@@ -364,6 +364,19 @@ backend→ECS seam だけでは十分条件にならない。
   visibility/handler system を `add_systems` して、`query_filtered::<Entity, With<RealMarker>>()` で引いた**実 entity**を
   `entity_mut(e).insert(Interaction::Pressed)` で押す。これで「登録・実 entity・可視性・guard」まで丸ごと検証できる
   （resource は `make_app` で本番 `main.rs` と同じ insert セットを揃える＝1 つ漏れると system-param panic）。
+- **pure-helper proxy（PyO3/runtime 経路を unit 化する純粋関数）は、本番コードが実際にその helper を呼んで
+  いなければ false-green の test-only ガードになる**。実 backend を起動できない経路（PyO3 worker の startup
+  status 列・instrument fetch 判断など）を「現状挙動を写した純粋関数 + desired を assert する RED」で
+  ガードするのは有効だが、**fix で本番 worker が helper を経由するよう配線しないと、helper はテスト専用の
+  独立した仕様記述になり、本番がインラインで重複実装したまま drift する**（helper のエラー文言・分岐が
+  本番と乖離してもテストは通り続け、回帰が再発しても検知できない）。実例（issue #64 レビュー 2 周目）:
+  `inproc_startup_status_sequence` を #2 fix で導入したが worker は status 送出をインラインのままにし、
+  helper は test からしか呼ばれず DataEngine 失敗文言が `: {e}` 有無で乖離 → Medium 指摘。fix は worker の
+  両分岐を `for u in helper(...) { send(u) }` で helper 経由にして「単一の真実」化（#7 の
+  `inproc_startup_instrument_fetch` / #3 の `inproc_poll_state_outcome` は最初から worker が呼ぶ形にしたので OK）。
+  **チェック: `grep -rn '<helper名>' src/` で「定義 + テスト」以外に本番呼出があるか必ず確認する**。
+  M16/M18/M19 の contract-test（テスト側で順序を確保＝production 配線は観測しない）と M20 の wiring-guard
+  （production 配線そのものを RED→GREEN）の対比と同じ構図。
 - **「クリックしても何も起きない」系のバグは silent guard（`warn!`+`continue` だけで UI に何も出さない）を最優先で疑う**。
   挙動を「保証」するテストは「コマンドが出る/出ない」だけでなく **「ブロック時にユーザーへ理由が surfacing される」**まで
   assert する（例 N7: pre-flight 失敗時に `LastRunResult.state=RunState::Failed{error}` を書き Run Result パネルへ赤字表示）。
