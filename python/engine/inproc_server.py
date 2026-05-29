@@ -87,6 +87,11 @@ class InprocLiveServer:
         )
         self._ctx = _NullContext()
 
+        # Slice 2: Pause/Step/Resume state for the nautilus backtest background thread.
+        # set=running, clear=paused. None when no backtest is active.
+        self._backtest_pause_event = None
+        self._backtest_step_event = None
+
     # ------------------------------------------------------------------
     # State polling
     # ------------------------------------------------------------------
@@ -562,6 +567,11 @@ class InprocLiveServer:
     def start_nautilus_replay(self, cfg: dict) -> dict:
         """Run a strategy via nautilus BacktestEngine and stream bars to RustBacktestSink.
 
+        Slice 2: runs the backtest on a daemon background thread so the Python worker
+        thread remains free to process Pause/Step/Resume commands concurrently.
+        Returns immediately once the thread starts; completion is signalled via
+        rust_sink.push_run_complete() or rust_sink.push_run_failed().
+
         cfg keys:
             strategy_file   str   — path to strategy .py
             instruments     list  — e.g. ["1301.TSE"]
@@ -573,8 +583,8 @@ class InprocLiveServer:
             rust_sink       obj   — RustBacktestSink PyO3 object
 
         Returns {"success": bool, "error_code": str, "error_message": str, "run_id": str}.
-        Blocks until the backtest completes; bars arrive via rust_sink.push_bar() callbacks.
         """
+        import threading
         from .nautilus_backtest_runner import NautilusBacktestRunner
 
         strategy_file = cfg.get("strategy_file", "")
@@ -593,6 +603,13 @@ class InprocLiveServer:
         if not catalog_path:
             return {"success": False, "error_code": "NO_CATALOG", "error_message": "catalog_path is required", "run_id": ""}
 
+        # Create Pause/Step/Resume control events (start in running state).
+        pause_event = threading.Event()
+        pause_event.set()  # running by default
+        step_event = threading.Event()
+        self._backtest_pause_event = pause_event
+        self._backtest_step_event = step_event
+
         runner = NautilusBacktestRunner(
             catalog_path=catalog_path,
             strategy_file=strategy_file,
@@ -602,17 +619,63 @@ class InprocLiveServer:
             granularity=cfg.get("granularity") or "Daily",
             initial_cash=float(cfg.get("initial_cash") or 10_000_000),
             rust_sink=rust_sink,
+            pause_event=pause_event,
+            step_event=step_event,
         )
 
-        result = runner.run()
-        if result["success"]:
-            return {"success": True, "error_code": "", "error_message": "", "run_id": result.get("run_id", "")}
-        return {
-            "success": False,
-            "error_code": "RUN_FAILED",
-            "error_message": result.get("error", "unknown error"),
-            "run_id": "",
-        }
+        def _run() -> None:
+            try:
+                result = runner.run()
+                # runner.run() calls rust_sink.push_run_complete() on success.
+                if not result["success"]:
+                    try:
+                        rust_sink.push_run_failed(result.get("error", "unknown error"))
+                    except Exception:
+                        logging.exception("[inproc] push_run_failed failed")
+            except Exception:
+                logging.exception("[inproc] backtest thread uncaught exception")
+                try:
+                    rust_sink.push_run_failed("backtest thread error")
+                except Exception:
+                    pass
+            finally:
+                # Use identity check so a concurrent second run's events are not nullified.
+                if self._backtest_pause_event is pause_event:
+                    self._backtest_pause_event = None
+                if self._backtest_step_event is step_event:
+                    self._backtest_step_event = None
+
+        t = threading.Thread(target=_run, daemon=True, name="backtest-runner")
+        t.start()
+        return {"success": True, "error_code": "", "error_message": "", "run_id": ""}
+
+    # ------------------------------------------------------------------
+    # Nautilus backtest Pause / Step / Resume control (Slice 2)
+    # ------------------------------------------------------------------
+
+    def pause_backtest(self) -> dict:
+        """Pause the running backtest by clearing the pause event."""
+        if self._backtest_pause_event is not None:
+            self._backtest_pause_event.clear()
+        return {"success": True}
+
+    def resume_backtest(self) -> dict:
+        """Resume a paused backtest by setting the pause event.
+
+        Also clears any pending step token so it is not silently consumed on the
+        first bar after the next Pause (stale token from step_backtest while running).
+        """
+        if self._backtest_step_event is not None:
+            self._backtest_step_event.clear()
+        if self._backtest_pause_event is not None:
+            self._backtest_pause_event.set()
+        return {"success": True}
+
+    def step_backtest(self) -> dict:
+        """Advance the paused backtest by exactly one bar."""
+        if self._backtest_step_event is not None:
+            self._backtest_step_event.set()
+        return {"success": True}
 
     def close(self) -> None:
         """Tear down the underlying live server (loop/runner/account-sync).

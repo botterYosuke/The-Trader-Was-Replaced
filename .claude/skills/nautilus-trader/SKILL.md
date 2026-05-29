@@ -46,6 +46,11 @@ description: |
   links pyo3 even if the test never touches Python. Also: the #64-merged `Cargo.lock` was OUT OF SYNC
   (pyo3 + its tree like `indoc` missing from `backcast`'s deps; `thiserror`→2 unification) — a clean
   build regenerates it, so `cargo build --locked` would fail until the lock is committed.
+  Also trigger on **issue #68 BacktestEngine → GUI bridge** vocabulary:
+  "NautilusBacktestRunner", "GuiBridgeActor", "RustBacktestSink", "start_nautilus_replay",
+  "push_bar", "push_run_complete", "BacktestEngine を GUI に繋ぐ", "bar をチャートに流す",
+  "msgbus.subscribe で bar を受け取る", "streaming=True", "engine.run(streaming=True)",
+  "Slice 1", "Slice 2" (issue #68 slices), "tracer bullet backtest".
   Also trigger on related vocabulary: "msgbus", "ts_event",
   "ts_init", "InstrumentId", "ClientId", "Venue", "BarSpec", "OrderFactory", "ExecAlgorithm",
   "PositionEvent", "OrderEvent", "cache" in a trading sense, "Cython .pyx".
