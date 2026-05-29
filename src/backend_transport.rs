@@ -127,91 +127,7 @@ impl BackendTransport for GrpcTransport {
                                 warn!("[backend-events] event with empty payload; skipping");
                                 continue;
                             };
-                            let mapped = match payload {
-                                engine::backend_event::Payload::SecretRequired(p) => {
-                                    BackendEvent::SecretRequired {
-                                        request_id: p.request_id,
-                                        venue: p.venue,
-                                        kind: p.kind,
-                                        purpose: p.purpose,
-                                    }
-                                }
-                                engine::backend_event::Payload::OrderEvent(p) => {
-                                    BackendEvent::OrderEvent {
-                                        order_id: p.order_id,
-                                        venue_order_id: p.venue_order_id,
-                                        client_order_id: p.client_order_id,
-                                        status: p.status,
-                                        filled_qty: p.filled_qty,
-                                        avg_price: p.avg_price,
-                                        ts_ms: p.ts_ms,
-                                        strategy_id: p.strategy_id.unwrap_or_default(),
-                                    }
-                                }
-                                engine::backend_event::Payload::AccountEvent(p) => {
-                                    BackendEvent::AccountEvent {
-                                        cash: p.cash,
-                                        buying_power: p.buying_power,
-                                        positions: p
-                                            .positions
-                                            .into_iter()
-                                            .map(|pos| AccountPosition {
-                                                symbol: pos.symbol,
-                                                qty: pos.qty,
-                                                avg_price: pos.avg_price,
-                                                unrealized_pnl: pos.unrealized_pnl,
-                                            })
-                                            .collect(),
-                                        ts_ms: p.ts_ms,
-                                    }
-                                }
-                                engine::backend_event::Payload::VenueLogoutDetected(p) => {
-                                    BackendEvent::VenueLogoutDetected { venue: p.venue }
-                                }
-                                engine::backend_event::Payload::LiveStrategyEvent(p) => {
-                                    BackendEvent::LiveStrategyEvent {
-                                        run_id: p.run_id,
-                                        strategy_id: p.strategy_id,
-                                        status: p.status,
-                                        ts_ms: p.ts_ms,
-                                    }
-                                }
-                                engine::backend_event::Payload::SafetyRailViolation(p) => {
-                                    BackendEvent::SafetyRailViolation {
-                                        run_id: p.run_id,
-                                        kind: p.kind,
-                                        detail: p.detail,
-                                        ts_ms: p.ts_ms,
-                                    }
-                                }
-                                engine::backend_event::Payload::StrategyLogMessage(p) => {
-                                    BackendEvent::StrategyLogMessage {
-                                        run_id: p.run_id,
-                                        level: p.level,
-                                        message: p.message,
-                                        ts_ms: p.ts_ms,
-                                    }
-                                }
-                                engine::backend_event::Payload::LiveStrategyTelemetry(p) => {
-                                    BackendEvent::LiveStrategyTelemetry {
-                                        run_id: p.run_id,
-                                        strategy_id: p.strategy_id,
-                                        realized_pnl: p.realized_pnl,
-                                        unrealized_pnl: p.unrealized_pnl,
-                                        order_count: p.order_count,
-                                        fill_count: p.fill_count,
-                                        ts_ms: p.ts_ms,
-                                    }
-                                }
-                                engine::backend_event::Payload::BackendError(p) => {
-                                    BackendEvent::BackendError {
-                                        source: p.source,
-                                        detail: p.detail,
-                                        ts_ms: p.ts_ms,
-                                    }
-                                }
-                            };
-                            let _ = ev_event_tx.send(mapped);
+                            let _ = ev_event_tx.send(map_backend_event_payload(payload));
                         }
                         Ok(None) => {
                             info!("[backend-events] server closed stream; reconnecting.");
@@ -1292,6 +1208,87 @@ impl BackendTransport for GrpcTransport {
 // Private helpers (all transport-specific)
 // ---------------------------------------------------------------------------
 
+/// Map a proto `engine::backend_event::Payload` to our internal `BackendEvent` enum.
+/// Shared between `GrpcTransport` (stream decode) and `RustEventSink` (inproc push).
+fn map_backend_event_payload(payload: engine::backend_event::Payload) -> BackendEvent {
+    match payload {
+        engine::backend_event::Payload::SecretRequired(p) => BackendEvent::SecretRequired {
+            request_id: p.request_id,
+            venue: p.venue,
+            kind: p.kind,
+            purpose: p.purpose,
+        },
+        engine::backend_event::Payload::OrderEvent(p) => BackendEvent::OrderEvent {
+            order_id: p.order_id,
+            venue_order_id: p.venue_order_id,
+            client_order_id: p.client_order_id,
+            status: p.status,
+            filled_qty: p.filled_qty,
+            avg_price: p.avg_price,
+            ts_ms: p.ts_ms,
+            strategy_id: p.strategy_id.unwrap_or_default(),
+        },
+        engine::backend_event::Payload::AccountEvent(p) => BackendEvent::AccountEvent {
+            cash: p.cash,
+            buying_power: p.buying_power,
+            positions: p
+                .positions
+                .into_iter()
+                .map(|pos| AccountPosition {
+                    symbol: pos.symbol,
+                    qty: pos.qty,
+                    avg_price: pos.avg_price,
+                    unrealized_pnl: pos.unrealized_pnl,
+                })
+                .collect(),
+            ts_ms: p.ts_ms,
+        },
+        engine::backend_event::Payload::VenueLogoutDetected(p) => {
+            BackendEvent::VenueLogoutDetected { venue: p.venue }
+        }
+        engine::backend_event::Payload::LiveStrategyEvent(p) => {
+            BackendEvent::LiveStrategyEvent {
+                run_id: p.run_id,
+                strategy_id: p.strategy_id,
+                status: p.status,
+                ts_ms: p.ts_ms,
+            }
+        }
+        engine::backend_event::Payload::SafetyRailViolation(p) => {
+            BackendEvent::SafetyRailViolation {
+                run_id: p.run_id,
+                kind: p.kind,
+                detail: p.detail,
+                ts_ms: p.ts_ms,
+            }
+        }
+        engine::backend_event::Payload::StrategyLogMessage(p) => {
+            BackendEvent::StrategyLogMessage {
+                run_id: p.run_id,
+                level: p.level,
+                message: p.message,
+                ts_ms: p.ts_ms,
+            }
+        }
+        engine::backend_event::Payload::LiveStrategyTelemetry(p) => {
+            BackendEvent::LiveStrategyTelemetry {
+                run_id: p.run_id,
+                strategy_id: p.strategy_id,
+                realized_pnl: p.realized_pnl,
+                unrealized_pnl: p.unrealized_pnl,
+                order_count: p.order_count,
+                fill_count: p.fill_count,
+                ts_ms: p.ts_ms,
+            }
+        }
+        engine::backend_event::Payload::BackendError(p) => BackendEvent::BackendError {
+            source: p.source,
+            detail: p.detail,
+            ts_ms: p.ts_ms,
+        },
+    }
+}
+
 /// Fire `ListInstruments` off the main polling loop and emit the three-part
 /// `InstrumentsListStarted` / `InstrumentsListed` / `InstrumentsListFailed`
 /// sequence.
@@ -1458,6 +1455,40 @@ pub fn parse_replay_granularity(s: &str) -> Result<i32, String> {
 }
 
 // ---------------------------------------------------------------------------
+// RustEventSink — PyO3 callable that Python uses to push BackendEvents (Phase 3)
+// ---------------------------------------------------------------------------
+
+/// A Python-callable object that forwards serialised `engine.BackendEvent` proto
+/// bytes into the Rust tokio mpsc channel.  Created once per inproc session and
+/// registered on `DataEngine` via `set_rust_event_sink(sink)`.
+///
+/// GIL design: `push()` is called from Python (GIL already held by the caller —
+/// typically the live-loop asyncio thread).  We decode the proto while holding the
+/// GIL (cheap, in-memory), then release it with `py.allow_threads` for the
+/// non-blocking channel send.
+#[pyo3::pyclass]
+struct RustEventSink {
+    event_tx: mpsc::UnboundedSender<BackendEvent>,
+}
+
+#[pyo3::pymethods]
+impl RustEventSink {
+    /// Called from Python: `sink.push(event.SerializeToString())`
+    fn push(&self, py: pyo3::Python<'_>, data: &[u8]) -> pyo3::PyResult<()> {
+        use prost::Message as _;
+        let proto = engine::BackendEvent::decode(data)
+            .map_err(|e| pyo3::exceptions::PyValueError::new_err(e.to_string()))?;
+        if let Some(payload) = proto.payload {
+            let ev = map_backend_event_payload(payload);
+            py.allow_threads(|| {
+                let _ = self.event_tx.send(ev);
+            });
+        }
+        Ok(())
+    }
+}
+
+// ---------------------------------------------------------------------------
 // InProcTransport — PyO3 direct call implementation (Phase 2)
 // ---------------------------------------------------------------------------
 
@@ -1521,6 +1552,7 @@ impl BackendTransport for InProcTransport {
                     inproc_python_worker(
                         cmd_rx,
                         resp_tx,
+                        event_tx,
                         catalog_path,
                         max_history_len,
                         python_engine_path,
@@ -1597,8 +1629,6 @@ impl BackendTransport for InProcTransport {
             }
             // Python thread exited — signal disconnected.
             let _ = status_tx.send(BackendStatusUpdate::Connected(false));
-            // Suppress unused warning: event_tx is kept alive until this drop.
-            drop(event_tx);
         })
     }
 }
@@ -1609,6 +1639,7 @@ impl BackendTransport for InProcTransport {
 fn inproc_python_worker(
     cmd_rx: std::sync::mpsc::Receiver<TransportCommand>,
     resp_tx: mpsc::UnboundedSender<InProcResp>,
+    event_tx: mpsc::UnboundedSender<BackendEvent>,
     catalog_path: Option<String>,
     max_history_len: usize,
     python_engine_path: String,
@@ -1653,6 +1684,18 @@ fn inproc_python_worker(
             return;
         }
     };
+
+    // Phase 3: register RustEventSink on the DataEngine so that Python's
+    // publish_backend_event() forwards live events to our tokio channel.
+    if let Err(e) = Python::with_gil(|py| -> pyo3::PyResult<()> {
+        let sink = pyo3::Py::new(py, RustEventSink { event_tx })?;
+        engine.bind(py).call_method1("set_rust_event_sink", (sink,))?;
+        Ok(())
+    }) {
+        error!("[inproc] RustEventSink registration failed: {}", e);
+    } else {
+        info!("[inproc] RustEventSink registered on DataEngine");
+    }
 
     let poll_duration = std::time::Duration::from_millis(poll_interval_ms);
 
@@ -1882,7 +1925,7 @@ fn inproc_dispatch(
 
 #[cfg(test)]
 mod tests {
-    use super::{flush_stale_transport_commands, parse_replay_granularity};
+    use super::{flush_stale_transport_commands, map_backend_event_payload, parse_replay_granularity};
     use crate::trading::TransportCommand;
 
     /// §3.8 regression: the reconnect flush must PRESERVE only
@@ -1986,5 +2029,55 @@ mod tests {
     #[test]
     fn parse_replay_granularity_empty_returns_err() {
         assert!(parse_replay_granularity("").is_err());
+    }
+
+    // ---------------------------------------------------------------------------
+    // Phase 3: map_backend_event_payload unit tests
+    // ---------------------------------------------------------------------------
+
+    #[test]
+    fn map_payload_secret_required() {
+        use crate::trading::engine;
+        let payload = engine::backend_event::Payload::SecretRequired(engine::SecretRequired {
+            request_id: "req-1".into(),
+            venue: "TACHIBANA".into(),
+            kind: "password".into(),
+            purpose: "second_auth".into(),
+        });
+        let ev = map_backend_event_payload(payload);
+        assert!(
+            matches!(ev, crate::trading::BackendEvent::SecretRequired { ref request_id, ref venue, .. }
+                if request_id == "req-1" && venue == "TACHIBANA"),
+            "SecretRequired payload should map correctly"
+        );
+    }
+
+    #[test]
+    fn map_payload_venue_logout_detected() {
+        use crate::trading::engine;
+        let payload = engine::backend_event::Payload::VenueLogoutDetected(
+            engine::VenueLogoutDetected { venue: "KABU".into() },
+        );
+        let ev = map_backend_event_payload(payload);
+        assert!(
+            matches!(ev, crate::trading::BackendEvent::VenueLogoutDetected { ref venue } if venue == "KABU"),
+            "VenueLogoutDetected payload should map correctly"
+        );
+    }
+
+    #[test]
+    fn map_payload_backend_error() {
+        use crate::trading::engine;
+        let payload = engine::backend_event::Payload::BackendError(engine::BackendError {
+            source: "test".into(),
+            detail: "something broke".into(),
+            ts_ms: 9999,
+        });
+        let ev = map_backend_event_payload(payload);
+        assert!(
+            matches!(ev, crate::trading::BackendEvent::BackendError { ref source, ts_ms, .. }
+                if source == "test" && ts_ms == 9999),
+            "BackendError payload should map correctly"
+        );
     }
 }

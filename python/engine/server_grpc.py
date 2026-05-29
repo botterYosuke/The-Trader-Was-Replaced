@@ -2677,6 +2677,13 @@ class GrpcDataEngineServer(
     def publish_backend_event(self, event):
         """Fan a BackendEvent out to all open SubscribeBackendEvents streams."""
         self._backend_event_bus.publish(event)
+        # Phase 3: also forward to in-proc Rust channel if registered
+        sink = getattr(self.engine, '_rust_event_sink', None)
+        if sink is not None:
+            try:
+                sink.push(event.SerializeToString())
+            except Exception:
+                logging.warning("[inproc] rust event sink push failed", exc_info=True)
 
     def SubscribeBackendEvents(self, request, context):
         if not self._token_ok(request):
