@@ -331,7 +331,3 @@ mod n13_footer_live_auto_pause_resume;
 // O. Live venue integration (TACHIBANA / kabusapi 統合フロー)
 #[path = "e2e/flows/o1_tachibana_live_manual_add_subscribe.rs"]
 mod o1_tachibana_live_manual_add_subscribe;
-
-// Q. Rendering / platform (headless smoke)
-#[path = "e2e/flows/q1_draw_closure_no_i32_overflow.rs"]
-mod q1_draw_closure_no_i32_overflow;

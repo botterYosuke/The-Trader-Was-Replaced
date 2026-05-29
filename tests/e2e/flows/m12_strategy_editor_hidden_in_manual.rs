@@ -18,8 +18,6 @@
 
 use bevy::prelude::*;
 use bevy::transform::TransformPlugin;
-use bevy_cosmic_edit::prelude::CosmicFontSystem;
-use cosmic_text::FontSystem;
 
 use backcast::trading::{ExecutionMode, ExecutionModeRes};
 use backcast::ui::components::{
@@ -31,11 +29,10 @@ use backcast::ui::strategy_editor::{
 };
 
 /// 実 Strategy Editor を 1 回だけ spawn するテストローカル startup system。
-/// 引数注入により `Commands` / `CosmicFontSystem` / `RegionKeyAllocator` の借用が分離され、
+/// 引数注入により `Commands` / `RegionKeyAllocator` の借用が分離され、
 /// world から手で取り出す際の二重借用を避ける（production dispatcher と同じ注入形）。
 fn spawn_real_editor_system(
     mut commands: Commands,
-    mut font_system: ResMut<CosmicFontSystem>,
     mut allocator: ResMut<RegionKeyAllocator>,
 ) {
     spawn_strategy_editor_panel(
@@ -54,9 +51,6 @@ fn m12_strategy_editor_hidden_in_manual() {
     let mut app = App::new();
     app.add_plugins(TransformPlugin);
     app.init_resource::<ExecutionModeRes>(); // 既定 = Replay
-    // 実 spawn に必要な resource（描画はしない: CPU フォントのみ headless 挿入）。
-    // CosmicEditPlugin 全体は MinimalPlugins 下で render/asset 依存で panic するため足さない。
-    app.insert_resource(CosmicFontSystem(FontSystem::new()));
     app.insert_resource(RegionKeyAllocator::default());
 
     // ── 実 Strategy Editor ウィンドウを spawn（editor/gutter/scrollbar を本物にする）──

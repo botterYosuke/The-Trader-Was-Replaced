@@ -8,15 +8,14 @@
 //! Slice 6c 開始時点: cosmic editor entity が 1 件 spawn される実装が残っており fail (RED)。
 //! Slice 6c 完了時点: cosmic spawn が削除され bevscode peer のみ残る (GREEN)。
 //!
-//! Slice 6d で `CosmicFontSystem` 注入が test ヘルパーから消えた段階で、本 test の
-//! cosmic 関連 import / insert_resource も削除する（cosmic crate 自体が 6e で消滅するため）。
+//! Slice 6d 時点で `CosmicFontSystem` 注入は不要になったので削除済み。
+//! 残る `CosmicEditBuffer` / `TextEdit2d` の 0 件 assert は cosmic crate が消滅する 6e で削除する。
 
 use bevy::asset::AssetPlugin;
 use bevy::prelude::*;
 use bevy::transform::TransformPlugin;
 use bevy_cosmic_edit::CosmicEditBuffer;
-use bevy_cosmic_edit::prelude::{CosmicFontSystem, TextEdit2d};
-use cosmic_text::FontSystem;
+use bevy_cosmic_edit::prelude::TextEdit2d;
 
 use backcast::ui::components::{
     InstrumentRegistry, PanelKind, PanelSpawnRequested, PendingStrategyFragments,
@@ -39,7 +38,6 @@ fn m26_strategy_editor_spawn_uses_bevscode_not_cosmic() {
         .init_asset::<Font>();
 
     app.insert_resource(WindowManager::default())
-        .insert_resource(CosmicFontSystem(FontSystem::new()))
         .insert_resource(RegionKeyAllocator::default())
         .insert_resource(AppHistory::default())
         .insert_resource(PendingStrategyFragments::default())

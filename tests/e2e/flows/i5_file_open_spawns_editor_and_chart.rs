@@ -28,8 +28,6 @@ use serial_test::serial;
 
 use bevy::prelude::*;
 use bevy::transform::TransformPlugin;
-use bevy_cosmic_edit::prelude::CosmicFontSystem;
-use cosmic_text::FontSystem;
 
 use backcast::trading::{ExecutionMode, ExecutionModeRes, InstrumentTradingDataMap};
 use backcast::ui::components::{
@@ -129,7 +127,6 @@ fn i5_file_open_spawns_editor_and_chart() {
         .insert_resource(RegionKeyAllocator::default())
         .insert_resource(AppHistory::default())
         .insert_resource(StrategyBuffer::default())
-        .insert_resource(CosmicFontSystem(FontSystem::new()))
         // scenario → registry → chart が触る resource。
         .insert_resource(ScenarioMetadata::default())
         .insert_resource(ScenarioFileWatchState::default())
