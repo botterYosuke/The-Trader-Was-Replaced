@@ -1,25 +1,16 @@
-//! Phase 9 §3.9 — OrderPanel (LiveManual 専用、手動発注フォーム)。
-//!
-//! Slice 2: world-space sprite floating window (ORDER) 内のフォーム。
-//! `panel_spawn_dispatcher_system` → `spawn_order_form_in_window` でコンテンツエリアを埋める。
-//!
-//! ボタン操作は `OrderButtonPressed` イベント経由（sprite の Pointer<Click> observer が送信）。
-//!
-//! 2 段階確認: `[発注]` で `OrderConfirm.pending` をセット → 中央オーバーレイの確認モーダルに
-//! 内容 (銘柄/売買/数量/価格/概算約定額) を再表示 → `[Confirm]` で初めて
-//! `TransportCommand::PlaceOrder` を発射する (§3.9)。
-//!
-//! 第二暗証番号 (Tachibana) は別モジュール `secret_modal.rs` が `SecretRequired` イベントで
-//! 収集する。OrderPanel は `second_secret` を載せない (mock/kabu は不要、Tachibana は Step 5)。
+//! OrderPanel フォーム本体 (Phase 9 §3.9)。order_panel/mod.rs から分割。
+//! ドメイン型・検証・ドラフト生成・floating-window コンテンツ・フォーム系 systems。
 
 use bevy::prelude::*;
 use bevy::picking::prelude::*;
 
 use crate::trading::{
-    ExecutionMode, ExecutionModeRes, LastPrices, OrderFeedback, SecretPrompt, SelectedSymbol,
-    TransportCommand, TransportCommandSender, VenueStatusRes,
+    ExecutionMode, ExecutionModeRes, OrderFeedback, SelectedSymbol, VenueStatusRes,
 };
 use crate::ui::components::{PanelKind, WindowRoot};
+
+use super::confirm_modal::OrderConfirm;
+use super::{COLOR_BTN_SUBMIT, COLOR_VALUE};
 
 // ── デフォルト売買単位・呼値 ───────────────────────────────────────────────
 // Phase 9 MVP: 銘柄メタデータ (売買単位 / 呼値) はまだ Rust 側 state に流れていない
@@ -29,16 +20,10 @@ const DEFAULT_LOT_SIZE: f64 = 100.0;
 const DEFAULT_TICK_SIZE: f64 = 1.0;
 
 // ── 配色 ───────────────────────────────────────────────────────────────────
-const COLOR_PANEL_BG: Color = Color::srgba(0.07, 0.07, 0.12, 0.96);
-const COLOR_HEADER: Color = Color::srgb(0.0, 0.81, 1.0);
 const COLOR_LABEL: Color = Color::srgb(0.65, 0.70, 0.78);
-const COLOR_VALUE: Color = Color::srgb(0.88, 0.91, 0.96);
 const COLOR_ERROR: Color = Color::srgb(1.0, 0.35, 0.45);
 const COLOR_BTN_IDLE: Color = Color::srgba(0.18, 0.20, 0.28, 1.0);
 const COLOR_BTN_SELECTED: Color = Color::srgba(0.10, 0.40, 0.60, 1.0);
-const COLOR_BTN_SUBMIT: Color = Color::srgba(0.10, 0.45, 0.30, 1.0);
-const COLOR_BTN_CANCEL: Color = Color::srgba(0.30, 0.16, 0.20, 1.0);
-const COLOR_MODAL_BACKDROP: Color = Color::srgba(0.0, 0.0, 0.0, 0.55);
 
 // ===========================================================================
 // ドメイン型
@@ -51,13 +36,13 @@ pub enum Side {
 }
 
 impl Side {
-    fn wire(self) -> &'static str {
+    pub(super) fn wire(self) -> &'static str {
         match self {
             Side::Buy => "BUY",
             Side::Sell => "SELL",
         }
     }
-    fn label(self) -> &'static str {
+    pub(super) fn label(self) -> &'static str {
         match self {
             Side::Buy => "BUY",
             Side::Sell => "SELL",
@@ -72,13 +57,13 @@ pub enum OrderType {
 }
 
 impl OrderType {
-    fn wire(self) -> &'static str {
+    pub(super) fn wire(self) -> &'static str {
         match self {
             OrderType::Market => "MARKET",
             OrderType::Limit => "LIMIT",
         }
     }
-    fn label(self) -> &'static str {
+    pub(super) fn label(self) -> &'static str {
         // 現状 wire と同一だが、確認モーダル表示は `label()` に統一して
         // 将来 wire 文字列が変わっても表示がドリフトしないようにする。
         match self {
@@ -96,14 +81,14 @@ pub enum TimeInForce {
 }
 
 impl TimeInForce {
-    fn wire(self) -> &'static str {
+    pub(super) fn wire(self) -> &'static str {
         match self {
             TimeInForce::Day => "DAY",
             TimeInForce::Opening => "OPENING",
             TimeInForce::Closing => "CLOSING",
         }
     }
-    fn label(self) -> &'static str {
+    pub(super) fn label(self) -> &'static str {
         match self {
             TimeInForce::Day => "DAY",
             TimeInForce::Opening => "OPEN",
@@ -145,14 +130,6 @@ pub struct OrderDraft {
     /// 成行は `None`。指値のみ `Some`。
     pub price: Option<f64>,
     pub tif: TimeInForce,
-}
-
-/// 2 段階確認の状態。`pending` が `Some` の間だけ確認モーダルを出す。
-#[derive(Resource, Default, Debug, Clone)]
-pub struct OrderConfirm {
-    pub pending: Option<OrderDraft>,
-    /// 発注ボタン押下時の検証エラー (パネルに赤字表示)。成功時は `None`。
-    pub last_error: Option<String>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -266,128 +243,6 @@ pub enum OrderField {
     Qty,
     Price,
     Error,
-}
-
-#[derive(Component)]
-pub struct ConfirmModalRoot;
-
-#[derive(Component, Clone, Copy)]
-pub enum ConfirmButton {
-    Confirm,
-    Cancel,
-}
-
-#[derive(Component)]
-pub struct ConfirmSummary;
-
-
-/// 2 段階確認モーダル (中央オーバーレイ) を spawn する (Startup)。初期 Display は None。
-pub fn spawn_confirm_modal(mut commands: Commands) {
-    commands
-        .spawn((
-            Node {
-                display: Display::None,
-                position_type: PositionType::Absolute,
-                top: Val::Px(0.0),
-                left: Val::Px(0.0),
-                width: Val::Percent(100.0),
-                height: Val::Percent(100.0),
-                align_items: AlignItems::Center,
-                justify_content: JustifyContent::Center,
-                ..default()
-            },
-            BackgroundColor(COLOR_MODAL_BACKDROP),
-            GlobalZIndex(200),
-            ConfirmModalRoot,
-            Name::new("OrderConfirmModal"),
-        ))
-        .with_children(|p| {
-            p.spawn((
-                Node {
-                    width: Val::Px(320.0),
-                    flex_direction: FlexDirection::Column,
-                    padding: UiRect::all(Val::Px(16.0)),
-                    ..default()
-                },
-                BackgroundColor(COLOR_PANEL_BG),
-            ))
-            .with_children(|card| {
-                card.spawn((
-                    Node {
-                        margin: UiRect::bottom(Val::Px(10.0)),
-                        ..default()
-                    },
-                    Text::new("発注内容の確認"),
-                    TextFont {
-                        font_size: 15.0,
-                        ..default()
-                    },
-                    TextColor(COLOR_HEADER),
-                ));
-                // 内容サマリ (sync system が書き換える)
-                card.spawn((
-                    Text::new(""),
-                    TextFont {
-                        font_size: 13.0,
-                        ..default()
-                    },
-                    TextColor(COLOR_VALUE),
-                    ConfirmSummary,
-                ));
-                // ボタン行
-                card.spawn((Node {
-                    margin: UiRect::top(Val::Px(14.0)),
-                    column_gap: Val::Px(10.0),
-                    ..default()
-                },))
-                    .with_children(|btns| {
-                        btns.spawn((
-                            Button,
-                            Node {
-                                flex_grow: 1.0,
-                                height: Val::Px(30.0),
-                                align_items: AlignItems::Center,
-                                justify_content: JustifyContent::Center,
-                                ..default()
-                            },
-                            BackgroundColor(COLOR_BTN_CANCEL),
-                            ConfirmButton::Cancel,
-                        ))
-                        .with_children(|b| {
-                            b.spawn((
-                                Text::new("キャンセル"),
-                                TextFont {
-                                    font_size: 13.0,
-                                    ..default()
-                                },
-                                TextColor(COLOR_VALUE),
-                            ));
-                        });
-                        btns.spawn((
-                            Button,
-                            Node {
-                                flex_grow: 1.0,
-                                height: Val::Px(30.0),
-                                align_items: AlignItems::Center,
-                                justify_content: JustifyContent::Center,
-                                ..default()
-                            },
-                            BackgroundColor(COLOR_BTN_SUBMIT),
-                            ConfirmButton::Confirm,
-                        ))
-                        .with_children(|b| {
-                            b.spawn((
-                                Text::new("Confirm"),
-                                TextFont {
-                                    font_size: 13.0,
-                                    ..default()
-                                },
-                                TextColor(COLOR_VALUE),
-                            ));
-                        });
-                    });
-            });
-        });
 }
 
 // ===========================================================================
@@ -519,7 +374,6 @@ pub fn spawn_order_form_in_window(commands: &mut Commands, content_area: Entity)
 // Systems
 // ===========================================================================
 
-
 /// side/type/TIF/数量±/価格± ボタン押下を `OrderForm` に反映する。
 pub fn order_form_button_system(
     mut events: MessageReader<OrderButtonPressed>,
@@ -581,85 +435,6 @@ pub fn order_submit_button_system(
             }
             Err(e) => {
                 confirm.last_error = Some(e.message().to_string());
-            }
-        }
-    }
-}
-
-/// 確認モーダル root の Display を `OrderConfirm.pending` の有無に同期する。
-pub fn confirm_modal_visibility_system(
-    confirm: Res<OrderConfirm>,
-    mut root_q: Query<&mut Node, With<ConfirmModalRoot>>,
-) {
-    let target = if confirm.pending.is_some() {
-        Display::Flex
-    } else {
-        Display::None
-    };
-    for mut node in &mut root_q {
-        if node.display != target {
-            node.display = target;
-        }
-    }
-}
-
-/// `[Confirm]` → `TransportCommand::PlaceOrder` 発射 + pending クリア。
-/// `[Cancel]` → pending クリア (発注しない)。
-pub fn confirm_modal_button_system(
-    interactions: Query<(&Interaction, &ConfirmButton), (Changed<Interaction>, With<Button>)>,
-    keys: Res<ButtonInput<KeyCode>>,
-    secret_prompt: Res<SecretPrompt>,
-    mut confirm: ResMut<OrderConfirm>,
-    mut feedback: ResMut<OrderFeedback>,
-    sender: Option<Res<TransportCommandSender>>,
-) {
-    // Item 8: this is the single most safety-critical button (real-money
-    // PlaceOrder). Guard on open-state — never act on a stray `Pressed` for a
-    // `ConfirmButton` when no order is pending (mirrors modify/context-menu
-    // systems; the Display::None zero-size invariant is the only other latch).
-    if confirm.pending.is_none() {
-        return;
-    }
-
-    // Item 9: Esc cancels the confirm modal (clears pending, fires nothing),
-    // consistent with every other Phase 9 modal. Escape is read via ButtonInput
-    // (not the SecretModal event drain), so yield to an open SecretModal so one
-    // keystroke can't close both (§3.10 / item 7 prioritization). The confirm
-    // modal is otherwise high priority — it does NOT yield to notice modals.
-    if keys.just_pressed(KeyCode::Escape) && secret_prompt.active.is_none() {
-        confirm.pending = None;
-        return;
-    }
-
-    for (interaction, button) in &interactions {
-        if *interaction != Interaction::Pressed {
-            continue;
-        }
-        match button {
-            ConfirmButton::Cancel => {
-                confirm.pending = None;
-            }
-            ConfirmButton::Confirm => {
-                let Some(draft) = confirm.pending.take() else {
-                    continue;
-                };
-                // Fresh attempt: clear any stale reject/timeout notice.
-                feedback.message = None;
-                if let Some(tx) = sender.as_ref() {
-                    let _ = tx.tx.send(TransportCommand::PlaceOrder {
-                        venue: draft.venue,
-                        instrument_id: draft.symbol,
-                        side: draft.side.wire().to_string(),
-                        qty: draft.qty,
-                        price: draft.price,
-                        order_type: draft.order_type.wire().to_string(),
-                        time_in_force: draft.tif.wire().to_string(),
-                        // Tachibana 第二暗証番号は secret_modal が SecretRequired で別途収集 (Step 5)。
-                        second_secret: None,
-                    });
-                } else {
-                    warn!("PlaceOrder skipped: TransportCommandSender unavailable");
-                }
             }
         }
     }
@@ -733,42 +508,6 @@ pub fn order_panel_sync_system(
         if sprite.color != target {
             sprite.color = target;
         }
-    }
-}
-
-/// 確認モーダルのサマリテキストを `pending` ドラフトから差分反映する。
-pub fn confirm_modal_sync_system(
-    confirm: Res<OrderConfirm>,
-    last_prices: Res<LastPrices>,
-    mut summary_q: Query<&mut Text, With<ConfirmSummary>>,
-) {
-    let Some(draft) = confirm.pending.as_ref() else {
-        return;
-    };
-    let Ok(mut text) = summary_q.single_mut() else {
-        return;
-    };
-    let price_str = match draft.price {
-        Some(p) => format!("{p:.0}"),
-        None => "成行".to_string(),
-    };
-    let last = last_prices.map.get(&draft.symbol).copied();
-    let notional = estimated_notional(draft, last)
-        .map(|n| format!("{n:.0}"))
-        .unwrap_or_else(|| "—".to_string());
-    let new = format!(
-        "venue: {}\n銘柄: {}\n売買: {}\n種別: {}\n数量: {:.0}\n価格: {}\n執行: {}\n概算約定額: {} (手数料概算は未対応)",
-        draft.venue,
-        draft.symbol,
-        draft.side.label(),
-        draft.order_type.label(),
-        draft.qty,
-        price_str,
-        draft.tif.label(),
-        notional,
-    );
-    if text.0 != new {
-        text.0 = new;
     }
 }
 
@@ -910,223 +649,12 @@ mod tests {
         );
     }
 
-    fn make_app() -> App {
+    #[test]
+    fn form_buttons_mutate_state() {
         let mut app = App::new();
         app.add_message::<OrderButtonPressed>();
         app.init_resource::<OrderForm>();
         app.init_resource::<OrderConfirm>();
-        app.init_resource::<OrderFeedback>();
-        app.init_resource::<SecretPrompt>();
-        app.init_resource::<ButtonInput<KeyCode>>();
-        app.insert_resource(SelectedSymbol {
-            id: Some("7203.T".to_string()),
-        });
-        app.insert_resource(VenueStatusRes {
-            venue_id: Some("MOCK".to_string()),
-            ..Default::default()
-        });
-        let (tx, rx) = tokio::sync::mpsc::unbounded_channel();
-        app.insert_resource(TransportCommandSender { tx });
-        app.world_mut().spawn(RxHolder { _rx: rx });
-        app
-    }
-
-    // テスト中に receiver を生かしておくための holder。
-    #[derive(Component)]
-    struct RxHolder {
-        _rx: tokio::sync::mpsc::UnboundedReceiver<TransportCommand>,
-    }
-
-    #[test]
-    fn submit_sets_pending_when_valid() {
-        let mut app = make_app();
-        app.add_systems(Update, order_submit_button_system);
-        app.world_mut()
-            .write_message(OrderButtonPressed(OrderButton::Submit));
-        app.update();
-        assert!(
-            app.world().resource::<OrderConfirm>().pending.is_some(),
-            "valid submit must open the confirm modal"
-        );
-    }
-
-    #[test]
-    fn submit_sets_error_when_symbol_missing() {
-        let mut app = make_app();
-        app.world_mut().resource_mut::<SelectedSymbol>().id = None;
-        app.add_systems(Update, order_submit_button_system);
-        app.world_mut()
-            .write_message(OrderButtonPressed(OrderButton::Submit));
-        app.update();
-        let confirm = app.world().resource::<OrderConfirm>();
-        assert!(
-            confirm.pending.is_none(),
-            "invalid submit must not open modal"
-        );
-        assert!(
-            confirm.last_error.is_some(),
-            "invalid submit must set an error"
-        );
-    }
-
-    #[test]
-    fn confirm_fires_place_order_and_clears_pending() {
-        let mut app = make_app();
-        // 受信側を保持して送信を観測する。
-        let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel();
-        app.insert_resource(TransportCommandSender { tx });
-        app.world_mut().resource_mut::<OrderConfirm>().pending = Some(OrderDraft {
-            venue: "MOCK".to_string(),
-            symbol: "7203.T".to_string(),
-            side: Side::Buy,
-            order_type: OrderType::Market,
-            qty: 100.0,
-            price: None,
-            tif: TimeInForce::Day,
-        });
-        app.add_systems(Update, confirm_modal_button_system);
-        app.world_mut()
-            .spawn((Button, Interaction::Pressed, ConfirmButton::Confirm));
-        app.update();
-
-        assert!(
-            app.world().resource::<OrderConfirm>().pending.is_none(),
-            "Confirm must clear pending"
-        );
-        let cmd = rx
-            .try_recv()
-            .expect("Confirm must fire a PlaceOrder command");
-        match cmd {
-            TransportCommand::PlaceOrder {
-                venue,
-                instrument_id,
-                side,
-                qty,
-                price,
-                order_type,
-                second_secret,
-                ..
-            } => {
-                assert_eq!(venue, "MOCK");
-                assert_eq!(instrument_id, "7203.T");
-                assert_eq!(side, "BUY");
-                assert_eq!(qty, 100.0);
-                assert_eq!(price, None);
-                assert_eq!(order_type, "MARKET");
-                assert!(
-                    second_secret.is_none(),
-                    "OrderPanel never carries the secret"
-                );
-            }
-            other => panic!("expected PlaceOrder, got {other:?}"),
-        }
-    }
-
-    #[test]
-    fn cancel_clears_pending_without_firing() {
-        let mut app = make_app();
-        let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel();
-        app.insert_resource(TransportCommandSender { tx });
-        app.world_mut().resource_mut::<OrderConfirm>().pending = Some(OrderDraft {
-            venue: "MOCK".to_string(),
-            symbol: "7203.T".to_string(),
-            side: Side::Buy,
-            order_type: OrderType::Market,
-            qty: 100.0,
-            price: None,
-            tif: TimeInForce::Day,
-        });
-        app.add_systems(Update, confirm_modal_button_system);
-        app.world_mut()
-            .spawn((Button, Interaction::Pressed, ConfirmButton::Cancel));
-        app.update();
-
-        assert!(app.world().resource::<OrderConfirm>().pending.is_none());
-        assert!(rx.try_recv().is_err(), "Cancel must not fire a command");
-    }
-
-    /// Item 8 regression: with NO order pending, a stray `ConfirmButton::Confirm`
-    /// Pressed must NOT fire a PlaceOrder (the single most safety-critical button).
-    #[test]
-    fn confirm_button_is_noop_when_pending_none() {
-        let mut app = make_app();
-        let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel();
-        app.insert_resource(TransportCommandSender { tx });
-        // pending stays None (default).
-        app.add_systems(Update, confirm_modal_button_system);
-        app.world_mut()
-            .spawn((Button, Interaction::Pressed, ConfirmButton::Confirm));
-        app.update();
-        assert!(
-            rx.try_recv().is_err(),
-            "no PlaceOrder may be sent when nothing is pending"
-        );
-        assert!(app.world().resource::<OrderConfirm>().pending.is_none());
-    }
-
-    /// Item 9 regression: Esc cancels the confirm modal — clears pending, fires
-    /// nothing — consistent with the other Phase 9 modals.
-    #[test]
-    fn escape_cancels_confirm_modal() {
-        let mut app = make_app();
-        let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel();
-        app.insert_resource(TransportCommandSender { tx });
-        app.world_mut().resource_mut::<OrderConfirm>().pending = Some(OrderDraft {
-            venue: "MOCK".to_string(),
-            symbol: "7203.T".to_string(),
-            side: Side::Buy,
-            order_type: OrderType::Market,
-            qty: 100.0,
-            price: None,
-            tif: TimeInForce::Day,
-        });
-        app.world_mut()
-            .resource_mut::<ButtonInput<KeyCode>>()
-            .press(KeyCode::Escape);
-        app.add_systems(Update, confirm_modal_button_system);
-        app.update();
-        assert!(
-            app.world().resource::<OrderConfirm>().pending.is_none(),
-            "Esc must clear pending (cancel)"
-        );
-        assert!(rx.try_recv().is_err(), "Esc must not fire a command");
-    }
-
-    /// Item 9 + item 7: while a SecretModal is open, Esc is consumed by the secret
-    /// modal — the confirm modal must NOT also close on the same keystroke.
-    #[test]
-    fn escape_on_confirm_yields_to_open_secret_prompt() {
-        use crate::trading::SecretPromptRequest;
-        let mut app = make_app();
-        app.world_mut().resource_mut::<OrderConfirm>().pending = Some(OrderDraft {
-            venue: "MOCK".to_string(),
-            symbol: "7203.T".to_string(),
-            side: Side::Buy,
-            order_type: OrderType::Market,
-            qty: 100.0,
-            price: None,
-            tif: TimeInForce::Day,
-        });
-        app.world_mut().resource_mut::<SecretPrompt>().active = Some(SecretPromptRequest {
-            request_id: "r1".to_string(),
-            venue: "MOCK".to_string(),
-            kind: "second_password".to_string(),
-            purpose: "new_order".to_string(),
-        });
-        app.world_mut()
-            .resource_mut::<ButtonInput<KeyCode>>()
-            .press(KeyCode::Escape);
-        app.add_systems(Update, confirm_modal_button_system);
-        app.update();
-        assert!(
-            app.world().resource::<OrderConfirm>().pending.is_some(),
-            "confirm modal must survive Escape consumed by the SecretModal"
-        );
-    }
-
-    #[test]
-    fn form_buttons_mutate_state() {
-        let mut app = make_app();
         app.add_systems(Update, order_form_button_system);
         app.world_mut()
             .write_message(OrderButtonPressed(OrderButton::SideSell));
