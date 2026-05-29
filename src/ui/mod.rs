@@ -1,5 +1,6 @@
 pub mod theme;
 pub mod traits;
+pub mod component;
 pub mod buying_power;
 pub mod chart_axes;
 pub mod chart_crosshair;
