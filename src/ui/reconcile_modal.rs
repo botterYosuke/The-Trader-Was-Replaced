@@ -195,30 +195,17 @@ pub fn reconcile_modal_reconcile_system(
     let Ok(root) = root_q.single() else {
         return;
     };
-    let on_stack = layer.stack.iter().any(|m| m.root == root);
-
-    if prompt.is_changed() && !prompt.unknown.is_empty() && !on_stack {
-        layer.push(ActiveModal {
-            root,
-            backdrop: root,
-            previous_focus: None,
-            on_before_dismiss: reconcile_dismiss,
-        });
-        *was_on_stack = true;
-        return;
-    }
-
-    if prompt.unknown.is_empty() && on_stack {
-        layer.stack.retain(|m| m.root != root);
-        *was_on_stack = false;
-        return;
-    }
-
-    if *was_on_stack && !on_stack && !prompt.unknown.is_empty() {
-        prompt.unknown.clear();
-    }
-
-    *was_on_stack = on_stack;
+    let is_open = !prompt.unknown.is_empty();
+    let prompt_changed = prompt.is_changed();
+    crate::ui::component::modal_layer::reconcile_modal_stack(
+        &mut layer,
+        root,
+        &mut was_on_stack,
+        is_open,
+        prompt_changed,
+        reconcile_dismiss,
+        || prompt.unknown.clear(),
+    );
 }
 
 /// 不明注文を「symbol id (status)」の行リストに整形する純関数（テスト用に分離）。

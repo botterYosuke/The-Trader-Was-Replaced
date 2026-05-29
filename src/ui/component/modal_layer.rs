@@ -72,6 +72,52 @@ impl ModalLayer {
     }
 }
 
+/// Generic `ModalLayer.stack` ⇄ owning-prompt reconcile step shared by the
+/// relogin and reconcile notice modals (#46 Slice B, mechanism A). Each modal's
+/// system computes its own `is_open` / `prompt_changed` and supplies a `clear`
+/// closure (called only on the REVERSE/esc-pop arm); the subtle branch order +
+/// `was_on_stack` bookkeeping lives ONCE here.
+///
+/// Branches (order is load-bearing):
+/// - FORWARD (open): `prompt_changed && is_open && !on_stack` → push + mark, return.
+/// - CLOSE (button/programmatic): `!is_open && on_stack` → retain-remove + unmark, return.
+/// - REVERSE (esc pop): `was_on_stack && !on_stack && is_open` → run `clear`.
+/// - fall-through: `was_on_stack = on_stack`.
+pub fn reconcile_modal_stack(
+    layer: &mut ModalLayer,
+    root: Entity,
+    was_on_stack: &mut bool,
+    is_open: bool,
+    prompt_changed: bool,
+    on_before_dismiss: fn() -> DismissDecision,
+    clear: impl FnOnce(),
+) {
+    let on_stack = layer.stack.iter().any(|m| m.root == root);
+
+    if prompt_changed && is_open && !on_stack {
+        layer.push(ActiveModal {
+            root,
+            backdrop: root,
+            previous_focus: None,
+            on_before_dismiss,
+        });
+        *was_on_stack = true;
+        return;
+    }
+
+    if !is_open && on_stack {
+        layer.stack.retain(|m| m.root != root);
+        *was_on_stack = false;
+        return;
+    }
+
+    if *was_on_stack && !on_stack && is_open {
+        clear();
+    }
+
+    *was_on_stack = on_stack;
+}
+
 /// Whether Esc is clear to dismiss the top modal-layer entry. Mirrors the
 /// relogin notice's yield guard (relogin_modal_button_system): a single
 /// Escape must defer to any higher-priority input modal that is open, so the
@@ -336,6 +382,27 @@ mod tests {
             1,
             "Esc must yield to the open secret modal; the stack entry survives"
         );
+    }
+
+    #[test]
+    fn m_modal_10_reconcile_stack_forward_then_reverse_clears() {
+        let mut layer = ModalLayer::default();
+        let root = e(50);
+        let mut was = false;
+        let mut cleared = false;
+
+        reconcile_modal_stack(&mut layer, root, &mut was, true, true, dismiss, || {});
+        assert!(was);
+        assert_eq!(layer.stack.len(), 1);
+
+        layer.try_dismiss_top();
+        assert!(layer.stack.is_empty());
+
+        reconcile_modal_stack(&mut layer, root, &mut was, true, false, dismiss, || {
+            cleared = true;
+        });
+        assert!(cleared, "esc pop must trigger the clear closure");
+        assert!(!was);
     }
 
     #[test]

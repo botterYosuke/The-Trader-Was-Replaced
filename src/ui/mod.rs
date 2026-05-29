@@ -606,10 +606,9 @@ impl Plugin for UiPlugin {
             Update,
             (
                 relogin_modal_visibility_system,
-                // §3.10 Escape determinism (see context_menu_keyboard_system).
-                relogin_modal_button_system
-                    .before(secret_modal_input_system)
-                    .before(confirm_modal_button_system),
+                // B2-4 (#46): button-only now (Escape moved to modal_layer_esc_system),
+                // so no .before(...) input-phase ordering is needed here.
+                relogin_modal_button_system,
                 relogin_modal_sync_system,
                 // B2-3 (#46): generic modal-layer Esc handler. No-op while the
                 // ModalLayer stack is empty (early-returns). Same Escape-yield

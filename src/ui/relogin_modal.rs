@@ -212,30 +212,17 @@ pub fn relogin_modal_reconcile_system(
     let Ok(root) = root_q.single() else {
         return;
     };
-    let on_stack = layer.stack.iter().any(|m| m.root == root);
-
-    if prompt.is_changed() && prompt.active.is_some() && !on_stack {
-        layer.push(ActiveModal {
-            root,
-            backdrop: root,
-            previous_focus: None,
-            on_before_dismiss: relogin_dismiss,
-        });
-        *was_on_stack = true;
-        return;
-    }
-
-    if prompt.active.is_none() && on_stack {
-        layer.stack.retain(|m| m.root != root);
-        *was_on_stack = false;
-        return;
-    }
-
-    if *was_on_stack && !on_stack && prompt.active.is_some() {
-        prompt.active = None;
-    }
-
-    *was_on_stack = on_stack;
+    let is_open = prompt.active.is_some();
+    let prompt_changed = prompt.is_changed();
+    crate::ui::component::modal_layer::reconcile_modal_stack(
+        &mut layer,
+        root,
+        &mut was_on_stack,
+        is_open,
+        prompt_changed,
+        relogin_dismiss,
+        || prompt.active = None,
+    );
 }
 
 #[cfg(test)]
