@@ -399,6 +399,13 @@ backend→ECS seam だけでは十分条件にならない。
   外部データ依存（catalog / J-Quants）や OS dialog（rfd 直呼び）は `#[test] #[ignore]` + 理由 doc にする。
 - **既存 warning は触らない**（`main.rs:33 UnsubscribeRequest` 等、本作業と無関係）。新規 warning は増やさない。
 - **コメントは「なぜ」だけ**。何をしているかの説明やタスク言及は書かない（プロジェクト規約）。
+- **モジュール/シンボルを撤去した後の現行化 grep は `docs/wiki/` だけでなく `docs/` ツリー全体を当たる**。
+  ADR・refactor/plan ドキュメント（`docs/adr/*`, `docs/ui-theme.md`, `docs/ui-refactor-plan.md` 等）は
+  「#N で実装予定」「#N で消える」のような**先送りリストに削除予定ファイル名を直書き**していることがあり、
+  対象が実際に消えると dangling 参照・偽の将来宣言になる。`grep -rn "<削除したファイル名/シンボル>" docs/`
+  を必ず回して 0 件（または「撤去済み」へ現行化）を確認する。実例: #50 Slice 7 で `strategy_editor_spike.rs`
+  を削除したが `docs/ui-theme.md` の #48 先送りリストが同ファイルを参照したまま残り、codex セカンドオピニオンが
+  Medium 指摘（`src/ tests/ docs/wiki/` だけ grep して `docs/ui-theme.md` を取りこぼした）。
 
 ## テストの型（コピーして埋める）
 
