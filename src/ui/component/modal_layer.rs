@@ -33,6 +33,10 @@ pub struct ActiveModal {
     pub backdrop: Entity,
     /// Entity that held focus before this modal opened (record-only this pass).
     pub previous_focus: Option<Entity>,
+    /// Stacking order (matches the modal's GlobalZIndex): higher = frontmost.
+    /// Used by [`ModalLayer::try_dismiss_highest_z`] to target the top-most modal
+    /// by z rather than by push order.
+    pub z: i32,
     /// Veto hook consulted by [`ModalLayer::try_dismiss_top`].
     pub on_before_dismiss: fn() -> DismissDecision,
 }
@@ -70,6 +74,34 @@ impl ModalLayer {
             None => false,
         }
     }
+
+    /// Attempt to dismiss the modal with the highest `z` (frontmost by stacking
+    /// order, not by push order), consulting its `on_before_dismiss` veto.
+    ///
+    /// Selects the entry with the maximum `z`; on ties, the last-pushed wins
+    /// (matching the `try_dismiss_top` last-element semantics). The veto applies
+    /// to that single entry only: on [`DismissDecision::Pending`] nothing is
+    /// removed and `false` is returned, just like `try_dismiss_top`.
+    pub fn try_dismiss_highest_z(&mut self) -> bool {
+        // `max_by_key` returns the LAST element among equal keys, so equal-z
+        // ties resolve to the last-pushed entry (same as `try_dismiss_top`).
+        let target = self
+            .stack
+            .iter()
+            .enumerate()
+            .max_by_key(|(_, m)| m.z)
+            .map(|(i, _)| i);
+        match target {
+            Some(i) => match (self.stack[i].on_before_dismiss)() {
+                DismissDecision::Dismiss => {
+                    self.stack.remove(i);
+                    true
+                }
+                DismissDecision::Pending => false,
+            },
+            None => false,
+        }
+    }
 }
 
 /// Generic `ModalLayer.stack` ⇄ owning-prompt reconcile step shared by the
@@ -86,6 +118,7 @@ impl ModalLayer {
 pub fn reconcile_modal_stack(
     layer: &mut ModalLayer,
     root: Entity,
+    z: i32,
     was_on_stack: &mut bool,
     is_open: bool,
     prompt_changed: bool,
@@ -99,6 +132,7 @@ pub fn reconcile_modal_stack(
             root,
             backdrop: root,
             previous_focus: None,
+            z,
             on_before_dismiss,
         });
         *was_on_stack = true;
@@ -235,6 +269,7 @@ mod tests {
             root: e(1),
             backdrop: e(2),
             previous_focus: None,
+            z: 100,
             on_before_dismiss: dismiss,
         });
         assert_eq!(layer.stack.len(), 1);
@@ -249,6 +284,7 @@ mod tests {
             root: e(10),
             backdrop: e(11),
             previous_focus: Some(e(99)),
+            z: 110,
             on_before_dismiss: dismiss,
         });
         let popped = layer.pop().expect("pop should return the pushed entry");
@@ -264,6 +300,7 @@ mod tests {
             root: e(20),
             backdrop: e(21),
             previous_focus: None,
+            z: 260,
             on_before_dismiss: dismiss,
         });
         // ... then reconcile modal (frontmost).
@@ -271,6 +308,7 @@ mod tests {
             root: e(30),
             backdrop: e(31),
             previous_focus: None,
+            z: 262,
             on_before_dismiss: dismiss,
         });
         assert!(layer.try_dismiss_top());
@@ -285,6 +323,7 @@ mod tests {
             root: e(40),
             backdrop: e(41),
             previous_focus: None,
+            z: 200,
             on_before_dismiss: pending,
         });
         assert!(!layer.try_dismiss_top());
@@ -347,6 +386,7 @@ mod tests {
             root: e(1),
             backdrop: e(2),
             previous_focus: None,
+            z: 210,
             on_before_dismiss: dismiss,
         });
         app.world_mut()
@@ -364,6 +404,7 @@ mod tests {
             root: e(1),
             backdrop: e(2),
             previous_focus: None,
+            z: 300,
             on_before_dismiss: dismiss,
         });
         app.world_mut().resource_mut::<crate::trading::SecretPrompt>().active =
@@ -391,14 +432,14 @@ mod tests {
         let mut was = false;
         let mut cleared = false;
 
-        reconcile_modal_stack(&mut layer, root, &mut was, true, true, dismiss, || {});
+        reconcile_modal_stack(&mut layer, root, 262, &mut was, true, true, dismiss, || {});
         assert!(was);
         assert_eq!(layer.stack.len(), 1);
 
         layer.try_dismiss_top();
         assert!(layer.stack.is_empty());
 
-        reconcile_modal_stack(&mut layer, root, &mut was, true, false, dismiss, || {
+        reconcile_modal_stack(&mut layer, root, 262, &mut was, true, false, dismiss, || {
             cleared = true;
         });
         assert!(cleared, "esc pop must trigger the clear closure");
@@ -413,5 +454,38 @@ mod tests {
             .press(KeyCode::Escape);
         app.update();
         assert!(app.world().resource::<ModalLayer>().stack.is_empty());
+    }
+
+    #[test]
+    fn m_modal_11_dismiss_targets_highest_z() {
+        // High-z entry is pushed FIRST, low-z SECOND, so push order (LIFO) and
+        // z order disagree: a correct max-z dismissal must remove the high-z A,
+        // not the last-pushed B.
+        let mut layer = ModalLayer::default();
+        // A: frontmost by z (300), pushed first.
+        layer.push(ActiveModal {
+            root: e(1),
+            backdrop: e(1),
+            previous_focus: None,
+            z: 300,
+            on_before_dismiss: dismiss,
+        });
+        // B: lower z (200), pushed last.
+        layer.push(ActiveModal {
+            root: e(2),
+            backdrop: e(2),
+            previous_focus: None,
+            z: 200,
+            on_before_dismiss: dismiss,
+        });
+
+        assert!(layer.try_dismiss_highest_z());
+        assert_eq!(layer.stack.len(), 1);
+        // The high-z A (e(1)) must be gone; the low-z B (e(2)) must remain.
+        assert_eq!(
+            layer.stack[0].root,
+            e(2),
+            "dismissal must target the highest-z modal, not the last-pushed one"
+        );
     }
 }

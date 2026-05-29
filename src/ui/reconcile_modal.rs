@@ -200,6 +200,7 @@ pub fn reconcile_modal_reconcile_system(
     crate::ui::component::modal_layer::reconcile_modal_stack(
         &mut layer,
         root,
+        262,
         &mut was_on_stack,
         is_open,
         prompt_changed,
