@@ -1227,12 +1227,53 @@ pub fn apply_layout_system(
                     continue;
                 }
             } else {
-                warn!("layout load: strategy_path {:?} not found, skipping", path);
-                // UserJsonOpen で存在しない strategy_path（例: 別 OS の絶対パス）を開いたとき、
-                // 前セッションの stale な fragments が editor に残らないよう破棄する。
-                if event.mode == LayoutLoadMode::UserJsonOpen {
+                // UserJsonOpen のとき: 同名 sibling .py があればフォールバックロードを試みる
+                let sibling = event.path.with_extension("py");
+                if event.mode == LayoutLoadMode::UserJsonOpen && sibling.exists() {
+                    warn!(
+                        "layout load: strategy_path {:?} not found, falling back to sibling {:?}",
+                        path, sibling
+                    );
                     pending_fragments.by_region_key.clear();
                     pending_fragments.loaded_for_path = None;
+                    pending.windows.clear();
+                    pending.spawn_requested.clear();
+                    pending.waiting_for_strategy = false;
+
+                    load_ev.write(StrategyFileLoadRequested {
+                        path: sibling,
+                        mode: StrategyLoadMode::LayoutRestore,
+                    });
+                    if let Some(win_layouts) = &layout.windows {
+                        pending.windows.extend(win_layouts.iter().cloned());
+                        pending.waiting_for_strategy = true;
+                    }
+                    if let (Some(vp), Ok((mut cam_tf, mut proj))) =
+                        (&layout.viewport, camera.single_mut())
+                    {
+                        cam_tf.translation.x = vp.pan_x;
+                        cam_tf.translation.y = vp.pan_y;
+                        if let Projection::Orthographic(ref mut p) = *proj {
+                            p.scale = vp.zoom;
+                        }
+                    }
+                    info!(
+                        "layout apply deferred via sibling fallback: {:?}",
+                        event.path
+                    );
+                    continue;
+                } else {
+                    warn!("layout load: strategy_path {:?} not found, skipping", path);
+                    // UserJsonOpen で存在しない strategy_path（例: 別 OS の絶対パス）を開いたとき、
+                    // 前セッションの stale な fragments が editor に残らないよう破棄する。
+                    // また pending.windows / spawn_requested も破棄する（連続 Open での誤適用防止）。
+                    if event.mode == LayoutLoadMode::UserJsonOpen {
+                        pending_fragments.by_region_key.clear();
+                        pending_fragments.loaded_for_path = None;
+                        pending.windows.clear();
+                        pending.spawn_requested.clear();
+                        pending.waiting_for_strategy = false;
+                    }
                 }
             }
         }

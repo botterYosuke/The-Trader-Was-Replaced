@@ -118,12 +118,12 @@ use crate::ui::order_panel::{
 use crate::ui::orders::orders_panel_system;
 use crate::ui::positions::positions_panel_system;
 use crate::ui::reconcile_modal::{
-    reconcile_modal_button_system, reconcile_modal_sync_system, reconcile_modal_visibility_system,
-    spawn_reconcile_modal,
+    reconcile_modal_button_system, reconcile_modal_reconcile_system, reconcile_modal_sync_system,
+    reconcile_modal_visibility_system, spawn_reconcile_modal,
 };
 use crate::ui::relogin_modal::{
-    relogin_modal_button_system, relogin_modal_sync_system, relogin_modal_visibility_system,
-    spawn_relogin_modal,
+    relogin_modal_button_system, relogin_modal_reconcile_system, relogin_modal_sync_system,
+    relogin_modal_visibility_system, spawn_relogin_modal,
 };
 use crate::ui::restore::restore_fixed_registry_on_replay_entry_system;
 use crate::ui::run_result_panel::{
@@ -311,6 +311,7 @@ impl Plugin for UiPlugin {
         // Phase 9 §3.11 / §3.12 (Step 4): right-click context menu + Modify modal.
         .init_resource::<OrderContextMenu>()
         .init_resource::<ModifyForm>()
+        .init_resource::<crate::ui::component::modal_layer::ModalLayer>()
         // Phase 10 §2.9: OrdersPanel strategy_id filter (All / Manual / Strategy).
         .init_resource::<crate::trading::OrdersFilter>()
         // Phase 10 §2.10 / log Open Question: violation toast + strategy log buffer.
@@ -605,11 +606,22 @@ impl Plugin for UiPlugin {
             Update,
             (
                 relogin_modal_visibility_system,
-                // §3.10 Escape determinism (see context_menu_keyboard_system).
-                relogin_modal_button_system
+                // B2-4 (#46): button-only now (Escape moved to modal_layer_esc_system),
+                // so no .before(...) input-phase ordering is needed here.
+                relogin_modal_button_system,
+                relogin_modal_sync_system,
+                // B2-3 (#46): generic modal-layer Esc handler. No-op while the
+                // ModalLayer stack is empty (early-returns). Same Escape-yield
+                // ordering as relogin so the handoff preserves determinism.
+                crate::ui::component::modal_layer::modal_layer_esc_system
                     .before(secret_modal_input_system)
                     .before(confirm_modal_button_system),
-                relogin_modal_sync_system,
+                // B2-4 step 2+3 (#46): mechanism A — bidirectional sync of
+                // ReloginPrompt.active <-> ModalLayer.stack. Runs AFTER the esc
+                // system so a same-frame Escape pop is reflected back into
+                // ReloginPrompt.active this frame (prod/test parity with k13).
+                relogin_modal_reconcile_system
+                    .after(crate::ui::component::modal_layer::modal_layer_esc_system),
             ),
         )
         // ── Phase 9 Step 8 §3.8: backend 再起動後の注文 reconcile 通知モーダル ──
@@ -617,11 +629,17 @@ impl Plugin for UiPlugin {
             Update,
             (
                 reconcile_modal_visibility_system,
-                // §3.10 Escape determinism (see context_menu_keyboard_system).
-                reconcile_modal_button_system
-                    .before(secret_modal_input_system)
-                    .before(confirm_modal_button_system),
+                // B3 (#46): Escape dismissal moved to the generic
+                // modal_layer_esc_system (registered once in the relogin block).
+                // This system now handles ONLY the [確認した] button.
+                reconcile_modal_button_system,
                 reconcile_modal_sync_system,
+                // B3 (#46): mechanism A — bidirectional sync of
+                // ReconcilePrompt.unknown <-> ModalLayer.stack. Runs AFTER the esc
+                // system so a same-frame Escape pop is reflected back into
+                // ReconcilePrompt.unknown this frame (prod/test parity with k14).
+                reconcile_modal_reconcile_system
+                    .after(crate::ui::component::modal_layer::modal_layer_esc_system),
             ),
         )
         // ── Phase 10 §2.10: Safety Rail violation toast ──

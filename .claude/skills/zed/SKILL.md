@@ -114,7 +114,7 @@ Zed は Rust 製の production-grade デスクトップアプリで、我々が 
 | Command palette | `Z:crates/command_palette/src/command_palette.rs`, `Z:crates/command_palette_hooks/src/command_palette_hooks.rs` | picker パターン + action 列挙、起動キーは `KeyboardInput` で捕獲 |
 | Action 定義 (型安全) | `Z:crates/zed_actions/src/lib.rs`, Zed の `actions!` マクロ | 1 アクション = 1 Bevy Event 型、`app.add_event::<MyAction>()` で配信 |
 | Menu bar | `Z:crates/title_bar/src/title_bar.rs` のメニュー周り | `src/ui/menu_bar.rs` 既存パターン (ドロップダウン、Alt+F/E) を踏襲 |
-| Modal layer (z-order) | `Z:crates/workspace/src/modal_layer.rs` | bevy_egui `Area::new(...).order(Order::Foreground)`、`FocusedWidget` を modal に向ける |
+| Modal layer (z-order) | `Z:crates/workspace/src/modal_layer.rs` | **`src/ui/component/modal_layer.rs`（#46 Slice B で実装済み）の `ModalLayer` スタック + `ModalSkeleton`/`spawn_modal` + `modal_layer_esc_system` を使う**。bevy_egui は撤去済みなのでモーダルは Bevy UI Node ツリー。新モーダルは `spawn_modal(&theme, ModalSkeleton{width,z_index,name})` で backdrop+card を組み `ModalLayer` に push、Esc は `modal_layer_esc_system` が frontmost を dismiss（`esc_yield_clear` で上位 modal に譲る）。secret/modify/confirm は未移行（後続スライス） |
 | Key binding | `Z:crates/settings/src/keymap_file.rs`, Zed `assets/keymaps/*.json` | 当面ハードコード `KeyboardInput` 判定、将来設定化なら参考 |
 
 ### Workspace / Panel / Layout / Persistence
@@ -167,7 +167,7 @@ Zed は Rust 製の production-grade デスクトップアプリで、我々が 
 | `cx.spawn(async move {...})` | `bevy_tasks::AsyncComputeTaskPool` + Event で結果配信 |
 | `cx.theme().colors().background` | `components.rs` 内の `pub const BG: Color = ...` |
 | `actions!(mod_name, [DoFoo, DoBar])` | 1 アクション = 1 Bevy Event 型、`app.add_event::<DoFoo>()` |
-| `ModalView` trait | `bevy_egui::Area::new(...).order(Order::Foreground)` + `FocusedWidget` を一時的に占有 |
+| `ModalView` trait | `src/ui/component/modal_layer.rs` の `ModalLayer` スタック + `ActiveModal{on_before_dismiss: fn()->DismissDecision}`（veto フック）。bevy_egui は撤去済み。focus 復元は未実装で `previous_focus` は record-only（グローバル focus リソース導入後） |
 | `cx.dispatch_action(Box::new(...))` | `EventWriter<MyAction>.send(MyAction)` |
 
 ## 必ず守る Caveat (Bevy + cosmic_edit 側の都合)

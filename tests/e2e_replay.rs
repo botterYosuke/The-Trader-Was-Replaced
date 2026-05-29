@@ -164,6 +164,8 @@ mod i16_cache_restore_replay_entry_no_inmemory_pollution;
 mod i17_file_open_bad_strategy_path_clears_stale_cache;
 #[path = "e2e/flows/i18_file_open_relative_strategy_path_loads.rs"]
 mod i18_file_open_relative_strategy_path_loads;
+#[path = "e2e/flows/i19_file_open_sidecar_missing_strategy_path_loads_sibling_py.rs"]
+mod i19_file_open_sidecar_missing_strategy_path_loads_sibling_py;
 
 // J. Strategy editor / startup panel / scenario / instrument picker (UI / integration)
 #[path = "e2e/flows/j1_strategy_editor_text_autosaves_cache.rs"]

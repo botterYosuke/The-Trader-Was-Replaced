@@ -16,16 +16,11 @@
 
 use bevy::prelude::*;
 
-use crate::trading::{ReloginPrompt, SecretPrompt};
-use crate::ui::modify_modal::ModifyForm;
-use crate::ui::order_panel::OrderConfirm;
-
-const COLOR_PANEL_BG: Color = Color::srgba(0.07, 0.07, 0.12, 0.98);
-const COLOR_BACKDROP: Color = Color::srgba(0.0, 0.0, 0.0, 0.6);
-const COLOR_HEADER: Color = Color::srgb(1.0, 0.62, 0.20);
-const COLOR_INFO: Color = Color::srgb(0.78, 0.81, 0.86);
-const COLOR_VALUE: Color = Color::srgb(0.88, 0.91, 0.96);
-const COLOR_BTN: Color = Color::srgba(0.16, 0.30, 0.44, 1.0);
+use crate::trading::ReloginPrompt;
+use crate::ui::component::modal_layer::{
+    ActiveModal, DismissDecision, ModalHandle, ModalLayer, ModalSkeleton, spawn_modal,
+};
+use crate::ui::theme::{DynamicSpacing, LabelSize, Theme};
 
 // ===========================================================================
 // Components
@@ -45,108 +40,93 @@ pub struct ReloginDismissButton;
 // Spawn (Startup)
 // ===========================================================================
 
-pub fn spawn_relogin_modal(mut commands: Commands) {
-    commands
+pub fn spawn_relogin_modal(mut commands: Commands, theme: Res<Theme>) {
+    let density = theme.spacing.density;
+    let ModalHandle { root, card } = spawn_modal(
+        &mut commands,
+        &theme,
+        ModalSkeleton {
+            width: 360.0,
+            z_index: 260,
+            name: "ReloginModal",
+        },
+    );
+
+    commands.entity(root).insert(ReloginModalRoot);
+
+    // NOTE: 記号グリフ (⚠ 等) は既定フォントに無く □ 落ちする
+    // (footer は ▶/■ 用に NotoSansSymbols2 を別ロードしている)。
+    // 警告色 (theme.status.warning=オレンジ) で代替し、本文は Basic-Latin+JP のみ。
+    let header = commands
         .spawn((
             Node {
-                display: Display::None,
-                position_type: PositionType::Absolute,
-                top: Val::Px(0.0),
-                left: Val::Px(0.0),
-                width: Val::Percent(100.0),
-                height: Val::Percent(100.0),
+                margin: UiRect::bottom(Val::Px(DynamicSpacing::Base08.px(density))),
+                ..default()
+            },
+            Text::new("venue からログアウトされました"),
+            theme.typography.label_font(LabelSize::Large),
+            TextColor(theme.status.warning),
+        ))
+        .id();
+
+    let info = commands
+        .spawn((
+            Node {
+                margin: UiRect::bottom(Val::Px(DynamicSpacing::Base06.px(density))),
+                ..default()
+            },
+            Text::new(""),
+            theme.typography.label_font(LabelSize::Default),
+            TextColor(theme.colors.text),
+            ReloginInfoText,
+        ))
+        .id();
+
+    let body = commands
+        .spawn((
+            Text::new(
+                "メニューの Venue → Disconnect の後、Connect から再ログインしてください。\n\
+                 Venue メニューから再ログインすると購読は自動的に再開されます。",
+            ),
+            theme.typography.label_font(LabelSize::Small),
+            TextColor(theme.colors.text_muted),
+        ))
+        .id();
+
+    let dismiss_label = commands
+        .spawn((
+            Text::new("閉じる"),
+            theme.typography.label_font(LabelSize::Large),
+            TextColor(theme.colors.text),
+        ))
+        .id();
+    let dismiss_btn = commands
+        .spawn((
+            Button,
+            Node {
+                width: Val::Px(96.0),
+                height: Val::Px(30.0),
                 align_items: AlignItems::Center,
                 justify_content: JustifyContent::Center,
                 ..default()
             },
-            BackgroundColor(COLOR_BACKDROP),
-            // secret modal (300) より前面である必要はない。確認モーダル (200) 級。
-            GlobalZIndex(260),
-            ReloginModalRoot,
-            Name::new("ReloginModal"),
+            BackgroundColor(theme.colors.element_selection_background),
+            ReloginDismissButton,
         ))
-        .with_children(|p| {
-            p.spawn((
-                Node {
-                    width: Val::Px(360.0),
-                    flex_direction: FlexDirection::Column,
-                    padding: UiRect::all(Val::Px(16.0)),
-                    ..default()
-                },
-                BackgroundColor(COLOR_PANEL_BG),
-            ))
-            .with_children(|card| {
-                card.spawn((
-                    Node {
-                        margin: UiRect::bottom(Val::Px(8.0)),
-                        ..default()
-                    },
-                    // NOTE: 記号グリフ (⚠ 等) は既定フォントに無く □ 落ちする
-                    // (footer は ▶/■ 用に NotoSansSymbols2 を別ロードしている)。
-                    // 警告色 (COLOR_HEADER=オレンジ) で代替し、本文は Basic-Latin+JP のみ。
-                    Text::new("venue からログアウトされました"),
-                    TextFont {
-                        font_size: 15.0,
-                        ..default()
-                    },
-                    TextColor(COLOR_HEADER),
-                ));
-                card.spawn((
-                    Node {
-                        margin: UiRect::bottom(Val::Px(6.0)),
-                        ..default()
-                    },
-                    Text::new(""),
-                    TextFont {
-                        font_size: 12.0,
-                        ..default()
-                    },
-                    TextColor(COLOR_VALUE),
-                    ReloginInfoText,
-                ));
-                card.spawn((
-                    Text::new(
-                        "メニューの Venue → Disconnect の後、Connect から再ログインしてください。\n\
-                         Venue メニューから再ログインすると購読は自動的に再開されます。",
-                    ),
-                    TextFont {
-                        font_size: 11.0,
-                        ..default()
-                    },
-                    TextColor(COLOR_INFO),
-                ));
-                // 閉じるボタン
-                card.spawn((Node {
-                    margin: UiRect::top(Val::Px(14.0)),
-                    justify_content: JustifyContent::FlexEnd,
-                    ..default()
-                },))
-                    .with_children(|btns| {
-                        btns.spawn((
-                            Button,
-                            Node {
-                                width: Val::Px(96.0),
-                                height: Val::Px(30.0),
-                                align_items: AlignItems::Center,
-                                justify_content: JustifyContent::Center,
-                                ..default()
-                            },
-                            BackgroundColor(COLOR_BTN),
-                            ReloginDismissButton,
-                        ))
-                        .with_children(|b| {
-                            b.spawn((
-                                Text::new("閉じる"),
-                                TextFont {
-                                    font_size: 13.0,
-                                    ..default()
-                                },
-                                TextColor(COLOR_VALUE),
-                            ));
-                        });
-                    });
-            });
-        });
+        .add_child(dismiss_label)
+        .id();
+    let btn_row = commands
+        .spawn(Node {
+            margin: UiRect::top(Val::Px(DynamicSpacing::Base12.px(density))),
+            justify_content: JustifyContent::FlexEnd,
+            ..default()
+        })
+        .add_child(dismiss_btn)
+        .id();
+
+    commands
+        .entity(card)
+        .add_children(&[header, info, body, btn_row]);
 }
 
 // ===========================================================================
@@ -174,27 +154,18 @@ pub fn relogin_modal_visibility_system(
     }
 }
 
-/// [閉じる] ボタン / Esc で通知を消す (prompt をクリア)。
+/// [閉じる] ボタンで通知を消す (prompt をクリア)。
+///
+/// Escape による dismiss は B2-4 step 2 で `modal_layer_esc_system` に移管した。
+/// ここはボタンクリック専用。Escape は reconcile の REVERSE sync 経由で prompt を消す。
 pub fn relogin_modal_button_system(
     interactions: Query<&Interaction, (Changed<Interaction>, With<ReloginDismissButton>)>,
-    keys: Res<ButtonInput<KeyCode>>,
     mut prompt: ResMut<ReloginPrompt>,
-    secret_prompt: Res<SecretPrompt>,
-    order_confirm: Res<OrderConfirm>,
-    modify_form: Res<ModifyForm>,
 ) {
     if prompt.active.is_none() {
         return;
     }
-    let pressed = interactions.iter().any(|i| *i == Interaction::Pressed);
-    // A button click is unambiguous. But Escape is read via ButtonInput (NOT the
-    // SecretModal's event drain), so a single Escape could close BOTH this notice
-    // and a higher-priority input modal (burning a one-shot Tachibana request_id).
-    // Yield the Escape to the higher-priority modal when one is open (§3.10).
-    let higher_priority_open =
-        secret_prompt.active.is_some() || order_confirm.pending.is_some() || modify_form.open;
-    let escape = keys.just_pressed(KeyCode::Escape) && !higher_priority_open;
-    if pressed || escape {
+    if interactions.iter().any(|i| *i == Interaction::Pressed) {
         prompt.active = None;
     }
 }
@@ -219,6 +190,41 @@ pub fn relogin_modal_sync_system(
     }
 }
 
+/// relogin notice の `on_before_dismiss` フック。通知モーダルは work-in-flight を
+/// 持たないので常に [`DismissDecision::Dismiss`] を返す（prod 用 free fn。
+/// modal_layer の `dismiss` テストヘルパは `#[cfg(test)]` なので prod から使えない）。
+fn relogin_dismiss() -> DismissDecision {
+    DismissDecision::Dismiss
+}
+
+/// `ModalLayer.stack` ⇄ `ReloginPrompt.active` を双方向同期する (mechanism A, B2-4 step 2)。
+///
+/// - FORWARD (open): `prompt.is_changed()` で active=Some かつ未登録 → stack に push。
+/// - REVERSE (esc dismiss): `modal_layer_esc_system` が自分の entry を pop すると
+///   prompt は変化しない。`was_on_stack` Local で「前フレーム stack に居た → 今フレーム
+///   居ない (active はまだ Some)」を検出し prompt をクリアする (visibility が hide する)。
+pub fn relogin_modal_reconcile_system(
+    mut prompt: ResMut<ReloginPrompt>,
+    root_q: Query<Entity, With<ReloginModalRoot>>,
+    mut layer: ResMut<ModalLayer>,
+    mut was_on_stack: Local<bool>,
+) {
+    let Ok(root) = root_q.single() else {
+        return;
+    };
+    let is_open = prompt.active.is_some();
+    let prompt_changed = prompt.is_changed();
+    crate::ui::component::modal_layer::reconcile_modal_stack(
+        &mut layer,
+        root,
+        &mut was_on_stack,
+        is_open,
+        prompt_changed,
+        relogin_dismiss,
+        || prompt.active = None,
+    );
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -226,10 +232,6 @@ mod tests {
     fn make_app() -> App {
         let mut app = App::new();
         app.init_resource::<ReloginPrompt>();
-        app.init_resource::<SecretPrompt>();
-        app.init_resource::<OrderConfirm>();
-        app.init_resource::<ModifyForm>();
-        app.insert_resource(ButtonInput::<KeyCode>::default());
         app
     }
 
@@ -244,68 +246,6 @@ mod tests {
         assert!(
             app.world().resource::<ReloginPrompt>().active.is_none(),
             "閉じる must clear the relogin prompt"
-        );
-    }
-
-    #[test]
-    fn escape_clears_prompt() {
-        let mut app = make_app();
-        app.world_mut().resource_mut::<ReloginPrompt>().active = Some("TACHIBANA".to_string());
-        app.world_mut()
-            .resource_mut::<ButtonInput<KeyCode>>()
-            .press(KeyCode::Escape);
-        app.add_systems(Update, relogin_modal_button_system);
-        app.update();
-        assert!(app.world().resource::<ReloginPrompt>().active.is_none());
-    }
-
-    #[test]
-    fn escape_yields_to_open_secret_prompt() {
-        // §3.10 cross-talk regression: a SecretModal is open (one-shot Tachibana
-        // request_id). A single Escape must close ONLY the secret modal — the
-        // relogin notice must survive so the user still sees the venue dropped.
-        use crate::trading::SecretPromptRequest;
-        let mut app = make_app();
-        app.world_mut().resource_mut::<ReloginPrompt>().active = Some("TACHIBANA".to_string());
-        app.world_mut().resource_mut::<SecretPrompt>().active = Some(SecretPromptRequest {
-            request_id: "r1".to_string(),
-            venue: "TACHIBANA".to_string(),
-            kind: "second_password".to_string(),
-            purpose: "new_order".to_string(),
-        });
-        app.world_mut()
-            .resource_mut::<ButtonInput<KeyCode>>()
-            .press(KeyCode::Escape);
-        app.add_systems(Update, relogin_modal_button_system);
-        app.update();
-        assert!(
-            app.world().resource::<ReloginPrompt>().active.is_some(),
-            "relogin notice must survive the Escape consumed by the SecretModal"
-        );
-    }
-
-    #[test]
-    fn escape_yields_to_open_order_confirm() {
-        let mut app = make_app();
-        app.world_mut().resource_mut::<ReloginPrompt>().active = Some("KABU".to_string());
-        app.world_mut().resource_mut::<OrderConfirm>().pending =
-            Some(crate::ui::order_panel::OrderDraft {
-                venue: "kabu".to_string(),
-                symbol: "7203.T".to_string(),
-                side: crate::ui::order_panel::Side::Buy,
-                order_type: crate::ui::order_panel::OrderType::Market,
-                qty: 100.0,
-                price: None,
-                tif: crate::ui::order_panel::TimeInForce::Day,
-            });
-        app.world_mut()
-            .resource_mut::<ButtonInput<KeyCode>>()
-            .press(KeyCode::Escape);
-        app.add_systems(Update, relogin_modal_button_system);
-        app.update();
-        assert!(
-            app.world().resource::<ReloginPrompt>().active.is_some(),
-            "relogin notice must survive Escape while the order-confirm modal is open"
         );
     }
 

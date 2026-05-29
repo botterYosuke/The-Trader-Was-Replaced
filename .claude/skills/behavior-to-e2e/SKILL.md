@@ -36,6 +36,10 @@ description: >-
   書いた場合は flow を `- [ ] RED＝回帰ガード` → GREEN 後に `- [x]` に更新する
   （CLAUDE.md「不具合修正前の E2E メンテナンス」に対応するが、**その flow を FLOWS.md に記録する作業が
   本スキルの仕事**。実装スキルに気を取られて FLOWS.md 記載が省略されがちなため明示）。
+  **issue の「対処案」セクションに「RED E2E を追加」「FLOWS.md も更新」「wiki: flow ID を反映」が含まれるとき**も
+  他スキル（`/pair-relay` / `/tdd` / `bevy-engine` など）と同時に本スキルを併発する。ユーザーが明示しなくても
+  `gh issue view` の本文を読んで自律的に発動する（issue #67: /plan /pair-relay /tdd が明示されたが、
+  対処案に「RED E2E + FLOWS.md + wiki」が揃っており behavior-to-e2e が見落とされた実例）。
   **「RED のつもりで書いたテストが最初から GREEN」＝fix 既適用パターン**: コードを直す前に書いた
   テストが即 GREEN になる場合は「バグが既に修正済み（別 PR / 別コミットで先に入った）」か
   「テストの assert が誤っていて実は bug を捕捉できていない」のどちらか。前者（例: issue #57 で
