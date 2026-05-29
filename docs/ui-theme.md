@@ -119,7 +119,11 @@
 1. **ボタン寸法 / footer 高さ / anchor 0** … footer.rs の `Val::Px(34.0)` 等の数値は token 化スコープ外。component helper（`Button::new(...)` 型 API）に集約するのは **#46 component helper 課題**。
 2. **`SyntaxColors` の syntect / tree-sitter 連携** … 構造体宣言のみ。実装は **#50**（`bevscode` 置換）。
 3. **Typography `mono` の editor / gutter / 板への配線** … 宣言のみ。**#50**。
-4. **`InputPhase` SystemSet 化** … `bevy_cosmic_edit` は #50 Slice 6 で撤去済み。今後 `bevscode` の input set にラップする際に同時導入。
+4. **`InputPhase` SystemSet 化** … **#46 Slice A で最小導入済み**（`src/ui/input_phase.rs`:
+   `InputPhase::{KeyboardDrain, ModalInput, WidgetInput, CosmicEdit}` を `.chain()` 順序固定）。
+   現状メンバは `WidgetInput`（`button_interaction_system`）のみ。`KeyboardDrain` は #46 Slice E、
+   `ModalInput` は #46 Slice B、`CosmicEdit`（bevscode 連携）は #50 で投入。#50 はこの set を
+   **再定義せず流用**する。
 5. **`order_panel.rs` 1,219 行の実コード分割** … `docs/ui-refactor-plan.md` に**計画のみ**。実装は **#46 Slice B**。
 6. **`footer.rs` 以外（menu_bar / sidebar / order_panel / modify_modal / scenario_startup / strategy_editor_*）の token 化** … **#46**。
 7. **`theme.layout.footer_h = 24.0` と footer.rs 生 `Val::Px(28.0)` の値の食い違い** … 将来統一の余地。
@@ -135,3 +139,63 @@
 - `Val::Px(34.0)` / `30.0` / `50.0` / `20.0` — transport / speed / mode toggle ボタン寸法。
 
 これらはすべて **#46 component helper 課題**（`Button::transport()` / `Button::speed()` などの helper API）で集約します。token 化を先行させるとボタン helper の設計を縛ってしまうため、寸法だけは温存しました。
+
+## 12. Button component (#46 Slice A)
+
+`src/ui/component/button.rs` が、散在していたボタン色変化 system（footer / menu_bar /
+sidebar / live_run / order_context_menu / modify_modal の `Changed<Interaction>` 色分岐）を
+**単一の `button_interaction_system` + `ButtonStyle × ButtonState` テーブル**に集約します。
+ボタンに `ButtonStyle` を付けるだけで、hover / press / selected / disabled の色が
+`Theme` から自動解決されます。
+
+### 利用例（builder）
+
+```rust
+use crate::ui::component::{spawn_button, ButtonStyle, TintColor};
+use crate::ui::traits::{Clickable, Disableable, Toggleable, UiSized, UiStyledExt};
+use crate::ui::theme::ElevationIndex;
+use crate::ui::traits::ComponentSize;
+
+spawn_button(&mut commands, &theme, "Run")
+    .style(ButtonStyle::Tinted(TintColor::Success))
+    .size(ComponentSize::Default)
+    .elevation(ElevationIndex::Surface)
+    .on_click(|| info!("run clicked"));   // FnMut closure → On<Pointer<Click>> observer
+```
+
+既存ボタンの移行は spawn タプルに `ButtonStyle` + `ElevationIndex` を足し、各 system から
+色代入を剥がすだけ。「選択中」「無効」状態はマーカー component で表す:
+
+- `ButtonSelected` — トグル ON / 現在値（speed の現在倍率・ExecutionMode の現在セグメント等）。
+  action system が `commands.insert/remove` で切替え、generic system が `Selected` 色を塗る。
+- `ButtonDisabled` — 無効状態（venue busy・confirm 不可・live run の不許可 action 等）。
+  `Disabled` が他のどの状態より優先される。
+
+### `ButtonStyle × ButtonState` テーブル（dark）
+
+`button_colors(style, state, elevation, &theme)` が唯一の解決点。`label` 列に応じて `icon`
+列も同じ階調（`icon` / `icon_muted` / `icon_disabled` / `icon_accent`）になる。
+
+| style \ state | Enabled (bg / border / label) | Hovered | Active | Selected | Disabled |
+|---|---|---|---|---|---|
+| **Filled** | element_background / NONE / text | element_hover | element_active | element_selected / border_selected | element_disabled / border_disabled / text_disabled |
+| **Tinted(t)** | tint_bg / tint_border / tint_label | tint_solid | tint_solid | tint_solid | element_disabled / border_disabled / text_disabled |
+| **Outlined** | NONE / border / text | element_hover / border_variant | element_active / border_variant | element_selected / border_selected | NONE / border_disabled / text_disabled |
+| **OutlinedGhost** | NONE / border / text_muted | ghost_element_hover | ghost_element_active | ghost_element_selected / border_selected | NONE / border_disabled / text_disabled |
+| **Subtle** | ghost_element_background / NONE / text_muted | ghost_element_hover | ghost_element_active | ghost_element_selected | ghost_element_disabled / NONE / text_disabled |
+| **Transparent** | NONE / NONE / text_muted | ghost_element_hover | ghost_element_active | ghost_element_selected | NONE / NONE / text_disabled |
+
+- `TintColor::{Accent, Error, Warning, Success}` は `theme.status.*`（error/warning/success）
+  と accent トークン（Accent）に解決される。Submit=`Tinted(Success)`、Cancel/Stop=`Tinted(Error)`。
+- `Focused` 行は将来の focus-ring slice 用に予約（Slice A では生成しない）。
+- builder は `#48` trait ピラミッド（`Clickable` / `Disableable` / `Toggleable` / `UiSized` /
+  `UiStyled` / `UiStyledExt`）を impl 済み。`button_interaction_system` は
+  `InputPhase::WidgetInput` set に登録される（§10.1-4 参照）。
+
+### Slice A の対象外（後続スライス）
+
+- **静的色のままのボタン**（secret / reconcile / relogin / settings / instrument_picker /
+  strategy_editor_find の発注確認以外）… 色変化 system を持たず spawn 時固定色のため、
+  生値ゼロ化は **Slice H**（残存生値ゼロ化 + CI 機械検査）で実施。
+- **`order_panel` の confirm / submit ボタン** … world-space Sprite + observer 方式で UI-Node の
+  `button_interaction_system` の対象外。**Slice B**（`order_panel` 分割 + `ModalSkeleton`）で扱う。
