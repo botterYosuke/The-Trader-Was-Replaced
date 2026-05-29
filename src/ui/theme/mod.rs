@@ -668,6 +668,156 @@ impl Plugin for ThemePlugin {
     }
 }
 
+/// Test-only constructor that returns a `Theme` where every serializable
+/// field of every sub-struct is mutated to a non-default value. Used by
+/// `tests/e2e/flows/q3_theme_serde_roundtrip.rs` (M1) so a stray
+/// `#[serde(skip)]` on any single field is caught by the PartialEq
+/// round-trip assert.
+///
+/// `#[doc(hidden)] pub` (not `#[cfg(test)]`) because integration test
+/// targets in `tests/` compile the lib WITHOUT `cfg(test)`.
+#[doc(hidden)]
+pub fn non_default_theme() -> Theme {
+    use bevy::color::Color;
+
+    fn distinct(i: u8) -> Color {
+        let v = (i as f32) / 255.0;
+        let w = ((i as u32 * 2) % 256) as f32 / 255.0;
+        Color::srgb(v, 1.0 - v, w)
+    }
+
+    fn distinct_scale(base: u8) -> ColorScale {
+        let mut steps = [Color::NONE; 12];
+        for k in 0..12 {
+            steps[k] = distinct(base.wrapping_add(k as u8));
+        }
+        ColorScale::new(steps)
+    }
+
+    let colors = ThemeColors {
+        background: distinct(0),
+        surface_background: distinct(1),
+        elevated_surface_background: distinct(2),
+        panel_background: distinct(3),
+        panel_focused_border: distinct(4),
+        status_bar_background: distinct(5),
+        title_bar_background: distinct(6),
+        toolbar_background: distinct(7),
+        tab_bar_background: distinct(8),
+        tab_active_background: distinct(9),
+        tab_inactive_background: distinct(10),
+        border: distinct(11),
+        border_variant: distinct(12),
+        border_focused: distinct(13),
+        border_selected: distinct(14),
+        border_disabled: distinct(15),
+        border_transparent: distinct(16),
+        text: distinct(17),
+        text_muted: distinct(18),
+        text_placeholder: distinct(19),
+        text_disabled: distinct(20),
+        text_accent: distinct(21),
+        element_background: distinct(22),
+        element_hover: distinct(23),
+        element_active: distinct(24),
+        element_selected: distinct(25),
+        element_disabled: distinct(26),
+        element_selection_background: distinct(27),
+        ghost_element_background: distinct(28),
+        ghost_element_hover: distinct(29),
+        ghost_element_active: distinct(30),
+        ghost_element_selected: distinct(31),
+        ghost_element_disabled: distinct(32),
+        accent: distinct(33),
+        accent_hover: distinct(34),
+        icon: distinct(35),
+        icon_muted: distinct(36),
+        icon_disabled: distinct(37),
+        icon_accent: distinct(38),
+        icon_placeholder: distinct(39),
+        drop_target_background: distinct(40),
+        drop_target_border: distinct(41),
+        search_match_background: distinct(42),
+        search_active_match_background: distinct(43),
+        scrollbar_thumb_background: distinct(44),
+        scrollbar_thumb_hover_background: distinct(45),
+        scrollbar_thumb_active_background: distinct(46),
+        scrollbar_track_background: distinct(47),
+        gutter_background: distinct(48),
+        line_number: distinct(49),
+        line_number_active: distinct(50),
+        modal_background: distinct(51),
+        notification_background: distinct(52),
+        drag_overlay_background: distinct(53),
+    };
+
+    let status = StatusColors {
+        info: distinct(60), info_background: distinct(61), info_border: distinct(62),
+        warning: distinct(63), warning_background: distinct(64), warning_border: distinct(65),
+        error: distinct(66), error_background: distinct(67), error_border: distinct(68),
+        success: distinct(69), success_background: distinct(70), success_border: distinct(71),
+        long: distinct(72), long_background: distinct(73), long_border: distinct(74),
+        short: distinct(75), short_background: distinct(76), short_border: distinct(77),
+        bid: distinct(78), bid_background: distinct(79), bid_border: distinct(80),
+        ask: distinct(81), ask_background: distinct(82), ask_border: distinct(83),
+    };
+
+    let syntax = SyntaxColors {
+        comment: distinct(90),
+        keyword: distinct(91),
+        string: distinct(92),
+        number: distinct(93),
+        type_: distinct(94),
+        function: distinct(95),
+        variable: distinct(96),
+        operator: distinct(97),
+    };
+
+    let players = PlayerColors([
+        distinct(100), distinct(101), distinct(102), distinct(103),
+        distinct(104), distinct(105), distinct(106), distinct(107),
+    ]);
+
+    let scale = ColorScales {
+        neutral: distinct_scale(110),
+        accent: distinct_scale(122),
+        red: distinct_scale(134),
+        green: distinct_scale(146),
+        yellow: distinct_scale(158),
+        blue: distinct_scale(170),
+    };
+
+    let spacing = SpacingTokens { density: UiDensity::Compact };
+    let typography = typography::non_default_typography();
+    let elevation = ElevationTokens;
+    let radius = Radius { sm: 99.0, md: 88.0, lg: 77.0, full: 66.0 };
+    let layout = Layout {
+        toolbar_h: 91.0,
+        footer_h: 92.0,
+        sidebar_w: 93.0,
+        inspector_w: 94.0,
+        footer_button_h: 95.0,
+        footer_transport_button_w: 96.0,
+        footer_speed_button_w: 97.0,
+        footer_mode_button_w: 98.0,
+    };
+    let appearance = Appearance::Light;
+
+    Theme {
+        colors,
+        status,
+        syntax,
+        players,
+        scale,
+        spacing,
+        typography,
+        elevation,
+        radius,
+        layout,
+        appearance,
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
