@@ -175,6 +175,9 @@ pub struct SupervisorConfig {
     /// Optional `--live-venue <VENUE>` passed to an autospawned backend
     /// (read from `LIVE_VENUE`). `None` keeps the backend in replay/backtest mode.
     pub live_venue: Option<String>,
+    /// When true (BACKEND_TRANSPORT=inproc), skip TCP probe and subprocess spawn;
+    /// emit Ready immediately so InProcTransport can take over.
+    pub inproc: bool,
 }
 
 impl SupervisorConfig {
@@ -192,6 +195,9 @@ impl SupervisorConfig {
             cwd: std::env::var("BACKEND_CWD").ok().filter(|s| !s.is_empty()),
             python_bin: std::env::var("PYTHON_BIN").ok().filter(|s| !s.is_empty()),
             live_venue: std::env::var("LIVE_VENUE").ok().filter(|s| !s.is_empty()),
+            inproc: std::env::var("BACKEND_TRANSPORT")
+                .map(|v| v.to_lowercase() == "inproc")
+                .unwrap_or(false),
         }
     }
 }
@@ -375,6 +381,12 @@ pub async fn run_supervisor(
 ) {
     if !config.enabled {
         let _ = lifecycle_tx.send(BackendLifecycle::Disabled);
+        return;
+    }
+
+    if config.inproc {
+        // InProcTransport owns the Python runtime; supervisor is a no-op.
+        let _ = lifecycle_tx.send(BackendLifecycle::Ready);
         return;
     }
 
@@ -1309,6 +1321,7 @@ mod tests {
             cwd: None,
             python_bin: None,
             live_venue: None,
+            inproc: false,
         };
         let (lt, lr) = watch::channel(BackendLifecycle::Disabled);
         let (ct, cr) = mpsc::unbounded_channel();
@@ -1333,6 +1346,7 @@ mod tests {
             cwd: Some("/tmp".to_string()),
             python_bin: Some("/no/such/python-binary-xyz".to_string()),
             live_venue: None,
+            inproc: false,
         };
         let (lt, lr) = watch::channel(BackendLifecycle::Disabled);
         let (ct, cr) = mpsc::unbounded_channel();
