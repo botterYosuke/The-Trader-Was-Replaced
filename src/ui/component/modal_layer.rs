@@ -32,8 +32,8 @@ pub struct ActiveModal {
     pub previous_focus: Option<Entity>,
     /// Escape-dismiss priority (highest wins one Escape), NOT the visual
     /// GlobalZIndex. Used by [`ModalLayer::try_dismiss_highest_z`] to target the
-    /// most-prioritized modal by z rather than by push order.
-    pub z: i32,
+    /// most-prioritized modal by priority rather than by push order.
+    pub dismiss_priority: i32,
     /// Veto hook consulted by [`ModalLayer::try_dismiss_top`].
     pub on_before_dismiss: fn() -> DismissDecision,
 }
@@ -86,7 +86,7 @@ impl ModalLayer {
             .stack
             .iter()
             .enumerate()
-            .max_by_key(|(_, m)| m.z)
+            .max_by_key(|(_, m)| m.dismiss_priority)
             .map(|(i, _)| i);
         match target {
             Some(i) => match (self.stack[i].on_before_dismiss)() {
@@ -115,7 +115,7 @@ impl ModalLayer {
 pub fn reconcile_modal_stack(
     layer: &mut ModalLayer,
     root: Entity,
-    z: i32,
+    dismiss_priority: i32,
     was_on_stack: &mut bool,
     is_open: bool,
     prompt_changed: bool,
@@ -129,7 +129,7 @@ pub fn reconcile_modal_stack(
             root,
             backdrop: root,
             previous_focus: None,
-            z,
+            dismiss_priority,
             on_before_dismiss,
         });
         *was_on_stack = true;
@@ -252,7 +252,7 @@ mod tests {
             root: e(1),
             backdrop: e(2),
             previous_focus: None,
-            z: 100,
+            dismiss_priority: 100,
             on_before_dismiss: dismiss,
         });
         assert_eq!(layer.stack.len(), 1);
@@ -267,7 +267,7 @@ mod tests {
             root: e(10),
             backdrop: e(11),
             previous_focus: Some(e(99)),
-            z: 110,
+            dismiss_priority: 110,
             on_before_dismiss: dismiss,
         });
         let popped = layer.pop().expect("pop should return the pushed entry");
@@ -283,7 +283,7 @@ mod tests {
             root: e(20),
             backdrop: e(21),
             previous_focus: None,
-            z: 260,
+            dismiss_priority: 260,
             on_before_dismiss: dismiss,
         });
         // ... then reconcile modal (frontmost).
@@ -291,7 +291,7 @@ mod tests {
             root: e(30),
             backdrop: e(31),
             previous_focus: None,
-            z: 262,
+            dismiss_priority: 262,
             on_before_dismiss: dismiss,
         });
         assert!(layer.try_dismiss_top());
@@ -306,7 +306,7 @@ mod tests {
             root: e(40),
             backdrop: e(41),
             previous_focus: None,
-            z: 200,
+            dismiss_priority: 200,
             on_before_dismiss: pending,
         });
         assert!(!layer.try_dismiss_top());
@@ -357,7 +357,7 @@ mod tests {
             root: e(1),
             backdrop: e(2),
             previous_focus: None,
-            z: 210,
+            dismiss_priority: 210,
             on_before_dismiss: dismiss,
         });
         app.world_mut()
@@ -409,7 +409,7 @@ mod tests {
             root: e(1),
             backdrop: e(1),
             previous_focus: None,
-            z: 300,
+            dismiss_priority: 300,
             on_before_dismiss: dismiss,
         });
         // B: lower z (200), pushed last.
@@ -417,7 +417,7 @@ mod tests {
             root: e(2),
             backdrop: e(2),
             previous_focus: None,
-            z: 200,
+            dismiss_priority: 200,
             on_before_dismiss: dismiss,
         });
 

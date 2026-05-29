@@ -2,7 +2,6 @@
 //! ドメイン型・検証・ドラフト生成・floating-window コンテンツ・フォーム系 systems。
 
 use bevy::prelude::*;
-use bevy::picking::prelude::*;
 
 use crate::trading::{
     ExecutionMode, ExecutionModeRes, OrderFeedback, SelectedSymbol, VenueStatusRes,

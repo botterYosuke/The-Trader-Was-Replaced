@@ -18,7 +18,7 @@ use bevy::prelude::*;
 
 use crate::trading::ReloginPrompt;
 use crate::ui::component::modal_layer::{
-    ActiveModal, DismissDecision, ModalHandle, ModalLayer, ModalSkeleton, spawn_modal,
+    DismissDecision, ModalHandle, ModalLayer, ModalSkeleton, spawn_modal,
 };
 use crate::ui::theme::{DynamicSpacing, LabelSize, Theme};
 
