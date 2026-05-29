@@ -142,6 +142,8 @@ class InprocLiveServer:
             resp = self._srv.VenueLogout(req, self._ctx)
         except RuntimeError as exc:
             return {"success": False, "error_code": "INPROC_ABORT", "detail": str(exc)}
+        except Exception as exc:
+            return {"success": False, "error_code": "INPROC_ERROR", "detail": str(exc)}
         return {"success": resp.success, "error_code": resp.error_code}
 
     # ------------------------------------------------------------------
@@ -156,6 +158,8 @@ class InprocLiveServer:
             resp = self._srv.SetExecutionMode(req, self._ctx)
         except RuntimeError as exc:
             return {"success": False, "error_code": "INPROC_ABORT", "execution_mode": "", "detail": str(exc)}
+        except Exception as exc:
+            return {"success": False, "error_code": "INPROC_ERROR", "execution_mode": "", "detail": str(exc)}
         return {
             "success": resp.success,
             "error_code": resp.error_code,
@@ -174,6 +178,8 @@ class InprocLiveServer:
             resp = self._srv.ListInstruments(req, self._ctx)
         except RuntimeError as exc:
             return {"success": False, "error_code": "INPROC_ABORT", "instruments": [], "instrument_ids": [], "detail": str(exc)}
+        except Exception as exc:
+            return {"success": False, "error_code": "INPROC_ERROR", "instruments": [], "instrument_ids": [], "detail": str(exc)}
         return {
             "success": resp.success,
             "error_code": resp.error_message,
@@ -192,6 +198,8 @@ class InprocLiveServer:
             resp = self._srv.ListAllListedSymbols(req, self._ctx)
         except RuntimeError as exc:
             return {"success": False, "error_code": "INPROC_ABORT", "instrument_ids": [], "resolved_end_date": end_date, "detail": str(exc)}
+        except Exception as exc:
+            return {"success": False, "error_code": "INPROC_ERROR", "instrument_ids": [], "resolved_end_date": end_date, "detail": str(exc)}
         return {
             "success": resp.success,
             "error_code": resp.error_message,
@@ -215,6 +223,8 @@ class InprocLiveServer:
             resp = self._srv.SubscribeMarketData(req, self._ctx)
         except RuntimeError as exc:
             return {"success": False, "error_code": "INPROC_ABORT", "detail": str(exc)}
+        except Exception as exc:
+            return {"success": False, "error_code": "INPROC_ERROR", "detail": str(exc)}
         return {"success": resp.success, "error_code": resp.error_code}
 
     def unsubscribe_market_data(self, instrument_id: str) -> dict:
@@ -225,6 +235,8 @@ class InprocLiveServer:
             resp = self._srv.UnsubscribeMarketData(req, self._ctx)
         except RuntimeError as exc:
             return {"success": False, "error_code": "INPROC_ABORT", "detail": str(exc)}
+        except Exception as exc:
+            return {"success": False, "error_code": "INPROC_ERROR", "detail": str(exc)}
         return {"success": resp.success, "error_code": resp.error_code}
 
     # ------------------------------------------------------------------
@@ -333,6 +345,8 @@ class InprocLiveServer:
             resp = self._srv.GetOrders(req, self._ctx)
         except RuntimeError as exc:
             return {"success": False, "error_code": "INPROC_ABORT", "orders": [], "detail": str(exc)}
+        except Exception as exc:
+            return {"success": False, "error_code": "INPROC_ERROR", "orders": [], "detail": str(exc)}
         return {
             "success": resp.success,
             "error_code": resp.error_code,
@@ -347,6 +361,8 @@ class InprocLiveServer:
             resp = self._srv.SubmitSecret(req, self._ctx)
         except RuntimeError as exc:
             return {"success": False, "error_code": "INPROC_ABORT", "detail": str(exc)}
+        except Exception as exc:
+            return {"success": False, "error_code": "INPROC_ERROR", "detail": str(exc)}
         return {"success": resp.success, "error_code": resp.error_code}
 
     def force_account_snapshot(self) -> dict:
@@ -357,6 +373,8 @@ class InprocLiveServer:
             resp = self._srv.ForceAccountSnapshot(req, self._ctx)
         except RuntimeError as exc:
             return {"success": False, "error_code": "INPROC_ABORT", "detail": str(exc)}
+        except Exception as exc:
+            return {"success": False, "error_code": "INPROC_ERROR", "detail": str(exc)}
         return {"success": resp.success, "error_code": resp.error_code}
 
     # ------------------------------------------------------------------
@@ -376,6 +394,8 @@ class InprocLiveServer:
             resp = self._srv.RegisterLiveStrategy(req, self._ctx)
         except RuntimeError as exc:
             return {"success": False, "error_code": "INPROC_ABORT", "strategy_id": "", "detail": str(exc)}
+        except Exception as exc:
+            return {"success": False, "error_code": "INPROC_ERROR", "strategy_id": "", "detail": str(exc)}
         return {
             "success": resp.success,
             "error_code": resp.error_code,
@@ -434,6 +454,8 @@ class InprocLiveServer:
             resp = self._srv.StopLiveStrategy(req, self._ctx)
         except RuntimeError as exc:
             return {"success": False, "error_code": "INPROC_ABORT", "detail": str(exc)}
+        except Exception as exc:
+            return {"success": False, "error_code": "INPROC_ERROR", "detail": str(exc)}
         return {"success": resp.success, "error_code": resp.error_code}
 
     def pause_live_strategy(self, run_id: str) -> dict:
@@ -444,6 +466,8 @@ class InprocLiveServer:
             resp = self._srv.PauseLiveStrategy(req, self._ctx)
         except RuntimeError as exc:
             return {"success": False, "error_code": "INPROC_ABORT", "detail": str(exc)}
+        except Exception as exc:
+            return {"success": False, "error_code": "INPROC_ERROR", "detail": str(exc)}
         return {"success": resp.success, "error_code": resp.error_code}
 
     def resume_live_strategy(self, run_id: str) -> dict:
@@ -454,6 +478,8 @@ class InprocLiveServer:
             resp = self._srv.ResumeLiveStrategy(req, self._ctx)
         except RuntimeError as exc:
             return {"success": False, "error_code": "INPROC_ABORT", "detail": str(exc)}
+        except Exception as exc:
+            return {"success": False, "error_code": "INPROC_ERROR", "detail": str(exc)}
         return {"success": resp.success, "error_code": resp.error_code}
 
     # ------------------------------------------------------------------
@@ -494,6 +520,8 @@ class InprocLiveServer:
             resp = self._srv.StartEngine(req, self._ctx)
         except RuntimeError as exc:
             return {"success": False, "error_code": "INPROC_ABORT", "run_id": "", "summary_json": "", "detail": str(exc)}
+        except Exception as exc:
+            return {"success": False, "error_code": "INPROC_ERROR", "run_id": "", "summary_json": "", "detail": str(exc)}
         return {
             "success": resp.success,
             "error_code": resp.error_code if not resp.success else "",
@@ -510,6 +538,8 @@ class InprocLiveServer:
             resp = self._srv.GetPortfolio(req, self._ctx)
         except RuntimeError as exc:
             return {"success": False, "error_code": "INPROC_ABORT", "buying_power": 0.0, "cash": 0.0, "equity": 0.0, "positions": [], "orders": [], "detail": str(exc)}
+        except Exception as exc:
+            return {"success": False, "error_code": "INPROC_ERROR", "buying_power": 0.0, "cash": 0.0, "equity": 0.0, "positions": [], "orders": [], "detail": str(exc)}
         return {
             "success": resp.success,
             "buying_power": resp.buying_power,

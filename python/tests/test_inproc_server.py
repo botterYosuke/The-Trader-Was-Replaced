@@ -369,3 +369,114 @@ def test_close_invokes_underlying_teardown():
     srv.close()
 
     assert calls == ["teardown"]
+
+
+# ---------------------------------------------------------------------------
+# RED (#64-フォロー①): 残り 15 メソッドの非 RuntimeError 例外が INPROC_ERROR を返す
+#   現行: except RuntimeError のみで TimeoutError 等が PyO3 境界へ伝播する
+#   修正後: except Exception (INPROC_ERROR) が捕捉し dict を返す
+# ---------------------------------------------------------------------------
+
+def test_venue_logout_non_runtime_exception_returns_inproc_error():
+    import concurrent.futures
+    from engine.inproc_server import InprocLiveServer
+
+    engine = DataEngine()
+    srv = InprocLiveServer(engine, live_venue_id=None)
+
+    def _raise(req, ctx):
+        raise concurrent.futures.TimeoutError("timeout")
+
+    srv._srv.VenueLogout = _raise
+    result = srv.venue_logout()
+    assert isinstance(result, dict)
+    assert result["success"] is False
+    assert result["error_code"] == "INPROC_ERROR"
+
+
+def test_list_instruments_non_runtime_exception_returns_inproc_error():
+    import concurrent.futures
+    from engine.inproc_server import InprocLiveServer
+
+    engine = DataEngine()
+    srv = InprocLiveServer(engine, live_venue_id=None)
+
+    def _raise(req, ctx):
+        raise concurrent.futures.TimeoutError("timeout")
+
+    srv._srv.ListInstruments = _raise
+    result = srv.list_instruments("local")
+    assert isinstance(result, dict)
+    assert result["success"] is False
+    assert result["error_code"] == "INPROC_ERROR"
+    assert isinstance(result.get("instruments"), list)
+    assert isinstance(result.get("instrument_ids"), list)
+
+
+def test_get_orders_non_runtime_exception_returns_inproc_error():
+    import concurrent.futures
+    from engine.inproc_server import InprocLiveServer
+
+    engine = DataEngine()
+    srv = InprocLiveServer(engine, live_venue_id=None)
+
+    def _raise(req, ctx):
+        raise concurrent.futures.TimeoutError("timeout")
+
+    srv._srv.GetOrders = _raise
+    result = srv.get_orders("MOCK")
+    assert isinstance(result, dict)
+    assert result["success"] is False
+    assert result["error_code"] == "INPROC_ERROR"
+    assert isinstance(result.get("orders"), list)
+
+
+def test_start_engine_non_runtime_exception_returns_inproc_error():
+    import concurrent.futures
+    from engine.inproc_server import InprocLiveServer
+
+    engine = DataEngine()
+    srv = InprocLiveServer(engine, live_venue_id=None)
+
+    def _raise(req, ctx):
+        raise concurrent.futures.TimeoutError("timeout")
+
+    srv._srv.StartEngine = _raise
+    result = srv.start_engine({"instrument_id": "7203.TSE", "strategy_file": "strat.py"})
+    assert isinstance(result, dict)
+    assert result["success"] is False
+    assert result["error_code"] == "INPROC_ERROR"
+
+
+def test_get_portfolio_non_runtime_exception_returns_inproc_error():
+    import concurrent.futures
+    from engine.inproc_server import InprocLiveServer
+
+    engine = DataEngine()
+    srv = InprocLiveServer(engine, live_venue_id=None)
+
+    def _raise(req, ctx):
+        raise concurrent.futures.TimeoutError("timeout")
+
+    srv._srv.GetPortfolio = _raise
+    result = srv.get_portfolio()
+    assert isinstance(result, dict)
+    assert result["success"] is False
+    assert result["error_code"] == "INPROC_ERROR"
+
+
+def test_venue_logout_abort_still_returns_inproc_abort():
+    """RuntimeError（NullContext.abort）は INPROC_ABORT のまま（回帰ガード）."""
+    from engine.inproc_server import InprocLiveServer
+
+    engine = DataEngine()
+    srv = InprocLiveServer(engine, live_venue_id=None)
+
+    def _abort(req, ctx):
+        raise RuntimeError("abort!")
+
+    srv._srv.VenueLogout = _abort
+    result = srv.venue_logout()
+    assert isinstance(result, dict)
+    assert result["success"] is False
+    assert result["error_code"] == "INPROC_ABORT"
