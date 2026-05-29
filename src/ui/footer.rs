@@ -665,11 +665,20 @@ pub fn footer_pause_resume_system(
                                 .collect();
                             items.sort_by(|a, b| a.0.cmp(&b.0));
                             items.retain(|(_, src)| !src.trim().is_empty());
+                            // "No strategy loaded" は cache_path も未設定の場合のみ
+                            if items.is_empty() && buffer.cache_path.is_none() {
+                                current_run.state = RunState::Failed {
+                                    error: "No strategy loaded".to_string(),
+                                };
+                                continue;
+                            }
                             let merged = merge_fragments(&items);
                             match flush_strategy_cache(&merged, &mut buffer, &mut auto_save) {
                                 Ok(true) => {}
                                 Ok(false) => {
-                                    warn!("Run blocked: no cache_path set");
+                                    current_run.state = RunState::Failed {
+                                        error: "No cache path set".to_string(),
+                                    };
                                     continue;
                                 }
                                 Err(e) => {
@@ -678,7 +687,9 @@ pub fn footer_pause_resume_system(
                                 }
                             }
                             let Some(path) = buffer.cache_path.clone() else {
-                                warn!("Run blocked: no cache_path set");
+                                current_run.state = RunState::Failed {
+                                    error: "No cache path set".to_string(),
+                                };
                                 continue;
                             };
                             run_events.write(StrategyRunRequested { cache_path: path });

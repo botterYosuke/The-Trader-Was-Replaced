@@ -202,7 +202,7 @@ fn normal_row_content(kind: &RunResultLabel, current_run: &CurrentRun) -> (Strin
             RunState::Running | RunState::Paused => (String::new(), COLOR_DEFAULT),
             _ => match &current_run.parsed_summary {
                 Some(s) => (
-                    format!("fills: {}  eq_pts: {}", s.fills_count, s.equity_points),
+                    format!("fills:{}  sh:{:.2}  dd:{:.0}", s.fills_count, s.sharpe, s.max_drawdown),
                     COLOR_DEFAULT,
                 ),
                 None if current_run.order_count > 0 || current_run.fill_count > 0 => (
@@ -236,7 +236,7 @@ fn normal_row_content(kind: &RunResultLabel, current_run: &CurrentRun) -> (Strin
             _ => match &current_run.parsed_summary {
                 Some(s) => {
                     let c = if s.total_pnl >= 0.0 { COLOR_PNL_POS } else { COLOR_PNL_NEG };
-                    (format!("pnl: {:.0}", s.total_pnl), c)
+                    (format!("pnl:{:.0}  so:{:.2}", s.total_pnl, s.sortino), c)
                 }
                 None
                     if current_run.realized_pnl != 0.0

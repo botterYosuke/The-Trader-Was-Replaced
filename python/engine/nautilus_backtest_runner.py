@@ -165,13 +165,64 @@ class NautilusBacktestRunner:
                 len(items),
             )
 
+            venue_obj = Venue(venue_str)
+            equity_curve: list[float] = []
+
             for item in items:
                 engine.add_data([item])
                 engine.run(streaming=True)
                 engine.clear_data()
+                # Record equity after each bar (account is updated synchronously)
+                acct = engine.kernel.cache.account_for_venue(venue_obj)
+                if acct is not None:
+                    bal = acct.balance_total(JPY)
+                    if bal is not None:
+                        equity_curve.append(bal.as_double())
 
-            log.info("[NautilusBacktestRunner] complete: bars=%d", len(items))
-            self._rust_sink.push_run_complete("", "{}")
+            # --- Compute summary statistics -----------------------------------
+            fills_count = len(engine.kernel.cache.orders_closed())
+
+            n = len(equity_curve)
+            max_drawdown = 0.0
+            sharpe = 0.0
+            sortino = 0.0
+            if n >= 2:
+                peak = equity_curve[0]
+                for eq in equity_curve:
+                    if eq > peak:
+                        peak = eq
+                    dd = peak - eq
+                    if dd > max_drawdown:
+                        max_drawdown = dd
+
+                returns = [
+                    (equity_curve[i] - equity_curve[i - 1]) / equity_curve[i - 1]
+                    for i in range(1, n)
+                    if equity_curve[i - 1] != 0.0
+                ]
+                if returns:
+                    import math
+                    mean_r = sum(returns) / len(returns)
+                    variance = sum((r - mean_r) ** 2 for r in returns) / len(returns)
+                    std_r = math.sqrt(variance)
+                    sharpe = (mean_r / std_r) * math.sqrt(252) if std_r != 0.0 else 0.0
+
+                    neg_returns = [r for r in returns if r < 0.0]
+                    if neg_returns:
+                        neg_var = sum(r ** 2 for r in neg_returns) / len(neg_returns)
+                        downside_std = math.sqrt(neg_var)
+                        sortino = (mean_r / downside_std) * math.sqrt(252) if downside_std != 0.0 else 0.0
+
+            import json
+            summary = json.dumps({
+                "fills_count": fills_count,
+                "equity_points": n,
+                "max_drawdown": max_drawdown,
+                "sharpe": sharpe,
+                "sortino": sortino,
+            })
+            log.info("[NautilusBacktestRunner] complete: bars=%d summary=%s", len(items), summary)
+            self._rust_sink.push_run_complete("", summary)
             return {"success": True, "run_id": "", "error": ""}
 
         except Exception as exc:

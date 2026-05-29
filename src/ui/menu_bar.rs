@@ -939,8 +939,13 @@ pub fn handle_strategy_run_system(
             }
         }
 
+        let instruments = if !registry.as_slice().is_empty() {
+            registry.as_slice().to_vec()
+        } else {
+            scenario.instruments.clone()
+        };
         let run_config = StrategyRunConfig {
-            instruments: scenario.instruments.clone(),
+            instruments,
             start: start.clone(),
             end: end.clone(),
             granularity: granularity.clone(),

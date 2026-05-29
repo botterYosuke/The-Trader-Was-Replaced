@@ -2031,40 +2031,6 @@ fn inproc_set_speed(engine: &Py<PyAny>, multiplier: u32) {
     });
 }
 
-/// Call `engine.load_replay_data(...)`.
-fn inproc_load_replay_data(
-    engine: &Py<PyAny>,
-    instrument_ids: &[String],
-    start_date: &str,
-    end_date: &str,
-    granularity: &str,
-    catalog_path: Option<&str>,
-) -> (bool, Option<String>) {
-    use pyo3::prelude::*;
-    use pyo3::types::{PyDict, PyList};
-
-    Python::with_gil(|py| {
-        let kwargs = PyDict::new_bound(py);
-        let py_ids = PyList::new_bound(py, instrument_ids.iter().map(|s| s.as_str()));
-        if let Err(e) = kwargs.set_item("instrument_ids", py_ids) {
-            return (false, Some(format!("kwargs set_item error: {}", e)));
-        }
-        let _ = kwargs.set_item("start_date", start_date);
-        let _ = kwargs.set_item("end_date", end_date);
-        let _ = kwargs.set_item("granularity", granularity);
-        if let Some(cp) = catalog_path {
-            let _ = kwargs.set_item("catalog_path", cp);
-        }
-
-        match engine.bind(py).call_method("load_replay_data", (), Some(&kwargs)) {
-            Ok(val) => val
-                .extract::<(bool, Option<String>)>()
-                .unwrap_or((false, Some("load_replay_data: extract failed".to_string()))),
-            Err(e) => (false, Some(format!("load_replay_data PyO3 error: {}", e))),
-        }
-    })
-}
-
 // ---------------------------------------------------------------------------
 // InprocLiveServer call helpers (Phase 4)
 // ---------------------------------------------------------------------------
@@ -2283,75 +2249,12 @@ fn inproc_dispatch(
                 }
             });
         }
-        TransportCommand::LoadAndStep { config, startup_id } => {
-            let _ = resp_tx.send(InProcResp::Status(BackendStatusUpdate::ReplayStartup {
-                startup_id,
-                stage: crate::trading::BackendStartupStage::ResettingReplay,
+        TransportCommand::LoadAndStep { startup_id, .. } => {
+            warn!("[inproc] LoadAndStep is no longer supported; use RunStrategy instead");
+            let _ = resp_tx.send(InProcResp::Status(BackendStatusUpdate::RunFailed {
+                startup_id: Some(startup_id),
+                error: "LoadAndStep is no longer supported in inproc mode".to_string(),
             }));
-            let (ok, err) = inproc_call_replay(engine, "force_stop_replay");
-            if !ok {
-                let msg = format!("LoadAndStep ForceStop: {:?}", err);
-                error!("[inproc] {}", msg);
-                let _ = resp_tx.send(InProcResp::Status(BackendStatusUpdate::RunFailed {
-                    startup_id: Some(startup_id),
-                    error: msg,
-                }));
-                return;
-            }
-
-            let granularity = match parse_replay_granularity(&config.granularity) {
-                Ok(_) => config.granularity.as_str(),
-                Err(msg) => {
-                    error!("[inproc] LoadAndStep: {}", msg);
-                    let _ = resp_tx.send(InProcResp::Status(BackendStatusUpdate::RunFailed {
-                        startup_id: Some(startup_id),
-                        error: msg,
-                    }));
-                    return;
-                }
-            };
-
-            let _ = resp_tx.send(InProcResp::Status(BackendStatusUpdate::ReplayStartup {
-                startup_id,
-                stage: crate::trading::BackendStartupStage::LoadingData,
-            }));
-
-            let (ok, err) = inproc_load_replay_data(
-                engine,
-                &config.instruments,
-                &config.start,
-                &config.end,
-                granularity,
-                default_catalog.as_deref(),
-            );
-            if !ok {
-                let msg = format!("LoadAndStep LoadReplayData: {:?}", err);
-                error!("[inproc] {}", msg);
-                let _ = resp_tx.send(InProcResp::Status(BackendStatusUpdate::RunFailed {
-                    startup_id: Some(startup_id),
-                    error: msg,
-                }));
-                return;
-            }
-            info!("[inproc] LoadReplayData ok");
-
-            let _ = resp_tx.send(InProcResp::Status(BackendStatusUpdate::ReplayStartup {
-                startup_id,
-                stage: crate::trading::BackendStartupStage::WaitingForFirstTick,
-            }));
-
-            let (ok, err) = inproc_call_replay(engine, "step_replay");
-            if !ok {
-                let msg = format!("LoadAndStep StepReplay: {:?}", err);
-                error!("[inproc] {}", msg);
-                let _ = resp_tx.send(InProcResp::Status(BackendStatusUpdate::RunFailed {
-                    startup_id: Some(startup_id),
-                    error: msg,
-                }));
-            } else {
-                info!("[inproc] LoadAndStep complete (step ok)");
-                inproc_poll_state(live_server, resp_tx);
-            }
         }
 
         // ---------------------------------------------------------------
