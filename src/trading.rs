@@ -211,6 +211,12 @@ pub enum TransportCommand {
         /// startup window を閉じないようにするために使う。
         startup_id: u64,
     },
+    /// IDLE 状態からの "1 ステップだけ実行": ForceStop → LoadReplayData → StepReplay (#61)。
+    /// StartEngine を呼ばないため、LOADED 状態のまま停止する。
+    LoadAndStep {
+        config: StrategyRunConfig,
+        startup_id: u64,
+    },
     /// User-initiated Live Auto launch via the footer ▶ button (issue #40 代替).
     /// 2 段直列: RegisterLiveStrategy → StartLiveStrategy。`token` は transport task が注入。
     StartLiveAuto {

@@ -14,7 +14,7 @@ use backcast::trading::{
 };
 use backcast::ui::components::{
     InstrumentRegistry, ScenarioMetadata, ScenarioStartupParams, ScenarioStartupParamsErrors,
-    ScenarioWritebackPaths, StrategyRunRequested,
+    ScenarioWritebackPaths, StepFromIdleRequested, StrategyRunRequested,
 };
 use backcast::ui::menu_bar::handle_strategy_run_system;
 use backcast::ui::scenario_startup_panel::{
@@ -51,6 +51,7 @@ fn build_run_app(
     app.insert_resource(CurrentRun::default());
     app.insert_resource(TransportCommandSender { tx });
     app.add_message::<StrategyRunRequested>();
+    app.add_message::<StepFromIdleRequested>();
     app.add_message::<ScenarioStartupParamCommit>();
     app.add_systems(
         Update,

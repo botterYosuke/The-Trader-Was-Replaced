@@ -413,14 +413,15 @@ class DataEngine:
             self._apply_event_locked(KlineUpdate(timestamp_ms=ts_ms, close=price, open=price, high=price, low=price))
 
     def step_replay(self) -> tuple[bool, str | None]:
-        """Advance one tick while paused, then remain in PAUSED."""
+        """Advance one tick while paused or loaded, then remain in the same state."""
         with self._lock:
-            if self._replay_state != "PAUSED":
-                return False, "StepReplay is only allowed from PAUSED"
+            if self._replay_state not in ("PAUSED", "LOADED"):
+                return False, "StepReplay is only allowed from PAUSED or LOADED"
 
+            prev_state = self._replay_state
             self._advance_one_locked()
             self._is_running = False
-            self._replay_state = "PAUSED"
+            self._replay_state = prev_state
             return True, None
 
     def get_replay_last_prices(self) -> dict:

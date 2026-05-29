@@ -116,6 +116,13 @@ pub struct StrategyRunRequested {
     pub cache_path: std::path::PathBuf,
 }
 
+/// IDLE 状態から ▶| を押したときに `transport_button_system` が発行するメッセージ。
+/// `handle_strategy_run_system` が `LoadAndStep` コマンドに変換する (#61)。
+#[derive(Message, Debug, Clone)]
+pub struct StepFromIdleRequested {
+    pub cache_path: std::path::PathBuf,
+}
+
 #[derive(Component)]
 pub struct SidebarRoot;
 
@@ -1524,6 +1531,7 @@ mod writeback_scenario_instruments_tests {
 
         let mut app = App::new();
         app.add_message::<StrategyRunRequested>();
+        app.add_message::<StepFromIdleRequested>();
         app.insert_resource(StrategyBuffer {
             original_path: Some(original_py.clone()),
             cache_path: None,
@@ -1599,6 +1607,7 @@ mod writeback_scenario_instruments_tests {
 
         let mut app = App::new();
         app.add_message::<StrategyRunRequested>();
+        app.add_message::<StepFromIdleRequested>();
         app.insert_resource(StrategyBuffer {
             original_path: Some(original_py.clone()),
             cache_path: None,
@@ -1675,6 +1684,7 @@ mod writeback_scenario_instruments_tests {
 
         let mut app = App::new();
         app.add_message::<StrategyRunRequested>();
+        app.add_message::<StepFromIdleRequested>();
         app.insert_resource(StrategyBuffer {
             original_path: Some(original_py.clone()),
             cache_path: None,
@@ -1737,6 +1747,7 @@ mod writeback_scenario_instruments_tests {
 
         let mut app = App::new();
         app.add_message::<StrategyRunRequested>();
+        app.add_message::<StepFromIdleRequested>();
         app.insert_resource(StrategyBuffer {
             original_path: Some(original_py.clone()),
             cache_path: None,
@@ -2270,6 +2281,7 @@ mod writeback_scenario_instruments_tests {
         app.init_resource::<ChartSizeMap>();
         app.add_message::<StrategyFileLoadRequested>();
         app.add_message::<StrategyRunRequested>();
+        app.add_message::<StepFromIdleRequested>();
         app.add_message::<ScenarioLoadedFromFile>();
         app.add_message::<ScenarioClearedFromFile>();
         app.add_message::<LayoutLoadRequested>();
@@ -2642,6 +2654,7 @@ mod writeback_scenario_instruments_tests {
         app.init_resource::<ChartSizeMap>();
         app.add_message::<StrategyFileLoadRequested>();
         app.add_message::<StrategyRunRequested>();
+        app.add_message::<StepFromIdleRequested>();
         app.add_message::<ScenarioLoadedFromFile>();
         app.add_message::<ScenarioClearedFromFile>();
         app.add_message::<LayoutLoadRequested>();

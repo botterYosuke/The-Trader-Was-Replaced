@@ -716,6 +716,7 @@ fn finish_layout_save(
         .iter()
         .map(|(id, frag)| (id.region_key.clone(), frag.source.clone()))
         .collect();
+    items.retain(|(_, src)| !src.trim().is_empty());
     if !items.is_empty() {
         items.sort_by(|a, b| a.0.cmp(&b.0));
         let merged = merge_fragments(&items);
@@ -966,6 +967,7 @@ pub fn poll_save_as_dialog_system(
         .iter()
         .map(|(id, frag)| (id.region_key.clone(), frag.source.clone()))
         .collect();
+    items.retain(|(_, src)| !src.trim().is_empty());
     if !items.is_empty() {
         items.sort_by(|a, b| a.0.cmp(&b.0));
         let merged = merge_fragments(&items);
@@ -1507,6 +1509,7 @@ fn save_layout_on_window_close(
             .iter()
             .map(|(id, frag)| (id.region_key.clone(), frag.source.clone()))
             .collect();
+        items.retain(|(_, src)| !src.trim().is_empty());
         if !items.is_empty() {
             items.sort_by(|a, b| a.0.cmp(&b.0));
             let merged = merge_fragments(&items);

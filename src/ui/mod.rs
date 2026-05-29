@@ -70,7 +70,7 @@ use crate::ui::chart_volume::volume_render_system;
 use crate::ui::components::{
     OpenMenu, PanelSpawnRequested, PendingStrategyFragments, RedoMenuRequested, RegionKeyAllocator,
     ScenarioMetadata, StrategyBuffer, StrategyFileLoadRequested, StrategyRunRequested,
-    UndoMenuRequested, WindowManager,
+    StepFromIdleRequested, UndoMenuRequested, WindowManager,
 };
 use crate::ui::components::{
     ScenarioClearedFromFile, mark_registry_dirty_system,
@@ -266,6 +266,7 @@ impl Plugin for UiPlugin {
         .init_resource::<crate::ui::instrument_picker::InstrumentPickerState>()
         .add_message::<StrategyFileLoadRequested>()
         .add_message::<StrategyRunRequested>()
+        .add_message::<StepFromIdleRequested>()
         .add_message::<PanelSpawnRequested>()
         .add_message::<UndoRedoApplied>()
         .add_message::<UndoMenuRequested>()
@@ -332,7 +333,7 @@ impl Plugin for UiPlugin {
                 update_price_display,
                 update_status_indicator,
                 update_footer_system.after(crate::trading::backend_update_system),
-                transport_button_system,
+                transport_button_system.before(handle_strategy_run_system),
                 footer_pause_resume_system
                     .before(handle_strategy_run_system)
                     .after(crate::trading::backend_update_system),

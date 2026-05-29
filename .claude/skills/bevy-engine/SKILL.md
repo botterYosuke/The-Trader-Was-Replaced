@@ -13,7 +13,8 @@ description: |
   ① ユーザが `src/ui/*.rs` や `src/camera.rs` を編集しようとしている（新規実装だけでなく、
     「issue #N をレビューして修正して」「codex / Navigator のレビューで src/ui の bug を直す」
     などレビュー駆動の修正で src/ui を触るときも含む。**レビュー task でも src/ui を編集するなら
-    本スキルを先に invoke する**）
+    本スキルを先に invoke する。1行の tiny fix（文字列比較・enum 分岐・定数変更など）であっても
+    `src/ui/` を触るなら必ず invoke する**。「変更が自明だから不要」という判断は禁止。）
   ② "Bevy", "bevy_egui", "PanCam", "Camera2d", "Sprite", "Text2d", "Plugin", "ECS",
     "Resource", "Component", "Event", "System", "Query", "Commands", "World",
     "observer", "Trigger", "Pointer<Drag>", "Pointer<Down>", "floating window",
@@ -38,6 +39,11 @@ description: |
     — `add_systems` タプル 20 上限、`app.add_observer()` vs `app.observe()`、
     `IntoObserverSystem` の import path、`CosmicEditor` 経由の `with_buffer_mut`、
     Text2d Anchor の左寄せ — で必ずハマる）
+  ⑧ 新しい Bevy Message type を追加するとき（`#[derive(Message)]`、`add_message::<T>()`、
+    `MessageWriter<T>` / `MessageReader<T>` を使う新規イベント追加）、または
+    「`add_message` が漏れていてパニックした」「Message not initialized」エラーが出たとき。
+    本スキルを読むと「`add_message::<T>()` を app 構築の全サイトに足す」「e2e テストのミニ App にも
+    同じ 1 行が必要」という典型的な落とし穴が分かる。
   ⑧ `cosmic_edit`, `CosmicEditBuffer`, `CosmicEditor`, `TextEdit2d`, `FocusedWidget`,
     `CosmicBackgroundColor`, `CursorColor`, `CosmicTextChanged`, `set_text`, `with_buffer_mut`
     という語彙が出てきたとき、または「focused で文字が小さい」「unfocused で文字が大きい」
