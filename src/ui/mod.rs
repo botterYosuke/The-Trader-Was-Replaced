@@ -118,8 +118,8 @@ use crate::ui::order_panel::{
 use crate::ui::orders::orders_panel_system;
 use crate::ui::positions::positions_panel_system;
 use crate::ui::reconcile_modal::{
-    reconcile_modal_button_system, reconcile_modal_sync_system, reconcile_modal_visibility_system,
-    spawn_reconcile_modal,
+    reconcile_modal_button_system, reconcile_modal_reconcile_system, reconcile_modal_sync_system,
+    reconcile_modal_visibility_system, spawn_reconcile_modal,
 };
 use crate::ui::relogin_modal::{
     relogin_modal_button_system, relogin_modal_reconcile_system, relogin_modal_sync_system,
@@ -630,11 +630,17 @@ impl Plugin for UiPlugin {
             Update,
             (
                 reconcile_modal_visibility_system,
-                // §3.10 Escape determinism (see context_menu_keyboard_system).
-                reconcile_modal_button_system
-                    .before(secret_modal_input_system)
-                    .before(confirm_modal_button_system),
+                // B3 (#46): Escape dismissal moved to the generic
+                // modal_layer_esc_system (registered once in the relogin block).
+                // This system now handles ONLY the [確認した] button.
+                reconcile_modal_button_system,
                 reconcile_modal_sync_system,
+                // B3 (#46): mechanism A — bidirectional sync of
+                // ReconcilePrompt.unknown <-> ModalLayer.stack. Runs AFTER the esc
+                // system so a same-frame Escape pop is reflected back into
+                // ReconcilePrompt.unknown this frame (prod/test parity with k14).
+                reconcile_modal_reconcile_system
+                    .after(crate::ui::component::modal_layer::modal_layer_esc_system),
             ),
         )
         // ── Phase 10 §2.10: Safety Rail violation toast ──

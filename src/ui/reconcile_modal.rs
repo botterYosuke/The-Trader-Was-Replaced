@@ -13,10 +13,8 @@
 
 use bevy::prelude::*;
 
-use crate::trading::{ReconcilePrompt, SecretPrompt};
+use crate::trading::ReconcilePrompt;
 use crate::ui::component::modal_layer::{ActiveModal, DismissDecision, ModalLayer};
-use crate::ui::modify_modal::ModifyForm;
-use crate::ui::order_panel::OrderConfirm;
 
 const COLOR_PANEL_BG: Color = Color::srgba(0.07, 0.07, 0.12, 0.98);
 const COLOR_BACKDROP: Color = Color::srgba(0.0, 0.0, 0.0, 0.6);
@@ -166,25 +164,17 @@ pub fn reconcile_modal_visibility_system(
     }
 }
 
-/// [確認した] ボタン / Esc で通知を消す (unknown をクリア)。
+/// [確認した] ボタンで通知を消す (unknown をクリア)。Escape は
+/// `modal_layer_esc_system` (汎用 modal-layer Esc) + `reconcile_modal_reconcile_system`
+/// 経由で処理する (#46 B3, relogin と同方針)。
 pub fn reconcile_modal_button_system(
     interactions: Query<&Interaction, (Changed<Interaction>, With<ReconcileDismissButton>)>,
-    keys: Res<ButtonInput<KeyCode>>,
     mut prompt: ResMut<ReconcilePrompt>,
-    secret_prompt: Res<SecretPrompt>,
-    order_confirm: Res<OrderConfirm>,
-    modify_form: Res<ModifyForm>,
 ) {
     if prompt.unknown.is_empty() {
         return;
     }
-    let pressed = interactions.iter().any(|i| *i == Interaction::Pressed);
-    // Escape (ButtonInput, not consumed by the SecretModal event drain) must yield
-    // to a higher-priority input modal so one keystroke can't close both (§3.10).
-    let higher_priority_open =
-        secret_prompt.active.is_some() || order_confirm.pending.is_some() || modify_form.open;
-    let escape = keys.just_pressed(KeyCode::Escape) && !higher_priority_open;
-    if pressed || escape {
+    if interactions.iter().any(|i| *i == Interaction::Pressed) {
         prompt.unknown.clear();
     }
 }
@@ -272,10 +262,6 @@ mod tests {
     fn make_app() -> App {
         let mut app = App::new();
         app.init_resource::<ReconcilePrompt>();
-        app.init_resource::<SecretPrompt>();
-        app.init_resource::<OrderConfirm>();
-        app.init_resource::<ModifyForm>();
-        app.insert_resource(ButtonInput::<KeyCode>::default());
         app
     }
 
@@ -302,18 +288,6 @@ mod tests {
     }
 
     #[test]
-    fn escape_clears_prompt() {
-        let mut app = make_app();
-        app.world_mut().resource_mut::<ReconcilePrompt>().unknown = vec![unknown("c1")];
-        app.world_mut()
-            .resource_mut::<ButtonInput<KeyCode>>()
-            .press(KeyCode::Escape);
-        app.add_systems(Update, reconcile_modal_button_system);
-        app.update();
-        assert!(app.world().resource::<ReconcilePrompt>().unknown.is_empty());
-    }
-
-    #[test]
     fn button_system_noop_when_closed() {
         let mut app = make_app();
         app.add_systems(Update, reconcile_modal_button_system);
@@ -321,88 +295,6 @@ mod tests {
             .spawn((Button, Interaction::Pressed, ReconcileDismissButton));
         app.update();
         assert!(app.world().resource::<ReconcilePrompt>().unknown.is_empty());
-    }
-
-    #[test]
-    fn escape_yields_to_open_secret_prompt() {
-        // §3.10 cross-talk regression: Escape consumed by an open SecretModal must
-        // not also clear the reconcile notice.
-        use crate::trading::SecretPromptRequest;
-        let mut app = make_app();
-        app.world_mut().resource_mut::<ReconcilePrompt>().unknown = vec![unknown("c1")];
-        app.world_mut().resource_mut::<SecretPrompt>().active = Some(SecretPromptRequest {
-            request_id: "r1".to_string(),
-            venue: "TACHIBANA".to_string(),
-            kind: "second_password".to_string(),
-            purpose: "new_order".to_string(),
-        });
-        app.world_mut()
-            .resource_mut::<ButtonInput<KeyCode>>()
-            .press(KeyCode::Escape);
-        app.add_systems(Update, reconcile_modal_button_system);
-        app.update();
-        assert!(
-            !app.world().resource::<ReconcilePrompt>().unknown.is_empty(),
-            "reconcile notice must survive the Escape consumed by the SecretModal"
-        );
-    }
-
-    /// §3.10 SCHEDULE-LEVEL ordering regression (review L2): the per-modal guard
-    /// tests above set `secret_prompt.active` by hand and pass even under the WRONG
-    /// system ordering. This test runs BOTH real systems with the production
-    /// `.before` constraint and a single real Escape (event drain + ButtonInput), so
-    /// it would catch a `.before`→`.after` flip (which would let one Escape close
-    /// both modals) or an ordering cycle. The SecretModal must close; the reconcile
-    /// notice must survive.
-    #[test]
-    fn schedule_orders_reconcile_before_secret_drain_so_one_escape_closes_only_secret() {
-        use crate::trading::SecretPromptRequest;
-        use crate::ui::secret_modal::{SecretInput, secret_modal_input_system};
-        use bevy::input::ButtonState;
-        use bevy::input::keyboard::{Key, KeyboardInput};
-
-        let mut app = make_app();
-        app.init_resource::<SecretInput>();
-        app.init_resource::<Messages<KeyboardInput>>();
-        app.world_mut().resource_mut::<ReconcilePrompt>().unknown = vec![unknown("c1")];
-        app.world_mut().resource_mut::<SecretPrompt>().active = Some(SecretPromptRequest {
-            request_id: "r1".to_string(),
-            venue: "TACHIBANA".to_string(),
-            kind: "second_password".to_string(),
-            purpose: "new_order".to_string(),
-        });
-        // Same ordering as ui/mod.rs: notice reader runs before the secret drain.
-        app.add_systems(
-            Update,
-            (
-                reconcile_modal_button_system.before(secret_modal_input_system),
-                secret_modal_input_system,
-            ),
-        );
-        // One real Escape: ButtonInput (read by the notice reader) + a KeyboardInput
-        // event (drained by the secret modal).
-        app.world_mut()
-            .resource_mut::<ButtonInput<KeyCode>>()
-            .press(KeyCode::Escape);
-        app.world_mut()
-            .resource_mut::<Messages<KeyboardInput>>()
-            .write(KeyboardInput {
-                key_code: KeyCode::Escape,
-                logical_key: Key::Escape,
-                state: ButtonState::Pressed,
-                text: None,
-                repeat: false,
-                window: Entity::PLACEHOLDER,
-            });
-        app.update();
-        assert!(
-            app.world().resource::<SecretPrompt>().active.is_none(),
-            "the SecretModal (top priority) must consume the Escape and close"
-        );
-        assert!(
-            !app.world().resource::<ReconcilePrompt>().unknown.is_empty(),
-            "the reconcile notice must survive — one Escape closes only the top modal"
-        );
     }
 
     #[test]
