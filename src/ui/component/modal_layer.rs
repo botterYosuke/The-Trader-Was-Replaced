@@ -11,6 +11,9 @@
 //! this pass (no global focus resource exists yet). The `ModalSkeleton` spawn
 //! helper and the Esc-driven dismissal system arrive in Slice B2.
 
+use crate::trading::SecretPrompt;
+use crate::ui::modify_modal::ModifyForm;
+use crate::ui::order_panel::OrderConfirm;
 use crate::ui::theme::{DynamicSpacing, ElevationIndex, Theme};
 use bevy::prelude::*;
 
@@ -67,6 +70,40 @@ impl ModalLayer {
             None => false,
         }
     }
+}
+
+/// Whether Esc is clear to dismiss the top modal-layer entry. Mirrors the
+/// relogin notice's yield guard (relogin_modal_button_system): a single
+/// Escape must defer to any higher-priority input modal that is open, so the
+/// one-shot Escape isn't consumed twice.
+fn esc_yield_clear(secret_active: bool, confirm_pending: bool, modify_open: bool) -> bool {
+    !(secret_active || confirm_pending || modify_open)
+}
+
+/// Consume Escape and dismiss the frontmost modal — but only when no
+/// higher-priority input modal (secret / order-confirm / modify) is open.
+/// `try_dismiss_top` itself respects each entry's `on_before_dismiss` veto.
+pub fn modal_layer_esc_system(
+    keys: Res<ButtonInput<KeyCode>>,
+    mut layer: ResMut<ModalLayer>,
+    secret_prompt: Res<SecretPrompt>,
+    order_confirm: Res<OrderConfirm>,
+    modify_form: Res<ModifyForm>,
+) {
+    if layer.stack.is_empty() {
+        return;
+    }
+    if !keys.just_pressed(KeyCode::Escape) {
+        return;
+    }
+    if !esc_yield_clear(
+        secret_prompt.active.is_some(),
+        order_confirm.pending.is_some(),
+        modify_form.open,
+    ) {
+        return;
+    }
+    layer.try_dismiss_top();
 }
 
 /// Declarative spec for a standard modal: a full-screen backdrop with a
@@ -235,5 +272,79 @@ mod tests {
 
         let card_bg = world.entity(handle.card).get::<BackgroundColor>().unwrap();
         assert_eq!(card_bg.0, ElevationIndex::ModalSurface.background(&Theme::default()));
+    }
+
+    #[test]
+    fn m_modal_06_esc_yield_clear_truth_table() {
+        assert!(esc_yield_clear(false, false, false));
+        assert!(!esc_yield_clear(true, false, false));
+        assert!(!esc_yield_clear(false, true, false));
+        assert!(!esc_yield_clear(false, false, true));
+        assert!(!esc_yield_clear(true, true, true));
+    }
+
+    fn esc_app() -> App {
+        let mut app = App::new();
+        app.init_resource::<ModalLayer>();
+        app.init_resource::<crate::trading::SecretPrompt>();
+        app.init_resource::<crate::ui::order_panel::OrderConfirm>();
+        app.init_resource::<crate::ui::modify_modal::ModifyForm>();
+        app.insert_resource(ButtonInput::<KeyCode>::default());
+        app.add_systems(Update, modal_layer_esc_system);
+        app
+    }
+
+    #[test]
+    fn m_modal_07_esc_dismisses_top_when_clear() {
+        let mut app = esc_app();
+        app.world_mut().resource_mut::<ModalLayer>().push(ActiveModal {
+            root: e(1),
+            backdrop: e(2),
+            previous_focus: None,
+            on_before_dismiss: dismiss,
+        });
+        app.world_mut()
+            .resource_mut::<ButtonInput<KeyCode>>()
+            .press(KeyCode::Escape);
+        app.update();
+        assert!(app.world().resource::<ModalLayer>().stack.is_empty());
+    }
+
+    #[test]
+    fn m_modal_08_esc_yields_to_open_secret_prompt() {
+        use crate::trading::SecretPromptRequest;
+        let mut app = esc_app();
+        app.world_mut().resource_mut::<ModalLayer>().push(ActiveModal {
+            root: e(1),
+            backdrop: e(2),
+            previous_focus: None,
+            on_before_dismiss: dismiss,
+        });
+        app.world_mut().resource_mut::<crate::trading::SecretPrompt>().active =
+            Some(SecretPromptRequest {
+                request_id: "r1".to_string(),
+                venue: "TACHIBANA".to_string(),
+                kind: "second_password".to_string(),
+                purpose: "new_order".to_string(),
+            });
+        app.world_mut()
+            .resource_mut::<ButtonInput<KeyCode>>()
+            .press(KeyCode::Escape);
+        app.update();
+        assert_eq!(
+            app.world().resource::<ModalLayer>().stack.len(),
+            1,
+            "Esc must yield to the open secret modal; the stack entry survives"
+        );
+    }
+
+    #[test]
+    fn m_modal_09_esc_noop_when_stack_empty() {
+        let mut app = esc_app();
+        app.world_mut()
+            .resource_mut::<ButtonInput<KeyCode>>()
+            .press(KeyCode::Escape);
+        app.update();
+        assert!(app.world().resource::<ModalLayer>().stack.is_empty());
     }
 }
