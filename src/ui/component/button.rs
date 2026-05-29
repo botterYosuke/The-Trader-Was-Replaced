@@ -7,7 +7,11 @@
 //! table for every button, replacing the ~13 scattered per-button color
 //! systems.
 
-use crate::ui::theme::{ElevationIndex, Theme};
+use crate::ui::theme::{DynamicSpacing, ElevationIndex, LabelSize, Theme, UiDensity};
+use crate::ui::traits::{
+    Clickable, ComponentSize, ComponentStyle, Disableable, Toggleable, UiSized, UiStyled,
+    UiStyledExt,
+};
 use bevy::prelude::*;
 
 // -- ButtonStyle ------------------------------------------------------------
@@ -262,6 +266,172 @@ pub fn button_interaction_system(
     }
 }
 
+// -- ComponentStyle bridge --------------------------------------------------
+
+/// Map the coarse #48 [`ComponentStyle`] onto a [`ButtonStyle`]. Lets the
+/// `UiStyled` trait (which speaks `ComponentStyle`) drive the builder, while
+/// callers that want the richer set use the inherent [`ButtonBuilder::style`].
+impl From<ComponentStyle> for ButtonStyle {
+    fn from(s: ComponentStyle) -> Self {
+        match s {
+            ComponentStyle::Filled => ButtonStyle::Filled,
+            ComponentStyle::Outlined => ButtonStyle::Outlined,
+            ComponentStyle::Ghost => ButtonStyle::OutlinedGhost,
+            ComponentStyle::Subtle => ButtonStyle::Subtle,
+        }
+    }
+}
+
+// -- spawn_button / ButtonBuilder -------------------------------------------
+
+/// Node sizing (height + horizontal padding) for a [`ComponentSize`], resolved
+/// through [`DynamicSpacing`] so no raw pixel literals appear in UI code.
+fn node_for_size(size: ComponentSize, density: UiDensity) -> Node {
+    let (h, pad) = match size {
+        ComponentSize::XSmall => (DynamicSpacing::Base16, DynamicSpacing::Base06),
+        ComponentSize::Small => (DynamicSpacing::Base20, DynamicSpacing::Base08),
+        ComponentSize::Default => (DynamicSpacing::Base24, DynamicSpacing::Base10),
+        ComponentSize::Large => (DynamicSpacing::Base32, DynamicSpacing::Base12),
+    };
+    Node {
+        height: Val::Px(h.px(density)),
+        padding: UiRect::horizontal(Val::Px(pad.px(density))),
+        justify_content: JustifyContent::Center,
+        align_items: AlignItems::Center,
+        ..default()
+    }
+}
+
+/// Spawn a themed button and return a [`ButtonBuilder`] for further config.
+///
+/// The button is created `Filled` / `Default` size / `Surface` elevation with
+/// a centered label child. Colors are left at component defaults and painted
+/// on the first frame by [`button_interaction_system`] (`Added<ButtonStyle>`),
+/// so call sites never write raw colors.
+///
+/// ```ignore
+/// spawn_button(&mut commands, &theme, "Run")
+///     .style(ButtonStyle::Tinted(TintColor::Success))
+///     .size(ComponentSize::Default)
+///     .elevation(ElevationIndex::Surface)
+///     .on_click(|| info!("run!"));
+/// ```
+pub fn spawn_button<'a, 'w, 's>(
+    commands: &'a mut Commands<'w, 's>,
+    theme: &Theme,
+    label: impl Into<String>,
+) -> ButtonBuilder<'a, 'w, 's> {
+    let density = theme.spacing.density;
+    let label_entity = commands
+        .spawn((
+            Text::new(label.into()),
+            theme.typography.label_font(LabelSize::Default),
+            TextColor(theme.colors.text),
+        ))
+        .id();
+    let mut root = commands.spawn((
+        Button,
+        node_for_size(ComponentSize::Default, density),
+        ButtonStyle::Filled,
+        ComponentSize::Default,
+        ElevationIndex::Surface,
+        Interaction::None,
+    ));
+    root.add_child(label_entity);
+    let entity = root.id();
+    ButtonBuilder { commands, entity, density }
+}
+
+/// Builder over a spawned themed button. Setters apply eagerly via `Commands`;
+/// there is no terminal `.build()` call. Implements the #48 trait pyramid
+/// ([`Clickable`] / [`Disableable`] / [`Toggleable`] / [`UiSized`] /
+/// [`UiStyled`] / [`UiStyledExt`]).
+pub struct ButtonBuilder<'a, 'w, 's> {
+    commands: &'a mut Commands<'w, 's>,
+    entity: Entity,
+    density: UiDensity,
+}
+
+impl<'a, 'w, 's> ButtonBuilder<'a, 'w, 's> {
+    /// The spawned button entity.
+    pub fn id(&self) -> Entity {
+        self.entity
+    }
+
+    /// Set the [`ButtonStyle`]. Inherent method (richer than the
+    /// `UiStyled::style` trait form, which only speaks [`ComponentStyle`]); it
+    /// wins method resolution when called with a `ButtonStyle`.
+    pub fn style(self, style: ButtonStyle) -> Self {
+        self.commands.entity(self.entity).insert(style);
+        self
+    }
+}
+
+impl<'a, 'w, 's> Clickable for ButtonBuilder<'a, 'w, 's> {
+    fn on_click<F>(self, mut on_click: F) -> Self
+    where
+        F: FnMut() + Send + Sync + 'static,
+    {
+        self.commands
+            .entity(self.entity)
+            .observe(move |_: On<Pointer<Click>>| on_click());
+        self
+    }
+}
+
+impl<'a, 'w, 's> Disableable for ButtonBuilder<'a, 'w, 's> {
+    fn disabled(self, disabled: bool) -> Self {
+        let mut e = self.commands.entity(self.entity);
+        if disabled {
+            e.insert(ButtonDisabled);
+        } else {
+            e.remove::<ButtonDisabled>();
+        }
+        self
+    }
+}
+
+impl<'a, 'w, 's> Toggleable for ButtonBuilder<'a, 'w, 's> {
+    fn toggle_state(self, selected: bool) -> Self {
+        let mut e = self.commands.entity(self.entity);
+        if selected {
+            e.insert(ButtonSelected);
+        } else {
+            e.remove::<ButtonSelected>();
+        }
+        self
+    }
+}
+
+impl<'a, 'w, 's> UiSized for ButtonBuilder<'a, 'w, 's> {
+    fn size(self, size: ComponentSize) -> Self {
+        self.commands
+            .entity(self.entity)
+            .insert((size, node_for_size(size, self.density)));
+        self
+    }
+}
+
+impl<'a, 'w, 's> UiStyled for ButtonBuilder<'a, 'w, 's> {
+    fn style<S: Into<ComponentStyle>>(self, style: S) -> Self {
+        let bs: ButtonStyle = style.into().into();
+        self.commands.entity(self.entity).insert(bs);
+        self
+    }
+}
+
+impl<'a, 'w, 's> UiStyledExt for ButtonBuilder<'a, 'w, 's> {
+    fn elevation(self, elevation: ElevationIndex) -> Self {
+        self.commands.entity(self.entity).insert(elevation);
+        self
+    }
+
+    /// Tooltip is a no-op stub in Slice A (Tooltip component lands in Slice F).
+    fn tooltip(self, _tooltip: impl Into<String>) -> Self {
+        self
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -416,5 +586,50 @@ mod tests {
         assert_eq!(bg, t.colors.element_disabled);
         assert_eq!(border, t.colors.border_disabled);
         assert_eq!(label, t.colors.text_disabled);
+    }
+
+    // -- spawn_button builder (A7) ------------------------------------------
+
+    /// The builder spawns a Button carrying the chosen style/size/selected
+    /// state plus a label child with the given text.
+    #[test]
+    fn builder_spawns_styled_labeled_button() {
+        let mut world = World::new();
+        world.insert_resource(Theme::default());
+        world
+            .run_system_once(|mut commands: Commands, theme: Res<Theme>| {
+                spawn_button(&mut commands, &theme, "Run")
+                    .style(ButtonStyle::Tinted(TintColor::Success))
+                    .size(ComponentSize::Small)
+                    .elevation(ElevationIndex::Surface)
+                    .toggle_state(true);
+            })
+            .unwrap();
+
+        let mut q = world
+            .query_filtered::<(&ButtonStyle, &ComponentSize, Has<ButtonSelected>, &Children), With<Button>>();
+        let (style, size, selected, children) = q.single(&world).unwrap();
+        assert_eq!(*style, ButtonStyle::Tinted(TintColor::Success));
+        assert_eq!(*size, ComponentSize::Small);
+        assert!(selected, "toggle_state(true) inserts ButtonSelected");
+
+        let child = children.iter().next().expect("label child");
+        let text = world.entity(child).get::<Text>().expect("child Text");
+        assert_eq!(text.0, "Run");
+    }
+
+    /// `on_click` (the `Clickable` trait) accepts an `FnMut` closure and wires
+    /// it as an observer without panicking; exactly one themed button results.
+    #[test]
+    fn builder_on_click_wires_observer() {
+        let mut world = World::new();
+        world.insert_resource(Theme::default());
+        world
+            .run_system_once(|mut commands: Commands, theme: Res<Theme>| {
+                spawn_button(&mut commands, &theme, "X").on_click(|| {});
+            })
+            .unwrap();
+        let mut q = world.query_filtered::<Entity, With<ButtonStyle>>();
+        assert_eq!(q.iter(&world).count(), 1);
     }
 }

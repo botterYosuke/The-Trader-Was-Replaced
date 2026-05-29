@@ -15,11 +15,15 @@
 //! Concrete components translate the closure to a `Commands`-driven send.
 
 use crate::ui::theme::ElevationIndex;
+use bevy::prelude::Component;
 
 // -- ComponentSize ----------------------------------------------------------
 
 /// Discrete size token for interactive components.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+///
+/// Issue #46: derives `Component` so a button can carry its size token (the
+/// builder inserts it and queries `&ComponentSize`).
+#[derive(Component, Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub enum ComponentSize {
     XSmall,
     Small,
