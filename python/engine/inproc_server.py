@@ -91,6 +91,7 @@ class InprocLiveServer:
         # set=running, clear=paused. None when no backtest is active.
         self._backtest_pause_event = None
         self._backtest_step_event = None
+        self._backtest_speed_ref: list = [0.0]  # Slice 7: mutable speed cell [0.0=unlimited]
 
     # ------------------------------------------------------------------
     # State polling
@@ -621,6 +622,7 @@ class InprocLiveServer:
             rust_sink=rust_sink,
             pause_event=pause_event,
             step_event=step_event,
+            speed_ref=self._backtest_speed_ref,
         )
 
         def _run() -> None:
@@ -675,6 +677,16 @@ class InprocLiveServer:
         """Advance the paused backtest by exactly one bar."""
         if self._backtest_step_event is not None:
             self._backtest_step_event.set()
+        return {"success": True}
+
+    def set_replay_speed(self, multiplier: int) -> dict:
+        """Set replay speed for the running nautilus backtest (Slice 7).
+
+        multiplier 0  = unlimited (no delay between bars)
+        multiplier 1  = 1x speed (BASE_DELAY_S per bar)
+        multiplier N  = N x speed (BASE_DELAY_S / N per bar)
+        """
+        self._backtest_speed_ref[0] = float(multiplier)
         return {"success": True}
 
     def close(self) -> None:

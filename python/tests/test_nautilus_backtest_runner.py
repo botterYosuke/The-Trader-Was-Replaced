@@ -329,3 +329,186 @@ class TestGuiBridgeActorPauseStep:
         sink.push_run_failed("some error")
         assert len(sink.run_failed_calls) == 1
         assert sink.run_failed_calls[0] == "some error"
+
+
+# ---------------------------------------------------------------------------
+# GuiBridgeActor — Orders handler (Slice 3) RED test
+# ---------------------------------------------------------------------------
+
+
+class TestGuiBridgeActorOrders:
+    """make_order_handler() が push_order を呼ぶことを確認 (Slice 3)."""
+
+    def test_order_handler_calls_push_order(self):
+        """OrderFilled イベントを渡すと sink.push_order() が 1 回呼ばれる。"""
+        from engine.live.gui_bridge_actor import GuiBridgeActor
+
+        class OrderCaptureSink:
+            def __init__(self):
+                self.orders: list[dict] = []
+
+            def push_bar(self, _json: str) -> None:
+                pass
+
+            def push_order(self, json_str: str) -> None:
+                import json
+                self.orders.append(json.loads(json_str))
+
+            def push_portfolio(self, _json: str) -> None:
+                pass
+
+        class _FakeId:
+            def __init__(self, val: str):
+                self._val = val
+
+            def __str__(self):
+                return self._val
+
+        class _FakeQty:
+            def as_double(self):
+                return 100.0
+
+        class _FakePx:
+            def as_double(self):
+                return 1500.0
+
+        class FakeOrderFilled:
+            instrument_id = _FakeId("1301.TSE")
+            client_order_id = _FakeId("O-001")
+            venue_order_id = _FakeId("V-001")
+            strategy_id = _FakeId("MyStrategy-001")
+            ts_event = 1_000_000_000_000
+            last_qty = _FakeQty()
+            last_px = _FakePx()
+
+            class _Side:
+                name = "BUY"
+
+            order_side = _Side()
+
+        sink = OrderCaptureSink()
+        actor = GuiBridgeActor(sink)
+        handler = actor.make_order_handler()
+        handler(FakeOrderFilled())
+
+        assert len(sink.orders) == 1
+        order = sink.orders[0]
+        assert order["symbol"] == "1301.TSE"
+        assert order["side"] == "BUY"
+        assert order["status"] == "FILLED"
+
+    def test_inproc_server_has_no_order_handler_yet(self):
+        """GuiBridgeActor.make_order_handler() メソッドが存在することを確認。"""
+        from engine.live.gui_bridge_actor import GuiBridgeActor
+        assert hasattr(GuiBridgeActor, "make_order_handler"), \
+            "GuiBridgeActor must have make_order_handler"
+
+
+# ---------------------------------------------------------------------------
+# GuiBridgeActor — Positions handler (Slice 4) RED test
+# ---------------------------------------------------------------------------
+
+
+class TestGuiBridgeActorPositions:
+    """make_position_handler() が push_portfolio を呼ぶことを確認 (Slice 4)."""
+
+    def test_position_handler_calls_push_portfolio(self):
+        """PositionOpened イベントを渡すと sink.push_portfolio() が 1 回呼ばれる。"""
+        from engine.live.gui_bridge_actor import GuiBridgeActor
+
+        class PortfolioCaptureSink:
+            def __init__(self):
+                self.portfolios: list[dict] = []
+
+            def push_bar(self, _json: str) -> None:
+                pass
+
+            def push_order(self, _json: str) -> None:
+                pass
+
+            def push_portfolio(self, json_str: str) -> None:
+                import json
+                self.portfolios.append(json.loads(json_str))
+
+        class FakePositionOpened:
+            pass
+
+        sink = PortfolioCaptureSink()
+        actor = GuiBridgeActor(sink)
+        handler = actor.make_position_handler(cache=None, venue_str="TSE")
+        handler(FakePositionOpened())
+
+        assert len(sink.portfolios) == 1
+        portfolio = sink.portfolios[0]
+        assert "buying_power" in portfolio
+        assert "positions" in portfolio
+        assert "orders" in portfolio
+
+
+# ---------------------------------------------------------------------------
+# GuiBridgeActor — Speed ref (Slice 7) RED test
+# ---------------------------------------------------------------------------
+
+
+class TestGuiBridgeActorSpeed:
+    """speed_ref があれば bar 後に delay が入ることを確認 (Slice 7)."""
+
+    def test_speed_ref_attribute_accessible(self):
+        """GuiBridgeActor が speed_ref キーワード引数を受け付けることを確認。"""
+        from engine.live.gui_bridge_actor import GuiBridgeActor
+
+        sink = MockRustSink()
+        # speed_ref を渡せること — TypeError が出なければ OK
+        speed_ref = [1.0]
+        actor = GuiBridgeActor(sink, speed_ref=speed_ref)
+        assert actor._speed_ref is speed_ref
+
+    def test_speed_ref_none_is_default(self):
+        """speed_ref=None（デフォルト）でも GuiBridgeActor が初期化できる。"""
+        from engine.live.gui_bridge_actor import GuiBridgeActor
+
+        sink = MockRustSink()
+        actor = GuiBridgeActor(sink)
+        assert actor._speed_ref is None
+
+    def test_bar_handler_sleeps_when_speed_ref_set(self):
+        """speed_ref=[1.0] のとき bar ハンドラが time.sleep を呼ぶことを確認。"""
+        from unittest.mock import patch
+        from engine.live.gui_bridge_actor import GuiBridgeActor
+
+        sink = MockRustSink()
+        speed_ref = [1.0]
+        actor = GuiBridgeActor(sink, speed_ref=speed_ref)
+        handler = actor.make_bar_handler()
+
+        with patch("time.sleep") as mock_sleep:
+            handler(FakeBar(ts_event=1_000_000_000_000))
+            assert mock_sleep.called, "time.sleep should be called when speed_ref is set"
+
+    def test_bar_handler_no_sleep_when_speed_ref_none(self):
+        """speed_ref=None（デフォルト）のとき time.sleep を呼ばない。"""
+        from unittest.mock import patch
+        from engine.live.gui_bridge_actor import GuiBridgeActor
+
+        sink = MockRustSink()
+        actor = GuiBridgeActor(sink)
+        handler = actor.make_bar_handler()
+
+        with patch("time.sleep") as mock_sleep:
+            handler(FakeBar(ts_event=1_000_000_000_000))
+            assert not mock_sleep.called, "time.sleep must not be called when speed_ref is None"
+
+
+# ---------------------------------------------------------------------------
+# InprocLiveServer — set_replay_speed (Slice 7) RED test
+# ---------------------------------------------------------------------------
+
+
+class TestInprocLiveServerSpeed:
+    """set_replay_speed() メソッドが InprocLiveServer に存在することを確認 (Slice 7)."""
+
+    def test_inproc_server_has_set_replay_speed(self):
+        """InprocLiveServer.set_replay_speed() メソッドが存在する。"""
+        from engine.inproc_server import InprocLiveServer
+        assert hasattr(InprocLiveServer, "set_replay_speed"), \
+            "InprocLiveServer must have set_replay_speed"

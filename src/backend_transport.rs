@@ -1513,13 +1513,87 @@ impl RustBacktestSink {
         Ok(())
     }
 
-    /// Placeholder for Slice 3 (orders panel).
-    fn push_order(&self, _json: &str) -> pyo3::PyResult<()> {
+    /// Slice 3: deserialise the order JSON from GuiBridgeActor and forward as
+    /// BackendStatusUpdate::OrderSeeded so the UI's LiveOrders table populates.
+    fn push_order(&self, json: &str) -> pyo3::PyResult<()> {
+        #[derive(serde::Deserialize)]
+        struct RawOrder {
+            symbol: String,
+            client_order_id: String,
+            venue_order_id: String,
+            strategy_id: String,
+            side: String,
+            status: String,
+            qty: f64,
+            price: f64,
+            timestamp_ms: i64,
+        }
+        match serde_json::from_str::<RawOrder>(json) {
+            Ok(o) => {
+                let _ = self.resp_tx.send(InProcResp::Status(
+                    crate::trading::BackendStatusUpdate::OrderSeeded {
+                        client_order_id: o.client_order_id,
+                        venue_order_id: o.venue_order_id,
+                        symbol: o.symbol,
+                        side: o.side,
+                        qty: o.qty,
+                        price: Some(o.price),
+                        status: o.status,
+                        filled_qty: o.qty,
+                        avg_price: o.price,
+                        ts_ms: o.timestamp_ms,
+                        strategy_id: o.strategy_id,
+                    },
+                ));
+            }
+            Err(e) => {
+                warn!("[sink] push_order deserialise failed: {}", e);
+            }
+        }
         Ok(())
     }
 
-    /// Placeholder for Slice 4 (positions / buying power).
-    fn push_portfolio(&self, _json: &str) -> pyo3::PyResult<()> {
+    /// Slice 4: deserialise the portfolio JSON from GuiBridgeActor and forward as
+    /// BackendStatusUpdate::PortfolioLoaded so the buying-power panel populates.
+    fn push_portfolio(&self, json: &str) -> pyo3::PyResult<()> {
+        #[derive(serde::Deserialize)]
+        struct RawPosition {
+            symbol: String,
+            qty: f64,
+            avg_price: f64,
+        }
+        #[derive(serde::Deserialize)]
+        struct RawPortfolio {
+            buying_power: f64,
+            equity: f64,
+            positions: Vec<RawPosition>,
+        }
+        match serde_json::from_str::<RawPortfolio>(json) {
+            Ok(p) => {
+                let positions = p
+                    .positions
+                    .into_iter()
+                    .map(|pos| crate::trading::PortfolioPosition {
+                        symbol: pos.symbol,
+                        qty: pos.qty as i64,
+                        avg_price: pos.avg_price,
+                        unrealized_pnl: 0.0,
+                    })
+                    .collect();
+                let _ = self.resp_tx.send(InProcResp::Status(
+                    crate::trading::BackendStatusUpdate::PortfolioLoaded {
+                        buying_power: p.buying_power,
+                        cash: p.buying_power,
+                        equity: p.equity,
+                        positions,
+                        orders: vec![],
+                    },
+                ));
+            }
+            Err(e) => {
+                warn!("[sink] push_portfolio deserialise failed: {}", e);
+            }
+        }
         Ok(())
     }
 
@@ -2202,6 +2276,12 @@ fn inproc_dispatch(
         }
         TransportCommand::SetSpeed(mult) => {
             inproc_set_speed(engine, mult);
+            use pyo3::prelude::*;
+            Python::with_gil(|py| {
+                if let Err(e) = live_server.bind(py).call_method1("set_replay_speed", (mult,)) {
+                    warn!("[inproc] live_server.set_replay_speed error: {}", e);
+                }
+            });
         }
         TransportCommand::LoadAndStep { config, startup_id } => {
             let _ = resp_tx.send(InProcResp::Status(BackendStatusUpdate::ReplayStartup {

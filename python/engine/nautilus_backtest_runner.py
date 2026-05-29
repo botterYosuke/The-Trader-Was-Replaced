@@ -38,6 +38,7 @@ class NautilusBacktestRunner:
         rust_sink: Any,
         pause_event: Any = None,
         step_event: Any = None,
+        speed_ref: Any = None,
     ) -> None:
         self._catalog_path = catalog_path
         self._strategy_file = strategy_file
@@ -49,6 +50,7 @@ class NautilusBacktestRunner:
         self._rust_sink = rust_sink
         self._pause_event = pause_event
         self._step_event = step_event
+        self._speed_ref = speed_ref
 
     def run(self) -> dict:
         """Execute the backtest synchronously.
@@ -108,7 +110,7 @@ class NautilusBacktestRunner:
             logging=LoggingConfig(bypass_logging=True),
         )
         engine = BacktestEngine(config=cfg)
-        bar_handlers: dict[str, Any] = {}
+        all_handlers: dict[str, Any] = {}
 
         try:
             engine.add_venue(
@@ -125,19 +127,34 @@ class NautilusBacktestRunner:
             strategy = strategy_cls()
             engine.add_strategy(strategy)
 
+            strategy_id_str = str(strategy.id)
+            order_topic = f"events.order.{strategy_id_str}"
+            position_topic = f"events.position.{strategy_id_str}"
+
             # Subscribe GuiBridgeActor to bar events via msgbus
             bridge = GuiBridgeActor(
                 self._rust_sink,
                 instrument_id="",
                 pause_event=self._pause_event,
                 step_event=self._step_event,
+                speed_ref=self._speed_ref,
             )
             bar_handler = bridge.make_bar_handler()
             for symbol in instruments:
                 bar_type_str = bar_type_for_instrument(symbol, granularity)
                 bar_topic = f"data.bars.{bar_type_str}"
-                bar_handlers[bar_topic] = bar_handler
+                all_handlers[bar_topic] = bar_handler
                 engine.kernel.msgbus.subscribe(topic=bar_topic, handler=bar_handler)
+
+            order_handler = bridge.make_order_handler()
+            position_handler = bridge.make_position_handler(
+                cache=engine.kernel.cache,
+                venue_str=venue_str,
+            )
+            engine.kernel.msgbus.subscribe(topic=order_topic, handler=order_handler)
+            engine.kernel.msgbus.subscribe(topic=position_topic, handler=position_handler)
+            all_handlers[order_topic] = order_handler
+            all_handlers[position_topic] = position_handler
 
             # --- Streaming loop: 1 bar at a time ------------------------------
             items = merge_bars_by_ts(bars_by_instrument)
@@ -161,7 +178,7 @@ class NautilusBacktestRunner:
             log.error("[NautilusBacktestRunner] run failed: %s", exc, exc_info=True)
             return {"success": False, "run_id": "", "error": str(exc)}
         finally:
-            for topic, handler in bar_handlers.items():
+            for topic, handler in all_handlers.items():
                 try:
                     engine.kernel.msgbus.unsubscribe(topic=topic, handler=handler)
                 except Exception:
