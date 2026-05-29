@@ -335,6 +335,12 @@ async def test_subscribe_then_unsubscribe_replays_remaining_symbols(
         )
 
     adapter = KabuStationAdapter(environment="verify")
+    # register は no-burst (capacity=1) のため 2 回目以降に rate-limit sleep が入る。
+    # ユニットテストでは実時間 sleep させず、かつ event loop に yield して ws task が
+    # 余分な register を発火しないよう、即時 (非 yield) の no-op sleep を inject する。
+    async def _instant(_d):  # noqa: ANN001
+        return
+    adapter._rate_limit_sleep = _instant
     await adapter.login(VenueCredentials(credentials_source="env"))
     await adapter.subscribe("7203.TSE", {"trades"})
     await adapter.subscribe("9984.TSE", {"trades"})
