@@ -82,11 +82,9 @@ fn j1_strategy_editor_text_autosaves_cache() {
         .id();
 
     // ── Phase A: テキスト変更 seam を直接注入 ──
-    // `sync_editor_to_strategy_buffer_system` は StrategyEditorContent entity からの
-    // CosmicTextChanged を fragment へ書き戻す。ここでは CosmicTextChanged の
-    // entity フィールドが `editor_q` に照合されるため、StrategyEditorContent を持つ
-    // 別 entity (editor child) を使う必要があるが、E2E では fragment に直接 dirty 化するほうが
-    // 安定している。本テストの主眼はデバウンス → ファイル書き込みなので、dirty を手動でセットする。
+    // 実際の編集経路は bevscode `CodeEditor` 入力 → `sync_bevscode_to_strategy_fragment_system` が
+    // StrategyFragment に書き戻す。本テストの主眼はデバウンス → ファイル書き込みなので、
+    // bevscode 入力をエミュレートせず fragment を直接 dirty 化するほうが安定している。
     {
         let mut fragment = app.world_mut().get_mut::<StrategyFragment>(root).unwrap();
         fragment.source = "x = 99\ny = 2".to_string();

@@ -19,7 +19,7 @@
 //!   `instrument_chart_sync_system` が Chart を spawn。
 //!
 //! 検証は目視ではなく構造化 UI ダンプ（位置 / 大きさ / 表示 / キャプション）で行う。
-//! cosmic_edit はフォント resource のみ headless 挿入（描画はしない）。実ピクセル描画の smoke は
+//! editor は bevscode peer の spawn 有無だけを構造で観測し描画はしない。実ピクセル描画の smoke は
 //! `L4`（headless 不可）。詳細は `tests/e2e/FLOWS.md` の I5 を参照。
 
 use std::ffi::OsString;
