@@ -44,6 +44,20 @@ pub struct ThemeColors {
     pub elevated_surface_background: Color,
     /// Sidebar / footer / dock panel background (step 2).
     pub panel_background: Color,
+    /// Focused panel accent border (accent.step_8).
+    pub panel_focused_border: Color,
+    /// Status bar background (neutral.step_2).
+    pub status_bar_background: Color,
+    /// Title bar background (neutral.step_2).
+    pub title_bar_background: Color,
+    /// Toolbar background (neutral.step_2).
+    pub toolbar_background: Color,
+    /// Tab bar background (neutral.step_2).
+    pub tab_bar_background: Color,
+    /// Active tab background (neutral.step_4).
+    pub tab_active_background: Color,
+    /// Inactive tab background (neutral.step_2).
+    pub tab_inactive_background: Color,
 
     /// Subtle non-interactive border / divider (step 6).
     pub border: Color,
@@ -51,6 +65,12 @@ pub struct ThemeColors {
     pub border_variant: Color,
     /// Focused field / focus ring border (step 8).
     pub border_focused: Color,
+    /// Selected element border (accent.step_7).
+    pub border_selected: Color,
+    /// Disabled element border (neutral.step_5).
+    pub border_disabled: Color,
+    /// Explicit transparent border (Color::NONE).
+    pub border_transparent: Color,
 
     /// High-contrast body text (step 12).
     pub text: Color,
@@ -71,6 +91,21 @@ pub struct ThemeColors {
     pub element_active: Color,
     /// Selected state (step 5 + slight accent tint via accent step 5).
     pub element_selected: Color,
+    /// Disabled interactive element background (neutral.step_3).
+    pub element_disabled: Color,
+    /// Text / range selection highlight background (accent.step_5).
+    pub element_selection_background: Color,
+
+    /// Ghost (background-same) Subtle button background (neutral.step_2).
+    pub ghost_element_background: Color,
+    /// Ghost element hover state (neutral.step_3).
+    pub ghost_element_hover: Color,
+    /// Ghost element active / pressed state (neutral.step_4).
+    pub ghost_element_active: Color,
+    /// Ghost element selected state (accent.step_3).
+    pub ghost_element_selected: Color,
+    /// Ghost element disabled state (neutral.step_2).
+    pub ghost_element_disabled: Color,
 
     /// Accent solid fill (accent step 9).
     pub accent: Color,
@@ -85,6 +120,34 @@ pub struct ThemeColors {
     pub icon_disabled: Color,
     /// Accent icon (accent step 11).
     pub icon_accent: Color,
+    /// Placeholder icon color (neutral.step_9).
+    pub icon_placeholder: Color,
+
+    /// Drag-and-drop target background highlight (accent.step_3).
+    pub drop_target_background: Color,
+    /// Drag-and-drop target border (accent.step_8).
+    pub drop_target_border: Color,
+
+    /// Search match background highlight (yellow.step_3).
+    pub search_match_background: Color,
+    /// Active / current search match background (yellow.step_5).
+    pub search_active_match_background: Color,
+
+    /// Scrollbar thumb background (neutral.step_6).
+    pub scrollbar_thumb_background: Color,
+    /// Scrollbar thumb hover (neutral.step_7).
+    pub scrollbar_thumb_hover_background: Color,
+    /// Scrollbar thumb active / pressed (neutral.step_8).
+    pub scrollbar_thumb_active_background: Color,
+    /// Scrollbar track background (neutral.step_2).
+    pub scrollbar_track_background: Color,
+
+    /// Editor gutter background (neutral.step_1).
+    pub gutter_background: Color,
+    /// Line number text (neutral.step_8).
+    pub line_number: Color,
+    /// Active line number text (neutral.step_12).
+    pub line_number_active: Color,
 }
 
 // -- StatusColors -----------------------------------------------------------
@@ -328,15 +391,26 @@ impl ThemeColors {
     pub fn from_scales(s: &ColorScales) -> Self {
         let neutral = &s.neutral;
         let accent = &s.accent;
+        let yellow = &s.yellow;
         Self {
             background: neutral.step_1(),
             surface_background: neutral.step_2(),
             elevated_surface_background: neutral.step_3(),
             panel_background: neutral.step_2(),
+            panel_focused_border: accent.step_8(),
+            status_bar_background: neutral.step_2(),
+            title_bar_background: neutral.step_2(),
+            toolbar_background: neutral.step_2(),
+            tab_bar_background: neutral.step_2(),
+            tab_active_background: neutral.step_4(),
+            tab_inactive_background: neutral.step_2(),
 
             border: neutral.step_6(),
             border_variant: neutral.step_7(),
             border_focused: accent.step_8(),
+            border_selected: accent.step_7(),
+            border_disabled: neutral.step_5(),
+            border_transparent: Color::NONE,
 
             text: neutral.step_12(),
             text_muted: neutral.step_11(),
@@ -348,6 +422,14 @@ impl ThemeColors {
             element_hover: neutral.step_4(),
             element_active: neutral.step_5(),
             element_selected: accent.step_5(),
+            element_disabled: neutral.step_3(),
+            element_selection_background: accent.step_5(),
+
+            ghost_element_background: neutral.step_2(),
+            ghost_element_hover: neutral.step_3(),
+            ghost_element_active: neutral.step_4(),
+            ghost_element_selected: accent.step_3(),
+            ghost_element_disabled: neutral.step_2(),
 
             accent: accent.step_9(),
             accent_hover: accent.step_10(),
@@ -356,6 +438,22 @@ impl ThemeColors {
             icon_muted: neutral.step_8(),
             icon_disabled: neutral.step_7(),
             icon_accent: accent.step_11(),
+            icon_placeholder: neutral.step_9(),
+
+            drop_target_background: accent.step_3(),
+            drop_target_border: accent.step_8(),
+
+            search_match_background: yellow.step_3(),
+            search_active_match_background: yellow.step_5(),
+
+            scrollbar_thumb_background: neutral.step_6(),
+            scrollbar_thumb_hover_background: neutral.step_7(),
+            scrollbar_thumb_active_background: neutral.step_8(),
+            scrollbar_track_background: neutral.step_2(),
+
+            gutter_background: neutral.step_1(),
+            line_number: neutral.step_8(),
+            line_number_active: neutral.step_12(),
         }
     }
 }
