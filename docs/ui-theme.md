@@ -143,7 +143,7 @@
 ## 12. Button component (#46 Slice A)
 
 `src/ui/component/button.rs` が、散在していたボタン色変化 system（footer / menu_bar /
-sidebar / live_run / order_context_menu / modify_modal の `Changed<Interaction>` 色分岐）を
+sidebar / live_run / modify_modal の `Changed<Interaction>` / resource 駆動の色分岐）を
 **単一の `button_interaction_system` + `ButtonStyle × ButtonState` テーブル**に集約します。
 ボタンに `ButtonStyle` を付けるだけで、hover / press / selected / disabled の色が
 `Theme` から自動解決されます。
@@ -197,5 +197,8 @@ spawn_button(&mut commands, &theme, "Run")
 - **静的色のままのボタン**（secret / reconcile / relogin / settings / instrument_picker /
   strategy_editor_find の発注確認以外）… 色変化 system を持たず spawn 時固定色のため、
   生値ゼロ化は **Slice H**（残存生値ゼロ化 + CI 機械検査）で実施。
+- **`order_context_menu` の hover**（`context_menu_hover_system` の cyan ハイライト）… 既存の
+  distinctive な cyan（`COLOR_ITEM_HOVER`）に対応する theme トークンが無く、`ButtonStyle` 化すると
+  色味が変わるため Slice A では現状維持。token 化は **Slice H**。
 - **`order_panel` の confirm / submit ボタン** … world-space Sprite + observer 方式で UI-Node の
   `button_interaction_system` の対象外。**Slice B**（`order_panel` 分割 + `ModalSkeleton`）で扱う。
