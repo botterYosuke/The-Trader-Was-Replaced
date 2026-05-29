@@ -33,9 +33,10 @@ const COLOR_RUNNING: Color = Color::srgb(0.0, 1.0, 0.50);
 const COLOR_PAUSED: Color = Color::srgb(1.0, 0.78, 0.0);
 const COLOR_ERROR: Color = Color::srgb(1.0, 0.20, 0.40);
 const COLOR_STOPPED: Color = Color::srgb(0.55, 0.55, 0.55);
+// Initial spawn backgrounds only; interactive/disabled color is owned by
+// button_interaction_system. #46 Slice A.
 const COLOR_BTN_IDLE: Color = Color::srgba(0.18, 0.20, 0.28, 1.0);
 const COLOR_BTN_STOP: Color = Color::srgba(0.30, 0.16, 0.20, 1.0);
-const COLOR_BTN_DISABLED: Color = Color::srgba(0.12, 0.12, 0.16, 1.0);
 const COLOR_PNL_POS: Color = Color::srgb(0.0, 1.0, 0.50);
 const COLOR_PNL_NEG: Color = Color::srgb(1.0, 0.20, 0.40);
 const COLOR_LOG_HEADER: Color = Color::srgb(0.55, 0.60, 0.70);
@@ -213,9 +214,15 @@ fn spawn_control_button(
     action: LiveRunControlAction,
     label: &str,
 ) {
-    let bg = match action {
-        LiveRunControlAction::Stop => COLOR_BTN_STOP,
-        _ => COLOR_BTN_IDLE,
+    // Stop is destructive (Error tint); other actions use the neutral Filled
+    // style. Disabled state is driven by live_run_control_visual_system via a
+    // ButtonDisabled toggle. #46 Slice A.
+    let (bg, style) = match action {
+        LiveRunControlAction::Stop => (
+            COLOR_BTN_STOP,
+            crate::ui::component::ButtonStyle::Tinted(crate::ui::component::TintColor::Error),
+        ),
+        _ => (COLOR_BTN_IDLE, crate::ui::component::ButtonStyle::Filled),
     };
     parent
         .spawn((
@@ -229,6 +236,8 @@ fn spawn_control_button(
                 ..default()
             },
             BackgroundColor(bg),
+            style,
+            crate::ui::theme::ElevationIndex::Surface,
             LiveRunControlButton { row, action },
         ))
         .with_children(|b| {
@@ -488,26 +497,32 @@ pub fn live_run_log_sync_system(
 /// 制御ボタンの有効/無効に応じて背景色を差分反映する（無効ボタンはグレー）。
 pub fn live_run_control_visual_system(
     runs: Res<LiveRuns>,
-    mut buttons: Query<(&LiveRunControlButton, &mut BackgroundColor)>,
+    mut commands: Commands,
+    buttons: Query<(
+        Entity,
+        &LiveRunControlButton,
+        Has<crate::ui::component::ButtonDisabled>,
+    )>,
 ) {
     if !runs.is_changed() {
         return;
     }
-    for (btn, mut bg) in &mut buttons {
+    // Color (incl. the Stop tint) is owned by button_interaction_system; this
+    // only toggles the ButtonDisabled marker for not-allowed actions. #46 Slice A.
+    for (entity, btn, has_disabled) in &buttons {
         let enabled = runs
             .runs
             .get(btn.row)
             .map(|r| btn.action.is_allowed(&r.status))
             .unwrap_or(false);
-        let target = if !enabled {
-            COLOR_BTN_DISABLED
-        } else if btn.action == LiveRunControlAction::Stop {
-            COLOR_BTN_STOP
-        } else {
-            COLOR_BTN_IDLE
-        };
-        if bg.0 != target {
-            bg.0 = target;
+        if !enabled && !has_disabled {
+            commands
+                .entity(entity)
+                .insert(crate::ui::component::ButtonDisabled);
+        } else if enabled && has_disabled {
+            commands
+                .entity(entity)
+                .remove::<crate::ui::component::ButtonDisabled>();
         }
     }
 }
