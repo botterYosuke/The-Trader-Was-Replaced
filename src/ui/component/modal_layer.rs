@@ -11,6 +11,7 @@
 //! this pass (no global focus resource exists yet). The `ModalSkeleton` spawn
 //! helper and the Esc-driven dismissal system arrive in Slice B2.
 
+use crate::ui::theme::{DynamicSpacing, ElevationIndex, Theme};
 use bevy::prelude::*;
 
 /// Result of an [`ActiveModal`]'s `on_before_dismiss` hook.
@@ -66,6 +67,66 @@ impl ModalLayer {
             None => false,
         }
     }
+}
+
+/// Declarative spec for a standard modal: a full-screen backdrop with a
+/// centered card. `spawn_modal` builds the entities; content children are
+/// added by the caller onto the returned `card`/`root` (Slice B2 migration).
+pub struct ModalSkeleton {
+    /// Card width in px (call sites pass a fixed width, e.g. relogin 360).
+    pub width: f32,
+    /// GlobalZIndex for the backdrop+card (preserves per-modal stacking:
+    /// relogin 260, reconcile 262 … until ElevationIndex fully owns z).
+    pub z_index: i32,
+    /// Accessible name for the root node.
+    pub name: &'static str,
+}
+
+/// Entities produced by [`spawn_modal`]. `root` is the backdrop (full-screen,
+/// `Display::None` at spawn); `card` is the centered surface to populate.
+pub struct ModalHandle {
+    pub root: Entity,
+    pub card: Entity,
+}
+
+pub fn spawn_modal(commands: &mut Commands, theme: &Theme, skeleton: ModalSkeleton) -> ModalHandle {
+    let density = theme.spacing.density;
+    let pad = DynamicSpacing::Base16.px(density);
+
+    let card = commands
+        .spawn((
+            Node {
+                width: Val::Px(skeleton.width),
+                flex_direction: FlexDirection::Column,
+                padding: UiRect::all(Val::Px(pad)),
+                ..default()
+            },
+            BackgroundColor(ElevationIndex::ModalSurface.background(theme)),
+            ElevationIndex::ModalSurface,
+        ))
+        .id();
+
+    let root = commands
+        .spawn((
+            Node {
+                display: Display::None,
+                position_type: PositionType::Absolute,
+                top: Val::Px(0.0),
+                left: Val::Px(0.0),
+                width: Val::Percent(100.0),
+                height: Val::Percent(100.0),
+                align_items: AlignItems::Center,
+                justify_content: JustifyContent::Center,
+                ..default()
+            },
+            BackgroundColor(theme.colors.background.with_alpha(0.6)),
+            GlobalZIndex(skeleton.z_index),
+            Name::new(skeleton.name),
+        ))
+        .add_child(card)
+        .id();
+
+    ModalHandle { root, card }
 }
 
 #[cfg(test)]
@@ -145,5 +206,34 @@ mod tests {
         });
         assert!(!layer.try_dismiss_top());
         assert_eq!(layer.stack.len(), 1);
+    }
+
+    use bevy::ecs::system::RunSystemOnce;
+
+    #[test]
+    fn m_modal_05_spawn_modal_builds_backdrop_and_card() {
+        let mut world = World::new();
+        world.insert_resource(Theme::default());
+        let handle = world
+            .run_system_once(|mut commands: Commands, theme: Res<Theme>| {
+                spawn_modal(
+                    &mut commands,
+                    &theme,
+                    ModalSkeleton { width: 360.0, z_index: 260, name: "Test" },
+                )
+            })
+            .unwrap();
+
+        let root_node = world.entity(handle.root).get::<Node>().unwrap();
+        assert_eq!(root_node.display, Display::None);
+
+        let z = world.entity(handle.root).get::<GlobalZIndex>().unwrap();
+        assert_eq!(z.0, 260);
+
+        let elevation = world.entity(handle.card).get::<ElevationIndex>().unwrap();
+        assert_eq!(*elevation, ElevationIndex::ModalSurface);
+
+        let card_bg = world.entity(handle.card).get::<BackgroundColor>().unwrap();
+        assert_eq!(card_bg.0, ElevationIndex::ModalSurface.background(&Theme::default()));
     }
 }
