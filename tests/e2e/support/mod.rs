@@ -101,6 +101,7 @@ impl Harness {
             catalog_path: None,
             use_inproc: false,
             python_engine_path: "python".to_string(),
+            live_venue_id: None,
         });
 
         app.insert_resource(StatusUpdateChannel { rx: status_rx });
