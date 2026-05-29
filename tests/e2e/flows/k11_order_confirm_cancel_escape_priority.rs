@@ -28,6 +28,9 @@ use backcast::ui::order_panel::{
     confirm_modal_button_system, confirm_modal_reconcile_system, ConfirmButton, ConfirmModalRoot,
     OrderConfirm, OrderDraft, OrderType, Side, TimeInForce,
 };
+use backcast::ui::secret_modal::{
+    SecretInput, SecretModalRoot, secret_modal_reconcile_system,
+};
 
 fn build_app() -> (App, mpsc::UnboundedReceiver<TransportCommand>) {
     let (tx, rx) = mpsc::unbounded_channel::<TransportCommand>();
@@ -37,17 +40,20 @@ fn build_app() -> (App, mpsc::UnboundedReceiver<TransportCommand>) {
     app.insert_resource(SecretPrompt::default());
     app.insert_resource(OrderFeedback::default());
     app.init_resource::<ModifyForm>();
+    app.init_resource::<SecretInput>();
     app.init_resource::<ModalLayer>();
     app.insert_resource(ButtonInput::<KeyCode>::default());
     app.insert_resource(TransportCommandSender { tx });
 
     app.world_mut().spawn(ConfirmModalRoot);
+    app.world_mut().spawn(SecretModalRoot);
     app.add_systems(
         Update,
         (
             confirm_modal_button_system,
             modal_layer_esc_system,
             confirm_modal_reconcile_system.after(modal_layer_esc_system),
+            secret_modal_reconcile_system.after(modal_layer_esc_system),
         ),
     );
 
@@ -131,13 +137,14 @@ fn k11_order_confirm_cancel_escape_priority() {
             kind: "second_password".to_string(),
             purpose: "new_order".to_string(),
         });
+        app.update(); // warm-up: secret を z=300 で stack に push (confirm=z280 の前面)。
 
         press_escape(&mut app);
         app.update();
 
         assert!(
             app.world().resource::<OrderConfirm>().pending.is_some(),
-            "Escape must NOT close confirm modal when SecretPrompt is active (higher priority)"
+            "Escape must dismiss the front SecretModal (z=300) — confirm modal (z=280) must survive"
         );
         assert!(
             rx.try_recv().is_err(),
@@ -192,9 +199,10 @@ fn k11_order_confirm_cancel_escape_priority() {
             kind: "second_password".to_string(),
             purpose: "new_order".to_string(),
         });
+        app.update(); // warm-up: secret を z=300 で stack に push (confirm=z280 の前面)。
         press_escape(&mut app);
         app.update();
-        // confirm modal はまだ open。
+        // confirm modal はまだ open (esc が secret z=300 を pop)。
         assert!(
             app.world().resource::<OrderConfirm>().pending.is_some(),
             "first Escape (SecretPrompt active) must not close confirm modal"

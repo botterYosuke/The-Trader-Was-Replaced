@@ -11,7 +11,6 @@
 //! this pass (no global focus resource exists yet). The `ModalSkeleton` spawn
 //! helper and the Esc-driven dismissal system arrive in Slice B2.
 
-use crate::trading::SecretPrompt;
 use crate::ui::theme::{DynamicSpacing, ElevationIndex, Theme};
 use bevy::prelude::*;
 
@@ -150,34 +149,21 @@ pub fn reconcile_modal_stack(
     *was_on_stack = on_stack;
 }
 
-/// Whether Esc is clear to dismiss the highest-z modal-layer entry. Mirrors the
-/// relogin notice's yield guard (relogin_modal_button_system): a single
-/// Escape must defer to any higher-priority input modal that is open, so the
-/// one-shot Escape isn't consumed twice. The order-confirm modal (z 280) and the
-/// modify modal (z 270) are now stack entries dismissed via
-/// `try_dismiss_highest_z`, so neither is a yield input here; only the secret
-/// modal (event-drain Escape) still yields.
-fn esc_yield_clear(secret_active: bool) -> bool {
-    !secret_active
-}
-
-/// Consume Escape and dismiss the highest-z modal entry — but only when no
-/// higher-priority input modal (secret) is open.
-/// `try_dismiss_highest_z` itself respects each entry's `on_before_dismiss`
-/// veto. The order-confirm modal (z 280) and the modify modal (z 270)
-/// participate as stack entries rather than yield inputs.
-pub fn modal_layer_esc_system(
-    keys: Res<ButtonInput<KeyCode>>,
-    mut layer: ResMut<ModalLayer>,
-    secret_prompt: Res<SecretPrompt>,
-) {
+/// Consume Escape and dismiss the highest-z modal-layer entry.
+///
+/// As of #46 Slice B 5d every modal (secret z=300, confirm 280, modify 270,
+/// reconcile 262, relogin 260) is a stack entry, so a single Escape uniformly
+/// targets the frontmost-by-z modal via [`ModalLayer::try_dismiss_highest_z`],
+/// which still respects each entry's `on_before_dismiss` veto. The secret
+/// modal's event-drain input system (`secret_modal_input_system`) consumes the
+/// raw `KeyboardInput` Escape in the same frame so it never leaks to the
+/// picker/menu; the actual close is driven by `secret_modal_reconcile_system`'s
+/// REVERSE arm once this system pops the entry.
+pub fn modal_layer_esc_system(keys: Res<ButtonInput<KeyCode>>, mut layer: ResMut<ModalLayer>) {
     if layer.stack.is_empty() {
         return;
     }
     if !keys.just_pressed(KeyCode::Escape) {
-        return;
-    }
-    if !esc_yield_clear(secret_prompt.active.is_some()) {
         return;
     }
     layer.try_dismiss_highest_z();
@@ -356,18 +342,9 @@ mod tests {
         assert_eq!(card_bg.0, ElevationIndex::ModalSurface.background(&Theme::default()));
     }
 
-    #[test]
-    fn m_modal_06_esc_yield_clear_truth_table() {
-        assert!(esc_yield_clear(false));
-        assert!(!esc_yield_clear(true));
-    }
-
     fn esc_app() -> App {
         let mut app = App::new();
         app.init_resource::<ModalLayer>();
-        app.init_resource::<crate::trading::SecretPrompt>();
-        app.init_resource::<crate::ui::order_panel::OrderConfirm>();
-        app.init_resource::<crate::ui::modify_modal::ModifyForm>();
         app.insert_resource(ButtonInput::<KeyCode>::default());
         app.add_systems(Update, modal_layer_esc_system);
         app
@@ -388,35 +365,6 @@ mod tests {
             .press(KeyCode::Escape);
         app.update();
         assert!(app.world().resource::<ModalLayer>().stack.is_empty());
-    }
-
-    #[test]
-    fn m_modal_08_esc_yields_to_open_secret_prompt() {
-        use crate::trading::SecretPromptRequest;
-        let mut app = esc_app();
-        app.world_mut().resource_mut::<ModalLayer>().push(ActiveModal {
-            root: e(1),
-            backdrop: e(2),
-            previous_focus: None,
-            z: 300,
-            on_before_dismiss: dismiss,
-        });
-        app.world_mut().resource_mut::<crate::trading::SecretPrompt>().active =
-            Some(SecretPromptRequest {
-                request_id: "r1".to_string(),
-                venue: "TACHIBANA".to_string(),
-                kind: "second_password".to_string(),
-                purpose: "new_order".to_string(),
-            });
-        app.world_mut()
-            .resource_mut::<ButtonInput<KeyCode>>()
-            .press(KeyCode::Escape);
-        app.update();
-        assert_eq!(
-            app.world().resource::<ModalLayer>().stack.len(),
-            1,
-            "Esc must yield to the open secret modal; the stack entry survives"
-        );
     }
 
     #[test]

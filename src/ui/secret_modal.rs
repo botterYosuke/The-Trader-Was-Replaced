@@ -25,7 +25,9 @@ use zeroize::Zeroizing;
 use crate::trading::{
     OrderFeedback, RedactedSecret, SecretPrompt, TransportCommand, TransportCommandSender,
 };
-use crate::ui::component::modal_layer::{ModalHandle, ModalSkeleton, spawn_modal};
+use crate::ui::component::modal_layer::{
+    DismissDecision, ModalHandle, ModalLayer, ModalSkeleton, reconcile_modal_stack, spawn_modal,
+};
 use crate::ui::theme::{LabelSize, Theme};
 
 /// バックエンドの 30s タイムアウトより少し短く設定し、先に UI を畳む (§3.10)。
@@ -329,7 +331,6 @@ pub fn secret_modal_input_system(
         return;
     }
     let mut submit = false;
-    let mut cancel = false;
     for ev in kb_events.drain() {
         if !ev.state.is_pressed() {
             continue;
@@ -343,15 +344,12 @@ pub fn secret_modal_input_system(
             Key::Space => input.push_char(' '),
             Key::Backspace => input.backspace(),
             Key::Enter => submit = true,
-            Key::Escape => cancel = true,
+            // Escape は drain でここで消費し (picker/menu への漏れ防止)、dismiss は
+            // modal_layer_esc_system → secret_modal_reconcile_system に委譲する (#46 Slice B 5d)。
             _ => {}
         }
     }
-    // drain 後に判定 (同フレームに複数キーが来ても最後の意図を優先しない単純化:
-    // Esc が来ていれば cancel を優先する)。
-    if cancel {
-        do_cancel(&mut input, &mut prompt, "SECRET_INPUT_CANCELED (escape)");
-    } else if submit {
+    if submit {
         do_submit(&mut input, &mut prompt, sender.as_deref());
     }
 }
@@ -426,6 +424,41 @@ pub fn secret_modal_sync_system(
     {
         t.0 = info;
     }
+}
+
+/// secret モーダルは在庫 (work-in-flight) を持たないので常に dismiss を許可する。
+fn secret_dismiss() -> DismissDecision {
+    DismissDecision::Dismiss
+}
+
+/// `ModalLayer.stack` ⇄ `SecretPrompt.active` を双方向同期する (mechanism A, #46 Slice B 5d)。
+/// FORWARD: open かつ未登録 → stack に push (dismiss 優先度 z=300、最前面)。
+/// REVERSE: `modal_layer_esc_system` が entry を pop → `was_on_stack` Local で検出し
+/// `do_cancel` で zeroize + prompt.close() を行う (既存の Escape do_cancel と同一の cleanup)。
+/// Escape イベント自体は `secret_modal_input_system` が drain で先に消費するので
+/// (mod.rs ordering)、picker/menu には漏れない。
+pub fn secret_modal_reconcile_system(
+    mut prompt: ResMut<SecretPrompt>,
+    mut input: ResMut<SecretInput>,
+    root_q: Query<Entity, With<SecretModalRoot>>,
+    mut layer: ResMut<ModalLayer>,
+    mut was_on_stack: Local<bool>,
+) {
+    let Ok(root) = root_q.single() else {
+        return;
+    };
+    let is_open = prompt.active.is_some();
+    let prompt_changed = prompt.is_changed();
+    reconcile_modal_stack(
+        &mut layer,
+        root,
+        300,
+        &mut was_on_stack,
+        is_open,
+        prompt_changed,
+        secret_dismiss,
+        || do_cancel(&mut input, &mut prompt, "SECRET_INPUT_CANCELED (escape)"),
+    );
 }
 
 #[cfg(test)]

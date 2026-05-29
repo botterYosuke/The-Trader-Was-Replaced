@@ -28,6 +28,9 @@ use backcast::ui::reconcile_modal::{
     ReconcileDismissButton, ReconcileModalRoot, reconcile_modal_button_system,
     reconcile_modal_reconcile_system,
 };
+use backcast::ui::secret_modal::{
+    SecretInput, SecretModalRoot, secret_modal_reconcile_system,
+};
 
 fn make_app() -> App {
     let mut app = App::new();
@@ -35,11 +38,13 @@ fn make_app() -> App {
     app.init_resource::<SecretPrompt>();
     app.init_resource::<OrderConfirm>();
     app.init_resource::<ModifyForm>();
+    app.init_resource::<SecretInput>();
     app.init_resource::<ModalLayer>();
     app.insert_resource(ButtonInput::<KeyCode>::default());
     app.world_mut().spawn(ReconcileModalRoot);
     app.world_mut().spawn(ConfirmModalRoot);
     app.world_mut().spawn(ModifyModalRoot);
+    app.world_mut().spawn(SecretModalRoot);
     app.add_systems(
         Update,
         (
@@ -48,6 +53,7 @@ fn make_app() -> App {
             reconcile_modal_reconcile_system.after(modal_layer_esc_system),
             confirm_modal_reconcile_system.after(modal_layer_esc_system),
             modify_modal_reconcile_system.after(modal_layer_esc_system),
+            secret_modal_reconcile_system.after(modal_layer_esc_system),
         ),
     );
     app
@@ -109,11 +115,12 @@ fn k14_reconcile_modal_dismiss_escape_priority() {
             kind: "second_password".to_string(),
             purpose: "new_order".to_string(),
         });
+        app.update(); // warm-up: secret を z=300 で stack に push。
         press_escape(&mut app);
         app.update();
         assert!(
             !app.world().resource::<ReconcilePrompt>().unknown.is_empty(),
-            "Escape must yield to open SecretModal — reconcile notice must survive"
+            "Escape must dismiss the front SecretModal (z=300) — reconcile notice (z=262) must survive"
         );
     }
 
@@ -196,6 +203,7 @@ fn k14_reconcile_modal_dismiss_escape_priority() {
             kind: "second_password".to_string(),
             purpose: "new_order".to_string(),
         });
+        app.update(); // warm-up: secret を z=300 で stack に push。
         press_escape(&mut app);
         app.update();
         assert!(

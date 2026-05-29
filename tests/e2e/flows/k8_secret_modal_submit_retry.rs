@@ -17,8 +17,10 @@ use tokio::sync::mpsc;
 use backcast::trading::{
     OrderFeedback, SecretPrompt, SecretPromptRequest, TransportCommand, TransportCommandSender,
 };
+use backcast::ui::component::modal_layer::{ModalLayer, modal_layer_esc_system};
 use backcast::ui::secret_modal::{
-    SecretButton, SecretInput, secret_modal_button_system, secret_modal_input_system,
+    SecretButton, SecretInput, SecretModalRoot, secret_modal_button_system,
+    secret_modal_input_system, secret_modal_reconcile_system,
 };
 
 // ── ヘルパー ──────────────────────────────────────────────────────────────────
@@ -29,13 +31,23 @@ fn make_app() -> (App, mpsc::UnboundedReceiver<TransportCommand>) {
     app.init_resource::<SecretInput>();
     app.init_resource::<SecretPrompt>();
     app.init_resource::<OrderFeedback>();
+    app.init_resource::<ModalLayer>();
+    app.insert_resource(ButtonInput::<KeyCode>::default());
     app.insert_resource(TransportCommandSender { tx });
     // keyboard drain が要求する Messages<KeyboardInput>
     app.add_message::<KeyboardInput>();
+    app.world_mut().spawn(SecretModalRoot);
     // input_system を先に、button_system を後に (同フレーム内の順序は任意でも OK だが明示する)
     app.add_systems(
         Update,
-        (secret_modal_input_system, secret_modal_button_system),
+        (
+            secret_modal_input_system,
+            secret_modal_button_system,
+            modal_layer_esc_system,
+            secret_modal_reconcile_system
+                .after(modal_layer_esc_system)
+                .after(secret_modal_input_system),
+        ),
     );
     (app, rx)
 }
@@ -67,19 +79,6 @@ fn type_into_modal(app: &mut App, s: &str) {
             text: None,
             });
     }
-}
-
-fn send_escape(app: &mut App) {
-    app.world_mut()
-        .resource_mut::<Messages<KeyboardInput>>()
-        .write(KeyboardInput {
-            key_code: KeyCode::Escape,
-            logical_key: Key::Escape,
-            state: ButtonState::Pressed,
-            repeat: false,
-            window: Entity::PLACEHOLDER,
-            text: None,
-        });
 }
 
 fn send_enter(app: &mut App) {
@@ -152,9 +151,11 @@ fn k8_secret_modal_submit_retry() {
         activate(&mut app, "req-k8-c");
 
         type_into_modal(&mut app, "typed");
-        app.update(); // drain
-        send_escape(&mut app);
-        app.update(); // input_system が Escape を消費 → do_cancel
+        app.update(); // drain で buffer 充填 + secret を z=300 で stack に push
+        app.world_mut()
+            .resource_mut::<ButtonInput<KeyCode>>()
+            .press(KeyCode::Escape);
+        app.update(); // modal_layer_esc_system が secret(z=300) を pop → reconcile が do_cancel
 
         assert!(
             rx.try_recv().is_err(),

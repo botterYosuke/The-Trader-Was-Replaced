@@ -145,8 +145,8 @@ use crate::ui::scenario_startup_panel::{
 };
 use crate::ui::secret_modal::{
     SecretInput, secret_modal_button_system, secret_modal_input_system,
-    secret_modal_lifecycle_system, secret_modal_sync_system, secret_modal_timeout_system,
-    secret_modal_visibility_system, spawn_secret_modal,
+    secret_modal_lifecycle_system, secret_modal_reconcile_system, secret_modal_sync_system,
+    secret_modal_timeout_system, secret_modal_visibility_system, spawn_secret_modal,
 };
 use crate::ui::sidebar::{
     instrument_remove_button_system, instrument_row_click_system, panel_button_system,
@@ -577,6 +577,14 @@ impl Plugin for UiPlugin {
                 secret_modal_button_system,
                 secret_modal_timeout_system,
                 secret_modal_sync_system,
+                // #46 Slice B 5d: mechanism A — SecretPrompt.active <-> ModalLayer.stack
+                // (dismiss-priority z=300, frontmost). Runs AFTER the esc system so a
+                // same-frame Escape pop is reflected this frame, and AFTER
+                // secret_modal_input_system so the raw Escape event is drained (consumed)
+                // while the prompt is still open — it never leaks to the picker/menu.
+                secret_modal_reconcile_system
+                    .after(crate::ui::component::modal_layer::modal_layer_esc_system)
+                    .after(secret_modal_input_system),
             ),
         )
         // ── Phase 9 Step 4: OrdersPanel 右クリックメニュー + Modify モーダル ──
@@ -610,7 +618,10 @@ impl Plugin for UiPlugin {
                 // Escape pop is reflected back into the form this frame (parity with
                 // confirm/relogin/reconcile).
                 modify_modal_reconcile_system
-                    .after(crate::ui::component::modal_layer::modal_layer_esc_system),
+                    .after(crate::ui::component::modal_layer::modal_layer_esc_system)
+                    // 5d HP1: input の後に置き、Escape フレームで reconcile が先に
+                    // form を閉じて input が early-return → Escape leak、を防ぐ。
+                    .after(modify_modal_input_system),
             ),
         )
         // ── Phase 9 Step 7: 再ログイン通知モーダル (venue 本体ログアウト検知, §3.5) ──
