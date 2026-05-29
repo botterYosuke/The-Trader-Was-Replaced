@@ -119,12 +119,12 @@
 1. **ボタン寸法 / footer 高さ / anchor 0** … footer.rs の `Val::Px(34.0)` 等の数値は token 化スコープ外。component helper（`Button::new(...)` 型 API）に集約するのは **#46 component helper 課題**。
 2. **`SyntaxColors` の syntect / tree-sitter 連携** … 構造体宣言のみ。実装は **#50**（`bevscode` 置換）。
 3. **Typography `mono` の editor / gutter / 板への配線** … 宣言のみ。**#50**。
-4. **`InputPhase` SystemSet 化と `bevy_cosmic_edit::InputSet` 79 件の整理** … `bevy_cosmic_edit` 自体が #50 で消えるため、#50 内で `bevscode` の input set にラップする際に同時導入。
+4. **`InputPhase` SystemSet 化** … `bevy_cosmic_edit` は #50 Slice 6 で撤去済み。今後 `bevscode` の input set にラップする際に同時導入。
 5. **`order_panel.rs` 1,219 行の実コード分割** … `docs/ui-refactor-plan.md` に**計画のみ**。実装は **#46 Slice B**。
 6. **`footer.rs` 以外（menu_bar / sidebar / order_panel / modify_modal / scenario_startup / strategy_editor_*）の token 化** … **#46**。
 7. **`theme.layout.footer_h = 24.0` と footer.rs 生 `Val::Px(28.0)` の値の食い違い** … 将来統一の余地。
 8. **Light theme 完成 / JSON ロード** … 将来。
-9. **`strategy_editor.rs` / `strategy_editor_spike.rs` の token 化** … #50 内で `bevscode` 上に乗ったタイミングで実施（#48 範囲外、`Color::srgba` 直書き残存は観測のみ）。
+9. **`strategy_editor.rs` の token 化** … #50 内で `bevscode` 上に乗ったタイミングで実施（#48 範囲外、`Color::srgba` 直書き残存は観測のみ。`strategy_editor_spike.rs` は #50 Slice 7 で撤去済み）。
 
 ## 11. footer で touch しなかったもの（明示）
 
