@@ -210,6 +210,55 @@ spawn_button(&mut commands, &theme, "Run")
 - **`order_panel` の confirm / submit ボタン** … world-space Sprite + observer 方式で UI-Node の
   `button_interaction_system` の対象外。**Slice B**（`order_panel` 分割 + `ModalSkeleton`）で扱う。
 
+## 12.5 Modal component (#46 Slice B)
+
+`src/ui/component/modal_layer.rs` が、各モーダルが個別に持っていた spawn コードと Escape 消化 system を、**単一の `ModalLayer` スタック + 汎用 `modal_layer_esc_system` + `spawn_modal` スケルトン**に集約します。Button(§12) が「色変化 system の集約」だったのに対し、Modal は「スタック管理と dismiss 経路の集約」が主眼です。
+
+### `ModalLayer` スタック
+
+`ModalLayer`（Bevy `Resource`）は開いているモーダルの LIFO スタック（`Vec<ActiveModal>`、末尾が frontmost）を持ちます。
+
+- `push(ActiveModal)` — 新しいモーダルを frontmost として積む。
+- `pop() -> Option<ActiveModal>` — frontmost を取り出す。
+- `try_dismiss_top() -> bool` — frontmost の `on_before_dismiss` を引いて、`DismissDecision::Dismiss` のときだけ pop し `true` を返す。`DismissDecision::Pending`（処理中などで dismiss を拒否）なら積んだまま `false`。
+
+`ActiveModal { root, backdrop, previous_focus, on_before_dismiss }`:
+
+- `root` / `backdrop` … モーダル本体と背後のバックドロップ entity。
+- `previous_focus: Option<Entity>` … モーダルを開く前に focus を持っていた entity。**本パスでは記録のみ（record-only）** で、復元はしません（グローバル focus リソースが未導入のため）。
+- `on_before_dismiss: fn() -> DismissDecision` … dismiss 前に引かれる veto フック。
+
+### Escape での dismiss（`modal_layer_esc_system`）
+
+`modal_layer_esc_system` が Escape を消化し、frontmost モーダルを `try_dismiss_top` で閉じます。ただし、より優先度の高い入力モーダル（secret / order-confirm / modify）が開いているときは Esc を譲ります（`esc_yield_clear(secret_active, confirm_pending, modify_open)` が `false` のとき早期 return）。スタックが空 / Escape 未押下のときも no-op。本 system は relogin 通知の旧 yield ガードと同じ「一度の Escape を二重消費させない」契約を引き継ぎます。
+
+### `ModalSkeleton` / `spawn_modal`
+
+```rust
+use crate::ui::component::modal_layer::{spawn_modal, ModalSkeleton, ModalHandle};
+
+let ModalHandle { root, card } = spawn_modal(
+    &mut commands,
+    &theme,
+    ModalSkeleton { width: 360.0, z_index: 260, name: "Relogin" },
+);
+// `root` は full-screen バックドロップ（spawn 時 `Display::None`）、
+// `card` は中央寄せの `ElevationIndex::ModalSurface` サーフェス。
+// 中身（テキスト・ボタン）は呼び出し側が `card` の子として足す。
+```
+
+`spawn_modal` が組むもの:
+
+- `card` … `width` 指定・`padding = DynamicSpacing::Base16`・`BackgroundColor = ElevationIndex::ModalSurface.background(theme)`・`ElevationIndex::ModalSurface` 付き（生値ゼロ）。
+- `root`（バックドロップ）… full-screen・spawn 時 `Display::None`・`BackgroundColor = theme.colors.background.with_alpha(0.6)`・`GlobalZIndex(z_index)`・`Name`。`card` を子に持つ。
+
+`z_index` は per-modal の重なり（relogin 260 / reconcile 262 …）を当面そのまま保持します（`ElevationIndex` が z を完全に所有するまでの暫定）。
+
+### 移行状況
+
+- **relogin / reconcile モーダルは本パス（Slice B）で移行済み**：spawn は `spawn_modal` + theme トークン（生値ゼロ）に組み直し、Escape dismiss は汎用 `modal_layer_esc_system` を通ります（per-modal の双方向 stack↔trigger 同期 system を併設）。各モーダル固有の system には Close/confirm クリックだけが残ります。観測可能挙動の回帰ガードは `[k13]`（relogin Esc 優先）/ `[k14]`（reconcile Esc 優先）、`ModalLayer` 基盤そのものは `modal_layer.rs` の in-src ユニットテスト `m_modal_01..09` が担保します。
+- **secret / modify / order-confirm モーダルは本パス未移行**（まだ legacy spawn / 個別 Esc 経路）。`previous_focus` の復元もグローバル focus リソース導入後の後続スライスで扱います。
+
 ## 13. Issue #48 review followup（fix/#48-review-followup ブランチ）
 
 #48 マージ後の Navigator + codex レビューで挙がった Medium 以上の指摘 13 件に対応したセッションで以下が landed しました。本文の他章はこの変更を反映済みなので、差分の history としてのみ記載します:
