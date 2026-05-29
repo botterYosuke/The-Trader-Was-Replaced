@@ -1,56 +1,42 @@
-//! J3 strategy_editor_enter_autoindent — Strategy Editor で Enter を押すと
-//! 直前行のインデント（と `:` / `{` 後の追加インデント）が継承されることを保証する（kind:ui）。
+//! J3 strategy_editor_enter_autoindent — Strategy Editor で Enter が `InsertNewline` action として
+//! bevscode に届くことを保証する（kind:ui / wiring guard）。
 //!
-//! Slice 3 (#50): cosmic_edit 撤去にあわせて、自前 `enter_autoindent_system` の検証から
-//! bevscode `input::auto_indent::compute_newline_indent` の振る舞いに対する上位契約に切り替える。
-//! 我々の Strategy Editor の indent unit（4 spaces）で seed コーパスに対する期待インデント文字列を
-//! 担保することで、bevscode + 我々の設定の組合せが期待通り動くことを回帰ガードする。
-//!
-//! 完全な keystroke 駆動 E2E は bevscode の input pipeline 全体を build する必要があり重いため、
-//! ここでは入口の `compute_newline_indent` を直接呼ぶ単体相当テストに留める。重い integration は
-//! Phase B+1 で別 issue 化する予定（behavior-to-e2e）。
+//! Iter3 A2 fix: 旧版は `bevscode::input::auto_indent::compute_newline_indent` を直接叩いて
+//! bevscode 内部実装の単体テストを我々の repo で重複していたため、`install_strategy_editor_keybindings`
+//! が壊れても green になっていた。j2 (Tab/InsertTab) と同じ wiring-guard 形式に揃え、
+//! InputMap に InsertNewline=Enter が残っていることを assert する。実際の autoindent 文字列計算は
+//! bevscode 側の単体テストでカバーされる。
 
-use bevscode::input::auto_indent::compute_newline_indent;
-use bevscode::settings::{AutoIndent, Indentation};
-use ropey::Rope;
-
-/// Strategy Editor のインデント単位（4 spaces / tab_size=4）。bevscode `Indentation::default()` と同等。
-fn strategy_editor_indent() -> Indentation {
-    Indentation::default()
-}
+use backcast::ui::strategy_editor::install_strategy_editor_keybindings;
+use bevscode::input::EditorAction;
+use bevscode::plugin::EditorInputManager;
+use bevy::prelude::*;
+use bevscode::input::InputMap;
 
 #[test]
-fn j3_enter_autoindent_inherits_previous_indent() {
-    // 4 spaces インデント済みの行末で Enter → 同じインデントを継承する（Python の典型）
-    let rope = Rope::from_str("def foo():\n    x = 1");
-    let pos = rope.len_chars();
-    let indent = compute_newline_indent(
-        &rope,
-        pos,
-        AutoIndent::Brackets,
-        &strategy_editor_indent(),
-    );
-    assert_eq!(
-        indent, "    ",
-        "前行のインデント 4 spaces が継承されない (got {:?})",
-        indent
-    );
-}
+fn j3_strategy_editor_keybindings_have_insert_newline() {
+    let mut app = App::new();
+    app.add_systems(Startup, install_strategy_editor_keybindings);
+    app.update();
 
-#[test]
-fn j3_enter_autoindent_no_indent_for_topline() {
-    // 0 インデントの行末で Enter → 空文字列（インデント追加なし）
-    let rope = Rope::from_str("x = 1");
-    let pos = rope.len_chars();
-    let indent = compute_newline_indent(
-        &rope,
-        pos,
-        AutoIndent::Brackets,
-        &strategy_editor_indent(),
+    let mut q = app
+        .world_mut()
+        .query_filtered::<&InputMap<EditorAction>, With<EditorInputManager>>();
+    let input_map = q
+        .iter(app.world())
+        .next()
+        .expect("install_strategy_editor_keybindings が EditorInputManager を spawn していない");
+
+    let buttons = input_map.get_buttonlike(&EditorAction::InsertNewline);
+    assert!(
+        buttons.is_some_and(|v| !v.is_empty()),
+        "InsertNewline が bind されていない: {:?}",
+        buttons,
     );
-    assert_eq!(
-        indent, "",
-        "トップレベル行で Enter を押したらインデント追加されないはず (got {:?})",
-        indent
+    let has_enter = buttons.unwrap().iter().any(|b| format!("{b:?}").contains("Enter"));
+    assert!(
+        has_enter,
+        "InsertNewline の binding に KeyCode::Enter が含まれない: {:?}",
+        buttons,
     );
 }

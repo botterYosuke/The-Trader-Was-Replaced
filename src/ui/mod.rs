@@ -549,7 +549,16 @@ impl Plugin for UiPlugin {
                 find_keyboard_system.before(manage_find_panel_lifecycle_system),
                 manage_find_panel_lifecycle_system,
                 // Bevy UI Node 入力: keyboard drain (focused_field=Query/Replacement 時)
-                find_field_input_system.after(manage_find_panel_lifecycle_system),
+                // A1/N2 (#50 followup): Find drain は同じ Messages<KeyboardInput> queue を
+                // 触る他 system と決定的順序を持つ必要がある。secret / modify (topmost modals)
+                // の後・picker / menu / scenario_startup の前で固定する。
+                find_field_input_system
+                    .after(manage_find_panel_lifecycle_system)
+                    .after(secret_modal_input_system)
+                    .after(modify_modal_input_system)
+                    .before(picker_searchbox_input_system)
+                    .before(menu_keyboard_system)
+                    .before(scenario_startup_param_input_system),
                 // ボタン Interaction エッジ → FindActionRequested
                 find_button_interaction_system.after(manage_find_panel_lifecycle_system),
                 compute_find_match_spans_system

@@ -16,9 +16,12 @@ use bevy::prelude::*;
 use backcast::ui::components::{
     StrategyBuffer, StrategyEditorId, StrategyFragment, WindowRoot,
 };
+use backcast::ui::editor_history::AppHistory;
 use backcast::ui::strategy_editor::{
-    StrategyAutoSaveState, debounced_strategy_autosave_system,
+    StrategyAutoSaveState, StrategyEditorNode, debounced_strategy_autosave_system,
+    sync_bevscode_to_strategy_fragment_system,
 };
+use bevscode::prelude::{RopeBuffer, TextBuffer};
 
 /// `BACKCAST_CACHE_DIR` を test 用に差し替え、Drop で元へ戻す RAII ガード。
 struct CacheDirGuard(Option<OsString>);
@@ -154,5 +157,87 @@ fn j1_strategy_editor_text_autosaves_cache() {
     assert_eq!(
         before, after,
         "デバウンス内はキャッシュファイルを書き換えないはず"
+    );
+}
+
+/// J1b — bevscode `TextBuffer<RopeBuffer>` を直接変更したら
+/// `sync_bevscode_to_strategy_fragment_system` が `StrategyFragment.dirty` と
+/// `StrategyAutoSaveState.dirty / last_change` を立てることを assert する（A3 fix）。
+#[test]
+fn j1b_bevscode_textbuffer_change_marks_fragment_dirty() {
+    let mut app = App::new();
+    app.insert_resource(AppHistory::default())
+        .insert_resource(StrategyAutoSaveState::default())
+        .add_systems(Update, sync_bevscode_to_strategy_fragment_system);
+
+    let region_key = "region_b001".to_string();
+
+    let root = app
+        .world_mut()
+        .spawn((
+            WindowRoot,
+            StrategyEditorId {
+                region_key: region_key.clone(),
+            },
+            StrategyFragment {
+                source: "x = 1".to_string(),
+                dirty: false,
+            },
+        ))
+        .id();
+
+    app.world_mut().spawn((
+        StrategyEditorNode {
+            root,
+            region_key: region_key.clone(),
+        },
+        TextBuffer::<RopeBuffer>::new(RopeBuffer::new("x = 1")),
+    ));
+
+    // 初回 update で Changed<TextBuffer> の初期 spawn 分を落ち着かせる
+    app.update();
+    {
+        let mut auto_save = app.world_mut().resource_mut::<StrategyAutoSaveState>();
+        auto_save.dirty = false;
+        auto_save.last_change = None;
+    }
+    {
+        let mut fragment = app.world_mut().get_mut::<StrategyFragment>(root).unwrap();
+        fragment.dirty = false;
+        fragment.source = "x = 1".to_string();
+    }
+
+    // ユーザー編集相当: TextBuffer の中身を別 RopeBuffer に差し替える
+    let editor_entity = {
+        let mut q = app
+            .world_mut()
+            .query_filtered::<Entity, With<StrategyEditorNode>>();
+        q.iter(app.world()).next().expect("editor entity が無い")
+    };
+    *app.world_mut()
+        .get_mut::<TextBuffer<RopeBuffer>>(editor_entity)
+        .unwrap() = TextBuffer::<RopeBuffer>::new(RopeBuffer::new("x = 42\nprint(x)"));
+
+    let before = std::time::Instant::now();
+    app.update();
+
+    let fragment = app.world().get::<StrategyFragment>(root).unwrap();
+    assert_eq!(
+        fragment.source, "x = 42\nprint(x)",
+        "bevscode TextBuffer の変更が fragment.source に書き戻されていない"
+    );
+    assert!(
+        fragment.dirty,
+        "ユーザー編集相当の TextBuffer 変更で fragment.dirty が立っていない"
+    );
+
+    let auto_save = app.world().resource::<StrategyAutoSaveState>();
+    assert!(
+        auto_save.dirty,
+        "ユーザー編集相当の TextBuffer 変更で StrategyAutoSaveState.dirty が立っていない"
+    );
+    assert!(
+        auto_save.last_change.is_some_and(|t| t >= before),
+        "StrategyAutoSaveState.last_change が更新されていない"
     );
 }

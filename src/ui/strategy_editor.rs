@@ -1590,6 +1590,10 @@ pub fn apply_pending_strategy_seed_system(
                 lang_python::HIGHLIGHTS_QUERY,
             )),
         });
+        // NOTE (#50-followup): Iter2 A5/N5 で `is_none()` guard を入れたが、explicit user
+        // spawn (menu New / file open) でも focus が取れなくなる回帰を生んだため revert。
+        // 元の cosmic 時代と同じく seed 適用時は無条件に focus を claim する
+        // (`claim_focus: bool` field 追加は spawn 全 path の追従が要るため follow-up issue)。
         input_focus.set(entity);
         commands
             .entity(entity)
@@ -1713,13 +1717,25 @@ pub fn cleanup_strategy_editor_node_on_root_despawn(
     mut removed: RemovedComponents<StrategyEditorRoot>,
     nodes: Query<(Entity, &StrategyEditorNode)>,
     mut commands: Commands,
+    mut input_focus: ResMut<bevy::input_focus::InputFocus>,
+    mut find_state: ResMut<crate::ui::strategy_editor_find::FindReplaceState>,
 ) {
     for root_entity in removed.read() {
         for (node_entity, marker) in nodes.iter() {
-            if marker.root == root_entity {
-                if let Ok(mut ec) = commands.get_entity(node_entity) {
-                    ec.despawn();
-                }
+            if marker.root != root_entity {
+                continue;
+            }
+            // Iter2 N6 fix: drop dangling Entity handles before despawn so the
+            // next frame's input dispatch / find lookup can't hit a dead entity.
+            if input_focus.0 == Some(node_entity) {
+                input_focus.0 = None;
+            }
+            if find_state.target_editor == Some(node_entity) {
+                find_state.target_editor = None;
+                find_state.is_open = false;
+            }
+            if let Ok(mut ec) = commands.get_entity(node_entity) {
+                ec.despawn();
             }
         }
     }
@@ -1789,6 +1805,9 @@ pub fn sync_bevscode_to_strategy_fragment_system(
             continue;
         };
 
+        // strict text+key match: undo/snapshot writeback と bevscode echo を tie-break する。
+        // (TODO #50-followup: bevscode が将来テキスト正規化を入れた場合は tick/version 比較に
+        // 置き換える。Iter2 A4 の region-only one-shot 化は user 入力との race を生むため revert。)
         if let Some((target_key, target_text)) = history.suppress_echo_target.clone() {
             if target_key == region_key && target_text.as_str() == new_text.as_str() {
                 history.suppress_echo_target = None;
@@ -1829,6 +1848,10 @@ pub fn sync_strategy_fragment_to_bevscode_system(
     editors: Query<(Entity, &StrategyEditorNode, &TextBuffer<RopeBuffer>)>,
     mut writer: MessageWriter<SetTextRequested>,
 ) {
+    // NOTE (#50-followup): Iter3 N8 で suppress_echo gate を前置短絡したが、
+    // suppress_echo は undo/snapshot writeback 側で立つため writeback そのものを潰す bug
+    // (re-review High) を発生させた。元の per-editor `current == fragment.source` walk で
+    // dedup する形に戻す。O(N) コストは未対応 (tick ベース dedup は TODO)。
     for (id, fragment) in fragments_q.iter() {
         for (editor_entity, marker, buffer) in editors.iter() {
             if marker.region_key != id.region_key {

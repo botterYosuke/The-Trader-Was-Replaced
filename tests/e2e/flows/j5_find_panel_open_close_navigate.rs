@@ -12,13 +12,17 @@
 //! マッチ計算は純粋で headless 友好的。`manage_find_panel_lifecycle_system` （Bevy UI Node spawn）は
 //! 本テストには含めない（panel UI の構造テストは別 flow）。
 
+use bevy::input::ButtonState;
+use bevy::input::keyboard::{Key, KeyboardInput};
 use bevy::prelude::*;
+use bevy::window::Window;
 
 use backcast::ui::components::{StrategyEditorId, StrategyFragment, WindowRoot};
 use backcast::ui::strategy_editor::StrategyEditorNode;
 use backcast::ui::strategy_editor_find::{
     FindActionRequested, FindButtonKind, FindMatchSpans, FindReplaceState,
-    compute_find_match_spans_system, find_keyboard_system, find_navigate_system,
+    compute_find_match_spans_system, find_field_input_system, find_keyboard_system,
+    find_navigate_system,
 };
 
 #[test]
@@ -195,5 +199,120 @@ fn j5_find_panel_open_close_navigate() {
             "is_open=false 後にマッチがクリアされるはず (got {})",
             state.matches.len()
         );
+    }
+}
+
+/// J5b — N7 (#50 followup): exercise find_field_input_system so Iter 1 N1/N3/N4 fixes
+/// have regression coverage (Ctrl+F clears InputFocus, Ctrl+A doesn't pollute query,
+/// Esc inside field restores focus to target_editor).
+#[test]
+fn j5b_find_field_input_handles_focus_typing_and_modifier_guard() {
+    let mut app = App::new();
+
+    app.insert_resource(ButtonInput::<KeyCode>::default())
+        .insert_resource(Time::<()>::default())
+        .insert_resource(FindReplaceState::default())
+        .init_resource::<bevy::input_focus::InputFocus>()
+        .add_message::<FindActionRequested>()
+        .add_message::<KeyboardInput>()
+        .add_systems(
+            Update,
+            (
+                find_keyboard_system,
+                find_field_input_system,
+            )
+                .chain(),
+        );
+
+    let region_key = "region_001".to_string();
+    let root = app
+        .world_mut()
+        .spawn((
+            WindowRoot,
+            StrategyEditorId { region_key: region_key.clone() },
+            StrategyFragment { source: "abc abc xyz".to_string(), dirty: false },
+        ))
+        .id();
+    let editor_entity = app
+        .world_mut()
+        .spawn((
+            StrategyEditorNode { root, region_key: region_key.clone() },
+            FindMatchSpans::default(),
+        ))
+        .id();
+    app.world_mut()
+        .resource_mut::<bevy::input_focus::InputFocus>()
+        .0 = Some(editor_entity);
+
+    // Phase A — Ctrl+F clears InputFocus (N1).
+    {
+        let mut keys = app.world_mut().resource_mut::<ButtonInput<KeyCode>>();
+        keys.press(KeyCode::ControlLeft);
+        keys.press(KeyCode::KeyF);
+    }
+    app.update();
+    app.world_mut().resource_mut::<ButtonInput<KeyCode>>().reset_all();
+
+    {
+        let state = app.world().resource::<FindReplaceState>();
+        assert!(state.is_open, "Ctrl+F should open the panel");
+        assert_eq!(state.target_editor, Some(editor_entity));
+        let focus = app.world().resource::<bevy::input_focus::InputFocus>();
+        assert_eq!(focus.0, None, "N1: InputFocus must be None after Ctrl+F");
+    }
+
+    // Phase B — type "abc" into Find query.
+    let dummy_window = app.world_mut().spawn(Window::default()).id();
+    for ch in ["a", "b", "c"] {
+        app.world_mut().write_message(KeyboardInput {
+            key_code: KeyCode::KeyA,
+            logical_key: Key::Character(ch.into()),
+            state: ButtonState::Pressed,
+            repeat: false,
+            window: dummy_window,
+            text: Some(ch.into()),
+        });
+    }
+    app.update();
+    {
+        let state = app.world().resource::<FindReplaceState>();
+        assert_eq!(state.query, "abc", "got query={:?}", state.query);
+    }
+
+    // Phase C — N4: Ctrl+A must NOT mutate the query.
+    {
+        let mut keys = app.world_mut().resource_mut::<ButtonInput<KeyCode>>();
+        keys.press(KeyCode::ControlLeft);
+    }
+    app.world_mut().write_message(KeyboardInput {
+        key_code: KeyCode::KeyA,
+        logical_key: Key::Character("a".into()),
+        state: ButtonState::Pressed,
+        repeat: false,
+        window: dummy_window,
+        text: Some("a".into()),
+    });
+    app.update();
+    app.world_mut().resource_mut::<ButtonInput<KeyCode>>().reset_all();
+    {
+        let state = app.world().resource::<FindReplaceState>();
+        assert_eq!(state.query, "abc", "N4: Ctrl+A polluted query: {:?}", state.query);
+    }
+
+    // Phase D — N3: Esc inside field restores InputFocus to target_editor.
+    app.world_mut().write_message(KeyboardInput {
+        key_code: KeyCode::Escape,
+        logical_key: Key::Escape,
+        state: ButtonState::Pressed,
+        repeat: false,
+        window: dummy_window,
+        text: None,
+    });
+    app.update();
+    {
+        let state = app.world().resource::<FindReplaceState>();
+        assert!(!state.is_open, "Esc should close panel");
+        let focus = app.world().resource::<bevy::input_focus::InputFocus>();
+        assert_eq!(focus.0, Some(editor_entity), "N3: focus must restore");
     }
 }
