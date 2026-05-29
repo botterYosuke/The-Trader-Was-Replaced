@@ -12,7 +12,6 @@
 //! helper and the Esc-driven dismissal system arrive in Slice B2.
 
 use crate::trading::SecretPrompt;
-use crate::ui::modify_modal::ModifyForm;
 use crate::ui::theme::{DynamicSpacing, ElevationIndex, Theme};
 use bevy::prelude::*;
 
@@ -154,23 +153,23 @@ pub fn reconcile_modal_stack(
 /// Whether Esc is clear to dismiss the highest-z modal-layer entry. Mirrors the
 /// relogin notice's yield guard (relogin_modal_button_system): a single
 /// Escape must defer to any higher-priority input modal that is open, so the
-/// one-shot Escape isn't consumed twice. The order-confirm modal is now a
-/// stack entry (z 280) dismissed via `try_dismiss_highest_z`, so it is no
-/// longer a yield input here.
-fn esc_yield_clear(secret_active: bool, modify_open: bool) -> bool {
-    !(secret_active || modify_open)
+/// one-shot Escape isn't consumed twice. The order-confirm modal (z 280) and the
+/// modify modal (z 270) are now stack entries dismissed via
+/// `try_dismiss_highest_z`, so neither is a yield input here; only the secret
+/// modal (event-drain Escape) still yields.
+fn esc_yield_clear(secret_active: bool) -> bool {
+    !secret_active
 }
 
 /// Consume Escape and dismiss the highest-z modal entry — but only when no
-/// higher-priority input modal (secret / modify) is open.
+/// higher-priority input modal (secret) is open.
 /// `try_dismiss_highest_z` itself respects each entry's `on_before_dismiss`
-/// veto. The order-confirm modal participates as a stack entry (z 280) rather
-/// than a yield input.
+/// veto. The order-confirm modal (z 280) and the modify modal (z 270)
+/// participate as stack entries rather than yield inputs.
 pub fn modal_layer_esc_system(
     keys: Res<ButtonInput<KeyCode>>,
     mut layer: ResMut<ModalLayer>,
     secret_prompt: Res<SecretPrompt>,
-    modify_form: Res<ModifyForm>,
 ) {
     if layer.stack.is_empty() {
         return;
@@ -178,7 +177,7 @@ pub fn modal_layer_esc_system(
     if !keys.just_pressed(KeyCode::Escape) {
         return;
     }
-    if !esc_yield_clear(secret_prompt.active.is_some(), modify_form.open) {
+    if !esc_yield_clear(secret_prompt.active.is_some()) {
         return;
     }
     layer.try_dismiss_highest_z();
@@ -359,10 +358,8 @@ mod tests {
 
     #[test]
     fn m_modal_06_esc_yield_clear_truth_table() {
-        assert!(esc_yield_clear(false, false));
-        assert!(!esc_yield_clear(true, false));
-        assert!(!esc_yield_clear(false, true));
-        assert!(!esc_yield_clear(true, true));
+        assert!(esc_yield_clear(false));
+        assert!(!esc_yield_clear(true));
     }
 
     fn esc_app() -> App {

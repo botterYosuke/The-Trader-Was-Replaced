@@ -20,7 +20,9 @@ use bevy::prelude::*;
 
 use crate::trading::{OrderFeedback, TransportCommand, TransportCommandSender};
 use crate::venue_capabilities::for_venue;
-use crate::ui::component::modal_layer::{ModalHandle, ModalSkeleton, spawn_modal};
+use crate::ui::component::modal_layer::{
+    DismissDecision, ModalHandle, ModalLayer, ModalSkeleton, reconcile_modal_stack, spawn_modal,
+};
 use crate::ui::theme::{LabelSize, Theme};
 
 const COLOR_FIELD_BG: Color = Color::srgba(0.04, 0.04, 0.08, 1.0);
@@ -400,7 +402,8 @@ pub fn modify_modal_visibility_system(
 
 /// 表示中だけ keyboard を drain して、フォーカス中の数値バッファに反映する。
 /// drain により cosmic_edit / picker / menu への二重配送を防ぐ。
-/// Tab = フォーカス切替、Enter = Confirm (可能なら)、Esc = 破棄。数字 / `.` のみ受ける。
+/// Tab = フォーカス切替、Enter = Confirm (可能なら)。数字 / `.` のみ受ける。
+/// Escape は drain で消費するが破棄はしない (modal_layer_esc_system に委譲, #46 Slice B 5c)。
 pub fn modify_modal_input_system(
     mut form: ResMut<ModifyForm>,
     mut kb_events: ResMut<Messages<KeyboardInput>>,
@@ -411,7 +414,6 @@ pub fn modify_modal_input_system(
         return;
     }
     let mut submit = false;
-    let mut cancel = false;
     for ev in kb_events.drain() {
         if !ev.state.is_pressed() {
             continue;
@@ -434,13 +436,10 @@ pub fn modify_modal_input_system(
                 };
             }
             Key::Enter => submit = true,
-            Key::Escape => cancel = true,
             _ => {}
         }
     }
-    if cancel {
-        form.close();
-    } else if submit {
+    if submit {
         do_confirm(&mut form, &mut feedback, sender.as_deref());
     }
 }
@@ -609,6 +608,37 @@ pub fn modify_modal_sync_system(
             }
         }
     }
+}
+
+fn modify_dismiss() -> DismissDecision {
+    DismissDecision::Dismiss
+}
+
+/// `ModalLayer.stack` ⇄ `ModifyForm.open` を双方向同期する (mechanism A, #46 Slice B 5c)。
+/// FORWARD: open かつ未登録 → stack に push (dismiss 優先度 z=270)。
+/// REVERSE: `modal_layer_esc_system` が entry を pop → `was_on_stack` Local で
+/// 検出し form をクリアする (Cancel と同じ cleanup, visibility が hide する)。
+pub fn modify_modal_reconcile_system(
+    mut form: ResMut<ModifyForm>,
+    root_q: Query<Entity, With<ModifyModalRoot>>,
+    mut layer: ResMut<ModalLayer>,
+    mut was_on_stack: Local<bool>,
+) {
+    let Ok(root) = root_q.single() else {
+        return;
+    };
+    let is_open = form.open;
+    let prompt_changed = form.is_changed();
+    reconcile_modal_stack(
+        &mut layer,
+        root,
+        270,
+        &mut was_on_stack,
+        is_open,
+        prompt_changed,
+        modify_dismiss,
+        || form.close(),
+    );
 }
 
 #[cfg(test)]

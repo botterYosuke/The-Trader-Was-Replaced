@@ -102,8 +102,9 @@ use crate::ui::menu_bar::{
     sync_menu_popup_visibility_system, update_strategy_status_label_system,
 };
 use crate::ui::modify_modal::{
-    ModifyForm, modify_modal_button_system, modify_modal_input_system, modify_modal_sync_system,
-    modify_modal_visibility_system, spawn_modify_modal,
+    ModifyForm, modify_modal_button_system, modify_modal_input_system,
+    modify_modal_reconcile_system, modify_modal_sync_system, modify_modal_visibility_system,
+    spawn_modify_modal,
 };
 use crate::ui::order_context_menu::{
     OrderContextMenu, context_menu_hover_system, context_menu_item_system,
@@ -604,6 +605,12 @@ impl Plugin for UiPlugin {
                     .before(menu_keyboard_system),
                 modify_modal_button_system,
                 modify_modal_sync_system,
+                // #46 Slice B 5c: mechanism A — ModifyForm.open <-> ModalLayer.stack
+                // (dismiss-priority z=270). Runs AFTER the esc system so a same-frame
+                // Escape pop is reflected back into the form this frame (parity with
+                // confirm/relogin/reconcile).
+                modify_modal_reconcile_system
+                    .after(crate::ui::component::modal_layer::modal_layer_esc_system),
             ),
         )
         // ── Phase 9 Step 7: 再ログイン通知モーダル (venue 本体ログアウト検知, §3.5) ──
