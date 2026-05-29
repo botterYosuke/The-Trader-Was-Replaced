@@ -31,12 +31,7 @@ pub mod secret_modal;
 pub mod settings;
 pub mod sidebar;
 pub mod strategy_editor;
-pub mod strategy_editor_compose;
 pub mod strategy_editor_find;
-pub mod strategy_editor_gutter;
-pub mod strategy_editor_highlight;
-pub mod strategy_editor_input;
-pub mod strategy_editor_scrollbar;
 // issue #50 Step 0 spike — cosmic 並存の Projected Node PoC（Go/No-Go ゲート）。
 pub mod strategy_editor_spike;
 pub mod systems;
@@ -46,7 +41,7 @@ pub use components::{
     ChartInstrument, InstrumentRegistry, ScenarioFileWatchState, ScenarioInstrumentsWritebackState,
     ScenarioLoadedFromFile, ScenarioReadTarget, ScenarioWritebackPaths,
 };
-pub use render_scale::{RenderScaleResponsive, update_cosmic_render_scale_system};
+// render_scale.rs は Slice 6e で削除予定。Slice 6c で全 callsite を消したので pub use も外す。
 
 use crate::ui::buying_power::buying_power_panel_system;
 use crate::ui::chart_axes::{price_axis_labels_system, time_axis_labels_system};
@@ -157,31 +152,17 @@ use crate::ui::sidebar::{
 };
 use crate::ui::strategy_editor::{
     StrategyAutoSaveState, apply_pending_app_edits_system, apply_strategy_snapshot_restore_system,
-    debounced_strategy_autosave_system, strategy_editor_content_layout_system,
-    sync_editor_to_strategy_buffer_system, sync_strategy_buffer_to_editor_system, undo_redo_system,
+    debounced_strategy_autosave_system, undo_redo_system,
 };
-use crate::ui::strategy_editor_compose::apply_highlight_layers_system;
 use crate::ui::strategy_editor_find::{
     FindActionRequested, FindReplaceState, compute_find_match_spans_system,
     find_button_interaction_system, find_field_input_system, find_keyboard_system,
     find_navigate_system, manage_find_panel_lifecycle_system, replace_execute_system,
     update_find_count_text_system,
 };
-use crate::ui::strategy_editor_gutter::{sync_gutter_scroll_system, update_gutter_text_system};
-use crate::ui::strategy_editor_highlight::{
-    compute_bracket_spans_system, compute_syntax_spans_system, init_syntect_highlighter,
-};
-use crate::ui::strategy_editor_input::{
-    bracket_autoclose_system, enter_autoindent_system, tab_input_system,
-};
-use crate::ui::strategy_editor_scrollbar::update_scrollbar_thumb_system;
 use crate::ui::systems::{update_price_display, update_status_indicator};
 use crate::ui::window::{chart_content_layout_system, instrument_chart_sync_system};
 use bevy::prelude::*;
-use bevy_cosmic_edit::{
-    CosmicEditPlugin, CosmicFontConfig,
-    prelude::{change_active_editor_sprite, change_active_editor_ui},
-};
 use bevy_vector_shapes::Shape2dPlugin;
 
 pub struct UiPlugin;
@@ -222,12 +203,9 @@ impl Plugin for UiPlugin {
     fn build(&self, app: &mut App) {
         app.add_plugins((
             Shape2dPlugin::default(),
-            CosmicEditPlugin {
-                font_config: CosmicFontConfig::default(),
-            },
             crate::ui::layout_persistence::LayoutPersistencePlugin,
-            // issue #50 Step 0 spike: bevscode editor を Projected Node 方式で世界座標に出すための plugins。
-            // cosmic_edit と並存（spike が Go になるまで撤去しない）。
+            // issue #50 Slice 1+: bevscode editor を Projected Node 方式で世界座標に出すための plugins。
+            // Slice 6c で cosmic_edit との並存を解消した（bevscode のみ）。
             bevscode::prelude::CodeEditorPlugins,
         ))
         .add_message::<crate::ui::strategy_editor_spike::SpikeEditorSpawnRequested>()
@@ -306,8 +284,6 @@ impl Plugin for UiPlugin {
                 spawn_scenario_startup_input_fields.after(spawn_scenario_startup_window_system),
                 // 起動時に固定 cache から復元する（CacheRestoreRequested 発火）
                 restore_last_strategy_system,
-                // highlight pipeline: syntect SyntaxSet/Theme を resource として用意
-                init_syntect_highlighter,
                 // Phase 9: LiveManual 発注 UI (floating window 流派)
                 spawn_confirm_modal,
                 spawn_secret_modal,
@@ -348,7 +324,6 @@ impl Plugin for UiPlugin {
                 panel_button_system,
                 panel_spawn_dispatcher_system,
                 floating_window_layout_system,
-                strategy_editor_content_layout_system,
                 chart_content_layout_system,
             ),
         )
@@ -479,64 +454,16 @@ impl Plugin for UiPlugin {
                 buying_power_panel_system,
                 positions_panel_system,
                 orders_panel_system,
-                sync_editor_to_strategy_buffer_system,
-                undo_redo_system.after(sync_editor_to_strategy_buffer_system),
+                undo_redo_system,
                 apply_pending_app_edits_system.after(undo_redo_system),
                 apply_strategy_snapshot_restore_system.after(apply_pending_app_edits_system),
-                sync_strategy_buffer_to_editor_system
-                    .after(handle_strategy_file_load_system)
-                    .after(apply_pending_app_edits_system)
-                    .after(apply_strategy_snapshot_restore_system),
                 debounced_strategy_autosave_system,
-                update_cosmic_render_scale_system,
             ),
-        )
-        .add_systems(
-            Update,
-            (change_active_editor_sprite, change_active_editor_ui)
-                .after(menu_keyboard_system)
-                .after(picker_searchbox_input_system),
         );
         // mode 可視性 system 群（footer/startup/run_result/strategy_editor/order）は
         // production と M20 RED ガードで同一 registration を共有するため関数に切り出す。
         add_mode_visibility_systems(app);
         app
-        // ── highlight pipeline (Phase A) ──
-        // span 計算は buffer→editor 同期の後に走らせ、合成 (apply) はその両者の後。
-        .add_systems(
-            Update,
-            (
-                compute_syntax_spans_system
-                    .after(sync_strategy_buffer_to_editor_system)
-                    .before(apply_highlight_layers_system),
-                compute_bracket_spans_system
-                    .after(sync_strategy_buffer_to_editor_system)
-                    .before(apply_highlight_layers_system),
-                apply_highlight_layers_system,
-            ),
-        )
-        // ── gutter + scrollbar (Phase B) ──
-        // gutter テキストは Changed<StrategyFragment> 駆動。scroll 追従とサムは
-        // エディタの scroll を読むだけなので毎フレーム回す (1 フレーム遅延は不可視)。
-        .add_systems(
-            Update,
-            (
-                update_gutter_text_system,
-                sync_gutter_scroll_system,
-                update_scrollbar_thumb_system,
-            ),
-        )
-        // ── Tab / Enter / bracket autoclose (Phase C) ──
-        // Tab/Enter は cosmic より先に走って reset で抑止 (.before)。
-        // bracket closer は cosmic が opener を入れた直後 (.after)。
-        .add_systems(
-            Update,
-            (
-                tab_input_system.before(bevy_cosmic_edit::InputSet),
-                enter_autoindent_system.before(bevy_cosmic_edit::InputSet),
-                bracket_autoclose_system.after(bevy_cosmic_edit::InputSet),
-            ),
-        )
         // ── Find / Replace パネル (Slice 5 #50: Bevy UI Node 化、cosmic 経路撤去) ──
         // マッチ計算は composer の前 (FindMatchSpans を書く)。色付けは composer (Slice 6 で削除)。
         .add_systems(
@@ -549,17 +476,14 @@ impl Plugin for UiPlugin {
                 // ボタン Interaction エッジ → FindActionRequested
                 find_button_interaction_system.after(manage_find_panel_lifecycle_system),
                 compute_find_match_spans_system
-                    .after(find_field_input_system)
-                    .before(apply_highlight_layers_system),
+                    .after(find_field_input_system),
                 find_navigate_system
                     .after(compute_find_match_spans_system)
-                    .after(find_button_interaction_system)
-                    .before(apply_highlight_layers_system),
+                    .after(find_button_interaction_system),
                 // replace は composer の後。bevscode SetTextRequested を発行するだけ
                 // (TextBuffer ↔ fragment/autosave は sync_bevscode_to_strategy_fragment_system が駆動)。
                 replace_execute_system
-                    .after(find_button_interaction_system)
-                    .after(apply_highlight_layers_system),
+                    .after(find_button_interaction_system),
                 // 件数表示はマッチ確定 (compute) とナビ確定 (navigate) の後に読む。
                 update_find_count_text_system
                     .after(compute_find_match_spans_system)
@@ -582,13 +506,12 @@ impl Plugin for UiPlugin {
                 // BEFORE the drain clears it — so run `.before(secret_modal_input_system)`.
                 confirm_modal_button_system.before(secret_modal_input_system),
                 confirm_modal_sync_system,
-                // SecretModal — input は cosmic より先に走って keystroke を消費する
+                // SecretModal — input は keystroke を消費する
                 // (picker_searchbox と同じ drain パターン)。最前面オーバーレイ (z=300) なので
                 // picker / menu の drain より先に走らせ、同フレーム共存時もモーダルが入力を得る。
                 secret_modal_lifecycle_system,
                 secret_modal_visibility_system,
                 secret_modal_input_system
-                    .before(bevy_cosmic_edit::InputSet)
                     .before(picker_searchbox_input_system)
                     .before(menu_keyboard_system),
                 secret_modal_button_system,
@@ -611,14 +534,13 @@ impl Plugin for UiPlugin {
                     .before(confirm_modal_button_system),
                 context_menu_item_system,
                 context_menu_hover_system,
-                // Modify modal — input は cosmic / picker / menu より先に keystroke を消費する
+                // Modify modal — input は picker / menu より先に keystroke を消費する
                 // (secret_modal と同じ drain パターン)。secret modal (最前面・最優先) が同フレームに
                 // 開いている稀ケースでは secret 側が先に drain するよう `.after(secret_modal_input_system)`
                 // を付け、決定的にする (両者が同じ keyboard event を奪い合うのを防ぐ)。
                 modify_modal_visibility_system,
                 modify_modal_input_system
                     .after(secret_modal_input_system)
-                    .before(bevy_cosmic_edit::InputSet)
                     .before(picker_searchbox_input_system)
                     .before(menu_keyboard_system),
                 modify_modal_button_system,

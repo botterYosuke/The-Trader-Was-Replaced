@@ -10,58 +10,14 @@ use crate::ui::floating_window::{
     FloatingWindowSpec, TITLE_BAR_HEIGHT, spawn_floating_window,
 };
 use crate::ui::layout_persistence::{AutoSaveState, PendingLayoutApply};
-use crate::ui::strategy_editor_gutter::spawn_line_number_gutter;
-use crate::ui::strategy_editor_highlight::{BracketSpans, FindMatchSpans, SyntaxSpans};
-use crate::ui::strategy_editor_scrollbar::spawn_editor_scrollbar;
-use crate::ui::render_scale::RenderScaleResponsive;
+use crate::ui::strategy_editor_find::FindMatchSpans;
 use bevy::prelude::*;
-use bevy_cosmic_edit::cosmic_text::{Attrs, AttrsOwned, Edit, Metrics, Shaping};
-use bevy_cosmic_edit::{
-    CosmicBackgroundColor, CosmicFontSystem, CosmicRenderScale, CosmicTextAlign, CosmicWrap,
-    CursorColor, ScrollEnabled,
-};
-use bevy_cosmic_edit::{CosmicTextChanged, prelude::*};
 
-// ── Bevy native 版 Strategy Editor ─────────────
+// ── Strategy Editor (bevscode 化済 / Slice 6c で cosmic 撤去) ─────────────
 
 const PANEL_SIZE: Vec2 = Vec2::new(500.0, 400.0);
 const PANEL_POSITION: Vec2 = Vec2::new(-300.0, 50.0);
-/// content_area 内でエディタ周辺 (gutter + text + scrollbar) が占める領域。
-/// 旧 `EDITOR_SIZE` のリネーム (Caveat #14)。
-pub const EDITOR_PANEL_SIZE: Vec2 = Vec2::new(440.0, 320.0);
-/// 行番号 gutter の幅。
-pub const GUTTER_WIDTH: f32 = 36.0;
-/// scrollbar の幅。
-pub const SCROLLBAR_WIDTH: f32 = 8.0;
-/// テキスト編集領域 (Sprite custom_size) の実サイズ。gutter / scrollbar を除いた分。
-pub const EDITOR_TEXT_SIZE: Vec2 = Vec2::new(
-    PANEL_SIZE.x - GUTTER_WIDTH - SCROLLBAR_WIDTH,
-    EDITOR_PANEL_SIZE.y,
-);
-const EDITOR_FONT_SIZE: f32 = 14.0;
-const EDITOR_LINE_HEIGHT: f32 = 18.0;
-
-/// gutter / editor 共通の cosmic_text Metrics。行高をぴったり一致させて
-/// gutter の行番号がエディタの行とズレないようにする (Caveat #4)。
-pub fn editor_metrics() -> Metrics {
-    Metrics::new(EDITOR_FONT_SIZE, EDITOR_LINE_HEIGHT)
-}
-
-/// focused なら CosmicEditor 内部 buffer、unfocused なら CosmicEditBuffer を読む (Caveat #2)。
-/// scroll / 行数を読む gutter・scrollbar 系がこの分岐を共有する。
-pub fn read_active_buffer<T>(
-    editor: Option<&CosmicEditor>,
-    buffer: &CosmicEditBuffer,
-    f: impl FnOnce(&bevy_cosmic_edit::cosmic_text::Buffer) -> T,
-) -> T {
-    match editor {
-        Some(editor) => editor.with_buffer(f),
-        None => f(&buffer.0),
-    }
-}
-const EDITOR_MAX_SUPERSAMPLE: f32 = 4.0;
 const ACCENT: Color = Color::srgba(0.63, 0.44, 1.0, 0.4); // SVG #a070ff (purple)
-const EDITOR_BG: Color = Color::srgba(0.02, 0.02, 0.04, 1.0);
 
 /// debounce 自動保存の進行状況を追跡する resource。
 /// `mark_strategy_dirty` で `last_change` を記録し、`debounced_strategy_autosave_system`
@@ -121,20 +77,6 @@ fn mark_fragment_dirty(
     fragment.dirty = true;
     auto_save.dirty = true;
     auto_save.last_change = Some(std::time::Instant::now());
-}
-
-/// エディタ本体（TextEdit2d 付き sprite）を識別するマーカー。
-/// Sub-step 1.8c で `Query<&mut CosmicEditBuffer, With<StrategyEditorContent>>` で取りに行く。
-#[derive(Component)]
-pub struct StrategyEditorContent;
-
-/// リサイズ時にコンテンツ領域を追従させるため、root entity に挿入する子エンティティ参照。
-/// `strategy_editor_content_layout_system` がこれを読んで editor / gutter / scrollbar を更新する。
-#[derive(Component)]
-pub struct StrategyEditorLayoutChildren {
-    pub editor: Entity,
-    pub gutter: Entity,
-    pub scrollbar_track: Entity,
 }
 
 /// LiveManual 中に Strategy Editor ウィンドウを隠す際、隠す直前の `Visibility` を退避する marker。
@@ -214,7 +156,6 @@ pub fn apply_strategy_editor_mode_visibility_system(
 /// dispatcher から呼ばれる spawn 関数。
 pub fn spawn_strategy_editor_panel(
     commands: &mut Commands,
-    font_system: &mut CosmicFontSystem,
     allocator: &mut RegionKeyAllocator,
     spec: StrategyEditorSpawnSpec,
 ) {
@@ -235,7 +176,7 @@ pub fn spawn_strategy_editor_panel(
     // spec.source を確定する責務。本関数は受け取った spec.source をそのまま採用する。
     let seed = spec.source.unwrap_or_default();
 
-    let (root, content_area, title_bar) = spawn_floating_window(
+    let (root, _content_area, title_bar) = spawn_floating_window(
         commands,
         FloatingWindowSpec {
             title: "STRATEGY EDITOR".to_string(),
@@ -260,65 +201,6 @@ pub fn spawn_strategy_editor_panel(
         StrategyEditorRoot,
     ));
 
-    let editor = commands
-        .spawn((
-            TextEdit2d,
-            Sprite {
-                custom_size: Some(EDITOR_TEXT_SIZE),
-                color: Color::WHITE,
-                ..default()
-            },
-            CosmicEditBuffer::new(font_system, editor_metrics()).with_text(
-                font_system,
-                &seed,
-                Attrs::new().color(CosmicColor::rgb(220, 220, 220)),
-            ),
-            DefaultAttrs(AttrsOwned::new(
-                &Attrs::new().color(CosmicColor::rgb(220, 220, 220)),
-            )),
-            CursorColor(Color::WHITE),
-            CosmicBackgroundColor(EDITOR_BG),
-            Transform::from_xyz(EDITOR_CONTENT_X, 0.0, 0.1),
-            StrategyEditorContent,
-            // highlight pipeline 用 span コンポーネント (Phase A) + wrap 無効化 (Phase B)。
-            // ネストして 1 Bundle 要素に畳む (tuple Bundle の 15 要素上限回避)。
-            // CosmicWrap::InfiniteLine: source 行 == layout 行にして gutter 行番号と一致させる。
-            (
-                SyntaxSpans::default(),
-                FindMatchSpans::default(),
-                BracketSpans::default(),
-                CosmicWrap::InfiniteLine,
-            ),
-            // editor child にも StrategyEditorId を貼ることで、CosmicTextChanged から
-            // region_key を即引きできる (root への親辿りが不要)。
-            StrategyEditorId {
-                region_key: region_key.clone(),
-            },
-            RenderScaleResponsive::new(EDITOR_MAX_SUPERSAMPLE),
-            CosmicRenderScale(1.0),
-            CosmicTextAlign::TopLeft { padding: 8 },
-            ScrollEnabled::Disabled,
-        ))
-        .id();
-
-    commands.entity(content_area).add_child(editor);
-    commands.insert_resource(FocusedWidget(Some(editor)));
-
-    // ── Phase B: gutter (左) + scrollbar (右) を editor と横並びに配置 ──
-    // content_area 内で [gutter | editor | scrollbar] の幅 EDITOR_PANEL_SIZE.x を中央寄せ。
-    let gutter = spawn_line_number_gutter(commands, font_system, region_key.clone(), GUTTER_X);
-    commands.entity(content_area).add_child(gutter);
-
-    let scrollbar_track = spawn_editor_scrollbar(commands, editor, SCROLLBAR_X);
-    commands.entity(content_area).add_child(scrollbar_track);
-
-    // リサイズ時にコンテンツを追従させるため子エンティティ参照を root に保持する。
-    commands.entity(root).insert(StrategyEditorLayoutChildren {
-        editor,
-        gutter,
-        scrollbar_track,
-    });
-
     // ── Slice 1 (#50): bevscode CodeEditor peer の spawn は `spawn_bevscode_peer_on_strategy_editor_added`
     // システムに委譲する。spawn_strategy_editor_panel は AssetServer を持たないが、bevscode のフォント
     // 読み込みに必要なため、root 生成 → 次フレームで Added<StrategyEditorRoot> を watch する system が
@@ -328,190 +210,6 @@ pub fn spawn_strategy_editor_panel(
 
     let _ = title_bar;
     let _ = spec.layout_source;
-}
-
-/// content_area 内 (中央 x=0) における [gutter | editor | scrollbar] 群の左端 x。
-const GROUP_LEFT_X: f32 = -PANEL_SIZE.x / 2.0;
-/// gutter Sprite の中心 x。
-pub const GUTTER_X: f32 = GROUP_LEFT_X + GUTTER_WIDTH / 2.0;
-/// editor Sprite の中心 x (gutter のぶん右にずらす)。
-pub const EDITOR_CONTENT_X: f32 = GROUP_LEFT_X + GUTTER_WIDTH + EDITOR_TEXT_SIZE.x / 2.0;
-/// scrollbar Sprite の中心 x。
-pub const SCROLLBAR_X: f32 =
-    GROUP_LEFT_X + GUTTER_WIDTH + EDITOR_TEXT_SIZE.x + SCROLLBAR_WIDTH / 2.0;
-
-/// Strategy Editor の root サイズが変わったとき（リサイズ）、editor / gutter / scrollbar を
-/// 新しいコンテンツ領域サイズに追従させる。差分書き込みで change detection の無駄発火を防ぐ。
-pub fn strategy_editor_content_layout_system(
-    roots: Query<
-        (&Sprite, &StrategyEditorLayoutChildren),
-        (With<WindowRoot>, Changed<Sprite>),
-    >,
-    mut sprites: Query<&mut Sprite, Without<WindowRoot>>,
-    mut transforms: Query<&mut Transform, Without<WindowRoot>>,
-) {
-    for (root_sprite, layout) in &roots {
-        let Some(root_size) = root_sprite.custom_size else {
-            continue;
-        };
-        let content_w = root_size.x;
-        let content_h = root_size.y - TITLE_BAR_HEIGHT;
-
-        let editor_text_w = (content_w - GUTTER_WIDTH - SCROLLBAR_WIDTH).max(10.0);
-        let editor_text_h = content_h.max(10.0);
-
-        let group_left_x = -content_w / 2.0;
-        let gutter_x = group_left_x + GUTTER_WIDTH / 2.0;
-        let editor_x = group_left_x + GUTTER_WIDTH + editor_text_w / 2.0;
-        let scrollbar_x = group_left_x + GUTTER_WIDTH + editor_text_w + SCROLLBAR_WIDTH / 2.0;
-
-        // editor sprite size + position
-        if let Ok(mut s) = sprites.get_mut(layout.editor) {
-            let target = Vec2::new(editor_text_w, editor_text_h);
-            if s.custom_size != Some(target) {
-                s.custom_size = Some(target);
-            }
-        }
-        if let Ok(mut t) = transforms.get_mut(layout.editor) {
-            if (t.translation.x - editor_x).abs() > 0.01 {
-                t.translation.x = editor_x;
-            }
-        }
-
-        // gutter sprite height + position
-        if let Ok(mut s) = sprites.get_mut(layout.gutter) {
-            let target = Vec2::new(GUTTER_WIDTH, editor_text_h);
-            if s.custom_size != Some(target) {
-                s.custom_size = Some(target);
-            }
-        }
-        if let Ok(mut t) = transforms.get_mut(layout.gutter) {
-            if (t.translation.x - gutter_x).abs() > 0.01 {
-                t.translation.x = gutter_x;
-            }
-        }
-
-        // scrollbar track height + position
-        if let Ok(mut s) = sprites.get_mut(layout.scrollbar_track) {
-            let target = Vec2::new(SCROLLBAR_WIDTH, editor_text_h);
-            if s.custom_size != Some(target) {
-                s.custom_size = Some(target);
-            }
-        }
-        if let Ok(mut t) = transforms.get_mut(layout.scrollbar_track) {
-            if (t.translation.x - scrollbar_x).abs() > 0.01 {
-                t.translation.x = scrollbar_x;
-            }
-        }
-
-    }
-}
-
-/// `OpenStrategyRequested` イベント（ファイル → buffer に丸ごとロード）の直後に、
-/// cosmic_edit エディタの内容を `buffer.source` で置き換える（片側同期: buffer → editor）。
-///
-/// 旧実装は `buffer.is_changed()` でトリガしていたが、`sync_editor_to_strategy_buffer_system`
-/// がユーザー入力ごとに `buffer.source = new_text` を書く（DerefMut で次フレーム is_changed = true）
-/// → buffer→editor 同期が走り `set_text` でカーソルが先頭にリセット、という不具合があった。
-/// イベント駆動に切り替えることで「外部から `.py` を読み込んだ瞬間」だけに発火範囲を絞る。
-///
-/// system 順序: `open_strategy_buffer_system` が同じイベントを読んで `buffer.source` を
-/// 更新するので、本 system は必ず `.after(open_strategy_buffer_system)` で走らせる。
-/// `EventReader` は system ごとに独立した読み取りカーソルを持つため、両方とも同じイベントを読める。
-pub fn sync_strategy_buffer_to_editor_system(
-    mut open_events: MessageReader<StrategyFileLoadRequested>,
-    mut undo_events: MessageReader<UndoRedoApplied>,
-    fragments_q: Query<(&StrategyEditorId, &StrategyFragment), With<WindowRoot>>,
-    mut editor_q: Query<
-        (
-            &StrategyEditorId,
-            &mut CosmicEditBuffer,
-            Option<&mut CosmicEditor>,
-        ),
-        With<StrategyEditorContent>,
-    >,
-    mut font_system: ResMut<CosmicFontSystem>,
-) {
-    open_events.clear();
-
-    if undo_events.read().next().is_none() {
-        return;
-    }
-
-    for (editor_id, mut edit_buffer, editor_opt) in editor_q.iter_mut() {
-        let Some((_, fragment)) = fragments_q
-            .iter()
-            .find(|(frag_id, _)| frag_id.region_key == editor_id.region_key)
-        else {
-            continue;
-        };
-        let source = fragment.source.as_str();
-        edit_buffer.set_text(&mut font_system, source, Attrs::new());
-        if let Some(mut editor) = editor_opt {
-            editor.with_buffer_mut(|b| {
-                b.set_text(&mut font_system, source, &Attrs::new(), Shaping::Advanced, None);
-                b.set_redraw(true);
-            });
-        }
-    }
-}
-
-/// cosmic_edit エディタでユーザーが編集した内容を `StrategyBuffer.source` に書き戻し、
-/// `dirty = true` を立てる（片側同期: editor → buffer）。
-///
-/// `CosmicTextChanged` イベントは bevy_cosmic_edit の input system
-/// （キーボード入力 / paste / drop）で発火する。`CosmicEditBuffer::set_text`
-/// からは発火しないので、buffer → editor 同期（`sync_strategy_buffer_to_editor_system`）
-/// とのループは発生しない（exact version 0.26.0 の input.rs / buffer.rs で確認済）。
-///
-/// イベント本体は `CosmicTextChanged(pub (Entity, String))` というタプル struct。
-/// 第 1 要素が編集されたエディタ entity、第 2 要素が新しい全文。
-/// Strategy Editor 以外のエディタ entity からのイベントは無視する。
-pub fn sync_editor_to_strategy_buffer_system(
-    mut events: MessageReader<CosmicTextChanged>,
-    editor_q: Query<&StrategyEditorId, With<StrategyEditorContent>>,
-    mut fragments_q: Query<(&StrategyEditorId, &mut StrategyFragment), With<WindowRoot>>,
-    mut history: ResMut<AppHistory>,
-    mut auto_save: ResMut<StrategyAutoSaveState>,
-) {
-    for CosmicTextChanged((entity, new_text)) in events.read() {
-        let Ok(editor_id) = editor_q.get(*entity) else {
-            continue;
-        };
-        let region_key = editor_id.region_key.clone();
-
-        let Some((_, mut fragment)) = fragments_q
-            .iter_mut()
-            .find(|(id, _)| id.region_key == region_key)
-        else {
-            warn!(
-                "CosmicTextChanged for region '{}' but no matching WindowRoot",
-                region_key
-            );
-            continue;
-        };
-
-        if let Some((target_key, target_text)) = history.suppress_echo_target.clone() {
-            if target_key == region_key && target_text.as_str() == new_text.as_str() {
-                history.suppress_echo_target = None;
-                fragment.source = new_text.clone();
-                continue;
-            } else {
-                history.suppress_echo_target = None;
-            }
-        }
-        if fragment.source == *new_text {
-            continue;
-        }
-        if !history.is_replaying() {
-            history.push_text(
-                region_key.clone(),
-                fragment.source.clone(),
-                new_text.clone(),
-            );
-        }
-        mark_fragment_dirty(&mut fragment, &mut auto_save, new_text.clone());
-    }
 }
 
 /// Ctrl+Z / Ctrl+Y / Ctrl+Shift+Z で Undo/Redo を実行する system。
@@ -693,12 +391,13 @@ pub fn apply_pending_app_edits_system(
 
 /// `PendingStrategySnapshotRestore` にスナップショットが積まれていたら
 /// buffer.source を復元し、エディタに反映するトリガーとして `UndoRedoApplied` を発火する。
-/// StrategyEditorContent entity が生成されるまで待つ（2 段階遅延）。
+/// StrategyEditorRoot entity が生成されるまで待つ（2 段階遅延、bevscode peer が後追いで張られるので
+/// root の存在で代用する）。
 pub fn apply_strategy_snapshot_restore_system(
     mut pending_restore: ResMut<PendingStrategySnapshotRestore>,
     mut fragments_q: Query<(&StrategyEditorId, &mut StrategyFragment), With<WindowRoot>>,
     mut history: ResMut<AppHistory>,
-    editor_q: Query<Entity, With<StrategyEditorContent>>,
+    editor_q: Query<Entity, With<StrategyEditorRoot>>,
     mut undo_applied: MessageWriter<UndoRedoApplied>,
     mut auto_save: ResMut<StrategyAutoSaveState>,
 ) {
@@ -1276,7 +975,7 @@ mod tests {
         app.add_message::<UndoRedoApplied>();
         app.add_systems(Update, apply_strategy_snapshot_restore_system);
 
-        app.world_mut().spawn(StrategyEditorContent);
+        app.world_mut().spawn(StrategyEditorRoot);
 
         let region_key = "region_001".to_string();
         let snapshot_text = "restored_source = 123".to_string();
@@ -1512,10 +1211,10 @@ pub struct StrategyEditorNode {
 #[derive(Component)]
 pub struct StrategyEditorPendingSeed(pub String);
 
-/// Projection 用ベース定数。`EDITOR_FONT_SIZE` / `EDITOR_LINE_HEIGHT` と一致させて
-/// scale=1.0 のとき cosmic と同じ字面になるようにする（並存期間の視覚一貫性）。
-const PROJECTED_BASE_FONT_SIZE: f32 = EDITOR_FONT_SIZE;
-const PROJECTED_BASE_LINE_HEIGHT: f32 = EDITOR_LINE_HEIGHT;
+/// Projection 用ベース定数。旧 cosmic の `EDITOR_FONT_SIZE` (14.0) /
+/// `EDITOR_LINE_HEIGHT` (18.0) と同値にして、scale=1.0 のとき同じ字面になるようにする。
+const PROJECTED_BASE_FONT_SIZE: f32 = 14.0;
+const PROJECTED_BASE_LINE_HEIGHT: f32 = 18.0;
 
 /// `Added<StrategyEditorRoot>` を watch して bevscode `CodeEditor` peer を spawn する。
 ///
@@ -1537,8 +1236,8 @@ pub fn spawn_bevscode_peer_on_strategy_editor_added(
                 left: Val::Px(0.0),
                 top: Val::Px(0.0),
                 // 初期値はダミー（次フレームの projection system が world rect で上書きする）。
-                width: Val::Px(EDITOR_TEXT_SIZE.x),
-                height: Val::Px(EDITOR_TEXT_SIZE.y),
+                width: Val::Px(0.0),
+                height: Val::Px(0.0),
                 ..default()
             },
             TextFont::from_font_size(PROJECTED_BASE_FONT_SIZE).with_font(font),

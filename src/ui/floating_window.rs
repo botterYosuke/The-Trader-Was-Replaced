@@ -16,7 +16,6 @@ use crate::ui::order_panel::spawn_order_form_in_window;
 use crate::ui::strategy_editor::spawn_strategy_editor_panel;
 use bevy::picking::Pickable;
 use bevy::prelude::*;
-use bevy_cosmic_edit::prelude::CosmicFontSystem;
 
 /// floating window の title bar 高さ。chart レイアウト定数 (`chart_viewstate.rs`) もこれを参照する
 /// (Caveat #33: 二重定義すると chart の draw 領域が枠を ~8px はみ出す)。
@@ -641,7 +640,6 @@ pub fn panel_spawn_dispatcher_system(
     mut events: MessageReader<PanelSpawnRequested>,
     existing: Query<&PanelKind, With<WindowRoot>>,
     mut commands: Commands,
-    mut font_system: ResMut<CosmicFontSystem>,
     mut allocator: ResMut<RegionKeyAllocator>,
     mut history: ResMut<AppHistory>,
     mut pending_fragments: ResMut<PendingStrategyFragments>,
@@ -705,7 +703,7 @@ pub fn panel_spawn_dispatcher_system(
                     spec
                 };
                 spawned_region_key = spec.region_key.clone();
-                spawn_strategy_editor_panel(&mut commands, &mut font_system, &mut allocator, spec);
+                spawn_strategy_editor_panel(&mut commands, &mut allocator, spec);
             }
             PanelKind::Order => {
                 let (root, content_area, _title_bar) = spawn_floating_window(
@@ -794,12 +792,9 @@ mod order_dispatcher_tests {
         StrategyBuffer,
     };
     use crate::ui::editor_history::AppHistory;
-    use bevy_cosmic_edit::cosmic_text::FontSystem;
-    use bevy_cosmic_edit::prelude::CosmicFontSystem;
 
     fn order_dispatch_app() -> App {
         let mut app = App::new();
-        app.insert_resource(CosmicFontSystem(FontSystem::new()));
         app.init_resource::<WindowManager>();
         app.init_resource::<ActiveDrag>();
         app.init_resource::<RegionKeyAllocator>();
