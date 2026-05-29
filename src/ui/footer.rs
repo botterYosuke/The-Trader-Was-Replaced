@@ -503,7 +503,7 @@ pub fn transport_button_system(
                         // ここには来ない想定だが、enum exhaustive match を保つため arm を残す。
                     }
                     TransportButton::StepForward => {
-                        if replay == "PAUSED" || replay == "LOADED" {
+                        if matches!(replay, "PAUSED" | "LOADED") {
                             let _ = sender.tx.send(TransportCommand::StepForward);
                         } else if replay == "IDLE" {
                             // #61: IDLE から ▶| → 策略フラッシュして StepFromIdleRequested を発行。
