@@ -194,3 +194,34 @@ mod tests {
         assert_eq!(tf.font, handle);
     }
 }
+
+/// Test-only constructor that mutates every serializable field of
+/// `Typography`, including the private `headline` / `label` arrays.
+/// Used by `tests/e2e/flows/q3_theme_serde_roundtrip.rs` (M1) to gate
+/// `#[serde(skip)]` silent drops.
+///
+/// `#[doc(hidden)] pub` (not `pub(crate)` / not `#[cfg(test)]`) because
+/// integration test targets in `tests/` compile the lib WITHOUT `cfg(test)`.
+#[doc(hidden)]
+pub fn non_default_typography() -> Typography {
+    let mk = |i: f32, family: FontFamily, weight: FontWeight| {
+        TypeStyle::new(100.0 + i, 200.0 + i, weight, family)
+    };
+    Typography {
+        headline: [
+            mk(1.0, FontFamily::Mono, FontWeight::Normal),
+            mk(2.0, FontFamily::Mono, FontWeight::Medium),
+            mk(3.0, FontFamily::Mono, FontWeight::Normal),
+            mk(4.0, FontFamily::Mono, FontWeight::Medium),
+            mk(5.0, FontFamily::Mono, FontWeight::Normal),
+        ],
+        label: [
+            mk(6.0, FontFamily::Mono, FontWeight::Bold),
+            mk(7.0, FontFamily::Mono, FontWeight::SemiBold),
+            mk(8.0, FontFamily::Mono, FontWeight::Bold),
+            mk(9.0, FontFamily::Mono, FontWeight::SemiBold),
+        ],
+        body: mk(10.0, FontFamily::Mono, FontWeight::Bold),
+        mono: mk(11.0, FontFamily::Sans, FontWeight::Bold),
+    }
+}

@@ -8,11 +8,9 @@
 //! Naming notes:
 //! * `UiSized` (not `Sized`) avoids collision with `std::marker::Sized`.
 //! * `UiStyled` / `UiStyledExt` mirror that convention for symmetry.
-//!
-//! Bevy version note:
-//! `Clickable::on_click` takes a closure (not a Bevy `Event` / `Message`) so
-//! the trait stays decoupled from the 0.15 → 0.18 `Event → Message` rename.
-//! Concrete components translate the closure to a `Commands`-driven send.
+
+use bevy::ecs::system::Commands;
+use bevy::prelude::Component;
 
 use crate::ui::theme::ElevationIndex;
 
@@ -42,15 +40,25 @@ pub enum ComponentStyle {
 
 // -- Clickable --------------------------------------------------------------
 
-/// Component can be clicked, forwarding the click to a closure.
+/// Stores a click handler closure that can dispatch via `Commands`.
 ///
-/// The closure form (instead of `Event` / `Message`) keeps this trait stable
-/// across the Bevy 0.15 → 0.18 rename. Component impls in #46 will translate
-/// the closure into a `Commands`-driven message send.
-pub trait Clickable {
+/// Attached by `Clickable::on_click`. A generic click-dispatch system
+/// (introduced alongside #46 component impls) queries `(Interaction, &mut OnClick)`
+/// and invokes the closure with the world's `Commands` when the element
+/// transitions to `Interaction::Pressed`, letting handlers `send_event` /
+/// `MessageWriter::write` / spawn / despawn freely.
+#[derive(Component)]
+pub struct OnClick(pub Box<dyn FnMut(&mut Commands) + Send + Sync>);
+
+/// Component can be clicked, forwarding the click to a `Commands`-aware closure.
+///
+/// The closure receives `&mut Commands`, so handlers can write messages,
+/// spawn / despawn entities, or queue any `Command` directly. Implementors
+/// attach the closure as an [`OnClick`] component on the produced entity.
+pub trait Clickable: Sized {
     fn on_click<F>(self, on_click: F) -> Self
     where
-        F: FnMut() + Send + Sync + 'static;
+        F: FnMut(&mut Commands) + Send + Sync + 'static;
 }
 
 // -- Disableable ------------------------------------------------------------
