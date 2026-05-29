@@ -459,10 +459,6 @@ class InprocLiveServer:
             instrument_ids=cfg.get("instrument_ids", []),
             strategy_file=cfg.get("strategy_file", ""),
         )
-        if cfg.get("start_date"):
-            engine_start_config.start_date.CopyFrom(
-                engine_pb2.EngineStartConfig.start_date.DESCRIPTOR  # just set the string
-            )
         start_date = cfg.get("start_date")
         end_date = cfg.get("end_date")
         if start_date:
