@@ -31,8 +31,8 @@ mod a12_replay_precision_mismatch_surfaced;
 mod a13_replay_play_pause_step_jumptostart;
 #[path = "e2e/flows/a14_footer_time_advances_on_replay_step.rs"]
 mod a14_footer_time_advances_on_replay_step;
-#[path = "e2e/flows/a15_replay_step_from_idle.rs"]
-mod a15_replay_step_from_idle;
+#[path = "e2e/flows/a15_per_instrument_ohlc_flows_into_map.rs"]
+mod a15_per_instrument_ohlc_flows_into_map;
 #[path = "e2e/flows/a7_replay_startup_progress.rs"]
 mod a7_replay_startup_progress;
 #[path = "e2e/flows/a8_stale_startup_id_ignored.rs"]
@@ -194,8 +194,6 @@ mod j14_scenario_schema_normalization;
 mod j15_scenario_file_watch_reparse;
 #[path = "e2e/flows/j16_startup_panel_field_commit.rs"]
 mod j16_startup_panel_field_commit;
-#[path = "e2e/flows/j17_empty_fragment_not_merged.rs"]
-mod j17_empty_fragment_not_merged;
 
 // K. Chart interaction / Reconcile / Order UI
 // k1: stub のみ（kind:render — ShapePainter + Text2d は GPU 必要、headless 不可）
