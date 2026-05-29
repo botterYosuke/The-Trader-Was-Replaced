@@ -14,14 +14,10 @@
 use bevy::prelude::*;
 
 use crate::trading::ReconcilePrompt;
-use crate::ui::component::modal_layer::{ActiveModal, DismissDecision, ModalLayer};
-
-const COLOR_PANEL_BG: Color = Color::srgba(0.07, 0.07, 0.12, 0.98);
-const COLOR_BACKDROP: Color = Color::srgba(0.0, 0.0, 0.0, 0.6);
-const COLOR_HEADER: Color = Color::srgb(1.0, 0.62, 0.20);
-const COLOR_INFO: Color = Color::srgb(0.78, 0.81, 0.86);
-const COLOR_VALUE: Color = Color::srgb(0.88, 0.91, 0.96);
-const COLOR_BTN: Color = Color::srgba(0.16, 0.30, 0.44, 1.0);
+use crate::ui::component::modal_layer::{
+    ActiveModal, DismissDecision, ModalHandle, ModalLayer, ModalSkeleton, spawn_modal,
+};
+use crate::ui::theme::{DynamicSpacing, LabelSize, Theme};
 
 // ===========================================================================
 // Components
@@ -41,103 +37,89 @@ pub struct ReconcileDismissButton;
 // Spawn (Startup)
 // ===========================================================================
 
-pub fn spawn_reconcile_modal(mut commands: Commands) {
-    commands
+pub fn spawn_reconcile_modal(mut commands: Commands, theme: Res<Theme>) {
+    let density = theme.spacing.density;
+    let ModalHandle { root, card } = spawn_modal(
+        &mut commands,
+        &theme,
+        ModalSkeleton {
+            width: 420.0,
+            z_index: 262,
+            name: "ReconcileModal",
+        },
+    );
+
+    commands.entity(root).insert(ReconcileModalRoot);
+
+    let header = commands
         .spawn((
             Node {
-                display: Display::None,
-                position_type: PositionType::Absolute,
-                top: Val::Px(0.0),
-                left: Val::Px(0.0),
-                width: Val::Percent(100.0),
-                height: Val::Percent(100.0),
+                margin: UiRect::bottom(Val::Px(DynamicSpacing::Base08.px(density))),
+                ..default()
+            },
+            Text::new("backend 再起動: 注文状態の再確認が必要です"),
+            theme.typography.label_font(LabelSize::Large),
+            TextColor(theme.status.warning),
+        ))
+        .id();
+
+    let info = commands
+        .spawn((
+            Text::new(
+                "backend が再起動したため、下記の注文の現在状態が不明になりました。\n\
+                 Venue メニューから再ログインし、証券会社側で約定/取消状況を確認してください。",
+            ),
+            theme.typography.label_font(LabelSize::Small),
+            TextColor(theme.colors.text_muted),
+        ))
+        .id();
+
+    let list = commands
+        .spawn((
+            Node {
+                margin: UiRect::vertical(Val::Px(DynamicSpacing::Base08.px(density))),
+                ..default()
+            },
+            Text::new(""),
+            theme.typography.label_font(LabelSize::Default),
+            TextColor(theme.colors.text),
+            ReconcileListText,
+        ))
+        .id();
+
+    let dismiss_label = commands
+        .spawn((
+            Text::new("確認した"),
+            theme.typography.label_font(LabelSize::Large),
+            TextColor(theme.colors.text),
+        ))
+        .id();
+    let dismiss_btn = commands
+        .spawn((
+            Button,
+            Node {
+                width: Val::Px(96.0),
+                height: Val::Px(30.0),
                 align_items: AlignItems::Center,
                 justify_content: JustifyContent::Center,
                 ..default()
             },
-            BackgroundColor(COLOR_BACKDROP),
-            // relogin modal (260) と同級。secret modal (300) より前面である必要はない。
-            GlobalZIndex(262),
-            ReconcileModalRoot,
-            Name::new("ReconcileModal"),
+            BackgroundColor(theme.colors.element_selection_background),
+            ReconcileDismissButton,
         ))
-        .with_children(|p| {
-            p.spawn((
-                Node {
-                    width: Val::Px(420.0),
-                    flex_direction: FlexDirection::Column,
-                    padding: UiRect::all(Val::Px(16.0)),
-                    ..default()
-                },
-                BackgroundColor(COLOR_PANEL_BG),
-            ))
-            .with_children(|card| {
-                card.spawn((
-                    Node {
-                        margin: UiRect::bottom(Val::Px(8.0)),
-                        ..default()
-                    },
-                    Text::new("backend 再起動: 注文状態の再確認が必要です"),
-                    TextFont {
-                        font_size: 15.0,
-                        ..default()
-                    },
-                    TextColor(COLOR_HEADER),
-                ));
-                card.spawn((
-                    Text::new(
-                        "backend が再起動したため、下記の注文の現在状態が不明になりました。\n\
-                         Venue メニューから再ログインし、証券会社側で約定/取消状況を確認してください。",
-                    ),
-                    TextFont {
-                        font_size: 11.0,
-                        ..default()
-                    },
-                    TextColor(COLOR_INFO),
-                ));
-                card.spawn((
-                    Node {
-                        margin: UiRect::vertical(Val::Px(8.0)),
-                        ..default()
-                    },
-                    Text::new(""),
-                    TextFont {
-                        font_size: 12.0,
-                        ..default()
-                    },
-                    TextColor(COLOR_VALUE),
-                    ReconcileListText,
-                ));
-                card.spawn((Node {
-                    justify_content: JustifyContent::FlexEnd,
-                    ..default()
-                },))
-                    .with_children(|btns| {
-                        btns.spawn((
-                            Button,
-                            Node {
-                                width: Val::Px(96.0),
-                                height: Val::Px(30.0),
-                                align_items: AlignItems::Center,
-                                justify_content: JustifyContent::Center,
-                                ..default()
-                            },
-                            BackgroundColor(COLOR_BTN),
-                            ReconcileDismissButton,
-                        ))
-                        .with_children(|b| {
-                            b.spawn((
-                                Text::new("確認した"),
-                                TextFont {
-                                    font_size: 13.0,
-                                    ..default()
-                                },
-                                TextColor(COLOR_VALUE),
-                            ));
-                        });
-                    });
-            });
-        });
+        .add_child(dismiss_label)
+        .id();
+    let btn_row = commands
+        .spawn(Node {
+            justify_content: JustifyContent::FlexEnd,
+            ..default()
+        })
+        .add_child(dismiss_btn)
+        .id();
+
+    commands
+        .entity(card)
+        .add_children(&[header, info, list, btn_row]);
 }
 
 // ===========================================================================
