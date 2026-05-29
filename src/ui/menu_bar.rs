@@ -9,7 +9,8 @@ use crate::ui::components::{
     PanelSpawnRequested, PanelSpawnSource, PendingStrategyFragments, RedoMenuRequested,
     RegionKeyAllocator, ScenarioReadTarget, ScenarioStartupParams, ScenarioWritebackPaths,
     StrategyBuffer, StrategyEditorSpawnSpec, StrategyFileLoadRequested, StrategyFragment,
-    StrategyLoadMode, StrategyRunRequested, StrategyStatusLabel, UndoMenuRequested, WindowRoot,
+    StrategyLoadMode, StrategyRunRequested, StepFromIdleRequested, StrategyStatusLabel,
+    UndoMenuRequested, WindowRoot,
     flush_sidecars_now,
 };
 use crate::ui::layout_persistence::{
@@ -936,6 +937,7 @@ pub fn log_strategy_run_requested_system(mut events: MessageReader<StrategyRunRe
 #[allow(clippy::too_many_arguments)]
 pub fn handle_strategy_run_system(
     mut events: MessageReader<StrategyRunRequested>,
+    mut step_events: MessageReader<StepFromIdleRequested>,
     scenario: Res<ScenarioMetadata>,
     sender: Option<Res<TransportCommandSender>>,
     registry: Res<InstrumentRegistry>,
@@ -1013,6 +1015,78 @@ pub fn handle_strategy_run_system(
         }
 
         // 送信成功後に progress を更新（失敗時は触らない）
+        let detail = event
+            .cache_path
+            .file_name()
+            .and_then(|s| s.to_str())
+            .map(|s| s.to_string());
+        progress.next_startup_id = startup_id.wrapping_add(1);
+        progress.startup_id = startup_id;
+        progress.visible = true;
+        progress.phase = ReplayStartupPhase::CommandAccepted;
+        progress.detail = detail;
+        progress.error = None;
+        progress.started_at_elapsed = Some(real_time.elapsed());
+        progress.baseline_timestamp_ms = Some(trading_data.timestamp_ms);
+        progress.start_engine_accepted = false;
+        current_run.state = RunState::Running;
+    }
+
+    // #61: IDLE から ▶| を押したときの StepFromIdleRequested → LoadAndStep
+    for event in step_events.read() {
+        if startup_params.errors.any() {
+            error!("StepFromIdle blocked: scenario startup params have errors");
+            continue;
+        }
+        if scenario.instruments.is_empty() {
+            error!("StepFromIdle blocked: SCENARIO has no instruments");
+            continue;
+        }
+        let Some(ref start) = scenario.start else {
+            error!("StepFromIdle blocked: SCENARIO has no start date");
+            continue;
+        };
+        let Some(ref end) = scenario.end else {
+            error!("StepFromIdle blocked: SCENARIO has no end date");
+            continue;
+        };
+        let Some(ref granularity) = scenario.granularity else {
+            error!("StepFromIdle blocked: SCENARIO has no granularity");
+            continue;
+        };
+
+        if registry.editable {
+            if let Err(e) =
+                flush_sidecars_now(registry.as_slice(), None, paths.cache_sidecar.as_deref())
+            {
+                error!("StepFromIdle blocked: sidecar flush failed: {}", e);
+                continue;
+            }
+        }
+
+        let run_config = StrategyRunConfig {
+            instruments: scenario.instruments.clone(),
+            start: start.clone(),
+            end: end.clone(),
+            granularity: granularity.clone(),
+            initial_cash: scenario.initial_cash,
+        };
+
+        let startup_id = progress.next_startup_id;
+        let cmd = TransportCommand::LoadAndStep {
+            config: run_config,
+            startup_id,
+        };
+
+        let Some(sender) = sender.as_ref() else {
+            error!("LoadAndStep: TransportCommandSender is None — backend not connected");
+            continue;
+        };
+        if let Err(e) = sender.tx.send(cmd) {
+            error!("failed to send LoadAndStep command: {}", e);
+            continue;
+        }
+
         let detail = event
             .cache_path
             .file_name()
@@ -1225,6 +1299,7 @@ mod tests {
         app.insert_resource(TradingSession::default());
         app.insert_resource(CurrentRun::default());
         app.add_message::<StrategyRunRequested>();
+        app.add_message::<StepFromIdleRequested>();
         app.add_systems(Update, handle_strategy_run_system);
 
         let rx = if with_sender {

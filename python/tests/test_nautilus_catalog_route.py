@@ -176,6 +176,40 @@ def test_catalog_route_step_advances_through_bars(patched_load_bars):
     assert state.price == 120.0
 
 
+def test_catalog_route_step_ohlc_points_grow(patched_load_bars):
+    """After each step_replay(), per_instrument ohlc_points should grow by 1 (issue #57)."""
+    catalog_dir, _ = patched_load_bars
+    engine = DataEngine(nautilus_catalog_path=str(catalog_dir))
+
+    assert engine.load_replay_data(instrument_ids=["AAPL.NASDAQ"], granularity="Minute")[0]
+    assert engine.start_engine()[0]
+    assert engine.pause_replay()[0]
+
+    # After load+pause: primed bar is in per_instrument.
+    state = engine.get_current_state()
+    pts = state.per_instrument.get("AAPL.NASDAQ")
+    assert pts is not None, "AAPL.NASDAQ must be in per_instrument after load"
+    count0 = len(pts.ohlc_points)
+    assert count0 == 1, f"expected 1 primed bar, got {count0}"
+
+    # First step → 2 bars.
+    assert engine.step_replay()[0]
+    state = engine.get_current_state()
+    pts = state.per_instrument["AAPL.NASDAQ"]
+    count1 = len(pts.ohlc_points)
+    assert count1 == 2, (
+        f"ohlc_points should grow to 2 after first step (issue #57 RED if stays at {count1})"
+    )
+    assert pts.ohlc_points[-1].timestamp_ms == 10_000
+
+    # Second step → 3 bars.
+    assert engine.step_replay()[0]
+    state = engine.get_current_state()
+    pts = state.per_instrument["AAPL.NASDAQ"]
+    count2 = len(pts.ohlc_points)
+    assert count2 == 3, f"ohlc_points should grow to 3 after second step, got {count2}"
+
+
 def test_catalog_route_propagates_no_data_error(tmp_path, monkeypatch):
     catalog_dir = tmp_path / "catalog"
     catalog_dir.mkdir()

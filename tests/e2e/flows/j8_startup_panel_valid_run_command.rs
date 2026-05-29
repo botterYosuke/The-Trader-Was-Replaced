@@ -14,7 +14,7 @@ use backcast::trading::{
 };
 use backcast::ui::components::{
     InstrumentRegistry, ScenarioMetadata, ScenarioStartupParams, ScenarioWritebackPaths,
-    StrategyRunRequested,
+    StepFromIdleRequested, StrategyRunRequested,
 };
 use backcast::ui::menu_bar::handle_strategy_run_system;
 
@@ -49,6 +49,7 @@ fn build_app(scenario: ScenarioMetadata) -> (App, mpsc::UnboundedReceiver<Transp
     app.insert_resource(CurrentRun::default());
     app.insert_resource(TransportCommandSender { tx });
     app.add_message::<StrategyRunRequested>();
+    app.add_message::<StepFromIdleRequested>();
     app.add_systems(Update, handle_strategy_run_system);
 
     (app, rx)
@@ -188,6 +189,7 @@ fn j8_startup_panel_valid_run_command() {
         app.insert_resource(CurrentRun::default());
         // TransportCommandSender を挿入しない
         app.add_message::<StrategyRunRequested>();
+        app.add_message::<StepFromIdleRequested>();
         app.add_systems(Update, handle_strategy_run_system);
 
         app.world_mut().write_message(StrategyRunRequested {

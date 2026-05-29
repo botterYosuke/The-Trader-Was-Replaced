@@ -1,3 +1,5 @@
+pub mod theme;
+pub mod traits;
 pub mod buying_power;
 pub mod chart_axes;
 pub mod chart_crosshair;
@@ -61,7 +63,7 @@ use crate::ui::chart_volume::volume_render_system;
 use crate::ui::components::{
     OpenMenu, PanelSpawnRequested, PendingStrategyFragments, RedoMenuRequested, RegionKeyAllocator,
     ScenarioMetadata, StrategyBuffer, StrategyFileLoadRequested, StrategyRunRequested,
-    UndoMenuRequested, WindowManager,
+    StepFromIdleRequested, UndoMenuRequested, WindowManager,
 };
 use crate::ui::components::{
     ScenarioClearedFromFile, mark_registry_dirty_system,
@@ -205,6 +207,7 @@ impl Plugin for UiPlugin {
             // issue #50 Slice 1+: bevscode editor を Projected Node 方式で世界座標に出すための plugins。
             // Slice 6c で cosmic_edit との並存を解消した（bevscode のみ）。
             bevscode::prelude::CodeEditorPlugins,
+            theme::ThemePlugin,
         ))
         .add_message::<crate::ui::strategy_editor_spike::SpikeEditorSpawnRequested>()
         .init_resource::<WindowManager>()
@@ -239,6 +242,7 @@ impl Plugin for UiPlugin {
         .init_resource::<crate::ui::instrument_picker::InstrumentPickerState>()
         .add_message::<StrategyFileLoadRequested>()
         .add_message::<StrategyRunRequested>()
+        .add_message::<StepFromIdleRequested>()
         .add_message::<PanelSpawnRequested>()
         .add_message::<UndoRedoApplied>()
         .add_message::<UndoMenuRequested>()
@@ -303,7 +307,7 @@ impl Plugin for UiPlugin {
                 update_price_display,
                 update_status_indicator,
                 update_footer_system.after(crate::trading::backend_update_system),
-                transport_button_system,
+                transport_button_system.before(handle_strategy_run_system),
                 footer_pause_resume_system
                     .before(handle_strategy_run_system)
                     .after(crate::trading::backend_update_system),

@@ -31,6 +31,12 @@ mod a12_replay_precision_mismatch_surfaced;
 mod a13_replay_play_pause_step_jumptostart;
 #[path = "e2e/flows/a14_footer_time_advances_on_replay_step.rs"]
 mod a14_footer_time_advances_on_replay_step;
+#[path = "e2e/flows/a15_per_instrument_ohlc_flows_into_map.rs"]
+mod a15_per_instrument_ohlc_flows_into_map;
+#[path = "e2e/flows/a15_replay_step_from_idle.rs"]
+mod a15_replay_step_from_idle;
+#[path = "e2e/flows/a16_replay_step_from_loaded.rs"]
+mod a16_replay_step_from_loaded;
 #[path = "e2e/flows/a7_replay_startup_progress.rs"]
 mod a7_replay_startup_progress;
 #[path = "e2e/flows/a8_stale_startup_id_ignored.rs"]
@@ -329,3 +335,9 @@ mod n13_footer_live_auto_pause_resume;
 // O. Live venue integration (TACHIBANA / kabusapi 統合フロー)
 #[path = "e2e/flows/o1_tachibana_live_manual_add_subscribe.rs"]
 mod o1_tachibana_live_manual_add_subscribe;
+
+// Q. Rendering / platform (headless smoke)
+#[path = "e2e/flows/q2_footer_no_raw_design_tokens.rs"]
+mod q2_footer_no_raw_design_tokens;
+#[path = "e2e/flows/q3_theme_serde_roundtrip.rs"]
+mod q3_theme_serde_roundtrip;

@@ -444,6 +444,7 @@ pub fn debounced_strategy_autosave_system(
         .map(|(id, f)| (id.region_key.clone(), f.source.clone()))
         .collect();
     items.sort_by(|a, b| a.0.cmp(&b.0));
+    items.retain(|(_, src)| !src.trim().is_empty());
     let merged = merge_fragments(&items);
 
     match flush_strategy_cache(&merged, &mut buffer, &mut auto_save) {

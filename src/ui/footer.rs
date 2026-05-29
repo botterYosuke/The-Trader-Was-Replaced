@@ -5,23 +5,25 @@ use crate::trading::{
 };
 use crate::ui::components::{
     ExecutionModeToggleSegment, FooterRoot, GrpcStatusLabel, PauseResumeButton, PauseResumeLabel,
-    ReplayStateBadge, ReplayTimeLabel, ScenarioMetadata, SpeedButton, StrategyBuffer, StrategyEditorId,
-    StrategyFragment, StrategyRunRequested, TransportButton, VenueStateBadge, WindowRoot,
+    ReplayStateBadge, ReplayTimeLabel, ScenarioMetadata, SpeedButton, StepFromIdleRequested,
+    StrategyBuffer, StrategyEditorId, StrategyFragment, StrategyRunRequested, TransportButton,
+    VenueStateBadge,
+    WindowRoot,
 };
 use crate::ui::strategy_editor::{StrategyAutoSaveState, flush_strategy_cache, merge_fragments};
 use bevy::prelude::*;
-
-const BTN_NORMAL: Color = Color::srgba(0.12, 0.12, 0.18, 1.0);
-const BTN_HOVER: Color = Color::srgba(0.22, 0.22, 0.32, 1.0);
-const BTN_PRESSED: Color = Color::srgba(0.35, 0.35, 0.52, 1.0);
-const BTN_SPEED_SELECTED: Color = Color::srgba(0.18, 0.38, 0.58, 1.0);
 
 const SPEED_OPTIONS: &[u32] = &[1, 2, 5, 10, 50];
 
 const BUTTON_DISABLED_ALPHA: f32 = 0.35;
 const BUTTON_ENABLED_ALPHA: f32 = 1.0;
 
-fn spawn_transport_btn(parent: &mut ChildSpawnerCommands, label: &str, action: TransportButton) {
+fn spawn_transport_btn(
+    parent: &mut ChildSpawnerCommands,
+    theme: &crate::ui::theme::Theme,
+    label: &str,
+    action: TransportButton,
+) {
     parent
         .spawn((
             Button,
@@ -32,22 +34,24 @@ fn spawn_transport_btn(parent: &mut ChildSpawnerCommands, label: &str, action: T
                 align_items: AlignItems::Center,
                 ..default()
             },
-            BackgroundColor(BTN_NORMAL),
+            BackgroundColor(theme.colors.element_background),
             action,
         ))
         .with_children(|p| {
             p.spawn((
                 Text::new(label),
-                TextFont {
-                    font_size: 11.0,
-                    ..default()
-                },
-                TextColor(Color::srgb(0.85, 0.85, 0.85)),
+                theme.typography.label_font(crate::ui::theme::LabelSize::Small),
+                TextColor(theme.colors.text),
             ));
         });
 }
 
-fn spawn_speed_btn(parent: &mut ChildSpawnerCommands, multiplier: u32, selected: bool) {
+fn spawn_speed_btn(
+    parent: &mut ChildSpawnerCommands,
+    theme: &crate::ui::theme::Theme,
+    multiplier: u32,
+    selected: bool,
+) {
     parent
         .spawn((
             Button,
@@ -59,25 +63,27 @@ fn spawn_speed_btn(parent: &mut ChildSpawnerCommands, multiplier: u32, selected:
                 ..default()
             },
             BackgroundColor(if selected {
-                BTN_SPEED_SELECTED
+                theme.colors.element_selected
             } else {
-                BTN_NORMAL
+                theme.colors.element_background
             }),
             SpeedButton(multiplier),
         ))
         .with_children(|p| {
             p.spawn((
                 Text::new(format!("{}x", multiplier)),
-                TextFont {
-                    font_size: 10.0,
-                    ..default()
-                },
-                TextColor(Color::srgb(0.75, 0.85, 1.0)),
+                theme.typography.label_font(crate::ui::theme::LabelSize::XSmall),
+                TextColor(theme.colors.text_accent),
             ));
         });
 }
 
-fn spawn_mode_segment(parent: &mut ChildSpawnerCommands, label: &str, mode: ExecutionMode) {
+fn spawn_mode_segment(
+    parent: &mut ChildSpawnerCommands,
+    theme: &crate::ui::theme::Theme,
+    label: &str,
+    mode: ExecutionMode,
+) {
     parent
         .spawn((
             Button,
@@ -88,22 +94,23 @@ fn spawn_mode_segment(parent: &mut ChildSpawnerCommands, label: &str, mode: Exec
                 align_items: AlignItems::Center,
                 ..default()
             },
-            BackgroundColor(BTN_NORMAL),
+            BackgroundColor(theme.colors.element_background),
             ExecutionModeToggleSegment(mode),
         ))
         .with_children(|p| {
             p.spawn((
                 Text::new(label),
-                TextFont {
-                    font_size: 11.0,
-                    ..default()
-                },
-                TextColor(Color::srgb(0.85, 0.85, 0.85)),
+                theme.typography.label_font(crate::ui::theme::LabelSize::Small),
+                TextColor(theme.colors.text),
             ));
         });
 }
 
-pub fn spawn_footer(mut commands: Commands, asset_server: Res<AssetServer>) {
+pub fn spawn_footer(
+    mut commands: Commands,
+    asset_server: Res<AssetServer>,
+    theme: Res<crate::ui::theme::Theme>,
+) {
     // U+25B6 ▶ と U+25A0 ■ は Bevy デフォルトフォント (FiraMono subset) に無いため、
     // Noto Sans Symbols 2 を読み込んで該当ボタンの Text にだけ適用する。
     // 他のボタン (`|<` `<` `>` `1x` 等) は ASCII なのでデフォルトのままで OK。
@@ -119,21 +126,25 @@ pub fn spawn_footer(mut commands: Commands, asset_server: Res<AssetServer>) {
                 height: Val::Px(28.0),
                 flex_direction: FlexDirection::Row,
                 align_items: AlignItems::Center,
-                column_gap: Val::Px(6.0),
-                padding: UiRect::horizontal(Val::Px(10.0)),
+                column_gap: Val::Px(
+                    crate::ui::theme::DynamicSpacing::Base06.px(theme.spacing.density),
+                ),
+                padding: UiRect::horizontal(Val::Px(
+                    crate::ui::theme::DynamicSpacing::Base08.px(theme.spacing.density),
+                )),
                 ..default()
             },
-            BackgroundColor(Color::srgba(0.04, 0.04, 0.07, 0.93)),
+            BackgroundColor(theme.colors.panel_background),
             FooterRoot,
         ))
         .with_children(|p| {
             // ── ExecutionMode segment toggle (Phase 8 §3.5.1) ──
-            spawn_mode_segment(p, "Replay", ExecutionMode::Replay);
-            spawn_mode_segment(p, "Manual", ExecutionMode::LiveManual);
-            spawn_mode_segment(p, "Auto", ExecutionMode::LiveAuto);
+            spawn_mode_segment(p, &theme, "Replay", ExecutionMode::Replay);
+            spawn_mode_segment(p, &theme, "Manual", ExecutionMode::LiveManual);
+            spawn_mode_segment(p, &theme, "Auto", ExecutionMode::LiveAuto);
 
             p.spawn(Node {
-                width: Val::Px(8.0),
+                width: Val::Px(crate::ui::theme::DynamicSpacing::Base08.px(theme.spacing.density)),
                 ..default()
             });
 
@@ -141,7 +152,7 @@ pub fn spawn_footer(mut commands: Commands, asset_server: Res<AssetServer>) {
             // No StepBack ("<") button: the backend has no replay-rewind path
             // (`StepReplay` only advances), so a back button would be dead UI.
             // See issue #7.
-            spawn_transport_btn(p, "|<", TransportButton::JumpToStart);
+            spawn_transport_btn(p, &theme, "|<", TransportButton::JumpToStart);
             // PauseResume: Button entity に PauseResumeButton marker、Text 子に PauseResumeLabel。
             // 初期表示は IDLE 起動を想定し "▶" (Run)。RUNNING 遷移時に "||" に切替。
             p.spawn((
@@ -153,23 +164,23 @@ pub fn spawn_footer(mut commands: Commands, asset_server: Res<AssetServer>) {
                     align_items: AlignItems::Center,
                     ..default()
                 },
-                BackgroundColor(BTN_NORMAL),
+                BackgroundColor(theme.colors.element_background),
                 TransportButton::PauseResume,
                 PauseResumeButton,
             ))
             .with_children(|pp| {
+                let (symbol_tf, symbol_lh) = theme
+                    .typography
+                    .label_font_with_font(crate::ui::theme::LabelSize::Small, symbol_font.clone());
                 pp.spawn((
                     Text::new("▶"),
-                    TextFont {
-                        font: symbol_font.clone(),
-                        font_size: 11.0,
-                        ..default()
-                    },
-                    TextColor(Color::srgb(0.85, 0.85, 0.85)),
+                    symbol_tf,
+                    symbol_lh,
+                    TextColor(theme.colors.text),
                     PauseResumeLabel,
                 ));
             });
-            spawn_transport_btn(p, ">", TransportButton::StepForward);
+            spawn_transport_btn(p, &theme, ">", TransportButton::StepForward);
             // ForceStop の "■" (U+25A0) は symbol_font が必要 (デフォルト font には無い)。
             p.spawn((
                 Button,
@@ -180,30 +191,30 @@ pub fn spawn_footer(mut commands: Commands, asset_server: Res<AssetServer>) {
                     align_items: AlignItems::Center,
                     ..default()
                 },
-                BackgroundColor(BTN_NORMAL),
+                BackgroundColor(theme.colors.element_background),
                 TransportButton::ForceStop,
             ))
             .with_children(|pp| {
+                let (symbol_tf, symbol_lh) = theme
+                    .typography
+                    .label_font_with_font(crate::ui::theme::LabelSize::Small, symbol_font.clone());
                 pp.spawn((
                     Text::new("■"),
-                    TextFont {
-                        font: symbol_font.clone(),
-                        font_size: 11.0,
-                        ..default()
-                    },
-                    TextColor(Color::srgb(0.85, 0.85, 0.85)),
+                    symbol_tf,
+                    symbol_lh,
+                    TextColor(theme.colors.text),
                 ));
             });
 
             // Separator
             p.spawn(Node {
-                width: Val::Px(6.0),
+                width: Val::Px(crate::ui::theme::DynamicSpacing::Base06.px(theme.spacing.density)),
                 ..default()
             });
 
             // Speed selector: 1x is selected by default
             for &mult in SPEED_OPTIONS {
-                spawn_speed_btn(p, mult, mult == 1);
+                spawn_speed_btn(p, &theme, mult, mult == 1);
             }
 
             // Flex spacer — pushes status labels to the right
@@ -215,38 +226,26 @@ pub fn spawn_footer(mut commands: Commands, asset_server: Res<AssetServer>) {
             // Status labels
             p.spawn((
                 Text::new("time: --"),
-                TextFont {
-                    font_size: 12.0,
-                    ..default()
-                },
-                TextColor(Color::srgb(0.55, 0.55, 0.55)),
+                theme.typography.label_font(crate::ui::theme::LabelSize::Default),
+                TextColor(theme.colors.text_muted),
                 ReplayTimeLabel,
             ));
             p.spawn((
                 Text::new("state: IDLE"),
-                TextFont {
-                    font_size: 12.0,
-                    ..default()
-                },
-                TextColor(Color::srgb(0.45, 0.45, 0.45)),
+                theme.typography.label_font(crate::ui::theme::LabelSize::Default),
+                TextColor(theme.colors.text_disabled),
                 ReplayStateBadge,
             ));
             p.spawn((
                 Text::new("Venue: DISCONNECTED"),
-                TextFont {
-                    font_size: 12.0,
-                    ..default()
-                },
-                TextColor(Color::srgb(0.55, 0.55, 0.55)),
+                theme.typography.label_font(crate::ui::theme::LabelSize::Default),
+                TextColor(theme.colors.text_muted),
                 VenueStateBadge,
             ));
             p.spawn((
                 Text::new("grpc: DISABLED"),
-                TextFont {
-                    font_size: 12.0,
-                    ..default()
-                },
-                TextColor(Color::srgb(0.40, 0.40, 0.40)),
+                theme.typography.label_font(crate::ui::theme::LabelSize::Default),
+                TextColor(theme.colors.text_disabled),
                 GrpcStatusLabel,
             ));
         });
@@ -317,6 +316,7 @@ pub fn update_footer_system(
         &mut BackgroundColor,
         &Interaction,
     )>,
+    theme: Res<crate::ui::theme::Theme>,
 ) {
     let need_walltime_tick = !matches!(exec_mode.mode, ExecutionMode::Replay);
     if !need_walltime_tick
@@ -374,11 +374,11 @@ pub fn update_footer_system(
             text.0 = new_text;
         }
         let new_color = match venue.state {
-            VenueState::Disconnected => Color::srgb(0.55, 0.55, 0.55),
-            VenueState::Authenticating | VenueState::Reconnecting => Color::srgb(1.00, 0.85, 0.20),
-            VenueState::Connected => Color::srgb(0.30, 0.80, 1.00),
-            VenueState::Subscribed => Color::srgb(0.20, 1.00, 0.45),
-            VenueState::Error => Color::srgb(1.00, 0.28, 0.28),
+            VenueState::Disconnected => theme.colors.text_muted,
+            VenueState::Authenticating | VenueState::Reconnecting => theme.status.warning,
+            VenueState::Connected => theme.status.info,
+            VenueState::Subscribed => theme.status.success,
+            VenueState::Error => theme.status.error,
         };
         if color.0 != new_color {
             color.0 = new_color;
@@ -388,11 +388,11 @@ pub fn update_footer_system(
     for (seg, mut bg, interaction) in &mut seg_q {
         let selected = seg.0 == exec_mode.mode;
         let target = if selected {
-            BTN_SPEED_SELECTED
+            theme.colors.element_selected
         } else if *interaction == Interaction::Hovered {
-            BTN_HOVER
+            theme.colors.element_hover
         } else {
-            BTN_NORMAL
+            theme.colors.element_background
         };
         if bg.0 != target {
             bg.0 = target;
@@ -403,10 +403,10 @@ pub fn update_footer_system(
     let replay = data.replay_state.as_deref().unwrap_or("IDLE");
     let state_text = format!("state: {}", replay);
     let state_color = match replay {
-        "RUNNING" => Color::srgb(0.20, 1.00, 0.45),
-        "PAUSED" => Color::srgb(1.00, 0.75, 0.20),
-        "LOADED" => Color::srgb(0.35, 0.70, 1.00),
-        _ => Color::srgb(0.45, 0.45, 0.45), // IDLE
+        "RUNNING" => theme.status.success,
+        "PAUSED" => theme.status.warning,
+        "LOADED" => theme.status.info,
+        _ => theme.colors.text_disabled, // IDLE
     };
     for (mut text, mut color) in &mut state_q {
         // 規約 2: 差分書き込み — avoid change-detection thrash per frame.
@@ -420,13 +420,13 @@ pub fn update_footer_system(
 
     // gRPC status
     let (grpc_text, grpc_color) = if !settings.backend_enabled {
-        ("grpc: DISABLED", Color::srgb(0.38, 0.38, 0.38))
+        ("grpc: DISABLED", theme.colors.text_disabled)
     } else if status.connected {
-        ("grpc: OK", Color::srgb(0.20, 1.00, 0.45))
+        ("grpc: OK", theme.status.success)
     } else if status.last_error.is_some() {
-        ("grpc: ERR", Color::srgb(1.00, 0.28, 0.28))
+        ("grpc: ERR", theme.status.error)
     } else {
-        ("grpc: ...", Color::srgb(0.80, 0.75, 0.25))
+        ("grpc: ...", theme.status.warning)
     };
     for (mut text, mut color) in &mut grpc_q {
         // 規約 2: 差分書き込み — avoid change-detection thrash per frame.
@@ -482,6 +482,12 @@ pub fn transport_button_system(
     data: Res<TradingSession>,
     sender: Res<TransportCommandSender>,
     exec_mode: Res<ExecutionModeRes>,
+    theme: Res<crate::ui::theme::Theme>,
+    // #61: IDLE からの StepForward に必要な追加パラメータ
+    fragments_q: Query<(&StrategyEditorId, &StrategyFragment), With<WindowRoot>>,
+    mut buffer: ResMut<StrategyBuffer>,
+    mut auto_save: ResMut<StrategyAutoSaveState>,
+    mut step_events: MessageWriter<StepFromIdleRequested>,
 ) {
     if !matches!(exec_mode.mode, ExecutionMode::Replay) {
         return;
@@ -489,7 +495,7 @@ pub fn transport_button_system(
     for (interaction, mut bg, action) in &mut query {
         match interaction {
             Interaction::Pressed => {
-                bg.0 = BTN_PRESSED;
+                bg.0 = theme.colors.element_active;
                 let replay = data.replay_state.as_deref().unwrap_or("IDLE");
                 match action {
                     TransportButton::PauseResume => {
@@ -497,8 +503,27 @@ pub fn transport_button_system(
                         // ここには来ない想定だが、enum exhaustive match を保つため arm を残す。
                     }
                     TransportButton::StepForward => {
-                        if replay == "PAUSED" {
+                        if matches!(replay, "PAUSED" | "LOADED") {
                             let _ = sender.tx.send(TransportCommand::StepForward);
+                        } else if replay == "IDLE" {
+                            // #61: IDLE から ▶| → 策略フラッシュして StepFromIdleRequested を発行。
+                            // handle_strategy_run_system が LoadAndStep コマンドに変換する。
+                            let mut items: Vec<(String, String)> = fragments_q
+                                .iter()
+                                .map(|(id, f)| (id.region_key.clone(), f.source.clone()))
+                                .collect();
+                            items.sort_by(|a, b| a.0.cmp(&b.0));
+                            items.retain(|(_, src)| !src.trim().is_empty());
+                            let merged = merge_fragments(&items);
+                            match flush_strategy_cache(&merged, &mut buffer, &mut auto_save) {
+                                Ok(true) => {
+                                    if let Some(path) = buffer.cache_path.clone() {
+                                        step_events.write(StepFromIdleRequested { cache_path: path });
+                                    }
+                                }
+                                Ok(false) => warn!("transport: step_from_idle blocked: no cache_path set"),
+                                Err(e) => error!("transport: step_from_idle flush failed: {}", e),
+                            }
                         } else {
                             info!("transport: step_forward ignored (state={})", replay);
                         }
@@ -517,8 +542,8 @@ pub fn transport_button_system(
                     },
                 }
             }
-            Interaction::Hovered => bg.0 = BTN_HOVER,
-            Interaction::None => bg.0 = BTN_NORMAL,
+            Interaction::Hovered => bg.0 = theme.colors.element_hover,
+            Interaction::None => bg.0 = theme.colors.element_background,
         }
     }
 }
@@ -532,6 +557,7 @@ pub fn speed_button_system(
     mut speed: ResMut<ReplaySpeed>,
     sender: Res<TransportCommandSender>,
     exec_mode: Res<ExecutionModeRes>,
+    theme: Res<crate::ui::theme::Theme>,
 ) {
     if !matches!(exec_mode.mode, ExecutionMode::Replay) {
         return;
@@ -541,14 +567,14 @@ pub fn speed_button_system(
             Interaction::Pressed => {
                 speed.current = *mult;
                 let _ = sender.tx.send(TransportCommand::SetSpeed(*mult));
-                bg.0 = BTN_SPEED_SELECTED;
+                bg.0 = theme.colors.element_selected;
             }
-            Interaction::Hovered => bg.0 = BTN_HOVER,
+            Interaction::Hovered => bg.0 = theme.colors.element_hover,
             Interaction::None => {
                 bg.0 = if speed.current == *mult {
-                    BTN_SPEED_SELECTED
+                    theme.colors.element_selected
                 } else {
-                    BTN_NORMAL
+                    theme.colors.element_background
                 }
             }
         }
@@ -559,17 +585,18 @@ pub fn speed_button_system(
 pub fn update_speed_buttons_system(
     speed: Res<ReplaySpeed>,
     mut query: Query<(&mut BackgroundColor, &SpeedButton, &Interaction)>,
+    theme: Res<crate::ui::theme::Theme>,
 ) {
     if !speed.is_changed() {
         return;
     }
     for (mut bg, SpeedButton(mult), interaction) in &mut query {
         bg.0 = if *mult == speed.current {
-            BTN_SPEED_SELECTED
+            theme.colors.element_selected
         } else if *interaction == Interaction::Hovered {
-            BTN_HOVER
+            theme.colors.element_hover
         } else {
-            BTN_NORMAL
+            theme.colors.element_background
         };
     }
 }
@@ -600,14 +627,18 @@ pub fn footer_pause_resume_system(
     selected: Res<SelectedSymbol>,
     scenario: Res<ScenarioMetadata>,
     venue: Res<VenueStatusRes>,
+    theme: Res<crate::ui::theme::Theme>,
 ) {
-    if !matches!(exec_mode.mode, ExecutionMode::Replay | ExecutionMode::LiveAuto) {
+    if !matches!(
+        exec_mode.mode,
+        ExecutionMode::Replay | ExecutionMode::LiveAuto
+    ) {
         return;
     }
     for (interaction, mut bg) in &mut query {
         match interaction {
             Interaction::Pressed => {
-                bg.0 = BTN_PRESSED;
+                bg.0 = theme.colors.element_active;
                 match exec_mode.mode {
                     ExecutionMode::Replay => match data.replay_state.as_deref() {
                         Some("RUNNING") => {
@@ -630,6 +661,7 @@ pub fn footer_pause_resume_system(
                                 .map(|(id, f)| (id.region_key.clone(), f.source.clone()))
                                 .collect();
                             items.sort_by(|a, b| a.0.cmp(&b.0));
+                            items.retain(|(_, src)| !src.trim().is_empty());
                             let merged = merge_fragments(&items);
                             match flush_strategy_cache(&merged, &mut buffer, &mut auto_save) {
                                 Ok(true) => {}
@@ -731,6 +763,7 @@ pub fn footer_pause_resume_system(
                             .map(|(id, f)| (id.region_key.clone(), f.source.clone()))
                             .collect();
                         items.sort_by(|a, b| a.0.cmp(&b.0));
+                        items.retain(|(_, src)| !src.trim().is_empty());
                         let merged = merge_fragments(&items);
                         match flush_strategy_cache(&merged, &mut buffer, &mut auto_save) {
                             Ok(true) => {}
@@ -774,8 +807,8 @@ pub fn footer_pause_resume_system(
                     ExecutionMode::LiveManual => {}
                 }
             }
-            Interaction::Hovered => bg.0 = BTN_HOVER,
-            Interaction::None => bg.0 = BTN_NORMAL,
+            Interaction::Hovered => bg.0 = theme.colors.element_hover,
+            Interaction::None => bg.0 = theme.colors.element_background,
         }
     }
 }
@@ -875,7 +908,10 @@ pub fn auto_replay_on_venue_disconnect_system(
         return;
     }
     if !is_venue_live(venue.state)
-        && matches!(exec_mode.mode, ExecutionMode::LiveManual | ExecutionMode::LiveAuto)
+        && matches!(
+            exec_mode.mode,
+            ExecutionMode::LiveManual | ExecutionMode::LiveAuto
+        )
     {
         info!(
             "venue non-live ({:?}): auto-switching {} → Replay",
@@ -922,7 +958,10 @@ pub fn apply_execution_mode_visibility_system(
         return;
     }
 
-    let pause_target = if matches!(exec_mode.mode, ExecutionMode::Replay | ExecutionMode::LiveAuto) {
+    let pause_target = if matches!(
+        exec_mode.mode,
+        ExecutionMode::Replay | ExecutionMode::LiveAuto
+    ) {
         Display::Flex
     } else {
         Display::None
@@ -954,8 +993,8 @@ pub fn apply_execution_mode_visibility_system(
 mod tests {
     use super::*;
     use crate::trading::{
-        CurrentRun, ExecutionMode, ExecutionModeRes, ReplaySpeed, SelectedSymbol,
-        TradingSession, TransportCommand, TransportCommandSender, VenueStatusRes,
+        CurrentRun, ExecutionMode, ExecutionModeRes, ReplaySpeed, SelectedSymbol, TradingSession,
+        TransportCommand, TransportCommandSender, VenueStatusRes,
     };
     use crate::ui::components::{
         PauseResumeButton, SpeedButton, StrategyBuffer, StrategyRunRequested, TransportButton,
@@ -976,7 +1015,9 @@ mod tests {
             .init_resource::<VenueStatusRes>()
             .init_resource::<ScenarioMetadata>()
             .init_resource::<StrategyAutoSaveState>()
-            .add_message::<StrategyRunRequested>();
+            .add_message::<StrategyRunRequested>()
+            .add_message::<StepFromIdleRequested>();
+        app.add_plugins(crate::ui::theme::ThemePlugin);
         app.add_systems(
             Update,
             (
