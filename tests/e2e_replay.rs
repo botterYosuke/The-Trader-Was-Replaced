@@ -337,9 +337,6 @@ mod n13_footer_live_auto_pause_resume;
 mod o1_tachibana_live_manual_add_subscribe;
 
 // Q. Rendering / platform (headless smoke)
-#[path = "e2e/flows/q1_draw_closure_no_i32_overflow.rs"]
-mod q1_draw_closure_no_i32_overflow;
-
 #[path = "e2e/flows/q2_footer_no_raw_design_tokens.rs"]
 mod q2_footer_no_raw_design_tokens;
 #[path = "e2e/flows/q3_theme_serde_roundtrip.rs"]

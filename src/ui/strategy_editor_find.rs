@@ -1437,7 +1437,6 @@ mod tests {
     // bevscode 切替後の不変条件:
     //   ReplaceAll action を投げると `SetTextRequested { entity: target, text: new_source }`
     //   が **1 件だけ** flush される (bevscode 側 sync system が fragment/autosave/AppHistory を駆動)。
-    //   cosmic 経路 (`CosmicTextChanged`) はもう使わない。
 
     #[test]
     fn replace_execute_emits_set_text_requested_on_replace_all() {

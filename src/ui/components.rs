@@ -88,9 +88,6 @@ pub enum MenuItem {
     VenueConnectKabuProd,
     VenueDisconnect,
     HelpSettings,
-    // issue #50 Step 0 spike — bevscode Projected Node PoC を spawn する menu item。
-    // spike 専用、Phase B（Go 後）でこの variant ごと削除する。
-    SpikeBevscode,
 }
 
 #[derive(Component, Clone, Copy, Debug, PartialEq, Eq)]

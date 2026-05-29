@@ -227,8 +227,8 @@ impl Edit for AppEdit {
 ///   `undo_redo_system` が undo/redo 呼び出し前に +1、
 ///   `apply_pending_app_edits_system` が drain 完了後に -1 する。
 /// - `suppress_echo_target`: `Some(text)` のとき `sync_editor_to_strategy_buffer_system` が
-///   `CosmicTextChanged` の内容を `text` と比較し、一致した場合のみ無視（消費）する。
-///   undo/redo 適用後に cosmic_edit が返す echo を「期待テキスト一致」で判別することで、
+///   bevscode からの text change イベント内容を `text` と比較し、一致した場合のみ無視（消費）する。
+///   undo/redo 適用後に bevscode が返す echo を「期待テキスト一致」で判別することで、
 ///   echo が 1 回しか来なかった場合でも次の本物のユーザー入力を誤って捨てない。
 #[derive(Resource)]
 pub struct AppHistory {
@@ -257,8 +257,8 @@ impl AppHistory {
         self.replaying_depth > 0
     }
 
-    /// undo/redo や外部からのテキスト適用後に cosmic_edit が echo する
-    /// `CosmicTextChanged` を無視するターゲットテキストをセットする。
+    /// undo/redo や外部からのテキスト適用後に bevscode が echo する
+    /// text change イベントを無視するターゲットテキストをセットする。
     /// `sync_editor_to_strategy_buffer_system` が `new_text == target` のとき
     /// だけ echo を消費・無視し、異なるテキストが来た場合はターゲットをクリアして
     /// 通常入力として履歴に積む。

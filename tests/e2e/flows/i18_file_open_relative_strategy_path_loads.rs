@@ -23,8 +23,6 @@ use serial_test::serial;
 
 use bevy::prelude::*;
 use bevy::transform::TransformPlugin;
-use bevy_cosmic_edit::prelude::CosmicFontSystem;
-use cosmic_text::FontSystem;
 
 use backcast::trading::{ExecutionMode, ExecutionModeRes, InstrumentTradingDataMap};
 use backcast::ui::components::{
@@ -113,7 +111,6 @@ fn i18_file_open_relative_strategy_path_loads() {
         .insert_resource(RegionKeyAllocator::default())
         .insert_resource(AppHistory::default())
         .insert_resource(StrategyBuffer::default())
-        .insert_resource(CosmicFontSystem(FontSystem::new()))
         .insert_resource(ScenarioMetadata::default())
         .insert_resource(ScenarioFileWatchState::default())
         .insert_resource(ScenarioInstrumentsWritebackState::default())

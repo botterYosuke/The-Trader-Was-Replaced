@@ -13,8 +13,6 @@
 
 use bevy::prelude::*;
 use bevy::transform::TransformPlugin;
-use bevy_cosmic_edit::prelude::CosmicFontSystem;
-use cosmic_text::FontSystem;
 
 use backcast::ui::components::{
     InstrumentRegistry, PanelKind, PanelSpawnRequested, PendingStrategyFragments,
@@ -33,7 +31,6 @@ fn m5_panel_duplicate_policy() {
     app.add_plugins(TransformPlugin);
 
     app.insert_resource(WindowManager::default())
-        .insert_resource(CosmicFontSystem(FontSystem::new()))
         .insert_resource(RegionKeyAllocator::default())
         .insert_resource(AppHistory::default())
         .insert_resource(ActiveDrag::default())
