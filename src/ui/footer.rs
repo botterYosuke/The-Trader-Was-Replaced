@@ -35,6 +35,8 @@ fn spawn_transport_btn(
                 ..default()
             },
             BackgroundColor(theme.colors.element_background),
+            crate::ui::component::ButtonStyle::Filled,
+            crate::ui::theme::ElevationIndex::Surface,
             action,
         ))
         .with_children(|p| {
@@ -67,6 +69,8 @@ fn spawn_speed_btn(
             } else {
                 theme.colors.element_background
             }),
+            crate::ui::component::ButtonStyle::Filled,
+            crate::ui::theme::ElevationIndex::Surface,
             SpeedButton(multiplier),
         ))
         .with_children(|p| {
@@ -95,6 +99,8 @@ fn spawn_mode_segment(
                 ..default()
             },
             BackgroundColor(theme.colors.element_background),
+            crate::ui::component::ButtonStyle::Filled,
+            crate::ui::theme::ElevationIndex::Surface,
             ExecutionModeToggleSegment(mode),
         ))
         .with_children(|p| {
@@ -165,6 +171,8 @@ pub fn spawn_footer(
                     ..default()
                 },
                 BackgroundColor(theme.colors.element_background),
+                crate::ui::component::ButtonStyle::Filled,
+                crate::ui::theme::ElevationIndex::Surface,
                 TransportButton::PauseResume,
                 PauseResumeButton,
             ))
@@ -311,11 +319,6 @@ pub fn update_footer_system(
             Without<PauseResumeLabel>,
         ),
     >,
-    mut seg_q: Query<(
-        &ExecutionModeToggleSegment,
-        &mut BackgroundColor,
-        &Interaction,
-    )>,
     theme: Res<crate::ui::theme::Theme>,
 ) {
     let need_walltime_tick = !matches!(exec_mode.mode, ExecutionMode::Replay);
@@ -385,19 +388,9 @@ pub fn update_footer_system(
         }
     }
 
-    for (seg, mut bg, interaction) in &mut seg_q {
-        let selected = seg.0 == exec_mode.mode;
-        let target = if selected {
-            theme.colors.element_selected
-        } else if *interaction == Interaction::Hovered {
-            theme.colors.element_hover
-        } else {
-            theme.colors.element_background
-        };
-        if bg.0 != target {
-            bg.0 = target;
-        }
-    }
+    // ExecutionMode segment selected highlight is owned by
+    // sync_execution_mode_selected_system (ButtonSelected) +
+    // button_interaction_system. #46 Slice A.
 
     // Replay state badge
     let replay = data.replay_state.as_deref().unwrap_or("IDLE");
@@ -471,8 +464,8 @@ pub fn update_footer_system(
 #[allow(clippy::type_complexity)]
 #[allow(clippy::too_many_arguments)]
 pub fn transport_button_system(
-    mut query: Query<
-        (&Interaction, &mut BackgroundColor, &TransportButton),
+    query: Query<
+        (&Interaction, &TransportButton),
         (
             Changed<Interaction>,
             With<Button>,
@@ -482,7 +475,6 @@ pub fn transport_button_system(
     data: Res<TradingSession>,
     sender: Res<TransportCommandSender>,
     exec_mode: Res<ExecutionModeRes>,
-    theme: Res<crate::ui::theme::Theme>,
     // #61: IDLE からの StepForward に必要な追加パラメータ
     fragments_q: Query<(&StrategyEditorId, &StrategyFragment), With<WindowRoot>>,
     mut buffer: ResMut<StrategyBuffer>,
@@ -492,10 +484,11 @@ pub fn transport_button_system(
     if !matches!(exec_mode.mode, ExecutionMode::Replay) {
         return;
     }
-    for (interaction, mut bg, action) in &mut query {
+    // Color is owned by button_interaction_system (Filled); this keeps only
+    // the transport action. #46 Slice A.
+    for (interaction, action) in &query {
         match interaction {
             Interaction::Pressed => {
-                bg.0 = theme.colors.element_active;
                 let replay = data.replay_state.as_deref().unwrap_or("IDLE");
                 match action {
                     TransportButton::PauseResume => {
@@ -542,62 +535,72 @@ pub fn transport_button_system(
                     },
                 }
             }
-            Interaction::Hovered => bg.0 = theme.colors.element_hover,
-            Interaction::None => bg.0 = theme.colors.element_background,
+            Interaction::Hovered | Interaction::None => {}
         }
     }
 }
 
 #[allow(clippy::type_complexity)]
 pub fn speed_button_system(
-    mut query: Query<
-        (&Interaction, &mut BackgroundColor, &SpeedButton),
-        (Changed<Interaction>, With<Button>),
-    >,
+    query: Query<(&Interaction, &SpeedButton), (Changed<Interaction>, With<Button>)>,
     mut speed: ResMut<ReplaySpeed>,
     sender: Res<TransportCommandSender>,
     exec_mode: Res<ExecutionModeRes>,
-    theme: Res<crate::ui::theme::Theme>,
 ) {
     if !matches!(exec_mode.mode, ExecutionMode::Replay) {
         return;
     }
-    for (interaction, mut bg, SpeedButton(mult)) in &mut query {
-        match interaction {
-            Interaction::Pressed => {
-                speed.current = *mult;
-                let _ = sender.tx.send(TransportCommand::SetSpeed(*mult));
-                bg.0 = theme.colors.element_selected;
-            }
-            Interaction::Hovered => bg.0 = theme.colors.element_hover,
-            Interaction::None => {
-                bg.0 = if speed.current == *mult {
-                    theme.colors.element_selected
-                } else {
-                    theme.colors.element_background
-                }
-            }
+    // Color (incl. the selected highlight) is owned by
+    // update_speed_buttons_system (ButtonSelected toggle) +
+    // button_interaction_system. This keeps only the set-speed action.
+    for (interaction, SpeedButton(mult)) in &query {
+        if *interaction == Interaction::Pressed {
+            speed.current = *mult;
+            let _ = sender.tx.send(TransportCommand::SetSpeed(*mult));
         }
     }
 }
 
-/// Refreshes speed button highlight whenever ReplaySpeed changes.
+/// Toggles the `ButtonSelected` marker on the speed button matching the current
+/// `ReplaySpeed`; `button_interaction_system` paints the highlight. #46 Slice A.
 pub fn update_speed_buttons_system(
     speed: Res<ReplaySpeed>,
-    mut query: Query<(&mut BackgroundColor, &SpeedButton, &Interaction)>,
-    theme: Res<crate::ui::theme::Theme>,
+    mut commands: Commands,
+    query: Query<(Entity, &SpeedButton)>,
 ) {
     if !speed.is_changed() {
         return;
     }
-    for (mut bg, SpeedButton(mult), interaction) in &mut query {
-        bg.0 = if *mult == speed.current {
-            theme.colors.element_selected
-        } else if *interaction == Interaction::Hovered {
-            theme.colors.element_hover
+    for (e, SpeedButton(mult)) in &query {
+        if *mult == speed.current {
+            commands.entity(e).insert(crate::ui::component::ButtonSelected);
         } else {
-            theme.colors.element_background
-        };
+            commands
+                .entity(e)
+                .remove::<crate::ui::component::ButtonSelected>();
+        }
+    }
+}
+
+/// Toggles `ButtonSelected` on the ExecutionMode segment matching the active
+/// mode; `button_interaction_system` paints the highlight. #46 Slice A
+/// (replaces the seg color loop formerly in `update_footer_system`).
+pub fn sync_execution_mode_selected_system(
+    exec_mode: Res<ExecutionModeRes>,
+    mut commands: Commands,
+    query: Query<(Entity, &ExecutionModeToggleSegment), With<Button>>,
+) {
+    if !exec_mode.is_changed() {
+        return;
+    }
+    for (e, seg) in &query {
+        if seg.0 == exec_mode.mode {
+            commands.entity(e).insert(crate::ui::component::ButtonSelected);
+        } else {
+            commands
+                .entity(e)
+                .remove::<crate::ui::component::ButtonSelected>();
+        }
     }
 }
 
@@ -612,8 +615,8 @@ pub fn update_speed_buttons_system(
 #[allow(clippy::type_complexity)]
 #[allow(clippy::too_many_arguments)]
 pub fn footer_pause_resume_system(
-    mut query: Query<
-        (&Interaction, &mut BackgroundColor),
+    query: Query<
+        &Interaction,
         (Changed<Interaction>, With<PauseResumeButton>, With<Button>),
     >,
     data: Res<TradingSession>,
@@ -627,7 +630,6 @@ pub fn footer_pause_resume_system(
     selected: Res<SelectedSymbol>,
     scenario: Res<ScenarioMetadata>,
     venue: Res<VenueStatusRes>,
-    theme: Res<crate::ui::theme::Theme>,
 ) {
     if !matches!(
         exec_mode.mode,
@@ -635,10 +637,11 @@ pub fn footer_pause_resume_system(
     ) {
         return;
     }
-    for (interaction, mut bg) in &mut query {
+    // Color is owned by button_interaction_system (Filled); this keeps only the
+    // pause/resume/run action. #46 Slice A.
+    for interaction in &query {
         match interaction {
             Interaction::Pressed => {
-                bg.0 = theme.colors.element_active;
                 match exec_mode.mode {
                     ExecutionMode::Replay => match data.replay_state.as_deref() {
                         Some("RUNNING") => {
@@ -807,8 +810,7 @@ pub fn footer_pause_resume_system(
                     ExecutionMode::LiveManual => {}
                 }
             }
-            Interaction::Hovered => bg.0 = theme.colors.element_hover,
-            Interaction::None => bg.0 = theme.colors.element_background,
+            Interaction::Hovered | Interaction::None => {}
         }
     }
 }

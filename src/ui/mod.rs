@@ -80,7 +80,8 @@ use crate::ui::editor_history::{
 use crate::ui::floating_window::{floating_window_layout_system, panel_spawn_dispatcher_system};
 use crate::ui::footer::{
     execution_mode_toggle_system, footer_pause_resume_system, spawn_footer, speed_button_system,
-    transport_button_system, update_footer_system, update_speed_buttons_system,
+    sync_execution_mode_selected_system, transport_button_system, update_footer_system,
+    update_speed_buttons_system,
 };
 use crate::ui::instrument_picker::{
     add_instrument_button_system, auto_fetch_available_on_replay_entry_system,
@@ -322,6 +323,7 @@ impl Plugin for UiPlugin {
                 speed_button_system,
                 update_speed_buttons_system,
                 execution_mode_toggle_system,
+                sync_execution_mode_selected_system,
                 log_strategy_file_load_requested_system,
                 handle_strategy_file_load_system,
                 update_strategy_status_label_system,

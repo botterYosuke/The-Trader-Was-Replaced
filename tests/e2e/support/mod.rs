@@ -42,7 +42,8 @@ use backcast::ui::components::{
 };
 use backcast::ui::footer::{
     execution_mode_toggle_system, footer_pause_resume_system, speed_button_system,
-    transport_button_system, update_footer_system,
+    sync_execution_mode_selected_system, transport_button_system, update_footer_system,
+    update_speed_buttons_system,
 };
 use backcast::ui::instrument_picker::{
     auto_fetch_available_on_replay_entry_system, auto_fetch_live_universe_on_connect_system,
@@ -184,7 +185,9 @@ impl Harness {
                 (footer_pause_resume_system, handle_strategy_run_system).chain(),
                 transport_button_system.before(handle_strategy_run_system),
                 speed_button_system,
+                update_speed_buttons_system,
                 execution_mode_toggle_system,
+                sync_execution_mode_selected_system,
                 instrument_row_click_system,
                 (
                     instrument_remove_button_system,
