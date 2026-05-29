@@ -281,3 +281,91 @@ def test_modify_order_no_session():
     )
     assert isinstance(result, dict)
     assert result["success"] is False
+
+
+# ---------------------------------------------------------------------------
+# RED (#64-1): _parse_granularity_int は Rust から渡る proto int を受け取れる
+#   Rust backend_transport.rs は granularity を proto enum の int (DAILY=3 等) で
+#   cfg.set_item するが、現行 parser は文字列名前提のため int が常に TICK(0) に潰れる。
+#   RED＝回帰ガード・fix は #64 後に green
+# ---------------------------------------------------------------------------
+
+def test_parse_granularity_int_accepts_proto_int_daily():
+    from engine.inproc_server import _parse_granularity_int
+    from engine.proto import engine_pb2
+
+    # Rust 側は proto enum の int をそのまま渡す（DAILY == 3）
+    assert _parse_granularity_int(engine_pb2.DAILY) == engine_pb2.DAILY
+
+
+def test_parse_granularity_int_accepts_proto_int_minute():
+    from engine.inproc_server import _parse_granularity_int
+    from engine.proto import engine_pb2
+
+    assert _parse_granularity_int(engine_pb2.MINUTE) == engine_pb2.MINUTE
+
+
+# ---------------------------------------------------------------------------
+# RED (#64-4): 配下ハンドラが RuntimeError 非サブクラス例外（concurrent.futures.TimeoutError）
+#   を投げたとき、現行 place_order は `except RuntimeError` をすり抜けて PyO3 境界へ
+#   例外を伝播させてしまう。修正後は except Exception で捕捉し error_code='INPROC_ERROR'
+#   の dict を返すべき。
+#   RED＝回帰ガード・fix は #64 後に green
+# ---------------------------------------------------------------------------
+
+def test_place_order_non_runtime_exception_returns_inproc_error():
+    import concurrent.futures
+    from engine.inproc_server import InprocLiveServer
+
+    engine = DataEngine()
+    srv = InprocLiveServer(engine, live_venue_id=None)
+
+    def _raise_timeout(req, ctx):
+        raise concurrent.futures.TimeoutError("inproc timeout")
+
+    srv._srv.PlaceOrder = _raise_timeout
+
+    # 現状: Timeout 例外が except RuntimeError をすり抜けて送出される（RED）。
+    # 修正後: dict が返り error_code == 'INPROC_ERROR' になる（GREEN）。
+    result = srv.place_order(
+        venue="MOCK",
+        instrument_id="7203.TSE",
+        side="BUY",
+        qty=100.0,
+        price=1000.0,
+        order_type="LIMIT",
+        time_in_force="DAY",
+        second_secret=None,
+    )
+    assert isinstance(result, dict)
+    assert result["success"] is False
+    assert result["error_code"] == "INPROC_ERROR"
+
+
+# ---------------------------------------------------------------------------
+# RED (#64-6): InprocLiveServer.close() は配下 GrpcDataEngineServer の live
+#   コンポーネント teardown を呼ぶべき。InProc worker は command channel close
+#   時に façade を drop するだけで、配下の live loop thread / runner / account
+#   sync を停止しない（server_grpc.py の _live_loop/_live_thread は誰も止めない）。
+#   修正後は close() が self._srv._teardown_live_components() を呼ぶ。
+#   RED＝回帰ガード・fix は #64 後に green
+# ---------------------------------------------------------------------------
+
+def test_close_invokes_underlying_teardown():
+    from engine.inproc_server import InprocLiveServer
+
+    engine = DataEngine()
+    srv = InprocLiveServer(engine, live_venue_id=None)
+
+    calls = []
+
+    def _spy_teardown():
+        calls.append("teardown")
+
+    srv._srv._teardown_live_components = _spy_teardown
+
+    # 現状: close() は no-op shell なので teardown を呼ばない（RED）。
+    # 修正後: close() が self._srv._teardown_live_components() を呼ぶ（GREEN）。
+    srv.close()
+
+    assert calls == ["teardown"]

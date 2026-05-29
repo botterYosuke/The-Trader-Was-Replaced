@@ -35,6 +35,17 @@ description: |
   in scope; `inproc_json_dumps` serializes Python dict → JSON string → `serde_json::Value`
   (necessary since return dicts have per-method shapes); `inproc_poll_state` now calls
   `live_server.get_state_json()` (includes live price/depth cache).
+  **PyO3 build env (Windows, this repo's `backcast` crate links pyo3 0.22):** `cargo build/test`
+  needs a real Python interpreter on PATH — the Windows `WindowsApps\python` alias stub fails with
+  "no Python 3.x interpreter found", and the repo `.venv` is Python 3.14 which EXCEEDS pyo3 0.22's
+  max (3.13: "configured Python interpreter version (3.14) is newer than PyO3's maximum supported").
+  Build with `$env:PYO3_PYTHON='<repo>\.venv\Scripts\python.exe'` +
+  `$env:PYO3_USE_ABI3_FORWARD_COMPATIBILITY='1'` (stable-ABI forward-compat; fine for tests that don't
+  init Python). First pyo3 build links all of Bevy (~13 min); run it in background. Pure-Rust unit
+  tests in `src/backend_transport.rs` (`#[cfg(test)] mod tests`) still need this because the crate
+  links pyo3 even if the test never touches Python. Also: the #64-merged `Cargo.lock` was OUT OF SYNC
+  (pyo3 + its tree like `indoc` missing from `backcast`'s deps; `thiserror`→2 unification) — a clean
+  build regenerates it, so `cargo build --locked` would fail until the lock is committed.
   Also trigger on related vocabulary: "msgbus", "ts_event",
   "ts_init", "InstrumentId", "ClientId", "Venue", "BarSpec", "OrderFactory", "ExecAlgorithm",
   "PositionEvent", "OrderEvent", "cache" in a trading sense, "Cython .pyx".
