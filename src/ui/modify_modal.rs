@@ -30,7 +30,8 @@ const COLOR_WARN_BG: Color = Color::srgba(0.35, 0.22, 0.05, 1.0);
 const COLOR_WARN_TEXT: Color = Color::srgb(1.0, 0.78, 0.35);
 const COLOR_FIELD_BG: Color = Color::srgba(0.04, 0.04, 0.08, 1.0);
 const COLOR_FIELD_BG_ACTIVE: Color = Color::srgba(0.10, 0.14, 0.22, 1.0);
-const COLOR_BTN_SUBMIT: Color = Color::srgba(0.10, 0.45, 0.30, 1.0);
+// Confirm button initial bg (starts disabled); active/disabled color is owned
+// by button_interaction_system (Tinted(Success) + ButtonDisabled). #46 Slice A.
 const COLOR_BTN_DISABLED: Color = Color::srgba(0.18, 0.20, 0.24, 1.0);
 const COLOR_BTN_CANCEL: Color = Color::srgba(0.30, 0.16, 0.20, 1.0);
 const COLOR_CHECK_OFF: Color = Color::srgba(0.18, 0.20, 0.28, 1.0);
@@ -284,6 +285,10 @@ pub fn spawn_modify_modal(mut commands: Commands) {
                                 ..default()
                             },
                             BackgroundColor(COLOR_BTN_CANCEL),
+                            crate::ui::component::ButtonStyle::Tinted(
+                                crate::ui::component::TintColor::Error,
+                            ),
+                            crate::ui::theme::ElevationIndex::ModalSurface,
                             ModifyButton::Cancel,
                         ))
                         .with_children(|b| {
@@ -306,6 +311,10 @@ pub fn spawn_modify_modal(mut commands: Commands) {
                                 ..default()
                             },
                             BackgroundColor(COLOR_BTN_DISABLED),
+                            crate::ui::component::ButtonStyle::Tinted(
+                                crate::ui::component::TintColor::Success,
+                            ),
+                            crate::ui::theme::ElevationIndex::ModalSurface,
                             ModifyButton::Confirm,
                         ))
                         .with_children(|b| {
@@ -534,14 +543,19 @@ pub fn modify_modal_sync_system(
     mut warn_q: Query<&mut Node, With<ModifyWarnRow>>,
     mut ack_row_q: Query<&mut Node, (With<ModifyWarnAckRow>, Without<ModifyWarnRow>)>,
     mut check_q: Query<&mut BackgroundColor, (With<ModifyAckCheckbox>, Without<ModifyFieldBg>)>,
-    mut confirm_q: Query<
-        (&ModifyButton, &mut BackgroundColor),
+    confirm_q: Query<
+        (
+            Entity,
+            &ModifyButton,
+            Has<crate::ui::component::ButtonDisabled>,
+        ),
         (
             With<Button>,
             Without<ModifyFieldBg>,
             Without<ModifyAckCheckbox>,
         ),
     >,
+    mut commands: Commands,
 ) {
     // 入力値テキスト
     for (field, mut text) in &mut fields {
@@ -593,17 +607,19 @@ pub fn modify_modal_sync_system(
         }
     }
 
-    // Confirm ボタン色 (gating の視覚化)
+    // Confirm ボタンの gating 視覚化は ButtonDisabled marker に委譲し、
+    // button_interaction_system が色を塗る。#46 Slice A。
     let can = form.can_confirm();
-    for (button, mut bg) in &mut confirm_q {
+    for (entity, button, has_disabled) in &confirm_q {
         if matches!(button, ModifyButton::Confirm) {
-            let target = if can {
-                COLOR_BTN_SUBMIT
-            } else {
-                COLOR_BTN_DISABLED
-            };
-            if bg.0 != target {
-                bg.0 = target;
+            if !can && !has_disabled {
+                commands
+                    .entity(entity)
+                    .insert(crate::ui::component::ButtonDisabled);
+            } else if can && has_disabled {
+                commands
+                    .entity(entity)
+                    .remove::<crate::ui::component::ButtonDisabled>();
             }
         }
     }

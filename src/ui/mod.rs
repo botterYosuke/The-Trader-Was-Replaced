@@ -106,8 +106,8 @@ use crate::ui::modify_modal::{
     modify_modal_visibility_system, spawn_modify_modal,
 };
 use crate::ui::order_context_menu::{
-    OrderContextMenu, context_menu_hover_system, context_menu_item_system,
-    context_menu_keyboard_system, context_menu_visibility_system, spawn_order_context_menu,
+    OrderContextMenu, context_menu_item_system, context_menu_keyboard_system,
+    context_menu_visibility_system, spawn_order_context_menu,
 };
 use crate::ui::order_panel::{
     OrderButtonPressed, OrderConfirm, OrderForm, confirm_modal_button_system,
@@ -545,7 +545,6 @@ impl Plugin for UiPlugin {
                     .before(secret_modal_input_system)
                     .before(confirm_modal_button_system),
                 context_menu_item_system,
-                context_menu_hover_system,
                 // Modify modal — input は picker / menu より先に keystroke を消費する
                 // (secret_modal と同じ drain パターン)。secret modal (最前面・最優先) が同フレームに
                 // 開いている稀ケースでは secret 側が先に drain するよう `.after(secret_modal_input_system)`

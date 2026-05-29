@@ -21,7 +21,8 @@ use crate::ui::order_panel::OrderConfirm;
 
 const COLOR_MENU_BG: Color = Color::srgba(0.10, 0.11, 0.16, 0.99);
 const COLOR_ITEM_TEXT: Color = Color::srgb(0.88, 0.91, 0.96);
-const COLOR_ITEM_HOVER: Color = Color::srgba(0.10, 0.40, 0.60, 1.0);
+// Initial spawn bg only; hover/idle color is owned by button_interaction_system
+// (Transparent style). #46 Slice A.
 const COLOR_ITEM_IDLE: Color = Color::srgba(0.0, 0.0, 0.0, 0.0);
 
 const MENU_WIDTH: f32 = 120.0;
@@ -141,6 +142,8 @@ fn spawn_item(parent: &mut ChildSpawnerCommands, item: ContextMenuItem, label: &
                 ..default()
             },
             BackgroundColor(COLOR_ITEM_IDLE),
+            crate::ui::component::ButtonStyle::Transparent,
+            crate::ui::theme::ElevationIndex::ElevatedSurface,
             item,
         ))
         .with_children(|b| {
@@ -267,19 +270,8 @@ pub fn context_menu_item_system(
 }
 
 /// ホバー中の項目を色付けする (差分書き込み)。
-pub fn context_menu_hover_system(
-    mut item_q: Query<(&Interaction, &mut BackgroundColor), (With<ContextMenuItem>, With<Button>)>,
-) {
-    for (interaction, mut bg) in &mut item_q {
-        let target = match interaction {
-            Interaction::Hovered | Interaction::Pressed => COLOR_ITEM_HOVER,
-            Interaction::None => COLOR_ITEM_IDLE,
-        };
-        if bg.0 != target {
-            bg.0 = target;
-        }
-    }
-}
+// #46 Slice A: context_menu_hover_system removed — items carry
+// ButtonStyle::Transparent and are painted by button_interaction_system.
 
 #[cfg(test)]
 mod tests {
