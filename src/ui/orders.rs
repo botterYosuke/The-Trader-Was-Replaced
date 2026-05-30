@@ -2,9 +2,11 @@ use crate::trading::{
     ExecutionModeRes, LiveOrders, OrdersFilter, PortfolioState, filter_label, is_live_mode,
     next_filter,
 };
+use crate::ui::component::label::spawn_table_headers_at;
 use crate::ui::components::PanelKind;
 use crate::ui::floating_window::{FloatingWindowSpec, spawn_floating_window};
 use crate::ui::order_context_menu::OrderContextMenu;
+use crate::ui::theme::Theme;
 use bevy::prelude::*;
 use bevy::sprite::Anchor;
 
@@ -13,7 +15,6 @@ const PANEL_SIZE: Vec2 = Vec2::new(360.0, 220.0);
 const PANEL_POSITION: Vec2 = Vec2::new(300.0, -270.0);
 const ACCENT: Color = Color::srgba(0.0, 0.8, 1.0, 0.4);
 
-const COLOR_HEADER: Color = Color::srgb(0.0, 0.81, 1.0);
 const COLOR_DEFAULT: Color = Color::srgb(0.85, 0.88, 0.94);
 const COLOR_BUY: Color = Color::srgb(0.0, 1.0, 0.50);
 const COLOR_SELL: Color = Color::srgb(1.0, 0.20, 0.40);
@@ -83,7 +84,7 @@ pub struct OrdersRowHit {
 const ROW_HIT_WIDTH: f32 = 320.0;
 
 // ── Spawn ────────────────────────────────────────────────────
-pub fn spawn_orders_panel(commands: &mut Commands) {
+pub fn spawn_orders_panel(commands: &mut Commands, theme: &Theme) {
     let (root, content_area, _title_bar) = spawn_floating_window(
         commands,
         FloatingWindowSpec {
@@ -98,26 +99,20 @@ pub fn spawn_orders_panel(commands: &mut Commands) {
     commands.entity(root).insert(PanelKind::Orders);
 
     // ヘッダー行
-    for (col, label) in [
-        (OrdersColumn::Symbol, "Sym"),
-        (OrdersColumn::Side, "Side"),
-        (OrdersColumn::Qty, "Qty"),
-        (OrdersColumn::Price, "Price"),
-        (OrdersColumn::Status, "Status"),
-    ] {
-        let header = commands
-            .spawn((
-                Text2d::new(label),
-                TextFont {
-                    font_size: 11.0,
-                    ..default()
-                },
-                TextColor(COLOR_HEADER),
-                Transform::from_xyz(column_x(col), HEADER_Y, 0.1),
-            ))
-            .id();
-        commands.entity(content_area).add_child(header);
-    }
+    spawn_table_headers_at(
+        commands,
+        content_area,
+        &[
+            ("Sym", column_x(OrdersColumn::Symbol)),
+            ("Side", column_x(OrdersColumn::Side)),
+            ("Qty", column_x(OrdersColumn::Qty)),
+            ("Price", column_x(OrdersColumn::Price)),
+            ("Status", column_x(OrdersColumn::Status)),
+        ],
+        HEADER_Y,
+        theme.colors.text_accent,
+        theme,
+    );
 
     // データセル（6 行 × 5 列）
     for row in 0..MAX_ROWS {

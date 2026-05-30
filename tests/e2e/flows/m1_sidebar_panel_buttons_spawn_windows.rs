@@ -35,7 +35,8 @@ fn m1_sidebar_panel_buttons_spawn_windows() {
         .insert_resource(StrategyBuffer::default())
         .insert_resource(ActiveDrag::default())
         .insert_resource(AutoSaveState::default())
-        .insert_resource(InstrumentRegistry::default());
+        .insert_resource(InstrumentRegistry::default())
+        .init_resource::<backcast::ui::theme::Theme>();
 
     app.add_message::<PanelSpawnRequested>();
 

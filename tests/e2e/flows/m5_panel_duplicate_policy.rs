@@ -37,7 +37,8 @@ fn m5_panel_duplicate_policy() {
         .insert_resource(AutoSaveState::default())
         .insert_resource(PendingStrategyFragments::default())
         .insert_resource(StrategyBuffer::default())
-        .insert_resource(InstrumentRegistry::default());
+        .insert_resource(InstrumentRegistry::default())
+        .init_resource::<backcast::ui::theme::Theme>();
 
     app.add_message::<PanelSpawnRequested>();
 
