@@ -253,12 +253,8 @@ mod l2_strategy_replay_cli_outputs_run_buffer;
 #[path = "e2e/flows/l3_prod_guard_blocks_without_env.rs"]
 mod l3_prod_guard_blocks_without_env;
 // l4: stub のみ（kind:render — winit + GPU 必要、headless 不可）
-#[path = "e2e/flows/l5_backend_process_launch_and_grpc_ready.rs"]
-mod l5_backend_process_launch_and_grpc_ready;
 #[path = "e2e/flows/l6_catalog_auto_build_from_jquants.rs"]
 mod l6_catalog_auto_build_from_jquants;
-#[path = "e2e/flows/l7_attach_live_venue_mismatch.rs"]
-mod l7_attach_live_venue_mismatch;
 
 // M. Window / sidebar (UI)
 #[path = "e2e/flows/m1_sidebar_panel_buttons_spawn_windows.rs"]

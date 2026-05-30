@@ -8,7 +8,7 @@ use backcast::backend_sync::{
     request_force_account_snapshot_on_live_entry, request_get_orders_on_venue_connected,
     status_update_system,
 };
-use backcast::backend_transport::{BackendTransport, GrpcTransport, InProcTransport};
+use backcast::backend_transport::{BackendTransport, InProcTransport};
 use backcast::camera::{pancam_suppression_over_editor_system, setup_camera};
 use backcast::grid::GridPlugin;
 use backcast::replay::ReplayStartupProgress;
@@ -203,21 +203,14 @@ fn setup_backend_connection(
         settings.backend_url
     );
 
-    let transport: Box<dyn BackendTransport> = if settings.use_inproc {
-        info!("InProc transport is the default (set BACKEND_TRANSPORT=grpc to opt into gRPC).");
+    let transport: Box<dyn BackendTransport> = {
+        info!("InProc transport.");
         Box::new(InProcTransport {
             catalog_path: settings.catalog_path.clone(),
             max_history_len: settings.max_history_points,
             python_engine_path: settings.python_engine_path.clone(),
             poll_interval_ms: settings.poll_interval_ms,
             live_venue_id: settings.live_venue_id.clone(),
-        })
-    } else {
-        Box::new(GrpcTransport {
-            url: settings.backend_url.clone(),
-            token: settings.token.clone(),
-            poll_interval_ms: settings.poll_interval_ms,
-            catalog_path: settings.catalog_path.clone(),
         })
     };
     let handle = tokio_handle.0.clone();

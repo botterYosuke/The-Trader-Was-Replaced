@@ -4,11 +4,6 @@ use serde::{Deserialize, Serialize};
 use std::collections::{HashMap, HashSet};
 use tokio::sync::mpsc;
 
-pub mod engine {
-    tonic::include_proto!("engine");
-}
-
-pub use engine::{StartRequest, StopRequest};
 
 #[derive(Debug, Serialize, Deserialize, Clone)]
 pub struct HistoryPoint {
@@ -347,17 +342,6 @@ pub enum TransportCommand {
     /// `force_resync()` で dedup を貫通して AccountEvent を既存 stream に再 push する。
     /// これが無いと CONNECTED でも BUYING POWER/POSITIONS が空のまま残る。
     ForceAccountSnapshot,
-}
-
-/// Live Auto 起動時の独立セーフティの既定値。allowed_instruments は起動対象 1 銘柄のみ whitelist。
-pub fn default_live_auto_safety_limits(instrument_id: &str) -> engine::SafetyLimits {
-    engine::SafetyLimits {
-        max_position_size_jpy: 1_000_000,
-        max_order_value_jpy: 500_000,
-        max_daily_loss_jpy: 100_000,
-        max_orders_per_minute: 5,
-        allowed_instruments: vec![instrument_id.to_string()],
-    }
 }
 
 /// Wrapper around a Tachibana second password that redacts itself in `Debug`
