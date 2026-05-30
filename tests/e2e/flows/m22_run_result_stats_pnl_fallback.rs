@@ -15,12 +15,13 @@ use backcast::ui::run_result_panel::{RunResultLabel, run_result_panel_system, sp
 #[test]
 fn m22_run_result_stats_pnl_fallback() {
     let mut app = App::new();
+    app.init_resource::<backcast::ui::theme::Theme>();
     app.add_plugins(TransformPlugin);
     app.init_resource::<CurrentRun>();
     app.init_resource::<ReplayStartupProgress>();
     app.add_systems(Update, run_result_panel_system);
     app.add_systems(Startup, |mut commands: Commands| {
-        spawn_run_result_panel(&mut commands);
+        spawn_run_result_panel(&mut commands, &backcast::ui::theme::Theme::default());
     });
 
     // spawn panels

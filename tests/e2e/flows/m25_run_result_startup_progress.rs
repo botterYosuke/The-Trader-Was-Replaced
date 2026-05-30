@@ -18,6 +18,7 @@ use bevy::transform::TransformPlugin;
 
 fn make_app() -> App {
     let mut app = App::new();
+    app.init_resource::<backcast::ui::theme::Theme>();
     app.add_plugins(TransformPlugin);
     app.insert_resource(ReplayStartupProgress::default());
     app.insert_resource(CurrentRun::default());
@@ -25,7 +26,7 @@ fn make_app() -> App {
     app.insert_resource(WindowManager::default());
     app.insert_resource(AppHistory::default());
     app.add_systems(Startup, |mut commands: Commands| {
-        spawn_run_result_panel(&mut commands);
+        spawn_run_result_panel(&mut commands, &backcast::ui::theme::Theme::default());
     });
     app.add_systems(Update, run_result_panel_system);
     app
