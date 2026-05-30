@@ -7,8 +7,8 @@ from engine.live.adapter import VenueCredentials
 from engine.live.mock_adapter import MockVenueAdapter
 from engine.live.state_machine import VenueStateMachine
 from engine.mode_manager import ModeManager
-from engine.proto import engine_pb2
-from engine.server_grpc import GrpcDataEngineServer
+from engine import _proto_compat as engine_pb2
+from engine._backend_impl import GrpcDataEngineServer
 
 
 def _make_servicer():
@@ -43,13 +43,13 @@ def test_bg_component_start_failure_publishes_backend_error():
     # GREEN 後は publish された 1 件をすぐ取れる。
     received = sub._queue.get(timeout=2.0)
     assert received.WhichOneof("payload") == "backend_error"
-    assert received.backend_error.source == "server_grpc"
+    assert received.backend_error.source == "backend_service"
     assert "boom-start" in received.backend_error.detail
     assert "account sync" in received.backend_error.detail
 
 
 def test_account_sync_fetch_failure_publishes_backend_error():
-    """AccountSync tick の fetch_account 失敗を server_grpc が拾い、
+    """AccountSync tick の fetch_account 失敗を _backend_impl が拾い、
     BackendError(source="account_sync") として backend event stream に publish する
     （issue #29 D2 / A 経路）。"""
     servicer = _make_servicer()
@@ -131,7 +131,7 @@ def test_bg_component_start_failure_empty_message_publishes_typed_detail():
     servicer._start_bg_component_after_login(_TimeoutStartComponent(), "account sync")
 
     received = sub._queue.get(timeout=2.0)
-    assert received.backend_error.source == "server_grpc"
+    assert received.backend_error.source == "backend_service"
     assert "account sync" in received.backend_error.detail   # label は残る
     assert "TimeoutError" in received.backend_error.detail    # 型名が残る（②-B の主眼）
 

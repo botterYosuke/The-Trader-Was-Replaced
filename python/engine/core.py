@@ -324,6 +324,10 @@ class DataEngine:
         with self._lock:
             self._is_running = False
             self._replay_state = "IDLE"
+            # Clear providers so the next load_replay_data() creates fresh ones
+            # instead of hitting the early-return guard at line 167 (#70).
+            self._replay_provider = None
+            self._replay_providers = {}
             self._run_event.set()
             return True, None
 
@@ -388,7 +392,7 @@ class DataEngine:
                 volume = _rest[0] if _rest else 0.0
                 if iid == self._replay_primary_id:
                     # Primary: emit with "" id so reducer appends OhlcPoint (volume) / history.
-                    # Mirrors server_grpc.py D16 double-emit convention.
+                    # Mirrors _backend_impl.py D16 double-emit convention.
                     self._apply_event_locked(KlineUpdate(
                         timestamp_ms=ts_ms, close=c, open=o, high=h, low=l,
                         open_time_ms=ts_ms, instrument_id="",

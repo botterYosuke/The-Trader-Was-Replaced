@@ -10,7 +10,7 @@
 - **transport / venue 非依存**: proto を import しない (account_sync / reducer_bridge と同思想)。
   「ログアウトしたか否か」は adapter が bool で返す契約にし、watchdog は venue 固有のエラー型を
   知らない。adapter を持たない venue (mock) や push 型で検知する venue (Tachibana は EVENT WS の
-  SS=閉局フレームで検知) はそもそも watchdog を起動しない (server_grpc が ``hasattr(check_health)``
+  SS=閉局フレームで検知) はそもそも watchdog を起動しない (_backend_impl が ``hasattr(check_health)``
   で gate)。
 - **初回 forced tick しない**: start は login 直後で venue は healthy なはず。account_sync は
   「初期ロードを必ず emit」のため forced だが、watchdog は「変化 (ログアウト) 検知」が目的なので

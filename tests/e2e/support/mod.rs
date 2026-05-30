@@ -10,35 +10,34 @@
 
 #![allow(dead_code)]
 
-use bevy::input::keyboard::{Key, KeyboardInput};
-use bevy::input::ButtonState;
-use bevy::prelude::*;
 use bevy::MinimalPlugins;
+use bevy::input::ButtonState;
+use bevy::input::keyboard::{Key, KeyboardInput};
+use bevy::prelude::*;
 use tokio::sync::mpsc;
 
 use std::path::PathBuf;
 use std::time::Duration;
 
 use backcast::backend_sync::{
-    backend_event_drain_system, status_update_system, BackendEventChannel, StatusUpdateChannel,
+    BackendEventChannel, StatusUpdateChannel, backend_event_drain_system, status_update_system,
 };
 use backcast::replay::{ReplayStartupPhase, ReplayStartupProgress};
-use backcast::ui::run_result_panel::replay_startup_timeout_system;
 use backcast::trading::{
-    backend_update_system, AvailableInstruments, BackendChannel, BackendEvent, BackendStatus,
-    BackendStatusUpdate, BackendTradingState, CurrentRun, ExecutionMode, ExecutionModeRes,
-    InstrumentTradingDataMap, LastPrices, LiveOrders, OrderFeedback,
-    PortfolioState, ReconcilePrompt, ReloginPrompt, ReplaySpeed, RunState,
-    SafetyToast, SecretPrompt, SelectedSymbol, StrategyLogs, Tickers, TradingSession,
-    TradingSettings, TransportCommand,
-    TransportCommandSender, VenueState, VenueStatusRes,
+    AvailableInstruments, BackendChannel, BackendEvent, BackendStatus, BackendStatusUpdate,
+    BackendTradingState, CurrentRun, ExecutionMode, ExecutionModeRes, InstrumentTradingDataMap,
+    LastPrices, LiveOrders, OrderFeedback, PortfolioState, ReconcilePrompt, ReloginPrompt,
+    ReplaySpeed, RunState, SafetyToast, SecretPrompt, SelectedSymbol, StrategyLogs, Tickers,
+    TradingSession, TradingSettings, TransportCommand, TransportCommandSender, VenueState,
+    VenueStatusRes, backend_update_system,
 };
+use backcast::ui::run_result_panel::replay_startup_timeout_system;
 
 // Production UI input systems (mirror src/main.rs wiring).
 use backcast::ui::components::{
-    InstrumentRegistry, OpenMenu, PanelSpawnRequested, PauseResumeButton, ReplayTimeLabel,
-    ScenarioMetadata, ScenarioStartupParams, ScenarioWritebackPaths, StrategyBuffer,
-    StrategyRunRequested, StepFromIdleRequested, RedoMenuRequested, UndoMenuRequested,
+    InstrumentRegistry, OpenMenu, PanelSpawnRequested, PauseResumeButton, RedoMenuRequested,
+    ReplayTimeLabel, ScenarioMetadata, ScenarioStartupParams, ScenarioWritebackPaths,
+    StepFromIdleRequested, StrategyBuffer, StrategyRunRequested, UndoMenuRequested,
 };
 use backcast::ui::footer::{
     execution_mode_toggle_system, footer_pause_resume_system, speed_button_system,
@@ -54,10 +53,12 @@ use backcast::ui::layout_persistence::{
 };
 use backcast::ui::menu_bar::{handle_strategy_run_system, menu_item_system};
 use backcast::ui::order_panel::{
-    confirm_modal_button_system, order_form_button_system, order_submit_button_system, ConfirmButton,
-    OrderButton, OrderButtonPressed, OrderConfirm, OrderForm,
+    ConfirmButton, OrderButton, OrderButtonPressed, OrderConfirm, OrderForm,
+    confirm_modal_button_system, order_form_button_system, order_submit_button_system,
 };
-use backcast::ui::secret_modal::{secret_modal_button_system, secret_modal_input_system, SecretInput};
+use backcast::ui::secret_modal::{
+    SecretInput, secret_modal_button_system, secret_modal_input_system,
+};
 use backcast::ui::sidebar::{instrument_remove_button_system, instrument_row_click_system};
 use backcast::ui::strategy_editor::StrategyAutoSaveState;
 
@@ -100,7 +101,7 @@ impl Harness {
             poll_interval_ms: 500,
             max_history_points: 1000,
             catalog_path: None,
-            use_inproc: false,
+            use_inproc: true,
             python_engine_path: "python".to_string(),
             live_venue_id: None,
         });
@@ -167,11 +168,9 @@ impl Harness {
                 status_update_system,
                 backend_event_drain_system,
                 replay_startup_timeout_system,
-                update_footer_system
-                    .after(backend_update_system)
-                    .run_if(|mode: Res<ExecutionModeRes>| {
-                        matches!(mode.mode, ExecutionMode::Replay)
-                    }),
+                update_footer_system.after(backend_update_system).run_if(
+                    |mode: Res<ExecutionModeRes>| matches!(mode.mode, ExecutionMode::Replay),
+                ),
             ),
         );
 
@@ -343,7 +342,10 @@ impl Harness {
 
     /// Footer renders `grpc: DISABLED` iff this is false (see footer.rs).
     pub fn backend_enabled(&self) -> bool {
-        self.app.world().resource::<TradingSettings>().backend_enabled
+        self.app
+            .world()
+            .resource::<TradingSettings>()
+            .backend_enabled
     }
 
     pub fn backend_last_error(&self) -> Option<String> {
@@ -358,10 +360,7 @@ impl Harness {
     /// in `apply_status_update` is active (it no-ops unless `visible` and the
     /// `startup_id` matches).
     pub fn begin_startup(&mut self, startup_id: u64) {
-        let mut progress = self
-            .app
-            .world_mut()
-            .resource_mut::<ReplayStartupProgress>();
+        let mut progress = self.app.world_mut().resource_mut::<ReplayStartupProgress>();
         progress.visible = true;
         progress.startup_id = startup_id;
         progress.phase = ReplayStartupPhase::Idle;
@@ -384,7 +383,10 @@ impl Harness {
     /// Advance the headless `Time<Real>` clock and pump one frame, so timer-driven
     /// systems (e.g. the startup soft-timeout) observe elapsed wall time.
     pub fn advance_real_time(&mut self, dur: Duration) {
-        self.app.world_mut().resource_mut::<Time<Real>>().advance_by(dur);
+        self.app
+            .world_mut()
+            .resource_mut::<Time<Real>>()
+            .advance_by(dur);
         self.tick();
     }
 
@@ -440,14 +442,16 @@ impl Harness {
     }
 
     pub fn set_selected_symbol(&mut self, symbol: Option<&str>) {
-        self.app.world_mut().resource_mut::<SelectedSymbol>().id =
-            symbol.map(|s| s.to_string());
+        self.app.world_mut().resource_mut::<SelectedSymbol>().id = symbol.map(|s| s.to_string());
     }
 
     pub fn set_strategy_cache_path(&mut self, name: &str) -> PathBuf {
         let cache_py = self.tmp.path().join(name);
         std::fs::write(&cache_py, "# strategy cache fixture\n").expect("write cache fixture");
-        self.app.world_mut().resource_mut::<StrategyBuffer>().cache_path = Some(cache_py.clone());
+        self.app
+            .world_mut()
+            .resource_mut::<StrategyBuffer>()
+            .cache_path = Some(cache_py.clone());
         cache_py
     }
 
@@ -487,7 +491,10 @@ impl Harness {
             .editable = false;
         let cache_py = self.tmp.path().join("strategy_cache.py");
         std::fs::write(&cache_py, "# strategy cache fixture\n").expect("write cache fixture");
-        self.app.world_mut().resource_mut::<StrategyBuffer>().cache_path = Some(cache_py);
+        self.app
+            .world_mut()
+            .resource_mut::<StrategyBuffer>()
+            .cache_path = Some(cache_py);
         self.set_replay_state(None);
         self.app.world_mut().spawn((
             PauseResumeButton,
@@ -540,7 +547,10 @@ impl Harness {
     /// modal drains `Messages<KeyboardInput>`). The prompt must already be active.
     pub fn type_secret(&mut self, text: &str) {
         {
-            let mut kb = self.app.world_mut().resource_mut::<Messages<KeyboardInput>>();
+            let mut kb = self
+                .app
+                .world_mut()
+                .resource_mut::<Messages<KeyboardInput>>();
             for ch in text.chars() {
                 kb.write(KeyboardInput {
                     key_code: KeyCode::KeyA,
@@ -561,6 +571,16 @@ impl Harness {
 
     pub fn replay_speed(&self) -> u32 {
         self.app.world().resource::<ReplaySpeed>().current
+    }
+
+    /// Read the current `TradingSession.replay_state` (mirrors backend `GetState`).
+    /// Returns `None` when no state has been pushed yet.
+    pub fn replay_state(&self) -> Option<String> {
+        self.app
+            .world()
+            .resource::<TradingSession>()
+            .replay_state
+            .clone()
     }
 
     /// Drive the production order panel in Manual mode end to end: select the

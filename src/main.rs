@@ -4,21 +4,18 @@ use backcast::backend_supervisor::{
 };
 use backcast::backend_sync::{
     BackendEventChannel, StatusUpdateChannel, backend_event_drain_system,
-    backend_restart_resync_system,
-    request_force_account_snapshot_on_live_entry, request_get_orders_on_venue_connected,
-    status_update_system,
+    backend_restart_resync_system, request_force_account_snapshot_on_live_entry,
+    request_get_orders_on_venue_connected, status_update_system,
 };
-use backcast::backend_transport::{BackendTransport, GrpcTransport, InProcTransport};
+use backcast::backend_transport::{BackendTransport, InProcTransport};
 use backcast::camera::{pancam_suppression_over_editor_system, setup_camera};
 use backcast::grid::GridPlugin;
 use backcast::replay::ReplayStartupProgress;
 use backcast::trading::{
-    AvailableInstruments, BackendChannel, BackendStatus,
-    CurrentRun, ExecutionModeRes, LastPrices, LiveOrders,
-    OrderFeedback, PortfolioState,
-    ReconcilePrompt, ReloginPrompt, ReplaySpeed, SecretPrompt, SelectedSymbol, Tickers,
-    TradingSettings, TransportCommand, TransportCommandSender, VenueStatusRes,
-    backend_update_system,
+    AvailableInstruments, BackendChannel, BackendStatus, CurrentRun, ExecutionModeRes, LastPrices,
+    LiveOrders, OrderFeedback, PortfolioState, ReconcilePrompt, ReloginPrompt, ReplaySpeed,
+    SecretPrompt, SelectedSymbol, Tickers, TradingSettings, TransportCommand,
+    TransportCommandSender, VenueStatusRes, backend_update_system,
 };
 use backcast::ui::UiPlugin;
 use backcast::ui::run_result_panel::{
@@ -203,21 +200,14 @@ fn setup_backend_connection(
         settings.backend_url
     );
 
-    let transport: Box<dyn BackendTransport> = if settings.use_inproc {
-        info!("InProc transport selected (BACKEND_TRANSPORT=inproc).");
+    let transport: Box<dyn BackendTransport> = {
+        info!("InProc transport.");
         Box::new(InProcTransport {
             catalog_path: settings.catalog_path.clone(),
             max_history_len: settings.max_history_points,
             python_engine_path: settings.python_engine_path.clone(),
             poll_interval_ms: settings.poll_interval_ms,
             live_venue_id: settings.live_venue_id.clone(),
-        })
-    } else {
-        Box::new(GrpcTransport {
-            url: settings.backend_url.clone(),
-            token: settings.token.clone(),
-            poll_interval_ms: settings.poll_interval_ms,
-            catalog_path: settings.catalog_path.clone(),
         })
     };
     let handle = tokio_handle.0.clone();
@@ -239,9 +229,9 @@ mod tests {
     use backcast::replay::ReplayStartupPhase;
     use backcast::trading::{
         AccountPosition, AvailableInstruments, BackendStartupStage, BackendStatus,
-        BackendStatusUpdate, CurrentRun, ExecutionModeRes, LastPrices, LiveOrders,
-        OrderFeedback, PortfolioState, ReconcilePrompt, RunState, SecretPrompt,
-        Ticker, Tickers, VenueStatusRes,
+        BackendStatusUpdate, CurrentRun, ExecutionMode, ExecutionModeRes, LastPrices, LiveOrders,
+        OrderFeedback, PortfolioState, ReconcilePrompt, RunState, SecretPrompt, Ticker, Tickers,
+        TradingSession, VenueStatusRes,
     };
     use chrono::NaiveDate;
 
@@ -328,6 +318,7 @@ mod tests {
             &mut order_feedback,
             &mut reconcile_prompt,
             &mut SecretPrompt::default(),
+            &mut TradingSession::default(),
         );
         current_run
     }
@@ -364,6 +355,7 @@ mod tests {
             &mut order_feedback,
             &mut reconcile_prompt,
             &mut SecretPrompt::default(),
+            &mut TradingSession::default(),
         );
         order_feedback
     }
@@ -441,7 +433,7 @@ mod tests {
     fn mode_change_clears_stale_feedback() {
         let fb = apply_feedback(
             BackendStatusUpdate::ExecutionModeChanged {
-                mode: backcast::trading::ExecutionMode::Replay,
+                mode: ExecutionMode::Replay,
             },
             Some("発注が拒否されました (X)"),
         );
@@ -453,7 +445,6 @@ mod tests {
 
     #[test]
     fn mode_change_resets_portfolio_to_prevent_live_replay_bleed() {
-        use backcast::trading::ExecutionMode;
         let mut status = BackendStatus::default();
         let mut current_run = CurrentRun::default();
         let mut portfolio = PortfolioState {
@@ -491,6 +482,7 @@ mod tests {
             &mut order_feedback,
             &mut reconcile_prompt,
             &mut SecretPrompt::default(),
+            &mut TradingSession::default(),
         );
         assert!(
             !portfolio.loaded,
@@ -532,6 +524,7 @@ mod tests {
             &mut order_feedback,
             &mut reconcile_prompt,
             &mut SecretPrompt::default(),
+            &mut TradingSession::default(),
         );
     }
 
@@ -573,12 +566,12 @@ mod tests {
         let mut av = AvailableInstruments::default();
         let date = d("2025-01-15");
         av.in_flight.insert(date);
-        apply_available_failed(&mut av, date, "grpc unavailable".into());
+        apply_available_failed(&mut av, date, "backend unavailable".into());
         assert!(
             !av.in_flight.contains(&date),
             "in_flight must be cleared on failure too"
         );
-        assert_eq!(av.last_error, Some((date, "grpc unavailable".into())));
+        assert_eq!(av.last_error, Some((date, "backend unavailable".into())));
         assert!(
             !av.by_end_date.contains_key(&date),
             "cache must not be populated on failure"
@@ -881,6 +874,7 @@ mod tests {
             &mut order_feedback,
             &mut reconcile_prompt,
             &mut SecretPrompt::default(),
+            &mut TradingSession::default(),
         );
     }
 

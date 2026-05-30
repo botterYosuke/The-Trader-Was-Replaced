@@ -11,6 +11,13 @@ description: >-
   「venue ログインの状態遷移をテスト」「銘柄リストの取得失敗をテスト」「回帰テストを追加」「E2E を1本足して」
   「FLOWS.md の flow を実装」「backend からこのイベントが来たら UI がこうなる、をテスト」
   「メニュー/エディタ/チャート/モーダル/レイアウトの操作をリリース前に保証したい」と言われたとき。
+  **E2E テスト / 手動検証セッション中にバグが再現・確認されたとき（issue が発生した / チカチカする /
+  クラッシュした / 動かない 等）も必ず本スキルを起動する**: CLAUDE.md の「不具合を修正するときは先に RED を書く」
+  ルールを担保するため。RED→verify RED→fix→GREEN→全体テスト の順序を守らせる責務が本スキルにある。
+  `/e2e-testing` セッション中にバグが発見された場合は即座に本スキルを併発し、修正に入る前に
+  `tests/e2e/flows/<id>.rs` に RED テストを書いて `cargo test` で assert fail を確認すること
+  （2026-05-30 の issue #69 followup で、/e2e-testing 中にバグを発見したのに behavior-to-e2e を発動せず、
+  修正後に GREEN テストを追加してしまい「本当に RED になるか」未確認になった実例）。
   **着手した issue / 計画書の本文が「behavior-to-e2e」を名指ししている、または新しい flow ID（例 M12 /
   N1）の追加＋ `tests/e2e/FLOWS.md` 追記＋ wiki `[FlowID]` 引用をひとまとめに指示しているときは、ユーザーが
   他スキル（`bevy-engine` / `pair-relay` / `plan` 等）を明示していても本スキルを併発する**

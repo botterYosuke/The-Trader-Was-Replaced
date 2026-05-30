@@ -15,12 +15,11 @@ use crate::backend_supervisor::{BackendLifecycle, BackendLifecycleHandle};
 use crate::replay::{ReplayStartupPhase, ReplayStartupProgress};
 use crate::trading::{
     AccountPosition, AvailableInstruments, BackendEvent, BackendStartupStage, BackendStatus,
-    BackendStatusUpdate, CurrentRun, ExecutionMode, ExecutionModeRes, LastPrices, LiveOrder, LiveOrders,
-    OrderFeedback, PortfolioPosition, PortfolioState, ReconcilePrompt,
-    ReloginPrompt, RunState, SafetyToast, SecretPrompt, SecretPromptRequest, StrategyLogs, Tickers,
-    ToastKind,
-    TickersStatus, TransportCommand, TransportCommandSender, VenueState, VenueStatusRes,
-    is_terminal_order_status, parse_summary_json, reconcile_unknown_orders,
+    BackendStatusUpdate, CurrentRun, ExecutionMode, ExecutionModeRes, LastPrices, LiveOrder,
+    LiveOrders, OrderFeedback, PortfolioPosition, PortfolioState, ReconcilePrompt, ReloginPrompt,
+    RunState, SafetyToast, SecretPrompt, SecretPromptRequest, StrategyLogs, Tickers, TickersStatus,
+    ToastKind, TradingSession, TransportCommand, TransportCommandSender, VenueState,
+    VenueStatusRes, is_terminal_order_status, parse_summary_json, reconcile_unknown_orders,
 };
 use bevy::prelude::*;
 use chrono::NaiveDate;
@@ -50,6 +49,7 @@ pub fn status_update_system(
     mut order_feedback: ResMut<OrderFeedback>,
     mut reconcile_prompt: ResMut<ReconcilePrompt>,
     mut secret_prompt: ResMut<SecretPrompt>,
+    mut session: ResMut<TradingSession>,
 ) {
     while let Ok(update) = channel.rx.try_recv() {
         apply_status_update(
@@ -67,6 +67,7 @@ pub fn status_update_system(
             &mut order_feedback,
             &mut reconcile_prompt,
             &mut secret_prompt,
+            &mut session,
         );
     }
 }
@@ -190,11 +191,11 @@ pub fn backend_event_drain_system(
                         // Stale fields only need resetting when a *previous* run existed.
                         // run_id==None means telemetry raced ahead — keep its counters.
                         if current_run.run_id.is_some() {
-                            current_run.strategy_name  = String::new();
-                            current_run.started_ts_ms  = 0;
-                            current_run.order_count    = 0;
-                            current_run.fill_count     = 0;
-                            current_run.realized_pnl   = 0.0;
+                            current_run.strategy_name = String::new();
+                            current_run.started_ts_ms = 0;
+                            current_run.order_count = 0;
+                            current_run.fill_count = 0;
+                            current_run.realized_pnl = 0.0;
                             current_run.unrealized_pnl = 0.0;
                             current_run.parsed_summary = None;
                         }
@@ -208,7 +209,7 @@ pub fn backend_event_drain_system(
                     }
                     current_run.state = match status.as_str() {
                         "RUNNING" => RunState::Running,
-                        "PAUSED"  => RunState::Paused,
+                        "PAUSED" => RunState::Paused,
                         "STOPPED" => RunState::Stopped,
                         // Preserve a rich error written by RunFailed (status channel) — it
                         // arrives before the event channel drains and carries the real cause.
@@ -217,7 +218,9 @@ pub fn backend_event_drain_system(
                             {
                                 current_run.state.clone()
                             } else {
-                                RunState::Failed { error: String::new() }
+                                RunState::Failed {
+                                    error: String::new(),
+                                }
                             }
                         }
                         _ => current_run.state.clone(),
@@ -244,7 +247,13 @@ pub fn backend_event_drain_system(
                 ts_ms,
             } => {
                 warn!("[backend-event] BackendError source={source} detail={detail} ts_ms={ts_ms}");
-                safety_toast.show(ToastKind::BackendError, String::new(), source, detail, ts_ms);
+                safety_toast.show(
+                    ToastKind::BackendError,
+                    String::new(),
+                    source,
+                    detail,
+                    ts_ms,
+                );
             }
             BackendEvent::StrategyLogMessage {
                 run_id,
@@ -284,10 +293,10 @@ pub fn backend_event_drain_system(
                     if !strategy_id.is_empty() {
                         current_run.strategy_name = strategy_id.clone();
                     }
-                    current_run.realized_pnl   = realized_pnl;
+                    current_run.realized_pnl = realized_pnl;
                     current_run.unrealized_pnl = unrealized_pnl;
-                    current_run.order_count    = order_count;
-                    current_run.fill_count     = fill_count;
+                    current_run.order_count = order_count;
+                    current_run.fill_count = fill_count;
                 }
             }
         }
@@ -332,15 +341,15 @@ pub fn apply_account_event(
 }
 
 /// supervisor lifecycle を footer 反映用の status update へ写像する。
-/// `StartupFailed(code)` は loud な `Error` に（footer を `grpc: ERR` 赤に）、
-/// それ以外は `None`（既存の grpc 表示ロジックに委ねる）。
+/// `StartupFailed(code)` は loud な `Error` に（footer を `backend: ERR` 赤に）、
+/// それ以外は `None`（既存の backend 表示ロジックに委ねる）。
 pub fn lifecycle_status_update(
     s: BackendLifecycle,
 ) -> Option<crate::trading::BackendStatusUpdate> {
     match s {
-        BackendLifecycle::StartupFailed(code) => Some(
-            crate::trading::BackendStatusUpdate::Error(format!("backend startup failed: {code}")),
-        ),
+        BackendLifecycle::StartupFailed(code) => Some(crate::trading::BackendStatusUpdate::Error(
+            format!("backend startup failed: {code}"),
+        )),
         _ => None,
     }
 }
@@ -361,6 +370,7 @@ pub fn apply_status_update(
     order_feedback: &mut OrderFeedback,
     reconcile_prompt: &mut ReconcilePrompt,
     secret_prompt: &mut SecretPrompt,
+    session: &mut TradingSession,
 ) {
     match update {
         BackendStatusUpdate::Connected(c) => status.connected = c,
@@ -604,6 +614,11 @@ pub fn apply_status_update(
                 live_orders.seed_working(order);
             }
         }
+        BackendStatusUpdate::ReplayStateChanged { state } => {
+            // Issue #63: PauseReplay / ResumeReplay RPC 成功後に GetState ポーリング待ちを
+            // ゼロにする即時 UI 更新。transport task が RPC 応答の current_state をここに送る。
+            session.replay_state = Some(state);
+        }
     }
 }
 
@@ -647,8 +662,12 @@ pub fn backend_restart_resync_system(
         return;
     };
     let venue = venue_status.venue_id.clone().unwrap_or_default();
-    info!("[backend] auto-restart reached Ready — reconciling in-flight orders (GetOrdersAndReconcile)");
-    let _ = tx.tx.send(TransportCommand::GetOrdersAndReconcile { venue });
+    info!(
+        "[backend] auto-restart reached Ready — reconciling in-flight orders (GetOrdersAndReconcile)"
+    );
+    let _ = tx
+        .tx
+        .send(TransportCommand::GetOrdersAndReconcile { venue });
 }
 
 /// Issue #29 Slice 2' (Step 5): `status_update_system` が `ExecutionModeRes.mode` を
@@ -666,7 +685,10 @@ pub fn request_force_account_snapshot_on_live_entry(
     let was = prev.replace(current);
 
     let is_live = matches!(current, ExecutionMode::LiveManual | ExecutionMode::LiveAuto);
-    let was_live = matches!(was, Some(ExecutionMode::LiveManual) | Some(ExecutionMode::LiveAuto));
+    let was_live = matches!(
+        was,
+        Some(ExecutionMode::LiveManual) | Some(ExecutionMode::LiveAuto)
+    );
     // Replay/未設定 → Live の実遷移のときだけ送る。Live 内の遷移や Live 離脱では送らない。
     if !(is_live && !was_live) {
         return;
@@ -694,7 +716,10 @@ pub fn request_get_orders_on_venue_connected(
     let was = prev.replace(current);
 
     let is_connected = matches!(current, VenueState::Connected | VenueState::Subscribed);
-    let was_connected = matches!(was, Some(VenueState::Connected) | Some(VenueState::Subscribed));
+    let was_connected = matches!(
+        was,
+        Some(VenueState::Connected) | Some(VenueState::Subscribed)
+    );
     // Disconnected/Authenticating → Connected の実遷移のみ。Connected 内の遷移や離脱では送らない。
     if !(is_connected && !was_connected) {
         return;
@@ -786,9 +811,8 @@ mod tests {
     /// StartupFailed はエラーコードを内包した `BackendStatusUpdate::Error` へ写す。
     #[test]
     fn lifecycle_status_update_maps_startup_failed_to_error() {
-        let out = lifecycle_status_update(BackendLifecycle::StartupFailed(
-            "BACKEND_VENUE_MISMATCH",
-        ));
+        let out =
+            lifecycle_status_update(BackendLifecycle::StartupFailed("BACKEND_VENUE_MISMATCH"));
         match out {
             Some(crate::trading::BackendStatusUpdate::Error(msg)) => {
                 assert!(
@@ -893,19 +917,26 @@ mod tests {
     /// race-free 設計: reducer が exec_mode を更新した後に observer が遷移を検出して送る。
     #[test]
     fn live_mode_entry_requests_force_account_snapshot() {
+        use crate::trading::{
+            ExecutionMode, ExecutionModeRes, TransportCommand, TransportCommandSender,
+        };
         use bevy::prelude::*;
-        use crate::trading::{ExecutionMode, ExecutionModeRes, TransportCommand, TransportCommandSender};
         use tokio::sync::mpsc;
 
         let (tx, mut rx) = mpsc::unbounded_channel::<TransportCommand>();
         let mut app = App::new();
         app.insert_resource(TransportCommandSender { tx });
-        app.insert_resource(ExecutionModeRes { mode: ExecutionMode::Replay });
+        app.insert_resource(ExecutionModeRes {
+            mode: ExecutionMode::Replay,
+        });
         app.add_systems(Update, request_force_account_snapshot_on_live_entry);
 
         // 1st tick: 前回 mode を Replay として記録するだけ。要求は出さない。
         app.update();
-        assert!(rx.try_recv().is_err(), "no request before any Live transition");
+        assert!(
+            rx.try_recv().is_err(),
+            "no request before any Live transition"
+        );
 
         // Replay → LiveManual の実遷移を起こす。
         app.world_mut().resource_mut::<ExecutionModeRes>().mode = ExecutionMode::LiveManual;
@@ -918,12 +949,18 @@ mod tests {
 
         // 同一 mode のまま再 tick → 二重要求しない。
         app.update();
-        assert!(rx.try_recv().is_err(), "no duplicate request while mode is unchanged");
+        assert!(
+            rx.try_recv().is_err(),
+            "no duplicate request while mode is unchanged"
+        );
 
         // LiveManual → Replay は Live への entry ではないので要求しない。
         app.world_mut().resource_mut::<ExecutionModeRes>().mode = ExecutionMode::Replay;
         app.update();
-        assert!(rx.try_recv().is_err(), "leaving Live must not request a snapshot");
+        assert!(
+            rx.try_recv().is_err(),
+            "leaving Live must not request a snapshot"
+        );
     }
 
     /// §3.10 regression: a failed SubmitSecret must surface on the SecretPrompt
@@ -962,6 +999,7 @@ mod tests {
             &mut order_feedback,
             &mut reconcile_prompt,
             &mut secret_prompt,
+            &mut TradingSession::default(),
         );
 
         assert!(
@@ -1014,6 +1052,7 @@ mod tests {
                 &mut order_feedback,
                 &mut reconcile_prompt,
                 &mut secret_prompt,
+                &mut TradingSession::default(),
             );
             tickers.status
         }
@@ -1046,7 +1085,9 @@ mod tests {
             let mut progress = ReplayStartupProgress::default();
             let mut venue_status = VenueStatusRes::default();
             // 実遷移を起こすため prev mode を Replay にしておく。
-            let mut exec_mode = ExecutionModeRes { mode: ExecutionMode::Replay };
+            let mut exec_mode = ExecutionModeRes {
+                mode: ExecutionMode::Replay,
+            };
             let mut tickers = Tickers::default();
             let mut last_prices = LastPrices::default();
             let mut live_orders = LiveOrders::default();
@@ -1068,6 +1109,7 @@ mod tests {
                 &mut order_feedback,
                 &mut reconcile_prompt,
                 &mut secret_prompt,
+                &mut TradingSession::default(),
             );
         }
 
@@ -1093,7 +1135,9 @@ mod tests {
             "Live entry must reset PortfolioState so stale Replay holdings don't bleed in"
         );
         assert!(
-            portfolio.positions.is_empty() && portfolio.buying_power == 0.0 && portfolio.cash == 0.0,
+            portfolio.positions.is_empty()
+                && portfolio.buying_power == 0.0
+                && portfolio.cash == 0.0,
             "reset must clear cash/buying_power/positions to default"
         );
 
@@ -1109,9 +1153,18 @@ mod tests {
                 unrealized_pnl: 1_500.0,
             }],
         );
-        assert!(portfolio.loaded, "AccountEvent must refill and mark loaded=true");
-        assert_eq!(portfolio.cash, 5_000.0, "cash must reflect the Live snapshot");
-        assert_eq!(portfolio.buying_power, 12_345.0, "buying_power must reflect the Live snapshot");
+        assert!(
+            portfolio.loaded,
+            "AccountEvent must refill and mark loaded=true"
+        );
+        assert_eq!(
+            portfolio.cash, 5_000.0,
+            "cash must reflect the Live snapshot"
+        );
+        assert_eq!(
+            portfolio.buying_power, 12_345.0,
+            "buying_power must reflect the Live snapshot"
+        );
         assert_eq!(portfolio.positions.len(), 1, "Live positions must populate");
         assert_eq!(portfolio.positions[0].symbol, "7203");
     }
@@ -1195,8 +1248,10 @@ mod tests {
     /// Issue #29 Slice 3b: venue CONNECTED 遷移で GetOrders を 1 回だけ発火する。
     #[test]
     fn venue_connected_requests_get_orders() {
+        use crate::trading::{
+            TransportCommand, TransportCommandSender, VenueState, VenueStatusRes,
+        };
         use bevy::prelude::*;
-        use crate::trading::{TransportCommand, TransportCommandSender, VenueState, VenueStatusRes};
         use tokio::sync::mpsc;
 
         let (tx, mut rx) = mpsc::unbounded_channel::<TransportCommand>();
@@ -1209,7 +1264,10 @@ mod tests {
 
         // 1st tick: Disconnected として記録するだけ。
         app.update();
-        assert!(rx.try_recv().is_err(), "no request while still disconnected");
+        assert!(
+            rx.try_recv().is_err(),
+            "no request while still disconnected"
+        );
 
         // Disconnected → Connected の実遷移。
         app.world_mut().resource_mut::<VenueStatusRes>().state = VenueState::Connected;
@@ -1226,6 +1284,9 @@ mod tests {
         // Connected → Disconnected は entry ではないので要求しない。
         app.world_mut().resource_mut::<VenueStatusRes>().state = VenueState::Disconnected;
         app.update();
-        assert!(rx.try_recv().is_err(), "leaving CONNECTED must not re-request");
+        assert!(
+            rx.try_recv().is_err(),
+            "leaving CONNECTED must not re-request"
+        );
     }
 }

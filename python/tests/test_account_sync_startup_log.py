@@ -4,7 +4,7 @@ from engine.core import DataEngine
 from engine.live.mock_adapter import MockVenueAdapter
 from engine.live.state_machine import VenueStateMachine
 from engine.mode_manager import ModeManager
-from engine.server_grpc import GrpcDataEngineServer
+from engine._backend_impl import GrpcDataEngineServer
 
 
 def _make_servicer():

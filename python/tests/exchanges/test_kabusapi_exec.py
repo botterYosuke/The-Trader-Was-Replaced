@@ -6,7 +6,7 @@ httpx_mock で /sendorder /cancelorder /orders /wallet/cash /positions をモッ
 - 訂正 = 取消→新規変換 (全成功 / 取消失敗 / 新規失敗の補償)
 - 口座同期 (買付余力 + 現物保有)
 - GET /orders polling → OrderEvent push + dedup
-- set_execution_hooks の server_grpc 互換 (secret_resolver を受理して無視)
+- set_execution_hooks の _backend_impl 互換 (secret_resolver を受理して無視)
 を検証する。Password を一切送らないこと (R3) も assert する。
 """
 
@@ -59,7 +59,7 @@ def test_is_ordering_venue_adapter():
 
 
 def test_set_execution_hooks_accepts_secret_resolver_kwarg():
-    """server_grpc は Tachibana と同じ呼び出し口 (secret_resolver=...) を使う。
+    """_backend_impl は Tachibana と同じ呼び出し口 (secret_resolver=...) を使う。
     kabu は Password 不要なので resolver を受理して無視する。"""
     a = KabuStationAdapter()
     a.set_execution_hooks(secret_resolver=object(), on_order_event=lambda e: None)
@@ -700,7 +700,7 @@ _APISOFTLIMIT = endpoint("apisoftlimit", env="verify")
 
 
 def test_set_execution_hooks_accepts_on_venue_logout_kwarg():
-    """server_grpc は on_venue_logout も注入する。kabu は poll 型 watchdog で検知するため
+    """_backend_impl は on_venue_logout も注入する。kabu は poll 型 watchdog で検知するため
     受理して無視する (Tachibana だけが SS push でこの hook を使う)。"""
     a = KabuStationAdapter()
     a.set_execution_hooks(

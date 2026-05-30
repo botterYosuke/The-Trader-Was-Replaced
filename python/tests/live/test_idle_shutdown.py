@@ -127,7 +127,7 @@ def test_open_subscribe_stream_keeps_clock_fresh() -> None:
     from engine.core import DataEngine
     from engine.live.state_machine import VenueStateMachine
     from engine.mode_manager import ModeManager
-    from engine.server_grpc import GrpcDataEngineServer
+    from engine._backend_impl import GrpcDataEngineServer
 
     venue_sm = VenueStateMachine()
     engine = DataEngine(state_machine=venue_sm)
@@ -157,7 +157,7 @@ def test_open_subscribe_stream_keeps_clock_fresh() -> None:
         def abort(self, *_a, **_k):  # pragma: no cover - good token here
             raise AssertionError("should not abort with valid token")
 
-    from engine.proto import engine_pb2
+    from engine import _proto_compat as engine_pb2
 
     ctx = _Ctx()
     req = engine_pb2.SubscribeBackendEventsReq(token="tok")

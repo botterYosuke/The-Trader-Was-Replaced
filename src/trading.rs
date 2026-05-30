@@ -4,11 +4,6 @@ use serde::{Deserialize, Serialize};
 use std::collections::{HashMap, HashSet};
 use tokio::sync::mpsc;
 
-pub mod engine {
-    tonic::include_proto!("engine");
-}
-
-pub use engine::{StartRequest, StopRequest};
 
 #[derive(Debug, Serialize, Deserialize, Clone)]
 pub struct HistoryPoint {
@@ -176,9 +171,7 @@ impl TradingSettings {
                 let p = std::path::Path::new(&base).join("jquants-catalog");
                 Some(p.to_string_lossy().to_string())
             },
-            use_inproc: std::env::var("BACKEND_TRANSPORT")
-                .map(|v| v.to_lowercase() == "inproc")
-                .unwrap_or(false),
+            use_inproc: true,
             python_engine_path: std::env::var("PYTHON_ENGINE_PATH")
                 .unwrap_or_else(|_| "python".to_string()),
             live_venue_id: std::env::var("LIVE_VENUE").ok().filter(|s| !s.is_empty()),
@@ -228,6 +221,16 @@ pub enum TransportCommand {
     LoadAndStep {
         config: StrategyRunConfig,
         startup_id: u64,
+    },
+    /// `|<` (JumpToStart) ボタンから送出される。現在の replay 状態によらず
+    /// バー 0 からリロードする (#58)。
+    ///
+    /// - RUNNING / PAUSED: ForceStop RPC → LoadReplayData RPC
+    /// - IDLE / LOADED: LoadReplayData RPC のみ
+    ///
+    /// 完了後の状態は LOADED。その後 ▶ でバー 0 から再生可能。
+    RestartReplay {
+        config: StrategyRunConfig,
     },
     /// User-initiated Live Auto launch via the footer ▶ button (issue #40 代替).
     /// 2 段直列: RegisterLiveStrategy → StartLiveStrategy。`token` は transport task が注入。
@@ -347,17 +350,6 @@ pub enum TransportCommand {
     /// `force_resync()` で dedup を貫通して AccountEvent を既存 stream に再 push する。
     /// これが無いと CONNECTED でも BUYING POWER/POSITIONS が空のまま残る。
     ForceAccountSnapshot,
-}
-
-/// Live Auto 起動時の独立セーフティの既定値。allowed_instruments は起動対象 1 銘柄のみ whitelist。
-pub fn default_live_auto_safety_limits(instrument_id: &str) -> engine::SafetyLimits {
-    engine::SafetyLimits {
-        max_position_size_jpy: 1_000_000,
-        max_order_value_jpy: 500_000,
-        max_daily_loss_jpy: 100_000,
-        max_orders_per_minute: 5,
-        allowed_instruments: vec![instrument_id.to_string()],
-    }
 }
 
 /// Wrapper around a Tachibana second password that redacts itself in `Debug`
@@ -877,11 +869,17 @@ pub enum BackendStatusUpdate {
     OrdersSeeded {
         orders: Vec<LiveOrder>,
     },
+    /// Issue #63: PauseReplay / ResumeReplay RPC 成功後に GetState ポーリング（最大
+    /// 1 秒）を待たずに即時 `TradingSession.replay_state` を更新する。transport task が
+    /// RPC 応答の `current_state` をこの variant に変換して送出する。
+    ReplayStateChanged {
+        state: String,
+    },
 }
 
 /// Bevy 側に流す backend event。proto の `backend_event::Payload` (oneof) を
 /// owned 型でミラーしたもの（gRPC 受信タスクから ECS へ渡すための Send + 'static 型）。
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Deserialize)]
 pub enum BackendEvent {
     SecretRequired {
         request_id: String,
@@ -944,7 +942,7 @@ pub enum BackendEvent {
         fill_count: i64,
         ts_ms: i64,
     },
-    /// Issue #29 Slice1: backend 側の継続的エラー (account_sync / server_grpc) を
+    /// Issue #29 Slice1: backend 側の継続的エラー (account_sync / server_backend) を
     /// Footer toast に出すための汎用エラーイベント。proto BackendError のミラー。
     BackendError {
         source: String,
@@ -954,7 +952,7 @@ pub enum BackendEvent {
 }
 
 /// AccountEvent.positions の 1 要素。proto AccountPosition のミラー。
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Deserialize)]
 pub struct AccountPosition {
     pub symbol: String,
     pub qty: i64,
@@ -1660,8 +1658,8 @@ mod tests {
         // venue-only 注文（client_order_id 空）は reconcile payload から除外。
         // 空 id の衝突で stale 注文が誤って既知扱いされるのを防ぐ。
         let seeded = vec![
-            make_live_order(""),     // venue-only → 除外
-            make_live_order("c1"),   // facade 採番 → 残す
+            make_live_order(""),   // venue-only → 除外
+            make_live_order("c1"), // facade 採番 → 残す
         ];
         assert_eq!(
             reconcile_ids_for_seed(&seeded, true),
@@ -1680,7 +1678,11 @@ mod tests {
         o.venue_order_id = "v-stale".to_string();
         lo.upsert_full(o);
         let unknown = reconcile_unknown_orders(&lo, &["".to_string()]);
-        assert_eq!(unknown.len(), 1, "empty-id working order must surface as unknown");
+        assert_eq!(
+            unknown.len(),
+            1,
+            "empty-id working order must surface as unknown"
+        );
     }
 
     #[test]
@@ -1826,8 +1828,16 @@ mod tests {
         b.venue_order_id = "V2".to_string();
         lo.seed_working(b);
 
-        assert_eq!(lo.orders.len(), 2, "distinct venue-only orders stay separate");
-        let venues: Vec<&str> = lo.orders.iter().map(|o| o.venue_order_id.as_str()).collect();
+        assert_eq!(
+            lo.orders.len(),
+            2,
+            "distinct venue-only orders stay separate"
+        );
+        let venues: Vec<&str> = lo
+            .orders
+            .iter()
+            .map(|o| o.venue_order_id.as_str())
+            .collect();
         assert!(venues.contains(&"V1"), "V1 row present");
         assert!(venues.contains(&"V2"), "V2 row present");
     }
@@ -1847,7 +1857,10 @@ mod tests {
         lo.seed_working(stale);
 
         let o = &lo.orders[0];
-        assert_eq!(o.status, "FILLED", "terminal status must not regress to ACCEPTED");
+        assert_eq!(
+            o.status, "FILLED",
+            "terminal status must not regress to ACCEPTED"
+        );
     }
 
     #[test]
@@ -1865,7 +1878,11 @@ mod tests {
         corrected.price = Some(2450.0);
         lo.seed_working(corrected);
 
-        assert_eq!(lo.orders[0].price, Some(2450.0), "facade-match price correction applied");
+        assert_eq!(
+            lo.orders[0].price,
+            Some(2450.0),
+            "facade-match price correction applied"
+        );
     }
 
     #[test]
@@ -1883,7 +1900,11 @@ mod tests {
         seed.price = Some(9999.0); // would clobber if the facade-overwrite path applied
         lo.seed_working(seed);
 
-        assert_eq!(lo.orders[0].price, Some(2500.0), "venue-only seed must not overwrite a known price");
+        assert_eq!(
+            lo.orders[0].price,
+            Some(2500.0),
+            "venue-only seed must not overwrite a known price"
+        );
     }
 
     #[test]
@@ -2523,11 +2544,11 @@ mod tests {
         };
         // Simulate InstrumentsListFailed reducer
         t.source = TickersSource::LiveVenue;
-        t.status = TickersStatus::Failed("grpc timeout".to_string());
+        t.status = TickersStatus::Failed("backend timeout".to_string());
         // list is preserved (stale display)
         assert_eq!(t.list, stale);
         assert_eq!(t.source, TickersSource::LiveVenue);
-        assert_eq!(t.status, TickersStatus::Failed("grpc timeout".to_string()));
+        assert_eq!(t.status, TickersStatus::Failed("backend timeout".to_string()));
     }
 
     #[test]

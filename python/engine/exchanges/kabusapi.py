@@ -67,7 +67,7 @@ _ORDER_TIMEOUT = httpx.Timeout(connect=10.0, read=30.0, write=10.0, pool=5.0)
 
 
 # on_order_event(OrderEventData) -> None : GET /orders polling で検出した注文状態変化を
-# proto 化して push する transport コールバック (server_grpc が publish_backend_event に
+# proto 化して push する transport コールバック (_backend_impl が publish_backend_event に
 # 束ねて注入)。kabu は約定 PUSH を持たないため polling 由来 (§3.3.2)。
 OnOrderEvent = Callable[[OrderEventData], None]
 
@@ -495,7 +495,7 @@ class KabuStationAdapter:
         on_order_event: OnOrderEvent,
         on_venue_logout: object = None,
     ) -> None:
-        """server_grpc が OrderEvent push を注入する。
+        """_backend_impl が OrderEvent push を注入する。
 
         Tachibana と同じ呼び出し口だが、kabu は Password 不要 (R3) のため
         ``secret_resolver`` は受理して無視する。約定通知は GET /orders polling 由来

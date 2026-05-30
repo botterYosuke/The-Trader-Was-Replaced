@@ -54,7 +54,7 @@ def test_p3_force_stop_replay_is_graceful_from_idle():
     which calls DataEngine.force_stop_replay() — must not raise even when IDLE.
     """
     from engine.inproc_server import InprocLiveServer
-    from engine.proto import engine_pb2
+    from engine import _proto_compat as engine_pb2
 
     engine = DataEngine()
     srv = InprocLiveServer(engine, live_venue_id=None)

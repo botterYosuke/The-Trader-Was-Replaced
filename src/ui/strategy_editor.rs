@@ -6,12 +6,10 @@ use crate::ui::components::{
 use crate::ui::editor_history::{
     AppEditAction, AppHistory, PendingStrategySnapshotRestore, UndoRedoApplied,
 };
-use crate::ui::floating_window::{
-    FloatingWindowSpec, TITLE_BAR_HEIGHT, spawn_floating_window,
-};
-use crate::ui::theme::Theme;
+use crate::ui::floating_window::{FloatingWindowSpec, TITLE_BAR_HEIGHT, spawn_floating_window};
 use crate::ui::layout_persistence::{AutoSaveState, PendingLayoutApply};
 use crate::ui::strategy_editor_find::FindMatchRects;
+use crate::ui::theme::Theme;
 use bevy::prelude::*;
 
 // ── Strategy Editor (bevscode 化済 / Slice 6c で cosmic 撤去) ─────────────
@@ -79,6 +77,18 @@ fn mark_fragment_dirty(
     auto_save.last_change = Some(std::time::Instant::now());
 }
 
+/// `sync_strategy_fragment_to_bevscode_system` が content replace 時に挿入する marker。
+///
+/// 同フレームで `SetTextRequested` + `SetLanguageRequested` を送ると、bevscode の
+/// `SetLanguageRequested` 処理が rope を一時クリアし `Changed<TextBuffer>` が 0 lines で立ち、
+/// `sync_bevscode_to_strategy_fragment_system` が `fragment.source = ""` に上書きする oscillation
+/// が発生する（特に `original=None` 起動で空 `TextBuffer` のとき顕在化）。
+///
+/// `flush_pending_language_request_system` が翌フレームにこのマーカーを検出して
+/// `SetLanguageRequested` を送出し、自身を remove する（issue #72）。
+#[derive(Component)]
+pub struct PendingLanguageReRequest;
+
 /// LiveManual 中に Strategy Editor ウィンドウを隠す際、隠す直前の `Visibility` を退避する marker。
 /// Manual を抜けたら保存値へ復元して marker を除去する (issue #31: save/restore 方式)。
 /// layout_persistence が `visible:false` で復元したウィンドウは `Hidden` が保存されるため、
@@ -132,17 +142,11 @@ pub fn apply_strategy_editor_mode_visibility_system(
             if *vis != saved.0 {
                 *vis = saved.0;
             }
-            commands
-                .entity(entity)
-                .remove::<StrategyEditorModeHidden>();
+            commands.entity(entity).remove::<StrategyEditorModeHidden>();
         }
     }
 
-    let display = if manual {
-        Display::None
-    } else {
-        Display::Flex
-    };
+    let display = if manual { Display::None } else { Display::Flex };
     for (kind, mut node) in &mut btn_q {
         if *kind != PanelKind::StrategyEditor {
             continue;
@@ -446,6 +450,19 @@ pub fn debounced_strategy_autosave_system(
         .collect();
     items.sort_by(|a, b| a.0.cmp(&b.0));
     items.retain(|(_, src)| !src.trim().is_empty());
+    // issue #62: sort+dedup でコレクション段階の重複 region_key を除去する（merge_fragments 内
+    // の seen ガードと二重防衛）。sort 済みのため隣接重複に dedup_by_key が効く。
+    {
+        let before = items.len();
+        items.dedup_by_key(|(k, _)| k.clone());
+        if items.len() < before {
+            warn!(
+                "debounced_strategy_autosave: {} duplicate region_key(s) removed before merge \
+                 (issue #62)",
+                before - items.len()
+            );
+        }
+    }
     let merged = merge_fragments(&items);
 
     match flush_strategy_cache(&merged, &mut buffer, &mut auto_save) {
@@ -481,9 +498,20 @@ pub struct SplitOutcome {
 ///
 /// 各アイテムを `# region <key>\n<body>\n# endregion <key>\n` に変換して連結する。
 /// body が空のときは中間改行なしで `# region <key>\n# endregion <key>\n`。
+///
+/// 同一 `key` が複数あるときは先頭エントリのみを使い、重複分は `warn!` を出してスキップする
+/// （issue #62: entity 二重 spawn で `# region` マーカーが重複し SyntaxError が起きる回帰ガード）。
 pub fn merge_fragments(items: &[(String, String)]) -> String {
+    let mut seen = std::collections::HashSet::new();
     let mut out = String::new();
     for (key, body) in items {
+        if !seen.insert(key.as_str()) {
+            warn!(
+                "merge_fragments: duplicate region_key '{}' skipped (issue #62)",
+                key
+            );
+            continue;
+        }
         out.push_str("# region ");
         out.push_str(key);
         out.push('\n');
@@ -732,13 +760,109 @@ mod tests {
              (Zed interpolate invariant: tree.end_byte() <= text.len())",
         );
 
-        // Language must be re-issued so the new rope gets reparsed.
+        // SetLanguageRequested は同フレームに来ない（翌フレーム遅延・issue #72）。
+        // 代わりに PendingLanguageReRequest が entity に挿入されている。
+        let langs = app.world().resource::<Messages<SetLanguageRequested>>();
+        let mut lc = langs.get_cursor();
+        assert_eq!(
+            lc.read(langs).count(),
+            0,
+            "SetLanguageRequested must NOT be sent in the same frame (deferred via PendingLanguageReRequest)",
+        );
+        assert!(
+            app.world().get::<PendingLanguageReRequest>(peer).is_some(),
+            "PendingLanguageReRequest must be inserted for deferred language re-issue",
+        );
+    }
+
+    // ── I23 / #72: SetLanguageRequested を 1 フレーム遅延させる回帰ガード ──────
+    //
+    // 根本原因: sync_strategy_fragment_to_bevscode_system が SetTextRequested と
+    // SetLanguageRequested を同一フレームで送ると、bevscode の SetLanguageRequested 処理が
+    // rope を一時クリアし Changed<TextBuffer> が 0 lines で立つ。
+    // sync_bevscode_to_strategy_fragment_system がこれを受け fragment.source = "" に上書き
+    // → oscillation。original=None（空 TextBuffer）起動で特に顕在化する。
+    //
+    // fix: SetLanguageRequested を PendingLanguageReRequest マーカー経由で 1 フレーム遅延。
+
+    /// content replace 時に sync_strategy_fragment_to_bevscode_system は
+    /// PendingLanguageReRequest を entity に insert し、SetLanguageRequested を「送らない」。
+    #[test]
+    fn i23_content_replace_defers_language_request_via_marker() {
+        let mut app = App::new();
+        app.add_message::<SetTextRequested>();
+        app.add_message::<SetLanguageRequested>();
+        app.add_systems(Update, sync_strategy_fragment_to_bevscode_system);
+
+        let region = "region_001".to_string();
+        let peer = app
+            .world_mut()
+            .spawn((
+                StrategyEditorNode {
+                    root: Entity::PLACEHOLDER,
+                    region_key: region.clone(),
+                },
+                TextBuffer::<RopeBuffer>::new(RopeBuffer::new("old = 1\n")),
+                bevy_tree_sitter::SyntaxTree::default(),
+            ))
+            .id();
+        app.world_mut().spawn((
+            WindowRoot,
+            StrategyEditorId {
+                region_key: region.clone(),
+            },
+            StrategyFragment {
+                source: "new = 2\n".to_string(),
+                dirty: false,
+            },
+        ));
+
+        app.update();
+
+        // SetLanguageRequested はこのフレームには来ない（1 フレーム遅延）。
+        let langs = app.world().resource::<Messages<SetLanguageRequested>>();
+        let mut lc = langs.get_cursor();
+        assert_eq!(
+            lc.read(langs).count(),
+            0,
+            "SetLanguageRequested must NOT be sent in the same frame as SetTextRequested",
+        );
+
+        // 代わりに PendingLanguageReRequest が entity に貼られている。
+        assert!(
+            app.world().get::<PendingLanguageReRequest>(peer).is_some(),
+            "PendingLanguageReRequest must be inserted on the peer entity",
+        );
+    }
+
+    /// flush_pending_language_request_system は次フレームで SetLanguageRequested を送り
+    /// PendingLanguageReRequest を取り外す。
+    #[test]
+    fn i23_flush_pending_language_request_sends_lang_and_removes_marker() {
+        let mut app = App::new();
+        app.add_message::<SetLanguageRequested>();
+        app.add_systems(Update, flush_pending_language_request_system);
+
+        let peer = app.world_mut().spawn(PendingLanguageReRequest).id();
+
+        // 1 回目の update で system が動く。
+        app.update();
+        // MessageWriter のダブルバッファ方式: 2 回目の update で swap が完了して読める。
+        app.update();
+
+        // SetLanguageRequested が 1 件送出されている。
         let langs = app.world().resource::<Messages<SetLanguageRequested>>();
         let mut lc = langs.get_cursor();
         assert_eq!(
             lc.read(langs).count(),
             1,
-            "expected SetLanguageRequested re-issue to reparse the new rope",
+            "flush_pending_language_request_system must send exactly one SetLanguageRequested",
+        );
+
+        // マーカーは除去されている。
+        assert!(
+            app.world().get::<PendingLanguageReRequest>(peer).is_none(),
+            "PendingLanguageReRequest must be removed after flush",
         );
     }
 
@@ -1239,24 +1363,36 @@ mod tests {
 
         // Replay: Hidden のまま（触られない）。
         app.update();
-        assert_eq!(*app.world().get::<Visibility>(window).unwrap(), Visibility::Hidden);
+        assert_eq!(
+            *app.world().get::<Visibility>(window).unwrap(),
+            Visibility::Hidden
+        );
 
         // Manual: Hidden を退避して Hidden のまま。
-        app.world_mut().resource_mut::<crate::trading::ExecutionModeRes>().mode =
-            crate::trading::ExecutionMode::LiveManual;
+        app.world_mut()
+            .resource_mut::<crate::trading::ExecutionModeRes>()
+            .mode = crate::trading::ExecutionMode::LiveManual;
         app.update();
-        assert_eq!(*app.world().get::<Visibility>(window).unwrap(), Visibility::Hidden);
+        assert_eq!(
+            *app.world().get::<Visibility>(window).unwrap(),
+            Visibility::Hidden
+        );
 
         // Replay へ戻す: 退避値 Hidden に復元 → blanket-Inherited にならない。
-        app.world_mut().resource_mut::<crate::trading::ExecutionModeRes>().mode =
-            crate::trading::ExecutionMode::Replay;
+        app.world_mut()
+            .resource_mut::<crate::trading::ExecutionModeRes>()
+            .mode = crate::trading::ExecutionMode::Replay;
         app.update();
         assert_eq!(
             *app.world().get::<Visibility>(window).unwrap(),
             Visibility::Hidden,
             "layout が Hidden を意図していたなら Manual を抜けても Hidden のまま"
         );
-        assert!(app.world().get::<StrategyEditorModeHidden>(window).is_none());
+        assert!(
+            app.world()
+                .get::<StrategyEditorModeHidden>(window)
+                .is_none()
+        );
     }
 }
 
@@ -1566,10 +1702,7 @@ pub fn install_strategy_editor_keybindings(mut commands: Commands) {
 /// 一致しなければ `mark_fragment_dirty` で fragment + autosave を更新し、replaying 中でなければ
 /// `AppHistory.push_text` で undo 履歴に積む。
 pub fn sync_bevscode_to_strategy_fragment_system(
-    editors: Query<
-        (&StrategyEditorNode, &TextBuffer<RopeBuffer>),
-        Changed<TextBuffer<RopeBuffer>>,
-    >,
+    editors: Query<(&StrategyEditorNode, &TextBuffer<RopeBuffer>), Changed<TextBuffer<RopeBuffer>>>,
     mut fragments_q: Query<(&StrategyEditorId, &mut StrategyFragment), With<WindowRoot>>,
     mut history: ResMut<AppHistory>,
     mut auto_save: ResMut<StrategyAutoSaveState>,
@@ -1632,7 +1765,6 @@ pub fn sync_strategy_fragment_to_bevscode_system(
     >,
     editors: Query<(Entity, &StrategyEditorNode, &TextBuffer<RopeBuffer>)>,
     mut writer: MessageWriter<SetTextRequested>,
-    mut lang_writer: MessageWriter<SetLanguageRequested>,
 ) {
     use std::collections::HashMap;
 
@@ -1657,19 +1789,27 @@ pub fn sync_strategy_fragment_to_bevscode_system(
             entity: editor_entity,
             text: fragment.source.clone(),
         });
-        // #67-followup: この経路は File→Open / undo writeback で「既存 peer の rope を
-        // まるごと差し替える」content replace。bevscode には Zed の SyntaxMap::interpolate
-        // 相当（編集のたびに tree.edit で node 範囲を新 rope 長へシフト/縮約し
-        // `tree.end_byte() <= text.len()` を保つ段）が無い。よって rope を差し替えた直後・
-        // 再パース前のフレームで `produce_line_styles` が stale tree の古い byte 範囲で
-        // 新（または空）rope を slice して panic する（manual E2E FLOWS.md I20、ropey
-        // "byte index N, rope length 0"）。Zed の不変条件を我々側で回復するため、
-        // 再 seed と同フレームで stale な SyntaxTree を drop し（→ highlight は tree=None で
-        // plain fallback、slice しない）、SetLanguageRequested を再送して新 rope を
-        // 再パースさせる。
+        // #67-followup / #72: SetLanguageRequested は同フレームに送らない（oscillation issue #72）。
+        // PendingLanguageReRequest を挿入し、flush_pending_language_request_system が翌フレームに送出する。
         commands
             .entity(editor_entity)
-            .remove::<bevy_tree_sitter::SyntaxTree>();
-        lang_writer.write(python_language_request(editor_entity));
+            .remove::<bevy_tree_sitter::SyntaxTree>()
+            .insert(PendingLanguageReRequest);
+    }
+}
+
+/// `PendingLanguageReRequest` を持つ entity に `SetLanguageRequested` を送り、marker を除去する。
+///
+/// `sync_strategy_fragment_to_bevscode_system` が content replace と同フレームで
+/// `SetLanguageRequested` を送ると oscillation が起きる（issue #72）ため、翌フレームに遅延させる。
+/// `apply_pending_strategy_seed_system` は直接 `SetLanguageRequested` を送り続ける（変更不要）。
+pub fn flush_pending_language_request_system(
+    mut commands: Commands,
+    pending_q: Query<Entity, With<PendingLanguageReRequest>>,
+    mut lang_writer: MessageWriter<SetLanguageRequested>,
+) {
+    for entity in pending_q.iter() {
+        lang_writer.write(python_language_request(entity));
+        commands.entity(entity).remove::<PendingLanguageReRequest>();
     }
 }

@@ -74,11 +74,11 @@ class _SecretResolver(Protocol):
 
 
 # on_order_event(OrderEventData) -> None : EC 約定通知を proto 化して push する
-# transport コールバック (server_grpc が publish_backend_event に束ねて注入)。
+# transport コールバック (_backend_impl が publish_backend_event に束ねて注入)。
 OnOrderEvent = Callable[[OrderEventData], None]
 
 # on_venue_logout(venue: str) -> None : 本体ログアウト (SS=閉局) を UI に push する
-# transport コールバック (Phase 9 §3.5 / Step 7)。server_grpc が VenueLogoutDetected に
+# transport コールバック (Phase 9 §3.5 / Step 7)。_backend_impl が VenueLogoutDetected に
 # 束ねて注入する。kabu は poll 型 watchdog で検知するが Tachibana は SS フレームで push 検知。
 OnVenueLogout = Callable[[str], None]
 
@@ -464,7 +464,7 @@ class TachibanaAdapter:
         on_order_event: OnOrderEvent,
         on_venue_logout: OnVenueLogout | None = None,
     ) -> None:
-        """server_grpc が secret 解決・OrderEvent push・ログアウト検知を注入する。
+        """_backend_impl が secret 解決・OrderEvent push・ログアウト検知を注入する。
 
         ``login()`` より前に呼ぶこと (EC ストリームは on_order_event 設定済みの
         ときだけ起動するため)。既にログイン済みなら EC ストリームをここで起動する。

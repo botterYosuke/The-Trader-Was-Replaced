@@ -1,14 +1,13 @@
 use crate::trading::{
     BackendStatus, CurrentRun, ExecutionMode, ExecutionModeRes, ReplaySpeed, RunState,
-    SelectedSymbol, TradingSession, TradingSettings, TransportCommand, TransportCommandSender,
-    VenueState, VenueStatusRes, is_venue_live,
+    SelectedSymbol, StrategyRunConfig, TradingSession, TradingSettings, TransportCommand,
+    TransportCommandSender, VenueState, VenueStatusRes, is_venue_live,
 };
 use crate::ui::components::{
-    ExecutionModeToggleSegment, FooterRoot, GrpcStatusLabel, PauseResumeButton, PauseResumeLabel,
-    ReplayStateBadge, ReplayTimeLabel, ScenarioMetadata, SpeedButton, StepFromIdleRequested,
-    StrategyBuffer, StrategyEditorId, StrategyFragment, StrategyRunRequested, TransportButton,
-    VenueStateBadge,
-    WindowRoot,
+    BackendStatusLabel, ExecutionModeToggleSegment, FooterRoot, InstrumentRegistry,
+    PauseResumeButton, PauseResumeLabel, ReplayStateBadge, ReplayTimeLabel, ScenarioMetadata,
+    SpeedButton, StepFromIdleRequested, StrategyBuffer, StrategyEditorId, StrategyFragment,
+    StrategyRunRequested, TransportButton, VenueStateBadge, WindowRoot,
 };
 use crate::ui::strategy_editor::{StrategyAutoSaveState, flush_strategy_cache, merge_fragments};
 use bevy::prelude::*;
@@ -42,7 +41,9 @@ fn spawn_transport_btn(
         .with_children(|p| {
             p.spawn((
                 Text::new(label),
-                theme.typography.label_font(crate::ui::theme::LabelSize::Small),
+                theme
+                    .typography
+                    .label_font(crate::ui::theme::LabelSize::Small),
                 TextColor(theme.colors.text),
             ));
         });
@@ -76,7 +77,9 @@ fn spawn_speed_btn(
         .with_children(|p| {
             p.spawn((
                 Text::new(format!("{}x", multiplier)),
-                theme.typography.label_font(crate::ui::theme::LabelSize::XSmall),
+                theme
+                    .typography
+                    .label_font(crate::ui::theme::LabelSize::XSmall),
                 TextColor(theme.colors.text_accent),
             ));
         });
@@ -106,7 +109,9 @@ fn spawn_mode_segment(
         .with_children(|p| {
             p.spawn((
                 Text::new(label),
-                theme.typography.label_font(crate::ui::theme::LabelSize::Small),
+                theme
+                    .typography
+                    .label_font(crate::ui::theme::LabelSize::Small),
                 TextColor(theme.colors.text),
             ));
         });
@@ -132,9 +137,7 @@ pub fn spawn_footer(
                 height: Val::Px(theme.layout.footer_h),
                 flex_direction: FlexDirection::Row,
                 align_items: AlignItems::Center,
-                column_gap: Val::Px(
-                    theme.spacing.px(crate::ui::theme::DynamicSpacing::Base06),
-                ),
+                column_gap: Val::Px(theme.spacing.px(crate::ui::theme::DynamicSpacing::Base06)),
                 padding: UiRect::horizontal(Val::Px(
                     theme.spacing.px(crate::ui::theme::DynamicSpacing::Base08),
                 )),
@@ -234,27 +237,33 @@ pub fn spawn_footer(
             // Status labels
             p.spawn((
                 Text::new("time: --"),
-                theme.typography.label_font(crate::ui::theme::LabelSize::Default),
+                theme
+                    .typography
+                    .label_font(crate::ui::theme::LabelSize::Default),
                 TextColor(theme.colors.text_muted),
                 ReplayTimeLabel,
             ));
             p.spawn((
                 Text::new("state: IDLE"),
-                theme.typography.label_font(crate::ui::theme::LabelSize::Default),
+                theme
+                    .typography
+                    .label_font(crate::ui::theme::LabelSize::Default),
                 TextColor(theme.colors.text_disabled),
                 ReplayStateBadge,
             ));
             p.spawn((
                 Text::new("Venue: DISCONNECTED"),
-                theme.typography.label_font(crate::ui::theme::LabelSize::Default),
+                theme
+                    .typography
+                    .label_font(crate::ui::theme::LabelSize::Default),
                 TextColor(theme.colors.text_muted),
                 VenueStateBadge,
             ));
             p.spawn((
-                Text::new("grpc: DISABLED"),
+                Text::new("backend: DISABLED"),
                 theme.typography.label_font(crate::ui::theme::LabelSize::Default),
                 TextColor(theme.colors.text_disabled),
-                GrpcStatusLabel,
+                BackendStatusLabel,
             ));
         });
 }
@@ -274,7 +283,7 @@ pub fn update_footer_system(
         (
             With<ReplayTimeLabel>,
             Without<ReplayStateBadge>,
-            Without<GrpcStatusLabel>,
+            Without<BackendStatusLabel>,
             Without<PauseResumeLabel>,
             Without<VenueStateBadge>,
         ),
@@ -284,15 +293,15 @@ pub fn update_footer_system(
         (
             With<ReplayStateBadge>,
             Without<ReplayTimeLabel>,
-            Without<GrpcStatusLabel>,
+            Without<BackendStatusLabel>,
             Without<PauseResumeLabel>,
             Without<VenueStateBadge>,
         ),
     >,
-    mut grpc_q: Query<
+    mut backend_q: Query<
         (&mut Text, &mut TextColor),
         (
-            With<GrpcStatusLabel>,
+            With<BackendStatusLabel>,
             Without<ReplayTimeLabel>,
             Without<ReplayStateBadge>,
             Without<PauseResumeLabel>,
@@ -305,7 +314,7 @@ pub fn update_footer_system(
             With<PauseResumeLabel>,
             Without<ReplayTimeLabel>,
             Without<ReplayStateBadge>,
-            Without<GrpcStatusLabel>,
+            Without<BackendStatusLabel>,
             Without<VenueStateBadge>,
         ),
     >,
@@ -315,7 +324,7 @@ pub fn update_footer_system(
             With<VenueStateBadge>,
             Without<ReplayTimeLabel>,
             Without<ReplayStateBadge>,
-            Without<GrpcStatusLabel>,
+            Without<BackendStatusLabel>,
             Without<PauseResumeLabel>,
         ),
     >,
@@ -411,23 +420,23 @@ pub fn update_footer_system(
         }
     }
 
-    // gRPC status
-    let (grpc_text, grpc_color) = if !settings.backend_enabled {
-        ("grpc: DISABLED", theme.colors.text_disabled)
+    // backend status
+    let (backend_text, backend_color) = if !settings.backend_enabled {
+        ("backend: DISABLED", theme.colors.text_disabled)
     } else if status.connected {
-        ("grpc: OK", theme.status.success)
+        ("backend: OK", theme.status.success)
     } else if status.last_error.is_some() {
-        ("grpc: ERR", theme.status.error)
+        ("backend: ERR", theme.status.error)
     } else {
-        ("grpc: ...", theme.status.warning)
+        ("backend: ...", theme.status.warning)
     };
-    for (mut text, mut color) in &mut grpc_q {
+    for (mut text, mut color) in &mut backend_q {
         // 規約 2: 差分書き込み — avoid change-detection thrash per frame.
-        if text.0 != grpc_text {
-            text.0 = grpc_text.to_string();
+        if text.0 != backend_text {
+            text.0 = backend_text.to_string();
         }
-        if color.0 != grpc_color {
-            color.0 = grpc_color;
+        if color.0 != backend_color {
+            color.0 = backend_color;
         }
     }
 
@@ -480,6 +489,9 @@ pub fn transport_button_system(
     mut buffer: ResMut<StrategyBuffer>,
     mut auto_save: ResMut<StrategyAutoSaveState>,
     mut step_events: MessageWriter<StepFromIdleRequested>,
+    // #58: JumpToStart に必要な追加パラメータ
+    scenario: Res<ScenarioMetadata>,
+    registry: Res<InstrumentRegistry>,
 ) {
     if !matches!(exec_mode.mode, ExecutionMode::Replay) {
         return;
@@ -511,22 +523,54 @@ pub fn transport_button_system(
                             match flush_strategy_cache(&merged, &mut buffer, &mut auto_save) {
                                 Ok(true) => {
                                     if let Some(path) = buffer.cache_path.clone() {
-                                        step_events.write(StepFromIdleRequested { cache_path: path });
+                                        step_events
+                                            .write(StepFromIdleRequested { cache_path: path });
                                     }
                                 }
-                                Ok(false) => warn!("transport: step_from_idle blocked: no cache_path set"),
+                                Ok(false) => {
+                                    warn!("transport: step_from_idle blocked: no cache_path set")
+                                }
                                 Err(e) => error!("transport: step_from_idle flush failed: {}", e),
                             }
                         } else {
                             info!("transport: step_forward ignored (state={})", replay);
                         }
                     }
-                    TransportButton::JumpToStart => match replay {
-                        "RUNNING" | "PAUSED" | "LOADED" => {
-                            let _ = sender.tx.send(TransportCommand::ForceStop);
+                    TransportButton::JumpToStart => {
+                        // #58: すべての replay 状態でバー 0 からリロード。
+                        // config が不完全（instruments/date 未設定）なら warn で弾く。
+                        let instruments = if !registry.as_slice().is_empty() {
+                            registry.as_slice().to_vec()
+                        } else {
+                            scenario.instruments.clone()
+                        };
+                        match (
+                            instruments.is_empty(),
+                            scenario.start.as_deref(),
+                            scenario.end.as_deref(),
+                            scenario.granularity.as_deref(),
+                        ) {
+                            (false, Some(start), Some(end), Some(granularity)) => {
+                                let config = StrategyRunConfig {
+                                    instruments,
+                                    start: start.to_string(),
+                                    end: end.to_string(),
+                                    granularity: granularity.to_string(),
+                                    initial_cash: scenario.initial_cash,
+                                };
+                                let _ = sender.tx.send(TransportCommand::RestartReplay { config });
+                            }
+                            _ => warn!(
+                                "transport: jump_to_start blocked: scenario config incomplete \
+                                 (state={}, instruments={}, start={:?}, end={:?}, gran={:?})",
+                                replay,
+                                scenario.instruments.len(),
+                                scenario.start,
+                                scenario.end,
+                                scenario.granularity,
+                            ),
                         }
-                        other => info!("transport: jump_to_start ignored (state={})", other),
-                    },
+                    }
                     TransportButton::ForceStop => match replay {
                         "RUNNING" | "PAUSED" | "LOADED" => {
                             let _ = sender.tx.send(TransportCommand::ForceStop);
@@ -573,7 +617,9 @@ pub fn update_speed_buttons_system(
     }
     for (e, SpeedButton(mult)) in &query {
         if *mult == speed.current {
-            commands.entity(e).insert(crate::ui::component::ButtonSelected);
+            commands
+                .entity(e)
+                .insert(crate::ui::component::ButtonSelected);
         } else {
             commands
                 .entity(e)
@@ -595,7 +641,9 @@ pub fn sync_execution_mode_selected_system(
     }
     for (e, seg) in &query {
         if seg.0 == exec_mode.mode {
-            commands.entity(e).insert(crate::ui::component::ButtonSelected);
+            commands
+                .entity(e)
+                .insert(crate::ui::component::ButtonSelected);
         } else {
             commands
                 .entity(e)
@@ -615,10 +663,7 @@ pub fn sync_execution_mode_selected_system(
 #[allow(clippy::type_complexity)]
 #[allow(clippy::too_many_arguments)]
 pub fn footer_pause_resume_system(
-    query: Query<
-        &Interaction,
-        (Changed<Interaction>, With<PauseResumeButton>, With<Button>),
-    >,
+    query: Query<&Interaction, (Changed<Interaction>, With<PauseResumeButton>, With<Button>)>,
     data: Res<TradingSession>,
     sender: Res<TransportCommandSender>,
     mut buffer: ResMut<StrategyBuffer>,
@@ -655,7 +700,16 @@ pub fn footer_pause_resume_system(
                             }
                         }
                         _ => {
-                            if matches!(current_run.state, RunState::Running) {
+                            // current_run.state may be stale (e.g. after LoadAndStep where
+                            // RunComplete is never sent). Trust explicit non-running backend
+                            // states rather than blocking on a stale local state.
+                            let backend_not_running = matches!(
+                                data.replay_state.as_deref(),
+                                Some("LOADED") | Some("IDLE")
+                            );
+                            if matches!(current_run.state, RunState::Running)
+                                && !backend_not_running
+                            {
                                 warn!("Run blocked: already running");
                                 continue;
                             }
@@ -1010,7 +1064,8 @@ mod tests {
         TransportCommand, TransportCommandSender, VenueStatusRes,
     };
     use crate::ui::components::{
-        PauseResumeButton, SpeedButton, StrategyBuffer, StrategyRunRequested, TransportButton,
+        InstrumentRegistry, PauseResumeButton, SpeedButton, StrategyBuffer, StrategyRunRequested,
+        TransportButton,
     };
     use crate::ui::strategy_editor::StrategyAutoSaveState;
     use tokio::sync::mpsc;
@@ -1027,6 +1082,7 @@ mod tests {
             .init_resource::<SelectedSymbol>()
             .init_resource::<VenueStatusRes>()
             .init_resource::<ScenarioMetadata>()
+            .init_resource::<InstrumentRegistry>()
             .init_resource::<StrategyAutoSaveState>()
             .add_message::<StrategyRunRequested>()
             .add_message::<StepFromIdleRequested>();
@@ -1040,6 +1096,16 @@ mod tests {
             ),
         );
         (app, rx)
+    }
+
+    /// Seed the scenario metadata for JumpToStart tests that need a valid config.
+    fn seed_scenario(app: &mut App) {
+        let mut sc = app.world_mut().resource_mut::<ScenarioMetadata>();
+        sc.instruments = vec!["7203.TSE".to_string()];
+        sc.start = Some("2025-01-06".to_string());
+        sc.end = Some("2025-03-31".to_string());
+        sc.granularity = Some("Daily".to_string());
+        sc.initial_cash = Some(1_000_000);
     }
 
     fn spawn_pressed_transport(app: &mut App, kind: TransportButton) -> Entity {
@@ -1172,15 +1238,42 @@ mod tests {
     fn transport_command_sent_in_replay_smoke() {
         let (mut app, mut rx) = make_input_app();
         set_mode(&mut app, ExecutionMode::Replay);
+        seed_scenario(&mut app);
         app.world_mut()
             .resource_mut::<TradingSession>()
             .replay_state = Some("RUNNING".into());
         let _ = spawn_pressed_transport(&mut app, TransportButton::JumpToStart);
         app.update();
         match rx.try_recv() {
-            Ok(TransportCommand::ForceStop) => {}
-            other => panic!("expected ForceStop in Replay smoke, got {:?}", other),
+            Ok(TransportCommand::RestartReplay { .. }) => {}
+            other => panic!("expected RestartReplay in Replay smoke, got {:?}", other),
         }
+    }
+
+    /// A18 (kind:unit): IDLE → ▶| (LoadAndStep) 後に ▶ がブロックされないこと。
+    ///
+    /// `StepFromIdleRequested` が `current_run.state = Running` をセットするが
+    /// `LoadAndStep` は `RunComplete` を送らない → ▶ が永続ロックされる回帰ガード (#71)。
+    /// LOADED 状態かつ `current_run.state == Running` で ▶ を押したとき、guard を通過して
+    /// "No strategy loaded" の Failed に遷移すること（guard が blocked なら Running のまま）。
+    #[test]
+    fn a18_run_not_blocked_when_backend_loaded_despite_running_state() {
+        let (mut app, _rx) = make_input_app();
+        set_mode(&mut app, ExecutionMode::Replay);
+        // Simulate post-StepFromIdleRequested: current_run.state=Running but backend=LOADED/not-running
+        app.world_mut().resource_mut::<CurrentRun>().state = RunState::Running;
+        app.world_mut()
+            .resource_mut::<TradingSession>()
+            .replay_state = Some("LOADED".into());
+        // cache_path=None → "No strategy loaded" Failed (proof guard passed)
+        let _ = spawn_pressed_pause_resume(&mut app);
+        app.update();
+        let state = app.world().resource::<CurrentRun>().state.clone();
+        assert!(
+            matches!(state, RunState::Failed { .. }),
+            "▶ should pass the guard and fail with 'No strategy loaded', got: {:?}",
+            state
+        );
     }
 
     fn make_visibility_app() -> App {

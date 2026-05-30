@@ -9,7 +9,7 @@
   （`Trader` + `LiveExecutionEngine` + `LiveRiskEngine` + `LiveDataEngine` + `Cache` +
   `Portfolio` + `MessageBus` + `LiveClock`）を組んで `NautilusVenueExecClient` を
   `register_client` し、戦略を `add_strategy()` して live loop 上で起動する
-  （Step 4/7/8 で結線済み）。`server_grpc` の既定 controller はこれで、StartLiveStrategy が
+  （Step 4/7/8 で結線済み）。`_backend_impl` の既定 controller はこれで、StartLiveStrategy が
   成功すると当該戦略は実際に venue へ発注し得る。
 
 - **`NoopLiveEngineController`（テスト専用 placeholder）**: Nautilus engine には繋がない。
@@ -17,7 +17,7 @@
   （`engine_runner` が backtest でやるのと同じ contract 確認）engine には載せない。
   gRPC RPC 配線・state machine・RunRegistry・イベント transport の疎通を、Nautilus を
   起動せずに検証するためのもの。注文経路に繋がっていないため実発注は発生しない。
-  テスト（server_grpc 単体テスト等）が明示的に注入する。
+  テスト（_backend_impl 単体テスト等）が明示的に注入する。
 """
 
 from __future__ import annotations
@@ -91,7 +91,7 @@ class NautilusLiveEngineController:
     Phase 10 単一 run 制約（§0.7）に合わせ、本 controller も **同時に 1 つの kernel** だけを
     保持する（attach → detach のペア）。複数 run は Phase 11。
 
-    runtime resource（live loop / venue adapter）は server_grpc が所有するため、構築時に
+    runtime resource（live loop / venue adapter）は _backend_impl が所有するため、構築時に
     provider 経由で受け取る（共有所有権、§1.1：新規 login / WebSocket は作らない）。
     safety_rails の **ネイティブ rail** は `LiveRiskEngineConfig` に、**独自 rail** は
     exec client の pre-trade フックに渡る（§2.4）。
@@ -119,7 +119,7 @@ class NautilusLiveEngineController:
         self._on_safety_violation = on_safety_violation
         # Step 7 C: kernel msgbus 由来の OrderEvent を UI へ橋渡しする callback。
         # 署名は (OrderEventData, strategy_id) で、strategy_id は当該 run の
-        # nautilus_strategy_id（"LIVE-{run}"）。server_grpc が注入する。
+        # nautilus_strategy_id（"LIVE-{run}"）。_backend_impl が注入する。
         self._on_order_event = on_order_event
         # Step 7 D: run 別 telemetry を push する callback。署名は (strategy_id, metrics dict)。
         self._on_telemetry = on_telemetry
@@ -128,7 +128,7 @@ class NautilusLiveEngineController:
         self._on_strategy_log = on_strategy_log
         # Issue #6: 当該 run（nautilus_strategy_id）が PAUSED で新規発注ゲートが閉じているかを
         # 返す provider。`(nautilus_strategy_id) -> bool`、True なら exec client が deny する。
-        # server_grpc が RunRegistry 逆引き + state_machine.is_running で構成する。
+        # _backend_impl が RunRegistry 逆引き + state_machine.is_running で構成する。
         self._run_gate_provider = run_gate_provider
         self._attach_timeout_s = attach_timeout_s
         self._trader_id = trader_id
@@ -231,7 +231,7 @@ class NautilusLiveEngineController:
         # 投げる）ため、kernel は `loop=` を渡さず `asyncio.get_running_loop()` で同じ loop に
         # bind させる。`loop=` を渡すと NautilusKernel が `_setup_loop()` で
         # `signal.signal(SIGINT)` / `loop.add_signal_handler()` を呼ぶが、これらは
-        # **メインスレッドでしか動かない**。本番の live loop は server_grpc の daemon thread
+        # **メインスレッドでしか動かない**。本番の live loop は _backend_impl の daemon thread
         # （phase8-live-loop）で回っており、Python 3.14 は非メインスレッドの signal.signal で
         # `ValueError: signal only works in main thread` を raise する（#36）。プロセスの
         # ライフサイクル/シグナルは backend が所有するので、Nautilus には signal handler を
@@ -414,7 +414,7 @@ class NautilusLiveEngineController:
         取得はしない（自己デッドロック回避、§Step4 不変条件）。
 
         重複報告の注意: 実 venue では同じ約定が共有 adapter の EC stream
-        （`server_grpc._publish_order_event`、strategy_id 空）でも届き得るが、UI 側は
+        （`_backend_impl._publish_order_event`、strategy_id 空）でも届き得るが、UI 側は
         client_order_id でマージし「非空が勝つ」規則で LIVE-{run} を保持する。mock の
         EC stream は発火しないため Step 7 のテスト範囲では二重化しない。
         """

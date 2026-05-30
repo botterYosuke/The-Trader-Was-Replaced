@@ -8,8 +8,6 @@ bevy = { version = "0.18", features = ["default", "bevy_picking", "sprite_pickin
 bevy_pancam = "0.20"
 bevy_vector_shapes = "0.12"
 rand = "0.8"
-tonic = "0.12"
-prost = "0.13"
 tokio = { version = "1", features = ["full"] }
 serde = { version = "1.0", features = ["derive"] }
 serde_json = "1.0"
@@ -44,10 +42,6 @@ tokio-stream = "0.1"
 # （bevscode 経由で transitive に入っているのと同じバージョンを使う）。
 ropey = "1"
 
-[build-dependencies]
-tonic-build = "0.12"
-protoc-bin-vendored = "3.0"
-
 # dev ビルドの実行時パフォーマンス対策（Bevy 公式推奨）。
 # 自分のクレートは opt-level=1 に留めてインクリメンタルコンパイルを速く保ちつつ、
 # 依存（Bevy / bevscode / bevy_instanced_text 等）だけ opt-level=3 で最適化する。
@@ -58,3 +52,4 @@ opt-level = 1
 
 [profile.dev.package."*"]
 opt-level = 3
+
