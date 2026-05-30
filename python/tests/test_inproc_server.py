@@ -302,7 +302,7 @@ def test_modify_order_no_session():
 # ---------------------------------------------------------------------------
 
 def test_parse_granularity_int_accepts_proto_int_daily():
-    from engine.inproc_server import _parse_granularity_int
+    from engine.backend_service import _parse_granularity_int
     from engine.proto import engine_pb2
 
     # Rust 側は proto enum の int をそのまま渡す（DAILY == 3）
@@ -310,7 +310,7 @@ def test_parse_granularity_int_accepts_proto_int_daily():
 
 
 def test_parse_granularity_int_accepts_proto_int_minute():
-    from engine.inproc_server import _parse_granularity_int
+    from engine.backend_service import _parse_granularity_int
     from engine.proto import engine_pb2
 
     assert _parse_granularity_int(engine_pb2.MINUTE) == engine_pb2.MINUTE

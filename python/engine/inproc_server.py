@@ -345,29 +345,3 @@ class InprocLiveServer:
             self._svc.teardown()
         except Exception:
             logging.exception("[inproc] close: teardown failed")
-        try:
-            self._svc.stop_live_loop(timeout=1.0)
-        except Exception:
-            logging.exception("[inproc] close: stop_live_loop failed")
-
-
-def _parse_granularity_int(granularity) -> int:
-    """Coerce granularity (proto enum int OR name string) to ReplayGranularity int.
-
-    Rust backend_transport.rs passes the proto enum int directly
-    (TICK=0, SECOND=1, MINUTE=2, DAILY=3), while legacy callers may pass
-    the name string ('Daily'/'Minute'). Unknown values fall back to TICK(0).
-    """
-    from .proto import engine_pb2
-    # bool is an int subclass (True == 1); reject before the int branch.
-    if isinstance(granularity, bool):
-        return engine_pb2.TICK
-    if isinstance(granularity, int):
-        if engine_pb2.TICK <= granularity <= engine_pb2.DAILY:
-            return granularity
-        return engine_pb2.TICK
-    if granularity == "Daily":
-        return engine_pb2.DAILY
-    if granularity in ("Minute", "MINUTE"):
-        return engine_pb2.MINUTE
-    return engine_pb2.TICK
