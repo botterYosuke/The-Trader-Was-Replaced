@@ -12,10 +12,17 @@
 //! same table.
 
 pub mod button;
-pub mod modal_layer;
 pub mod keyboard_drain;
+pub mod label;
+pub mod modal_layer;
 
 pub use button::{
     button_colors, button_interaction_system, ButtonColors, ButtonDisabled, ButtonSelected,
     ButtonState, ButtonStyle, TintColor,
 };
+pub use label::{
+    spawn_divider, spawn_indicator, spawn_labeled_value_row, spawn_table_headers_at,
+};
+
+mod hit_target;
+pub use hit_target::spawn_transparent_hit_sprite;

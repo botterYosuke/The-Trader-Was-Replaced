@@ -2,9 +2,12 @@ use crate::trading::{
     ExecutionModeRes, LiveOrders, OrdersFilter, PortfolioState, filter_label, is_live_mode,
     next_filter,
 };
+use crate::ui::component::label::spawn_table_headers_at;
+use crate::ui::component::spawn_transparent_hit_sprite;
 use crate::ui::components::PanelKind;
 use crate::ui::floating_window::{FloatingWindowSpec, spawn_floating_window};
 use crate::ui::order_context_menu::OrderContextMenu;
+use crate::ui::theme::Theme;
 use bevy::prelude::*;
 use bevy::sprite::Anchor;
 
@@ -13,7 +16,6 @@ const PANEL_SIZE: Vec2 = Vec2::new(360.0, 220.0);
 const PANEL_POSITION: Vec2 = Vec2::new(300.0, -270.0);
 const ACCENT: Color = Color::srgba(0.0, 0.8, 1.0, 0.4);
 
-const COLOR_HEADER: Color = Color::srgb(0.0, 0.81, 1.0);
 const COLOR_DEFAULT: Color = Color::srgb(0.85, 0.88, 0.94);
 const COLOR_BUY: Color = Color::srgb(0.0, 1.0, 0.50);
 const COLOR_SELL: Color = Color::srgb(1.0, 0.20, 0.40);
@@ -83,7 +85,7 @@ pub struct OrdersRowHit {
 const ROW_HIT_WIDTH: f32 = 320.0;
 
 // ── Spawn ────────────────────────────────────────────────────
-pub fn spawn_orders_panel(commands: &mut Commands) {
+pub fn spawn_orders_panel(commands: &mut Commands, theme: &Theme) {
     let (root, content_area, _title_bar) = spawn_floating_window(
         commands,
         FloatingWindowSpec {
@@ -98,26 +100,20 @@ pub fn spawn_orders_panel(commands: &mut Commands) {
     commands.entity(root).insert(PanelKind::Orders);
 
     // ヘッダー行
-    for (col, label) in [
-        (OrdersColumn::Symbol, "Sym"),
-        (OrdersColumn::Side, "Side"),
-        (OrdersColumn::Qty, "Qty"),
-        (OrdersColumn::Price, "Price"),
-        (OrdersColumn::Status, "Status"),
-    ] {
-        let header = commands
-            .spawn((
-                Text2d::new(label),
-                TextFont {
-                    font_size: 11.0,
-                    ..default()
-                },
-                TextColor(COLOR_HEADER),
-                Transform::from_xyz(column_x(col), HEADER_Y, 0.1),
-            ))
-            .id();
-        commands.entity(content_area).add_child(header);
-    }
+    spawn_table_headers_at(
+        commands,
+        content_area,
+        &[
+            ("Sym", column_x(OrdersColumn::Symbol)),
+            ("Side", column_x(OrdersColumn::Side)),
+            ("Qty", column_x(OrdersColumn::Qty)),
+            ("Price", column_x(OrdersColumn::Price)),
+            ("Status", column_x(OrdersColumn::Status)),
+        ],
+        HEADER_Y,
+        theme.colors.text_accent,
+        theme,
+    );
 
     // データセル（6 行 × 5 列）
     for row in 0..MAX_ROWS {
@@ -149,47 +145,41 @@ pub fn spawn_orders_panel(commands: &mut Commands) {
     // セルより僅かに背面 (z=0.05) に置き、行全幅をカバーする。
     for row in 0..MAX_ROWS {
         let y = ROW_0_Y - (row as f32) * ROW_SPACING;
-        let hit = commands
-            .spawn((
-                Sprite {
-                    color: Color::srgba(0.0, 0.0, 0.0, 0.0),
-                    custom_size: Some(Vec2::new(ROW_HIT_WIDTH, ROW_SPACING)),
-                    ..default()
-                },
-                Transform::from_xyz(0.0, y, 0.05),
-                OrdersRowHit { row },
-            ))
-            .observe(
-                |down: On<Pointer<Press>>,
-                 hit_q: Query<&OrdersRowHit>,
-                 live_orders: Res<LiveOrders>,
-                 filter: Res<OrdersFilter>,
-                 exec_mode: Res<ExecutionModeRes>,
-                 venue: Res<crate::trading::VenueStatusRes>,
-                 mut menu: ResMut<OrderContextMenu>| {
-                    // Pointer<Press> は全ボタンで発火する → Secondary (右) のみ反応 (規約)。
-                    if down.button != PointerButton::Secondary {
-                        return;
-                    }
-                    // Live モードのみ。Replay 注文には取消/訂正を出さない。
-                    if !is_live_mode(exec_mode.mode) {
-                        return;
-                    }
-                    let Ok(hit) = hit_q.get(down.entity) else {
-                        return;
-                    };
-                    // §2.9: index into the SAME filtered view the panel renders, so
-                    // row N maps to the displayed order N (not the raw Vec index).
-                    let Some(order) = live_orders.nth_filtered(&filter, hit.row) else {
-                        return;
-                    };
-                    menu.open = true;
-                    menu.client_order_id = Some(order.client_order_id.clone());
-                    menu.venue = venue.venue_id.clone().unwrap_or_default();
-                    menu.screen_pos = down.pointer_location.position;
-                },
-            )
-            .id();
+        let hit = spawn_transparent_hit_sprite(
+            commands,
+            Vec2::new(ROW_HIT_WIDTH, ROW_SPACING),
+            Vec3::new(0.0, y, 0.05),
+        );
+        commands.entity(hit).insert(OrdersRowHit { row }).observe(
+            |down: On<Pointer<Press>>,
+             hit_q: Query<&OrdersRowHit>,
+             live_orders: Res<LiveOrders>,
+             filter: Res<OrdersFilter>,
+             exec_mode: Res<ExecutionModeRes>,
+             venue: Res<crate::trading::VenueStatusRes>,
+             mut menu: ResMut<OrderContextMenu>| {
+                // Pointer<Press> は全ボタンで発火する → Secondary (右) のみ反応 (規約)。
+                if down.button != PointerButton::Secondary {
+                    return;
+                }
+                // Live モードのみ。Replay 注文には取消/訂正を出さない。
+                if !is_live_mode(exec_mode.mode) {
+                    return;
+                }
+                let Ok(hit) = hit_q.get(down.entity) else {
+                    return;
+                };
+                // §2.9: index into the SAME filtered view the panel renders, so
+                // row N maps to the displayed order N (not the raw Vec index).
+                let Some(order) = live_orders.nth_filtered(&filter, hit.row) else {
+                    return;
+                };
+                menu.open = true;
+                menu.client_order_id = Some(order.client_order_id.clone());
+                menu.venue = venue.venue_id.clone().unwrap_or_default();
+                menu.screen_pos = down.pointer_location.position;
+            },
+        );
         commands.entity(content_area).add_child(hit);
     }
 
@@ -210,36 +200,30 @@ pub fn spawn_orders_panel(commands: &mut Commands) {
     commands.entity(content_area).add_child(filter_label);
 
     // 絞り込みラベル上の透明クリック領域 (左クリックで循環)。
-    let filter_hit = commands
-        .spawn((
-            Sprite {
-                color: Color::srgba(0.0, 0.0, 0.0, 0.0),
-                custom_size: Some(Vec2::new(FILTER_HIT_WIDTH, ROW_SPACING)),
-                ..default()
-            },
-            Transform::from_xyz(-150.0 + FILTER_HIT_WIDTH / 2.0, FILTER_Y, 0.05),
-            OrdersFilterHit,
-        ))
-        .observe(
-            |down: On<Pointer<Press>>,
-             exec_mode: Res<ExecutionModeRes>,
-             live_orders: Res<LiveOrders>,
-             mut filter: ResMut<OrdersFilter>| {
-                // Pointer<Press> は全ボタンで発火する → Primary (左) のみ反応 (規約)。
-                if down.button != PointerButton::Primary {
-                    return;
-                }
-                // Live モードのみ。Replay 経路はフィルタを使わない。
-                if !is_live_mode(exec_mode.mode) {
-                    return;
-                }
-                let next = next_filter(&filter, &live_orders);
-                if *filter != next {
-                    *filter = next;
-                }
-            },
-        )
-        .id();
+    let filter_hit = spawn_transparent_hit_sprite(
+        commands,
+        Vec2::new(FILTER_HIT_WIDTH, ROW_SPACING),
+        Vec3::new(-150.0 + FILTER_HIT_WIDTH / 2.0, FILTER_Y, 0.05),
+    );
+    commands.entity(filter_hit).insert(OrdersFilterHit).observe(
+        |down: On<Pointer<Press>>,
+         exec_mode: Res<ExecutionModeRes>,
+         live_orders: Res<LiveOrders>,
+         mut filter: ResMut<OrdersFilter>| {
+            // Pointer<Press> は全ボタンで発火する → Primary (左) のみ反応 (規約)。
+            if down.button != PointerButton::Primary {
+                return;
+            }
+            // Live モードのみ。Replay 経路はフィルタを使わない。
+            if !is_live_mode(exec_mode.mode) {
+                return;
+            }
+            let next = next_filter(&filter, &live_orders);
+            if *filter != next {
+                *filter = next;
+            }
+        },
+    );
     commands.entity(content_area).add_child(filter_hit);
 
     // ステータスメッセージ

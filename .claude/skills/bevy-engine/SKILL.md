@@ -436,11 +436,12 @@ impl Plugin for MyPlugin {
     }
 }
 
-// Hierarchy (0.15)
+// Hierarchy (0.18)
 let parent = commands.spawn(Transform::default()).id();
 let child = commands.spawn(Transform::default()).id();
 commands.entity(parent).add_child(child);
-// or: commands.entity(child).set_parent(parent);
+// ⚠️ EntityCommands::set_parent() は Bevy 0.18 で廃止。
+// .spawn().set_parent(p) はコンパイルエラー。add_child か insert(ChildOf(p)) を使う。
 // 取得: fn (parent_q: Query<&Parent>) { parent_q.get(child)?.get() }
 
 // Observer (entity-local)

@@ -1,6 +1,8 @@
 use crate::trading::PortfolioState;
+use crate::ui::component::label::spawn_table_headers_at;
 use crate::ui::components::PanelKind;
 use crate::ui::floating_window::{FloatingWindowSpec, spawn_floating_window};
+use crate::ui::theme::Theme;
 use bevy::prelude::*;
 
 // ── レイアウト & 配色 ─────────────────────────────────────────
@@ -8,7 +10,6 @@ const PANEL_SIZE: Vec2 = Vec2::new(280.0, 200.0);
 const PANEL_POSITION: Vec2 = Vec2::new(-150.0, -270.0);
 const ACCENT: Color = Color::srgba(0.0, 0.8, 1.0, 0.4);
 
-const COLOR_HEADER: Color = Color::srgb(0.0, 0.81, 1.0);
 const COLOR_DEFAULT: Color = Color::srgb(0.85, 0.88, 0.94);
 const COLOR_POS: Color = Color::srgb(0.0, 1.0, 0.50);
 const COLOR_NEG: Color = Color::srgb(1.0, 0.20, 0.40);
@@ -48,7 +49,7 @@ pub struct PositionsCell {
 pub struct PositionsStatus;
 
 // ── Spawn ────────────────────────────────────────────────────
-pub fn spawn_positions_panel(commands: &mut Commands) {
+pub fn spawn_positions_panel(commands: &mut Commands, theme: &Theme) {
     let (root, content_area, _title_bar) = spawn_floating_window(
         commands,
         FloatingWindowSpec {
@@ -63,25 +64,19 @@ pub fn spawn_positions_panel(commands: &mut Commands) {
     commands.entity(root).insert(PanelKind::Positions);
 
     // ヘッダー行
-    for (col, label) in [
-        (PositionsColumn::Symbol, "Sym"),
-        (PositionsColumn::Qty, "Qty"),
-        (PositionsColumn::Avg, "Avg"),
-        (PositionsColumn::UPnl, "uPnL"),
-    ] {
-        let header = commands
-            .spawn((
-                Text2d::new(label),
-                TextFont {
-                    font_size: 11.0,
-                    ..default()
-                },
-                TextColor(COLOR_HEADER),
-                Transform::from_xyz(column_x(col), HEADER_Y, 0.1),
-            ))
-            .id();
-        commands.entity(content_area).add_child(header);
-    }
+    spawn_table_headers_at(
+        commands,
+        content_area,
+        &[
+            ("Sym", column_x(PositionsColumn::Symbol)),
+            ("Qty", column_x(PositionsColumn::Qty)),
+            ("Avg", column_x(PositionsColumn::Avg)),
+            ("uPnL", column_x(PositionsColumn::UPnl)),
+        ],
+        HEADER_Y,
+        theme.colors.text_accent,
+        theme,
+    );
 
     // データセル（5 行 × 4 列、最初は空）
     for row in 0..MAX_ROWS {

@@ -1421,11 +1421,12 @@ pub fn apply_pending_layout_system(
             &mut Sprite,
             &mut Visibility,
             Option<&mut StrategyEditorModeHidden>,
+            Option<&mut StrategyFragment>,
         ),
         (With<WindowRoot>, Without<LayoutExcluded>),
     >,
     mut wm: ResMut<WindowManager>,
-    pending_fragments: Res<PendingStrategyFragments>,
+    mut pending_fragments: ResMut<PendingStrategyFragments>,
     mut spawn_ev: MessageWriter<PanelSpawnRequested>,
     orphan_peers: Query<(Entity, &StrategyEditorNode)>,
     mut input_focus: ResMut<bevy::input_focus::InputFocus>,
@@ -1457,6 +1458,7 @@ pub fn apply_pending_layout_system(
                 true
             }
         });
+
         match found {
             None => {
                 // orphan peer（旧 root が despawn 済みで StrategyEditorNode だけ残っている）を
@@ -1512,7 +1514,7 @@ pub fn apply_pending_layout_system(
                 }
                 still_pending.push(win_layout);
             }
-            Some((kind, _, mut tf, mut sprite, mut vis, mode_hidden)) => {
+            Some((kind, id, mut tf, mut sprite, mut vis, mode_hidden, maybe_fragment)) => {
                 tf.translation.x = win_layout.position[0];
                 tf.translation.y = win_layout.position[1];
                 tf.translation.z = win_layout.z;
@@ -1534,6 +1536,24 @@ pub fn apply_pending_layout_system(
                 }
                 if win_layout.z > wm.max_z {
                     wm.max_z = win_layout.z;
+                }
+                // LayoutRestore 経路（File→Open で既存 StrategyEditor root が生存中）:
+                // handle_strategy_file_load_system が LayoutRestore では root を despawn しないため、
+                // pending_fragments の新コンテンツをここで in-place 書き込む。
+                // sync_strategy_fragment_to_bevscode_system が Changed<StrategyFragment> を検知して
+                // bevscode peer に新コンテンツを伝播する（issue #69 followup）。
+                // StrategyEditorId を持たないパネルでは id=None → if-let が落ちる（outer kind-check 不要）。
+                if let (Some(editor_id), Some(mut fragment)) = (id, maybe_fragment) {
+                    if let Some(new_source) =
+                        pending_fragments.by_region_key.remove(&editor_id.region_key)
+                    {
+                        info!(
+                            "apply_pending_layout: in-place fragment update for {:?}",
+                            editor_id.region_key
+                        );
+                        fragment.source = new_source;
+                        fragment.dirty = false;
+                    }
                 }
             }
         }
@@ -3961,6 +3981,101 @@ mod tests {
         assert!(
             matches!(spawns[0].kind, PanelKind::StrategyEditor),
             "発火された spawn は StrategyEditor のはず"
+        );
+    }
+
+    /// I22 回帰ガード（#69 followup）: cache 復元済みの既存 root（found=Some）がある状態で
+    /// apply_pending_layout_system が走ったとき、pending_fragments のコンテンツを
+    /// StrategyFragment に in-place 書き込むこと。
+    ///
+    /// fix 前の問題: `handle_strategy_file_load_system` が root を despawn するが Bevy
+    /// コマンドは遅延適用のため、同フレームの `apply_pending_layout_system` では root が
+    /// alive のまま → found=Some → pending.windows 消費 → 新 root が生まれず「0 lines」。
+    /// fix 後: found=Some かつ pending_fragments にコンテンツがある → in-place 更新。
+    #[test]
+    fn i22_apply_pending_updates_existing_editor_fragment_in_place() {
+        use super::*;
+        use crate::ui::components::{PendingStrategyFragments, WindowManager};
+        use crate::ui::strategy_editor::StrategyEditorRoot;
+        use bevy::prelude::*;
+
+        let mut app = App::new();
+        app.add_message::<PanelSpawnRequested>();
+        app.insert_resource(WindowManager::default());
+        app.insert_resource(PendingStrategyFragments::default());
+
+        // 既存の root（cache 復元済み、old_content）を spawn。
+        let existing_root = app
+            .world_mut()
+            .spawn((
+                PanelKind::StrategyEditor,
+                StrategyEditorId {
+                    region_key: "region_001".to_string(),
+                },
+                StrategyFragment {
+                    source: "old_content".to_string(),
+                    dirty: false,
+                },
+                StrategyEditorRoot,
+                WindowRoot,
+                Transform::default(),
+                Sprite::default(),
+                Visibility::default(),
+            ))
+            .id();
+
+        // pending_fragments に新コンテンツ（File→Open で読み込んだ）。
+        {
+            let mut pf = app
+                .world_mut()
+                .resource_mut::<PendingStrategyFragments>();
+            pf.by_region_key
+                .insert("region_001".to_string(), "new_content\n".to_string());
+        }
+
+        // PendingLayoutApply: region_001 エディタが waiting_for_strategy=false で pending。
+        let mut pending = PendingLayoutApply::default();
+        pending.waiting_for_strategy = false;
+        pending.windows.push(WindowLayout {
+            kind: PanelKind::StrategyEditor,
+            visible: true,
+            position: [0.0, 0.0],
+            size: [800.0, 600.0],
+            z: 1.0,
+            region_key: Some("region_001".to_string()),
+        });
+        app.insert_resource(pending);
+        app.init_resource::<bevy::input_focus::InputFocus>();
+        app.init_resource::<crate::ui::strategy_editor_find::FindReplaceState>();
+
+        app.add_systems(Update, apply_pending_layout_system);
+        app.update();
+
+        // fix 後: 既存 root の StrategyFragment が in-place で new_content に更新される。
+        let fragment = app
+            .world()
+            .get::<StrategyFragment>(existing_root)
+            .expect("root entity は生存しているはず");
+        assert_eq!(
+            fragment.source,
+            "new_content\n",
+            "apply_pending_layout_system は found=Some のとき pending_fragments のコンテンツで \
+             StrategyFragment を in-place 更新すべき（0 lines チカチカ fix の回帰ガード）"
+        );
+        assert!(
+            !fragment.dirty,
+            "in-place 更新後は dirty=false であるべき"
+        );
+
+        // PanelSpawnRequested は発火されない（既存 root が in-place 更新されたため）。
+        let mut spawn_msgs = app
+            .world_mut()
+            .resource_mut::<Messages<PanelSpawnRequested>>();
+        let spawns: Vec<_> = spawn_msgs.update_drain().collect();
+        assert_eq!(
+            spawns.len(),
+            0,
+            "found=Some のとき新規 spawn は不要（in-place 更新で完結）"
         );
     }
 }

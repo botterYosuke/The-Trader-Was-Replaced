@@ -1,4 +1,6 @@
 use crate::ui::buying_power::spawn_buying_power_panel;
+use crate::ui::component::spawn_transparent_hit_sprite;
+use crate::ui::theme::Theme;
 use crate::ui::components::{
     ChartInstrument, ChartSizeMap, CloseButton, InstrumentRegistry, LayoutExcluded, PanelKind,
     PanelSpawnRequested, PanelSpawnSource, PendingStrategyFragments, RegionKeyAllocator,
@@ -77,16 +79,9 @@ enum ResizeAxis {
 /// 透明なリサイズハンドル sprite を spawn し、Drag/DragEnd/Over/Out の 4 observer を付けて返す。
 /// caller が root の子として add_child する。
 fn spawn_resize_handle(commands: &mut Commands, axis: ResizeAxis, size: Vec2, pos: Vec2) -> Entity {
+    let e = spawn_transparent_hit_sprite(commands, size, Vec3::new(pos.x, pos.y, 0.5));
     commands
-        .spawn((
-            Sprite {
-                color: Color::srgba(0.0, 0.0, 0.0, 0.0),
-                custom_size: Some(size),
-                ..default()
-            },
-            Transform::from_xyz(pos.x, pos.y, 0.5),
-            Pickable::default(),
-        ))
+        .entity(e)
         // Drag → root の custom_size / translation を更新（左端・上端固定）
         .observe(
             move |drag: On<Pointer<Drag>>,
@@ -181,7 +176,8 @@ fn spawn_resize_handle(commands: &mut Commands, axis: ResizeAxis, size: Vec2, po
                 }
             },
         )
-        .id()
+        ;
+    e
 }
 
 /// 戻り値: (root_entity, content_area_entity, title_bar_entity)
@@ -644,6 +640,7 @@ pub fn panel_spawn_dispatcher_system(
     mut history: ResMut<AppHistory>,
     mut pending_fragments: ResMut<PendingStrategyFragments>,
     mut buffer: ResMut<StrategyBuffer>,
+    theme: Res<Theme>,
 ) {
     for event in events.read() {
         let already = existing.iter().any(|k| *k == event.kind);
@@ -653,10 +650,10 @@ pub fn panel_spawn_dispatcher_system(
         }
         let mut spawned_region_key: Option<String> = None;
         match event.kind {
-            PanelKind::BuyingPower => spawn_buying_power_panel(&mut commands),
+            PanelKind::BuyingPower => spawn_buying_power_panel(&mut commands, &theme),
             PanelKind::RunResult => spawn_run_result_panel(&mut commands),
-            PanelKind::Positions => spawn_positions_panel(&mut commands),
-            PanelKind::Orders => spawn_orders_panel(&mut commands),
+            PanelKind::Positions => spawn_positions_panel(&mut commands, &theme),
+            PanelKind::Orders => spawn_orders_panel(&mut commands, &theme),
             PanelKind::Startup => spawn_scenario_startup_window(&mut commands),
             PanelKind::Chart => {
                 warn!("PanelKind::Chart spawn requested but Chart is deprecated; ignored");
@@ -801,6 +798,7 @@ mod order_dispatcher_tests {
         app.init_resource::<AppHistory>();
         app.init_resource::<PendingStrategyFragments>();
         app.init_resource::<StrategyBuffer>();
+        app.init_resource::<Theme>();
         app.add_message::<PanelSpawnRequested>();
         app.add_systems(Update, panel_spawn_dispatcher_system);
         app
