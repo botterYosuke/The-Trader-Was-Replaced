@@ -150,8 +150,7 @@ pub fn spawn_orders_panel(commands: &mut Commands, theme: &Theme) {
             Vec2::new(ROW_HIT_WIDTH, ROW_SPACING),
             Vec3::new(0.0, y, 0.05),
         );
-        commands.entity(hit).insert(OrdersRowHit { row });
-        commands.entity(hit).observe(
+        commands.entity(hit).insert(OrdersRowHit { row }).observe(
             |down: On<Pointer<Press>>,
              hit_q: Query<&OrdersRowHit>,
              live_orders: Res<LiveOrders>,
@@ -206,8 +205,7 @@ pub fn spawn_orders_panel(commands: &mut Commands, theme: &Theme) {
         Vec2::new(FILTER_HIT_WIDTH, ROW_SPACING),
         Vec3::new(-150.0 + FILTER_HIT_WIDTH / 2.0, FILTER_Y, 0.05),
     );
-    commands.entity(filter_hit).insert(OrdersFilterHit);
-    commands.entity(filter_hit).observe(
+    commands.entity(filter_hit).insert(OrdersFilterHit).observe(
         |down: On<Pointer<Press>>,
          exec_mode: Res<ExecutionModeRes>,
          live_orders: Res<LiveOrders>,

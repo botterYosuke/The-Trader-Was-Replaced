@@ -24,5 +24,5 @@ pub use label::{
     spawn_divider, spawn_indicator, spawn_labeled_value_row, spawn_table_headers_at,
 };
 
-pub mod hit_target;
+mod hit_target;
 pub use hit_target::spawn_transparent_hit_sprite;
