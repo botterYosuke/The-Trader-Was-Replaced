@@ -31,23 +31,23 @@ use bevy::transform::TransformPlugin;
 
 use backcast::trading::{ExecutionMode, ExecutionModeRes, InstrumentTradingDataMap};
 use backcast::ui::components::{
-    sync_registry_from_scenario_loaded_system, InstrumentRegistry, PanelSpawnRequested,
-    PendingStrategyFragments, RegionKeyAllocator, ScenarioClearedFromFile, ScenarioFileWatchState,
-    ScenarioInstrumentsWritebackState, ScenarioLoadedFromFile, ScenarioMetadata, ScenarioReadTarget,
-    StrategyBuffer, StrategyFileLoadRequested, WindowManager,
+    InstrumentRegistry, PanelSpawnRequested, PendingStrategyFragments, RegionKeyAllocator,
+    ScenarioClearedFromFile, ScenarioFileWatchState, ScenarioInstrumentsWritebackState,
+    ScenarioLoadedFromFile, ScenarioMetadata, ScenarioReadTarget, StrategyBuffer,
+    StrategyFileLoadRequested, WindowManager, sync_registry_from_scenario_loaded_system,
 };
 use backcast::ui::editor_history::AppHistory;
 use backcast::ui::floating_window::panel_spawn_dispatcher_system;
 use backcast::ui::layout_persistence::{
-    apply_layout_system, apply_pending_layout_system, layout_shortcut_system,
     LayoutLoadDialogRequested, LayoutLoadMode, LayoutLoadRequested, LayoutSaveAsRequested,
-    LayoutSaveRequested, PendingLayoutApply,
+    LayoutSaveRequested, PendingLayoutApply, apply_layout_system, apply_pending_layout_system,
+    layout_shortcut_system,
 };
 use backcast::ui::menu_bar::handle_strategy_file_load_system;
 use backcast::ui::scenario_parser::parse_scenario_system;
 use backcast::ui::window::instrument_chart_sync_system;
 
-use crate::ui_dump::{dump_elements, dump_panels, panels_of, ElementKind};
+use crate::ui_dump::{ElementKind, dump_elements, dump_panels, panels_of};
 
 /// `BACKCAST_CACHE_DIR` を test 用に差し替え、Drop で元へ戻す RAII ガード。
 /// strategy ローダの cache 書き込みを temp に隔離するため。
@@ -108,6 +108,8 @@ fn i5_file_open_spawns_editor_and_chart() {
     let mut app = App::new();
     // 子要素の絶対座標を出すため Transform 伝播を有効化（render は不要）。
     app.add_plugins(TransformPlugin);
+    // panel_spawn_dispatcher_system が Res<Theme> を要求するため ThemePlugin が必要。
+    app.add_plugins(backcast::ui::theme::ThemePlugin);
 
     app
         // 「replay モードで」の前提を固定。
@@ -133,7 +135,9 @@ fn i5_file_open_spawns_editor_and_chart() {
         .insert_resource(ScenarioInstrumentsWritebackState::default())
         .insert_resource(InstrumentRegistry::default())
         .insert_resource(InstrumentTradingDataMap::default())
-        .init_resource::<backcast::ui::components::ChartSizeMap>();
+        .init_resource::<backcast::ui::components::ChartSizeMap>()
+        .init_resource::<bevy::input_focus::InputFocus>()
+        .init_resource::<backcast::ui::strategy_editor_find::FindReplaceState>();
 
     app.add_message::<LayoutLoadDialogRequested>()
         .add_message::<LayoutSaveRequested>()
@@ -145,10 +149,7 @@ fn i5_file_open_spawns_editor_and_chart() {
         .add_message::<ScenarioClearedFromFile>();
 
     // apply_layout_system はカメラを get_single_mut するため Camera2d を 1 体置く。
-    app.world_mut().spawn((
-        Camera2d,
-        Transform::default(),
-            ));
+    app.world_mut().spawn((Camera2d, Transform::default()));
 
     app.add_systems(
         Update,
@@ -191,7 +192,8 @@ fn i5_file_open_spawns_editor_and_chart() {
     {
         let panels = dump_panels(app.world_mut());
         assert!(
-            panels_of(&panels, "Strategy Editor").is_empty() && panels_of(&panels, "Chart").is_empty(),
+            panels_of(&panels, "Strategy Editor").is_empty()
+                && panels_of(&panels, "Chart").is_empty(),
             "load 前は Strategy Editor も Chart も出ない (panels={panels:#?})"
         );
     }

@@ -4,6 +4,7 @@
 //! A2/A3/A4 は各操作を個別に単体テストするが、本テストはリプレイの典型的な
 //! 操作フロー全体が正しい `TransportCommand` を順番に送出することを確認する。
 //! step- (1 bar 戻る) は未実装のため、|< (JumpToStart) を代用する。
+//! #58: JumpToStart は `ForceStop` ではなく `RestartReplay` を送出する（バー 0 リロード）。
 //! 詳細は `tests/e2e/FLOWS.md` の A13 を参照。
 
 use crate::support::Harness;
@@ -37,22 +38,28 @@ fn a13_replay_play_pause_step_jumptostart() {
     h.click(TransportButton::StepForward);
     let cmds = h.drain_commands();
     assert!(
-        cmds.iter().any(|c| matches!(c, TransportCommand::StepForward)),
+        cmds.iter()
+            .any(|c| matches!(c, TransportCommand::StepForward)),
         "PAUSED 中の StepForward 押下は StepForward を送るはず (got {cmds:?})"
     );
 
     // backend が 1 tick 進めた時計を返す。
     // push_state は replay_state を持たないためリセットされる — 直後に再セットする (A2 と同じパターン)。
     h.push_state(1);
-    assert_eq!(h.timestamp_ms(), 1, "step 後の時計は backend が返す値をミラーするはず");
+    assert_eq!(
+        h.timestamp_ms(),
+        1,
+        "step 後の時計は backend が返す値をミラーするはず"
+    );
     h.set_replay_state(Some("PAUSED"));
 
-    // |< を押す (step- 代用) → PAUSED 中なので ForceStop コマンドが送られる。
+    // |< を押す → PAUSED 中なので RestartReplay コマンドが送られる（#58: バー 0 リロード）。
     h.click(TransportButton::JumpToStart);
     let cmds = h.drain_commands();
     assert!(
-        cmds.iter().any(|c| matches!(c, TransportCommand::ForceStop)),
-        "PAUSED 中の JumpToStart 押下は ForceStop を送るはず (got {cmds:?})"
+        cmds.iter()
+            .any(|c| matches!(c, TransportCommand::RestartReplay { .. })),
+        "PAUSED 中の JumpToStart 押下は RestartReplay を送るはず (got {cmds:?})"
     );
 
     // backend が完走を通知 → Completed に遷移する。

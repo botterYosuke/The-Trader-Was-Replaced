@@ -19,16 +19,16 @@ use bevy::transform::TransformPlugin;
 
 use backcast::trading::{ExecutionMode, ExecutionModeRes, InstrumentTradingDataMap};
 use backcast::ui::components::{
-    sync_registry_from_scenario_loaded_system, InstrumentRegistry, PanelSpawnRequested,
-    PendingStrategyFragments, RegionKeyAllocator, ScenarioClearedFromFile, ScenarioFileWatchState,
-    ScenarioInstrumentsWritebackState, ScenarioLoadedFromFile, ScenarioMetadata, ScenarioReadTarget,
-    StrategyBuffer, StrategyFileLoadRequested, WindowManager,
+    InstrumentRegistry, PanelSpawnRequested, PendingStrategyFragments, RegionKeyAllocator,
+    ScenarioClearedFromFile, ScenarioFileWatchState, ScenarioInstrumentsWritebackState,
+    ScenarioLoadedFromFile, ScenarioMetadata, ScenarioReadTarget, StrategyBuffer,
+    StrategyFileLoadRequested, WindowManager, sync_registry_from_scenario_loaded_system,
 };
 use backcast::ui::editor_history::AppHistory;
 use backcast::ui::floating_window::panel_spawn_dispatcher_system;
 use backcast::ui::layout_persistence::{
-    apply_layout_system, apply_pending_layout_system, LayoutLoadMode, LayoutLoadRequested,
-    LayoutSaveAsRequested, LayoutSaveRequested, PendingLayoutApply,
+    LayoutLoadMode, LayoutLoadRequested, LayoutSaveAsRequested, LayoutSaveRequested,
+    PendingLayoutApply, apply_layout_system, apply_pending_layout_system,
 };
 use backcast::ui::menu_bar::handle_strategy_file_load_system;
 use backcast::ui::scenario_parser::parse_scenario_system;
@@ -92,29 +92,36 @@ fn i19_file_open_sidecar_missing_strategy_path_loads_sibling_py() {
     let cache_dir = dir.path().join("cache");
     let _cache_guard = {
         let prev = std::env::var_os("BACKCAST_CACHE_DIR");
-        unsafe { std::env::set_var("BACKCAST_CACHE_DIR", &cache_dir); }
+        unsafe {
+            std::env::set_var("BACKCAST_CACHE_DIR", &cache_dir);
+        }
         CacheDirGuard(prev)
     };
 
     let mut app = App::new();
     app.add_plugins(TransformPlugin);
+    app.add_plugins(backcast::ui::theme::ThemePlugin);
 
-    app.insert_resource(ExecutionModeRes { mode: ExecutionMode::Replay })
-        .insert_resource(ButtonInput::<KeyCode>::default())
-        .insert_resource(Time::<()>::default())
-        .insert_resource(WindowManager::default())
-        .insert_resource(PendingLayoutApply::default())
-        .insert_resource(PendingStrategyFragments::default())
-        .insert_resource(ScenarioReadTarget::default())
-        .insert_resource(RegionKeyAllocator::default())
-        .insert_resource(AppHistory::default())
-        .insert_resource(StrategyBuffer::default())
-        .insert_resource(ScenarioMetadata::default())
-        .insert_resource(ScenarioFileWatchState::default())
-        .insert_resource(ScenarioInstrumentsWritebackState::default())
-        .insert_resource(InstrumentRegistry::default())
-        .insert_resource(InstrumentTradingDataMap::default())
-        .init_resource::<backcast::ui::components::ChartSizeMap>();
+    app.insert_resource(ExecutionModeRes {
+        mode: ExecutionMode::Replay,
+    })
+    .insert_resource(ButtonInput::<KeyCode>::default())
+    .insert_resource(Time::<()>::default())
+    .insert_resource(WindowManager::default())
+    .insert_resource(PendingLayoutApply::default())
+    .insert_resource(PendingStrategyFragments::default())
+    .insert_resource(ScenarioReadTarget::default())
+    .insert_resource(RegionKeyAllocator::default())
+    .insert_resource(AppHistory::default())
+    .insert_resource(StrategyBuffer::default())
+    .insert_resource(ScenarioMetadata::default())
+    .insert_resource(ScenarioFileWatchState::default())
+    .insert_resource(ScenarioInstrumentsWritebackState::default())
+    .insert_resource(InstrumentRegistry::default())
+    .insert_resource(InstrumentTradingDataMap::default())
+    .init_resource::<backcast::ui::components::ChartSizeMap>()
+    .init_resource::<bevy::input_focus::InputFocus>()
+    .init_resource::<backcast::ui::strategy_editor_find::FindReplaceState>();
 
     app.add_message::<LayoutSaveRequested>()
         .add_message::<LayoutSaveAsRequested>()
@@ -124,10 +131,7 @@ fn i19_file_open_sidecar_missing_strategy_path_loads_sibling_py() {
         .add_message::<ScenarioLoadedFromFile>()
         .add_message::<ScenarioClearedFromFile>();
 
-    app.world_mut().spawn((
-        Camera2d,
-        Transform::default(),
-    ));
+    app.world_mut().spawn((Camera2d, Transform::default()));
 
     app.add_systems(
         Update,
@@ -139,7 +143,8 @@ fn i19_file_open_sidecar_missing_strategy_path_loads_sibling_py() {
             parse_scenario_system,
             sync_registry_from_scenario_loaded_system,
             instrument_chart_sync_system,
-        ).chain(),
+        )
+            .chain(),
     );
 
     // strategy_path が存在しない sidecar JSON を UserJsonOpen で開く。
