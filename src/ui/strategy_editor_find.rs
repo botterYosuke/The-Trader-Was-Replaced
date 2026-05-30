@@ -33,17 +33,6 @@ pub struct MatchSpan {
     pub byte_range: std::ops::Range<usize>,
 }
 
-/// Find マッチ結果。find/replace の検索 system が書き込み、composer がレンダリングに使う。
-#[derive(Component, Default)]
-pub struct FindMatchSpans {
-    pub matches: Vec<MatchSpan>,
-    /// 現在マッチの index。`FindReplaceState.current` の **描画側ミラー** で、
-    /// composer はこの entity だけ見れば現在マッチを別色にできる (Resource を読まずに済む)。
-    /// nav 側 (`FindReplaceState.current`) と更新は常に lockstep。
-    pub current_idx: Option<usize>,
-    pub prev_match_lines: Vec<usize>,
-}
-
 // ─────────────────────────────────────────────────────────────────
 // 状態 / マーカー / イベント
 // ─────────────────────────────────────────────────────────────────
@@ -326,7 +315,7 @@ pub fn compute_find_match_spans_system(
     fragments_q: Query<(&StrategyEditorId, &StrategyFragment), With<WindowRoot>>,
     // Slice 5 (#50): cosmic 側 (StrategyEditorContent) ではなく bevscode peer 側
     // (StrategyEditorNode) の FindMatchSpans を更新する。region_key は StrategyEditorNode が直接持つ。
-    mut editor_q: Query<(&StrategyEditorNode, &mut FindMatchSpans)>,
+    mut editor_q: Query<(&StrategyEditorNode, &mut FindMatchRects)>,
     mut last: Local<(String, bool, bool, Option<Entity>)>,
 ) {
     // 孤児チェック: target_editor が despawn 済み (× で閉じられた等) なら state をリセット。
@@ -374,30 +363,23 @@ pub fn compute_find_match_spans_system(
     if target_changed
         && let Some(old) = prev_target
         && Some(old) != state.target_editor
-        && let Ok((_, mut old_spans)) = editor_q.get_mut(old)
+        && editor_q.get_mut(old).is_ok()
     {
-        old_spans.prev_match_lines = old_spans.matches.iter().map(|m| m.line).collect();
-        old_spans.matches = Vec::new();
-        old_spans.current_idx = None;
+        // FindMatchRects は update_find_overlay_rects_system が自動更新するため不要。
     }
 
     let Some(target) = state.target_editor else {
         return;
     };
-    let Ok((target_node, mut spans)) = editor_q.get_mut(target) else {
+    let Ok((target_node, _)) = editor_q.get_mut(target) else {
         return;
     };
     let region_key = target_node.region_key.clone();
-
-    // 旧マッチ行を保存 (クリア時に composer の dirty 行へ含めるため、上書き前に)。
-    spans.prev_match_lines = spans.matches.iter().map(|m| m.line).collect();
 
     // 閉じている / クエリ空 → マッチをクリアして終了。
     if !state.is_open || state.query.is_empty() {
         state.matches = Vec::new();
         state.current = 0;
-        spans.matches = Vec::new();
-        spans.current_idx = None;
         return;
     }
 
@@ -419,8 +401,6 @@ pub fn compute_find_match_spans_system(
     }
     state.current = if n == 0 { 0 } else { state.current.min(n - 1) };
 
-    spans.matches = new_matches.clone();
-    spans.current_idx = (n > 0).then_some(state.current);
     state.matches = new_matches;
 }
 
@@ -431,7 +411,6 @@ pub fn find_navigate_system(
     mut actions: MessageReader<FindActionRequested>,
     input_focus: Res<bevy::input_focus::InputFocus>,
     mut state: ResMut<FindReplaceState>,
-    mut editor_q: Query<&mut FindMatchSpans, With<StrategyEditorNode>>,
 ) {
     if !state.is_open || state.matches.is_empty() {
         return;
@@ -467,12 +446,6 @@ pub fn find_navigate_system(
     } else {
         (state.current + n - 1) % n
     };
-    let cur = state.current;
-    if let Some(target) = state.target_editor
-        && let Ok(mut spans) = editor_q.get_mut(target)
-    {
-        spans.current_idx = Some(cur);
-    }
 }
 
 /// Replace / Replace All ボタンで `apply_replacement` を実行し、対象 bevscode editor entity へ
@@ -843,6 +816,79 @@ fn spawn_find_button(commands: &mut Commands, kind: FindButtonKind, label: &str,
 }
 
 // ─────────────────────────────────────────────────────────────────
+// FindMatchRects コンポーネント (Slice A #50: FindMatchSpans の後継)
+// ─────────────────────────────────────────────────────────────────
+
+use bevy_instanced_text::{CornerRadii, DisplayLayout, RectOverlay, RowVertical, TextUnderlays};
+
+/// Find マッチの描画 rect リスト。`update_find_overlay_rects_system` が PostUpdate で計算し、
+/// `merge_find_overlay_rects_system` が `TextUnderlays` に z=-2 センチネルで注入する。
+#[derive(Component, Default)]
+pub struct FindMatchRects(pub Vec<RectOverlay>);
+
+/// `FindReplaceState` の matches を `DisplayLayout` 経由で pixel rect に変換し、
+/// editor entity の `FindMatchRects` を更新する。
+///
+/// PostUpdate の `RenderingSet` で実行する（mod.rs への登録は別手で行う）。
+pub fn update_find_overlay_rects_system(
+    state: Res<FindReplaceState>,
+    theme: Res<Theme>,
+    mut editors: Query<(Entity, &DisplayLayout, &mut FindMatchRects), With<StrategyEditorNode>>,
+) {
+    for (entity, layout, mut rects) in editors.iter_mut() {
+        let is_target = state.target_editor == Some(entity);
+        if !state.is_open || !is_target {
+            rects.0.clear();
+            continue;
+        }
+
+        rects.0.clear();
+        for (i, span) in state.matches.iter().enumerate() {
+            let Some((display_row, byte_in_row)) =
+                layout.buffer_to_display(span.line as u32, span.byte_range.start)
+            else {
+                continue;
+            };
+            let end_byte_in_row = byte_in_row + span.byte_range.len();
+            let Some(x_start) = layout.x_at_byte(display_row, byte_in_row) else {
+                continue;
+            };
+            let Some(x_end) =
+                layout.x_after_source_range(display_row, byte_in_row, end_byte_in_row)
+            else {
+                continue;
+            };
+            let color = if i == state.current {
+                theme.colors.search_active_match_background
+            } else {
+                theme.colors.search_match_background
+            };
+            rects.0.push(RectOverlay {
+                display_row,
+                x_range: x_start..x_end,
+                vertical: RowVertical::Full,
+                color,
+                z: -2,
+                corners: CornerRadii::ZERO,
+            });
+        }
+    }
+}
+
+/// `FindMatchRects` を `TextUnderlays` へ merge する system。
+///
+/// 前フレームの find rects (z=-2) を retain で除去してから今フレーム分を extend する。
+/// z=-2 は `TextUnderlays` では bevscode 側が使わないセンチネル値（調査済み）。
+pub fn merge_find_overlay_rects_system(
+    mut query: Query<(&FindMatchRects, &mut TextUnderlays)>,
+) {
+    for (find_rects, mut underlays) in query.iter_mut() {
+        underlays.0.retain(|r| r.z != -2);
+        underlays.0.extend_from_slice(&find_rects.0);
+    }
+}
+
+// ─────────────────────────────────────────────────────────────────
 // tests
 // ─────────────────────────────────────────────────────────────────
 
@@ -997,7 +1043,7 @@ mod tests {
                     root,
                     region_key: region.clone(),
                 },
-                FindMatchSpans::default(),
+                FindMatchRects::default(),
             ))
             .id();
 
@@ -1012,9 +1058,7 @@ mod tests {
         let state = app.world().resource::<FindReplaceState>();
         assert_eq!(state.matches.len(), 2, "two `def` occurrences");
 
-        let spans = app.world().get::<FindMatchSpans>(editor).unwrap();
-        assert_eq!(spans.matches.len(), 2);
-        assert_eq!(spans.current_idx, Some(0));
+        // FindMatchRects は update_find_overlay_rects_system が計算する。state.matches で確認済み。
     }
 
     #[test]
@@ -1045,11 +1089,7 @@ mod tests {
                     root,
                     region_key: region.clone(),
                 },
-                FindMatchSpans {
-                    matches: vec![ms(0, 0..3)],
-                    current_idx: Some(0),
-                    prev_match_lines: vec![],
-                },
+                FindMatchRects::default(),
             ))
             .id();
 
@@ -1061,11 +1101,9 @@ mod tests {
         }
         app.update();
 
-        let spans = app.world().get::<FindMatchSpans>(editor).unwrap();
-        assert!(spans.matches.is_empty());
-        assert_eq!(spans.current_idx, None);
-        // 旧マッチ行が prev_match_lines に退避され、composer が base 色へ戻せる。
-        assert_eq!(spans.prev_match_lines, vec![0]);
+        let state = app.world().resource::<FindReplaceState>();
+        assert!(state.matches.is_empty(), "empty query → matches cleared");
+        assert_eq!(state.current, 0);
     }
 
     #[test]
@@ -1104,7 +1142,7 @@ mod tests {
                     root,
                     region_key: region.clone(),
                 },
-                FindMatchSpans::default(),
+                FindMatchRects::default(),
             ))
             .id();
 
@@ -1167,7 +1205,7 @@ mod tests {
                     root,
                     region_key: region.clone(),
                 },
-                FindMatchSpans::default(),
+                FindMatchRects::default(),
             ))
             .id();
         // Stand-in panel entities (their identity is what must survive the reset).
@@ -1227,7 +1265,7 @@ mod tests {
                         root,
                         region_key: region.to_string(),
                     },
-                    FindMatchSpans::default(),
+                    FindMatchRects::default(),
                 ))
                 .id()
         };
@@ -1243,12 +1281,9 @@ mod tests {
         }
         app.update();
         assert_eq!(
-            app.world()
-                .get::<FindMatchSpans>(editor_a)
-                .unwrap()
-                .matches
-                .len(),
-            2
+            app.world().resource::<FindReplaceState>().matches.len(),
+            2,
+            "initial target_a: 2 matches"
         );
 
         // Retarget to B → A's spans must be cleared, B's populated.
@@ -1256,22 +1291,9 @@ mod tests {
             .resource_mut::<FindReplaceState>()
             .target_editor = Some(editor_b);
         app.update();
-        assert!(
-            app.world()
-                .get::<FindMatchSpans>(editor_a)
-                .unwrap()
-                .matches
-                .is_empty(),
-            "old target spans cleared on retarget"
-        );
-        assert_eq!(
-            app.world()
-                .get::<FindMatchSpans>(editor_b)
-                .unwrap()
-                .matches
-                .len(),
-            2
-        );
+        let state = app.world().resource::<FindReplaceState>();
+        assert_eq!(state.matches.len(), 2, "retarget: state holds B's 2 matches");
+        assert_eq!(state.target_editor, Some(editor_b), "target is now B");
     }
 
     // ── manage_find_panel_lifecycle_system (Slice 5 #50) ───────
@@ -1555,5 +1577,79 @@ mod tests {
         );
         assert_eq!(drained[0].entity, editor);
         assert_eq!(drained[0].text, "X bar X");
+    }
+
+    // ── merge_find_overlay_rects_system ─────────────────────────
+
+    #[test]
+    fn merge_find_overlay_rects_injects_find_rects_into_underlays() {
+        use bevy_instanced_text::{CornerRadii, RectOverlay, RowVertical, TextUnderlays};
+
+        let mut app = App::new();
+        app.add_systems(Update, merge_find_overlay_rects_system);
+
+        let existing = RectOverlay {
+            display_row: 0,
+            x_range: 0.0..10.0,
+            vertical: RowVertical::Full,
+            color: Color::WHITE,
+            z: -1,
+            corners: CornerRadii::ZERO,
+        };
+        let find_rect = RectOverlay {
+            display_row: 1,
+            x_range: 4.0..8.0,
+            vertical: RowVertical::Full,
+            color: Color::WHITE,
+            z: -2,
+            corners: CornerRadii::ZERO,
+        };
+
+        let entity = app
+            .world_mut()
+            .spawn((
+                FindMatchRects(vec![find_rect.clone()]),
+                TextUnderlays(vec![existing.clone()]),
+            ))
+            .id();
+
+        app.update();
+
+        let underlays = app.world().get::<TextUnderlays>(entity).unwrap();
+        assert_eq!(underlays.0.len(), 2, "z=-1 既存 + z=-2 find = 2 件");
+        assert!(underlays.0.iter().any(|r| r.z == -1), "既存 z=-1 rect は保持");
+        assert!(underlays.0.iter().any(|r| r.z == -2), "find rect z=-2 が inject");
+    }
+
+    #[test]
+    fn merge_find_overlay_rects_replaces_previous_frame_find_rects() {
+        use bevy_instanced_text::{CornerRadii, RectOverlay, RowVertical, TextUnderlays};
+
+        let mut app = App::new();
+        app.add_systems(Update, merge_find_overlay_rects_system);
+
+        let make_find = |row: u32| RectOverlay {
+            display_row: row,
+            x_range: 0.0..4.0,
+            vertical: RowVertical::Full,
+            color: Color::WHITE,
+            z: -2,
+            corners: CornerRadii::ZERO,
+        };
+
+        // 前フレームから残った z=-2 が 2 件、今フレームの FindMatchRects は 1 件
+        let entity = app
+            .world_mut()
+            .spawn((
+                FindMatchRects(vec![make_find(0)]),
+                TextUnderlays(vec![make_find(0), make_find(1)]),
+            ))
+            .id();
+
+        app.update();
+
+        let underlays = app.world().get::<TextUnderlays>(entity).unwrap();
+        assert_eq!(underlays.0.len(), 1, "前フレーム z=-2 が除去されて 1 件のみ");
+        assert_eq!(underlays.0[0].display_row, 0);
     }
 }

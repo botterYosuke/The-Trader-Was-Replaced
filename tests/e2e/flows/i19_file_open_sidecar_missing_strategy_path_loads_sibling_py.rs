@@ -115,6 +115,9 @@ fn i19_file_open_sidecar_missing_strategy_path_loads_sibling_py() {
         .insert_resource(InstrumentRegistry::default())
         .insert_resource(InstrumentTradingDataMap::default())
         .init_resource::<backcast::ui::components::ChartSizeMap>();
+    app.init_resource::<bevy::input_focus::InputFocus>();
+    app.init_resource::<backcast::ui::strategy_editor_find::FindReplaceState>();
+    app.init_resource::<backcast::ui::theme::Theme>();
 
     app.add_message::<LayoutSaveRequested>()
         .add_message::<LayoutSaveAsRequested>()

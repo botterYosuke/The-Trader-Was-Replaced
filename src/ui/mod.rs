@@ -159,8 +159,8 @@ use crate::ui::strategy_editor::{
 use crate::ui::strategy_editor_find::{
     FindActionRequested, FindReplaceState, compute_find_match_spans_system,
     find_button_interaction_system, find_field_input_system, find_keyboard_system,
-    find_navigate_system, manage_find_panel_lifecycle_system, replace_execute_system,
-    update_find_count_text_system,
+    find_navigate_system, manage_find_panel_lifecycle_system, merge_find_overlay_rects_system,
+    replace_execute_system, update_find_count_text_system, update_find_overlay_rects_system,
 };
 use crate::ui::systems::{update_price_display, update_status_indicator};
 use crate::ui::window::{chart_content_layout_system, instrument_chart_sync_system};
@@ -692,6 +692,11 @@ impl Plugin for UiPlugin {
                     .before(bevy::ui::UiSystems::Layout),
                 crate::ui::strategy_editor::touch_strategy_text_layouts_on_position_change
                     .after(bevy_instanced_text::LayoutProduceSet)
+                    .before(bevy_instanced_text::TextViewRenderSet),
+                update_find_overlay_rects_system
+                    .in_set(bevscode::plugin::RenderingSet),
+                merge_find_overlay_rects_system
+                    .after(bevscode::plugin::RenderingSet)
                     .before(bevy_instanced_text::TextViewRenderSet),
             ),
         )

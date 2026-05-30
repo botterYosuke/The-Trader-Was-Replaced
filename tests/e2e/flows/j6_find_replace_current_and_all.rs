@@ -15,7 +15,7 @@ use bevscode::prelude::SetTextRequested;
 use backcast::ui::components::{StrategyEditorId, StrategyFragment, WindowRoot};
 use backcast::ui::strategy_editor::StrategyEditorNode;
 use backcast::ui::strategy_editor_find::{
-    FindActionRequested, FindButtonKind, FindMatchSpans, FindReplaceState,
+    FindActionRequested, FindButtonKind, FindMatchRects, FindReplaceState,
     compute_find_match_spans_system, replace_execute_system,
 };
 
@@ -54,7 +54,7 @@ fn build_app(source: &str) -> (App, Entity) {
                 root,
                 region_key,
             },
-            FindMatchSpans::default(),
+            FindMatchRects::default(),
         ))
         .id();
 

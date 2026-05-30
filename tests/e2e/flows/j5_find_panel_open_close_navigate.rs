@@ -20,7 +20,7 @@ use bevy::window::Window;
 use backcast::ui::components::{StrategyEditorId, StrategyFragment, WindowRoot};
 use backcast::ui::strategy_editor::StrategyEditorNode;
 use backcast::ui::strategy_editor_find::{
-    FindActionRequested, FindButtonKind, FindMatchSpans, FindReplaceState,
+    FindActionRequested, FindButtonKind, FindMatchRects, FindReplaceState,
     compute_find_match_spans_system, find_field_input_system, find_keyboard_system,
     find_navigate_system,
 };
@@ -71,7 +71,7 @@ fn j5_find_panel_open_close_navigate() {
                 root,
                 region_key: region_key.clone(),
             },
-            FindMatchSpans::default(),
+            FindMatchRects::default(),
         ))
         .id();
 
@@ -120,13 +120,13 @@ fn j5_find_panel_open_close_navigate() {
         assert_eq!(state.current, 0, "クエリ変更後は先頭マッチ (current=0) になるはず");
     }
 
-    // FindMatchSpans にも書き込まれているはず。
+    // state.matches に 3 件書き込まれていることを再確認。
     {
-        let spans = app.world().get::<FindMatchSpans>(editor_entity).unwrap();
+        let state = app.world().resource::<FindReplaceState>();
         assert_eq!(
-            spans.matches.len(),
+            state.matches.len(),
             3,
-            "FindMatchSpans にも 3 件書き込まれるはず"
+            "state.matches に 3 件書き込まれるはず"
         );
     }
 
@@ -237,7 +237,7 @@ fn j5b_find_field_input_handles_focus_typing_and_modifier_guard() {
         .world_mut()
         .spawn((
             StrategyEditorNode { root, region_key: region_key.clone() },
-            FindMatchSpans::default(),
+            FindMatchRects::default(),
         ))
         .id();
     app.world_mut()
