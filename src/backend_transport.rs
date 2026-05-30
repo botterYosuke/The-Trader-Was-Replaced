@@ -682,36 +682,14 @@ fn inproc_poll_state_outcome(state_json: Result<String, ()>) -> PollStateOutcome
 /// Values mirror proto `EngineState` (engine.proto):
 /// IDLE=0, LOADED=1, RUNNING=2, PAUSED=3, STOPPING=4.
 fn engine_state_i32_to_str(state: i32) -> Option<&'static str> {
-    #[repr(i32)]
-    enum S {
-        Idle = 0,
-        Loaded = 1,
-        Running = 2,
-        Paused = 3,
-        Stopping = 4,
+    match state {
+        0 => Some("IDLE"),
+        1 => Some("LOADED"),
+        2 => Some("RUNNING"),
+        3 => Some("PAUSED"),
+        4 => Some("STOPPING"),
+        _ => None,
     }
-    impl S {
-        fn from_i32(v: i32) -> Option<Self> {
-            match v {
-                0 => Some(Self::Idle),
-                1 => Some(Self::Loaded),
-                2 => Some(Self::Running),
-                3 => Some(Self::Paused),
-                4 => Some(Self::Stopping),
-                _ => None,
-            }
-        }
-        fn as_str(&self) -> &'static str {
-            match self {
-                Self::Idle => "IDLE",
-                Self::Loaded => "LOADED",
-                Self::Running => "RUNNING",
-                Self::Paused => "PAUSED",
-                Self::Stopping => "STOPPING",
-            }
-        }
-    }
-    S::from_i32(state).map(|s| s.as_str())
 }
 
 /// Call a zero-argument replay method that returns `(bool, str | None)`.
@@ -737,11 +715,10 @@ fn inproc_call_load_replay_data(
     use pyo3::types::PyList;
 
     Python::with_gil(|py| {
-        let result = (|| -> PyResult<(bool, Option<String>)> {
-            use pyo3::types::PyDictMethods;
-            let kwargs = pyo3::types::PyDict::new_bound(py);
-            let py_ids =
-                PyList::new_bound(py, config.instruments.iter().map(|s| s.as_str()));
+        use pyo3::types::{PyDict, PyDictMethods};
+        match (|| -> PyResult<(bool, Option<String>)> {
+            let kwargs = PyDict::new_bound(py);
+            let py_ids = PyList::new_bound(py, config.instruments.iter().map(|s| s.as_str()));
             kwargs.set_item("instrument_ids", py_ids)?;
             kwargs.set_item("start_date", &config.start)?;
             kwargs.set_item("end_date", &config.end)?;
@@ -749,14 +726,14 @@ fn inproc_call_load_replay_data(
             if let Some(cp) = default_catalog.as_deref() {
                 kwargs.set_item("catalog_path", cp)?;
             }
-            let val = engine
+            engine
                 .bind(py)
-                .call_method("load_replay_data", (), Some(&kwargs))?;
-            val.extract::<(bool, Option<String>)>()
-        })();
-        result.unwrap_or_else(|e| {
-            (false, Some(format!("load_replay_data: PyO3 error: {}", e)))
-        })
+                .call_method("load_replay_data", (), Some(&kwargs))?
+                .extract::<(bool, Option<String>)>()
+        })() {
+            Ok(r) => r,
+            Err(e) => (false, Some(format!("load_replay_data: PyO3 error: {}", e))),
+        }
     })
 }
 
@@ -1083,16 +1060,12 @@ fn inproc_dispatch(
             }
             info!("[inproc] RestartReplay: LoadReplayData ok");
 
-            // Step 3: 即時 UI 更新 (#74)
-            // load_replay_data 成功後の engine state は常に LOADED。
-            // engine_state_i32_to_str で変換して ReplayStateChanged を送出。
-            if let Some(state_str) = engine_state_i32_to_str(1 /* LOADED */) {
-                let _ = resp_tx.send(InProcResp::Status(
-                    BackendStatusUpdate::ReplayStateChanged {
-                        state: state_str.to_string(),
-                    },
-                ));
-            }
+            // Step 3: 即時 UI 更新 (#74) — load_replay_data 成功後は必ず LOADED。
+            let _ = resp_tx.send(InProcResp::Status(
+                BackendStatusUpdate::ReplayStateChanged {
+                    state: "LOADED".to_string(),
+                },
+            ));
         }
 
         // ---------------------------------------------------------------
