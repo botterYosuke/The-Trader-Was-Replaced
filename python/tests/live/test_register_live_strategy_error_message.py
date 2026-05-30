@@ -49,9 +49,9 @@ def test_register_live_strategy_res_has_error_message_field():
     """RegisterLiveStrategyRes proto に error_message フィールドが存在すること。
 
     現状はフィールドが無いため AttributeError で RED になる。
-    proto に `string error_message = 7;` を追加し、server_grpc が詰めれば GREEN になる。
+    proto に `string error_message = 7;` を追加し、_backend_impl が詰めれば GREEN になる。
     """
-    from engine.proto import engine_pb2
+    from engine import _proto_compat as engine_pb2
 
     res = engine_pb2.RegisterLiveStrategyRes(
         success=False,
@@ -68,7 +68,7 @@ def test_start_live_strategy_res_has_error_message_field():
     現状はフィールドが無いため AttributeError で RED になる。
     proto に `string error_message = 6;` を追加すれば GREEN になる。
     """
-    from engine.proto import engine_pb2
+    from engine import _proto_compat as engine_pb2
 
     res = engine_pb2.StartLiveStrategyRes(
         success=False,
@@ -90,8 +90,8 @@ def test_register_live_strategy_handler_returns_cause_error_message():
 
     from engine.core import DataEngine
     from engine.live.engine_controller import NoopLiveEngineController
-    from engine.proto import engine_pb2
-    from engine.server_grpc import GrpcDataEngineServer
+    from engine import _proto_compat as engine_pb2
+    from engine._backend_impl import GrpcDataEngineServer
 
     servicer = GrpcDataEngineServer(
         "test-token",
@@ -129,8 +129,8 @@ def test_start_live_strategy_handler_returns_cause_error_message():
     from engine.core import DataEngine
     from engine.live.engine_controller import NoopLiveEngineController
     from engine.live.strategy_host import LiveStrategyHostError
-    from engine.proto import engine_pb2
-    from engine.server_grpc import GrpcDataEngineServer
+    from engine import _proto_compat as engine_pb2
+    from engine._backend_impl import GrpcDataEngineServer
 
     class FakeModeManager:
         current_mode = "LiveAuto"

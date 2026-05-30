@@ -332,8 +332,8 @@ pub fn apply_account_event(
 }
 
 /// supervisor lifecycle を footer 反映用の status update へ写像する。
-/// `StartupFailed(code)` は loud な `Error` に（footer を `grpc: ERR` 赤に）、
-/// それ以外は `None`（既存の grpc 表示ロジックに委ねる）。
+/// `StartupFailed(code)` は loud な `Error` に（footer を `backend: ERR` 赤に）、
+/// それ以外は `None`（既存の backend 表示ロジックに委ねる）。
 pub fn lifecycle_status_update(
     s: BackendLifecycle,
 ) -> Option<crate::trading::BackendStatusUpdate> {

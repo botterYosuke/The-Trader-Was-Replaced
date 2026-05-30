@@ -30,7 +30,6 @@ regex = "1"
 wait-timeout = "0.2"
 zeroize = "1"
 pyo3 = { version = "0.22", features = ["auto-initialize"] }
-prost = "0.13"
 
 [dev-dependencies]
 # `debug` feature を有効化すると `ScheduleSystem::name()` が実際の関数名を返す（M20 で必要）。
@@ -54,6 +53,3 @@ opt-level = 1
 [profile.dev.package."*"]
 opt-level = 3
 
-[build-dependencies]
-prost-build = "0.13"
-protoc-bin-vendored = "3.0"

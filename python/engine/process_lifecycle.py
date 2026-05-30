@@ -14,7 +14,7 @@ def set_components(
     engine,
     servicer,
 ) -> None:
-    """server_grpc.serve() の server.start() 直前に 1 度だけ呼ぶ。
+    """_backend_impl.serve() の server.start() 直前に 1 度だけ呼ぶ。
     live loop thread の join は servicer._teardown_live_components() が内部で処理する
     ため、本モジュールでは live thread を別管理しない。"""
     with _lock:

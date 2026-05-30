@@ -3,13 +3,13 @@
 責務（§3.6 / §0.4）:
 - venue 別の銘柄メタデータ（code/name/market/tick_size/lot_size）を
   `cache_dir/the-trader-was-replaced/instruments/<venue>.parquet` に保存・読み出す。
-- 書き込みは **atomic**（tmp へ書いて `os.replace`。`server_grpc._write_artifact_atomic`
+- 書き込みは **atomic**（tmp へ書いて `os.replace`。`_backend_impl._write_artifact_atomic`
   と同じ流儀）。読み手（ListInstruments / 日次更新）が中途半端な parquet を見ない。
 
 設計判断:
 - ログイン時 1 回 + 営業日 5:00 JST の日次更新（`instruments_scheduler.py`）が writer。
   ListInstruments(live) は store-first で読み、無ければ adapter から fetch する。
-- parquet ライブラリは server_grpc が既に使う pyarrow を流用（追加依存なし）。
+- parquet ライブラリは _backend_impl が既に使う pyarrow を流用（追加依存なし）。
 - `INSTRUMENTS_CACHE_DIR` env override はテスト用（tachibana_file_store の override と同型）。
 """
 from __future__ import annotations

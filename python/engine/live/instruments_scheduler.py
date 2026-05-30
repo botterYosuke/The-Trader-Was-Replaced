@@ -83,7 +83,7 @@ class InstrumentsScheduler:
         """初回 refresh（ログイン時 persist）が進行中なら True。
 
         起動前（task 未生成）と初回 refresh 完了後は False。Issue #32 Slice 2 で
-        server_grpc が cold-store miss を 60s blocking fetch せず `LIVE_UNIVERSE_PENDING`
+        _backend_impl が cold-store miss を 60s blocking fetch せず `LIVE_UNIVERSE_PENDING`
         に倒す判定に使う（store が埋まる前の picker クリックを Loading spinner にする）。
         """
         if self._task is None:

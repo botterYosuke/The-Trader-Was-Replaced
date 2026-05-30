@@ -3,7 +3,7 @@
 SecretVault と "SecretRequired を UI に push する transport コールバック" を束ね、
 adapter から ``await resolve(venue, purpose)`` 1 発で第二暗証番号を取得できるように
 する仲介層。transport 非依存 (proto を import しない): push コールバックは
-server_grpc 側で publish_backend_event に束ねて注入する。
+_backend_impl 側で publish_backend_event に束ねて注入する。
 """
 from __future__ import annotations
 

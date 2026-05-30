@@ -4,7 +4,7 @@ use crate::trading::{
     VenueState, VenueStatusRes, is_venue_live,
 };
 use crate::ui::components::{
-    ExecutionModeToggleSegment, FooterRoot, GrpcStatusLabel, PauseResumeButton, PauseResumeLabel,
+    ExecutionModeToggleSegment, FooterRoot, BackendStatusLabel, PauseResumeButton, PauseResumeLabel,
     ReplayStateBadge, ReplayTimeLabel, ScenarioMetadata, SpeedButton, StepFromIdleRequested,
     StrategyBuffer, StrategyEditorId, StrategyFragment, StrategyRunRequested, TransportButton,
     VenueStateBadge,
@@ -251,10 +251,10 @@ pub fn spawn_footer(
                 VenueStateBadge,
             ));
             p.spawn((
-                Text::new("grpc: DISABLED"),
+                Text::new("backend: DISABLED"),
                 theme.typography.label_font(crate::ui::theme::LabelSize::Default),
                 TextColor(theme.colors.text_disabled),
-                GrpcStatusLabel,
+                BackendStatusLabel,
             ));
         });
 }
@@ -274,7 +274,7 @@ pub fn update_footer_system(
         (
             With<ReplayTimeLabel>,
             Without<ReplayStateBadge>,
-            Without<GrpcStatusLabel>,
+            Without<BackendStatusLabel>,
             Without<PauseResumeLabel>,
             Without<VenueStateBadge>,
         ),
@@ -284,15 +284,15 @@ pub fn update_footer_system(
         (
             With<ReplayStateBadge>,
             Without<ReplayTimeLabel>,
-            Without<GrpcStatusLabel>,
+            Without<BackendStatusLabel>,
             Without<PauseResumeLabel>,
             Without<VenueStateBadge>,
         ),
     >,
-    mut grpc_q: Query<
+    mut backend_q: Query<
         (&mut Text, &mut TextColor),
         (
-            With<GrpcStatusLabel>,
+            With<BackendStatusLabel>,
             Without<ReplayTimeLabel>,
             Without<ReplayStateBadge>,
             Without<PauseResumeLabel>,
@@ -305,7 +305,7 @@ pub fn update_footer_system(
             With<PauseResumeLabel>,
             Without<ReplayTimeLabel>,
             Without<ReplayStateBadge>,
-            Without<GrpcStatusLabel>,
+            Without<BackendStatusLabel>,
             Without<VenueStateBadge>,
         ),
     >,
@@ -315,7 +315,7 @@ pub fn update_footer_system(
             With<VenueStateBadge>,
             Without<ReplayTimeLabel>,
             Without<ReplayStateBadge>,
-            Without<GrpcStatusLabel>,
+            Without<BackendStatusLabel>,
             Without<PauseResumeLabel>,
         ),
     >,
@@ -411,23 +411,23 @@ pub fn update_footer_system(
         }
     }
 
-    // gRPC status
-    let (grpc_text, grpc_color) = if !settings.backend_enabled {
-        ("grpc: DISABLED", theme.colors.text_disabled)
+    // backend status
+    let (backend_text, backend_color) = if !settings.backend_enabled {
+        ("backend: DISABLED", theme.colors.text_disabled)
     } else if status.connected {
-        ("grpc: OK", theme.status.success)
+        ("backend: OK", theme.status.success)
     } else if status.last_error.is_some() {
-        ("grpc: ERR", theme.status.error)
+        ("backend: ERR", theme.status.error)
     } else {
-        ("grpc: ...", theme.status.warning)
+        ("backend: ...", theme.status.warning)
     };
-    for (mut text, mut color) in &mut grpc_q {
+    for (mut text, mut color) in &mut backend_q {
         // 規約 2: 差分書き込み — avoid change-detection thrash per frame.
-        if text.0 != grpc_text {
-            text.0 = grpc_text.to_string();
+        if text.0 != backend_text {
+            text.0 = backend_text.to_string();
         }
-        if color.0 != grpc_color {
-            color.0 = grpc_color;
+        if color.0 != backend_color {
+            color.0 = backend_color;
         }
     }
 

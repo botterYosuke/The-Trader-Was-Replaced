@@ -30,7 +30,7 @@ pub struct ReplayTimeLabel;
 pub struct ReplayStateBadge;
 
 #[derive(Component)]
-pub struct GrpcStatusLabel;
+pub struct BackendStatusLabel;
 
 #[derive(Component)]
 pub struct PauseResumeLabel;

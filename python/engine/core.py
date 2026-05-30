@@ -388,7 +388,7 @@ class DataEngine:
                 volume = _rest[0] if _rest else 0.0
                 if iid == self._replay_primary_id:
                     # Primary: emit with "" id so reducer appends OhlcPoint (volume) / history.
-                    # Mirrors server_grpc.py D16 double-emit convention.
+                    # Mirrors _backend_impl.py D16 double-emit convention.
                     self._apply_event_locked(KlineUpdate(
                         timestamp_ms=ts_ms, close=c, open=o, high=h, low=l,
                         open_time_ms=ts_ms, instrument_id="",

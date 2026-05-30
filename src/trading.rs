@@ -171,9 +171,7 @@ impl TradingSettings {
                 let p = std::path::Path::new(&base).join("jquants-catalog");
                 Some(p.to_string_lossy().to_string())
             },
-            use_inproc: std::env::var("BACKEND_TRANSPORT")
-                .map(|v| v.to_lowercase() != "grpc")
-                .unwrap_or(true),
+            use_inproc: true,
             python_engine_path: std::env::var("PYTHON_ENGINE_PATH")
                 .unwrap_or_else(|_| "python".to_string()),
             live_venue_id: std::env::var("LIVE_VENUE").ok().filter(|s| !s.is_empty()),
@@ -865,7 +863,7 @@ pub enum BackendStatusUpdate {
 
 /// Bevy 側に流す backend event。proto の `backend_event::Payload` (oneof) を
 /// owned 型でミラーしたもの（gRPC 受信タスクから ECS へ渡すための Send + 'static 型）。
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Deserialize)]
 pub enum BackendEvent {
     SecretRequired {
         request_id: String,
@@ -928,7 +926,7 @@ pub enum BackendEvent {
         fill_count: i64,
         ts_ms: i64,
     },
-    /// Issue #29 Slice1: backend 側の継続的エラー (account_sync / server_grpc) を
+    /// Issue #29 Slice1: backend 側の継続的エラー (account_sync / server_backend) を
     /// Footer toast に出すための汎用エラーイベント。proto BackendError のミラー。
     BackendError {
         source: String,
@@ -938,7 +936,7 @@ pub enum BackendEvent {
 }
 
 /// AccountEvent.positions の 1 要素。proto AccountPosition のミラー。
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Deserialize)]
 pub struct AccountPosition {
     pub symbol: String,
     pub qty: i64,
@@ -2507,11 +2505,11 @@ mod tests {
         };
         // Simulate InstrumentsListFailed reducer
         t.source = TickersSource::LiveVenue;
-        t.status = TickersStatus::Failed("grpc timeout".to_string());
+        t.status = TickersStatus::Failed("backend timeout".to_string());
         // list is preserved (stale display)
         assert_eq!(t.list, stale);
         assert_eq!(t.source, TickersSource::LiveVenue);
-        assert_eq!(t.status, TickersStatus::Failed("grpc timeout".to_string()));
+        assert_eq!(t.status, TickersStatus::Failed("backend timeout".to_string()));
     }
 
     #[test]

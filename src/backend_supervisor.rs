@@ -156,9 +156,7 @@ impl SupervisorConfig {
             cwd: std::env::var("BACKEND_CWD").ok().filter(|s| !s.is_empty()),
             python_bin: std::env::var("PYTHON_BIN").ok().filter(|s| !s.is_empty()),
             live_venue: std::env::var("LIVE_VENUE").ok().filter(|s| !s.is_empty()),
-            inproc: std::env::var("BACKEND_TRANSPORT")
-                .map(|v| v.to_lowercase() != "grpc")
-                .unwrap_or(true),
+            inproc: true,
         }
     }
 }
@@ -196,25 +194,6 @@ pub fn build_backend_command_args(token: &str, port: u16, live_venue: Option<&st
     args
 }
 
-/// Parse a backend stdout line for the readiness sentinel
-/// `GRPC_LISTENING port=<n>`. Returns the advertised port on match, else
-/// `None`. Pure (regex compiled once via OnceLock) so the contract is
-/// golden-testable without spawning a subprocess. (C-5)
-pub fn parse_sentinel_line(line: &str) -> Option<u16> {
-    static RE: OnceLock<regex::Regex> = OnceLock::new();
-    let re = RE.get_or_init(|| regex::Regex::new(r"^GRPC_LISTENING port=(\d+)$").unwrap());
-    re.captures(line.trim())
-        .and_then(|c| c.get(1))
-        .and_then(|m| m.as_str().parse::<u16>().ok())
-}
-
-/// Check whether a sentinel-advertised port matches the expected port from
-/// BACKEND_URL. Returns `true` on match. Mismatch is non-fatal: the caller
-/// logs an error and continues on the Health.Check path (C-5). Pure so the
-/// contract is unit-testable without a subprocess.
-pub fn sentinel_port_matches(advertised: u16, expected: u16) -> bool {
-    advertised == expected
-}
 
 /// Resolve the working directory used as the base for `.venv` discovery and
 /// `PYTHONPATH=<cwd>/python`. (C-4)
@@ -702,39 +681,6 @@ mod tests {
                 "TACHIBANA"
             ]
         );
-    }
-
-    #[test]
-    fn parse_sentinel_line_matches_grpc_listening() {
-        assert_eq!(
-            parse_sentinel_line("GRPC_LISTENING port=19876"),
-            Some(19876)
-        );
-    }
-
-    #[test]
-    fn parse_sentinel_line_trims_trailing_newline() {
-        assert_eq!(
-            parse_sentinel_line("GRPC_LISTENING port=50051\n"),
-            Some(50051)
-        );
-    }
-
-    #[test]
-    fn parse_sentinel_line_ignores_non_sentinel() {
-        assert_eq!(parse_sentinel_line("[engine] starting up"), None);
-        assert_eq!(parse_sentinel_line("GRPC_LISTENING port=abc"), None);
-        assert_eq!(parse_sentinel_line("prefix GRPC_LISTENING port=1"), None);
-    }
-
-    #[test]
-    fn sentinel_port_matches_on_equal() {
-        assert!(sentinel_port_matches(19876, 19876));
-    }
-
-    #[test]
-    fn sentinel_port_matches_false_on_mismatch() {
-        assert!(!sentinel_port_matches(50051, 19876));
     }
 
     // --- 4-B-2b-i: pure resolver / preflight unit tests ---

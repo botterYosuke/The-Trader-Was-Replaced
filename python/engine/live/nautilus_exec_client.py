@@ -109,7 +109,7 @@ class NautilusVenueExecClient(LiveExecutionClient):
     # ── connection ───────────────────────────────────────────────────────────
 
     async def _connect(self) -> None:
-        # adapter の login は live session（server_grpc）が既に済ませている（共有所有権、
+        # adapter の login は live session（_backend_impl）が既に済ませている（共有所有権、
         # §1.1）。ここでは追加の接続は張らず、口座スナップショットだけ seed する
         # （RiskEngine の free-balance チェックと Portfolio が account を要求するため）。
         await self._seed_account_state()

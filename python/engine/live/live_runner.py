@@ -53,12 +53,12 @@ class LiveRunner:
         self.bus: LiveEventBus = LiveEventBus()
         self._task: Optional[asyncio.Task[None]] = None
         self._last_error: Optional[BaseException] = None
-        self._loop: Optional[asyncio.AbstractEventLoop] = None  # D10: set by server_grpc
+        self._loop: Optional[asyncio.AbstractEventLoop] = None  # D10: set by _backend_impl
         # Phase 10 Step 8: 生 TradesUpdate を横取りする listener（Nautilus aggregation へ
         # tick を流す engine_controller が登録する）。bus 経路（UI 用）とは別系統。
         self._tick_listeners: list[Callable[[TradesUpdate], None]] = []
         # Phase 10 Step 8: UI 用 partial bar push（build_now() を一定間隔で bus に publish）。
-        # 0 / None なら無効（既存テストの既定）。production は server_grpc が 1.0s を渡す。
+        # 0 / None なら無効（既存テストの既定）。production は _backend_impl が 1.0s を渡す。
         self._partial_push_interval_s: float = float(partial_push_interval_s or 0.0)
         self._partial_task: Optional[asyncio.Task[None]] = None
         # 直近に push した partial bar（(instrument_id, interval 順位) → KlineUpdate）。
@@ -238,7 +238,7 @@ class LiveRunner:
     def fetch_instruments_blocking(self, timeout: float = 5.0):
         """D10: Fetch instruments from adapter synchronously (from gRPC thread).
 
-        Requires _loop to be set (via _ensure_live_loop in server_grpc).
+        Requires _loop to be set (via _ensure_live_loop in _backend_impl).
         """
         if self._loop is None:
             raise RuntimeError("LiveRunner._loop not set; call _ensure_live_loop first")

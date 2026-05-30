@@ -218,7 +218,7 @@ def test_is_warming_true_during_initial_refresh_false_before_and_after() -> None
     """Issue #32 Slice 2: 初回 refresh（ログイン時 persist）が進行中の間だけ
     `is_warming()` が True。起動前と初回完了後は False。
 
-    この信号で server_grpc は cold-store miss を 60s blocking fetch せず
+    この信号で _backend_impl は cold-store miss を 60s blocking fetch せず
     `LIVE_UNIVERSE_PENDING` に倒す（UI で Loading spinner にする）。"""
 
     async def scenario() -> None:

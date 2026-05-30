@@ -1,4 +1,4 @@
-from engine.proto import engine_pb2
+from engine import _proto_compat as engine_pb2
 
 
 def test_backend_event_has_backend_error_oneof():

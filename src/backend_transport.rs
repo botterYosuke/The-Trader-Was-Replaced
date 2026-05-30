@@ -11,9 +11,16 @@ use crate::trading::{
     VenueState, ExecutionMode, get_orders_notice,
     reconcile_ids_for_seed, tickers_source_to_wire,
 };
-pub(crate) mod engine { include!(concat!(env!("OUT_DIR"), "/engine.rs")); }
-fn default_live_auto_safety_limits(instrument_id: &str) -> engine::SafetyLimits {
-    engine::SafetyLimits {
+struct SafetyLimits {
+    max_position_size_jpy: i64,
+    max_order_value_jpy: i64,
+    max_daily_loss_jpy: i64,
+    max_orders_per_minute: i32,
+    allowed_instruments: Vec<String>,
+}
+
+fn default_live_auto_safety_limits(instrument_id: &str) -> SafetyLimits {
+    SafetyLimits {
         max_position_size_jpy: 1_000_000,
         max_order_value_jpy: 500_000,
         max_daily_loss_jpy: 100_000,
@@ -32,7 +39,7 @@ fn default_live_auto_safety_limits(instrument_id: &str) -> engine::SafetyLimits 
 /// reconnect — the transport must honour `BackendLifecycle::Ready` as the gate.
 ///
 /// The `Pin<Box<dyn Future>>` return keeps the trait object-safe so Phase 2 can
-/// swap `GrpcTransport` for `InProcTransport` via `Box<dyn BackendTransport>`.
+/// use `InProcTransport` via `Box<dyn BackendTransport>`.
 pub trait BackendTransport: Send + 'static {
     fn run(
         self: Box<Self>,
@@ -42,91 +49,6 @@ pub trait BackendTransport: Send + 'static {
         event_tx: mpsc::UnboundedSender<BackendEvent>,
         lifecycle_rx: tokio::sync::watch::Receiver<BackendLifecycle>,
     ) -> Pin<Box<dyn Future<Output = ()> + Send + 'static>>;
-}
-
-// ---------------------------------------------------------------------------
-// Private helpers (all transport-specific)
-// ---------------------------------------------------------------------------
-
-/// Map a proto `engine::backend_event::Payload` to our internal `BackendEvent` enum.
-/// Shared between `GrpcTransport` (stream decode) and `RustEventSink` (inproc push).
-fn map_backend_event_payload(payload: engine::backend_event::Payload) -> BackendEvent {
-    match payload {
-        engine::backend_event::Payload::SecretRequired(p) => BackendEvent::SecretRequired {
-            request_id: p.request_id,
-            venue: p.venue,
-            kind: p.kind,
-            purpose: p.purpose,
-        },
-        engine::backend_event::Payload::OrderEvent(p) => BackendEvent::OrderEvent {
-            order_id: p.order_id,
-            venue_order_id: p.venue_order_id,
-            client_order_id: p.client_order_id,
-            status: p.status,
-            filled_qty: p.filled_qty,
-            avg_price: p.avg_price,
-            ts_ms: p.ts_ms,
-            strategy_id: p.strategy_id.unwrap_or_default(),
-        },
-        engine::backend_event::Payload::AccountEvent(p) => BackendEvent::AccountEvent {
-            cash: p.cash,
-            buying_power: p.buying_power,
-            positions: p
-                .positions
-                .into_iter()
-                .map(|pos| AccountPosition {
-                    symbol: pos.symbol,
-                    qty: pos.qty,
-                    avg_price: pos.avg_price,
-                    unrealized_pnl: pos.unrealized_pnl,
-                })
-                .collect(),
-            ts_ms: p.ts_ms,
-        },
-        engine::backend_event::Payload::VenueLogoutDetected(p) => {
-            BackendEvent::VenueLogoutDetected { venue: p.venue }
-        }
-        engine::backend_event::Payload::LiveStrategyEvent(p) => {
-            BackendEvent::LiveStrategyEvent {
-                run_id: p.run_id,
-                strategy_id: p.strategy_id,
-                status: p.status,
-                ts_ms: p.ts_ms,
-            }
-        }
-        engine::backend_event::Payload::SafetyRailViolation(p) => {
-            BackendEvent::SafetyRailViolation {
-                run_id: p.run_id,
-                kind: p.kind,
-                detail: p.detail,
-                ts_ms: p.ts_ms,
-            }
-        }
-        engine::backend_event::Payload::StrategyLogMessage(p) => {
-            BackendEvent::StrategyLogMessage {
-                run_id: p.run_id,
-                level: p.level,
-                message: p.message,
-                ts_ms: p.ts_ms,
-            }
-        }
-        engine::backend_event::Payload::LiveStrategyTelemetry(p) => {
-            BackendEvent::LiveStrategyTelemetry {
-                run_id: p.run_id,
-                strategy_id: p.strategy_id,
-                realized_pnl: p.realized_pnl,
-                unrealized_pnl: p.unrealized_pnl,
-                order_count: p.order_count,
-                fill_count: p.fill_count,
-                ts_ms: p.ts_ms,
-            }
-        }
-        engine::backend_event::Payload::BackendError(p) => BackendEvent::BackendError {
-            source: p.source,
-            detail: p.detail,
-            ts_ms: p.ts_ms,
-        },
-    }
 }
 
 /// Backend-events reconnect backoff: wait for either a lifecycle change or a
@@ -168,8 +90,8 @@ fn parse_execution_mode(s: &str) -> Option<ExecutionMode> {
 
 pub fn parse_replay_granularity(s: &str) -> Result<i32, String> {
     match s {
-        "Daily" => Ok(engine::ReplayGranularity::Daily as i32),
-        "Minute" => Ok(engine::ReplayGranularity::Minute as i32),
+        "Daily" => Ok(3),   // ReplayGranularity::DAILY = 3
+        "Minute" => Ok(2),  // ReplayGranularity::MINUTE = 2
         other => Err(format!("unknown granularity: {:?}", other)),
     }
 }
@@ -194,14 +116,12 @@ struct RustEventSink {
 
 #[pyo3::pymethods]
 impl RustEventSink {
-    /// Called from Python: `sink.push(event.SerializeToString())`
-    fn push(&self, data: &[u8]) -> pyo3::PyResult<()> {
-        use prost::Message as _;
-        let proto = engine::BackendEvent::decode(data)
+    /// Called from Python: `sink.push_json(json_bytes)`
+    /// `json_bytes` must be a UTF-8 JSON serialisation of `BackendEvent`.
+    fn push_json(&self, data: &[u8]) -> pyo3::PyResult<()> {
+        let event: crate::trading::BackendEvent = serde_json::from_slice(data)
             .map_err(|e| pyo3::exceptions::PyValueError::new_err(e.to_string()))?;
-        if let Some(payload) = proto.payload {
-            let _ = self.event_tx.send(map_backend_event_payload(payload));
-        }
+        let _ = self.event_tx.send(event);
         Ok(())
     }
 }
@@ -428,7 +348,7 @@ impl BackendTransport for InProcTransport {
                 return;
             }
 
-            // State diffing state (mirrors GrpcTransport inner loop).
+            // State diffing state (mirrors InProcTransport inner loop).
             let mut prev_venue: Option<String> = None;
             let mut prev_mode: Option<String> = None;
             let mut prev_configured_venue: Option<Option<String>> = None;
@@ -1528,7 +1448,7 @@ fn inproc_dispatch(
 #[cfg(test)]
 mod tests {
     use super::{
-        flush_stale_transport_commands, inproc_startup_status_sequence, map_backend_event_payload,
+        flush_stale_transport_commands, inproc_startup_status_sequence,
         parse_replay_granularity,
     };
     use crate::trading::TransportCommand;
@@ -1563,12 +1483,12 @@ mod tests {
     /// UI is seeded at startup. The InProc worker must perform the SAME startup fetch,
     /// otherwise the universe is empty only in in-proc mode (a regression).
     #[test]
-    fn inproc_startup_fetches_instruments_like_grpc() {
+    fn inproc_startup_fetches_instruments_like_inproc() {
         use crate::trading::TickersSource;
         assert_eq!(
             super::inproc_startup_instrument_fetch(),
             Some(TickersSource::ReplayCatalogFallback),
-            "InProc startup must fetch instruments with the same source as gRPC \
+            "InProc startup must fetch instruments (same source as InProc at startup) \
              (fire_list_instruments at backend_transport.rs:185)"
         );
     }
@@ -1667,18 +1587,12 @@ mod tests {
 
     #[test]
     fn parse_replay_granularity_daily() {
-        assert_eq!(
-            parse_replay_granularity("Daily").unwrap(),
-            crate::trading::engine::ReplayGranularity::Daily as i32
-        );
+        assert_eq!(parse_replay_granularity("Daily").unwrap(), 3);
     }
 
     #[test]
     fn parse_replay_granularity_minute() {
-        assert_eq!(
-            parse_replay_granularity("Minute").unwrap(),
-            crate::trading::engine::ReplayGranularity::Minute as i32
-        );
+        assert_eq!(parse_replay_granularity("Minute").unwrap(), 2);
     }
 
     #[test]
@@ -1690,56 +1604,6 @@ mod tests {
     #[test]
     fn parse_replay_granularity_empty_returns_err() {
         assert!(parse_replay_granularity("").is_err());
-    }
-
-    // ---------------------------------------------------------------------------
-    // Phase 3: map_backend_event_payload unit tests
-    // ---------------------------------------------------------------------------
-
-    #[test]
-    fn map_payload_secret_required() {
-        use crate::trading::engine;
-        let payload = engine::backend_event::Payload::SecretRequired(engine::SecretRequired {
-            request_id: "req-1".into(),
-            venue: "TACHIBANA".into(),
-            kind: "password".into(),
-            purpose: "second_auth".into(),
-        });
-        let ev = map_backend_event_payload(payload);
-        assert!(
-            matches!(ev, crate::trading::BackendEvent::SecretRequired { ref request_id, ref venue, .. }
-                if request_id == "req-1" && venue == "TACHIBANA"),
-            "SecretRequired payload should map correctly"
-        );
-    }
-
-    #[test]
-    fn map_payload_venue_logout_detected() {
-        use crate::trading::engine;
-        let payload = engine::backend_event::Payload::VenueLogoutDetected(
-            engine::VenueLogoutDetected { venue: "KABU".into() },
-        );
-        let ev = map_backend_event_payload(payload);
-        assert!(
-            matches!(ev, crate::trading::BackendEvent::VenueLogoutDetected { ref venue } if venue == "KABU"),
-            "VenueLogoutDetected payload should map correctly"
-        );
-    }
-
-    #[test]
-    fn map_payload_backend_error() {
-        use crate::trading::engine;
-        let payload = engine::backend_event::Payload::BackendError(engine::BackendError {
-            source: "test".into(),
-            detail: "something broke".into(),
-            ts_ms: 9999,
-        });
-        let ev = map_backend_event_payload(payload);
-        assert!(
-            matches!(ev, crate::trading::BackendEvent::BackendError { ref source, ts_ms, .. }
-                if source == "test" && ts_ms == 9999),
-            "BackendError payload should map correctly"
-        );
     }
 
 }

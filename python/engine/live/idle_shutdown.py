@@ -1,4 +1,4 @@
-"""Idle gRPC shutdown — Phase 9 Step 8 / §3.7。
+"""Idle shutdown monitor — Phase 9 Step 8 / §3.7。
 
 独立起動 (Bevy supervisor 配下でない) backend が、どの RPC も 60 秒来なければ自己 shutdown
 する。CLI から手動で `python -m engine` を起動して放置したプロセスが居残らないようにする運用用。
@@ -11,8 +11,8 @@
   呼んで終了する。start_shutdown が teardown（kabu なら `unregister/all`）→ `server.stop` を担う。
 
 設計判断:
-- **threading ベース (asyncio ではない)**: 本番 gRPC サーバは `grpc.server(ThreadPoolExecutor)` の
-  **同期サーバ**で、interceptor も monitor も worker/daemon thread 上で走る。計画書 §3.7 の
+- **threading ベース (asyncio ではない)**: backend は `ThreadPoolExecutor` ベースの
+  **同期処理**で動作し、interceptor も monitor も worker/daemon thread 上で走る。計画書 §3.7 の
   「asyncio.Lock / background asyncio task」前提は**ドリフト訂正**（SecretVault が threading.Lock に
   したのと同じ理由 — 単一 asyncio loop は存在しない）。`LastRequestClock` は `threading.Lock` で保護。
 - **supervisor 配下では無効**: Bevy が spawn したときは `BACKEND_SUPERVISED=1` を立てる。その場合は
@@ -25,8 +25,6 @@ import logging
 import threading
 import time as _time
 from typing import Callable, Optional, Protocol
-
-import grpc
 
 _LOG = logging.getLogger(__name__)
 
@@ -66,7 +64,7 @@ class LastRequestClock:
             return self._time() - self._last
 
 
-class RequestActivityInterceptor(grpc.ServerInterceptor):
+class RequestActivityInterceptor:
     """全 RPC ディスパッチで `LastRequestClock.touch()` する server interceptor。
 
     `intercept_service` は RPC 到着ごとに 1 度呼ばれるため、これで「最後に要求が来た時刻」を

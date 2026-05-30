@@ -84,7 +84,7 @@ def mask_secrets(payload: Any) -> Any:
     - dataclass: dataclasses.asdict() の dict を再帰
     - その他: そのまま返す（immutable / scalar 想定）
 
-    元の payload は変更しない（マスク済みの新オブジェクトを返す）。protobuf 等の
+    元の payload は変更しない（マスク済みの新オブジェクトを返す）。上記以外の
     任意オブジェクトは対象外（scalar 扱いでそのまま返す）。深さ ``_MAX_MASK_DEPTH``
     を超えると ``'<max-depth>'`` を返して再帰を打ち切る（cyclic payload 防御）。
     """

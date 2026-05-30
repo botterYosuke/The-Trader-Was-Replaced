@@ -12,7 +12,7 @@ dispatch に留める。
 
 設計メモ:
 - **transport 非依存**: proto を import しない。proto 変換と `publish_backend_event`
-  は gRPC handler（server_grpc.py）の責務。token / execution mode 検証 /
+  は gRPC handler（_backend_impl.py）の責務。token / execution mode 検証 /
   VENUE_LOGIN_REQUIRED 判定も handler 側。facade は adapter 稼働前提で呼ばれる。
 - place / cancel は live loop thread 上で await され、get_status は gRPC worker
   thread から同期で呼ばれる cross-thread 構造のため、`_orders` を `threading.Lock`

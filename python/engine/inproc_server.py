@@ -1,7 +1,7 @@
 """InprocLiveServer — Phase 4 / issue #64.
 
 Thin façade over BackendService that lets Rust call live Python methods
-directly via PyO3, bypassing gRPC TCP+protobuf round-trips.
+directly via PyO3, bypassing TCP round-trips via InprocTransport.
 
 Design decisions:
 - BackendService owns GrpcDataEngineServer internally (token="" so _token_ok() always passes).

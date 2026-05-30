@@ -43,7 +43,7 @@ def _proto_order_event_to_dict(ev) -> dict:
 
 def _parse_granularity_int(granularity) -> int:
     """Coerce granularity (proto enum int OR name string) to ReplayGranularity int."""
-    from .proto import engine_pb2
+    from . import _proto_compat as engine_pb2
 
     if isinstance(granularity, bool):
         return engine_pb2.TICK
@@ -58,6 +58,35 @@ def _parse_granularity_int(granularity) -> int:
     return engine_pb2.TICK
 
 
+from ._backend_impl import GrpcDataEngineServer
+
+
+class _BackendCore(GrpcDataEngineServer):
+    """GrpcDataEngineServer の inproc ラッパー用サブクラス。
+
+    BackendService が _srv として保持する。token="" で初期化。
+    """
+
+    def __init__(
+        self,
+        engine,
+        mode_manager=None,
+        venue_sm=None,
+        live_adapter_factory=None,
+        live_venue_id: Optional[str] = None,
+        engine_controller=None,
+    ) -> None:
+        super().__init__(
+            token="",
+            engine=engine,
+            mode_manager=mode_manager,
+            venue_sm=venue_sm,
+            live_adapter_factory=live_adapter_factory,
+            live_venue_id=live_venue_id,
+            engine_controller=engine_controller,
+        )
+
+
 class BackendService:
     """GrpcDataEngineServer を包む薄いラッパー。proto 非依存の plain dict を返す。"""
 
@@ -70,10 +99,7 @@ class BackendService:
         live_venue_id=None,
         engine_controller=None,
     ) -> None:
-        from .server_grpc import GrpcDataEngineServer
-
-        self._srv = GrpcDataEngineServer(
-            token="",
+        self._srv = _BackendCore(
             engine=engine,
             mode_manager=mode_manager,
             venue_sm=venue_sm,
@@ -87,7 +113,7 @@ class BackendService:
     # ------------------------------------------------------------------
 
     def get_state_json(self) -> str:
-        from .proto import engine_pb2
+        from . import _proto_compat as engine_pb2
 
         try:
             req = engine_pb2.GetStateRequest(token="")
@@ -98,7 +124,7 @@ class BackendService:
             return self._srv.engine.get_current_state().model_dump_json()
 
     def get_portfolio(self) -> dict:
-        from .proto import engine_pb2
+        from . import _proto_compat as engine_pb2
 
         req = engine_pb2.GetPortfolioRequest(token="")
         try:
@@ -132,7 +158,7 @@ class BackendService:
         credentials_source: str,
         environment_hint: Optional[str],
     ) -> dict:
-        from .proto import engine_pb2
+        from . import _proto_compat as engine_pb2
 
         req = engine_pb2.VenueLoginRequest(
             venue_id=venue_id,
@@ -154,7 +180,7 @@ class BackendService:
         }
 
     def venue_logout(self) -> dict:
-        from .proto import engine_pb2
+        from . import _proto_compat as engine_pb2
 
         req = engine_pb2.VenueLogoutRequest(token="")
         try:
@@ -170,7 +196,7 @@ class BackendService:
     # ------------------------------------------------------------------
 
     def set_execution_mode(self, mode: str) -> dict:
-        from .proto import engine_pb2
+        from . import _proto_compat as engine_pb2
 
         req = engine_pb2.SetExecutionModeRequest(mode=mode, token="")
         try:
@@ -190,7 +216,7 @@ class BackendService:
     # ------------------------------------------------------------------
 
     def list_instruments(self, source: str) -> dict:
-        from .proto import engine_pb2
+        from . import _proto_compat as engine_pb2
 
         req = engine_pb2.ListInstrumentsRequest(source=source, token="")
         try:
@@ -210,7 +236,7 @@ class BackendService:
         }
 
     def list_all_listed_symbols(self, end_date: str) -> dict:
-        from .proto import engine_pb2
+        from . import _proto_compat as engine_pb2
 
         req = engine_pb2.ListAllListedSymbolsRequest(end_date=end_date, token="")
         try:
@@ -231,7 +257,7 @@ class BackendService:
     # ------------------------------------------------------------------
 
     def subscribe_market_data(self, instrument_id: str) -> dict:
-        from .proto import engine_pb2
+        from . import _proto_compat as engine_pb2
 
         req = engine_pb2.SubscribeRequest(
             instrument_id=instrument_id,
@@ -247,7 +273,7 @@ class BackendService:
         return {"success": resp.success, "error_code": resp.error_code}
 
     def unsubscribe_market_data(self, instrument_id: str) -> dict:
-        from .proto import engine_pb2
+        from . import _proto_compat as engine_pb2
 
         req = engine_pb2.UnsubscribeRequest(instrument_id=instrument_id, token="")
         try:
@@ -273,7 +299,7 @@ class BackendService:
         time_in_force: str,
         second_secret: Optional[str],
     ) -> dict:
-        from .proto import engine_pb2
+        from . import _proto_compat as engine_pb2
 
         req = engine_pb2.PlaceOrderReq(
             token="",
@@ -306,7 +332,7 @@ class BackendService:
         order_id: str,
         second_secret: Optional[str],
     ) -> dict:
-        from .proto import engine_pb2
+        from . import _proto_compat as engine_pb2
 
         req = engine_pb2.CancelOrderReq(token="", venue=venue, order_id=order_id)
         if second_secret is not None:
@@ -331,7 +357,7 @@ class BackendService:
         new_price: Optional[float],
         second_secret: Optional[str],
     ) -> dict:
-        from .proto import engine_pb2
+        from . import _proto_compat as engine_pb2
 
         req = engine_pb2.ModifyOrderReq(
             token="",
@@ -357,7 +383,7 @@ class BackendService:
         }
 
     def get_orders(self, venue: str) -> dict:
-        from .proto import engine_pb2
+        from . import _proto_compat as engine_pb2
 
         req = engine_pb2.GetOrdersReq(token="", venue=venue)
         try:
@@ -373,7 +399,7 @@ class BackendService:
         }
 
     def submit_secret(self, request_id: str, secret: str) -> dict:
-        from .proto import engine_pb2
+        from . import _proto_compat as engine_pb2
 
         req = engine_pb2.SubmitSecretReq(token="", request_id=request_id, secret=secret)
         try:
@@ -385,7 +411,7 @@ class BackendService:
         return {"success": resp.success, "error_code": resp.error_code}
 
     def force_account_snapshot(self) -> dict:
-        from .proto import engine_pb2
+        from . import _proto_compat as engine_pb2
 
         req = engine_pb2.ForceAccountSnapshotRequest(token="")
         try:
@@ -401,7 +427,7 @@ class BackendService:
     # ------------------------------------------------------------------
 
     def register_live_strategy(self, strategy_file: str) -> dict:
-        from .proto import engine_pb2
+        from . import _proto_compat as engine_pb2
 
         req = engine_pb2.RegisterLiveStrategyReq(
             token="",
@@ -429,7 +455,7 @@ class BackendService:
         venue: str,
         safety_limits_dict: Optional[dict] = None,
     ) -> dict:
-        from .proto import engine_pb2
+        from . import _proto_compat as engine_pb2
 
         safety_limits = engine_pb2.SafetyLimits()
         if safety_limits_dict:
@@ -466,7 +492,7 @@ class BackendService:
         }
 
     def stop_live_strategy(self, run_id: str) -> dict:
-        from .proto import engine_pb2
+        from . import _proto_compat as engine_pb2
 
         req = engine_pb2.StopLiveStrategyReq(token="", request_id="", run_id=run_id)
         try:
@@ -478,7 +504,7 @@ class BackendService:
         return {"success": resp.success, "error_code": resp.error_code}
 
     def pause_live_strategy(self, run_id: str) -> dict:
-        from .proto import engine_pb2
+        from . import _proto_compat as engine_pb2
 
         req = engine_pb2.PauseLiveStrategyReq(token="", request_id="", run_id=run_id)
         try:
@@ -490,7 +516,7 @@ class BackendService:
         return {"success": resp.success, "error_code": resp.error_code}
 
     def resume_live_strategy(self, run_id: str) -> dict:
-        from .proto import engine_pb2
+        from . import _proto_compat as engine_pb2
 
         req = engine_pb2.ResumeLiveStrategyReq(token="", request_id="", run_id=run_id)
         try:
@@ -507,7 +533,7 @@ class BackendService:
 
     def start_engine(self, cfg: dict) -> dict:
         """Delegate to GrpcDataEngineServer.StartEngine() for strategy backtest runs."""
-        from .proto import engine_pb2
+        from . import _proto_compat as engine_pb2
 
         engine_start_config = engine_pb2.EngineStartConfig(
             instrument_id=cfg.get("instrument_id", ""),

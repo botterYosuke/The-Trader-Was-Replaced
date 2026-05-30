@@ -303,7 +303,7 @@ def test_modify_order_no_session():
 
 def test_parse_granularity_int_accepts_proto_int_daily():
     from engine.backend_service import _parse_granularity_int
-    from engine.proto import engine_pb2
+    from engine import _proto_compat as engine_pb2
 
     # Rust 側は proto enum の int をそのまま渡す（DAILY == 3）
     assert _parse_granularity_int(engine_pb2.DAILY) == engine_pb2.DAILY
@@ -311,7 +311,7 @@ def test_parse_granularity_int_accepts_proto_int_daily():
 
 def test_parse_granularity_int_accepts_proto_int_minute():
     from engine.backend_service import _parse_granularity_int
-    from engine.proto import engine_pb2
+    from engine import _proto_compat as engine_pb2
 
     assert _parse_granularity_int(engine_pb2.MINUTE) == engine_pb2.MINUTE
 
@@ -357,7 +357,7 @@ def test_place_order_non_runtime_exception_returns_inproc_error():
 # RED (#64-6): InprocLiveServer.close() は配下 GrpcDataEngineServer の live
 #   コンポーネント teardown を呼ぶべき。InProc worker は command channel close
 #   時に façade を drop するだけで、配下の live loop thread / runner / account
-#   sync を停止しない（server_grpc.py の _live_loop/_live_thread は誰も止めない）。
+#   sync を停止しない（_backend_impl.py の _live_loop/_live_thread は誰も止めない）。
 #   修正後は close() が self._srv._teardown_live_components() を呼ぶ。
 #   RED＝回帰ガード・fix は #64 後に green
 # ---------------------------------------------------------------------------

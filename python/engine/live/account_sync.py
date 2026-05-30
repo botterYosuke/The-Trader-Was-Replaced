@@ -9,8 +9,8 @@
 
 設計判断:
 - **transport 非依存**: proto を import しない（reducer_bridge と同思想）。`on_account_event`
-  コールバックに `AccountSnapshot` を渡すだけ。proto 変換と `ts_ms` 採番は server_grpc の責務。
-- **callback は同期関数**: live loop thread 上で走り、server_grpc では threadsafe な
+  コールバックに `AccountSnapshot` を渡すだけ。proto 変換と `ts_ms` 採番は _backend_impl の責務。
+- **callback は同期関数**: live loop thread 上で走り、_backend_impl では threadsafe な
   `BackendEventBus.publish` を直接叩く（Step 0 設計）ため await 不要。
 - **fetch_account の例外**: reducer_bridge は「例外でループ終了 + last_error 記録」だが、
   口座同期で「1 回の transient 失敗で永久停止」は実運用で困る。よって本実装は
@@ -34,7 +34,7 @@ _LOG = logging.getLogger(__name__)
 
 @dataclass(frozen=True)
 class LiveErrorRecord:
-    """source 付きの live エラー観測点（D2 で server_grpc が読み、BackendError event へ寄せる布石）。"""
+    """source 付きの live エラー観測点（D2 で _backend_impl が読み、BackendError event へ寄せる布石）。"""
     source: str
     detail: str
 

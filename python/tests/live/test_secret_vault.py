@@ -125,7 +125,7 @@ def test_wait_for_unknown_request_id_raises_keyerror():
 
 def test_submit_from_worker_thread_resolves_wait_for_on_loop():
     """SubmitSecret RPC handler は sync ThreadPool の worker thread から submit する。
-    一方 wait_for は live loop thread で await される（server_grpc の
+    一方 wait_for は live loop thread で await される（_backend_impl の
     run_coroutine_threadsafe 経路）。plain future.set_result は loop を起こさず
     dead-wait になるため、cross-thread submit でも wait_for が解けることを固定する。
     """
