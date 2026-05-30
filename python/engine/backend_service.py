@@ -105,6 +105,7 @@ class BackendService:
             venue_sm=venue_sm,
             live_adapter_factory=live_adapter_factory,
             live_venue_id=live_venue_id,
+            engine_controller=engine_controller,
         )
         self._ctx = _NullContext()
 
