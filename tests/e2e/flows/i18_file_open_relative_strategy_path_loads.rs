@@ -123,7 +123,8 @@ fn i18_file_open_relative_strategy_path_loads() {
     .insert_resource(InstrumentTradingDataMap::default())
     .init_resource::<backcast::ui::components::ChartSizeMap>()
     .init_resource::<bevy::input_focus::InputFocus>()
-    .init_resource::<backcast::ui::strategy_editor_find::FindReplaceState>();
+    .init_resource::<backcast::ui::strategy_editor_find::FindReplaceState>()
+    .init_resource::<backcast::ui::theme::Theme>();
 
     app.add_message::<LayoutSaveRequested>()
         .add_message::<LayoutSaveAsRequested>()

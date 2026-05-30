@@ -8,7 +8,7 @@ use crate::ui::editor_history::{
 };
 use crate::ui::floating_window::{FloatingWindowSpec, TITLE_BAR_HEIGHT, spawn_floating_window};
 use crate::ui::layout_persistence::{AutoSaveState, PendingLayoutApply};
-use crate::ui::strategy_editor_find::FindMatchSpans;
+use crate::ui::strategy_editor_find::FindMatchRects;
 use crate::ui::theme::Theme;
 use bevy::prelude::*;
 
@@ -1407,7 +1407,7 @@ use bevscode::prelude::*;
 use bevscode::types::GutterTextView;
 use bevy::ui::UiGlobalTransform;
 use bevy::window::PrimaryWindow;
-use bevy_instanced_text::DisplayLayout;
+use bevy_instanced_text::{DisplayLayout, TextUnderlays};
 use bevy_tree_sitter::arborium::lang_python;
 
 /// Strategy Editor の world-space root sprite に貼る marker。
@@ -1465,9 +1465,10 @@ pub fn spawn_bevscode_peer_on_strategy_editor_added(
                 root: root_entity,
                 region_key: id.region_key.clone(),
             },
-            // Slice 5 (#50): compute_find_match_spans_system は bevscode peer 側で動くように切替済み。
-            // spawn 時から FindMatchSpans を貼り、cosmic 側の重複は Slice 6 で撤去予定。
-            FindMatchSpans::default(),
+            // Slice A (#50): FindMatchSpans → FindMatchRects + TextUnderlays に移行。
+            // merge_find_overlay_rects_system が FindMatchRects を TextUnderlays に書き込む。
+            FindMatchRects::default(),
+            TextUnderlays::default(),
             StrategyEditorPendingSeed(fragment.source.clone()),
             Name::new("StrategyEditorNode(bevscode)"),
         ));
@@ -1765,45 +1766,35 @@ pub fn sync_strategy_fragment_to_bevscode_system(
     editors: Query<(Entity, &StrategyEditorNode, &TextBuffer<RopeBuffer>)>,
     mut writer: MessageWriter<SetTextRequested>,
 ) {
-    // NOTE (#50-followup): Iter3 N8 で suppress_echo gate を前置短絡したが、
-    // suppress_echo は undo/snapshot writeback 側で立つため writeback そのものを潰す bug
-    // (re-review High) を発生させた。元の per-editor `current == fragment.source` walk で
-    // dedup する形に戻す。O(N) コストは未対応 (tick ベース dedup は TODO)。
+    use std::collections::HashMap;
+
+    // region_key → (Entity, &TextBuffer) の逆引き map を一度構築し、
+    // fragment ループ内のエディタ探索を O(N) → O(1) に落とす。
+    // buffer.chars().collect() は一致した editor に対してのみ実行される。
+    let editor_map: HashMap<&str, (Entity, &TextBuffer<RopeBuffer>)> = editors
+        .iter()
+        .map(|(e, m, buf)| (m.region_key.as_str(), (e, buf)))
+        .collect();
+
     for (id, fragment) in fragments_q.iter() {
-        for (editor_entity, marker, buffer) in editors.iter() {
-            if marker.region_key != id.region_key {
-                continue;
-            }
-            // すでに bevscode 側が同じ内容なら send 不要（無駄な Changed を立てない）。
-            let current = buffer.chars().collect::<String>();
-            if current == fragment.source {
-                continue;
-            }
-            writer.write(SetTextRequested {
-                entity: editor_entity,
-                text: fragment.source.clone(),
-            });
-            // #67-followup / #72: この経路は File→Open / undo writeback で「既存 peer の rope を
-            // まるごと差し替える」content replace。bevscode には Zed の SyntaxMap::interpolate
-            // 相当（編集のたびに tree.edit で node 範囲を新 rope 長へシフト/縮約し
-            // `tree.end_byte() <= text.len()` を保つ段）が無い。よって rope を差し替えた直後・
-            // 再パース前のフレームで `produce_line_styles` が stale tree の古い byte 範囲で
-            // 新（または空）rope を slice して panic する（manual E2E FLOWS.md I20、ropey
-            // "byte index N, rope length 0"）。Zed の不変条件を我々側で回復するため、
-            // 再 seed と同フレームで stale な SyntaxTree を drop する（→ highlight は tree=None で
-            // plain fallback、slice しない）。
-            //
-            // SetLanguageRequested は同フレームには送らない。同フレームで送ると bevscode が rope を
-            // 一時クリアし Changed<TextBuffer> が 0 lines で立って
-            // sync_bevscode_to_strategy_fragment_system が fragment.source = "" に上書きする
-            // oscillation が起きる（original=None 起動 = 空 TextBuffer で特に顕在化、issue #72）。
-            // 代わりに PendingLanguageReRequest を挿入し、flush_pending_language_request_system が
-            // 翌フレームに SetLanguageRequested を送出する。
-            commands
-                .entity(editor_entity)
-                .remove::<bevy_tree_sitter::SyntaxTree>()
-                .insert(PendingLanguageReRequest);
+        let Some(&(editor_entity, buf)) = editor_map.get(id.region_key.as_str()) else {
+            continue;
+        };
+        // すでに bevscode 側が同じ内容なら send 不要（無駄な Changed を立てない）。
+        let current = buf.chars().collect::<String>();
+        if current == fragment.source {
+            continue;
         }
+        writer.write(SetTextRequested {
+            entity: editor_entity,
+            text: fragment.source.clone(),
+        });
+        // #67-followup / #72: SetLanguageRequested は同フレームに送らない（oscillation issue #72）。
+        // PendingLanguageReRequest を挿入し、flush_pending_language_request_system が翌フレームに送出する。
+        commands
+            .entity(editor_entity)
+            .remove::<bevy_tree_sitter::SyntaxTree>()
+            .insert(PendingLanguageReRequest);
     }
 }
 

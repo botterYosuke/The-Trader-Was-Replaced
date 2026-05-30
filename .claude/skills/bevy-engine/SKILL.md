@@ -102,7 +102,11 @@ description: |
     "マルチカーソル", "multi-cursor", "folding", "コード折りたたみ", "括弧マッチ",
     "bracket match", "スクロールバー", "検索置換", "find/replace", "LSP UI", "補完",
     "completion", "hover", "diagnostics", "tree-sitter", "rope", "undo/redo of editor",
-    "コードエディタ", "code editor", "テキストエディタ widget" と言われたとき。
+    "コードエディタ", "code editor", "テキストエディタ widget",
+    "TextUnderlays", "TextOverlays", "RectOverlay", "overlay producer", "find highlight",
+    "selection highlight", "merge_overlay_components", "RenderingSet", "LayoutProduceSet",
+    "TextViewRenderSet", "DisplayLayout", "buffer_to_display", "x_at_byte",
+    "find match overlay", "find マッチ highlight", "検索 highlight", "ハイライト overlay" と言われたとき。
     本スキルには **bevscode**（Bevy ネイティブのコードエディタ・コンポーネントライブラリ）の
     完全ソースミラーが `.claude/skills/bevy-engine/bevscode/` に同梱されており、エディタ系 UI の
     先行事例として引く（**Bevy 0.18 なのでコピペ不可・cosmic_edit を置き換える依存ではない**点に注意。
@@ -180,6 +184,44 @@ description: |
 > `[dependencies]` の features とマージし test ビルドのみ有効化。本番バイナリには影響しない）。
 > **症状**: M20 パターンで `add_mode_visibility_systems が登録すべき可視性 system が schedule に存在しない:
 > ["apply_execution_mode_visibility_system", ...]` が出たら、まずこのトラップを疑う。
+>
+> ### ⚠️ トラップ 5: `bevy_instanced_text::TextUnderlays` に外部 producer から rects を注入する方法
+> bevscode の `merge_overlay_components` は **毎フレーム（change-gated）TextUnderlays を clear + rebuild** する。
+> 外部の producer（例: find highlight overlay）が `TextUnderlays` に rects を直接 extend すると、
+> 次フレームで merge が動いたときに外部 rects が消え、merge が動かなかったフレームは二重追加になる。
+>
+> **正解パターン: z-sentinel + retain + extend**
+> - 外部 producer は専用の z 値（例: `z: -2`）を sentinel として選ぶ（bevscode TextUnderlays での z=-1=選択背景、z=0=カーソル等）
+> - 外部 producer の merge system は **毎 PostUpdate フレーム** 以下を実行する:
+>   ```rust
+>   underlays.0.retain(|r| r.z != -2);   // 前フレーム分を除去
+>   underlays.0.extend_from_slice(&find_rects.0); // 今フレーム分を追加
+>   ```
+> - これにより merge が動いた直後もそうでないフレームも常に「bevscode rects + 外部 rects」の正しい状態になる
+> - スケジューリング: `.after(bevscode::plugin::RenderingSet).before(bevy_instanced_text::TextViewRenderSet)`
+> - `RenderingSet` は bevscode の `CodeEditorPlugin` が `PostUpdate` に登録:
+>   `after(LayoutProduceSet).before(TextViewRenderSet)`
+> - 実例: `src/ui/strategy_editor_find.rs` の `merge_find_overlay_rects_system`（issue #50 Slice A）
+>
+> **外部 producer が計算に `DisplayLayout` を必要とする場合** (match → pixel 座標変換等):
+> - system を `bevscode::plugin::RenderingSet` の **中** (`in_set`) で実行し、`DisplayLayout` が確定した後に実行させる
+> - `DisplayLayout` の有用メソッド:
+>   - `buffer_to_display(buffer_row, byte_in_line) -> Option<(display_row, byte_in_display_row)>`
+>   - `x_at_byte(display_row, byte) -> Option<f32>` — source byte の左端 x（行ローカル pixel）
+>   - `x_after_source_range(display_row, start, end) -> Option<f32>` — source byte range の右端 x
+>
+> ### ⚠️ トラップ 6: UiPlugin に新 system を追加すると e2e test app が resource not found でパニックする
+> `UiPlugin` に `Res<MyResource>` を読む system を追加すると、その Plugin を使う e2e test app でも
+> `MyResource` が初期化されていないとパニックする（Bevy 0.18: missing resource → system panic）。
+> test app は `App::new()` + 手動 plugin 追加で構築されており、Plugin が登録するリソースが自動 init
+> されないケースがある。
+>
+> **症状**: 既存の e2e テストが突然 `Resource does not exist` で落ちる（test 側は触っていないのに）。
+> **対処**: 落ちている system が要求するリソースを test app に `app.init_resource::<T>()` で追加する。
+> 影響範囲の探し方: `cargo test --test e2e_replay <failing_test>` でエラーを見て、
+> どの system の何の resource かを確認し、対象 flow ファイルに init_resource を追記する。
+> 実例: issue #50 Slice A で `update_find_overlay_rects_system`（`Res<Theme>` + `Res<FindReplaceState>`）と
+> `apply_pending_layout_system`（`ResMut<InputFocus>`）が i5/i17/i18/i19 で資源不足によりパニックした。
 >
 > ### ⚠️ トラップ 2: `cargo build --lib` green ≠ `cargo test --lib` green ≠ test 全 pass
 > 移行検証は **3 段別物**。①`cargo build --lib` は `#[cfg(test)]` を compile しない（test 内の旧 API は素通り）。

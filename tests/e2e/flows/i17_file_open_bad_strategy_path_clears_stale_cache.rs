@@ -119,7 +119,8 @@ fn i17_file_open_bad_strategy_path_clears_stale_cache() {
     .insert_resource(InstrumentTradingDataMap::default())
     .init_resource::<backcast::ui::components::ChartSizeMap>()
     .init_resource::<bevy::input_focus::InputFocus>()
-    .init_resource::<backcast::ui::strategy_editor_find::FindReplaceState>();
+    .init_resource::<backcast::ui::strategy_editor_find::FindReplaceState>()
+    .init_resource::<backcast::ui::theme::Theme>();
 
     app.add_message::<LayoutSaveRequested>()
         .add_message::<LayoutSaveAsRequested>()

@@ -123,7 +123,7 @@ release gate 列の ID（`I*` / `J*` / `K*` / `L*` 群、保留中の `A5` / `C5
 | OS ファイルダイアログ | CI で OS native dialog を安定操作しにくい | dialog 自体はバイパスし、選択済み path を `PendingFileDialog::inject_resolved` seam で注入。別途 smoke で起動確認 | I5 ✅ / I6 ✅ / I7 ✅ / I8 ✅ / I14 ✅ / L4 stub |
 | レイアウト永続化 | ファイル I/O と debounce が主対象 | temp dir fixture で `Save/Load` を integration 実行し JSON と復元 entity を assert | I7 ✅ / I12 ✅ / M2 ✅（drag autosave） |
 | bevscode editor 入力 | bevscode `CodeEditor` の focus/keyboard 処理が主対象（cosmic_edit は #50 で撤去） | `kind:ui`。focused entity と keyboard/text input を注入。必要なら最小実ウィンドウ smoke を追加 | J1-J4 ✅ |
-| find / replace | match span 計算と置換が主対象 | `kind:ui`。FindReplaceState と FindActionRequested を駆動 | J5/J6 ✅ |
+| find / replace | match span 計算と置換が主対象。#50 Slice A で find マッチ highlight が `bevy_instanced_text::TextUnderlays` の `RectOverlay`（z=-2 sentinel）として GPU インスタンシング描画に移行（`FindMatchSpans` を削除）。merge logic の unit test は `strategy_editor_find::tests::merge_find_overlay_rects_*` | `kind:ui`。FindReplaceState と FindActionRequested を駆動。overlay 描画は `kind:render`（GPU 必要）→ 手動目視確認：Find 開いて "def" 検索→黄色 highlight・現在マッチは濃黄・Replace→highlight 更新 | J5/J6 ✅ |
 | Startup パネル入力検証 | Run command を送らない UI gating が仕様 | `kind:ui`。field editor state、error label、transport channel 未送信/送信を assert | J7/J8/J16 ✅ |
 | `instruments_ref` fail-closed | file-watch / parser / writeback の連携 | temp sidecar/ref file を使う integration。破損・空・正常の fixture を固定 | J9/J10/J14/J15 ✅ |
 | 銘柄ピッカー | searchbox、debounce、候補表示、readonly が純 UI | `kind:ui`。time advance と text/entity assert。取得 seam は C1-C4/C6 と組み合わせる | J11/J12/J13 ✅ |
