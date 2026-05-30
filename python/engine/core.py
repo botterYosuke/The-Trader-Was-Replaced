@@ -324,6 +324,10 @@ class DataEngine:
         with self._lock:
             self._is_running = False
             self._replay_state = "IDLE"
+            # Clear providers so the next load_replay_data() creates fresh ones
+            # instead of hitting the early-return guard at line 167 (#70).
+            self._replay_provider = None
+            self._replay_providers = {}
             self._run_event.set()
             return True, None
 

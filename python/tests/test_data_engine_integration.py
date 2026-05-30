@@ -447,3 +447,90 @@ def test_step_replay_kline_update_has_ohlc(tmp_path):
     assert kline.high >= kline.low
     assert kline.high >= kline.close
     assert kline.low <= kline.close
+
+
+# ---------------------------------------------------------------------------
+# P13 — force_stop_replay + load_replay_data + step_replay の連続呼び出し
+# ---------------------------------------------------------------------------
+
+def test_p13_load_and_step_after_full_run_resets_timestamp(tmp_path):
+    """P13 (RED) 回帰ガード: フルラン完了後に force_stop_replay() + load_replay_data() +
+    step_replay() を呼ぶと timestamp が先頭バーから進むこと。
+
+    バグ: force_stop_replay() が _replay_provider をクリアしないため 2 回目の
+    load_replay_data() が core.py:167 の早期リターンを踏み、exhausted providers のまま
+    step_replay() が新バーを取れず timestamp が末尾バーに固まる。fix は #70。
+
+    RED = 回帰ガード・fix は #70 後に green
+    """
+    from unittest.mock import MagicMock, patch
+
+    BAR1 = (1000.0, 100.0, 110.0, 90.0, 105.0, 1000.0)   # ts=1000s
+    BAR2 = (2000.0, 105.0, 115.0, 95.0, 110.0, 1200.0)   # ts=2000s
+    BAR3 = (3000.0, 110.0, 120.0, 100.0, 115.0, 1500.0)  # ts=3000s
+
+    BAR1_MS = int(BAR1[0] * 1000)
+    BAR2_MS = int(BAR2[0] * 1000)
+    BAR3_MS = int(BAR3[0] * 1000)
+
+    def make_provider(bars):
+        prov = MagicMock()
+        idx = [0]
+
+        def pop():
+            if idx[0] < len(bars):
+                t = bars[idx[0]]; idx[0] += 1; return t
+            return None
+
+        prov.get_next_tick.side_effect = pop
+        prov.pop_next_tick.side_effect = pop
+        prov.peek_next_tick.side_effect = lambda: bars[idx[0]] if idx[0] < len(bars) else None
+        prov.is_exhausted.side_effect = lambda: idx[0] >= len(bars)
+        return prov
+
+    engine = DataEngine(nautilus_catalog_path=str(tmp_path / "cat"))
+
+    # [First load] bar1 が prime で消費される → _replay_provider に provider1 がセット
+    p1 = make_provider([BAR1, BAR2, BAR3])
+    with patch("engine.core.NautilusBarsReplayProvider", return_value=p1):
+        ok, err = engine.load_replay_data(
+            ["1301.TSE"], start_date="2025-01-01", end_date="2025-01-03", granularity="Daily"
+        )
+    assert ok, f"first load failed: {err}"
+    assert engine.get_current_state().timestamp_ms == BAR1_MS
+
+    # [Exhaust] bar2, bar3 を step で消費
+    engine.step_replay()  # bar2
+    engine.step_replay()  # bar3 → exhausted
+    assert engine.is_exhausted
+    assert engine.get_current_state().timestamp_ms == BAR3_MS
+
+    # [ForceStop] LoadAndStep が最初に呼ぶ操作
+    ok, _ = engine.force_stop_replay()
+    assert ok
+    assert engine.replay_state == "IDLE"
+
+    # [Second load] LoadAndStep が次に呼ぶ操作 — 新しい provider で先頭から読み直すはず
+    p2 = make_provider([BAR1, BAR2, BAR3])
+    with patch("engine.core.NautilusBarsReplayProvider", return_value=p2):
+        ok, err = engine.load_replay_data(
+            ["1301.TSE"], start_date="2025-01-01", end_date="2025-01-03", granularity="Daily"
+        )
+    assert ok, f"second load failed: {err}"
+    assert engine.replay_state == "LOADED"
+
+    # [Assert] 再 load 後は先頭バーの ts にリセットされているはず
+    reload_ts = engine.get_current_state().timestamp_ms
+    assert reload_ts == BAR1_MS, (
+        f"reload should reset timestamp to first bar ({BAR1_MS} ms), "
+        f"got {reload_ts} ms — bug: _replay_provider not cleared in force_stop_replay() (#70)"
+    )
+
+    # [Step] LoadAndStep が最後に呼ぶ操作
+    ok, _ = engine.step_replay()
+    assert ok
+
+    step_ts = engine.get_current_state().timestamp_ms
+    assert step_ts == BAR2_MS, (
+        f"step should advance to bar2 ({BAR2_MS} ms), got {step_ts} ms"
+    )
