@@ -334,7 +334,7 @@ def test_place_order_non_runtime_exception_returns_inproc_error():
     def _raise_timeout(req, ctx):
         raise concurrent.futures.TimeoutError("inproc timeout")
 
-    srv._srv.PlaceOrder = _raise_timeout
+    srv._svc._srv.PlaceOrder = _raise_timeout
 
     # 現状: Timeout 例外が except RuntimeError をすり抜けて送出される（RED）。
     # 修正後: dict が返り error_code == 'INPROC_ERROR' になる（GREEN）。
@@ -373,7 +373,7 @@ def test_close_invokes_underlying_teardown():
     def _spy_teardown():
         calls.append("teardown")
 
-    srv._srv._teardown_live_components = _spy_teardown
+    srv._svc._srv._teardown_live_components = _spy_teardown
 
     # 現状: close() は no-op shell なので teardown を呼ばない（RED）。
     # 修正後: close() が self._srv._teardown_live_components() を呼ぶ（GREEN）。
@@ -398,7 +398,7 @@ def test_venue_logout_non_runtime_exception_returns_inproc_error():
     def _raise(req, ctx):
         raise concurrent.futures.TimeoutError("timeout")
 
-    srv._srv.VenueLogout = _raise
+    srv._svc._srv.VenueLogout = _raise
     result = srv.venue_logout()
     assert isinstance(result, dict)
     assert result["success"] is False
@@ -415,7 +415,7 @@ def test_list_instruments_non_runtime_exception_returns_inproc_error():
     def _raise(req, ctx):
         raise concurrent.futures.TimeoutError("timeout")
 
-    srv._srv.ListInstruments = _raise
+    srv._svc._srv.ListInstruments = _raise
     result = srv.list_instruments("local")
     assert isinstance(result, dict)
     assert result["success"] is False
@@ -434,7 +434,7 @@ def test_get_orders_non_runtime_exception_returns_inproc_error():
     def _raise(req, ctx):
         raise concurrent.futures.TimeoutError("timeout")
 
-    srv._srv.GetOrders = _raise
+    srv._svc._srv.GetOrders = _raise
     result = srv.get_orders("MOCK")
     assert isinstance(result, dict)
     assert result["success"] is False
@@ -452,7 +452,7 @@ def test_start_engine_non_runtime_exception_returns_inproc_error():
     def _raise(req, ctx):
         raise concurrent.futures.TimeoutError("timeout")
 
-    srv._srv.StartEngine = _raise
+    srv._svc._srv.StartEngine = _raise
     result = srv.start_engine({"instrument_id": "7203.TSE", "strategy_file": "strat.py"})
     assert isinstance(result, dict)
     assert result["success"] is False
@@ -469,7 +469,7 @@ def test_get_portfolio_non_runtime_exception_returns_inproc_error():
     def _raise(req, ctx):
         raise concurrent.futures.TimeoutError("timeout")
 
-    srv._srv.GetPortfolio = _raise
+    srv._svc._srv.GetPortfolio = _raise
     result = srv.get_portfolio()
     assert isinstance(result, dict)
     assert result["success"] is False
@@ -486,7 +486,7 @@ def test_venue_logout_abort_still_returns_inproc_abort():
     def _abort(req, ctx):
         raise RuntimeError("abort!")
 
-    srv._srv.VenueLogout = _abort
+    srv._svc._srv.VenueLogout = _abort
     result = srv.venue_logout()
     assert isinstance(result, dict)
     assert result["success"] is False
