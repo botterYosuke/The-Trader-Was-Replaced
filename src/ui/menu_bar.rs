@@ -1072,7 +1072,8 @@ pub fn handle_strategy_run_system(
         progress.started_at_elapsed = Some(real_time.elapsed());
         progress.baseline_timestamp_ms = Some(trading_data.timestamp_ms);
         progress.start_engine_accepted = false;
-        current_run.state = RunState::Running;
+        // LoadAndStep は RunComplete を送らないため Running をセットすると永続ロックする。
+        // 進捗モーダルが既に visual feedback を提供するため RunState の変更は不要。
     }
 }
 

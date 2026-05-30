@@ -655,7 +655,14 @@ pub fn footer_pause_resume_system(
                             }
                         }
                         _ => {
-                            if matches!(current_run.state, RunState::Running) {
+                            // Trust backend LOADED state: if backend is explicitly LOADED,
+                            // current_run.state may be stale (e.g. after LoadAndStep where
+                            // RunComplete is never sent — issue #71).
+                            let backend_is_loaded =
+                                data.replay_state.as_deref() == Some("LOADED");
+                            if matches!(current_run.state, RunState::Running)
+                                && !backend_is_loaded
+                            {
                                 warn!("Run blocked: already running");
                                 continue;
                             }
@@ -1181,6 +1188,32 @@ mod tests {
             Ok(TransportCommand::ForceStop) => {}
             other => panic!("expected ForceStop in Replay smoke, got {:?}", other),
         }
+    }
+
+    /// A18 (kind:unit): IDLE → ▶| (LoadAndStep) 後に ▶ がブロックされないこと。
+    ///
+    /// `StepFromIdleRequested` が `current_run.state = Running` をセットするが
+    /// `LoadAndStep` は `RunComplete` を送らない → ▶ が永続ロックされる回帰ガード (#71)。
+    /// LOADED 状態かつ `current_run.state == Running` で ▶ を押したとき、guard を通過して
+    /// "No strategy loaded" の Failed に遷移すること（guard が blocked なら Running のまま）。
+    #[test]
+    fn a18_run_not_blocked_when_backend_loaded_despite_running_state() {
+        let (mut app, _rx) = make_input_app();
+        set_mode(&mut app, ExecutionMode::Replay);
+        // Simulate post-StepFromIdleRequested: current_run.state=Running but backend=LOADED
+        app.world_mut().resource_mut::<CurrentRun>().state = RunState::Running;
+        app.world_mut()
+            .resource_mut::<TradingSession>()
+            .replay_state = Some("LOADED".into());
+        // cache_path=None → "No strategy loaded" Failed (proof guard passed)
+        let _ = spawn_pressed_pause_resume(&mut app);
+        app.update();
+        let state = app.world().resource::<CurrentRun>().state.clone();
+        assert!(
+            matches!(state, RunState::Failed { .. }),
+            "▶ should pass the guard and fail with 'No strategy loaded', got: {:?}",
+            state
+        );
     }
 
     fn make_visibility_app() -> App {
