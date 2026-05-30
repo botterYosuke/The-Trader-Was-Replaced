@@ -680,9 +680,13 @@ impl Plugin for UiPlugin {
                 (
                     crate::ui::strategy_editor::sync_bevscode_to_strategy_fragment_system,
                     crate::ui::strategy_editor::sync_strategy_fragment_to_bevscode_system,
-                    crate::ui::strategy_editor::flush_pending_language_request_system.after(
-                        crate::ui::strategy_editor::sync_bevscode_to_strategy_fragment_system,
-                    ),
+                    crate::ui::strategy_editor::flush_pending_language_request_system
+                        .after(
+                            crate::ui::strategy_editor::sync_bevscode_to_strategy_fragment_system,
+                        )
+                        .after(
+                            crate::ui::strategy_editor::sync_strategy_fragment_to_bevscode_system,
+                        ),
                 ),
             )
             // - project_strategy_editor_node_system: world rect → screen rect 投影で Node を毎フレーム更新
