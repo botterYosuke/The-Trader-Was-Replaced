@@ -10,8 +10,8 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     }
 
     prost_build::compile_protos(
-        &["python/proto/engine.proto"],
-        &["python/proto"],
+        &["proto/engine.proto"],
+        &["proto"],
     )?;
 
     Ok(())
