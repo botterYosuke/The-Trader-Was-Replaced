@@ -1537,23 +1537,22 @@ pub fn apply_pending_layout_system(
                 if win_layout.z > wm.max_z {
                     wm.max_z = win_layout.z;
                 }
-                // LayoutRestore 経路（File→Open で既存 root が生存中）:
+                // LayoutRestore 経路（File→Open で既存 StrategyEditor root が生存中）:
                 // handle_strategy_file_load_system が LayoutRestore では root を despawn しないため、
                 // pending_fragments の新コンテンツをここで in-place 書き込む。
                 // sync_strategy_fragment_to_bevscode_system が Changed<StrategyFragment> を検知して
                 // bevscode peer に新コンテンツを伝播する（issue #69 followup）。
-                if win_layout.kind == PanelKind::StrategyEditor {
-                    if let (Some(editor_id), Some(mut fragment)) = (id, maybe_fragment) {
-                        if let Some(new_source) =
-                            pending_fragments.by_region_key.remove(&editor_id.region_key)
-                        {
-                            info!(
-                                "apply_pending_layout: in-place fragment update for {:?}",
-                                editor_id.region_key
-                            );
-                            fragment.source = new_source;
-                            fragment.dirty = false;
-                        }
+                // StrategyEditorId を持たないパネルでは id=None → if-let が落ちる（outer kind-check 不要）。
+                if let (Some(editor_id), Some(mut fragment)) = (id, maybe_fragment) {
+                    if let Some(new_source) =
+                        pending_fragments.by_region_key.remove(&editor_id.region_key)
+                    {
+                        info!(
+                            "apply_pending_layout: in-place fragment update for {:?}",
+                            editor_id.region_key
+                        );
+                        fragment.source = new_source;
+                        fragment.dirty = false;
                     }
                 }
             }
