@@ -12,7 +12,9 @@ Public API:
 """
 from __future__ import annotations
 
+import json
 import logging
+import math
 from typing import Any
 
 log = logging.getLogger(__name__)
@@ -180,46 +182,21 @@ class NautilusBacktestRunner:
                         equity_curve.append(bal.as_double())
 
             # --- Compute summary statistics -----------------------------------
-            fills_count = len(engine.kernel.cache.orders_closed())
+            from nautilus_trader.model.enums import OrderStatus as _OrderStatus
+            from engine.strategy_runtime.summary import equity_curve_stats
 
+            fills_count = sum(
+                1 for o in engine.kernel.cache.orders_closed()
+                if o.status in (_OrderStatus.FILLED, _OrderStatus.PARTIALLY_FILLED)
+            )
+            stats = equity_curve_stats(equity_curve)
             n = len(equity_curve)
-            max_drawdown = 0.0
-            sharpe = 0.0
-            sortino = 0.0
-            if n >= 2:
-                peak = equity_curve[0]
-                for eq in equity_curve:
-                    if eq > peak:
-                        peak = eq
-                    dd = peak - eq
-                    if dd > max_drawdown:
-                        max_drawdown = dd
-
-                returns = [
-                    (equity_curve[i] - equity_curve[i - 1]) / equity_curve[i - 1]
-                    for i in range(1, n)
-                    if equity_curve[i - 1] != 0.0
-                ]
-                if returns:
-                    import math
-                    mean_r = sum(returns) / len(returns)
-                    variance = sum((r - mean_r) ** 2 for r in returns) / len(returns)
-                    std_r = math.sqrt(variance)
-                    sharpe = (mean_r / std_r) * math.sqrt(252) if std_r != 0.0 else 0.0
-
-                    neg_returns = [r for r in returns if r < 0.0]
-                    if neg_returns:
-                        neg_var = sum(r ** 2 for r in neg_returns) / len(neg_returns)
-                        downside_std = math.sqrt(neg_var)
-                        sortino = (mean_r / downside_std) * math.sqrt(252) if downside_std != 0.0 else 0.0
-
-            import json
             summary = json.dumps({
                 "fills_count": fills_count,
                 "equity_points": n,
-                "max_drawdown": max_drawdown,
-                "sharpe": sharpe,
-                "sortino": sortino,
+                "max_drawdown": stats["max_drawdown"],
+                "sharpe": stats["sharpe"],
+                "sortino": stats["sortino"],
             })
             log.info("[NautilusBacktestRunner] complete: bars=%d summary=%s", len(items), summary)
             self._rust_sink.push_run_complete("", summary)
