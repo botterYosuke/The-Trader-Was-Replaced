@@ -20,42 +20,24 @@ use crate::trading::{
     LiveRuns, StrategyLogs, TransportCommand, TransportCommandSender, is_terminal_run_status,
     short_id,
 };
+use crate::ui::theme::Theme;
 
 const MAX_PANEL_ROWS: usize = 3;
 /// Strategy log lines tailed in the panel (the full 100 live in `StrategyLogs`).
 const MAX_LOG_ROWS: usize = 6;
-
-// ── 配色 ───────────────────────────────────────────────────────────────────
-const COLOR_PANEL_BG: Color = Color::srgba(0.07, 0.07, 0.12, 0.96);
-const COLOR_HEADER: Color = Color::srgb(1.0, 0.55, 0.0);
-const COLOR_VALUE: Color = Color::srgb(0.88, 0.91, 0.96);
-const COLOR_RUNNING: Color = Color::srgb(0.0, 1.0, 0.50);
-const COLOR_PAUSED: Color = Color::srgb(1.0, 0.78, 0.0);
-const COLOR_ERROR: Color = Color::srgb(1.0, 0.20, 0.40);
-const COLOR_STOPPED: Color = Color::srgb(0.55, 0.55, 0.55);
-// Initial spawn backgrounds only; interactive/disabled color is owned by
-// button_interaction_system. #46 Slice A.
-const COLOR_BTN_IDLE: Color = Color::srgba(0.18, 0.20, 0.28, 1.0);
-const COLOR_BTN_STOP: Color = Color::srgba(0.30, 0.16, 0.20, 1.0);
-const COLOR_PNL_POS: Color = Color::srgb(0.0, 1.0, 0.50);
-const COLOR_PNL_NEG: Color = Color::srgb(1.0, 0.20, 0.40);
-const COLOR_LOG_HEADER: Color = Color::srgb(0.55, 0.60, 0.70);
-const COLOR_LOG_INFO: Color = Color::srgb(0.72, 0.76, 0.82);
-const COLOR_LOG_WARN: Color = Color::srgb(1.0, 0.78, 0.0);
-const COLOR_LOG_ERROR: Color = Color::srgb(1.0, 0.30, 0.40);
 
 // ===========================================================================
 // Pure helpers (testable)
 // ===========================================================================
 
 /// 状態文字列に応じた表示色。
-pub fn status_color(status: &str) -> Color {
+pub fn status_color(status: &str, theme: &Theme) -> Color {
     match status {
-        "RUNNING" => COLOR_RUNNING,
-        "PAUSED" => COLOR_PAUSED,
-        "ERROR" => COLOR_ERROR,
-        "STOPPED" | "STOPPING" => COLOR_STOPPED,
-        _ => COLOR_VALUE,
+        "RUNNING" => theme.status.success,
+        "PAUSED" => theme.status.warning,
+        "ERROR" => theme.status.error,
+        "STOPPED" | "STOPPING" => theme.colors.text_muted,
+        _ => theme.colors.text,
     }
 }
 
@@ -100,12 +82,12 @@ pub fn format_pnl(realized_pnl: f64, unrealized_pnl: f64) -> String {
 }
 
 /// Color for a combined PnL value: green if > 0, red if < 0, neutral at 0.
-pub fn pnl_color(realized_pnl: f64, unrealized_pnl: f64) -> Color {
+pub fn pnl_color(realized_pnl: f64, unrealized_pnl: f64, theme: &Theme) -> Color {
     let yen = (realized_pnl + unrealized_pnl).round() as i64;
     match yen.cmp(&0) {
-        std::cmp::Ordering::Greater => COLOR_PNL_POS,
-        std::cmp::Ordering::Less => COLOR_PNL_NEG,
-        std::cmp::Ordering::Equal => COLOR_VALUE,
+        std::cmp::Ordering::Greater => theme.status.success,
+        std::cmp::Ordering::Less => theme.status.error,
+        std::cmp::Ordering::Equal => theme.colors.text,
     }
 }
 
@@ -115,11 +97,11 @@ pub fn format_counts(order_count: i64, fill_count: i64) -> String {
 }
 
 /// Display color for a strategy log line by `level` (case-insensitive).
-pub fn log_level_color(level: &str) -> Color {
+pub fn log_level_color(level: &str, theme: &Theme) -> Color {
     match level.to_ascii_uppercase().as_str() {
-        "ERROR" | "CRITICAL" => COLOR_LOG_ERROR,
-        "WARN" | "WARNING" => COLOR_LOG_WARN,
-        _ => COLOR_LOG_INFO,
+        "ERROR" | "CRITICAL" => theme.status.error,
+        "WARN" | "WARNING" => theme.status.warning,
+        _ => theme.colors.text_muted,
     }
 }
 
@@ -213,16 +195,19 @@ fn spawn_control_button(
     row: usize,
     action: LiveRunControlAction,
     label: &str,
+    btn_idle: Color,
+    btn_stop: Color,
+    text_color: Color,
 ) {
     // Stop is destructive (Error tint); other actions use the neutral Filled
     // style. Disabled state is driven by live_run_control_visual_system via a
     // ButtonDisabled toggle. #46 Slice A.
     let (bg, style) = match action {
         LiveRunControlAction::Stop => (
-            COLOR_BTN_STOP,
+            btn_stop,
             crate::ui::component::ButtonStyle::Tinted(crate::ui::component::TintColor::Error),
         ),
-        _ => (COLOR_BTN_IDLE, crate::ui::component::ButtonStyle::Filled),
+        _ => (btn_idle, crate::ui::component::ButtonStyle::Filled),
     };
     parent
         .spawn((
@@ -247,12 +232,12 @@ fn spawn_control_button(
                     font_size: 10.0,
                     ..default()
                 },
-                TextColor(COLOR_VALUE),
+                TextColor(text_color),
             ));
         });
 }
 
-fn spawn_cell(parent: &mut ChildBuilder, row: usize, cell: LiveRunCell, width: f32) {
+fn spawn_cell(parent: &mut ChildBuilder, row: usize, cell: LiveRunCell, width: f32, text_color: Color) {
     parent.spawn((
         Node {
             width: Val::Px(width),
@@ -263,13 +248,20 @@ fn spawn_cell(parent: &mut ChildBuilder, row: usize, cell: LiveRunCell, width: f
             font_size: 11.0,
             ..default()
         },
-        TextColor(COLOR_VALUE),
+        TextColor(text_color),
         LiveRunCellTag { row, cell },
     ));
 }
 
 /// Live Run Panel 本体を spawn する (Startup)。初期 Display は None。
-pub fn spawn_live_run_panel(mut commands: Commands) {
+pub fn spawn_live_run_panel(mut commands: Commands, theme: Res<Theme>) {
+    let panel_bg = theme.colors.surface_background.with_alpha(0.96);
+    let header_color = theme.status.warning;
+    let text_color = theme.colors.text;
+    let log_header_color = theme.colors.text_muted;
+    let log_info_color = theme.colors.text_muted;
+    let btn_idle = theme.colors.element_background;
+    let btn_stop = theme.status.error_background;
     commands
         .spawn((
             Node {
@@ -286,7 +278,7 @@ pub fn spawn_live_run_panel(mut commands: Commands) {
                 row_gap: Val::Px(4.0),
                 ..default()
             },
-            BackgroundColor(COLOR_PANEL_BG),
+            BackgroundColor(panel_bg),
             GlobalZIndex(62),
             LiveRunPanelRoot,
             Name::new("LiveRunPanel"),
@@ -302,7 +294,7 @@ pub fn spawn_live_run_panel(mut commands: Commands) {
                     font_size: 13.0,
                     ..default()
                 },
-                TextColor(COLOR_HEADER),
+                TextColor(header_color),
             ));
             for row in 0..MAX_PANEL_ROWS {
                 p.spawn((
@@ -323,9 +315,9 @@ pub fn spawn_live_run_panel(mut commands: Commands) {
                         ..default()
                     },))
                         .with_children(|line| {
-                            spawn_cell(line, row, LiveRunCell::Status, 70.0);
-                            spawn_cell(line, row, LiveRunCell::Ids, 130.0);
-                            spawn_cell(line, row, LiveRunCell::Started, 70.0);
+                            spawn_cell(line, row, LiveRunCell::Status, 70.0, text_color);
+                            spawn_cell(line, row, LiveRunCell::Ids, 130.0, text_color);
+                            spawn_cell(line, row, LiveRunCell::Started, 70.0, text_color);
                         });
                     // 2 行目: telemetry (§2.8 / §2.9) — PnL (符号で色分け) / order·fill 数
                     r.spawn((Node {
@@ -335,8 +327,8 @@ pub fn spawn_live_run_panel(mut commands: Commands) {
                         ..default()
                     },))
                         .with_children(|line| {
-                            spawn_cell(line, row, LiveRunCell::Pnl, 150.0);
-                            spawn_cell(line, row, LiveRunCell::Counts, 120.0);
+                            spawn_cell(line, row, LiveRunCell::Pnl, 150.0, text_color);
+                            spawn_cell(line, row, LiveRunCell::Counts, 120.0, text_color);
                         });
                     // 3 行目: 制御ボタン
                     r.spawn((Node {
@@ -345,9 +337,9 @@ pub fn spawn_live_run_panel(mut commands: Commands) {
                         ..default()
                     },))
                         .with_children(|btns| {
-                            spawn_control_button(btns, row, LiveRunControlAction::Pause, "Pause");
-                            spawn_control_button(btns, row, LiveRunControlAction::Resume, "Resume");
-                            spawn_control_button(btns, row, LiveRunControlAction::Stop, "Stop");
+                            spawn_control_button(btns, row, LiveRunControlAction::Pause, "Pause", btn_idle, btn_stop, text_color);
+                            spawn_control_button(btns, row, LiveRunControlAction::Resume, "Resume", btn_idle, btn_stop, text_color);
+                            spawn_control_button(btns, row, LiveRunControlAction::Stop, "Stop", btn_idle, btn_stop, text_color);
                         });
                 });
             }
@@ -362,7 +354,7 @@ pub fn spawn_live_run_panel(mut commands: Commands) {
                     font_size: 11.0,
                     ..default()
                 },
-                TextColor(COLOR_LOG_HEADER),
+                TextColor(log_header_color),
             ));
             for index in 0..MAX_LOG_ROWS {
                 p.spawn((
@@ -375,7 +367,7 @@ pub fn spawn_live_run_panel(mut commands: Commands) {
                         font_size: 10.0,
                         ..default()
                     },
-                    TextColor(COLOR_LOG_INFO),
+                    TextColor(log_info_color),
                     StrategyLogLineTag { index },
                 ));
             }
@@ -429,6 +421,7 @@ pub fn live_run_row_visibility_system(
 /// 各セルのテキスト/色を差分反映する。
 pub fn live_run_panel_sync_system(
     runs: Res<LiveRuns>,
+    theme: Res<Theme>,
     mut cells: Query<(&LiveRunCellTag, &mut Text, &mut TextColor)>,
 ) {
     if !runs.is_changed() {
@@ -442,21 +435,21 @@ pub fn live_run_panel_sync_system(
             continue;
         };
         let (new_text, new_color) = match tag.cell {
-            LiveRunCell::Status => (run.status.clone(), status_color(&run.status)),
+            LiveRunCell::Status => (run.status.clone(), status_color(&run.status, &theme)),
             LiveRunCell::Ids => (
                 format!(
                     "{} · {}",
                     short_id(&run.strategy_id, 8),
                     short_id(&run.run_id, 6)
                 ),
-                COLOR_VALUE,
+                theme.colors.text,
             ),
-            LiveRunCell::Started => (format_hms(run.started_ts_ms), COLOR_VALUE),
+            LiveRunCell::Started => (format_hms(run.started_ts_ms), theme.colors.text),
             LiveRunCell::Pnl => (
                 format!("PnL {}", format_pnl(run.realized_pnl, run.unrealized_pnl)),
-                pnl_color(run.realized_pnl, run.unrealized_pnl),
+                pnl_color(run.realized_pnl, run.unrealized_pnl, &theme),
             ),
-            LiveRunCell::Counts => (format_counts(run.order_count, run.fill_count), COLOR_VALUE),
+            LiveRunCell::Counts => (format_counts(run.order_count, run.fill_count), theme.colors.text),
         };
         if text.0 != new_text {
             text.0 = new_text;
@@ -471,6 +464,7 @@ pub fn live_run_panel_sync_system(
 /// 変わったときだけ走り、表示窓 (`MAX_LOG_ROWS`) を超える分は `StrategyLogs` に保持される。
 pub fn live_run_log_sync_system(
     logs: Res<StrategyLogs>,
+    theme: Res<Theme>,
     mut cells: Query<(&StrategyLogLineTag, &mut Text, &mut TextColor)>,
 ) {
     if !logs.is_changed() {
@@ -481,9 +475,9 @@ pub fn live_run_log_sync_system(
         let (new_text, new_color) = match recent.get(tag.index) {
             Some(line) => (
                 format_log_line(line.ts_ms, &line.level, &line.message),
-                log_level_color(&line.level),
+                log_level_color(&line.level, &theme),
             ),
-            None => (String::new(), COLOR_LOG_INFO),
+            None => (String::new(), theme.colors.text_muted),
         };
         if text.0 != new_text {
             text.0 = new_text;
@@ -568,8 +562,10 @@ mod tests {
     use crate::trading::LiveRunRecord;
 
     fn make_app() -> App {
+        use crate::ui::theme::Theme;
         let mut app = App::new();
         app.init_resource::<LiveRuns>();
+        app.insert_resource(Theme::default());
         let (tx, rx) = tokio::sync::mpsc::unbounded_channel();
         app.insert_resource(TransportCommandSender { tx });
         app.world_mut().spawn(RxHolder { _rx: rx });
@@ -625,9 +621,11 @@ mod tests {
 
     #[test]
     fn pnl_color_tracks_sign() {
-        assert_eq!(pnl_color(100.0, 0.0), COLOR_PNL_POS);
-        assert_eq!(pnl_color(-100.0, 0.0), COLOR_PNL_NEG);
-        assert_eq!(pnl_color(0.0, 0.0), COLOR_VALUE);
+        use crate::ui::theme::Theme;
+        let theme = Theme::default();
+        assert_eq!(pnl_color(100.0, 0.0, &theme), theme.status.success);
+        assert_eq!(pnl_color(-100.0, 0.0, &theme), theme.status.error);
+        assert_eq!(pnl_color(0.0, 0.0, &theme), theme.colors.text);
     }
 
     #[test]
@@ -638,15 +636,18 @@ mod tests {
 
     #[test]
     fn log_level_color_maps_case_insensitively() {
-        assert_eq!(log_level_color("ERROR"), COLOR_LOG_ERROR);
-        assert_eq!(log_level_color("warning"), COLOR_LOG_WARN);
-        assert_eq!(log_level_color("INFO"), COLOR_LOG_INFO);
-        assert_eq!(log_level_color("debug"), COLOR_LOG_INFO);
+        use crate::ui::theme::Theme;
+        let theme = Theme::default();
+        assert_eq!(log_level_color("ERROR", &theme), theme.status.error);
+        assert_eq!(log_level_color("warning", &theme), theme.status.warning);
+        assert_eq!(log_level_color("INFO", &theme), theme.colors.text_muted);
+        assert_eq!(log_level_color("debug", &theme), theme.colors.text_muted);
     }
 
     #[test]
     fn log_tail_renders_most_recent_lines_oldest_first() {
         use crate::trading::StrategyLogs;
+        use crate::ui::theme::Theme;
         let mut app = App::new();
         let mut logs = StrategyLogs::default();
         // Push more than MAX_LOG_ROWS so the window tails the newest.
@@ -659,6 +660,7 @@ mod tests {
             );
         }
         app.insert_resource(logs);
+        app.insert_resource(Theme::default());
         app.add_systems(Update, live_run_log_sync_system);
         let cells: Vec<_> = (0..MAX_LOG_ROWS)
             .map(|index| {
@@ -666,7 +668,7 @@ mod tests {
                     .spawn((
                         Text::new(""),
                         StrategyLogLineTag { index },
-                        TextColor(COLOR_LOG_INFO),
+                        TextColor(Color::WHITE),
                     ))
                     .id()
             })
@@ -705,7 +707,7 @@ mod tests {
                     row: 0,
                     cell: LiveRunCell::Pnl,
                 },
-                TextColor(COLOR_VALUE),
+                TextColor(Color::WHITE),
             ))
             .id();
         let counts = app
@@ -716,14 +718,18 @@ mod tests {
                     row: 0,
                     cell: LiveRunCell::Counts,
                 },
-                TextColor(COLOR_VALUE),
+                TextColor(Color::WHITE),
             ))
             .id();
         app.update();
         assert_eq!(app.world().get::<Text>(pnl).unwrap().0, "PnL +6,234");
+        let expected_pos = {
+            use crate::ui::theme::Theme;
+            Theme::default().status.success
+        };
         assert_eq!(
             app.world().get::<TextColor>(pnl).unwrap().0,
-            COLOR_PNL_POS,
+            expected_pos,
             "positive PnL renders green"
         );
         assert_eq!(app.world().get::<Text>(counts).unwrap().0, "o:4 f:2");

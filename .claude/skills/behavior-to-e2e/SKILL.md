@@ -129,6 +129,7 @@ description: >-
   Step 0 で本スキルを invoke せず、unit test 1 本だけ書いて完了扱いにしたが、5 デモ目視結果が FLOWS.md に
   残らず Phase B 引き継ぎ時に「どの demo が PASS だったか」を会話履歴から発掘する羽目になった）。
   **E2E テスト調査中に「この AC にテストが無い」「この挙動が自動テストでカバーされていない」というカバレッジ gap を自分で発見したとき**も本スキルを発動する（ユーザーが明示的に「テストを追加して」と言わなくても同様）: gap を発見→即テスト追加という流れでも FLOWS.md エントリの品質確認（doc stub になっていないか、FlowID が wiki と合っているか）と wiki の現行化は本スキルの担当。実例: issue #54 の E2E テスト調査で AC #3 のエラー表示に自動テストが無いことを発見 → テスト追加したが behavior-to-e2e を invoke せず wiki 確認がスキップされた。
+  **`src/ui/component/` に新しい UI コンポーネント（Toast / Tooltip / ContextMenu / Popover 等）を追加したとき**も必ず本スキルを発動する: 「コンポーネント layer はリファクタ」「既存 E2E に影響なし」と思い込みがちだが、新コンポーネントは TOAST_MAX=5 の eviction・Esc dismiss の priority・dismiss_priority=100 の ModalLayer push など **新しい不変条件** を生む。これを FLOWS.md に（unit test が既に書かれていても）doc 形式で記録し、docs/ui-theme.md などの wiki に [FlowID] を引くことが本スキルの仕事（実例: #46 Slice F で Toast/Tooltip/ContextMenu/Popover を追加したが behavior-to-e2e を invoke せず FLOWS.md/wiki 更新が漏れた）。
 ---
 
 # behavior-to-e2e — 挙動の言葉を E2E テストに変える

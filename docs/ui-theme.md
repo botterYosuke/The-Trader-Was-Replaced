@@ -324,3 +324,136 @@ fn secret_modal_input_system(
 `src/ui/component/keyboard_drain.rs` の `#[cfg(test)]` ユニットテストが
 `process_key_events` の不変条件を担保（純粋関数のため headless App 不要）。
 `drain_keyboard` の E2E 観測は [k7]/[k8]/[k12] の modal 系 flow が担います。
+
+## 15. CI Anti-Pattern Guard（Slice H）
+
+`scripts/check-design-system.sh` が `src/ui/**/*.rs` を走査し、
+生の `Color::srgb(` / `Color::srgba(` / `Color::rgb(` / `Color::rgba(` 呼び出しを検出する。
+
+| exit code | 意味 |
+|---|---|
+| 0 | 違反なし — トークン経由で色が指定されている |
+| 1 | 違反あり — 件数と行番号を stderr に出力 |
+
+### 使い方
+
+```bash
+bash scripts/check-design-system.sh
+```
+
+### 違反した場合の修正方針
+
+§8 アンチパターン集を参照。`Color::srgb(r, g, b)` 直書きは `theme.colors.<token>` に置き換える。
+新しいトークンが必要な場合は `ThemeColors` に追加し §2 の索引に記載すること。
+
+## 16. Component 利用例（Button / Modal / Label / Toast）
+
+§12・§12.5 が原則を説明しています。本節は呼び出し側のコード例を示します。
+
+### Button（§12 詳細）
+
+```rust
+// 送信ボタン（Success tint + Default size）
+spawn_button(&mut commands, &theme, "Run")
+    .style(ButtonStyle::Tinted(TintColor::Success))
+    .size(ComponentSize::Default);
+
+// キャンセルボタン（Error tint）
+spawn_button(&mut commands, &theme, "Cancel")
+    .style(ButtonStyle::Tinted(TintColor::Error));
+
+// サブタイルなトグルボタン
+spawn_button(&mut commands, &theme, "Live")
+    .style(ButtonStyle::Subtle)
+    .with_selected(is_live);   // ButtonSelected の insert/remove は action system で行う
+```
+
+### Modal（§12.5 詳細）
+
+```rust
+use crate::ui::component::modal_layer::{spawn_modal, ModalSkeleton, ModalHandle};
+
+// 確認ダイアログ（z_index は confirm = 280）
+let ModalHandle { root, card } = spawn_modal(
+    &mut commands, &theme,
+    ModalSkeleton { width: 360.0, z_index: 280, name: "Confirm" },
+);
+// card の子にテキスト・ボタンを足す
+commands.entity(card).with_children(|p| {
+    p.spawn((Text::new("本当に実行しますか？"), TextColor(theme.colors.text)));
+});
+// ModalLayer に登録して Esc 優先順を確定させる
+layer.push(ActiveModal {
+    root,
+    backdrop: root,       // spawn_modal が作る backdrop は root の親
+    previous_focus: None,
+    z: 280,
+    on_before_dismiss: || DismissDecision::Dismiss(true),
+});
+```
+
+### Label（`src/ui/component/label.rs`）
+
+```rust
+use crate::ui::component::label::{spawn_labeled_value_row, spawn_table_headers};
+
+// "equity: ¥1,234,567" のような「ラベル＋値」行（world-space Text2d）
+let (_lbl, value_entity) = spawn_labeled_value_row(
+    &mut commands,
+    content_area,
+    "equity:",          // ラベル文字列（text_muted で描画）
+    "¥1,234,567",       // 初期値（text で描画。update system が後で差分書き込み）
+    -90.0,              // label X（world-local）
+    30.0,               // value X
+    20.0,               // Y
+    &theme,
+);
+// value_entity にマーカー component を貼って update system がクエリ
+commands.entity(value_entity).insert(MyLabel::Equity);
+
+// ヘッダー行（orders / positions テーブル上部）
+spawn_table_headers(
+    &mut commands, content_area,
+    &["ID", "Side", "Qty", "Price", "Status"],
+    -120.0, 60.0, 80.0,
+    &theme,
+);
+```
+
+### Toast（`src/ui/component/toast.rs`）
+
+```rust
+use crate::ui::component::toast::{ToastKind, ToastLayer, spawn_toast};
+
+// system 例: 任意の event を受けて toast を 1 件発行
+fn my_notify_system(
+    mut commands: Commands,
+    mut layer: ResMut<ToastLayer>,
+    theme: Res<Theme>,
+    mut events: EventReader<MyEvent>,
+) {
+    for ev in events.read() {
+        spawn_toast(
+            &mut commands,
+            &theme,
+            &mut layer,
+            format!("完了: {}", ev.label),
+            ToastKind::Success,
+            4.0,   // 秒
+        );
+    }
+}
+```
+
+`ToastKind` は 4 種。対応する `StatusColors` トークンが accent stripe 色に使われます:
+
+| Kind | accent stripe |
+|---|---|
+| `Info` | `theme.status.info` |
+| `Warning` | `theme.status.warning` |
+| `Error` | `theme.status.error` |
+| `Success` | `theme.status.success` |
+
+`ToastLayer` は最大 `TOAST_MAX`（5）件の同時表示を管理し、溢れると最古から自動 despawn します。
+toast は `ElevationIndex::Notification`（z=500）に積まれるため、モーダル（z=200〜300）の上に出ます。
+`toast_expiry_system` が毎フレーム `Timer` を tick し、期限切れ entity を despawn します。

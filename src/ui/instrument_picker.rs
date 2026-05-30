@@ -21,6 +21,7 @@ use crate::trading::{
 };
 use crate::ui::component::keyboard_drain::drain_keyboard;
 use crate::ui::components::{InstrumentRegistry, ScenarioMetadata, SidebarAddInstrumentButton};
+use crate::ui::theme::Theme;
 use std::collections::HashSet;
 
 // ---------------------------------------------------------------------------
@@ -99,7 +100,7 @@ pub fn spawn_picker_dropdown(parent: &mut ChildSpawnerCommands) {
                 padding: UiRect::all(Val::Px(4.0)),
                 ..default()
             },
-            BackgroundColor(Color::srgba(0.10, 0.10, 0.16, 0.98)),
+            BackgroundColor(Theme::default().colors.surface_background),
             GlobalZIndex(100),
             InstrumentPickerDropdown,
             Name::new("InstrumentPickerDropdown"),
@@ -113,7 +114,7 @@ pub fn spawn_picker_dropdown(parent: &mut ChildSpawnerCommands) {
                     margin: UiRect::bottom(Val::Px(2.0)),
                     ..default()
                 },
-                BackgroundColor(Color::srgba(0.06, 0.06, 0.10, 1.0)),
+                BackgroundColor(Theme::default().colors.element_background),
             ))
             .with_children(|sb| {
                 sb.spawn((
@@ -376,10 +377,11 @@ fn spawn_picker_row_ui(
     instrument_id: Option<&str>,
     already_added: bool,
 ) {
+    let theme = Theme::default();
     let bg = if already_added {
-        Color::srgba(0.25, 0.25, 0.25, 0.6)
+        theme.colors.element_background.with_alpha(0.6)
     } else {
-        Color::srgba(0.15, 0.35, 0.55, 0.6)
+        theme.colors.element_selected.with_alpha(0.6)
     };
     let mut e = commands.spawn((
         Button,

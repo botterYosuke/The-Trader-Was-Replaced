@@ -18,11 +18,7 @@ use bevy::prelude::*;
 use crate::trading::{SecretPrompt, TransportCommand, TransportCommandSender};
 use crate::ui::modify_modal::{ModifyFocus, ModifyForm};
 use crate::ui::order_panel::OrderConfirm;
-
-const COLOR_MENU_BG: Color = Color::srgba(0.10, 0.11, 0.16, 0.99);
-const COLOR_ITEM_TEXT: Color = Color::srgb(0.88, 0.91, 0.96);
-const COLOR_ITEM_HOVER: Color = Color::srgba(0.10, 0.40, 0.60, 1.0);
-const COLOR_ITEM_IDLE: Color = Color::srgba(0.0, 0.0, 0.0, 0.0);
+use crate::ui::theme::Theme;
 
 const MENU_WIDTH: f32 = 120.0;
 
@@ -75,7 +71,9 @@ pub enum ContextMenuItem {
 // Spawn (Startup)
 // ===========================================================================
 
-pub fn spawn_order_context_menu(mut commands: Commands) {
+pub fn spawn_order_context_menu(mut commands: Commands, theme: Res<Theme>) {
+    let menu_bg = theme.colors.elevated_surface_background;
+    let item_text = theme.colors.text;
     commands
         .spawn((
             Node {
@@ -88,7 +86,7 @@ pub fn spawn_order_context_menu(mut commands: Commands) {
                 ..default()
             },
             // backdrop は完全透明だが UI Interaction を拾うために存在する。
-            BackgroundColor(Color::srgba(0.0, 0.0, 0.0, 0.0)),
+            BackgroundColor(Color::NONE),
             GlobalZIndex(220),
             ContextMenuRoot,
             Name::new("OrderContextMenu"),
@@ -105,7 +103,7 @@ pub fn spawn_order_context_menu(mut commands: Commands) {
                     height: Val::Percent(100.0),
                     ..default()
                 },
-                BackgroundColor(Color::srgba(0.0, 0.0, 0.0, 0.0)),
+                BackgroundColor(Color::NONE),
                 ContextMenuBackdrop,
             ));
             // メニュー本体 (位置は sync system がカーソルに合わせる)。
@@ -119,17 +117,17 @@ pub fn spawn_order_context_menu(mut commands: Commands) {
                     padding: UiRect::all(Val::Px(4.0)),
                     ..default()
                 },
-                BackgroundColor(COLOR_MENU_BG),
+                BackgroundColor(menu_bg),
                 ContextMenuPanel,
             ))
             .with_children(|panel| {
-                spawn_item(panel, ContextMenuItem::Cancel, "取消");
-                spawn_item(panel, ContextMenuItem::Modify, "訂正");
+                spawn_item(panel, ContextMenuItem::Cancel, "取消", item_text);
+                spawn_item(panel, ContextMenuItem::Modify, "訂正", item_text);
             });
         });
 }
 
-fn spawn_item(parent: &mut ChildSpawnerCommands, item: ContextMenuItem, label: &str) {
+fn spawn_item(parent: &mut ChildSpawnerCommands, item: ContextMenuItem, label: &str, text_color: Color) {
     parent
         .spawn((
             Button,
@@ -140,7 +138,7 @@ fn spawn_item(parent: &mut ChildSpawnerCommands, item: ContextMenuItem, label: &
                 padding: UiRect::horizontal(Val::Px(8.0)),
                 ..default()
             },
-            BackgroundColor(COLOR_ITEM_IDLE),
+            BackgroundColor(Color::NONE),
             item,
         ))
         .with_children(|b| {
@@ -150,7 +148,7 @@ fn spawn_item(parent: &mut ChildSpawnerCommands, item: ContextMenuItem, label: &
                     font_size: 13.0,
                     ..default()
                 },
-                TextColor(COLOR_ITEM_TEXT),
+                TextColor(text_color),
             ));
         });
 }
@@ -273,11 +271,12 @@ pub fn context_menu_item_system(
 // static-color UI surfaces).
 pub fn context_menu_hover_system(
     mut item_q: Query<(&Interaction, &mut BackgroundColor), (With<ContextMenuItem>, With<Button>)>,
+    theme: Res<Theme>,
 ) {
     for (interaction, mut bg) in &mut item_q {
         let target = match interaction {
-            Interaction::Hovered | Interaction::Pressed => COLOR_ITEM_HOVER,
-            Interaction::None => COLOR_ITEM_IDLE,
+            Interaction::Hovered | Interaction::Pressed => theme.colors.element_selected,
+            Interaction::None => Color::NONE,
         };
         if bg.0 != target {
             bg.0 = target;

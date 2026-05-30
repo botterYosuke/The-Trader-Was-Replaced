@@ -30,7 +30,7 @@ pub fn spawn_transparent_hit_sprite(
     commands
         .spawn((
             Sprite {
-                color: Color::srgba(1.0, 1.0, 1.0, 0.001),
+                color: Color::WHITE.with_alpha(0.001),
                 custom_size: Some(size),
                 ..default()
             },

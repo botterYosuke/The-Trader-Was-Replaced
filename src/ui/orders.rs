@@ -5,23 +5,15 @@ use crate::trading::{
 use crate::ui::component::label::spawn_table_headers_at;
 use crate::ui::component::spawn_transparent_hit_sprite;
 use crate::ui::components::PanelKind;
-use crate::ui::floating_window::{FloatingWindowSpec, spawn_floating_window};
+use crate::ui::floating_window::{FloatingWindowSpec, spawn_floating_window_with_theme};
 use crate::ui::order_context_menu::OrderContextMenu;
 use crate::ui::theme::Theme;
 use bevy::prelude::*;
 use bevy::sprite::Anchor;
 
-// ── レイアウト & 配色 ─────────────────────────────────────────
+// ── レイアウト ─────────────────────────────────────────────────
 const PANEL_SIZE: Vec2 = Vec2::new(360.0, 220.0);
 const PANEL_POSITION: Vec2 = Vec2::new(300.0, -270.0);
-const ACCENT: Color = Color::srgba(0.0, 0.8, 1.0, 0.4);
-
-const COLOR_DEFAULT: Color = Color::srgb(0.85, 0.88, 0.94);
-const COLOR_BUY: Color = Color::srgb(0.0, 1.0, 0.50);
-const COLOR_SELL: Color = Color::srgb(1.0, 0.20, 0.40);
-const COLOR_OTHER: Color = Color::srgb(0.55, 0.55, 0.55);
-const COLOR_STATUS: Color = Color::srgb(0.55, 0.55, 0.55);
-const COLOR_FILTER: Color = Color::srgb(1.0, 0.78, 0.0);
 
 const MAX_ROWS: usize = 6;
 const ROW_SPACING: f32 = 18.0;
@@ -86,16 +78,17 @@ const ROW_HIT_WIDTH: f32 = 320.0;
 
 // ── Spawn ────────────────────────────────────────────────────
 pub fn spawn_orders_panel(commands: &mut Commands, theme: &Theme) {
-    let (root, content_area, _title_bar) = spawn_floating_window(
+    let (root, content_area, _title_bar) = spawn_floating_window_with_theme(
         commands,
         FloatingWindowSpec {
             title: "ORDERS".to_string(),
             size: PANEL_SIZE,
             position: PANEL_POSITION,
-            accent: ACCENT,
+            accent: theme.colors.accent.with_alpha(0.4),
             closeable: true,
             resizable: false,
         },
+        theme,
     );
     commands.entity(root).insert(PanelKind::Orders);
 
@@ -132,7 +125,7 @@ pub fn spawn_orders_panel(commands: &mut Commands, theme: &Theme) {
                         font_size: 11.0,
                         ..default()
                     },
-                    TextColor(COLOR_DEFAULT),
+                    TextColor(theme.colors.text),
                     Transform::from_xyz(column_x(col), y, 0.1),
                     OrdersCell { row, col },
                 ))
@@ -191,7 +184,7 @@ pub fn spawn_orders_panel(commands: &mut Commands, theme: &Theme) {
                 font_size: 11.0,
                 ..default()
             },
-            TextColor(COLOR_FILTER),
+            TextColor(theme.status.warning),
             Anchor::CENTER_LEFT,
             Transform::from_xyz(-150.0, FILTER_Y, 0.1),
             OrdersFilterLabel,
@@ -234,7 +227,7 @@ pub fn spawn_orders_panel(commands: &mut Commands, theme: &Theme) {
                 font_size: 12.0,
                 ..default()
             },
-            TextColor(COLOR_STATUS),
+            TextColor(theme.colors.text_muted),
             Transform::from_xyz(0.0, -5.0, 0.15),
             OrdersStatus,
         ))
@@ -243,11 +236,11 @@ pub fn spawn_orders_panel(commands: &mut Commands, theme: &Theme) {
 }
 
 /// 1 セル分の (テキスト, 色)。side だけ色分けし、他は既定色。
-fn side_color(side: &str) -> Color {
+fn side_color(side: &str, theme: &Theme) -> Color {
     match side {
-        "BUY" => COLOR_BUY,
-        "SELL" => COLOR_SELL,
-        _ => COLOR_OTHER,
+        "BUY" => theme.status.long,
+        "SELL" => theme.status.short,
+        _ => theme.colors.text_muted,
     }
 }
 
@@ -266,6 +259,7 @@ pub fn orders_panel_system(
     live_orders: Res<LiveOrders>,
     filter: Res<OrdersFilter>,
     exec_mode: Res<ExecutionModeRes>,
+    theme: Res<Theme>,
     mut cells: Query<(&OrdersCell, &mut Text2d, &mut TextColor)>,
     mut status_q: Query<
         &mut Text2d,
@@ -332,27 +326,27 @@ pub fn orders_panel_system(
     // cells — 表示行のみソースから直接引く（中間 Vec を作らない）。
     for (cell, mut text, mut color) in &mut cells {
         let (new_text, new_color) = if cell.row >= count {
-            (String::new(), COLOR_DEFAULT)
+            (String::new(), theme.colors.text)
         } else if live {
             let o = live_view[cell.row].expect("row < count ⇒ slot is Some");
             match cell.col {
-                OrdersColumn::Symbol => (o.symbol.clone(), COLOR_DEFAULT),
-                OrdersColumn::Side => (o.side.clone(), side_color(&o.side)),
-                OrdersColumn::Qty => (format!("{:.0}", o.qty), COLOR_DEFAULT),
+                OrdersColumn::Symbol => (o.symbol.clone(), theme.colors.text),
+                OrdersColumn::Side => (o.side.clone(), side_color(&o.side, &theme)),
+                OrdersColumn::Qty => (format!("{:.0}", o.qty), theme.colors.text),
                 OrdersColumn::Price => match o.price {
-                    Some(p) => (format!("{p:.0}"), COLOR_DEFAULT),
-                    None => ("MKT".to_string(), COLOR_OTHER),
+                    Some(p) => (format!("{p:.0}"), theme.colors.text),
+                    None => ("MKT".to_string(), theme.colors.text_muted),
                 },
-                OrdersColumn::Status => (o.status.clone(), COLOR_DEFAULT),
+                OrdersColumn::Status => (o.status.clone(), theme.colors.text),
             }
         } else {
             let o = &state.orders[cell.row];
             match cell.col {
-                OrdersColumn::Symbol => (o.symbol.clone(), COLOR_DEFAULT),
-                OrdersColumn::Side => (o.side.clone(), side_color(&o.side)),
-                OrdersColumn::Qty => (format!("{:.0}", o.qty), COLOR_DEFAULT),
-                OrdersColumn::Price => (format!("{:.0}", o.price), COLOR_DEFAULT),
-                OrdersColumn::Status => (o.status.clone(), COLOR_DEFAULT),
+                OrdersColumn::Symbol => (o.symbol.clone(), theme.colors.text),
+                OrdersColumn::Side => (o.side.clone(), side_color(&o.side, &theme)),
+                OrdersColumn::Qty => (format!("{:.0}", o.qty), theme.colors.text),
+                OrdersColumn::Price => (format!("{:.0}", o.price), theme.colors.text),
+                OrdersColumn::Status => (o.status.clone(), theme.colors.text),
             }
         };
         if text.0 != new_text {
@@ -385,7 +379,9 @@ mod tests {
     /// Spawn the Symbol cell for each of `MAX_ROWS` rows and the filter label, run
     /// `orders_panel_system`, and read back the Symbol cells + filter label.
     fn run_panel(orders: Vec<LiveOrder>, filter: OrdersFilter) -> (Vec<String>, String) {
+        let theme = crate::ui::theme::Theme::default();
         let mut app = App::new();
+        app.insert_resource(theme.clone());
         app.insert_resource(PortfolioState::default());
         let mut lo = LiveOrders::default();
         // upsert oldest-first so storage ends up newest-first like production.
@@ -405,7 +401,7 @@ mod tests {
                 .world_mut()
                 .spawn((
                     Text2d::new(""),
-                    TextColor(COLOR_DEFAULT),
+                    TextColor(theme.colors.text),
                     OrdersCell {
                         row,
                         col: OrdersColumn::Symbol,

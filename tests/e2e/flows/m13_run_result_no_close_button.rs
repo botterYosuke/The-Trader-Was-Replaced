@@ -18,7 +18,7 @@ fn m13_run_result_no_close_button() {
     app.insert_resource(AppHistory::default());
 
     app.add_systems(Startup, |mut commands: Commands| {
-        spawn_run_result_panel(&mut commands);
+        spawn_run_result_panel(&mut commands, &backcast::ui::theme::Theme::default());
     });
     app.update();
 

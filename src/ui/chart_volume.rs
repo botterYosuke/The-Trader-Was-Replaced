@@ -11,9 +11,9 @@
 //! `continue` で行う。
 
 use crate::trading::{InstrumentTradingDataMap, OhlcPoint};
-use crate::ui::chart_render::{BEARISH_CANDLE_COLOR, BULLISH_CANDLE_COLOR};
 use crate::ui::chart_viewstate::ChartViewState;
 use crate::ui::components::ChartInstrument;
+use crate::ui::theme::Theme;
 use bevy::prelude::*;
 use bevy_vector_shapes::prelude::*;
 
@@ -62,6 +62,7 @@ pub fn volume_render_system(
     mut painter: ShapePainter,
     map: Res<InstrumentTradingDataMap>,
     chart_q: Query<(&GlobalTransform, &ChartInstrument, &ChartViewState)>,
+    theme: Res<Theme>,
 ) {
     for (gt, instrument, state) in &chart_q {
         let Some(data) = map.map.get(&instrument.instrument_id) else {
@@ -78,8 +79,8 @@ pub fn volume_render_system(
         let bar_width = state.body_half_width() * 2.0;
         let bar_bottom_y = -state.bounds.y / 2.0;
         let area_height = state.volume_area_height();
-        let bullish = BULLISH_CANDLE_COLOR.with_alpha(VOLUME_BAR_ALPHA);
-        let bearish = BEARISH_CANDLE_COLOR.with_alpha(VOLUME_BAR_ALPHA);
+        let bullish = theme.status.long.with_alpha(VOLUME_BAR_ALPHA);
+        let bearish = theme.status.short.with_alpha(VOLUME_BAR_ALPHA);
 
         for candle in visible {
             let Some(vol) = candle.volume else {

@@ -21,7 +21,7 @@ fn m14_run_result_mode_visibility() {
     app.add_systems(Update, apply_run_result_visibility_system);
 
     app.add_systems(Startup, |mut commands: Commands| {
-        spawn_run_result_panel(&mut commands);
+        spawn_run_result_panel(&mut commands, &backcast::ui::theme::Theme::default());
     });
     app.update();
 
