@@ -102,6 +102,7 @@ fn i18_file_open_relative_strategy_path_loads() {
 
     let mut app = App::new();
     app.add_plugins(TransformPlugin);
+    app.add_plugins(backcast::ui::theme::ThemePlugin);
 
     app.insert_resource(ExecutionModeRes {
         mode: ExecutionMode::Replay,

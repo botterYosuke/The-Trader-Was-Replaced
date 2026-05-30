@@ -44,7 +44,7 @@ Startup ウィンドウは **Replay モードのときだけ表示**される（
 |---|---|---|
 | `\|<` | 先頭へ（実際には強制停止して初期状態へ戻す） | [A4] |
 | `<` | 1 バック（現状未配線。`PAUSED` 中のみ意味を持つ想定） | no-op [A10] |
-| `▶` / `\|\|` | Play / Pause。`IDLE` / `LOADED` のときは Run（実行開始）、`RUNNING` のときは `\|\|`（Pause）、`PAUSED` のときは `▶`（Resume） | Run [A1] / Pause・Resume [A2] |
+| `▶` / `\|\|` | Play / Pause。`IDLE` / `LOADED` のときは Run（実行開始）、`RUNNING` のときは `\|\|`（Pause）、`PAUSED` のときは `▶`（Resume）。Pause/Resume RPC 成功後は GetState ポーリング待ちなしで即時 `state:` バッジが更新される [A20] | Run [A1] / Pause・Resume [A2] / 即時更新 [A20] |
 | `>` | 1 進む。`PAUSED` / `LOADED` 中は 1 バーずつステップ実行 [A16]。`IDLE` のときは戦略を flush してから 1 ステップ実行（ForceStop → LoadReplayData → StepReplay。`LOADED` 状態で停止）。**フルラン完了後に `>` を押しても前回 run のタイムスタンプにとどまらない**（`force_stop_replay()` がプロバイダをクリアして再ロードを正しく実行する [P13]） | [A3] / [A15] / [P13] |
 | `■` | 強制停止（`RUNNING` / `PAUSED` / `LOADED` のとき有効） | [A4] |
 

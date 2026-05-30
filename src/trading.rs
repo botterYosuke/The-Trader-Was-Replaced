@@ -229,6 +229,16 @@ pub enum TransportCommand {
         config: StrategyRunConfig,
         startup_id: u64,
     },
+    /// `|<` (JumpToStart) ボタンから送出される。現在の replay 状態によらず
+    /// バー 0 からリロードする (#58)。
+    ///
+    /// - RUNNING / PAUSED: ForceStop RPC → LoadReplayData RPC
+    /// - IDLE / LOADED: LoadReplayData RPC のみ
+    ///
+    /// 完了後の状態は LOADED。その後 ▶ でバー 0 から再生可能。
+    RestartReplay {
+        config: StrategyRunConfig,
+    },
     /// User-initiated Live Auto launch via the footer ▶ button (issue #40 代替).
     /// 2 段直列: RegisterLiveStrategy → StartLiveStrategy。`token` は transport task が注入。
     StartLiveAuto {
@@ -876,6 +886,12 @@ pub enum BackendStatusUpdate {
     /// monotonic fill or known static fields.
     OrdersSeeded {
         orders: Vec<LiveOrder>,
+    },
+    /// Issue #63: PauseReplay / ResumeReplay RPC 成功後に GetState ポーリング（最大
+    /// 1 秒）を待たずに即時 `TradingSession.replay_state` を更新する。transport task が
+    /// RPC 応答の `current_state` をこの variant に変換して送出する。
+    ReplayStateChanged {
+        state: String,
     },
 }
 
@@ -1660,8 +1676,8 @@ mod tests {
         // venue-only 注文（client_order_id 空）は reconcile payload から除外。
         // 空 id の衝突で stale 注文が誤って既知扱いされるのを防ぐ。
         let seeded = vec![
-            make_live_order(""),     // venue-only → 除外
-            make_live_order("c1"),   // facade 採番 → 残す
+            make_live_order(""),   // venue-only → 除外
+            make_live_order("c1"), // facade 採番 → 残す
         ];
         assert_eq!(
             reconcile_ids_for_seed(&seeded, true),
@@ -1680,7 +1696,11 @@ mod tests {
         o.venue_order_id = "v-stale".to_string();
         lo.upsert_full(o);
         let unknown = reconcile_unknown_orders(&lo, &["".to_string()]);
-        assert_eq!(unknown.len(), 1, "empty-id working order must surface as unknown");
+        assert_eq!(
+            unknown.len(),
+            1,
+            "empty-id working order must surface as unknown"
+        );
     }
 
     #[test]
@@ -1826,8 +1846,16 @@ mod tests {
         b.venue_order_id = "V2".to_string();
         lo.seed_working(b);
 
-        assert_eq!(lo.orders.len(), 2, "distinct venue-only orders stay separate");
-        let venues: Vec<&str> = lo.orders.iter().map(|o| o.venue_order_id.as_str()).collect();
+        assert_eq!(
+            lo.orders.len(),
+            2,
+            "distinct venue-only orders stay separate"
+        );
+        let venues: Vec<&str> = lo
+            .orders
+            .iter()
+            .map(|o| o.venue_order_id.as_str())
+            .collect();
         assert!(venues.contains(&"V1"), "V1 row present");
         assert!(venues.contains(&"V2"), "V2 row present");
     }
@@ -1847,7 +1875,10 @@ mod tests {
         lo.seed_working(stale);
 
         let o = &lo.orders[0];
-        assert_eq!(o.status, "FILLED", "terminal status must not regress to ACCEPTED");
+        assert_eq!(
+            o.status, "FILLED",
+            "terminal status must not regress to ACCEPTED"
+        );
     }
 
     #[test]
@@ -1865,7 +1896,11 @@ mod tests {
         corrected.price = Some(2450.0);
         lo.seed_working(corrected);
 
-        assert_eq!(lo.orders[0].price, Some(2450.0), "facade-match price correction applied");
+        assert_eq!(
+            lo.orders[0].price,
+            Some(2450.0),
+            "facade-match price correction applied"
+        );
     }
 
     #[test]
@@ -1883,7 +1918,11 @@ mod tests {
         seed.price = Some(9999.0); // would clobber if the facade-overwrite path applied
         lo.seed_working(seed);
 
-        assert_eq!(lo.orders[0].price, Some(2500.0), "venue-only seed must not overwrite a known price");
+        assert_eq!(
+            lo.orders[0].price,
+            Some(2500.0),
+            "venue-only seed must not overwrite a known price"
+        );
     }
 
     #[test]

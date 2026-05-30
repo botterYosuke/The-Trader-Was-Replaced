@@ -10,12 +10,12 @@ use serial_test::serial;
 use backcast::backend_sync::{
     apply_status_update, build_register_reject_message, build_start_reject_message,
 };
+use backcast::replay::ReplayStartupProgress;
 use backcast::trading::{
     AvailableInstruments, BackendStatus, BackendStatusUpdate, CurrentRun, ExecutionModeRes,
-    LastPrices, LiveOrders, OrderFeedback, ReconcilePrompt, RunState, SecretPrompt, Tickers,
-    VenueStatusRes,
+    LastPrices, LiveOrders, OrderFeedback, ReconcilePrompt, RunState, SecretPrompt,
+    Tickers, TradingSession, VenueStatusRes,
 };
-use backcast::replay::ReplayStartupProgress;
 
 use tokio::sync::mpsc;
 
@@ -68,6 +68,7 @@ fn n8_grpc_reject_propagates_run_failed_via_apply_status_update() {
         &mut order_feedback,
         &mut reconcile_prompt,
         &mut secret_prompt,
+        &mut TradingSession::default(),
     );
 
     assert!(
@@ -141,6 +142,7 @@ fn n8b_build_reject_message_drives_run_failed_via_channel() {
         &mut order_feedback,
         &mut reconcile_prompt,
         &mut secret_prompt,
+        &mut TradingSession::default(),
     );
 
     assert!(

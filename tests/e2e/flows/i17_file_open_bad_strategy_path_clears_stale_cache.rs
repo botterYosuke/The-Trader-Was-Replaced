@@ -98,6 +98,7 @@ fn i17_file_open_bad_strategy_path_clears_stale_cache() {
 
     let mut app = App::new();
     app.add_plugins(TransformPlugin);
+    app.add_plugins(backcast::ui::theme::ThemePlugin);
 
     app.insert_resource(ExecutionModeRes {
         mode: ExecutionMode::Replay,

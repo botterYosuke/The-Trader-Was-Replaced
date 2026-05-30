@@ -100,6 +100,7 @@ fn i19_file_open_sidecar_missing_strategy_path_loads_sibling_py() {
 
     let mut app = App::new();
     app.add_plugins(TransformPlugin);
+    app.add_plugins(backcast::ui::theme::ThemePlugin);
 
     app.insert_resource(ExecutionModeRes {
         mode: ExecutionMode::Replay,

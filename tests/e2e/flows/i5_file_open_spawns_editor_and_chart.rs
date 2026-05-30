@@ -108,6 +108,8 @@ fn i5_file_open_spawns_editor_and_chart() {
     let mut app = App::new();
     // 子要素の絶対座標を出すため Transform 伝播を有効化（render は不要）。
     app.add_plugins(TransformPlugin);
+    // panel_spawn_dispatcher_system が Res<Theme> を要求するため ThemePlugin が必要。
+    app.add_plugins(backcast::ui::theme::ThemePlugin);
 
     app
         // 「replay モードで」の前提を固定。

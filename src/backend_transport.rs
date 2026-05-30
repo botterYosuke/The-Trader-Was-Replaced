@@ -1,27 +1,26 @@
-use std::pin::Pin;
-use std::future::Future;
-use tokio::sync::mpsc;
 use bevy::log::{error, info, warn};
 use pyo3::prelude::{Py, PyAny};
+use std::future::Future;
+use std::pin::Pin;
+use tokio::sync::mpsc;
 
 use crate::backend_supervisor::BackendLifecycle;
 use crate::backend_sync::lifecycle_status_update;
 use crate::trading::{
     AccountPosition, BackendEvent, BackendStartupStage, BackendStatusUpdate, BackendTradingState,
-    LiveOrder, PortfolioOrder, PortfolioPosition, Ticker, TickersSource, TransportCommand,
-    VenueState, ExecutionMode, default_live_auto_safety_limits, get_orders_notice,
-    reconcile_ids_for_seed, tickers_source_to_wire, engine,
+    ExecutionMode, LiveOrder, PortfolioOrder, PortfolioPosition, Ticker, TickersSource,
+    TransportCommand, VenueState, default_live_auto_safety_limits, engine, get_orders_notice,
+    reconcile_ids_for_seed, tickers_source_to_wire,
 };
 use engine::data_engine_client::DataEngineClient;
 use engine::{
     EngineKind, EngineStartConfig, ForceAccountSnapshotRequest, ForceStopReplayRequest,
-    GetPortfolioRequest, GetStateRequest,
-    ListAllListedSymbolsRequest, ListInstrumentsRequest, LoadReplayDataRequest,
-    PauseLiveStrategyReq, PauseReplayRequest, RegisterLiveStrategyReq, ReplayGranularity,
-    ResumeLiveStrategyReq, ResumeReplayRequest, SafetyLimits, SetExecutionModeRequest,
-    SetReplaySpeedRequest, StartEngineRequest, StartEngineResponse, StartLiveStrategyReq,
-    StepReplayRequest, StopLiveStrategyReq, SubscribeBackendEventsReq, SubscribeRequest,
-    VenueLoginRequest, VenueLogoutRequest,
+    GetPortfolioRequest, GetStateRequest, ListAllListedSymbolsRequest, ListInstrumentsRequest,
+    LoadReplayDataRequest, PauseLiveStrategyReq, PauseReplayRequest, RegisterLiveStrategyReq,
+    ReplayGranularity, ResumeLiveStrategyReq, ResumeReplayRequest, SafetyLimits,
+    SetExecutionModeRequest, SetReplaySpeedRequest, StartEngineRequest, StartEngineResponse,
+    StartLiveStrategyReq, StepReplayRequest, StopLiveStrategyReq, SubscribeBackendEventsReq,
+    SubscribeRequest, VenueLoginRequest, VenueLogoutRequest,
 };
 
 use crate::backend_sync::{build_register_reject_message, build_start_reject_message};
@@ -224,7 +223,17 @@ impl BackendTransport for GrpcTransport {
                             token: token.clone(),
                         });
                         match client.pause_replay(req).await {
-                            Ok(r) => info!("PauseReplay ok, state={:?}", r.into_inner().current_state),
+                            Ok(r) => {
+                                let inner = r.into_inner();
+                                let state_str = engine_state_i32_to_str(inner.current_state);
+                                info!("PauseReplay ok, state={:?}", state_str);
+                                // Issue #63: 即時 UI 更新 — GetState ポーリング(1s)を待たない。
+                                if let Some(s) = state_str {
+                                    let _ = status_tx.send(BackendStatusUpdate::ReplayStateChanged {
+                                        state: s.to_string(),
+                                    });
+                                }
+                            }
                             Err(e) => error!("PauseReplay failed: {}", e),
                         }
                     }
@@ -234,7 +243,17 @@ impl BackendTransport for GrpcTransport {
                             token: token.clone(),
                         });
                         match client.resume_replay(req).await {
-                            Ok(r) => info!("ResumeReplay ok, state={:?}", r.into_inner().current_state),
+                            Ok(r) => {
+                                let inner = r.into_inner();
+                                let state_str = engine_state_i32_to_str(inner.current_state);
+                                info!("ResumeReplay ok, state={:?}", state_str);
+                                // Issue #63: 即時 UI 更新 — GetState ポーリング(1s)を待たない。
+                                if let Some(s) = state_str {
+                                    let _ = status_tx.send(BackendStatusUpdate::ReplayStateChanged {
+                                        state: s.to_string(),
+                                    });
+                                }
+                            }
                             Err(e) => error!("ResumeReplay failed: {}", e),
                         }
                     }
@@ -371,6 +390,69 @@ impl BackendTransport for GrpcTransport {
                                     let _ = run_status_tx.send(BackendStatusUpdate::RunFailed {
                                         startup_id: Some(startup_id), error: msg,
                                     });
+                                }
+                            }
+                        });
+                    }
+                    TransportCommand::RestartReplay { config } => {
+                        let mut run_client = client.clone();
+                        let run_token = token.clone();
+                        let run_catalog = catalog_path.clone();
+                        tokio::spawn(async move {
+                            // ForceStop は RUNNING/PAUSED/LOADED でキャンセルに使う。
+                            // IDLE ではサーバーが success=true を返す（no-op）ため、
+                            // 常に呼んで状態によらず続行できる。
+                            match run_client.force_stop_replay(tonic::Request::new(ForceStopReplayRequest {
+                                request_id: String::new(),
+                                token: run_token.clone(),
+                            })).await {
+                                Ok(r) => {
+                                    let inner = r.into_inner();
+                                    if !inner.success {
+                                        error!(
+                                            "RestartReplay: ForceStop failed: {} {}",
+                                            inner.error_code, inner.error_message
+                                        );
+                                        return;
+                                    }
+                                    info!("RestartReplay: ForceStop ok");
+                                }
+                                Err(e) => {
+                                    error!("RestartReplay: ForceStop gRPC error: {}", e);
+                                    return;
+                                }
+                            }
+
+                            let granularity_i32 = match parse_replay_granularity(&config.granularity) {
+                                Ok(v) => Some(v),
+                                Err(msg) => {
+                                    error!("RestartReplay: {}, aborting", msg);
+                                    return;
+                                }
+                            };
+
+                            match run_client.load_replay_data(tonic::Request::new(LoadReplayDataRequest {
+                                request_id: String::new(),
+                                instrument_ids: config.instruments.clone(),
+                                start_date: config.start.clone(),
+                                end_date: config.end.clone(),
+                                granularity: granularity_i32,
+                                token: run_token.clone(),
+                                catalog_path: run_catalog.clone(),
+                            })).await {
+                                Ok(r) => {
+                                    let inner = r.into_inner();
+                                    if !inner.success {
+                                        error!(
+                                            "RestartReplay: LoadReplayData failed: {} {}",
+                                            inner.error_code, inner.error_message
+                                        );
+                                    } else {
+                                        info!("RestartReplay: LoadReplayData ok, state={:?}", inner.current_state);
+                                    }
+                                }
+                                Err(e) => {
+                                    error!("RestartReplay: LoadReplayData gRPC error: {}", e);
                                 }
                             }
                         });
@@ -1208,6 +1290,19 @@ impl BackendTransport for GrpcTransport {
 // Private helpers (all transport-specific)
 // ---------------------------------------------------------------------------
 
+/// Map a proto `EngineState` i32 to the string used in `TradingSession.replay_state`.
+/// Returns `None` for unknown values (older backend, new state added to proto, etc.).
+fn engine_state_i32_to_str(state: i32) -> Option<&'static str> {
+    match state {
+        0 => Some("IDLE"),
+        1 => Some("LOADED"),
+        2 => Some("RUNNING"),
+        3 => Some("PAUSED"),
+        4 => Some("STOPPING"),
+        _ => None,
+    }
+}
+
 /// Map a proto `engine::backend_event::Payload` to our internal `BackendEvent` enum.
 /// Shared between `GrpcTransport` (stream decode) and `RustEventSink` (inproc push).
 fn map_backend_event_payload(payload: engine::backend_event::Payload) -> BackendEvent {
@@ -1246,14 +1341,12 @@ fn map_backend_event_payload(payload: engine::backend_event::Payload) -> Backend
         engine::backend_event::Payload::VenueLogoutDetected(p) => {
             BackendEvent::VenueLogoutDetected { venue: p.venue }
         }
-        engine::backend_event::Payload::LiveStrategyEvent(p) => {
-            BackendEvent::LiveStrategyEvent {
-                run_id: p.run_id,
-                strategy_id: p.strategy_id,
-                status: p.status,
-                ts_ms: p.ts_ms,
-            }
-        }
+        engine::backend_event::Payload::LiveStrategyEvent(p) => BackendEvent::LiveStrategyEvent {
+            run_id: p.run_id,
+            strategy_id: p.strategy_id,
+            status: p.status,
+            ts_ms: p.ts_ms,
+        },
         engine::backend_event::Payload::SafetyRailViolation(p) => {
             BackendEvent::SafetyRailViolation {
                 run_id: p.run_id,
@@ -1262,14 +1355,12 @@ fn map_backend_event_payload(payload: engine::backend_event::Payload) -> Backend
                 ts_ms: p.ts_ms,
             }
         }
-        engine::backend_event::Payload::StrategyLogMessage(p) => {
-            BackendEvent::StrategyLogMessage {
-                run_id: p.run_id,
-                level: p.level,
-                message: p.message,
-                ts_ms: p.ts_ms,
-            }
-        }
+        engine::backend_event::Payload::StrategyLogMessage(p) => BackendEvent::StrategyLogMessage {
+            run_id: p.run_id,
+            level: p.level,
+            message: p.message,
+            ts_ms: p.ts_ms,
+        },
         engine::backend_event::Payload::LiveStrategyTelemetry(p) => {
             BackendEvent::LiveStrategyTelemetry {
                 run_id: p.run_id,
@@ -1432,7 +1523,7 @@ fn is_reconcile_command(cmd: &TransportCommand) -> bool {
     matches!(
         cmd,
         TransportCommand::GetOrdersAndReconcile { .. }
-        | TransportCommand::FetchAvailableInstruments { .. }
+            | TransportCommand::FetchAvailableInstruments { .. }
     )
 }
 
@@ -1509,7 +1600,9 @@ impl RustBacktestSink {
     /// Called once per bar: `sink.push_bar(state_json_str)`.
     /// `state_json_str` must deserialise as `BackendTradingState`.
     fn push_bar(&self, state_json: &str) -> pyo3::PyResult<()> {
-        let _ = self.resp_tx.send(InProcResp::StateJson(state_json.to_string()));
+        let _ = self
+            .resp_tx
+            .send(InProcResp::StateJson(state_json.to_string()));
         Ok(())
     }
 
@@ -1604,11 +1697,13 @@ impl RustBacktestSink {
 
     /// Called once when BacktestEngine.run() completes successfully.
     fn push_run_complete(&self, run_id: &str, summary_json: &str) -> pyo3::PyResult<()> {
-        let _ = self.resp_tx.send(InProcResp::Status(BackendStatusUpdate::RunComplete {
-            startup_id: Some(self.startup_id),
-            run_id: run_id.to_string(),
-            summary_json: summary_json.to_string(),
-        }));
+        let _ = self
+            .resp_tx
+            .send(InProcResp::Status(BackendStatusUpdate::RunComplete {
+                startup_id: Some(self.startup_id),
+                run_id: run_id.to_string(),
+                summary_json: summary_json.to_string(),
+            }));
         Ok(())
     }
 
@@ -1616,10 +1711,12 @@ impl RustBacktestSink {
     /// Mirrors the synchronous RunFailed path in inproc_dispatch so the UI shows
     /// the error even though start_nautilus_replay() returned immediately.
     fn push_run_failed(&self, error: &str) -> pyo3::PyResult<()> {
-        let _ = self.resp_tx.send(InProcResp::Status(BackendStatusUpdate::RunFailed {
-            startup_id: Some(self.startup_id),
-            error: error.to_string(),
-        }));
+        let _ = self
+            .resp_tx
+            .send(InProcResp::Status(BackendStatusUpdate::RunFailed {
+                startup_id: Some(self.startup_id),
+                error: error.to_string(),
+            }));
         Ok(())
     }
 }
@@ -1703,7 +1800,8 @@ impl BackendTransport for InProcTransport {
                 error!("[inproc] failed to spawn Python thread: {}", e);
                 let _ = status_tx.send(BackendStatusUpdate::Connected(false));
                 let _ = status_tx.send(BackendStatusUpdate::Error(format!(
-                    "InProc thread spawn failed: {}", e
+                    "InProc thread spawn failed: {}",
+                    e
                 )));
                 return;
             }
@@ -1723,11 +1821,15 @@ impl BackendTransport for InProcTransport {
                                     if let Some(ref s) = state.venue_state {
                                         match parse_venue_state(s) {
                                             Some(vs) => {
-                                                let _ = status_tx.send(BackendStatusUpdate::VenueChanged {
-                                                    state: vs,
-                                                    venue_id: state.venue_id.clone(),
-                                                    instruments_loaded: state.instruments_loaded.unwrap_or(0),
-                                                });
+                                                let _ = status_tx.send(
+                                                    BackendStatusUpdate::VenueChanged {
+                                                        state: vs,
+                                                        venue_id: state.venue_id.clone(),
+                                                        instruments_loaded: state
+                                                            .instruments_loaded
+                                                            .unwrap_or(0),
+                                                    },
+                                                );
                                             }
                                             None => warn!("[inproc] unknown venue_state: {:?}", s),
                                         }
@@ -1738,17 +1840,25 @@ impl BackendTransport for InProcTransport {
                                     if let Some(ref m) = state.execution_mode {
                                         match parse_execution_mode(m) {
                                             Some(em) => {
-                                                let _ = status_tx.send(BackendStatusUpdate::ExecutionModeChanged { mode: em });
+                                                let _ = status_tx.send(
+                                                    BackendStatusUpdate::ExecutionModeChanged {
+                                                        mode: em,
+                                                    },
+                                                );
                                             }
-                                            None => warn!("[inproc] unknown execution_mode: {:?}", m),
+                                            None => {
+                                                warn!("[inproc] unknown execution_mode: {:?}", m)
+                                            }
                                         }
                                     }
                                     prev_mode = state.execution_mode.clone();
                                 }
                                 if prev_configured_venue.as_ref() != Some(&state.configured_venue) {
-                                    let _ = status_tx.send(BackendStatusUpdate::ConfiguredVenueDiscovered {
-                                        venue_id: state.configured_venue.clone(),
-                                    });
+                                    let _ = status_tx.send(
+                                        BackendStatusUpdate::ConfiguredVenueDiscovered {
+                                            venue_id: state.configured_venue.clone(),
+                                        },
+                                    );
                                     prev_configured_venue = Some(state.configured_venue.clone());
                                 }
                                 let _ = status_tx.send(BackendStatusUpdate::LastPricesUpdated {
@@ -1828,7 +1938,8 @@ fn inproc_python_worker(
         Err(e) => {
             error!("[inproc] DataEngine init failed: {}", e);
             let _ = resp_tx.send(InProcResp::Status(BackendStatusUpdate::Error(format!(
-                "InProc DataEngine init failed: {}", e
+                "InProc DataEngine init failed: {}",
+                e
             ))));
             return;
         }
@@ -1838,7 +1949,9 @@ fn inproc_python_worker(
     // publish_backend_event() forwards live events to our tokio channel.
     if let Err(e) = Python::with_gil(|py| -> pyo3::PyResult<()> {
         let sink = pyo3::Py::new(py, RustEventSink { event_tx })?;
-        engine.bind(py).call_method1("set_rust_event_sink", (sink,))?;
+        engine
+            .bind(py)
+            .call_method1("set_rust_event_sink", (sink,))?;
         Ok(())
     }) {
         error!("[inproc] RustEventSink registration failed: {}", e);
@@ -1860,7 +1973,10 @@ fn inproc_python_worker(
         Ok(srv.into())
     }) {
         Ok(s) => {
-            info!("[inproc] InprocLiveServer initialized (live_venue_id={:?})", live_venue_id);
+            info!(
+                "[inproc] InprocLiveServer initialized (live_venue_id={:?})",
+                live_venue_id
+            );
             // #2 fix: startup is complete only once live commands are available.
             // Route through the pure helper so its regression test guards this arm.
             for update in inproc_startup_status_sequence(/*live_server_ok=*/ true) {
@@ -1883,7 +1999,10 @@ fn inproc_python_worker(
             s
         }
         Err(e) => {
-            error!("[inproc] InprocLiveServer init failed: {}; aborting worker", e);
+            error!(
+                "[inproc] InprocLiveServer init failed: {}; aborting worker",
+                e
+            );
             // #2 fix: do NOT continue with a None sentinel. Report disconnect + error and exit.
             // Route through the pure helper so its regression test guards this arm.
             for update in inproc_startup_status_sequence(/*live_server_ok=*/ false) {
@@ -1964,9 +2083,12 @@ fn inproc_poll_state(live_server: &Py<PyAny>, resp_tx: &mpsc::UnboundedSender<In
     use pyo3::prelude::*;
 
     let state_json = Python::with_gil(|py| -> Result<String, ()> {
-        live_server.bind(py).call_method0("get_state_json")
+        live_server
+            .bind(py)
+            .call_method0("get_state_json")
             .map_err(|_| ())?
-            .extract::<String>().map_err(|_| ())
+            .extract::<String>()
+            .map_err(|_| ())
     });
 
     match inproc_poll_state_outcome(state_json) {
@@ -2004,19 +2126,14 @@ fn inproc_poll_state_outcome(state_json: Result<String, ()>) -> PollStateOutcome
 }
 
 /// Call a zero-argument replay method that returns `(bool, str | None)`.
-fn inproc_call_replay(
-    engine: &Py<PyAny>,
-    method: &str,
-) -> (bool, Option<String>) {
+fn inproc_call_replay(engine: &Py<PyAny>, method: &str) -> (bool, Option<String>) {
     use pyo3::prelude::*;
 
-    Python::with_gil(|py| {
-        match engine.bind(py).call_method0(method) {
-            Ok(val) => val
-                .extract::<(bool, Option<String>)>()
-                .unwrap_or((false, Some(format!("{}: extract failed", method)))),
-            Err(e) => (false, Some(format!("{}: PyO3 error: {}", method, e))),
-        }
+    Python::with_gil(|py| match engine.bind(py).call_method0(method) {
+        Ok(val) => val
+            .extract::<(bool, Option<String>)>()
+            .unwrap_or((false, Some(format!("{}: extract failed", method)))),
+        Err(e) => (false, Some(format!("{}: PyO3 error: {}", method, e))),
     })
 }
 
@@ -2025,7 +2142,10 @@ fn inproc_set_speed(engine: &Py<PyAny>, multiplier: u32) {
     use pyo3::prelude::*;
 
     Python::with_gil(|py| {
-        if let Err(e) = engine.bind(py).call_method1("set_replay_speed", (multiplier,)) {
+        if let Err(e) = engine
+            .bind(py)
+            .call_method1("set_replay_speed", (multiplier,))
+        {
             warn!("[inproc] set_replay_speed error: {}", e);
         }
     });
@@ -2091,7 +2211,9 @@ fn inproc_json_dumps(
     context: &str,
 ) -> Result<serde_json::Value, String> {
     use pyo3::prelude::*;
-    let json_mod = py.import_bound("json").map_err(|e| format!("import json: {}", e))?;
+    let json_mod = py
+        .import_bound("json")
+        .map_err(|e| format!("import json: {}", e))?;
     let json_str: String = json_mod
         .call_method1("dumps", (value,))
         .map_err(|e| format!("{}: json.dumps: {}", context, e))?
@@ -2105,10 +2227,14 @@ fn inproc_json_dumps(
 /// must not poll state when the step itself failed).
 fn inproc_nautilus_control(live_server: &pyo3::Py<pyo3::PyAny>, method: &str) -> bool {
     use pyo3::prelude::*;
-    Python::with_gil(|py| {
-        match live_server.bind(py).call_method0(method) {
-            Ok(_) => { info!("[inproc] {} ok", method); true }
-            Err(e) => { error!("[inproc] {} failed: {}", method, e); false }
+    Python::with_gil(|py| match live_server.bind(py).call_method0(method) {
+        Ok(_) => {
+            info!("[inproc] {} ok", method);
+            true
+        }
+        Err(e) => {
+            error!("[inproc] {} failed: {}", method, e);
+            false
         }
     })
 }
@@ -2126,32 +2252,49 @@ fn inproc_seed_orders(
         Ok(())
     }) {
         Ok(r) => {
-            let orders: Vec<crate::trading::LiveOrder> = r.get("orders")
+            let orders: Vec<crate::trading::LiveOrder> = r
+                .get("orders")
                 .and_then(|v| v.as_array())
-                .map(|a| a.iter().filter_map(|o| {
-                    Some(crate::trading::LiveOrder {
-                        client_order_id: o.get("client_order_id")?.as_str()?.to_owned(),
-                        venue_order_id: o.get("venue_order_id")?.as_str()?.to_owned(),
-                        symbol: o.get("symbol")?.as_str()?.to_owned(),
-                        side: o.get("side")?.as_str()?.to_owned(),
-                        qty: o.get("qty")?.as_f64()?,
-                        price: o.get("price").and_then(|v| v.as_f64()),
-                        status: o.get("status")?.as_str()?.to_owned(),
-                        filled_qty: o.get("filled_qty")?.as_f64()?,
-                        avg_price: o.get("avg_price")?.as_f64()?,
-                        ts_ms: o.get("ts_ms")?.as_i64()?,
-                        strategy_id: o.get("strategy_id").and_then(|v| v.as_str()).unwrap_or("").to_owned(),
-                    })
-                }).collect())
+                .map(|a| {
+                    a.iter()
+                        .filter_map(|o| {
+                            Some(crate::trading::LiveOrder {
+                                client_order_id: o.get("client_order_id")?.as_str()?.to_owned(),
+                                venue_order_id: o.get("venue_order_id")?.as_str()?.to_owned(),
+                                symbol: o.get("symbol")?.as_str()?.to_owned(),
+                                side: o.get("side")?.as_str()?.to_owned(),
+                                qty: o.get("qty")?.as_f64()?,
+                                price: o.get("price").and_then(|v| v.as_f64()),
+                                status: o.get("status")?.as_str()?.to_owned(),
+                                filled_qty: o.get("filled_qty")?.as_f64()?,
+                                avg_price: o.get("avg_price")?.as_f64()?,
+                                ts_ms: o.get("ts_ms")?.as_i64()?,
+                                strategy_id: o
+                                    .get("strategy_id")
+                                    .and_then(|v| v.as_str())
+                                    .unwrap_or("")
+                                    .to_owned(),
+                            })
+                        })
+                        .collect()
+                })
                 .unwrap_or_default();
-            let ec = r.get("error_code").and_then(|v| v.as_str()).unwrap_or("").to_string();
+            let ec = r
+                .get("error_code")
+                .and_then(|v| v.as_str())
+                .unwrap_or("")
+                .to_string();
             if let Some(notice) = get_orders_notice(&ec) {
                 let _ = resp_tx.send(InProcResp::Status(notice));
             }
             let reconcile_ids = reconcile_ids_for_seed(&orders, reconcile);
-            let _ = resp_tx.send(InProcResp::Status(BackendStatusUpdate::OrdersSeeded { orders }));
+            let _ = resp_tx.send(InProcResp::Status(BackendStatusUpdate::OrdersSeeded {
+                orders,
+            }));
             if let Some(ids) = reconcile_ids {
-                let _ = resp_tx.send(InProcResp::Status(BackendStatusUpdate::OrdersReconciled { backend_client_order_ids: ids }));
+                let _ = resp_tx.send(InProcResp::Status(BackendStatusUpdate::OrdersReconciled {
+                    backend_client_order_ids: ids,
+                }));
             }
         }
         Err(msg) => warn!("[inproc] GetOrders failed: {}", msg),
@@ -2164,32 +2307,45 @@ fn inproc_get_portfolio(live_server: &Py<PyAny>, resp_tx: &mpsc::UnboundedSender
     match inproc_live_call(live_server, "get_portfolio", |_py, _kwargs| Ok(())) {
         Ok(r) => {
             if r.get("success").and_then(|v| v.as_bool()).unwrap_or(false) {
-                let positions = r.get("positions")
+                let positions = r
+                    .get("positions")
                     .and_then(|v| v.as_array())
-                    .map(|a| a.iter().filter_map(|p| {
-                        Some(crate::trading::PortfolioPosition {
-                            symbol: p.get("symbol")?.as_str()?.to_owned(),
-                            qty: p.get("qty")?.as_i64()?,
-                            avg_price: p.get("avg_price")?.as_f64()?,
-                            unrealized_pnl: p.get("unrealized_pnl")?.as_f64()?,
-                        })
-                    }).collect())
+                    .map(|a| {
+                        a.iter()
+                            .filter_map(|p| {
+                                Some(crate::trading::PortfolioPosition {
+                                    symbol: p.get("symbol")?.as_str()?.to_owned(),
+                                    qty: p.get("qty")?.as_i64()?,
+                                    avg_price: p.get("avg_price")?.as_f64()?,
+                                    unrealized_pnl: p.get("unrealized_pnl")?.as_f64()?,
+                                })
+                            })
+                            .collect()
+                    })
                     .unwrap_or_default();
-                let orders = r.get("orders")
+                let orders = r
+                    .get("orders")
                     .and_then(|v| v.as_array())
-                    .map(|a| a.iter().filter_map(|o| {
-                        Some(crate::trading::PortfolioOrder {
-                            symbol: o.get("symbol")?.as_str()?.to_owned(),
-                            side: o.get("side")?.as_str()?.to_owned(),
-                            qty: o.get("qty")?.as_f64()?,
-                            price: o.get("price")?.as_f64()?,
-                            status: o.get("status")?.as_str()?.to_owned(),
-                            ts_ms: o.get("ts_ms")?.as_i64()?,
-                        })
-                    }).collect())
+                    .map(|a| {
+                        a.iter()
+                            .filter_map(|o| {
+                                Some(crate::trading::PortfolioOrder {
+                                    symbol: o.get("symbol")?.as_str()?.to_owned(),
+                                    side: o.get("side")?.as_str()?.to_owned(),
+                                    qty: o.get("qty")?.as_f64()?,
+                                    price: o.get("price")?.as_f64()?,
+                                    status: o.get("status")?.as_str()?.to_owned(),
+                                    ts_ms: o.get("ts_ms")?.as_i64()?,
+                                })
+                            })
+                            .collect()
+                    })
                     .unwrap_or_default();
                 let _ = resp_tx.send(InProcResp::Status(BackendStatusUpdate::PortfolioLoaded {
-                    buying_power: r.get("buying_power").and_then(|v| v.as_f64()).unwrap_or(0.0),
+                    buying_power: r
+                        .get("buying_power")
+                        .and_then(|v| v.as_f64())
+                        .unwrap_or(0.0),
                     cash: r.get("cash").and_then(|v| v.as_f64()).unwrap_or(0.0),
                     equity: r.get("equity").and_then(|v| v.as_f64()).unwrap_or(0.0),
                     positions,
@@ -2244,7 +2400,10 @@ fn inproc_dispatch(
             inproc_set_speed(engine, mult);
             use pyo3::prelude::*;
             Python::with_gil(|py| {
-                if let Err(e) = live_server.bind(py).call_method1("set_replay_speed", (mult,)) {
+                if let Err(e) = live_server
+                    .bind(py)
+                    .call_method1("set_replay_speed", (mult,))
+                {
                     warn!("[inproc] live_server.set_replay_speed error: {}", e);
                 }
             });
@@ -2256,11 +2415,23 @@ fn inproc_dispatch(
                 error: "LoadAndStep is no longer supported in inproc mode".to_string(),
             }));
         }
+        TransportCommand::RestartReplay { .. } => {
+            // inproc モードは BacktestEngine 直接 API を使う。
+            // ForceStop → load_replay_data に相当する処理は RunStrategy が担う。
+            // RestartReplay は gRPC 専用: inproc では未対応（warn のみ）。
+            warn!(
+                "[inproc] RestartReplay is not yet supported in inproc mode; use RunStrategy to reload from bar 0"
+            );
+        }
 
         // ---------------------------------------------------------------
         // Strategy run — nautilus BacktestEngine path (issue #68 Slice 1)
         // ---------------------------------------------------------------
-        TransportCommand::RunStrategy { strategy_file, config, startup_id } => {
+        TransportCommand::RunStrategy {
+            strategy_file,
+            config,
+            startup_id,
+        } => {
             let strategy_file_str = strategy_file.to_string_lossy().to_string();
 
             let _ = resp_tx.send(InProcResp::Status(BackendStatusUpdate::RunStarted));
@@ -2279,15 +2450,20 @@ fn inproc_dispatch(
                 use pyo3::types::{PyDict, PyList};
                 let resp_tx_clone = resp_tx.clone();
                 Python::with_gil(|py| {
-                    let sink = pyo3::Py::new(py, RustBacktestSink {
-                        resp_tx: resp_tx_clone,
-                        startup_id,
-                    }).map_err(|e| format!("RustBacktestSink::new: {}", e))?;
+                    let sink = pyo3::Py::new(
+                        py,
+                        RustBacktestSink {
+                            resp_tx: resp_tx_clone,
+                            startup_id,
+                        },
+                    )
+                    .map_err(|e| format!("RustBacktestSink::new: {}", e))?;
 
                     let cfg = PyDict::new_bound(py);
                     cfg.set_item("strategy_file", &strategy_file_str)
                         .map_err(|e| e.to_string())?;
-                    let py_ids = PyList::new_bound(py, config.instruments.iter().map(|s| s.as_str()));
+                    let py_ids =
+                        PyList::new_bound(py, config.instruments.iter().map(|s| s.as_str()));
                     cfg.set_item("instruments", py_ids)
                         .map_err(|e| e.to_string())?;
                     cfg.set_item("start_date", &config.start)
@@ -2321,24 +2497,30 @@ fn inproc_dispatch(
                     if success {
                         // Background thread started; completion arrives via
                         // push_run_complete() or push_run_failed() from Python.
-                        info!("[inproc] RunStrategy start_nautilus_replay: background thread started");
+                        info!(
+                            "[inproc] RunStrategy start_nautilus_replay: background thread started"
+                        );
                     } else {
                         // Validation failed synchronously (no strategy file, no catalog, etc.)
                         let msg = format!(
                             "start_nautilus_replay: {} {}",
                             r.get("error_code").and_then(|v| v.as_str()).unwrap_or(""),
-                            r.get("error_message").and_then(|v| v.as_str()).unwrap_or(""),
+                            r.get("error_message")
+                                .and_then(|v| v.as_str())
+                                .unwrap_or(""),
                         );
                         error!("[inproc] RunStrategy {}", msg);
                         let _ = resp_tx.send(InProcResp::Status(BackendStatusUpdate::RunFailed {
-                            startup_id: Some(startup_id), error: msg,
+                            startup_id: Some(startup_id),
+                            error: msg,
                         }));
                     }
                 }
                 Err(msg) => {
                     error!("[inproc] RunStrategy start_nautilus_replay error: {}", msg);
                     let _ = resp_tx.send(InProcResp::Status(BackendStatusUpdate::RunFailed {
-                        startup_id: Some(startup_id), error: msg,
+                        startup_id: Some(startup_id),
+                        error: msg,
                     }));
                 }
             }
@@ -2354,18 +2536,34 @@ fn inproc_dispatch(
             }) {
                 Ok(r) => {
                     let success = r.get("success").and_then(|v| v.as_bool()).unwrap_or(false);
-                    let ec = r.get("error_code").and_then(|v| v.as_str()).unwrap_or("").to_string();
-                    let em = r.get("execution_mode").and_then(|v| v.as_str()).unwrap_or("").to_string();
+                    let ec = r
+                        .get("error_code")
+                        .and_then(|v| v.as_str())
+                        .unwrap_or("")
+                        .to_string();
+                    let em = r
+                        .get("execution_mode")
+                        .and_then(|v| v.as_str())
+                        .unwrap_or("")
+                        .to_string();
                     if success {
                         info!("[inproc] SetExecutionMode ok execution_mode={}", em);
                     } else {
-                        error!("[inproc] SetExecutionMode rejected: error_code={} target={}", ec, mode.as_wire_str());
+                        error!(
+                            "[inproc] SetExecutionMode rejected: error_code={} target={}",
+                            ec,
+                            mode.as_wire_str()
+                        );
                     }
                 }
                 Err(msg) => error!("[inproc] SetExecutionMode error: {}", msg),
             }
         }
-        TransportCommand::VenueLogin { venue_id, credentials_source, environment_hint } => {
+        TransportCommand::VenueLogin {
+            venue_id,
+            credentials_source,
+            environment_hint,
+        } => {
             match inproc_live_call(live_server, "venue_login", |py, kwargs| {
                 kwargs.set_item("venue_id", &venue_id)?;
                 kwargs.set_item("credentials_source", &credentials_source)?;
@@ -2374,20 +2572,39 @@ fn inproc_dispatch(
             }) {
                 Ok(r) => {
                     let success = r.get("success").and_then(|v| v.as_bool()).unwrap_or(false);
-                    let ec = r.get("error_code").and_then(|v| v.as_str()).unwrap_or("").to_string();
-                    let vs = r.get("venue_state").and_then(|v| v.as_str()).unwrap_or("").to_string();
-                    let il = r.get("instruments_loaded").and_then(|v| v.as_u64()).unwrap_or(0);
+                    let ec = r
+                        .get("error_code")
+                        .and_then(|v| v.as_str())
+                        .unwrap_or("")
+                        .to_string();
+                    let vs = r
+                        .get("venue_state")
+                        .and_then(|v| v.as_str())
+                        .unwrap_or("")
+                        .to_string();
+                    let il = r
+                        .get("instruments_loaded")
+                        .and_then(|v| v.as_u64())
+                        .unwrap_or(0);
                     if success {
-                        info!("[inproc] VenueLogin ok: venue_id={} venue_state={} instruments_loaded={}", venue_id, vs, il);
+                        info!(
+                            "[inproc] VenueLogin ok: venue_id={} venue_state={} instruments_loaded={}",
+                            venue_id, vs, il
+                        );
                         if let Some(parsed) = parse_venue_state(&vs) {
-                            let _ = resp_tx.send(InProcResp::Status(BackendStatusUpdate::VenueChanged {
-                                state: parsed,
-                                venue_id: Some(venue_id),
-                                instruments_loaded: il as u32,
-                            }));
+                            let _ = resp_tx.send(InProcResp::Status(
+                                BackendStatusUpdate::VenueChanged {
+                                    state: parsed,
+                                    venue_id: Some(venue_id),
+                                    instruments_loaded: il as u32,
+                                },
+                            ));
                         }
                     } else {
-                        error!("[inproc] VenueLogin rejected: venue_id={} error_code={}", venue_id, ec);
+                        error!(
+                            "[inproc] VenueLogin rejected: venue_id={} error_code={}",
+                            venue_id, ec
+                        );
                     }
                 }
                 Err(msg) => error!("[inproc] VenueLogin error: {}", msg),
@@ -2408,7 +2625,9 @@ fn inproc_dispatch(
         }
         TransportCommand::ListInstruments { source } => {
             let source_str = tickers_source_to_wire(source);
-            let _ = resp_tx.send(InProcResp::Status(BackendStatusUpdate::InstrumentsListStarted { source }));
+            let _ = resp_tx.send(InProcResp::Status(
+                BackendStatusUpdate::InstrumentsListStarted { source },
+            ));
             match inproc_live_call(live_server, "list_instruments", |_py, kwargs| {
                 let _ = kwargs.set_item("source", &source_str);
                 Ok(())
@@ -2416,30 +2635,56 @@ fn inproc_dispatch(
                 Ok(r) => {
                     let success = r.get("success").and_then(|v| v.as_bool()).unwrap_or(false);
                     if success {
-                        let ids: Vec<String> = r.get("instrument_ids")
+                        let ids: Vec<String> = r
+                            .get("instrument_ids")
                             .and_then(|v| v.as_array())
-                            .map(|a| a.iter().filter_map(|x| x.as_str().map(|s| s.to_owned())).collect())
+                            .map(|a| {
+                                a.iter()
+                                    .filter_map(|x| x.as_str().map(|s| s.to_owned()))
+                                    .collect()
+                            })
                             .unwrap_or_default();
-                        let instruments: Vec<crate::trading::Ticker> = r.get("instruments")
+                        let instruments: Vec<crate::trading::Ticker> = r
+                            .get("instruments")
                             .and_then(|v| v.as_array())
-                            .map(|a| a.iter().filter_map(|x| {
-                                Some(crate::trading::Ticker {
-                                    id: x.get("id")?.as_str()?.to_owned(),
-                                    name: x.get("name")?.as_str()?.to_owned(),
-                                    market: x.get("market")?.as_str()?.to_owned(),
-                                })
-                            }).collect())
+                            .map(|a| {
+                                a.iter()
+                                    .filter_map(|x| {
+                                        Some(crate::trading::Ticker {
+                                            id: x.get("id")?.as_str()?.to_owned(),
+                                            name: x.get("name")?.as_str()?.to_owned(),
+                                            market: x.get("market")?.as_str()?.to_owned(),
+                                        })
+                                    })
+                                    .collect()
+                            })
                             .unwrap_or_default();
-                        info!("[inproc] ListInstruments ok: {} instruments", instruments.len());
-                        let _ = resp_tx.send(InProcResp::Status(BackendStatusUpdate::InstrumentsListed { source, instruments }));
+                        info!(
+                            "[inproc] ListInstruments ok: {} instruments",
+                            instruments.len()
+                        );
+                        let _ = resp_tx.send(InProcResp::Status(
+                            BackendStatusUpdate::InstrumentsListed {
+                                source,
+                                instruments,
+                            },
+                        ));
                     } else {
-                        let err = r.get("error_code").and_then(|v| v.as_str()).unwrap_or("unknown").to_string();
+                        let err = r
+                            .get("error_code")
+                            .and_then(|v| v.as_str())
+                            .unwrap_or("unknown")
+                            .to_string();
                         warn!("[inproc] ListInstruments failed: {}", err);
-                        let _ = resp_tx.send(InProcResp::Status(BackendStatusUpdate::InstrumentsListFailed { source, error: err }));
+                        let _ = resp_tx.send(InProcResp::Status(
+                            BackendStatusUpdate::InstrumentsListFailed { source, error: err },
+                        ));
                     }
                 }
                 Err(msg) => {
-                    let _ = resp_tx.send(InProcResp::Status(BackendStatusUpdate::InstrumentsListFailed { source, error: msg }));
+                    let _ = resp_tx.send(InProcResp::Status(
+                        BackendStatusUpdate::InstrumentsListFailed { source, error: msg },
+                    ));
                 }
             }
         }
@@ -2452,22 +2697,52 @@ fn inproc_dispatch(
                 Ok(r) => {
                     let success = r.get("success").and_then(|v| v.as_bool()).unwrap_or(false);
                     if success {
-                        let ids: Vec<String> = r.get("instrument_ids")
+                        let ids: Vec<String> = r
+                            .get("instrument_ids")
                             .and_then(|v| v.as_array())
-                            .map(|a| a.iter().filter_map(|x| x.as_str().map(|s| s.to_owned())).collect())
+                            .map(|a| {
+                                a.iter()
+                                    .filter_map(|x| x.as_str().map(|s| s.to_owned()))
+                                    .collect()
+                            })
                             .unwrap_or_default();
-                        let resolved = r.get("resolved_end_date").and_then(|v| v.as_str()).unwrap_or(&end_date_str).to_string();
+                        let resolved = r
+                            .get("resolved_end_date")
+                            .and_then(|v| v.as_str())
+                            .unwrap_or(&end_date_str)
+                            .to_string();
                         if resolved != end_date_str {
-                            info!("[inproc] ListAllListedSymbols: backend clamped end_date {} -> {} ({} ids)", end_date_str, resolved, ids.len());
+                            info!(
+                                "[inproc] ListAllListedSymbols: backend clamped end_date {} -> {} ({} ids)",
+                                end_date_str,
+                                resolved,
+                                ids.len()
+                            );
                         }
-                        let _ = resp_tx.send(InProcResp::Status(BackendStatusUpdate::AvailableInstrumentsLoaded { end_date, ids }));
+                        let _ = resp_tx.send(InProcResp::Status(
+                            BackendStatusUpdate::AvailableInstrumentsLoaded { end_date, ids },
+                        ));
                     } else {
-                        let err = r.get("error_code").and_then(|v| v.as_str()).unwrap_or("").to_string();
-                        let _ = resp_tx.send(InProcResp::Status(BackendStatusUpdate::AvailableInstrumentsFetchFailed { end_date, error: err }));
+                        let err = r
+                            .get("error_code")
+                            .and_then(|v| v.as_str())
+                            .unwrap_or("")
+                            .to_string();
+                        let _ = resp_tx.send(InProcResp::Status(
+                            BackendStatusUpdate::AvailableInstrumentsFetchFailed {
+                                end_date,
+                                error: err,
+                            },
+                        ));
                     }
                 }
                 Err(msg) => {
-                    let _ = resp_tx.send(InProcResp::Status(BackendStatusUpdate::AvailableInstrumentsFetchFailed { end_date, error: msg }));
+                    let _ = resp_tx.send(InProcResp::Status(
+                        BackendStatusUpdate::AvailableInstrumentsFetchFailed {
+                            end_date,
+                            error: msg,
+                        },
+                    ));
                 }
             }
         }
@@ -2480,10 +2755,17 @@ fn inproc_dispatch(
                     if r.get("success").and_then(|v| v.as_bool()).unwrap_or(false) {
                         info!("[inproc] SubscribeMarketData ok: {}", instrument_id);
                     } else {
-                        warn!("[inproc] SubscribeMarketData rejected: {} error_code={:?}", instrument_id, r.get("error_code"));
+                        warn!(
+                            "[inproc] SubscribeMarketData rejected: {} error_code={:?}",
+                            instrument_id,
+                            r.get("error_code")
+                        );
                     }
                 }
-                Err(msg) => error!("[inproc] SubscribeMarketData error: {} {}", instrument_id, msg),
+                Err(msg) => error!(
+                    "[inproc] SubscribeMarketData error: {} {}",
+                    instrument_id, msg
+                ),
             }
         }
         TransportCommand::UnsubscribeMarketData { instrument_id } => {
@@ -2495,13 +2777,29 @@ fn inproc_dispatch(
                     if r.get("success").and_then(|v| v.as_bool()).unwrap_or(false) {
                         info!("[inproc] UnsubscribeMarketData ok: {}", instrument_id);
                     } else {
-                        warn!("[inproc] UnsubscribeMarketData rejected: {} error_code={:?}", instrument_id, r.get("error_code"));
+                        warn!(
+                            "[inproc] UnsubscribeMarketData rejected: {} error_code={:?}",
+                            instrument_id,
+                            r.get("error_code")
+                        );
                     }
                 }
-                Err(msg) => error!("[inproc] UnsubscribeMarketData error: {} {}", instrument_id, msg),
+                Err(msg) => error!(
+                    "[inproc] UnsubscribeMarketData error: {} {}",
+                    instrument_id, msg
+                ),
             }
         }
-        TransportCommand::PlaceOrder { venue, instrument_id, side, qty, price, order_type, time_in_force, second_secret } => {
+        TransportCommand::PlaceOrder {
+            venue,
+            instrument_id,
+            side,
+            qty,
+            price,
+            order_type,
+            time_in_force,
+            second_secret,
+        } => {
             match inproc_live_call(live_server, "place_order", |_py, kwargs| {
                 let _ = kwargs.set_item("venue", &venue);
                 let _ = kwargs.set_item("instrument_id", &instrument_id);
@@ -2510,150 +2808,271 @@ fn inproc_dispatch(
                 let _ = kwargs.set_item("price", price);
                 let _ = kwargs.set_item("order_type", &order_type);
                 let _ = kwargs.set_item("time_in_force", &time_in_force);
-                let _ = kwargs.set_item("second_secret", second_secret.as_ref().map(|s| s.expose().to_string()));
+                let _ = kwargs.set_item(
+                    "second_secret",
+                    second_secret.as_ref().map(|s| s.expose().to_string()),
+                );
                 Ok(())
             }) {
                 Ok(r) => {
                     let success = r.get("success").and_then(|v| v.as_bool()).unwrap_or(false);
-                    let ec = r.get("error_code").and_then(|v| v.as_str()).unwrap_or("").to_string();
+                    let ec = r
+                        .get("error_code")
+                        .and_then(|v| v.as_str())
+                        .unwrap_or("")
+                        .to_string();
                     if success {
                         if let Some(ev) = r.get("order_event").filter(|v| !v.is_null()) {
-                            let coid = ev.get("client_order_id").and_then(|v| v.as_str()).unwrap_or("").to_string();
-                            let void = ev.get("venue_order_id").and_then(|v| v.as_str()).unwrap_or("").to_string();
-                            let status = ev.get("status").and_then(|v| v.as_str()).unwrap_or("").to_string();
-                            let filled_qty = ev.get("filled_qty").and_then(|v| v.as_f64()).unwrap_or(0.0);
-                            let avg_price = ev.get("avg_price").and_then(|v| v.as_f64()).unwrap_or(0.0);
+                            let coid = ev
+                                .get("client_order_id")
+                                .and_then(|v| v.as_str())
+                                .unwrap_or("")
+                                .to_string();
+                            let void = ev
+                                .get("venue_order_id")
+                                .and_then(|v| v.as_str())
+                                .unwrap_or("")
+                                .to_string();
+                            let status = ev
+                                .get("status")
+                                .and_then(|v| v.as_str())
+                                .unwrap_or("")
+                                .to_string();
+                            let filled_qty =
+                                ev.get("filled_qty").and_then(|v| v.as_f64()).unwrap_or(0.0);
+                            let avg_price =
+                                ev.get("avg_price").and_then(|v| v.as_f64()).unwrap_or(0.0);
                             let ts_ms = ev.get("ts_ms").and_then(|v| v.as_i64()).unwrap_or(0);
-                            let strat_id = ev.get("strategy_id").and_then(|v| v.as_str()).unwrap_or("").to_string();
-                            info!("[inproc] PlaceOrder ok: {} {} {} qty={} status={} client_order_id={}", venue, side, instrument_id, qty, status, coid);
-                            let _ = resp_tx.send(InProcResp::Status(BackendStatusUpdate::OrderSeeded {
-                                client_order_id: coid,
-                                venue_order_id: void,
-                                symbol: instrument_id,
-                                side,
-                                qty,
-                                price,
-                                status,
-                                filled_qty,
-                                avg_price,
-                                ts_ms,
-                                strategy_id: strat_id,
-                            }));
+                            let strat_id = ev
+                                .get("strategy_id")
+                                .and_then(|v| v.as_str())
+                                .unwrap_or("")
+                                .to_string();
+                            info!(
+                                "[inproc] PlaceOrder ok: {} {} {} qty={} status={} client_order_id={}",
+                                venue, side, instrument_id, qty, status, coid
+                            );
+                            let _ = resp_tx.send(InProcResp::Status(
+                                BackendStatusUpdate::OrderSeeded {
+                                    client_order_id: coid,
+                                    venue_order_id: void,
+                                    symbol: instrument_id,
+                                    side,
+                                    qty,
+                                    price,
+                                    status,
+                                    filled_qty,
+                                    avg_price,
+                                    ts_ms,
+                                    strategy_id: strat_id,
+                                },
+                            ));
                         } else {
-                            warn!("[inproc] PlaceOrder ok but no order_event returned: {}", instrument_id);
-                            let _ = resp_tx.send(InProcResp::Status(BackendStatusUpdate::OrderNotice {
-                                message: "発注応答が不完全です — venue で注文状態を確認してください".to_string(),
-                            }));
+                            warn!(
+                                "[inproc] PlaceOrder ok but no order_event returned: {}",
+                                instrument_id
+                            );
+                            let _ =
+                                resp_tx
+                                    .send(InProcResp::Status(BackendStatusUpdate::OrderNotice {
+                                    message:
+                                        "発注応答が不完全です — venue で注文状態を確認してください"
+                                            .to_string(),
+                                }));
                         }
                     } else {
-                        warn!("[inproc] PlaceOrder rejected: {} error_code={}", instrument_id, ec);
-                        let _ = resp_tx.send(InProcResp::Status(BackendStatusUpdate::OrderRejected {
-                            action: "発注".to_string(),
-                            error_code: ec,
-                        }));
+                        warn!(
+                            "[inproc] PlaceOrder rejected: {} error_code={}",
+                            instrument_id, ec
+                        );
+                        let _ =
+                            resp_tx.send(InProcResp::Status(BackendStatusUpdate::OrderRejected {
+                                action: "発注".to_string(),
+                                error_code: ec,
+                            }));
                     }
                 }
                 Err(msg) => {
                     error!("[inproc] PlaceOrder error: {} {}", instrument_id, msg);
                     let _ = resp_tx.send(InProcResp::Status(BackendStatusUpdate::OrderNotice {
-                        message: "通信エラー — venue で注文状態を確認してください (発注)".to_string(),
+                        message: "通信エラー — venue で注文状態を確認してください (発注)"
+                            .to_string(),
                     }));
                 }
             }
         }
-        TransportCommand::CancelOrder { venue, order_id, second_secret } => {
+        TransportCommand::CancelOrder {
+            venue,
+            order_id,
+            second_secret,
+        } => {
             match inproc_live_call(live_server, "cancel_order", |_py, kwargs| {
                 let _ = kwargs.set_item("venue", &venue);
                 let _ = kwargs.set_item("order_id", &order_id);
-                let _ = kwargs.set_item("second_secret", second_secret.as_ref().map(|s| s.expose().to_string()));
+                let _ = kwargs.set_item(
+                    "second_secret",
+                    second_secret.as_ref().map(|s| s.expose().to_string()),
+                );
                 Ok(())
             }) {
                 Ok(r) => {
                     let success = r.get("success").and_then(|v| v.as_bool()).unwrap_or(false);
-                    let ec = r.get("error_code").and_then(|v| v.as_str()).unwrap_or("").to_string();
+                    let ec = r
+                        .get("error_code")
+                        .and_then(|v| v.as_str())
+                        .unwrap_or("")
+                        .to_string();
                     if success {
                         if let Some(ev) = r.get("order_event").filter(|v| !v.is_null()) {
-                            let coid = ev.get("client_order_id").and_then(|v| v.as_str()).unwrap_or("").to_string();
-                            let void = ev.get("venue_order_id").and_then(|v| v.as_str()).unwrap_or("").to_string();
-                            let status = ev.get("status").and_then(|v| v.as_str()).unwrap_or("").to_string();
-                            let filled_qty = ev.get("filled_qty").and_then(|v| v.as_f64()).unwrap_or(0.0);
-                            let avg_price = ev.get("avg_price").and_then(|v| v.as_f64()).unwrap_or(0.0);
+                            let coid = ev
+                                .get("client_order_id")
+                                .and_then(|v| v.as_str())
+                                .unwrap_or("")
+                                .to_string();
+                            let void = ev
+                                .get("venue_order_id")
+                                .and_then(|v| v.as_str())
+                                .unwrap_or("")
+                                .to_string();
+                            let status = ev
+                                .get("status")
+                                .and_then(|v| v.as_str())
+                                .unwrap_or("")
+                                .to_string();
+                            let filled_qty =
+                                ev.get("filled_qty").and_then(|v| v.as_f64()).unwrap_or(0.0);
+                            let avg_price =
+                                ev.get("avg_price").and_then(|v| v.as_f64()).unwrap_or(0.0);
                             let ts_ms = ev.get("ts_ms").and_then(|v| v.as_i64()).unwrap_or(0);
-                            info!("[inproc] CancelOrder ok: order_id={} status={}", order_id, status);
-                            let _ = resp_tx.send(InProcResp::Status(BackendStatusUpdate::OrderStatusUpdated {
-                                client_order_id: coid,
-                                venue_order_id: void,
-                                status,
-                                filled_qty,
-                                avg_price,
-                                ts_ms,
-                            }));
+                            info!(
+                                "[inproc] CancelOrder ok: order_id={} status={}",
+                                order_id, status
+                            );
+                            let _ = resp_tx.send(InProcResp::Status(
+                                BackendStatusUpdate::OrderStatusUpdated {
+                                    client_order_id: coid,
+                                    venue_order_id: void,
+                                    status,
+                                    filled_qty,
+                                    avg_price,
+                                    ts_ms,
+                                },
+                            ));
                         }
                     } else {
-                        warn!("[inproc] CancelOrder rejected: order_id={} error_code={}", order_id, ec);
-                        let _ = resp_tx.send(InProcResp::Status(BackendStatusUpdate::OrderRejected {
-                            action: "取消".to_string(),
-                            error_code: ec,
-                        }));
+                        warn!(
+                            "[inproc] CancelOrder rejected: order_id={} error_code={}",
+                            order_id, ec
+                        );
+                        let _ =
+                            resp_tx.send(InProcResp::Status(BackendStatusUpdate::OrderRejected {
+                                action: "取消".to_string(),
+                                error_code: ec,
+                            }));
                     }
                 }
                 Err(msg) => {
                     error!("[inproc] CancelOrder error: {} {}", order_id, msg);
                     let _ = resp_tx.send(InProcResp::Status(BackendStatusUpdate::OrderNotice {
-                        message: "通信エラー — venue で注文状態を確認してください (取消)".to_string(),
+                        message: "通信エラー — venue で注文状態を確認してください (取消)"
+                            .to_string(),
                     }));
                 }
             }
         }
-        TransportCommand::ModifyOrder { venue, client_order_id, new_qty, new_price, second_secret } => {
+        TransportCommand::ModifyOrder {
+            venue,
+            client_order_id,
+            new_qty,
+            new_price,
+            second_secret,
+        } => {
             match inproc_live_call(live_server, "modify_order", |_py, kwargs| {
                 let _ = kwargs.set_item("venue", &venue);
                 let _ = kwargs.set_item("client_order_id", &client_order_id);
                 let _ = kwargs.set_item("new_qty", new_qty);
                 let _ = kwargs.set_item("new_price", new_price);
-                let _ = kwargs.set_item("second_secret", second_secret.as_ref().map(|s| s.expose().to_string()));
+                let _ = kwargs.set_item(
+                    "second_secret",
+                    second_secret.as_ref().map(|s| s.expose().to_string()),
+                );
                 Ok(())
             }) {
                 Ok(r) => {
                     let success = r.get("success").and_then(|v| v.as_bool()).unwrap_or(false);
-                    let ec = r.get("error_code").and_then(|v| v.as_str()).unwrap_or("").to_string();
+                    let ec = r
+                        .get("error_code")
+                        .and_then(|v| v.as_str())
+                        .unwrap_or("")
+                        .to_string();
                     if success {
                         if let Some(ev) = r.get("order_event").filter(|v| !v.is_null()) {
-                            let coid = ev.get("client_order_id").and_then(|v| v.as_str()).unwrap_or("").to_string();
-                            let void = ev.get("venue_order_id").and_then(|v| v.as_str()).unwrap_or("").to_string();
-                            let status = ev.get("status").and_then(|v| v.as_str()).unwrap_or("").to_string();
-                            let filled_qty = ev.get("filled_qty").and_then(|v| v.as_f64()).unwrap_or(0.0);
-                            let avg_price = ev.get("avg_price").and_then(|v| v.as_f64()).unwrap_or(0.0);
+                            let coid = ev
+                                .get("client_order_id")
+                                .and_then(|v| v.as_str())
+                                .unwrap_or("")
+                                .to_string();
+                            let void = ev
+                                .get("venue_order_id")
+                                .and_then(|v| v.as_str())
+                                .unwrap_or("")
+                                .to_string();
+                            let status = ev
+                                .get("status")
+                                .and_then(|v| v.as_str())
+                                .unwrap_or("")
+                                .to_string();
+                            let filled_qty =
+                                ev.get("filled_qty").and_then(|v| v.as_f64()).unwrap_or(0.0);
+                            let avg_price =
+                                ev.get("avg_price").and_then(|v| v.as_f64()).unwrap_or(0.0);
                             let ts_ms = ev.get("ts_ms").and_then(|v| v.as_i64()).unwrap_or(0);
-                            info!("[inproc] ModifyOrder ok: client_order_id={} status={}", client_order_id, status);
-                            let _ = resp_tx.send(InProcResp::Status(BackendStatusUpdate::OrderModified {
-                                client_order_id: coid,
-                                venue_order_id: void,
-                                new_qty,
-                                new_price,
-                                status,
-                                filled_qty,
-                                avg_price,
-                                ts_ms,
-                            }));
+                            info!(
+                                "[inproc] ModifyOrder ok: client_order_id={} status={}",
+                                client_order_id, status
+                            );
+                            let _ = resp_tx.send(InProcResp::Status(
+                                BackendStatusUpdate::OrderModified {
+                                    client_order_id: coid,
+                                    venue_order_id: void,
+                                    new_qty,
+                                    new_price,
+                                    status,
+                                    filled_qty,
+                                    avg_price,
+                                    ts_ms,
+                                },
+                            ));
                         } else {
-                            warn!("[inproc] ModifyOrder ok but no order_event: {}", client_order_id);
-                            let _ = resp_tx.send(InProcResp::Status(BackendStatusUpdate::OrderNotice {
-                                message: "発注応答が不完全です — venue で注文状態を確認してください".to_string(),
-                            }));
+                            warn!(
+                                "[inproc] ModifyOrder ok but no order_event: {}",
+                                client_order_id
+                            );
+                            let _ =
+                                resp_tx
+                                    .send(InProcResp::Status(BackendStatusUpdate::OrderNotice {
+                                    message:
+                                        "発注応答が不完全です — venue で注文状態を確認してください"
+                                            .to_string(),
+                                }));
                         }
                     } else {
-                        warn!("[inproc] ModifyOrder rejected: {} error_code={}", client_order_id, ec);
-                        let _ = resp_tx.send(InProcResp::Status(BackendStatusUpdate::OrderRejected {
-                            action: "訂正".to_string(),
-                            error_code: ec,
-                        }));
+                        warn!(
+                            "[inproc] ModifyOrder rejected: {} error_code={}",
+                            client_order_id, ec
+                        );
+                        let _ =
+                            resp_tx.send(InProcResp::Status(BackendStatusUpdate::OrderRejected {
+                                action: "訂正".to_string(),
+                                error_code: ec,
+                            }));
                     }
                 }
                 Err(msg) => {
                     error!("[inproc] ModifyOrder error: {} {}", client_order_id, msg);
                     let _ = resp_tx.send(InProcResp::Status(BackendStatusUpdate::OrderNotice {
-                        message: "通信エラー — venue で注文状態を確認してください (訂正)".to_string(),
+                        message: "通信エラー — venue で注文状態を確認してください (訂正)"
+                            .to_string(),
                     }));
                 }
             }
@@ -2674,9 +3093,18 @@ fn inproc_dispatch(
                     if r.get("success").and_then(|v| v.as_bool()).unwrap_or(false) {
                         info!("[inproc] SubmitSecret ok: request_id={}", request_id);
                     } else {
-                        let ec = r.get("error_code").and_then(|v| v.as_str()).unwrap_or("").to_string();
-                        warn!("[inproc] SubmitSecret rejected: request_id={} error_code={}", request_id, ec);
-                        let _ = resp_tx.send(InProcResp::Status(BackendStatusUpdate::SecretSubmitFailed { error_code: ec }));
+                        let ec = r
+                            .get("error_code")
+                            .and_then(|v| v.as_str())
+                            .unwrap_or("")
+                            .to_string();
+                        warn!(
+                            "[inproc] SubmitSecret rejected: request_id={} error_code={}",
+                            request_id, ec
+                        );
+                        let _ = resp_tx.send(InProcResp::Status(
+                            BackendStatusUpdate::SecretSubmitFailed { error_code: ec },
+                        ));
                     }
                 }
                 Err(msg) => error!("[inproc] SubmitSecret error: {} {}", request_id, msg),
@@ -2686,40 +3114,75 @@ fn inproc_dispatch(
             match inproc_live_call(live_server, "force_account_snapshot", |_py, _kwargs| Ok(())) {
                 Ok(r) => {
                     if r.get("success").and_then(|v| v.as_bool()).unwrap_or(false) {
-                        info!("[inproc] ForceAccountSnapshot accepted; awaiting AccountEvent on stream");
+                        info!(
+                            "[inproc] ForceAccountSnapshot accepted; awaiting AccountEvent on stream"
+                        );
                     } else {
-                        error!("[inproc] ForceAccountSnapshot rejected: error_code={:?}", r.get("error_code"));
+                        error!(
+                            "[inproc] ForceAccountSnapshot rejected: error_code={:?}",
+                            r.get("error_code")
+                        );
                     }
                 }
                 Err(msg) => error!("[inproc] ForceAccountSnapshot error: {}", msg),
             }
         }
-        TransportCommand::StartLiveAuto { instrument_id, venue, strategy_file } => {
+        TransportCommand::StartLiveAuto {
+            instrument_id,
+            venue,
+            strategy_file,
+        } => {
             let strategy_file_str = strategy_file.to_string_lossy().to_string();
             // Step 1: RegisterLiveStrategy
-            let reg_result = inproc_live_call(live_server, "register_live_strategy", |_py, kwargs| {
-                let _ = kwargs.set_item("strategy_file", &strategy_file_str);
-                Ok(())
-            });
+            let reg_result =
+                inproc_live_call(live_server, "register_live_strategy", |_py, kwargs| {
+                    let _ = kwargs.set_item("strategy_file", &strategy_file_str);
+                    Ok(())
+                });
             let strategy_id = match reg_result {
                 Ok(r) => {
                     let success = r.get("success").and_then(|v| v.as_bool()).unwrap_or(false);
                     if !success {
-                        let ec = r.get("error_code").and_then(|v| v.as_str()).unwrap_or("").to_string();
-                        let em = r.get("error_message").and_then(|v| v.as_str()).unwrap_or("").to_string();
+                        let ec = r
+                            .get("error_code")
+                            .and_then(|v| v.as_str())
+                            .unwrap_or("")
+                            .to_string();
+                        let em = r
+                            .get("error_message")
+                            .and_then(|v| v.as_str())
+                            .unwrap_or("")
+                            .to_string();
                         let msg = crate::backend_sync::build_register_reject_message(
-                            false, &ec, &em, &instrument_id, &venue,
-                        ).unwrap_or_else(|| format!("RegisterLiveStrategy rejected: {}", ec));
+                            false,
+                            &ec,
+                            &em,
+                            &instrument_id,
+                            &venue,
+                        )
+                        .unwrap_or_else(|| format!("RegisterLiveStrategy rejected: {}", ec));
                         error!("[inproc] {}", msg);
-                        let _ = resp_tx.send(InProcResp::Status(BackendStatusUpdate::RunFailed { startup_id: None, error: msg }));
+                        let _ = resp_tx.send(InProcResp::Status(BackendStatusUpdate::RunFailed {
+                            startup_id: None,
+                            error: msg,
+                        }));
                         return;
                     }
-                    r.get("strategy_id").and_then(|v| v.as_str()).unwrap_or("").to_string()
+                    r.get("strategy_id")
+                        .and_then(|v| v.as_str())
+                        .unwrap_or("")
+                        .to_string()
                 }
                 Err(msg) => {
-                    let full = format!("RegisterLiveStrategy failed: instrument_id={} venue={} err={}", instrument_id, venue, msg);
+                    let full = format!(
+                        "RegisterLiveStrategy failed: instrument_id={} venue={} err={}",
+                        instrument_id, venue, msg
+                    );
                     error!("[inproc] {}", full);
-                    let _ = resp_tx.send(InProcResp::Status(BackendStatusUpdate::RunFailed { startup_id: None, error: full }));
+                    let _ = resp_tx.send(InProcResp::Status(BackendStatusUpdate::RunFailed {
+                        startup_id: None,
+                        error: full,
+                    }));
                     return;
                 }
             };
@@ -2735,7 +3198,8 @@ fn inproc_dispatch(
                 sl.set_item("max_order_value_jpy", safety.max_order_value_jpy)?;
                 sl.set_item("max_daily_loss_jpy", safety.max_daily_loss_jpy)?;
                 sl.set_item("max_orders_per_minute", safety.max_orders_per_minute)?;
-                let instr = PyList::new_bound(py, safety.allowed_instruments.iter().map(|s| s.as_str()));
+                let instr =
+                    PyList::new_bound(py, safety.allowed_instruments.iter().map(|s| s.as_str()));
                 sl.set_item("allowed_instruments", instr)?;
                 kwargs.set_item("safety_limits_dict", sl)?;
                 Ok(())
@@ -2743,19 +3207,42 @@ fn inproc_dispatch(
                 Ok(r) => {
                     let success = r.get("success").and_then(|v| v.as_bool()).unwrap_or(false);
                     if !success {
-                        let ec = r.get("error_code").and_then(|v| v.as_str()).unwrap_or("").to_string();
-                        let em = r.get("error_message").and_then(|v| v.as_str()).unwrap_or("").to_string();
+                        let ec = r
+                            .get("error_code")
+                            .and_then(|v| v.as_str())
+                            .unwrap_or("")
+                            .to_string();
+                        let em = r
+                            .get("error_message")
+                            .and_then(|v| v.as_str())
+                            .unwrap_or("")
+                            .to_string();
                         let msg = crate::backend_sync::build_start_reject_message(
-                            false, &ec, &em, &strategy_id, &instrument_id, &venue,
-                        ).unwrap_or_else(|| format!("StartLiveStrategy rejected: {}", ec));
+                            false,
+                            &ec,
+                            &em,
+                            &strategy_id,
+                            &instrument_id,
+                            &venue,
+                        )
+                        .unwrap_or_else(|| format!("StartLiveStrategy rejected: {}", ec));
                         error!("[inproc] {}", msg);
-                        let _ = resp_tx.send(InProcResp::Status(BackendStatusUpdate::RunFailed { startup_id: None, error: msg }));
+                        let _ = resp_tx.send(InProcResp::Status(BackendStatusUpdate::RunFailed {
+                            startup_id: None,
+                            error: msg,
+                        }));
                     }
                 }
                 Err(msg) => {
-                    let full = format!("StartLiveStrategy failed: strategy_id={} instrument_id={} venue={} err={}", strategy_id, instrument_id, venue, msg);
+                    let full = format!(
+                        "StartLiveStrategy failed: strategy_id={} instrument_id={} venue={} err={}",
+                        strategy_id, instrument_id, venue, msg
+                    );
                     error!("[inproc] {}", full);
-                    let _ = resp_tx.send(InProcResp::Status(BackendStatusUpdate::RunFailed { startup_id: None, error: full }));
+                    let _ = resp_tx.send(InProcResp::Status(BackendStatusUpdate::RunFailed {
+                        startup_id: None,
+                        error: full,
+                    }));
                 }
             }
         }
@@ -2766,10 +3253,17 @@ fn inproc_dispatch(
             }) {
                 Ok(r) => {
                     if !r.get("success").and_then(|v| v.as_bool()).unwrap_or(false) {
-                        error!("[inproc] PauseLiveStrategy rejected: run_id={} error_code={:?}", run_id, r.get("error_code"));
+                        error!(
+                            "[inproc] PauseLiveStrategy rejected: run_id={} error_code={:?}",
+                            run_id,
+                            r.get("error_code")
+                        );
                     }
                 }
-                Err(msg) => error!("[inproc] PauseLiveStrategy error: run_id={} err={}", run_id, msg),
+                Err(msg) => error!(
+                    "[inproc] PauseLiveStrategy error: run_id={} err={}",
+                    run_id, msg
+                ),
             }
         }
         TransportCommand::ResumeLiveStrategy { run_id } => {
@@ -2779,10 +3273,17 @@ fn inproc_dispatch(
             }) {
                 Ok(r) => {
                     if !r.get("success").and_then(|v| v.as_bool()).unwrap_or(false) {
-                        error!("[inproc] ResumeLiveStrategy rejected: run_id={} error_code={:?}", run_id, r.get("error_code"));
+                        error!(
+                            "[inproc] ResumeLiveStrategy rejected: run_id={} error_code={:?}",
+                            run_id,
+                            r.get("error_code")
+                        );
                     }
                 }
-                Err(msg) => error!("[inproc] ResumeLiveStrategy error: run_id={} err={}", run_id, msg),
+                Err(msg) => error!(
+                    "[inproc] ResumeLiveStrategy error: run_id={} err={}",
+                    run_id, msg
+                ),
             }
         }
         TransportCommand::StopLiveStrategy { run_id } => {
@@ -2792,10 +3293,17 @@ fn inproc_dispatch(
             }) {
                 Ok(r) => {
                     if !r.get("success").and_then(|v| v.as_bool()).unwrap_or(false) {
-                        error!("[inproc] StopLiveStrategy rejected: run_id={} error_code={:?}", run_id, r.get("error_code"));
+                        error!(
+                            "[inproc] StopLiveStrategy rejected: run_id={} error_code={:?}",
+                            run_id,
+                            r.get("error_code")
+                        );
                     }
                 }
-                Err(msg) => error!("[inproc] StopLiveStrategy error: run_id={} err={}", run_id, msg),
+                Err(msg) => error!(
+                    "[inproc] StopLiveStrategy error: run_id={} err={}",
+                    run_id, msg
+                ),
             }
         }
     }
@@ -2822,17 +3330,20 @@ mod tests {
         use crate::trading::BackendStatusUpdate;
         let seq = super::inproc_startup_status_sequence(/*live_server_ok=*/ false);
         assert!(
-            !seq.iter().any(|u| matches!(u, BackendStatusUpdate::Connected(true))),
+            !seq.iter()
+                .any(|u| matches!(u, BackendStatusUpdate::Connected(true))),
             "must not report Connected(true) when live server init fails: {:?}",
             seq
         );
         assert!(
-            seq.iter().any(|u| matches!(u, BackendStatusUpdate::Connected(false))),
+            seq.iter()
+                .any(|u| matches!(u, BackendStatusUpdate::Connected(false))),
             "must report Connected(false) on live server init failure: {:?}",
             seq
         );
         assert!(
-            seq.iter().any(|u| matches!(u, BackendStatusUpdate::Error(_))),
+            seq.iter()
+                .any(|u| matches!(u, BackendStatusUpdate::Error(_))),
             "must surface an Error on live server init failure: {:?}",
             seq
         );
@@ -2996,9 +3507,10 @@ mod tests {
     #[test]
     fn map_payload_venue_logout_detected() {
         use crate::trading::engine;
-        let payload = engine::backend_event::Payload::VenueLogoutDetected(
-            engine::VenueLogoutDetected { venue: "KABU".into() },
-        );
+        let payload =
+            engine::backend_event::Payload::VenueLogoutDetected(engine::VenueLogoutDetected {
+                venue: "KABU".into(),
+            });
         let ev = map_backend_event_payload(payload);
         assert!(
             matches!(ev, crate::trading::BackendEvent::VenueLogoutDetected { ref venue } if venue == "KABU"),
@@ -3048,8 +3560,7 @@ mod tests {
         let (state_tx, _state_rx) = mpsc::unbounded_channel::<BackendTradingState>();
         let (status_tx, _status_rx) = mpsc::unbounded_channel::<BackendStatusUpdate>();
         let (event_tx, _event_rx) = mpsc::unbounded_channel::<BackendEvent>();
-        let (_life_tx, life_rx) =
-            tokio::sync::watch::channel(BackendLifecycle::NotStarted);
+        let (_life_tx, life_rx) = tokio::sync::watch::channel(BackendLifecycle::NotStarted);
 
         // Constructing the future must not require a Tokio runtime. Currently the
         // events subscriber `tokio::spawn` lives in the synchronous body (~:90) and

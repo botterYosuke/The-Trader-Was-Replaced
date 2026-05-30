@@ -4,21 +4,18 @@ use backcast::backend_supervisor::{
 };
 use backcast::backend_sync::{
     BackendEventChannel, StatusUpdateChannel, backend_event_drain_system,
-    backend_restart_resync_system,
-    request_force_account_snapshot_on_live_entry, request_get_orders_on_venue_connected,
-    status_update_system,
+    backend_restart_resync_system, request_force_account_snapshot_on_live_entry,
+    request_get_orders_on_venue_connected, status_update_system,
 };
 use backcast::backend_transport::{BackendTransport, GrpcTransport, InProcTransport};
 use backcast::camera::{pancam_suppression_over_editor_system, setup_camera};
 use backcast::grid::GridPlugin;
 use backcast::replay::ReplayStartupProgress;
 use backcast::trading::{
-    AvailableInstruments, BackendChannel, BackendStatus,
-    CurrentRun, ExecutionModeRes, LastPrices, LiveOrders,
-    OrderFeedback, PortfolioState,
-    ReconcilePrompt, ReloginPrompt, ReplaySpeed, SecretPrompt, SelectedSymbol, Tickers,
-    TradingSettings, TransportCommand, TransportCommandSender, VenueStatusRes,
-    backend_update_system,
+    AvailableInstruments, BackendChannel, BackendStatus, CurrentRun, ExecutionModeRes, LastPrices,
+    LiveOrders, OrderFeedback, PortfolioState, ReconcilePrompt, ReloginPrompt, ReplaySpeed,
+    SecretPrompt, SelectedSymbol, Tickers, TradingSettings, TransportCommand,
+    TransportCommandSender, VenueStatusRes, backend_update_system,
 };
 use backcast::ui::UiPlugin;
 use backcast::ui::run_result_panel::{
@@ -239,9 +236,9 @@ mod tests {
     use backcast::replay::ReplayStartupPhase;
     use backcast::trading::{
         AccountPosition, AvailableInstruments, BackendStartupStage, BackendStatus,
-        BackendStatusUpdate, CurrentRun, ExecutionModeRes, LastPrices, LiveOrders,
-        OrderFeedback, PortfolioState, ReconcilePrompt, RunState, SecretPrompt,
-        Ticker, Tickers, VenueStatusRes,
+        BackendStatusUpdate, CurrentRun, ExecutionMode, ExecutionModeRes, LastPrices, LiveOrders,
+        OrderFeedback, PortfolioState, ReconcilePrompt, RunState, SecretPrompt, Ticker, Tickers,
+        TradingSession, VenueStatusRes,
     };
     use chrono::NaiveDate;
 
@@ -328,6 +325,7 @@ mod tests {
             &mut order_feedback,
             &mut reconcile_prompt,
             &mut SecretPrompt::default(),
+            &mut TradingSession::default(),
         );
         current_run
     }
@@ -364,6 +362,7 @@ mod tests {
             &mut order_feedback,
             &mut reconcile_prompt,
             &mut SecretPrompt::default(),
+            &mut TradingSession::default(),
         );
         order_feedback
     }
@@ -441,7 +440,7 @@ mod tests {
     fn mode_change_clears_stale_feedback() {
         let fb = apply_feedback(
             BackendStatusUpdate::ExecutionModeChanged {
-                mode: backcast::trading::ExecutionMode::Replay,
+                mode: ExecutionMode::Replay,
             },
             Some("発注が拒否されました (X)"),
         );
@@ -453,7 +452,6 @@ mod tests {
 
     #[test]
     fn mode_change_resets_portfolio_to_prevent_live_replay_bleed() {
-        use backcast::trading::ExecutionMode;
         let mut status = BackendStatus::default();
         let mut current_run = CurrentRun::default();
         let mut portfolio = PortfolioState {
@@ -491,6 +489,7 @@ mod tests {
             &mut order_feedback,
             &mut reconcile_prompt,
             &mut SecretPrompt::default(),
+            &mut TradingSession::default(),
         );
         assert!(
             !portfolio.loaded,
@@ -532,6 +531,7 @@ mod tests {
             &mut order_feedback,
             &mut reconcile_prompt,
             &mut SecretPrompt::default(),
+            &mut TradingSession::default(),
         );
     }
 
@@ -881,6 +881,7 @@ mod tests {
             &mut order_feedback,
             &mut reconcile_prompt,
             &mut SecretPrompt::default(),
+            &mut TradingSession::default(),
         );
     }
 
