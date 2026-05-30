@@ -315,7 +315,7 @@ pub fn compute_find_match_spans_system(
     fragments_q: Query<(&StrategyEditorId, &StrategyFragment), With<WindowRoot>>,
     // Slice 5 (#50): cosmic 側 (StrategyEditorContent) ではなく bevscode peer 側
     // (StrategyEditorNode) の FindMatchSpans を更新する。region_key は StrategyEditorNode が直接持つ。
-    mut editor_q: Query<(&StrategyEditorNode, &mut FindMatchRects)>,
+    editor_q: Query<&StrategyEditorNode>,
     mut last: Local<(String, bool, bool, Option<Entity>)>,
 ) {
     // 孤児チェック: target_editor が despawn 済み (× で閉じられた等) なら state をリセット。
@@ -363,7 +363,7 @@ pub fn compute_find_match_spans_system(
     if target_changed
         && let Some(old) = prev_target
         && Some(old) != state.target_editor
-        && editor_q.get_mut(old).is_ok()
+        && editor_q.get(old).is_ok()
     {
         // FindMatchRects は update_find_overlay_rects_system が自動更新するため不要。
     }
@@ -371,7 +371,7 @@ pub fn compute_find_match_spans_system(
     let Some(target) = state.target_editor else {
         return;
     };
-    let Ok((target_node, _)) = editor_q.get_mut(target) else {
+    let Ok(target_node) = editor_q.get(target) else {
         return;
     };
     let region_key = target_node.region_key.clone();
@@ -834,7 +834,11 @@ pub fn update_find_overlay_rects_system(
     state: Res<FindReplaceState>,
     theme: Res<Theme>,
     mut editors: Query<(Entity, &DisplayLayout, &mut FindMatchRects), With<StrategyEditorNode>>,
+    changed_layouts: Query<(), (With<StrategyEditorNode>, Changed<DisplayLayout>)>,
 ) {
+    if !state.is_changed() && changed_layouts.is_empty() {
+        return;
+    }
     for (entity, layout, mut rects) in editors.iter_mut() {
         let is_target = state.target_editor == Some(entity);
         if !state.is_open || !is_target {
@@ -1243,7 +1247,10 @@ mod tests {
         let mut app = App::new();
         app.init_resource::<crate::ui::theme::Theme>();
         app.init_resource::<FindReplaceState>();
-        app.add_systems(Update, compute_find_match_spans_system);
+        app.add_systems(
+            Update,
+            (compute_find_match_spans_system, update_find_overlay_rects_system),
+        );
 
         let spawn_pair = |app: &mut App, region: &str| -> Entity {
             let root = app
@@ -1266,6 +1273,7 @@ mod tests {
                         region_key: region.to_string(),
                     },
                     FindMatchRects::default(),
+                    DisplayLayout::default(),
                 ))
                 .id()
         };
@@ -1294,6 +1302,18 @@ mod tests {
         let state = app.world().resource::<FindReplaceState>();
         assert_eq!(state.matches.len(), 2, "retarget: state holds B's 2 matches");
         assert_eq!(state.target_editor, Some(editor_b), "target is now B");
+
+        // editor_a の FindMatchRects は retarget 後にクリアされていること。
+        // headless では DisplayLayout に pixel 情報がないため editor_b も空になる。
+        let rects_a = app
+            .world()
+            .entity(editor_a)
+            .get::<FindMatchRects>()
+            .unwrap();
+        assert!(
+            rects_a.0.is_empty(),
+            "editor_a's FindMatchRects must be cleared after retarget"
+        );
     }
 
     // ── manage_find_panel_lifecycle_system (Slice 5 #50) ───────
