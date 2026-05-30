@@ -282,6 +282,8 @@ impl Plugin for UiPlugin {
         .init_resource::<OrderContextMenu>()
         .init_resource::<ModifyForm>()
         .init_resource::<crate::ui::component::modal_layer::ModalLayer>()
+        .init_resource::<crate::ui::component::toast::ToastLayer>()
+        .init_resource::<crate::ui::component::context_menu::ContextMenuLayer>()
         // Phase 10 §2.9: OrdersPanel strategy_id filter (All / Manual / Strategy).
         .init_resource::<crate::trading::OrdersFilter>()
         // Phase 10 §2.10 / log Open Question: violation toast + strategy log buffer.
@@ -565,6 +567,9 @@ impl Plugin for UiPlugin {
             (
                 // Context menu (右クリック → [取消]/[訂正])
                 context_menu_visibility_system,
+                // ContextMenuLayer Esc dismissal.
+                crate::ui::component::context_menu::context_menu_esc_system
+                    .in_set(crate::ui::input_phase::InputPhase::ModalInput),
                 // §3.10 Escape determinism (see confirm_modal_button_system): this
                 // notice reader yields Escape to a higher-priority modal, so it must
                 // read those flags BEFORE they are cleared — run before both the
@@ -639,7 +644,13 @@ impl Plugin for UiPlugin {
             ),
         )
         // ── Phase 10 §2.10: Safety Rail violation toast ──
-        .add_systems(Update, safety_toast_system)
+        .add_systems(
+            Update,
+            (
+                safety_toast_system,
+                crate::ui::component::toast::toast_expiry_system,
+            ),
+        )
         // ── Slice 1 (#50): bevscode 本実装 Projected Node 系統 ──
         // ADR 0006. bevscode `CodeEditor` を world-space marker（StrategyEditorRoot / StrategyEditorNode）に
         // 投影する唯一の Projected Node 経路。

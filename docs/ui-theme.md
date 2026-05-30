@@ -324,3 +324,24 @@ fn secret_modal_input_system(
 `src/ui/component/keyboard_drain.rs` の `#[cfg(test)]` ユニットテストが
 `process_key_events` の不変条件を担保（純粋関数のため headless App 不要）。
 `drain_keyboard` の E2E 観測は [k7]/[k8]/[k12] の modal 系 flow が担います。
+
+## 15. CI Anti-Pattern Guard（Slice H）
+
+`scripts/check-design-system.sh` が `src/ui/**/*.rs` を走査し、
+生の `Color::srgb(` / `Color::srgba(` / `Color::rgb(` / `Color::rgba(` 呼び出しを検出する。
+
+| exit code | 意味 |
+|---|---|
+| 0 | 違反なし — トークン経由で色が指定されている |
+| 1 | 違反あり — 件数と行番号を stderr に出力 |
+
+### 使い方
+
+```bash
+bash scripts/check-design-system.sh
+```
+
+### 違反した場合の修正方針
+
+§8 アンチパターン集を参照。`Color::srgb(r, g, b)` 直書きは `theme.colors.<token>` に置き換える。
+新しいトークンが必要な場合は `ThemeColors` に追加し §2 の索引に記載すること。
