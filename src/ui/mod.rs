@@ -615,6 +615,7 @@ impl Plugin for UiPlugin {
                 // ModalLayer stack is empty (early-returns). Same Escape-yield
                 // ordering as relogin so the handoff preserves determinism.
                 crate::ui::component::modal_layer::modal_layer_esc_system
+                    .in_set(crate::ui::input_phase::InputPhase::ModalInput)
                     .before(secret_modal_input_system)
                     .before(confirm_modal_button_system),
                 // B2-4 step 2+3 (#46): mechanism A — bidirectional sync of

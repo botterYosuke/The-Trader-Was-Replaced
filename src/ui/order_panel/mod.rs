@@ -18,8 +18,7 @@ mod confirm_modal;
 mod form;
 
 // ── 共有配色 (form / confirm_modal 双方が参照) ──────────────────────────────
-pub(crate) const COLOR_VALUE: Color = Color::srgb(0.88, 0.91, 0.96);
-pub(crate) const COLOR_BTN_SUBMIT: Color = Color::srgba(0.10, 0.45, 0.30, 1.0);
+// Colors are now sourced from Theme (see usage sites)
 
 pub use confirm_modal::{
     ConfirmButton, ConfirmModalRoot, OrderConfirm, confirm_modal_button_system,

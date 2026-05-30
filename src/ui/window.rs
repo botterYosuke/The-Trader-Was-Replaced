@@ -10,11 +10,11 @@ use crate::ui::components::{
     WindowRoot,
 };
 use crate::ui::floating_window::{FloatingWindowSpec, TITLE_BAR_HEIGHT, spawn_floating_window};
+use crate::ui::theme::Theme;
 use bevy::prelude::*;
 use std::collections::{HashMap, HashSet};
 
 const PANEL_POSITION: Vec2 = Vec2::new(200.0, 0.0);
-const ACCENT: Color = Color::srgba(0.0, 0.8, 1.0, 0.4);
 
 pub fn spawn_chart_panel(commands: &mut Commands, instrument_id: &str, initial_size: Vec2) {
     // 枠は共通ヘルパーに任せる
@@ -24,7 +24,7 @@ pub fn spawn_chart_panel(commands: &mut Commands, instrument_id: &str, initial_s
             title: format!("CHART — {}", instrument_id),
             size: initial_size,
             position: PANEL_POSITION,
-            accent: ACCENT,
+            accent: Theme::default().colors.accent.with_alpha(0.4),
             closeable: true,
             resizable: true,
         },
@@ -46,7 +46,7 @@ pub fn spawn_chart_panel(commands: &mut Commands, instrument_id: &str, initial_s
                 font_size: 22.0,
                 ..default()
             },
-            TextColor(Color::srgb(0.0, 1.0, 0.5)),
+            TextColor(Theme::default().status.success),
             Transform::from_xyz(CHART_CHILD_LOCAL_X_REPLAY, 72.0, 0.3),
             PriceDisplay,
         ))
@@ -65,7 +65,7 @@ pub fn spawn_chart_panel(commands: &mut Commands, instrument_id: &str, initial_s
             //    うるため alpha 0.001 の実質透明 sprite にする。
             Sprite {
                 custom_size: Some(CHART_DRAW_SIZE),
-                color: Color::srgba(0.0, 0.0, 0.0, 0.001),
+                color: Color::NONE.with_alpha(0.001),
                 ..default()
             },
             Transform::from_xyz(CHART_CHILD_LOCAL_X_REPLAY, CHART_CHILD_LOCAL_Y, 0.1),

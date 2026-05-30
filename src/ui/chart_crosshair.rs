@@ -60,10 +60,7 @@ pub struct CrosshairBadge {
 const CROSS_LINE_Z: f32 = 0.5;
 /// badge 背景の z (axis label +0.3 / cross line +0.5 より上 — Caveat #16)。
 const BADGE_Z: f32 = 0.6;
-/// cross line の色 (薄いグレー半透明)。
-const CROSS_LINE_COLOR: Color = Color::srgba(0.8, 0.8, 0.8, 0.5);
-/// badge 背景色 (bluish accent、gutter のラベルより目立たせる)。
-const BADGE_BG_COLOR: Color = Color::srgba(0.18, 0.42, 0.58, 0.95);
+// Cross line and badge colors are sourced from Theme at render time.
 /// badge テキスト色。
 const BADGE_TEXT_COLOR: Color = Color::WHITE;
 /// badge テキストサイズ (axis label と同じ)。
@@ -74,6 +71,7 @@ const PRICE_BADGE_HEIGHT: f32 = 16.0;
 const TIME_BADGE_WIDTH: f32 = 46.0;
 
 use crate::ui::chart_viewstate::{PRICE_GUTTER_WIDTH, TIME_GUTTER_HEIGHT};
+use crate::ui::theme::Theme;
 
 // ─── observer (schedule 外、Caveat #28) ───
 
@@ -196,13 +194,14 @@ fn nearest_candle_volume(ohlc: &[OhlcPoint], target_ms: i64) -> Option<f32> {
 pub fn chart_crosshair_render_system(
     mut painter: ShapePainter,
     chart_q: Query<(&GlobalTransform, &ChartViewState, &CrosshairState)>,
+    theme: Res<Theme>,
 ) {
     for (gt, state, crosshair) in &chart_q {
         let Some(cursor) = crosshair.cursor_world else {
             continue;
         };
         painter.set_translation(gt.translation());
-        painter.color = CROSS_LINE_COLOR;
+        painter.color = theme.colors.border_variant.with_alpha(0.5);
         painter.thickness = 1.0;
         // 縦線 (cursor.x 上の price 軸方向)。
         painter.line(
@@ -239,6 +238,7 @@ pub fn crosshair_badge_system(
     existing: Query<(Entity, &CrosshairBadge)>,
     live_price_gutter: Query<(), With<PriceGutter>>,
     live_time_gutter: Query<(), With<TimeGutter>>,
+    theme: Res<Theme>,
 ) {
     for (chart_entity, state, crosshair, price_ref, time_ref) in &chart_q {
         // 自 chart の既存 badge を一括 despawn (背景 + 文字の 2 entity)。
@@ -248,6 +248,7 @@ pub fn crosshair_badge_system(
             }
         }
 
+        let badge_bg = theme.colors.element_selected.with_alpha(0.95);
         // price badge — main area 内 hover のときだけ (hovered_price = Some)。
         if let Some(price) = crosshair.hovered_price {
             if live_price_gutter.contains(price_ref.0) {
@@ -259,6 +260,7 @@ pub fn crosshair_badge_system(
                     Vec2::new(0.0, y),
                     Vec2::new(PRICE_GUTTER_WIDTH, PRICE_BADGE_HEIGHT),
                     format!("{:.*}", state.decimals, price),
+                    badge_bg,
                 );
             }
         }
@@ -274,6 +276,7 @@ pub fn crosshair_badge_system(
                     Vec2::new(0.0, cursor.y),
                     Vec2::new(PRICE_GUTTER_WIDTH, PRICE_BADGE_HEIGHT),
                     format_volume(vol),
+                    badge_bg,
                 );
             }
         }
@@ -290,6 +293,7 @@ pub fn crosshair_badge_system(
                         Vec2::new(x, 0.0),
                         Vec2::new(TIME_BADGE_WIDTH, TIME_GUTTER_HEIGHT),
                         text,
+                        badge_bg,
                     );
                 }
             }
@@ -307,6 +311,7 @@ fn spawn_badge(
     gutter_local: Vec2,
     bg_size: Vec2,
     text: String,
+    badge_bg: Color,
 ) {
     let text_entity = commands
         .spawn((
@@ -324,7 +329,7 @@ fn spawn_badge(
     let badge = commands
         .spawn((
             Sprite {
-                color: BADGE_BG_COLOR,
+                color: badge_bg,
                 custom_size: Some(bg_size),
                 ..default()
             },
@@ -355,6 +360,7 @@ mod tests {
     #[test]
     fn derive_computes_price_and_time_in_main_area() {
         let mut app = App::new();
+        app.init_resource::<crate::ui::theme::Theme>();
         app.init_resource::<InstrumentTradingDataMap>();
         let state = state_for_hover();
         // main area 中央付近 (y >= main_area_y_bottom)。
@@ -392,6 +398,7 @@ mod tests {
     #[test]
     fn derive_price_none_in_volume_area() {
         let mut app = App::new();
+        app.init_resource::<crate::ui::theme::Theme>();
         app.init_resource::<InstrumentTradingDataMap>();
         let state = state_for_hover();
         // volume area (下 20%): y < main_area_y_bottom。
@@ -437,6 +444,7 @@ mod tests {
         use crate::trading::InstrumentTradingData;
 
         let mut app = App::new();
+        app.init_resource::<crate::ui::theme::Theme>();
         app.init_resource::<InstrumentTradingDataMap>();
 
         let state = state_for_hover();
@@ -511,6 +519,7 @@ mod tests {
     #[test]
     fn derive_noop_when_cursor_none() {
         let mut app = App::new();
+        app.init_resource::<crate::ui::theme::Theme>();
         app.init_resource::<InstrumentTradingDataMap>();
         let chart = app
             .world_mut()
@@ -537,6 +546,7 @@ mod tests {
         struct ChangedLog(Vec<usize>);
 
         let mut app = App::new();
+        app.init_resource::<crate::ui::theme::Theme>();
         app.init_resource::<ChangedLog>();
         app.init_resource::<InstrumentTradingDataMap>();
         app.world_mut().spawn((
@@ -583,6 +593,7 @@ mod tests {
     #[test]
     fn badge_system_spawns_badges_as_gutter_children() {
         let mut app = App::new();
+        app.init_resource::<crate::ui::theme::Theme>();
 
         let price_gutter = app
             .world_mut()
@@ -635,6 +646,7 @@ mod tests {
     #[test]
     fn badge_replaces_not_accumulates() {
         let mut app = App::new();
+        app.init_resource::<crate::ui::theme::Theme>();
 
         let price_gutter = app
             .world_mut()
@@ -698,6 +710,7 @@ mod tests {
     #[test]
     fn badge_volume_area_spawns_volume_and_time_badges() {
         let mut app = App::new();
+        app.init_resource::<crate::ui::theme::Theme>();
 
         let price_gutter = app
             .world_mut()
@@ -748,6 +761,7 @@ mod tests {
     #[test]
     fn badge_skips_despawned_gutter_without_panic() {
         let mut app = App::new();
+        app.init_resource::<crate::ui::theme::Theme>();
 
         let price_gutter = app
             .world_mut()

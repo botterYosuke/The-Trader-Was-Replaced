@@ -20,7 +20,6 @@
 use crate::trading::{
     DepthLevel, DepthSnapshot, ExecutionModeRes, InstrumentTradingDataMap, LastPrices, is_live_mode,
 };
-use crate::ui::chart_render::{BEARISH_CANDLE_COLOR, BULLISH_CANDLE_COLOR};
 use crate::ui::chart_viewstate::{
     CHART_CHILD_LOCAL_X_LIVE, CHART_CHILD_LOCAL_X_REPLAY, CHART_PANEL_SIZE, ChartViewState,
     LADDER_PANE_LOCAL_X, LADDER_WIDTH, LIVE_COMBINED_PANEL_SIZE,
@@ -28,6 +27,7 @@ use crate::ui::chart_viewstate::{
 use crate::ui::chart_volume::format_volume;
 use crate::ui::components::{ChartInstrument, PriceDisplay, WindowRoot};
 use crate::ui::floating_window::TITLE_BAR_HEIGHT;
+use crate::ui::theme::Theme;
 use bevy::prelude::*;
 use bevy::sprite::Anchor;
 
@@ -41,8 +41,6 @@ const LADDER_ROW_COUNT: f32 = 21.0;
 /// Ladder の段数 (片側)。
 const LADDER_DEPTH: usize = 10;
 
-/// Ladder ペイン背景色。
-const LADDER_PANE_BG: Color = Color::srgba(0.08, 0.08, 0.08, 0.95);
 /// ペインの z (chart child +0.1 より前、crosshair badge +0.6 より後ろは問わない別 entity)。
 const LADDER_PANE_Z: f32 = 0.2;
 /// 行背景 Sprite の z (ペイン基準)。
@@ -55,12 +53,6 @@ const ROW_TEXT_SIZE: f32 = 9.0;
 const ROW_TEXT_PAD_X: f32 = 4.0;
 /// bid/ask 行背景の薄塗り alpha (candle 色を流用 — Caveat: 色は const 一本化)。
 const ROW_BG_ALPHA: f32 = 0.22;
-/// LAST 行の背景色。
-const LAST_ROW_BG: Color = Color::srgba(0.2, 0.2, 0.28, 0.95);
-/// LAST 行のテキスト色。
-const LAST_ROW_FG: Color = Color::srgb(1.0, 0.95, 0.55);
-/// プレースホルダ (depth 無し) のテキスト色。
-const PLACEHOLDER_FG: Color = Color::srgb(0.55, 0.55, 0.55);
 /// price 表示桁 (ChartViewState の decimals と同じ hardcode 2)。
 const LADDER_PRICE_DECIMALS: usize = 2;
 
@@ -166,6 +158,7 @@ pub fn chart_ladder_mode_sync_system(
     mut price_tf: Query<&mut Transform, (With<PriceDisplay>, Without<ChartViewState>)>,
     ladder_panes: Query<(Entity, &LadderPane)>,
     mut root_sprites: Query<&mut Sprite, With<WindowRoot>>,
+    theme: Res<Theme>,
 ) {
     if !exec_mode.is_changed() && new_roots.is_empty() {
         return;
@@ -237,7 +230,7 @@ pub fn chart_ladder_mode_sync_system(
                             },
                             Sprite {
                                 custom_size: Some(Vec2::new(LADDER_WIDTH, LADDER_CONTENT_HEIGHT)),
-                                color: LADDER_PANE_BG,
+                                color: theme.colors.background.with_alpha(0.95),
                                 ..default()
                             },
                             Transform::from_xyz(LADDER_PANE_LOCAL_X, 0.0, LADDER_PANE_Z),
@@ -271,6 +264,7 @@ pub fn ladder_render_system(
     mut ladder_panes: Query<(Entity, &mut LadderPane, Option<&Children>)>,
     root_instruments: Query<&ChartInstrument>,
     rows_q: Query<(), With<LadderRow>>,
+    theme: Res<Theme>,
 ) {
     // depth は `InstrumentTradingDataMap`、LAST は `LastPrices` と別チャンネルで更新される
     // (main.rs の BackendStatusUpdate)。LAST だけ動いたフレームも拾わないと LAST 行が stale になる。
@@ -307,6 +301,11 @@ pub fn ladder_render_system(
             }
         }
 
+        let long_color = theme.status.long;
+        let short_color = theme.status.short;
+        let last_row_bg = theme.colors.element_background.with_alpha(0.95);
+        let last_row_fg = theme.status.warning;
+        let placeholder_fg = theme.colors.text_muted;
         match depth {
             Some(depth) => {
                 // Ask 行 (上半分)。10 段未満は `---` で埋め常に 10 行 (Caveat #37)。
@@ -317,10 +316,12 @@ pub fn ladder_render_system(
                         LadderRowKind::Ask,
                         i,
                         depth.asks.get(i),
+                        long_color,
+                        short_color,
                     );
                 }
                 // LAST 行 (中央)。last は per-instrument の LastPrices から引く (上で取得済)。
-                spawn_ladder_last_row(&mut commands, pane_entity, last);
+                spawn_ladder_last_row(&mut commands, pane_entity, last, last_row_bg, last_row_fg);
                 // Bid 行 (下半分)。
                 for i in 0..LADDER_DEPTH {
                     spawn_ladder_row(
@@ -329,12 +330,14 @@ pub fn ladder_render_system(
                         LadderRowKind::Bid,
                         i,
                         depth.bids.get(i),
+                        long_color,
+                        short_color,
                     );
                 }
             }
             None => {
                 // depth 無し (Replay / 未購読): プレースホルダ 1 行。
-                spawn_ladder_placeholder(&mut commands, pane_entity);
+                spawn_ladder_placeholder(&mut commands, pane_entity, placeholder_fg);
             }
         }
     }
@@ -393,12 +396,14 @@ fn spawn_ladder_row(
     kind: LadderRowKind,
     index: usize,
     level: Option<&DepthLevel>,
+    long_color: Color,
+    short_color: Color,
 ) {
     // この helper は Ask / Bid のみで呼ばれる (Last は spawn_ladder_last_row)。
     let base = if kind == LadderRowKind::Bid {
-        BULLISH_CANDLE_COLOR
+        long_color
     } else {
-        BEARISH_CANDLE_COLOR
+        short_color
     };
     spawn_row(
         commands,
@@ -412,7 +417,7 @@ fn spawn_ladder_row(
 }
 
 /// LAST 行 (中央) を spawn する。`last == None` なら価格を `---` 表示。
-fn spawn_ladder_last_row(commands: &mut Commands, pane: Entity, last: Option<f64>) {
+fn spawn_ladder_last_row(commands: &mut Commands, pane: Entity, last: Option<f64>, last_row_bg: Color, last_row_fg: Color) {
     let label = match last {
         Some(p) => format!("LAST {:.*}", LADDER_PRICE_DECIMALS, p),
         None => "LAST ---".to_string(),
@@ -422,22 +427,22 @@ fn spawn_ladder_last_row(commands: &mut Commands, pane: Entity, last: Option<f64
         pane,
         LadderRowKind::Last,
         0,
-        LAST_ROW_BG,
-        LAST_ROW_FG,
+        last_row_bg,
+        last_row_fg,
         label,
     );
 }
 
 /// depth が無い (Replay / 未購読) ときのプレースホルダ行。再生成時に他行と同様 despawn される。
 /// 行ヘルパを再利用し、背景のみ透明にして中央テキストだけ見せる。
-fn spawn_ladder_placeholder(commands: &mut Commands, pane: Entity) {
+fn spawn_ladder_placeholder(commands: &mut Commands, pane: Entity, placeholder_fg: Color) {
     spawn_row(
         commands,
         pane,
         LadderRowKind::Last,
         0,
         Color::NONE,
-        PLACEHOLDER_FG,
+        placeholder_fg,
         // ⚠️ ASCII 限定: 既定フォント (FiraMono-subset) は CJK グリフを持たず日本語は豆腐になる
         //    (codebase 全体で UI 文字列は ASCII。buying_power の "—" 等が前例)。
         "No depth data".to_string(),
@@ -570,6 +575,7 @@ mod tests {
     #[test]
     fn mode_sync_spawns_ladder_in_live_and_despawns_in_replay() {
         let mut app = App::new();
+        app.init_resource::<crate::ui::theme::Theme>();
         app.insert_resource(ExecutionModeRes {
             mode: ExecutionMode::LiveManual,
         });
@@ -643,6 +649,7 @@ mod tests {
     #[test]
     fn ladder_render_builds_21_rows_from_depth() {
         let mut app = App::new();
+        app.init_resource::<crate::ui::theme::Theme>();
         app.init_resource::<InstrumentTradingDataMap>();
         app.init_resource::<LastPrices>();
         app.add_systems(Update, ladder_render_system);
@@ -713,6 +720,7 @@ mod tests {
     #[test]
     fn ladder_render_placeholder_when_no_depth() {
         let mut app = App::new();
+        app.init_resource::<crate::ui::theme::Theme>();
         app.init_resource::<InstrumentTradingDataMap>();
         app.init_resource::<LastPrices>();
         app.add_systems(Update, ladder_render_system);
@@ -756,6 +764,7 @@ mod tests {
     #[test]
     fn ladder_render_is_per_instrument() {
         let mut app = App::new();
+        app.init_resource::<crate::ui::theme::Theme>();
         app.init_resource::<InstrumentTradingDataMap>();
         app.init_resource::<LastPrices>();
         app.add_systems(Update, ladder_render_system);
@@ -834,6 +843,7 @@ mod tests {
     #[test]
     fn ladder_rows_replace_not_accumulate() {
         let mut app = App::new();
+        app.init_resource::<crate::ui::theme::Theme>();
         app.init_resource::<InstrumentTradingDataMap>();
         app.init_resource::<LastPrices>();
         app.add_systems(Update, ladder_render_system);
@@ -897,6 +907,7 @@ mod tests {
     #[test]
     fn ladder_skips_rebuild_when_depth_unchanged() {
         let mut app = App::new();
+        app.init_resource::<crate::ui::theme::Theme>();
         app.init_resource::<InstrumentTradingDataMap>();
         app.init_resource::<LastPrices>();
         app.add_systems(Update, ladder_render_system);
@@ -968,6 +979,7 @@ mod tests {
     #[test]
     fn ladder_rebuilds_on_last_price_only_change() {
         let mut app = App::new();
+        app.init_resource::<crate::ui::theme::Theme>();
         app.init_resource::<InstrumentTradingDataMap>();
         app.init_resource::<LastPrices>();
         app.add_systems(Update, ladder_render_system);

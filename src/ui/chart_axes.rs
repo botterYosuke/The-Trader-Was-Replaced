@@ -11,13 +11,12 @@
 
 use crate::ui::chart_viewstate::{ChartViewState, PRICE_GUTTER_WIDTH};
 use crate::ui::components::ChartInstrument;
+use crate::ui::theme::Theme;
 use bevy::prelude::*;
 use bevy::sprite::Anchor;
 
 /// ラベルのフォントサイズ (px)。gutter 幅 (50) / 高さ (24) に収まる小さめの値。
 const TEXT_SIZE: f32 = 11.0;
-/// ラベル文字色 (薄いグレー)。
-const LABEL_COLOR: Color = Color::srgb(0.7, 0.7, 0.7);
 /// axis label の z (Caveat #16: crosshair badge は +0.6、cross line は +0.5)。
 const LABEL_Z: f32 = 0.3;
 /// price label の左パディング (gutter 左端からの余白)。
@@ -191,6 +190,7 @@ pub fn price_axis_labels_system(
     // gutter が生存している chart のみ処理する。chart panel は prune→sync で spawn 直後に
     // despawn されることがあり (universe 空など)、despawn 済 gutter への set_parent は panic する。
     live_gutter: Query<(), With<PriceGutter>>,
+    theme: Res<Theme>,
 ) {
     for (chart_entity, state, gutter_ref) in &chart_q {
         if !live_gutter.contains(gutter_ref.0) {
@@ -235,7 +235,7 @@ pub fn price_axis_labels_system(
                         font_size: TEXT_SIZE,
                         ..default()
                     },
-                    TextColor(LABEL_COLOR),
+                    TextColor(theme.colors.text_muted),
                     Anchor::CENTER_LEFT,
                     Transform::from_xyz(label_x, y, LABEL_Z),
                     PriceLabel {
@@ -259,6 +259,7 @@ pub fn time_axis_labels_system(
     existing: Query<(Entity, &TimeLabel)>,
     // 価格軸と同様、despawn 済 gutter への set_parent panic を防ぐ。
     live_gutter: Query<(), With<TimeGutter>>,
+    theme: Res<Theme>,
 ) {
     for (chart_entity, state, gutter_ref) in &chart_q {
         if !live_gutter.contains(gutter_ref.0) {
@@ -305,7 +306,7 @@ pub fn time_axis_labels_system(
                                 font_size: TEXT_SIZE,
                                 ..default()
                             },
-                            TextColor(LABEL_COLOR),
+                            TextColor(theme.colors.text_muted),
                             Anchor::CENTER,
                             // time gutter は chart-local (0, -y) に置いているので gutter-local x == interval_to_x。
                             Transform::from_xyz(x, 0.0, LABEL_Z),
@@ -443,6 +444,7 @@ mod tests {
         };
 
         let mut app = App::new();
+        app.init_resource::<crate::ui::theme::Theme>();
         app.add_message::<RequestAutoscale>();
         app.init_resource::<InstrumentTradingDataMap>();
 
@@ -541,6 +543,7 @@ mod tests {
         use crate::ui::chart_viewstate::ChartViewState;
 
         let mut app = App::new();
+        app.init_resource::<crate::ui::theme::Theme>();
 
         let price_gutter = app
             .world_mut()
@@ -604,6 +607,7 @@ mod tests {
         use crate::ui::chart_viewstate::{ChartViewState, RequestAutoscale};
 
         let mut app = App::new();
+        app.init_resource::<crate::ui::theme::Theme>();
         app.add_message::<RequestAutoscale>();
         app.init_resource::<InstrumentTradingDataMap>();
 
@@ -694,6 +698,7 @@ mod tests {
         use crate::ui::chart_viewstate::{ChartViewState, RequestAutoscale};
 
         let mut app = App::new();
+        app.init_resource::<crate::ui::theme::Theme>();
         app.add_message::<RequestAutoscale>();
         app.init_resource::<InstrumentTradingDataMap>();
 

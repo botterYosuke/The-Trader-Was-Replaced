@@ -9,6 +9,7 @@ use crate::ui::editor_history::{
 use crate::ui::floating_window::{
     FloatingWindowSpec, TITLE_BAR_HEIGHT, spawn_floating_window,
 };
+use crate::ui::theme::Theme;
 use crate::ui::layout_persistence::{AutoSaveState, PendingLayoutApply};
 use crate::ui::strategy_editor_find::FindMatchSpans;
 use bevy::prelude::*;
@@ -17,7 +18,6 @@ use bevy::prelude::*;
 
 const PANEL_SIZE: Vec2 = Vec2::new(500.0, 400.0);
 const PANEL_POSITION: Vec2 = Vec2::new(-300.0, 50.0);
-const ACCENT: Color = Color::srgba(0.63, 0.44, 1.0, 0.4); // SVG #a070ff (purple)
 
 /// debounce 自動保存の進行状況を追跡する resource。
 /// `mark_strategy_dirty` で `last_change` を記録し、`debounced_strategy_autosave_system`
@@ -182,7 +182,7 @@ pub fn spawn_strategy_editor_panel(
             title: "STRATEGY EDITOR".to_string(),
             size: PANEL_SIZE,
             position: PANEL_POSITION,
-            accent: ACCENT,
+            accent: Theme::default().colors.accent.with_alpha(0.4),
             closeable: true,
             resizable: true,
         },
