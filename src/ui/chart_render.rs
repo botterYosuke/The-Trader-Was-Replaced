@@ -8,13 +8,9 @@
 use crate::trading::{InstrumentTradingDataMap, OhlcPoint};
 use crate::ui::chart_viewstate::ChartViewState;
 use crate::ui::components::ChartInstrument;
+use crate::ui::theme::Theme;
 use bevy::prelude::*;
 use bevy_vector_shapes::prelude::*;
-
-/// 陽線 (close >= open) の色。volume bar も同色 (alpha を足す) なので single source 化。
-pub const BULLISH_CANDLE_COLOR: Color = Color::srgb(0.0, 0.78, 0.31);
-/// 陰線 (close < open) の色。
-pub const BEARISH_CANDLE_COLOR: Color = Color::srgb(0.9, 0.2, 0.2);
 
 /// 1 本のローソク足を描く。`x` は chart-local x (= `interval_to_x` の結果)。
 fn draw_candle(
@@ -24,11 +20,13 @@ fn draw_candle(
     pt: &OhlcPoint,
     body_half_width: f32,
     state: &ChartViewState,
+    bullish_color: Color,
+    bearish_color: Color,
 ) {
     let color = if pt.close >= pt.open {
-        BULLISH_CANDLE_COLOR
+        bullish_color
     } else {
-        BEARISH_CANDLE_COLOR
+        bearish_color
     };
 
     let y_high = state.price_to_y(pt.high);
@@ -59,6 +57,7 @@ pub fn chart_main_render_system(
     mut painter: ShapePainter,
     trading_data: Res<InstrumentTradingDataMap>,
     query: Query<(&ChartViewState, &GlobalTransform, &ChartInstrument)>,
+    theme: Res<Theme>,
 ) {
     for (state, transform, ci) in &query {
         let Some(data) = trading_data.map.get(&ci.instrument_id) else {
@@ -67,7 +66,7 @@ pub fn chart_main_render_system(
         let origin = transform.translation();
 
         painter.set_translation(origin);
-        painter.color = Color::srgb(0.12, 0.12, 0.15);
+        painter.color = theme.colors.background;
         painter.rect(state.bounds);
 
         let ohlc = &data.ohlc_points;
@@ -82,7 +81,9 @@ pub fn chart_main_render_system(
         // close ライン (z=0.1) と candle (wick z=0.15 / body z=0.2) を 1 パスで描く。
         // x は candle あたり 1 回だけ算出 (z 差で描画順は気にしなくて良い)。
         let body_half_width = state.body_half_width();
-        let line_color = Color::srgb(0.0, 1.0, 0.5);
+        let line_color = theme.status.success;
+        let bullish_color = theme.status.long;
+        let bearish_color = theme.status.short;
         let mut prev: Option<Vec3> = None;
         for pt in visible {
             let x = state.interval_to_x(pt.open_time_ms);
@@ -95,7 +96,7 @@ pub fn chart_main_render_system(
             }
             prev = Some(current);
 
-            draw_candle(&mut painter, origin, x, pt, body_half_width, state);
+            draw_candle(&mut painter, origin, x, pt, body_half_width, state, bullish_color, bearish_color);
             painter.set_translation(origin);
         }
     }

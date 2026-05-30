@@ -14,17 +14,10 @@
 use bevy::prelude::*;
 
 use crate::trading::{SafetyToast, SafetyToastEntry, ToastKind, short_id};
+use crate::ui::theme::Theme;
 
 /// How long a violation toast stays on screen before auto-dismiss.
 const TOAST_DURATION_S: f32 = 6.0;
-
-const COLOR_TOAST_BG: Color = Color::srgba(0.10, 0.05, 0.07, 0.96);
-const COLOR_BODY: Color = Color::srgb(0.92, 0.92, 0.92);
-// Kind → header color: max_daily_loss は赤、それ以外は橙. (max_orders_per_minute /
-// max_order_value はネイティブ rail = `OrderDenied` で、`SafetyRailViolation` イベントは
-// 出さない。よってトーストに「レート系」kind は届かない。)
-const COLOR_LOSS: Color = Color::srgb(1.0, 0.25, 0.30);
-const COLOR_OTHER: Color = Color::srgb(1.0, 0.55, 0.0);
 
 // Mirrors `python/engine/live/safety_rails.py` `KIND_*` — the only kinds the backend
 // emits as a `SafetyRailViolation` (independent pre/post-trade rails).
@@ -37,12 +30,12 @@ pub const KIND_ALLOWED_INSTRUMENTS: &str = "ALLOWED_INSTRUMENTS";
 // ===========================================================================
 
 /// Header accent color for a violation `kind`. An unknown / future kind falls back
-/// to orange (never panics).
-pub fn toast_color(kind: &str) -> Color {
+/// to warning (never panics).
+pub fn toast_color(kind: &str, theme: &Theme) -> Color {
     match kind {
-        KIND_MAX_DAILY_LOSS => COLOR_LOSS,
-        KIND_MAX_POSITION_SIZE | KIND_ALLOWED_INSTRUMENTS => COLOR_OTHER,
-        _ => COLOR_OTHER,
+        KIND_MAX_DAILY_LOSS => theme.status.error,
+        KIND_MAX_POSITION_SIZE | KIND_ALLOWED_INSTRUMENTS => theme.status.warning,
+        _ => theme.status.warning,
     }
 }
 
@@ -81,7 +74,10 @@ pub enum SafetyToastCell {
 // ===========================================================================
 
 /// Spawn the (initially hidden) toast overlay. Sits above the 28px footer.
-pub fn spawn_safety_toast(mut commands: Commands) {
+pub fn spawn_safety_toast(mut commands: Commands, theme: Res<Theme>) {
+    let toast_bg = theme.colors.notification_background;
+    let header_color = theme.status.warning;
+    let body_color = theme.colors.text;
     commands
         .spawn((
             Node {
@@ -95,7 +91,7 @@ pub fn spawn_safety_toast(mut commands: Commands) {
                 row_gap: Val::Px(3.0),
                 ..default()
             },
-            BackgroundColor(COLOR_TOAST_BG),
+            BackgroundColor(toast_bg),
             // Above the Live Run Panel (62) so a violation is never occluded.
             GlobalZIndex(70),
             SafetyToastRoot,
@@ -108,7 +104,7 @@ pub fn spawn_safety_toast(mut commands: Commands) {
                     font_size: 12.0,
                     ..default()
                 },
-                TextColor(COLOR_OTHER),
+                TextColor(header_color),
                 SafetyToastCell::Header,
             ));
             p.spawn((
@@ -117,7 +113,7 @@ pub fn spawn_safety_toast(mut commands: Commands) {
                     font_size: 11.0,
                     ..default()
                 },
-                TextColor(COLOR_BODY),
+                TextColor(body_color),
                 SafetyToastCell::Body,
             ));
         });
@@ -136,6 +132,7 @@ pub fn spawn_safety_toast(mut commands: Commands) {
 pub fn safety_toast_system(
     mut toast: ResMut<SafetyToast>,
     time: Res<Time>,
+    theme: Res<Theme>,
     mut remaining: Local<f32>,
     mut root_q: Query<&mut Node, With<SafetyToastRoot>>,
     mut cells: Query<(&SafetyToastCell, &mut Text, &mut TextColor)>,
@@ -144,11 +141,12 @@ pub fn safety_toast_system(
         && let Some(entry) = toast.active.clone()
     {
         *remaining = TOAST_DURATION_S;
-        let accent = toast_color(&entry.kind);
+        let accent = toast_color(&entry.kind, &theme);
+        let body_color = theme.colors.text;
         for (cell, mut text, mut color) in &mut cells {
             let (s, c) = match cell {
                 SafetyToastCell::Header => (toast_header(&entry), accent),
-                SafetyToastCell::Body => (toast_body(&entry), COLOR_BODY),
+                SafetyToastCell::Body => (toast_body(&entry), body_color),
             };
             if text.0 != s {
                 text.0 = s;
@@ -196,11 +194,13 @@ mod tests {
 
     #[test]
     fn color_maps_by_kind() {
-        assert_eq!(toast_color(KIND_MAX_DAILY_LOSS), COLOR_LOSS);
-        assert_eq!(toast_color(KIND_MAX_POSITION_SIZE), COLOR_OTHER);
-        assert_eq!(toast_color(KIND_ALLOWED_INSTRUMENTS), COLOR_OTHER);
+        use crate::ui::theme::Theme;
+        let theme = Theme::default();
+        assert_eq!(toast_color(KIND_MAX_DAILY_LOSS, &theme), theme.status.error);
+        assert_eq!(toast_color(KIND_MAX_POSITION_SIZE, &theme), theme.status.warning);
+        assert_eq!(toast_color(KIND_ALLOWED_INSTRUMENTS, &theme), theme.status.warning);
         // Unknown future kind still gets a sane color.
-        assert_eq!(toast_color("SOMETHING_NEW"), COLOR_OTHER);
+        assert_eq!(toast_color("SOMETHING_NEW", &theme), theme.status.warning);
     }
 
     #[test]
@@ -215,17 +215,20 @@ mod tests {
 
     #[test]
     fn show_makes_toast_visible_and_sets_text() {
+        use crate::ui::theme::Theme;
         let mut app = App::new();
         app.init_resource::<SafetyToast>();
         app.init_resource::<Time>();
+        app.insert_resource(Theme::default());
         app.add_systems(Update, safety_toast_system);
         let root = app
             .world_mut()
             .spawn((Node::default(), SafetyToastRoot))
             .id();
+        let theme = Theme::default();
         let header = app
             .world_mut()
-            .spawn((Text::new(""), TextColor(COLOR_BODY), SafetyToastCell::Header))
+            .spawn((Text::new(""), TextColor(theme.colors.text), SafetyToastCell::Header))
             .id();
         app.world_mut().resource_mut::<SafetyToast>().show(
             ToastKind::SafetyRail,
@@ -244,6 +247,6 @@ mod tests {
             app.world().get::<Text>(header).unwrap().0,
             "SAFETY RAIL — MAX_DAILY_LOSS"
         );
-        assert_eq!(app.world().get::<TextColor>(header).unwrap().0, COLOR_LOSS);
+        assert_eq!(app.world().get::<TextColor>(header).unwrap().0, theme.status.error);
     }
 }

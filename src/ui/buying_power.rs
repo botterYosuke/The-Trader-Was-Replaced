@@ -4,13 +4,12 @@
 use crate::trading::PortfolioState;
 use crate::ui::component::label::spawn_labeled_value_row;
 use crate::ui::components::PanelKind;
-use crate::ui::floating_window::{FloatingWindowSpec, spawn_floating_window};
+use crate::ui::floating_window::{FloatingWindowSpec, spawn_floating_window_with_theme};
 use crate::ui::theme::Theme;
 use bevy::prelude::*;
 
 const PANEL_SIZE: Vec2 = Vec2::new(270.0, 130.0);
 const PANEL_POSITION: Vec2 = Vec2::new(-450.0, 100.0);
-const ACCENT: Color = Color::srgba(0.0, 0.8, 1.0, 0.4); // cyan rim
 
 /// content_area 内の値テキスト行を識別するためのマーカー。
 /// ラベル側（"equity:"）には貼らない。値側だけに貼って update system がここだけ書き換える。
@@ -23,16 +22,17 @@ pub enum BuyingPowerLabel {
 
 /// dispatcher から呼ばれる spawn 関数。
 pub fn spawn_buying_power_panel(commands: &mut Commands, theme: &Theme) {
-    let (root, content_area, _title_bar) = spawn_floating_window(
+    let (root, content_area, _title_bar) = spawn_floating_window_with_theme(
         commands,
         FloatingWindowSpec {
             title: "BUYING POWER".to_string(),
             size: PANEL_SIZE,
             position: PANEL_POSITION,
-            accent: ACCENT,
+            accent: theme.colors.accent.with_alpha(0.4),
             closeable: true,
             resizable: false,
         },
+        theme,
     );
     // 重複防止用に PanelKind を root に貼る
     commands.entity(root).insert(PanelKind::BuyingPower);

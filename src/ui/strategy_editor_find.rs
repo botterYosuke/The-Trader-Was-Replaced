@@ -14,6 +14,7 @@
 
 use crate::ui::components::{StrategyEditorId, StrategyFragment, WindowRoot};
 use crate::ui::strategy_editor::StrategyEditorNode;
+use crate::ui::theme::Theme;
 use bevscode::prelude::SetTextRequested;
 use bevy::input::ButtonState;
 use bevy::input::keyboard::{Key, KeyboardInput};
@@ -276,6 +277,7 @@ pub fn find_keyboard_system(
 pub fn manage_find_panel_lifecycle_system(
     mut commands: Commands,
     mut state: ResMut<FindReplaceState>,
+    theme: Res<Theme>,
     existence_q: Query<(), With<FindPanelRoot>>,
     mut node_q: Query<&mut Node, With<FindPanelRoot>>,
 ) {
@@ -290,7 +292,7 @@ pub fn manage_find_panel_lifecycle_system(
 
     // 初回 open: Bevy UI Node panel を spawn。
     if state.is_open && state.panel_root.is_none() {
-        let (root, query_field, replacement_field) = spawn_find_panel(&mut commands);
+        let (root, query_field, replacement_field) = spawn_find_panel(&mut commands, &theme);
         state.panel_root = Some(root);
         state.query_editor = Some(query_field);
         state.replacement_editor = Some(replacement_field);
@@ -647,18 +649,17 @@ pub fn update_find_count_text_system(
 // spawn ヘルパ (Slice 5 #50: Bevy UI Node ベース)
 // ─────────────────────────────────────────────────────────────────
 
-const PANEL_BG: Color = Color::srgba(0.08, 0.08, 0.10, 0.95);
-const FIELD_BG_UI: Color = Color::srgba(0.05, 0.05, 0.08, 1.0);
-const BTN_BG: Color = Color::srgba(0.2, 0.2, 0.32, 1.0);
-const TEXT_FG: Color = Color::srgb(0.9, 0.9, 0.92);
-const LABEL_FG: Color = Color::srgb(0.7, 0.7, 0.75);
-
 /// Find / Replace パネルの Bevy UI Node ツリーを spawn する。
 /// 返り値: (panel_root, query_field_text, replacement_field_text)
 ///
 /// 視覚要素は最小限の skeleton (操作系 UI の機能配線が目的、polish は Phase B+1)。
 /// 位置・寸法は screen 固定 (画面右上)、`GlobalZIndex(200)` で menu_bar(100) より前面へ。
-fn spawn_find_panel(commands: &mut Commands) -> (Entity, Entity, Entity) {
+fn spawn_find_panel(commands: &mut Commands, theme: &Theme) -> (Entity, Entity, Entity) {
+    let panel_bg = theme.colors.panel_background.with_alpha(0.95);
+    let field_bg = theme.colors.element_background;
+    let btn_bg = theme.colors.element_background;
+    let text_fg = theme.colors.text;
+    let label_fg = theme.colors.text_muted;
     // Panel root.
     let root = commands
         .spawn((
@@ -674,7 +675,7 @@ fn spawn_find_panel(commands: &mut Commands) -> (Entity, Entity, Entity) {
                 display: Display::Flex,
                 ..default()
             },
-            BackgroundColor(PANEL_BG),
+            BackgroundColor(panel_bg),
             GlobalZIndex(200),
         ))
         .id();
@@ -687,18 +688,18 @@ fn spawn_find_panel(commands: &mut Commands) -> (Entity, Entity, Entity) {
                 font_size: 13.0,
                 ..default()
             },
-            TextColor(LABEL_FG),
+            TextColor(label_fg),
         ))
         .id();
     commands.entity(root).add_child(title);
 
     // Find row.
-    let find_row = spawn_field_row(commands, "Find", FindFieldKind::Query);
+    let find_row = spawn_field_row(commands, "Find", FindFieldKind::Query, label_fg, field_bg, text_fg);
     let query_field_text = find_row.text_node;
     commands.entity(root).add_child(find_row.row);
 
     // Replacement row.
-    let repl_row = spawn_field_row(commands, "Repl", FindFieldKind::Replacement);
+    let repl_row = spawn_field_row(commands, "Repl", FindFieldKind::Replacement, label_fg, field_bg, text_fg);
     let replacement_field_text = repl_row.text_node;
     commands.entity(root).add_child(repl_row.row);
 
@@ -719,7 +720,7 @@ fn spawn_find_panel(commands: &mut Commands) -> (Entity, Entity, Entity) {
                 font_size: 12.0,
                 ..default()
             },
-            TextColor(LABEL_FG),
+            TextColor(label_fg),
             Node {
                 width: Val::Px(50.0),
                 ..default()
@@ -734,7 +735,7 @@ fn spawn_find_panel(commands: &mut Commands) -> (Entity, Entity, Entity) {
         (FindButtonKind::Replace, "Repl"),
         (FindButtonKind::ReplaceAll, "Repl All"),
     ] {
-        let btn = spawn_find_button(commands, kind, label);
+        let btn = spawn_find_button(commands, kind, label, btn_bg, text_fg);
         commands.entity(bottom_row).add_child(btn);
     }
     commands.entity(root).add_child(bottom_row);
@@ -752,7 +753,7 @@ struct FieldRow {
     text_node: Entity,
 }
 
-fn spawn_field_row(commands: &mut Commands, label: &str, kind: FindFieldKind) -> FieldRow {
+fn spawn_field_row(commands: &mut Commands, label: &str, kind: FindFieldKind, label_color: Color, field_bg: Color, text_color: Color) -> FieldRow {
     let row = commands
         .spawn(Node {
             flex_direction: FlexDirection::Row,
@@ -768,7 +769,7 @@ fn spawn_field_row(commands: &mut Commands, label: &str, kind: FindFieldKind) ->
                 font_size: 12.0,
                 ..default()
             },
-            TextColor(LABEL_FG),
+            TextColor(label_color),
             Node {
                 width: Val::Px(40.0),
                 ..default()
@@ -783,7 +784,7 @@ fn spawn_field_row(commands: &mut Commands, label: &str, kind: FindFieldKind) ->
                 padding: UiRect::all(Val::Px(4.0)),
                 ..default()
             },
-            BackgroundColor(FIELD_BG_UI),
+            BackgroundColor(field_bg),
         ))
         .id();
     let text_node = commands
@@ -793,7 +794,7 @@ fn spawn_field_row(commands: &mut Commands, label: &str, kind: FindFieldKind) ->
                 font_size: 14.0,
                 ..default()
             },
-            TextColor(TEXT_FG),
+            TextColor(text_color),
         ))
         .id();
     match kind {
@@ -810,7 +811,7 @@ fn spawn_field_row(commands: &mut Commands, label: &str, kind: FindFieldKind) ->
     FieldRow { row, text_node }
 }
 
-fn spawn_find_button(commands: &mut Commands, kind: FindButtonKind, label: &str) -> Entity {
+fn spawn_find_button(commands: &mut Commands, kind: FindButtonKind, label: &str, btn_color: Color, text_color: Color) -> Entity {
     let btn = commands
         .spawn((
             Button,
@@ -823,7 +824,7 @@ fn spawn_find_button(commands: &mut Commands, kind: FindButtonKind, label: &str)
                 align_items: AlignItems::Center,
                 ..default()
             },
-            BackgroundColor(BTN_BG),
+            BackgroundColor(btn_color),
             kind,
         ))
         .id();
@@ -834,7 +835,7 @@ fn spawn_find_button(commands: &mut Commands, kind: FindButtonKind, label: &str)
                 font_size: 12.0,
                 ..default()
             },
-            TextColor(TEXT_FG),
+            TextColor(text_color),
         ))
         .id();
     commands.entity(btn).add_child(txt);
@@ -969,6 +970,7 @@ mod tests {
     #[test]
     fn compute_find_match_spans_writes_matches_to_target_editor() {
         let mut app = App::new();
+        app.init_resource::<crate::ui::theme::Theme>();
         app.init_resource::<FindReplaceState>();
         app.add_systems(Update, compute_find_match_spans_system);
 
@@ -1018,6 +1020,7 @@ mod tests {
     #[test]
     fn compute_find_match_spans_clears_on_empty_query() {
         let mut app = App::new();
+        app.init_resource::<crate::ui::theme::Theme>();
         app.init_resource::<FindReplaceState>();
         app.add_systems(Update, compute_find_match_spans_system);
 
@@ -1070,6 +1073,7 @@ mod tests {
         // Regression: find_navigate mutates state.current (→ FindReplaceState changed),
         // and compute must NOT treat that as a search-input change and snap current back to 0.
         let mut app = App::new();
+        app.init_resource::<crate::ui::theme::Theme>();
         app.init_resource::<FindReplaceState>();
         app.init_resource::<ButtonInput<KeyCode>>();
         app.init_resource::<bevy::input_focus::InputFocus>();
@@ -1138,6 +1142,7 @@ mod tests {
         // unclosable). State resets to default but panel handles survive so the lifecycle
         // system's close branch (!is_open && panel_root.is_some()) despawns the panel.
         let mut app = App::new();
+        app.init_resource::<crate::ui::theme::Theme>();
         app.init_resource::<FindReplaceState>();
         app.add_systems(Update, compute_find_match_spans_system);
 
@@ -1198,6 +1203,7 @@ mod tests {
     fn retarget_clears_old_editor_spans() {
         // Switching target_editor must clear the previous target's highlight (multi-spawn).
         let mut app = App::new();
+        app.init_resource::<crate::ui::theme::Theme>();
         app.init_resource::<FindReplaceState>();
         app.add_systems(Update, compute_find_match_spans_system);
 
@@ -1282,6 +1288,7 @@ mod tests {
     #[test]
     fn lifecycle_spawns_panel_on_open_and_toggles_display() {
         let mut app = App::new();
+        app.init_resource::<crate::ui::theme::Theme>();
         app.init_resource::<FindReplaceState>();
         app.add_systems(Update, manage_find_panel_lifecycle_system);
 
@@ -1321,6 +1328,7 @@ mod tests {
     #[test]
     fn find_button_interaction_emits_action_on_pressed_edge() {
         let mut app = App::new();
+        app.init_resource::<crate::ui::theme::Theme>();
         app.add_message::<FindActionRequested>();
         app.add_systems(Update, find_button_interaction_system);
 
@@ -1367,6 +1375,7 @@ mod tests {
     #[test]
     fn find_field_input_escape_closes_panel() {
         let mut app = App::new();
+        app.init_resource::<crate::ui::theme::Theme>();
         app.init_resource::<FindReplaceState>();
         app.init_resource::<bevy::input_focus::InputFocus>();
         app.init_resource::<ButtonInput<KeyCode>>();
@@ -1395,6 +1404,7 @@ mod tests {
     #[test]
     fn find_field_input_tab_cycles_focus_between_query_and_replacement() {
         let mut app = App::new();
+        app.init_resource::<crate::ui::theme::Theme>();
         app.init_resource::<FindReplaceState>();
         app.init_resource::<bevy::input_focus::InputFocus>();
         app.init_resource::<ButtonInput<KeyCode>>();
@@ -1426,6 +1436,7 @@ mod tests {
     #[test]
     fn find_field_input_backspace_removes_last_char_from_focused_field() {
         let mut app = App::new();
+        app.init_resource::<crate::ui::theme::Theme>();
         app.init_resource::<FindReplaceState>();
         app.init_resource::<bevy::input_focus::InputFocus>();
         app.init_resource::<ButtonInput<KeyCode>>();
@@ -1450,6 +1461,7 @@ mod tests {
     #[test]
     fn find_field_input_appends_char_to_query_when_query_focused() {
         let mut app = App::new();
+        app.init_resource::<crate::ui::theme::Theme>();
         app.init_resource::<FindReplaceState>();
         app.init_resource::<bevy::input_focus::InputFocus>();
         app.init_resource::<ButtonInput<KeyCode>>();
@@ -1479,6 +1491,7 @@ mod tests {
     #[test]
     fn replace_execute_emits_set_text_requested_on_replace_all() {
         let mut app = App::new();
+        app.init_resource::<crate::ui::theme::Theme>();
         app.init_resource::<FindReplaceState>();
         app.add_message::<FindActionRequested>();
         app.add_message::<SetTextRequested>();

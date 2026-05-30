@@ -20,15 +20,11 @@ use crate::ui::layout_persistence::{
 use crate::ui::component::ButtonStyle;
 use crate::ui::settings::{SettingsModalRoot, spawn_settings_modal};
 use crate::ui::strategy_editor::split_py_into_fragments;
-use crate::ui::theme::ElevationIndex;
+use crate::ui::theme::{ElevationIndex, Theme};
 use bevy::input::keyboard::KeyboardInput;
 use bevy::prelude::*;
 
-// Initial spawn background only; interactive state color is owned by
-// button_interaction_system (Filled). #46 Slice A.
-const BTN_NORMAL: Color = Color::srgba(0.10, 0.10, 0.16, 1.0);
-
-fn spawn_menu_item(parent: &mut ChildSpawnerCommands, label: &str, action: MenuItem) {
+fn spawn_menu_item(parent: &mut ChildSpawnerCommands, label: &str, action: MenuItem, btn_bg: Color, text_color: Color) {
     parent
         .spawn((
             Button,
@@ -39,7 +35,7 @@ fn spawn_menu_item(parent: &mut ChildSpawnerCommands, label: &str, action: MenuI
                 width: Val::Percent(100.0),
                 ..default()
             },
-            BackgroundColor(BTN_NORMAL),
+            BackgroundColor(btn_bg),
             ButtonStyle::Filled,
             ElevationIndex::Surface,
             action,
@@ -51,12 +47,17 @@ fn spawn_menu_item(parent: &mut ChildSpawnerCommands, label: &str, action: MenuI
                     font_size: 12.0,
                     ..default()
                 },
-                TextColor(Color::srgb(0.82, 0.82, 0.82)),
+                TextColor(text_color),
             ));
         });
 }
 
-pub fn spawn_menu_bar(mut commands: Commands) {
+pub fn spawn_menu_bar(mut commands: Commands, theme: Res<Theme>) {
+    let btn_bg = theme.colors.element_background;
+    let popup_bg = theme.colors.surface_background;
+    let bar_bg = theme.colors.panel_background.with_alpha(0.95);
+    let text_color = theme.colors.text;
+    let muted_color = theme.colors.text_muted;
     commands
         .spawn((
             Node {
@@ -72,7 +73,7 @@ pub fn spawn_menu_bar(mut commands: Commands) {
                 overflow: Overflow::visible(),
                 ..default()
             },
-            BackgroundColor(Color::srgba(0.07, 0.07, 0.11, 0.95)),
+            BackgroundColor(bar_bg),
             MenuBarRoot,
         ))
         .with_children(|p| {
@@ -86,7 +87,7 @@ pub fn spawn_menu_bar(mut commands: Commands) {
                     position_type: PositionType::Relative,
                     ..default()
                 },
-                BackgroundColor(BTN_NORMAL),
+                BackgroundColor(btn_bg),
                 ButtonStyle::Filled,
                 ElevationIndex::Surface,
                 MenuTopLevel::File,
@@ -98,7 +99,7 @@ pub fn spawn_menu_bar(mut commands: Commands) {
                         font_size: 12.0,
                         ..default()
                     },
-                    TextColor(Color::srgb(0.82, 0.82, 0.82)),
+                    TextColor(text_color),
                 ));
                 // File popup
                 p.spawn((
@@ -111,15 +112,15 @@ pub fn spawn_menu_bar(mut commands: Commands) {
                         min_width: Val::Px(200.0),
                         ..default()
                     },
-                    BackgroundColor(Color::srgba(0.10, 0.10, 0.16, 0.98)),
+                    BackgroundColor(popup_bg),
                     GlobalZIndex(100),
                     MenuPopup(MenuTopLevel::File),
                 ))
                 .with_children(|p| {
-                    spawn_menu_item(p, "New", MenuItem::FileNew);
-                    spawn_menu_item(p, "Open (Ctrl+O)", MenuItem::LoadLayout);
-                    spawn_menu_item(p, "Save (Ctrl+S)", MenuItem::SaveLayout);
-                    spawn_menu_item(p, "Save As (Ctrl+Shift+S)", MenuItem::SaveLayoutAs);
+                    spawn_menu_item(p, "New", MenuItem::FileNew, btn_bg, text_color);
+                    spawn_menu_item(p, "Open (Ctrl+O)", MenuItem::LoadLayout, btn_bg, text_color);
+                    spawn_menu_item(p, "Save (Ctrl+S)", MenuItem::SaveLayout, btn_bg, text_color);
+                    spawn_menu_item(p, "Save As (Ctrl+Shift+S)", MenuItem::SaveLayoutAs, btn_bg, text_color);
                 });
             });
 
@@ -133,7 +134,7 @@ pub fn spawn_menu_bar(mut commands: Commands) {
                     position_type: PositionType::Relative,
                     ..default()
                 },
-                BackgroundColor(BTN_NORMAL),
+                BackgroundColor(btn_bg),
                 ButtonStyle::Filled,
                 ElevationIndex::Surface,
                 MenuTopLevel::Edit,
@@ -145,7 +146,7 @@ pub fn spawn_menu_bar(mut commands: Commands) {
                         font_size: 12.0,
                         ..default()
                     },
-                    TextColor(Color::srgb(0.82, 0.82, 0.82)),
+                    TextColor(text_color),
                 ));
                 // Edit popup
                 p.spawn((
@@ -158,13 +159,13 @@ pub fn spawn_menu_bar(mut commands: Commands) {
                         min_width: Val::Px(160.0),
                         ..default()
                     },
-                    BackgroundColor(Color::srgba(0.10, 0.10, 0.16, 0.98)),
+                    BackgroundColor(popup_bg),
                     GlobalZIndex(100),
                     MenuPopup(MenuTopLevel::Edit),
                 ))
                 .with_children(|p| {
-                    spawn_menu_item(p, "Undo (Ctrl+Z)", MenuItem::Undo);
-                    spawn_menu_item(p, "Redo (Ctrl+Y)", MenuItem::Redo);
+                    spawn_menu_item(p, "Undo (Ctrl+Z)", MenuItem::Undo, btn_bg, text_color);
+                    spawn_menu_item(p, "Redo (Ctrl+Y)", MenuItem::Redo, btn_bg, text_color);
                 });
             });
 
@@ -178,7 +179,7 @@ pub fn spawn_menu_bar(mut commands: Commands) {
                     position_type: PositionType::Relative,
                     ..default()
                 },
-                BackgroundColor(BTN_NORMAL),
+                BackgroundColor(btn_bg),
                 ButtonStyle::Filled,
                 ElevationIndex::Surface,
                 MenuTopLevel::Venue,
@@ -190,7 +191,7 @@ pub fn spawn_menu_bar(mut commands: Commands) {
                         font_size: 12.0,
                         ..default()
                     },
-                    TextColor(Color::srgb(0.82, 0.82, 0.82)),
+                    TextColor(text_color),
                 ));
                 // Venue popup
                 p.spawn((
@@ -203,32 +204,16 @@ pub fn spawn_menu_bar(mut commands: Commands) {
                         min_width: Val::Px(240.0),
                         ..default()
                     },
-                    BackgroundColor(Color::srgba(0.10, 0.10, 0.16, 0.98)),
+                    BackgroundColor(popup_bg),
                     GlobalZIndex(100),
                     MenuPopup(MenuTopLevel::Venue),
                 ))
                 .with_children(|p| {
-                    spawn_menu_item(
-                        p,
-                        "Connect Tachibana (Demo)",
-                        MenuItem::VenueConnectTachibanaDemo,
-                    );
-                    spawn_menu_item(
-                        p,
-                        "Connect Tachibana (Prod)",
-                        MenuItem::VenueConnectTachibanaProd,
-                    );
-                    spawn_menu_item(
-                        p,
-                        "Connect kabuStation (Verify)",
-                        MenuItem::VenueConnectKabuVerify,
-                    );
-                    spawn_menu_item(
-                        p,
-                        "Connect kabuStation (Prod)",
-                        MenuItem::VenueConnectKabuProd,
-                    );
-                    spawn_menu_item(p, "Disconnect", MenuItem::VenueDisconnect);
+                    spawn_menu_item(p, "Connect Tachibana (Demo)", MenuItem::VenueConnectTachibanaDemo, btn_bg, text_color);
+                    spawn_menu_item(p, "Connect Tachibana (Prod)", MenuItem::VenueConnectTachibanaProd, btn_bg, text_color);
+                    spawn_menu_item(p, "Connect kabuStation (Verify)", MenuItem::VenueConnectKabuVerify, btn_bg, text_color);
+                    spawn_menu_item(p, "Connect kabuStation (Prod)", MenuItem::VenueConnectKabuProd, btn_bg, text_color);
+                    spawn_menu_item(p, "Disconnect", MenuItem::VenueDisconnect, btn_bg, text_color);
                 });
             });
 
@@ -242,7 +227,7 @@ pub fn spawn_menu_bar(mut commands: Commands) {
                     position_type: PositionType::Relative,
                     ..default()
                 },
-                BackgroundColor(BTN_NORMAL),
+                BackgroundColor(btn_bg),
                 ButtonStyle::Filled,
                 ElevationIndex::Surface,
                 MenuTopLevel::Help,
@@ -254,7 +239,7 @@ pub fn spawn_menu_bar(mut commands: Commands) {
                         font_size: 12.0,
                         ..default()
                     },
-                    TextColor(Color::srgb(0.82, 0.82, 0.82)),
+                    TextColor(text_color),
                 ));
                 // Help popup
                 p.spawn((
@@ -267,12 +252,12 @@ pub fn spawn_menu_bar(mut commands: Commands) {
                         min_width: Val::Px(160.0),
                         ..default()
                     },
-                    BackgroundColor(Color::srgba(0.10, 0.10, 0.16, 0.98)),
+                    BackgroundColor(popup_bg),
                     GlobalZIndex(100),
                     MenuPopup(MenuTopLevel::Help),
                 ))
                 .with_children(|p| {
-                    spawn_menu_item(p, "Settings", MenuItem::HelpSettings);
+                    spawn_menu_item(p, "Settings", MenuItem::HelpSettings, btn_bg, text_color);
                 });
             });
 
@@ -289,7 +274,7 @@ pub fn spawn_menu_bar(mut commands: Commands) {
                     font_size: 12.0,
                     ..default()
                 },
-                TextColor(Color::srgb(0.55, 0.55, 0.55)),
+                TextColor(muted_color),
                 StrategyStatusLabel,
             ));
         });
@@ -1381,6 +1366,7 @@ mod tests {
         state: VenueState,
         venue_id: Option<&str>,
     ) -> (App, Entity, Entity) {
+        let btn_bg = crate::ui::theme::Theme::default().colors.element_background;
         let mut app = App::new();
         app.init_resource::<OpenMenu>();
         app.insert_resource(VenueStatusRes {
@@ -1403,7 +1389,7 @@ mod tests {
             .spawn((
                 Button,
                 Interaction::None,
-                BackgroundColor(BTN_NORMAL),
+                BackgroundColor(btn_bg),
                 MenuItem::VenueConnectTachibanaDemo,
             ))
             .add_child(text_t)
@@ -1421,7 +1407,7 @@ mod tests {
             .spawn((
                 Button,
                 Interaction::None,
-                BackgroundColor(BTN_NORMAL),
+                BackgroundColor(btn_bg),
                 MenuItem::VenueConnectKabuVerify,
             ))
             .add_child(text_k)
@@ -1490,6 +1476,7 @@ mod tests {
         Entity,
         tokio::sync::mpsc::UnboundedReceiver<TransportCommand>,
     ) {
+        let btn_bg = crate::ui::theme::Theme::default().colors.element_background;
         let mut app = App::new();
         app.init_resource::<OpenMenu>();
         app.insert_resource(VenueStatusRes {
@@ -1516,7 +1503,7 @@ mod tests {
             .spawn((
                 Button,
                 Interaction::Pressed,
-                BackgroundColor(BTN_NORMAL),
+                BackgroundColor(btn_bg),
                 item,
             ))
             .id();
@@ -1649,7 +1636,7 @@ mod tests {
         app.world_mut().spawn((
             Button,
             Interaction::Pressed,
-            BackgroundColor(BTN_NORMAL),
+            BackgroundColor(crate::ui::theme::Theme::default().colors.element_background),
             MenuItem::HelpSettings,
         ));
         app.update();

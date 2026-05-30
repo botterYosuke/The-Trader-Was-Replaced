@@ -3,6 +3,7 @@
 
 use bevy::prelude::*;
 use crate::trading::SecretPrompt;
+use crate::ui::theme::Theme;
 use crate::ui::modify_modal::ModifyForm;
 use crate::ui::order_panel::OrderConfirm;
 
@@ -21,6 +22,7 @@ pub struct SettingsCloseButton;
 // ────────────────────────────────────────────────
 
 pub fn spawn_settings_modal(commands: &mut Commands) {
+    let theme = Theme::default();
     commands
         .spawn((
             Node {
@@ -33,7 +35,7 @@ pub fn spawn_settings_modal(commands: &mut Commands) {
                 justify_content: JustifyContent::Center,
                 ..default()
             },
-            BackgroundColor(Color::srgba(0.0, 0.0, 0.0, 0.5)),
+            BackgroundColor(Color::BLACK.with_alpha(0.5)),
             GlobalZIndex(195),
             SettingsModalRoot,
             Name::new("SettingsModal"),
@@ -47,7 +49,7 @@ pub fn spawn_settings_modal(commands: &mut Commands) {
                     padding: UiRect::all(Val::Px(16.0)),
                     ..default()
                 },
-                BackgroundColor(Color::srgba(0.07, 0.07, 0.12, 0.98)),
+                BackgroundColor(theme.colors.surface_background),
             ))
             .with_children(|card| {
                 // ── ヘッダ行: "Settings" (左) + × ボタン (右) ──
@@ -63,7 +65,7 @@ pub fn spawn_settings_modal(commands: &mut Commands) {
                     row.spawn((
                         Text::new("Settings"),
                         TextFont { font_size: 14.0, ..default() },
-                        TextColor(Color::srgb(0.88, 0.91, 0.96)),
+                        TextColor(theme.colors.text),
                     ));
                     row.spawn((
                         Button,
@@ -78,7 +80,7 @@ pub fn spawn_settings_modal(commands: &mut Commands) {
                         btn.spawn((
                             Text::new("×"),
                             TextFont { font_size: 14.0, ..default() },
-                            TextColor(Color::srgb(0.70, 0.70, 0.70)),
+                            TextColor(theme.colors.text_muted),
                         ));
                     });
                 });
@@ -87,7 +89,7 @@ pub fn spawn_settings_modal(commands: &mut Commands) {
                 card.spawn((
                     Text::new("Theme: Dark\nBackend: localhost:19876\nSave Layout: —"),
                     TextFont { font_size: 12.0, ..default() },
-                    TextColor(Color::srgb(0.75, 0.75, 0.85)),
+                    TextColor(theme.colors.text_muted),
                 ));
             });
         });

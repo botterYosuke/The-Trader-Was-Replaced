@@ -9,27 +9,20 @@ use crate::ui::components::{
     SidebarInstrumentsWarning, SidebarRoot, WindowRoot,
 };
 use crate::ui::instrument_picker::spawn_picker_dropdown;
+use crate::ui::theme::Theme;
 use bevy::prelude::*;
 
 const SIDEBAR_WIDTH: f32 = 180.0;
 const FOOTER_HEIGHT: f32 = 28.0;
 const MENU_BAR_HEIGHT: f32 = 24.0;
 
-const BG: Color = Color::srgba(0.05, 0.05, 0.09, 0.95);
-const SECTION_HEADER_BG: Color = Color::srgba(0.10, 0.10, 0.16, 1.0);
-const BORDER: Color = Color::srgba(0.18, 0.18, 0.28, 1.0);
-
-// パネルボタンの初期背景（spawn 時のみ。状態色は button_interaction_system が所有 / #46 Slice A）
-const BTN_NORMAL: Color = Color::srgba(0.10, 0.10, 0.16, 1.0);
-const BTN_TEXT: Color = Color::srgb(0.78, 0.82, 0.92);
-
-// Instrument 行用の色
-const REMOVE_BTN_NORMAL: Color = Color::srgba(0.20, 0.10, 0.12, 1.0);
-const REMOVE_BTN_DISABLED: Color = Color::srgba(0.15, 0.15, 0.20, 0.6);
-const ROW_TEXT: Color = Color::srgb(0.80, 0.90, 1.00);
-const WARNING_TEXT: Color = Color::srgb(0.95, 0.75, 0.35);
-
-pub fn spawn_sidebar(mut commands: Commands) {
+pub fn spawn_sidebar(mut commands: Commands, theme: Res<Theme>) {
+    let bg = theme.colors.panel_background.with_alpha(0.95);
+    let section_header_bg = theme.colors.element_background;
+    let section_title_color = theme.status.info;
+    let border = theme.colors.border;
+    let btn_normal = theme.colors.element_background;
+    let btn_text = theme.colors.text_accent;
     commands
         .spawn((
             Node {
@@ -43,13 +36,13 @@ pub fn spawn_sidebar(mut commands: Commands) {
                 overflow: Overflow::clip_y(),
                 ..default()
             },
-            BackgroundColor(BG),
-            BorderColor::all(BORDER),
+            BackgroundColor(bg),
+            BorderColor::all(border),
             SidebarRoot,
         ))
         .with_children(|parent| {
             // ── Instruments section ───────────────────────────────────
-            spawn_section_header(parent, "Instruments");
+            spawn_section_header(parent, "Instruments", section_header_bg, section_title_color);
 
             parent.spawn((
                 Node {
@@ -62,7 +55,7 @@ pub fn spawn_sidebar(mut commands: Commands) {
             ));
 
             // ── Panels section ────────────────────────────────────────
-            spawn_section_header(parent, "Panels");
+            spawn_section_header(parent, "Panels", section_header_bg, section_title_color);
 
             for kind in [
                 PanelKind::StrategyEditor,
@@ -71,13 +64,13 @@ pub fn spawn_sidebar(mut commands: Commands) {
                 PanelKind::Orders,
                 PanelKind::Order,
             ] {
-                spawn_panel_btn(parent, kind);
+                spawn_panel_btn(parent, kind, btn_normal, btn_text);
             }
 
         });
 }
 
-fn spawn_section_header(parent: &mut ChildSpawnerCommands, title: &str) {
+fn spawn_section_header(parent: &mut ChildSpawnerCommands, title: &str, header_bg: Color, title_color: Color) {
     parent
         .spawn((
             Node {
@@ -85,7 +78,7 @@ fn spawn_section_header(parent: &mut ChildSpawnerCommands, title: &str) {
                 padding: UiRect::axes(Val::Px(6.0), Val::Px(3.0)),
                 ..default()
             },
-            BackgroundColor(SECTION_HEADER_BG),
+            BackgroundColor(header_bg),
         ))
         .with_children(|p| {
             p.spawn((
@@ -94,7 +87,7 @@ fn spawn_section_header(parent: &mut ChildSpawnerCommands, title: &str) {
                     font_size: 10.0,
                     ..default()
                 },
-                TextColor(Color::srgb(0.50, 0.70, 1.00)),
+                TextColor(title_color),
             ));
         });
 }
@@ -120,7 +113,7 @@ pub fn apply_order_button_visibility_system(
     }
 }
 
-fn spawn_panel_btn(parent: &mut ChildSpawnerCommands, kind: PanelKind) {
+fn spawn_panel_btn(parent: &mut ChildSpawnerCommands, kind: PanelKind, btn_bg: Color, text_color: Color) {
     parent
         .spawn((
             Button,
@@ -131,7 +124,7 @@ fn spawn_panel_btn(parent: &mut ChildSpawnerCommands, kind: PanelKind) {
                 align_items: AlignItems::Center,
                 ..default()
             },
-            BackgroundColor(BTN_NORMAL),
+            BackgroundColor(btn_bg),
             crate::ui::component::ButtonStyle::Filled,
             crate::ui::theme::ElevationIndex::Surface,
             kind, // PanelKind 自身をマーカーとして付ける
@@ -143,7 +136,7 @@ fn spawn_panel_btn(parent: &mut ChildSpawnerCommands, kind: PanelKind) {
                     font_size: 11.0,
                     ..default()
                 },
-                TextColor(BTN_TEXT),
+                TextColor(text_color),
             ));
         });
 }
@@ -152,6 +145,7 @@ fn spawn_panel_btn(parent: &mut ChildSpawnerCommands, kind: PanelKind) {
 pub fn update_sidebar_system(
     mut commands: Commands,
     registry: Res<InstrumentRegistry>,
+    theme: Res<Theme>,
     list_q: Query<Entity, With<SidebarInstrumentsList>>,
     warning_q: Query<Entity, With<SidebarInstrumentsWarning>>,
     sidebar_root_q: Query<Entity, With<SidebarRoot>>,
@@ -168,10 +162,14 @@ pub fn update_sidebar_system(
 
     let editable = registry.editable;
     let row_btn_bg = if editable {
-        REMOVE_BTN_NORMAL
+        theme.status.error_background
     } else {
-        REMOVE_BTN_DISABLED
+        theme.colors.element_disabled.with_alpha(0.6)
     };
+    let row_text = theme.colors.text_accent;
+    let ticker_price_text = theme.colors.text_muted;
+    let btn_text = theme.colors.text_accent;
+    let warning_text = theme.status.warning;
 
     if registry.ids.is_empty() {
         commands.entity(list_entity).with_children(|parent| {
@@ -181,7 +179,7 @@ pub fn update_sidebar_system(
                     font_size: 11.0,
                     ..default()
                 },
-                TextColor(Color::srgb(0.45, 0.45, 0.45)),
+                TextColor(theme.colors.text_disabled),
                 Node {
                     padding: UiRect::all(Val::Px(6.0)),
                     ..default()
@@ -225,7 +223,7 @@ pub fn update_sidebar_system(
                                     font_size: 11.0,
                                     ..default()
                                 },
-                                TextColor(ROW_TEXT),
+                                TextColor(row_text),
                             ));
                         });
                         // §4.2: Price column (fixed 70px)
@@ -242,7 +240,7 @@ pub fn update_sidebar_system(
                                         font_size: 11.0,
                                         ..default()
                                     },
-                                    TextColor(TICKER_PRICE_TEXT),
+                                    TextColor(ticker_price_text),
                                     SidebarInstrumentPriceText {
                                         instrument_id: id.clone(),
                                     },
@@ -270,7 +268,7 @@ pub fn update_sidebar_system(
                                     font_size: 11.0,
                                     ..default()
                                 },
-                                TextColor(BTN_TEXT),
+                                TextColor(btn_text),
                             ));
                         });
                     });
@@ -302,7 +300,7 @@ pub fn update_sidebar_system(
                         font_size: 11.0,
                         ..default()
                     },
-                    TextColor(BTN_TEXT),
+                    TextColor(btn_text),
                 ));
                 spawn_picker_dropdown(btn);
             });
@@ -322,7 +320,7 @@ pub fn update_sidebar_system(
                         font_size: 10.0,
                         ..default()
                     },
-                    TextColor(WARNING_TEXT),
+                    TextColor(warning_text),
                     Node {
                         width: Val::Percent(100.0),
                         padding: UiRect::all(Val::Px(6.0)),
@@ -355,8 +353,6 @@ pub fn instrument_remove_button_system(
 }
 
 // ── Phase 8.7 §4.2 / §4.3 / §4.4 Instruments row systems ────────────────
-
-const TICKER_PRICE_TEXT: Color = Color::srgb(0.70, 0.85, 0.95);
 
 /// Format a `LastPrices` value for the sidebar price column.
 /// `None` → empty string; otherwise fixed 2-decimal formatting.
@@ -503,6 +499,7 @@ mod tests {
         // We verify this by adding an instrument to the registry, running the system,
         // and checking that at least one SidebarInstrumentPriceText entity exists.
         let mut app = App::new();
+        app.init_resource::<crate::ui::theme::Theme>();
         app.insert_resource(InstrumentRegistry {
             ids: vec!["7203.TSE".to_string()],
             editable: true,
@@ -539,6 +536,7 @@ mod tests {
     #[test]
     fn instrument_row_price_uses_last_prices_map() {
         let mut app = App::new();
+        app.init_resource::<crate::ui::theme::Theme>();
         let mut map = HashMap::new();
         map.insert("1301.TSE".to_string(), 1234.56_f64);
         app.insert_resource(LastPrices { map });
@@ -566,6 +564,7 @@ mod tests {
     #[test]
     fn instrument_row_click_sets_selected_symbol() {
         let mut app = App::new();
+        app.init_resource::<crate::ui::theme::Theme>();
         app.insert_resource(SelectedSymbol { id: None });
         app.insert_resource(ExecutionModeRes {
             mode: ExecutionMode::Replay,
@@ -590,6 +589,7 @@ mod tests {
     fn instrument_row_click_in_live_sends_subscribe_market_data() {
         use tokio::sync::mpsc;
         let mut app = App::new();
+        app.init_resource::<crate::ui::theme::Theme>();
         app.insert_resource(SelectedSymbol { id: None });
         app.insert_resource(ExecutionModeRes {
             mode: ExecutionMode::LiveManual,
@@ -623,6 +623,7 @@ mod tests {
         // So instrument_row_click_system must not fire for it.
         use tokio::sync::mpsc;
         let mut app = App::new();
+        app.init_resource::<crate::ui::theme::Theme>();
         app.insert_resource(SelectedSymbol { id: None });
         app.insert_resource(ExecutionModeRes {
             mode: ExecutionMode::LiveManual,
@@ -705,6 +706,7 @@ mod tests {
         // The sidebar Order button must be Hidden in any non-LiveManual mode.
         // RED until apply_order_button_visibility_system exists & is registered.
         let mut app = App::new();
+        app.init_resource::<crate::ui::theme::Theme>();
         app.insert_resource(ExecutionModeRes {
             mode: ExecutionMode::Replay,
         });
@@ -728,6 +730,7 @@ mod tests {
     #[test]
     fn order_button_visible_in_livemanual() {
         let mut app = App::new();
+        app.init_resource::<crate::ui::theme::Theme>();
         app.insert_resource(ExecutionModeRes {
             mode: ExecutionMode::LiveManual,
         });

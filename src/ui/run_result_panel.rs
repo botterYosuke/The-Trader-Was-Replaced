@@ -1,22 +1,13 @@
 use crate::replay::{ReplayStartupPhase, ReplayStartupProgress};
 use crate::trading::{CurrentRun, RunState};
 use crate::ui::components::{PanelKind, RunResultPanelRoot};
-use crate::ui::floating_window::{FloatingWindowSpec, spawn_floating_window};
+use crate::ui::floating_window::{FloatingWindowSpec, spawn_floating_window_with_theme};
+use crate::ui::theme::Theme;
 use bevy::prelude::*;
 
-// ── レイアウト & 配色 ─────────────────────────────────────────
+// ── レイアウト ────────────────────────────────────────────────
 const PANEL_SIZE: Vec2 = Vec2::new(280.0, 160.0);
 const PANEL_POSITION: Vec2 = Vec2::new(-450.0, -70.0);
-const ACCENT: Color = Color::srgba(0.0, 0.8, 1.0, 0.4);
-
-const COLOR_DEFAULT: Color = Color::srgb(0.85, 0.88, 0.94);
-const COLOR_IDLE: Color = Color::srgb(0.55, 0.55, 0.55);
-const COLOR_RUNNING: Color = Color::srgb(1.0, 0.78, 0.0);
-const COLOR_COMPLETED: Color = Color::srgb(0.0, 1.0, 0.50);
-const COLOR_FAILED: Color = Color::srgb(1.0, 0.20, 0.40);
-const COLOR_RUNID: Color = Color::srgb(0.0, 0.81, 1.0);
-const COLOR_PNL_POS: Color = Color::srgb(0.0, 1.0, 0.50);
-const COLOR_PNL_NEG: Color = Color::srgb(1.0, 0.20, 0.40);
 
 const BAR_WIDTH: f32 = 230.0;
 const BAR_HEIGHT: f32 = 8.0;
@@ -42,17 +33,18 @@ pub struct RunResultBarBg;
 pub struct RunResultBarFill;
 
 // ── Spawn ────────────────────────────────────────────────────
-pub fn spawn_run_result_panel(commands: &mut Commands) {
-    let (root, content_area, _title_bar) = spawn_floating_window(
+pub fn spawn_run_result_panel(commands: &mut Commands, theme: &Theme) {
+    let (root, content_area, _title_bar) = spawn_floating_window_with_theme(
         commands,
         FloatingWindowSpec {
             title: "RUN RESULT".to_string(),
             size: PANEL_SIZE,
             position: PANEL_POSITION,
-            accent: ACCENT,
+            accent: theme.colors.accent.with_alpha(0.4),
             closeable: false,
             resizable: false,
         },
+        theme,
     );
     commands.entity(root).insert((PanelKind::RunResult, RunResultPanelRoot));
 
@@ -66,7 +58,7 @@ pub fn spawn_run_result_panel(commands: &mut Commands) {
             .spawn((
                 Text2d::new(""),
                 TextFont { font_size: 12.0, ..default() },
-                TextColor(COLOR_DEFAULT),
+                TextColor(theme.colors.text),
                 Transform::from_xyz(0.0, y, 0.1),
                 kind,
             ))
@@ -78,7 +70,7 @@ pub fn spawn_run_result_panel(commands: &mut Commands) {
         .spawn((
             Text2d::new(""),
             TextFont { font_size: 12.0, ..default() },
-            TextColor(COLOR_DEFAULT),
+            TextColor(theme.colors.text),
             Transform::from_xyz(0.0, 10.0, 0.1),
             Visibility::Hidden,
             RunResultPhaseLabel,
@@ -89,7 +81,7 @@ pub fn spawn_run_result_panel(commands: &mut Commands) {
     let bar_bg = commands
         .spawn((
             Sprite {
-                color: Color::srgba(0.15, 0.15, 0.22, 1.0),
+                color: theme.colors.element_disabled,
                 custom_size: Some(Vec2::new(BAR_WIDTH, BAR_HEIGHT)),
                 ..default()
             },
@@ -103,7 +95,7 @@ pub fn spawn_run_result_panel(commands: &mut Commands) {
     let bar_fill = commands
         .spawn((
             Sprite {
-                color: Color::srgba(0.35, 0.55, 0.85, 1.0),
+                color: theme.colors.accent,
                 custom_size: Some(Vec2::new(BAR_FILL_WIDTH, BAR_HEIGHT)),
                 ..default()
             },
@@ -114,13 +106,14 @@ pub fn spawn_run_result_panel(commands: &mut Commands) {
     commands.entity(bar_bg).add_child(bar_fill);
 }
 
-pub fn spawn_run_result_panel_system(mut commands: Commands) {
-    spawn_run_result_panel(&mut commands);
+pub fn spawn_run_result_panel_system(mut commands: Commands, theme: Res<Theme>) {
+    spawn_run_result_panel(&mut commands, &theme);
 }
 
 pub fn run_result_panel_system(
     current_run: Res<CurrentRun>,
     progress: Res<ReplayStartupProgress>,
+    theme: Res<Theme>,
     mut label_q: Query<(&RunResultLabel, &mut Text2d, &mut TextColor)>,
     mut phase_q: Query<
         (&mut Text2d, &mut Visibility),
@@ -153,9 +146,9 @@ pub fn run_result_panel_system(
 
     for (kind, mut text, mut color) in &mut label_q {
         let (new_text, new_color) = if startup_active {
-            (String::new(), COLOR_DEFAULT)
+            (String::new(), theme.colors.text)
         } else {
-            normal_row_content(kind, &current_run)
+            normal_row_content(kind, &current_run, &theme)
         };
         if text.0 != new_text {
             text.0 = new_text;
@@ -177,19 +170,19 @@ fn phase_label_text(phase: ReplayStartupPhase) -> &'static str {
     }
 }
 
-fn normal_row_content(kind: &RunResultLabel, current_run: &CurrentRun) -> (String, Color) {
+fn normal_row_content(kind: &RunResultLabel, current_run: &CurrentRun, theme: &Theme) -> (String, Color) {
     match kind {
         RunResultLabel::State => match &current_run.state {
-            RunState::Idle => ("No run yet".to_string(), COLOR_IDLE),
-            RunState::Running => ("Running…".to_string(), COLOR_RUNNING),
-            RunState::Paused => ("Paused".to_string(), COLOR_RUNNING),
-            RunState::Stopped => ("Stopped".to_string(), COLOR_IDLE),
-            RunState::Completed => ("Completed".to_string(), COLOR_COMPLETED),
-            RunState::Failed { error } => (format!("Failed: {}", error), COLOR_FAILED),
+            RunState::Idle => ("No run yet".to_string(), theme.colors.text_muted),
+            RunState::Running => ("Running…".to_string(), theme.status.warning),
+            RunState::Paused => ("Paused".to_string(), theme.status.warning),
+            RunState::Stopped => ("Stopped".to_string(), theme.colors.text_muted),
+            RunState::Completed => ("Completed".to_string(), theme.status.success),
+            RunState::Failed { error } => (format!("Failed: {}", error), theme.status.error),
         },
         RunResultLabel::RunId => match &current_run.run_id {
-            Some(id) => (format!("run: {}", id), COLOR_RUNID),
-            None => (String::new(), COLOR_DEFAULT),
+            Some(id) => (format!("run: {}", id), theme.status.info),
+            None => (String::new(), theme.colors.text),
         },
         RunResultLabel::Stats => match &current_run.state {
             RunState::Running | RunState::Paused if !current_run.strategy_name.is_empty() => (
@@ -197,13 +190,13 @@ fn normal_row_content(kind: &RunResultLabel, current_run: &CurrentRun) -> (Strin
                     "strat: {}  o:{} f:{}",
                     current_run.strategy_name, current_run.order_count, current_run.fill_count
                 ),
-                COLOR_DEFAULT,
+                theme.colors.text,
             ),
-            RunState::Running | RunState::Paused => (String::new(), COLOR_DEFAULT),
+            RunState::Running | RunState::Paused => (String::new(), theme.colors.text),
             _ => match &current_run.parsed_summary {
                 Some(s) => (
                     format!("fills:{}  sh:{:.2}  dd:{:.0}", s.fills_count, s.sharpe, s.max_drawdown),
-                    COLOR_DEFAULT,
+                    theme.colors.text,
                 ),
                 None if current_run.order_count > 0 || current_run.fill_count > 0 => (
                     format!(
@@ -212,17 +205,17 @@ fn normal_row_content(kind: &RunResultLabel, current_run: &CurrentRun) -> (Strin
                         current_run.order_count,
                         current_run.fill_count
                     ),
-                    COLOR_DEFAULT,
+                    theme.colors.text,
                 ),
-                None => (String::new(), COLOR_DEFAULT),
+                None => (String::new(), theme.colors.text),
             },
         },
         RunResultLabel::Pnl => match &current_run.state {
             RunState::Running | RunState::Paused if !current_run.strategy_name.is_empty() => {
                 let c = if current_run.realized_pnl + current_run.unrealized_pnl >= 0.0 {
-                    COLOR_PNL_POS
+                    theme.status.success
                 } else {
-                    COLOR_PNL_NEG
+                    theme.status.error
                 };
                 (
                     format!(
@@ -232,10 +225,10 @@ fn normal_row_content(kind: &RunResultLabel, current_run: &CurrentRun) -> (Strin
                     c,
                 )
             }
-            RunState::Running | RunState::Paused => (String::new(), COLOR_DEFAULT),
+            RunState::Running | RunState::Paused => (String::new(), theme.colors.text),
             _ => match &current_run.parsed_summary {
                 Some(s) => {
-                    let c = if s.total_pnl >= 0.0 { COLOR_PNL_POS } else { COLOR_PNL_NEG };
+                    let c = if s.total_pnl >= 0.0 { theme.status.success } else { theme.status.error };
                     (format!("pnl:{:.0}  so:{:.2}", s.total_pnl, s.sortino), c)
                 }
                 None
@@ -243,9 +236,9 @@ fn normal_row_content(kind: &RunResultLabel, current_run: &CurrentRun) -> (Strin
                         || current_run.unrealized_pnl != 0.0 =>
                 {
                     let c = if current_run.realized_pnl + current_run.unrealized_pnl >= 0.0 {
-                        COLOR_PNL_POS
+                        theme.status.success
                     } else {
-                        COLOR_PNL_NEG
+                        theme.status.error
                     };
                     (
                         format!(
@@ -255,7 +248,7 @@ fn normal_row_content(kind: &RunResultLabel, current_run: &CurrentRun) -> (Strin
                         c,
                     )
                 }
-                None => (String::new(), COLOR_DEFAULT),
+                None => (String::new(), theme.colors.text),
             },
         },
     }

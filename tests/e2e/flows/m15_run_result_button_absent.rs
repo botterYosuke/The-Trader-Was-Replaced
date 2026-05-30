@@ -13,6 +13,7 @@ use backcast::ui::sidebar::spawn_sidebar;
 #[test]
 fn m15_run_result_button_absent() {
     let mut app = App::new();
+    app.init_resource::<backcast::ui::theme::Theme>();
     app.add_plugins(TransformPlugin);
     app.insert_resource(WindowManager::default());
     app.add_systems(Startup, spawn_sidebar);

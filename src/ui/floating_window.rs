@@ -188,13 +188,42 @@ pub fn spawn_floating_window(
     commands: &mut Commands,
     spec: FloatingWindowSpec,
 ) -> (Entity, Entity, Entity) {
+    spawn_floating_window_themed(commands, spec, None)
+}
+
+/// Theme-aware variant. Called by spawn functions that have a `&Theme`.
+pub fn spawn_floating_window_with_theme(
+    commands: &mut Commands,
+    spec: FloatingWindowSpec,
+    theme: &crate::ui::theme::Theme,
+) -> (Entity, Entity, Entity) {
+    spawn_floating_window_themed(commands, spec, Some(theme))
+}
+
+fn spawn_floating_window_themed(
+    commands: &mut Commands,
+    spec: FloatingWindowSpec,
+    theme: Option<&crate::ui::theme::Theme>,
+) -> (Entity, Entity, Entity) {
     let title_bar_half = TITLE_BAR_HEIGHT / 2.0;
+    let default_theme;
+    let t = match theme {
+        Some(t) => t,
+        None => {
+            default_theme = crate::ui::theme::Theme::default();
+            &default_theme
+        }
+    };
+    let bg_color = t.colors.surface_background.with_alpha(0.85);
+    let inner_glow_color = Color::WHITE.with_alpha(0.05);
+    let title_bar_color = t.colors.surface_background;
+    let close_btn_color = t.status.error.with_alpha(0.85);
 
     // ─── 1. Window root (背景) ───
     let root = commands
         .spawn((
             Sprite {
-                color: Color::srgba(0.07, 0.07, 0.12, 0.85),
+                color: bg_color,
                 custom_size: Some(spec.size),
                 ..default()
             },
@@ -218,7 +247,7 @@ pub fn spawn_floating_window(
     let inner_glow = commands
         .spawn((
             Sprite {
-                color: Color::srgba(1.0, 1.0, 1.0, 0.05),
+                color: inner_glow_color,
                 custom_size: Some(spec.size - Vec2::splat(4.0)),
                 ..default()
             },
@@ -246,7 +275,7 @@ pub fn spawn_floating_window(
     let title_bar = commands
         .spawn((
             Sprite {
-                color: Color::srgba(0.1, 0.1, 0.2, 1.0),
+                color: title_bar_color,
                 custom_size: Some(Vec2::new(spec.size.x, TITLE_BAR_HEIGHT)),
                 ..default()
             },
@@ -367,7 +396,7 @@ pub fn spawn_floating_window(
         let close_btn = commands
             .spawn((
                 Sprite {
-                    color: Color::srgba(0.6, 0.15, 0.15, 0.85),
+                    color: close_btn_color,
                     custom_size: Some(Vec2::splat(CLOSE_BTN_SIZE)),
                     ..default()
                 },
@@ -651,7 +680,7 @@ pub fn panel_spawn_dispatcher_system(
         let mut spawned_region_key: Option<String> = None;
         match event.kind {
             PanelKind::BuyingPower => spawn_buying_power_panel(&mut commands, &theme),
-            PanelKind::RunResult => spawn_run_result_panel(&mut commands),
+            PanelKind::RunResult => spawn_run_result_panel(&mut commands, &theme),
             PanelKind::Positions => spawn_positions_panel(&mut commands, &theme),
             PanelKind::Orders => spawn_orders_panel(&mut commands, &theme),
             PanelKind::Startup => spawn_scenario_startup_window(&mut commands),
@@ -703,16 +732,17 @@ pub fn panel_spawn_dispatcher_system(
                 spawn_strategy_editor_panel(&mut commands, &mut allocator, spec);
             }
             PanelKind::Order => {
-                let (root, content_area, _title_bar) = spawn_floating_window(
+                let (root, content_area, _title_bar) = spawn_floating_window_with_theme(
                     &mut commands,
                     FloatingWindowSpec {
                         title: "ORDER".to_string(),
                         size: Vec2::new(320.0, 360.0),
                         position: Vec2::new(0.0, 0.0),
-                        accent: Color::srgb(0.20, 0.80, 1.0),
+                        accent: theme.colors.accent,
                         closeable: true,
                         resizable: false,
                     },
+                    &theme,
                 );
                 commands.entity(root).insert((PanelKind::Order, LayoutExcluded));
                 spawn_order_form_in_window(&mut commands, content_area);

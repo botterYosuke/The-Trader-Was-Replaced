@@ -15,13 +15,12 @@ use crate::ui::components::{
     ScenarioStartupPanelRoot, ScenarioStartupParams, ScenarioStartupStartFieldHost,
     ScenarioWritebackPaths, atomic_mutate_scenario_object,
 };
-use crate::ui::floating_window::{FloatingWindowSpec, spawn_floating_window};
+use crate::ui::floating_window::{FloatingWindowSpec, spawn_floating_window_with_theme};
+use crate::ui::theme::Theme;
 
 const DATE_FMT: &str = "%Y-%m-%d";
 
-const ERROR_COLOR: Color = Color::srgb(0.95, 0.45, 0.45);
-const FIELD_BG_ACTIVE: Color = Color::srgba(0.02, 0.02, 0.04, 1.0);
-const FIELD_BG_DISABLED: Color = Color::srgba(0.08, 0.08, 0.10, 1.0);
+// Colors are sourced from Theme at spawn time (see spawn_scenario_startup_window)
 
 impl GranularityChoice {
     /// `ScenarioMetadata.granularity` / cache sidecar JSON / `StrategyRunConfig.granularity`
@@ -87,14 +86,19 @@ pub enum ScenarioStartupParamCommit {
 /// marker / granularity-button marker を既存システムが期待する数・種類で再現する。
 /// Startup 時に sprite startup window を一度だけ spawn する system ラッパ。
 /// 本体は helper `spawn_scenario_startup_window(&mut Commands)`（4d の dispatcher 復元 arm も同 helper を呼ぶ）。
-pub fn spawn_scenario_startup_window_system(mut commands: Commands) {
-    spawn_scenario_startup_window(&mut commands);
+pub fn spawn_scenario_startup_window_system(mut commands: Commands, theme: Res<Theme>) {
+    spawn_scenario_startup_window_with_theme(&mut commands, &theme);
 }
 
+// Keep the old name as a wrapper for the dispatcher (which doesn't have theme yet).
 pub fn spawn_scenario_startup_window(commands: &mut Commands) {
+    let theme = Theme::default();
+    spawn_scenario_startup_window_with_theme(commands, &theme);
+}
+
+fn spawn_scenario_startup_window_with_theme(commands: &mut Commands, theme: &Theme) {
     const WINDOW_SIZE: Vec2 = Vec2::new(320.0, 200.0);
     const WINDOW_POSITION: Vec2 = Vec2::new(-450.0, -120.0);
-    const ACCENT: Color = Color::srgba(0.5, 0.7, 1.0, 0.4);
 
     // Labels are right-anchored, so LABEL_X is their RIGHT edge (10px left of
     // the field's left edge at FIELD_X-60 = -60). Right-aligning keeps the
@@ -105,21 +109,22 @@ pub fn spawn_scenario_startup_window(commands: &mut Commands) {
     const FIELD_X: f32 = 0.0;
     const FIELD_SIZE: Vec2 = Vec2::new(120.0, 22.0);
     const ERROR_X: f32 = -40.0;
-    const STARTUP_LABEL_COLOR: Color = Color::srgb(0.78, 0.82, 0.92);
-    const FIELD_BG: Color = Color::srgba(0.02, 0.02, 0.04, 1.0);
-    const GRAN_BTN_BG: Color = Color::srgba(0.10, 0.10, 0.16, 1.0);
+    let startup_label_color = theme.colors.text_accent;
+    let field_bg = theme.colors.element_background;
+    let gran_btn_bg = theme.colors.element_background;
     const GRAN_BTN_SIZE: Vec2 = Vec2::new(50.0, 16.0);
 
-    let (root, content_area, _title_bar) = spawn_floating_window(
+    let (root, content_area, _title_bar) = spawn_floating_window_with_theme(
         commands,
         FloatingWindowSpec {
             title: "STARTUP".to_string(),
             size: WINDOW_SIZE,
             position: WINDOW_POSITION,
-            accent: ACCENT,
+            accent: theme.colors.accent.with_alpha(0.4),
             closeable: false,
             resizable: false,
         },
+        theme,
     );
     commands
         .entity(root)
@@ -132,6 +137,8 @@ pub fn spawn_scenario_startup_window(commands: &mut Commands) {
         y: f32,
         label: &str,
         host_marker: impl Bundle,
+        label_color: Color,
+        field_color: Color,
     ) {
         let lbl = commands
             .spawn((
@@ -140,7 +147,7 @@ pub fn spawn_scenario_startup_window(commands: &mut Commands) {
                     font_size: 11.0,
                     ..default()
                 },
-                TextColor(STARTUP_LABEL_COLOR),
+                TextColor(label_color),
                 bevy::sprite::Anchor::CENTER_RIGHT,
                 Transform::from_xyz(LABEL_X, y, 0.1),
             ))
@@ -150,7 +157,7 @@ pub fn spawn_scenario_startup_window(commands: &mut Commands) {
         let host = commands
             .spawn((
                 Sprite {
-                    color: FIELD_BG,
+                    color: field_color,
                     custom_size: Some(FIELD_SIZE),
                     ..default()
                 },
@@ -167,6 +174,7 @@ pub fn spawn_scenario_startup_window(commands: &mut Commands) {
         parent: Entity,
         y: f32,
         field: ScenarioStartupField,
+        error_color: Color,
     ) {
         let err = commands
             .spawn((
@@ -175,7 +183,7 @@ pub fn spawn_scenario_startup_window(commands: &mut Commands) {
                     font_size: 10.0,
                     ..default()
                 },
-                TextColor(ERROR_COLOR),
+                TextColor(error_color),
                 Transform::from_xyz(ERROR_X, y, 0.1),
                 ScenarioStartupErrorLabel { field },
             ))
@@ -192,11 +200,12 @@ pub fn spawn_scenario_startup_window(commands: &mut Commands) {
         label: &str,
         marker: impl Bundle,
         choice: GranularityChoice,
+        btn_color: Color,
     ) {
         let btn = commands
             .spawn((
                 Sprite {
-                    color: GRAN_BTN_BG,
+                    color: btn_color,
                     custom_size: Some(GRAN_BTN_SIZE),
                     ..default()
                 },
@@ -226,20 +235,21 @@ pub fn spawn_scenario_startup_window(commands: &mut Commands) {
                     font_size: 10.0,
                     ..default()
                 },
-                TextColor(STARTUP_LABEL_COLOR),
+                TextColor(btn_color),
                 Transform::from_xyz(0.0, 0.0, 0.1),
             ))
             .id();
         commands.entity(btn).add_child(txt);
     }
 
+    let error_color = theme.status.error;
     // (a) Start 行 + (b) Start エラー
-    spawn_field_row(commands, content_area, 70.0, "Start", ScenarioStartupStartFieldHost);
-    spawn_error_label(commands, content_area, 56.0, ScenarioStartupField::Start);
+    spawn_field_row(commands, content_area, 70.0, "Start", ScenarioStartupStartFieldHost, startup_label_color, field_bg);
+    spawn_error_label(commands, content_area, 56.0, ScenarioStartupField::Start, error_color);
 
     // (c) End 行 + End エラー
-    spawn_field_row(commands, content_area, 38.0, "End", ScenarioStartupEndFieldHost);
-    spawn_error_label(commands, content_area, 24.0, ScenarioStartupField::End);
+    spawn_field_row(commands, content_area, 38.0, "End", ScenarioStartupEndFieldHost, startup_label_color, field_bg);
+    spawn_error_label(commands, content_area, 24.0, ScenarioStartupField::End, error_color);
 
     // (d) Granularity ラベル + 2 ボタン + Granularity エラー
     let gran_label = commands
@@ -249,7 +259,7 @@ pub fn spawn_scenario_startup_window(commands: &mut Commands) {
                 font_size: 11.0,
                 ..default()
             },
-            TextColor(STARTUP_LABEL_COLOR),
+            TextColor(startup_label_color),
             bevy::sprite::Anchor::CENTER_RIGHT,
             Transform::from_xyz(LABEL_X, 6.0, 0.1),
         ))
@@ -263,6 +273,7 @@ pub fn spawn_scenario_startup_window(commands: &mut Commands) {
         "Daily",
         ScenarioStartupGranularityDailyButton,
         GranularityChoice::Daily,
+        gran_btn_bg,
     );
     spawn_granularity_btn(
         commands,
@@ -272,8 +283,9 @@ pub fn spawn_scenario_startup_window(commands: &mut Commands) {
         "Minute",
         ScenarioStartupGranularityMinuteButton,
         GranularityChoice::Minute,
+        gran_btn_bg,
     );
-    spawn_error_label(commands, content_area, -8.0, ScenarioStartupField::Granularity);
+    spawn_error_label(commands, content_area, -8.0, ScenarioStartupField::Granularity, error_color);
 
     // (e) Initial cash 行 + エラー
     spawn_field_row(
@@ -282,17 +294,20 @@ pub fn spawn_scenario_startup_window(commands: &mut Commands) {
         -26.0,
         "Initial cash",
         ScenarioStartupCashFieldHost,
+        startup_label_color,
+        field_bg,
     );
-    spawn_error_label(commands, content_area, -40.0, ScenarioStartupField::InitialCash);
+    spawn_error_label(commands, content_area, -40.0, ScenarioStartupField::InitialCash, error_color);
 
     // (f) CrossField エラー
-    spawn_error_label(commands, content_area, -58.0, ScenarioStartupField::CrossField);
+    spawn_error_label(commands, content_area, -58.0, ScenarioStartupField::CrossField, error_color);
 }
 
 /// Attach a cosmic-edit `TextEdit` to each field host. Focus is handled by
 /// `change_active_editor_sprite` on click; `FocusedWidget` is intentionally untouched.
 pub fn spawn_scenario_startup_input_fields(
     mut commands: Commands,
+    theme: Res<Theme>,
     start_host_q: Query<
         Entity,
         (
@@ -319,6 +334,7 @@ pub fn spawn_scenario_startup_input_fields(
         commands: &mut Commands,
         host: Entity,
         field: ScenarioStartupField,
+        field_color: Color,
     ) {
         // Slice 6a (#50): cosmic-edit から Bevy 2D primitive へ。
         // - Sprite: 入力欄の背景矩形 (色は readonly_system が後から塗り替える)
@@ -330,7 +346,7 @@ pub fn spawn_scenario_startup_input_fields(
             .spawn((
                 Sprite {
                     custom_size: Some(Vec2::new(120.0, 22.0)),
-                    color: FIELD_BG_ACTIVE,
+                    color: field_color,
                     ..default()
                 },
                 Transform::from_xyz(0.0, 0.0, 0.1),
@@ -362,11 +378,13 @@ pub fn spawn_scenario_startup_input_fields(
         commands.entity(host).add_child(entity);
     }
 
+    let field_color = theme.colors.element_background;
     if let Ok(host) = start_host_q.single() {
         spawn_field(
             &mut commands,
             host,
             ScenarioStartupField::Start,
+            field_color,
         );
     }
     if let Ok(host) = end_host_q.single() {
@@ -374,6 +392,7 @@ pub fn spawn_scenario_startup_input_fields(
             &mut commands,
             host,
             ScenarioStartupField::End,
+            field_color,
         );
     }
     if let Ok(host) = cash_host_q.single() {
@@ -381,6 +400,7 @@ pub fn spawn_scenario_startup_input_fields(
             &mut commands,
             host,
             ScenarioStartupField::InitialCash,
+            field_color,
         );
     }
 }
@@ -743,12 +763,13 @@ pub fn scenario_startup_param_input_system(
 pub fn enforce_scenario_startup_panel_readonly_system(
     progress: Res<ReplayStartupProgress>,
     paths: Res<ScenarioWritebackPaths>,
+    theme: Res<Theme>,
     mut q: Query<&mut Sprite, With<ScenarioStartupFieldEditor>>,
 ) {
     let target = if is_panel_disabled(&progress, &paths) {
-        FIELD_BG_DISABLED
+        theme.colors.element_disabled
     } else {
-        FIELD_BG_ACTIVE
+        theme.colors.element_background
     };
     for mut sprite in q.iter_mut() {
         if sprite.color != target {
@@ -765,6 +786,7 @@ pub fn update_scenario_startup_param_ui_system(
     params: Res<ScenarioStartupParams>,
     progress: Res<ReplayStartupProgress>,
     paths: Res<ScenarioWritebackPaths>,
+    theme: Res<Theme>,
     mut daily_sprite_q: Query<
         &mut Sprite,
         (
@@ -786,8 +808,8 @@ pub fn update_scenario_startup_param_ui_system(
     } else {
         1.0
     };
-    let active = Color::srgba(0.20, 0.35, 0.60, alpha);
-    let inactive = Color::srgba(0.10, 0.10, 0.16, alpha);
+    let active = theme.colors.element_selected.with_alpha(alpha);
+    let inactive = theme.colors.element_background.with_alpha(alpha);
 
     let (daily_color, minute_color) = match params.granularity {
         GranularityChoice::Daily => (active, inactive),
@@ -886,11 +908,16 @@ mod tests {
     /// leak through after auto-hide flips `progress.visible`.
     #[test]
     fn enforce_readonly_toggles_with_progress_visible() {
+        use crate::ui::theme::Theme;
+        let theme = Theme::default();
+        let field_bg_active = theme.colors.element_background;
+        let field_bg_disabled = theme.colors.element_disabled;
         let mut app = App::new();
         app.init_resource::<ReplayStartupProgress>()
             .insert_resource(ScenarioWritebackPaths {
                 cache_sidecar: Some(std::path::PathBuf::from("/tmp/dummy_cache.json")),
             })
+            .insert_resource(theme)
             .add_systems(Update, enforce_scenario_startup_panel_readonly_system);
 
         let e = app
@@ -900,7 +927,7 @@ mod tests {
                     field: ScenarioStartupField::InitialCash,
                 },
                 Sprite {
-                    color: FIELD_BG_ACTIVE,
+                    color: field_bg_active,
                     ..default()
                 },
             ))
@@ -910,7 +937,7 @@ mod tests {
         app.update();
         assert_eq!(
             app.world().get::<Sprite>(e).unwrap().color,
-            FIELD_BG_ACTIVE
+            field_bg_active
         );
 
         // Flip to visible — editor must be dimmed.
@@ -920,7 +947,7 @@ mod tests {
         app.update();
         assert_eq!(
             app.world().get::<Sprite>(e).unwrap().color,
-            FIELD_BG_DISABLED
+            field_bg_disabled
         );
 
         // Flip back — bg restored.
@@ -930,7 +957,7 @@ mod tests {
         app.update();
         assert_eq!(
             app.world().get::<Sprite>(e).unwrap().color,
-            FIELD_BG_ACTIVE
+            field_bg_active
         );
     }
 
@@ -939,11 +966,16 @@ mod tests {
     /// enforcement must mirror that, not only watch `progress.visible`.
     #[test]
     fn enforce_readonly_when_cache_unavailable() {
+        use crate::ui::theme::Theme;
+        let theme = Theme::default();
+        let field_bg_active = theme.colors.element_background;
+        let field_bg_disabled = theme.colors.element_disabled;
         let mut app = App::new();
         app.init_resource::<ReplayStartupProgress>()
             .insert_resource(ScenarioWritebackPaths {
                 cache_sidecar: None,
             })
+            .insert_resource(theme)
             .add_systems(Update, enforce_scenario_startup_panel_readonly_system);
 
         let e = app
@@ -953,7 +985,7 @@ mod tests {
                     field: ScenarioStartupField::Start,
                 },
                 Sprite {
-                    color: FIELD_BG_ACTIVE,
+                    color: field_bg_active,
                     ..default()
                 },
             ))
@@ -962,7 +994,7 @@ mod tests {
         app.update();
         assert_eq!(
             app.world().get::<Sprite>(e).unwrap().color,
-            FIELD_BG_DISABLED
+            field_bg_disabled
         );
     }
 

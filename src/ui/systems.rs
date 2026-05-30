@@ -1,5 +1,6 @@
 use crate::trading::{BackendStatus, LastPrices, SelectedSymbol, TradingSettings};
 use crate::ui::components::{PriceDisplay, StatusIndicator};
+use crate::ui::theme::Theme;
 use bevy::prelude::*;
 
 pub fn update_price_display(
@@ -25,23 +26,24 @@ pub fn update_price_display(
 pub fn update_status_indicator(
     status: Res<BackendStatus>,
     settings: Res<TradingSettings>,
+    theme: Res<Theme>,
     mut query: Query<&mut Sprite, With<StatusIndicator>>,
 ) {
     if !settings.backend_enabled {
         for mut sprite in query.iter_mut() {
-            sprite.color = Color::srgb(0.3, 0.3, 0.3); // Disabled: Dark Gray
+            sprite.color = theme.colors.element_disabled;
         }
         return;
     }
 
     let color = if status.connected {
         if status.running {
-            Color::srgb(0.0, 1.0, 0.0) // Connected & Running: Green
+            theme.status.success
         } else {
-            Color::srgb(1.0, 1.0, 0.0) // Connected but Paused: Yellow
+            theme.status.warning
         }
     } else {
-        Color::srgb(1.0, 0.0, 0.0) // Error/Disconnected: Red
+        theme.status.error
     };
 
     for mut sprite in query.iter_mut() {

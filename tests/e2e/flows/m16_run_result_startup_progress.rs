@@ -24,7 +24,7 @@ fn make_app() -> App {
     app.insert_resource(WindowManager::default());
     app.insert_resource(AppHistory::default());
     app.add_systems(Startup, |mut commands: Commands| {
-        spawn_run_result_panel(&mut commands);
+        spawn_run_result_panel(&mut commands, &backcast::ui::theme::Theme::default());
     });
     app.add_systems(Update, run_result_panel_system);
     app

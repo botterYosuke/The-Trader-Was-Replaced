@@ -9,7 +9,6 @@ use crate::trading::{
 use crate::ui::components::{PanelKind, WindowRoot};
 
 use super::confirm_modal::OrderConfirm;
-use super::{COLOR_BTN_SUBMIT, COLOR_VALUE};
 
 // ── デフォルト売買単位・呼値 ───────────────────────────────────────────────
 // Phase 9 MVP: 銘柄メタデータ (売買単位 / 呼値) はまだ Rust 側 state に流れていない
@@ -18,11 +17,7 @@ use super::{COLOR_BTN_SUBMIT, COLOR_VALUE};
 const DEFAULT_LOT_SIZE: f64 = 100.0;
 const DEFAULT_TICK_SIZE: f64 = 1.0;
 
-// ── 配色 ───────────────────────────────────────────────────────────────────
-const COLOR_LABEL: Color = Color::srgb(0.65, 0.70, 0.78);
-const COLOR_ERROR: Color = Color::srgb(1.0, 0.35, 0.45);
-const COLOR_BTN_IDLE: Color = Color::srgba(0.18, 0.20, 0.28, 1.0);
-const COLOR_BTN_SELECTED: Color = Color::srgba(0.10, 0.40, 0.60, 1.0);
+// Colors sourced from Theme (see spawn functions below)
 
 // ===========================================================================
 // ドメイン型
@@ -249,6 +244,11 @@ pub enum OrderField {
 // ===========================================================================
 
 pub fn spawn_order_form_in_window(commands: &mut Commands, content_area: Entity) {
+    let theme = crate::ui::theme::Theme::default();
+    let color_label = theme.colors.text_muted;
+    let color_error = theme.status.error;
+    let color_btn_idle = theme.colors.element_background;
+    let color_btn_selected = theme.colors.element_selected;
     const LABEL_X: f32 = -95.0;
     const Y_SYMBOL: f32 = 128.0;
     const Y_SIDE: f32 = 98.0;
@@ -271,7 +271,7 @@ pub fn spawn_order_form_in_window(commands: &mut Commands, content_area: Entity)
             p.spawn((
                 Text2d::new(text.to_string()),
                 TextFont { font_size: FONT_SZ, ..default() },
-                TextColor(COLOR_LABEL),
+                TextColor(color_label),
                 Transform::from_xyz(x, y, 0.1),
                 bevy::sprite::Anchor::CENTER_RIGHT,
             ));
@@ -283,7 +283,7 @@ pub fn spawn_order_form_in_window(commands: &mut Commands, content_area: Entity)
             p.spawn((
                 Text2d::new(text.to_string()),
                 TextFont { font_size: FONT_SZ, ..default() },
-                TextColor(COLOR_VALUE),
+                TextColor(theme.colors.text),
                 Transform::from_xyz(x, y, 0.1),
                 field,
             ));
@@ -305,7 +305,7 @@ pub fn spawn_order_form_in_window(commands: &mut Commands, content_area: Entity)
                 s.spawn((
                     Text2d::new(label.to_string()),
                     TextFont { font_size: FONT_SZ, ..default() },
-                    TextColor(COLOR_VALUE),
+                    TextColor(theme.colors.text),
                     Transform::from_xyz(0.0, 0.0, 0.1),
                 ));
             });
@@ -316,33 +316,33 @@ pub fn spawn_order_form_in_window(commands: &mut Commands, content_area: Entity)
     spawn_field(commands, OrderField::Symbol, "----", 30.0, Y_SYMBOL);
 
     spawn_label(commands, "Side", LABEL_X, Y_SIDE);
-    spawn_btn(commands, OrderButton::SideBuy, "BUY", -50.0, Y_SIDE, BTN_SM_W, BTN_H, COLOR_BTN_SELECTED);
-    spawn_btn(commands, OrderButton::SideSell, "SELL", 22.0, Y_SIDE, BTN_SM_W, BTN_H, COLOR_BTN_IDLE);
+    spawn_btn(commands, OrderButton::SideBuy, "BUY", -50.0, Y_SIDE, BTN_SM_W, BTN_H, color_btn_selected);
+    spawn_btn(commands, OrderButton::SideSell, "SELL", 22.0, Y_SIDE, BTN_SM_W, BTN_H, color_btn_idle);
 
     spawn_label(commands, "Type", LABEL_X, Y_TYPE);
-    spawn_btn(commands, OrderButton::TypeMarket, "MKT", -50.0, Y_TYPE, BTN_SM_W, BTN_H, COLOR_BTN_SELECTED);
-    spawn_btn(commands, OrderButton::TypeLimit, "LIMIT", 22.0, Y_TYPE, BTN_SM_W, BTN_H, COLOR_BTN_IDLE);
+    spawn_btn(commands, OrderButton::TypeMarket, "MKT", -50.0, Y_TYPE, BTN_SM_W, BTN_H, color_btn_selected);
+    spawn_btn(commands, OrderButton::TypeLimit, "LIMIT", 22.0, Y_TYPE, BTN_SM_W, BTN_H, color_btn_idle);
 
     spawn_label(commands, "Qty", LABEL_X, Y_QTY);
-    spawn_btn(commands, OrderButton::QtyDec, "-", -78.0, Y_QTY, BTN_STEP_W, BTN_H, COLOR_BTN_IDLE);
+    spawn_btn(commands, OrderButton::QtyDec, "-", -78.0, Y_QTY, BTN_STEP_W, BTN_H, color_btn_idle);
     spawn_field(commands, OrderField::Qty, "100", -26.0, Y_QTY);
-    spawn_btn(commands, OrderButton::QtyInc, "+", 25.0, Y_QTY, BTN_STEP_W, BTN_H, COLOR_BTN_IDLE);
+    spawn_btn(commands, OrderButton::QtyInc, "+", 25.0, Y_QTY, BTN_STEP_W, BTN_H, color_btn_idle);
 
     spawn_label(commands, "Price", LABEL_X, Y_PRICE);
-    spawn_btn(commands, OrderButton::PriceDec, "-", -78.0, Y_PRICE, BTN_STEP_W, BTN_H, COLOR_BTN_IDLE);
+    spawn_btn(commands, OrderButton::PriceDec, "-", -78.0, Y_PRICE, BTN_STEP_W, BTN_H, color_btn_idle);
     spawn_field(commands, OrderField::Price, "----", -26.0, Y_PRICE);
-    spawn_btn(commands, OrderButton::PriceInc, "+", 25.0, Y_PRICE, BTN_STEP_W, BTN_H, COLOR_BTN_IDLE);
+    spawn_btn(commands, OrderButton::PriceInc, "+", 25.0, Y_PRICE, BTN_STEP_W, BTN_H, color_btn_idle);
 
     spawn_label(commands, "TIF", LABEL_X, Y_TIF);
-    spawn_btn(commands, OrderButton::Tif(TimeInForce::Day), "DAY", -72.0, Y_TIF, BTN_TIF_W, BTN_H, COLOR_BTN_SELECTED);
-    spawn_btn(commands, OrderButton::Tif(TimeInForce::Opening), "OPEN", -12.0, Y_TIF, BTN_TIF_W, BTN_H, COLOR_BTN_IDLE);
-    spawn_btn(commands, OrderButton::Tif(TimeInForce::Closing), "CLOSE", 48.0, Y_TIF, BTN_TIF_W, BTN_H, COLOR_BTN_IDLE);
+    spawn_btn(commands, OrderButton::Tif(TimeInForce::Day), "DAY", -72.0, Y_TIF, BTN_TIF_W, BTN_H, color_btn_selected);
+    spawn_btn(commands, OrderButton::Tif(TimeInForce::Opening), "OPEN", -12.0, Y_TIF, BTN_TIF_W, BTN_H, color_btn_idle);
+    spawn_btn(commands, OrderButton::Tif(TimeInForce::Closing), "CLOSE", 48.0, Y_TIF, BTN_TIF_W, BTN_H, color_btn_idle);
 
     commands.entity(content_area).with_children(|p| {
         p.spawn((
             Text2d::new(""),
             TextFont { font_size: FONT_SZ, ..default() },
-            TextColor(COLOR_ERROR),
+            TextColor(color_error),
             Transform::from_xyz(0.0, Y_ERROR, 0.1),
             OrderField::Error,
         ));
@@ -351,7 +351,7 @@ pub fn spawn_order_form_in_window(commands: &mut Commands, content_area: Entity)
     let submit = OrderButton::Submit;
     commands.entity(content_area).with_children(|p| {
         p.spawn((
-            Sprite { color: COLOR_BTN_SUBMIT, custom_size: Some(Vec2::new(BTN_SUBMIT_W, BTN_SUBMIT_H)), ..default() },
+            Sprite { color: theme.status.success_background, custom_size: Some(Vec2::new(BTN_SUBMIT_W, BTN_SUBMIT_H)), ..default() },
             Transform::from_xyz(0.0, Y_SUBMIT, 0.2),
             submit,
         ))
@@ -362,7 +362,7 @@ pub fn spawn_order_form_in_window(commands: &mut Commands, content_area: Entity)
             s.spawn((
                 Text2d::new("発注"),
                 TextFont { font_size: FONT_SZ + 2.0, ..default() },
-                TextColor(COLOR_VALUE),
+                TextColor(theme.colors.text),
                 Transform::from_xyz(0.0, 0.0, 0.1),
             ));
         });
@@ -465,6 +465,7 @@ pub fn order_panel_sync_system(
     selected: Res<SelectedSymbol>,
     confirm: Res<OrderConfirm>,
     feedback: Res<OrderFeedback>,
+    theme: Res<crate::ui::theme::Theme>,
     mut fields: Query<(&OrderField, &mut Text2d, &mut TextColor)>,
     mut buttons: Query<(&OrderButton, &mut Sprite)>,
 ) {
@@ -500,9 +501,9 @@ pub fn order_panel_sync_system(
             _ => continue,
         };
         let target = if selected_now {
-            COLOR_BTN_SELECTED
+            theme.colors.element_selected
         } else {
-            COLOR_BTN_IDLE
+            theme.colors.element_background
         };
         if sprite.color != target {
             sprite.color = target;

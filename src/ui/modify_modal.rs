@@ -26,14 +26,7 @@ use crate::ui::component::modal_layer::{
 };
 use crate::ui::theme::{LabelSize, Theme};
 
-const COLOR_FIELD_BG: Color = Color::srgba(0.04, 0.04, 0.08, 1.0);
-const COLOR_FIELD_BG_ACTIVE: Color = Color::srgba(0.10, 0.14, 0.22, 1.0);
-// Confirm button initial bg (starts disabled); active/disabled color is owned
-// by button_interaction_system (Tinted(Success) + ButtonDisabled). #46 Slice A.
-const COLOR_BTN_DISABLED: Color = Color::srgba(0.18, 0.20, 0.24, 1.0);
-const COLOR_BTN_CANCEL: Color = Color::srgba(0.30, 0.16, 0.20, 1.0);
-const COLOR_CHECK_OFF: Color = Color::srgba(0.18, 0.20, 0.28, 1.0);
-const COLOR_CHECK_ON: Color = Color::srgba(0.10, 0.45, 0.30, 1.0);
+// Colors are sourced from Theme (see spawn_modify_modal / modify_modal_sync_system)
 
 const KABU_WARNING: &str = "kabuステーションには訂正 API がありません。取消→新規発注の 2 段階で訂正します。途中失敗で元注文のみ取消になることがあります。";
 
@@ -225,7 +218,7 @@ pub fn spawn_modify_modal(mut commands: Commands, theme: Res<Theme>) {
                 height: Val::Px(16.0),
                 ..default()
             },
-            BackgroundColor(COLOR_CHECK_OFF),
+            BackgroundColor(theme.colors.element_background),
             ModifyAckCheckbox,
         ))
         .id();
@@ -248,7 +241,7 @@ pub fn spawn_modify_modal(mut commands: Commands, theme: Res<Theme>) {
                 column_gap: Val::Px(8.0),
                 ..default()
             },
-            BackgroundColor(Color::srgba(0.0, 0.0, 0.0, 0.0)),
+            BackgroundColor(Color::NONE),
             ModifyButton::AckToggle,
             ModifyWarnAckRow,
         ))
@@ -272,7 +265,7 @@ pub fn spawn_modify_modal(mut commands: Commands, theme: Res<Theme>) {
                 justify_content: JustifyContent::Center,
                 ..default()
             },
-            BackgroundColor(COLOR_BTN_CANCEL),
+            BackgroundColor(theme.status.error_background),
             crate::ui::component::ButtonStyle::Tinted(crate::ui::component::TintColor::Error),
             crate::ui::theme::ElevationIndex::ModalSurface,
             ModifyButton::Cancel,
@@ -297,7 +290,7 @@ pub fn spawn_modify_modal(mut commands: Commands, theme: Res<Theme>) {
                 justify_content: JustifyContent::Center,
                 ..default()
             },
-            BackgroundColor(COLOR_BTN_DISABLED),
+            BackgroundColor(theme.colors.element_disabled),
             crate::ui::component::ButtonStyle::Tinted(crate::ui::component::TintColor::Success),
             crate::ui::theme::ElevationIndex::ModalSurface,
             ModifyButton::Confirm,
@@ -361,7 +354,7 @@ fn spawn_input_row(
                 align_items: AlignItems::Center,
                 ..default()
             },
-            BackgroundColor(COLOR_FIELD_BG),
+            BackgroundColor(theme.colors.element_background),
             focus,
             ModifyFieldBg(focus_kind),
         ))
@@ -522,6 +515,7 @@ pub fn modify_modal_button_system(
 /// 入力値テキスト・フォーカス背景・警告バナー表示・チェックボックス色・Confirm 色を差分反映する。
 pub fn modify_modal_sync_system(
     form: Res<ModifyForm>,
+    theme: Res<Theme>,
     mut fields: Query<(&ModifyField, &mut Text)>,
     mut field_bgs: Query<(&ModifyFieldBg, &mut BackgroundColor), Without<ModifyAckCheckbox>>,
     mut warn_q: Query<&mut Node, With<ModifyWarnRow>>,
@@ -555,9 +549,9 @@ pub fn modify_modal_sync_system(
     // フォーカス背景
     for (bg_marker, mut bg) in &mut field_bgs {
         let target = if bg_marker.0 == form.focus {
-            COLOR_FIELD_BG_ACTIVE
+            theme.colors.element_hover
         } else {
-            COLOR_FIELD_BG
+            theme.colors.element_background
         };
         if bg.0 != target {
             bg.0 = target;
@@ -582,9 +576,9 @@ pub fn modify_modal_sync_system(
     // チェックボックス色
     if let Ok(mut bg) = check_q.single_mut() {
         let target = if form.ack_kabu {
-            COLOR_CHECK_ON
+            theme.status.success_background
         } else {
-            COLOR_CHECK_OFF
+            theme.colors.element_background
         };
         if bg.0 != target {
             bg.0 = target;

@@ -25,6 +25,7 @@ use backcast::ui::sidebar::{instrument_remove_button_system, instrument_row_clic
 /// row click system に必要な最小 App を構築する。
 fn make_click_app(ids: Vec<String>, editable: bool) -> App {
     let mut app = App::new();
+    app.init_resource::<backcast::ui::theme::Theme>();
     app.insert_resource(SelectedSymbol { id: None })
         .insert_resource(InstrumentRegistry { ids, editable })
         .insert_resource(ExecutionModeRes {
@@ -39,6 +40,7 @@ fn make_click_app(ids: Vec<String>, editable: bool) -> App {
 /// `update_sidebar_system` もチェーンして sidebar 再描画まで確認する。
 fn make_remove_app(ids: Vec<String>, editable: bool) -> App {
     let mut app = App::new();
+    app.init_resource::<backcast::ui::theme::Theme>();
     app.insert_resource(InstrumentRegistry { ids, editable })
         .insert_resource(SelectedSymbol { id: None })
         .insert_resource(ExecutionModeRes {

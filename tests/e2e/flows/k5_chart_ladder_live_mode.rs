@@ -91,6 +91,7 @@ fn k5_chart_ladder_live_mode() {
     // chart_ladder_mode_sync_system / ladder_render_system は Time 非依存なので
     // App::new() で十分。MinimalPlugins は不要。
     let mut app = App::new();
+    app.init_resource::<backcast::ui::theme::Theme>();
 
     // mode_sync_system と render_system が要求する resource を挿入。
     app.insert_resource(ExecutionModeRes {
