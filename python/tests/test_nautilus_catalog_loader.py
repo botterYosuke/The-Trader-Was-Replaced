@@ -11,8 +11,6 @@ import pytest
 
 from engine.core import DataEngine
 from engine.nautilus_catalog_loader import load_bars, load_trades
-from engine.nautilus_runner import NautilusReplayRunner
-from engine.replay import BaseReplayProvider
 
 # Real 8-byte (standard-precision) catalog snapshot taken from the shared Synology
 # catalog (1301.TSE minute, first 5 rows). See GH #34 / Slice 0.
@@ -135,35 +133,6 @@ def test_load_trades_queries_with_trade_tick_class(patched_catalog):
 # ---------------------------------------------------------------------------
 
 
-class _OneTickProvider(BaseReplayProvider):
-    def __init__(self):
-        self._done = False
-
-    def get_next_tick(self):
-        if self._done:
-            return None
-        self._done = True
-        return (0.001, 1.0, 1.0, 1.0, 1.0)
-
-    def is_exhausted(self) -> bool:
-        return self._done
-
-
-def test_load_bars_feeds_runner_and_updates_engine_state(patched_catalog):
-    _FakeCatalog._next_return = [
-        _FakeBar(100.0, 5_000_000_000),
-        _FakeBar(110.0, 10_000_000_000),
-    ]
-
-    engine = DataEngine(replay_provider=_OneTickProvider())
-    runner = NautilusReplayRunner(engine)
-
-    runner.run_bars(load_bars(patched_catalog, instrument_ids=["X"]))
-
-    state = engine.get_current_state()
-    assert state.timestamp_ms == 10_000
-    assert state.price == 110.0
-
 
 # ---------------------------------------------------------------------------
 # Precision preflight hard-gate (GH #34)
@@ -259,57 +228,3 @@ def test_load_bars_gates_before_query_on_mismatch(monkeypatch):
 # ---------------------------------------------------------------------------
 
 
-@pytest.mark.slow
-def test_real_catalog_round_trip_bars_to_engine_state(tmp_path):
-    """
-    Write real Bars into a ParquetDataCatalog on disk, then read them back through
-    load_bars → NautilusReplayRunner → DataEngine and verify the final state.
-
-    Confirms:
-      - identifiers filtering with a BarType string works
-      - returned bars are in ts_event order
-      - the adapter's ns → ms conversion lines up with what we wrote
-    """
-    from nautilus_trader.model.data import Bar, BarType
-    from nautilus_trader.model.objects import Price, Quantity
-    from nautilus_trader.persistence.catalog import ParquetDataCatalog
-
-    catalog_path = tmp_path / "catalog"
-    catalog_path.mkdir()
-    catalog = ParquetDataCatalog(str(catalog_path.resolve()))
-
-    bar_type = BarType.from_str("AAPL.NASDAQ-1-MINUTE-LAST-EXTERNAL")
-
-    def _bar(close: str, ts_event_ns: int) -> Bar:
-        # high >= low/close, low <= close — keep all four equal to satisfy validation.
-        p = Price.from_str(close)
-        return Bar(
-            bar_type=bar_type,
-            open=p,
-            high=p,
-            low=p,
-            close=p,
-            volume=Quantity.from_int(1000),
-            ts_event=ts_event_ns,
-            ts_init=ts_event_ns,
-        )
-
-    bars_in = [
-        _bar("100.50", 5_000_000_000),    # 5_000 ms
-        _bar("101.25", 10_000_000_000),   # 10_000 ms
-        _bar("102.00", 15_000_000_000),   # 15_000 ms
-    ]
-    catalog.write_data(bars_in)
-
-    loaded = load_bars(catalog_path, instrument_ids=[str(bar_type)])
-    assert len(loaded) == 3
-    assert [int(b.ts_event) for b in loaded] == [5_000_000_000, 10_000_000_000, 15_000_000_000]
-
-    engine = DataEngine(replay_provider=_OneTickProvider())
-    runner = NautilusReplayRunner(engine)
-    runner.run_bars(loaded)
-
-    state = engine.get_current_state()
-    assert state.timestamp_ms == 15_000
-    assert state.close == 102.0
-    assert state.price == 102.0

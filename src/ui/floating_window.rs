@@ -1,4 +1,5 @@
 use crate::ui::buying_power::spawn_buying_power_panel;
+use crate::ui::component::spawn_transparent_hit_sprite;
 use crate::ui::theme::Theme;
 use crate::ui::components::{
     ChartInstrument, ChartSizeMap, CloseButton, InstrumentRegistry, LayoutExcluded, PanelKind,
@@ -78,16 +79,9 @@ enum ResizeAxis {
 /// 透明なリサイズハンドル sprite を spawn し、Drag/DragEnd/Over/Out の 4 observer を付けて返す。
 /// caller が root の子として add_child する。
 fn spawn_resize_handle(commands: &mut Commands, axis: ResizeAxis, size: Vec2, pos: Vec2) -> Entity {
+    let e = spawn_transparent_hit_sprite(commands, size, Vec3::new(pos.x, pos.y, 0.5));
     commands
-        .spawn((
-            Sprite {
-                color: Color::srgba(0.0, 0.0, 0.0, 0.0),
-                custom_size: Some(size),
-                ..default()
-            },
-            Transform::from_xyz(pos.x, pos.y, 0.5),
-            Pickable::default(),
-        ))
+        .entity(e)
         // Drag → root の custom_size / translation を更新（左端・上端固定）
         .observe(
             move |drag: On<Pointer<Drag>>,
@@ -182,7 +176,8 @@ fn spawn_resize_handle(commands: &mut Commands, axis: ResizeAxis, size: Vec2, po
                 }
             },
         )
-        .id()
+        ;
+    e
 }
 
 /// 戻り値: (root_entity, content_area_entity, title_bar_entity)

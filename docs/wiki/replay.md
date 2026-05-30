@@ -4,6 +4,8 @@
 
 Replay モードは、過去のバーデータを再生して戦略を**仮想実行**するモードである（既定モード）。実発注は行わず、約定はエンジン内のシミュレーションで生成される。
 
+Replay Run には戦略ファイル（`.py` + サイドカー `.json`）が必須であり、`BacktestEngine` が注文・ポジション・統計を生成する。再生対象の universe は `InstrumentRegistry` で決定され、未登録の場合は `ScenarioMetadata.instruments` にフォールバックする。
+
 ヘッドレス（GUI なし）で同等の実行を行う方法は [backtest.md](backtest.md) を参照。
 
 ![Replay シーケンス](assets/replay-sequence.drawio.svg)

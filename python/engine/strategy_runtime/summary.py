@@ -112,6 +112,40 @@ def compute_summary(run_buffer_dir: Path) -> dict:
     }
 
 
+def equity_curve_stats(equity_values: list) -> dict:
+    """Compute max_drawdown / sharpe / sortino from an in-memory equity curve."""
+    import math
+
+    n = len(equity_values)
+    max_drawdown = 0.0
+    sharpe = 0.0
+    sortino = 0.0
+    if n >= 2:
+        peak = equity_values[0]
+        for eq in equity_values:
+            if eq > peak:
+                peak = eq
+            dd = peak - eq
+            if dd > max_drawdown:
+                max_drawdown = dd
+        returns = [
+            (equity_values[i] - equity_values[i - 1]) / equity_values[i - 1]
+            for i in range(1, n)
+            if equity_values[i - 1] != 0.0
+        ]
+        if returns:
+            mean_r = sum(returns) / len(returns)
+            variance = sum((r - mean_r) ** 2 for r in returns) / len(returns)
+            std_r = math.sqrt(variance)
+            sharpe = (mean_r / std_r) * math.sqrt(252) if std_r != 0.0 else 0.0
+            neg_returns = [r for r in returns if r < 0.0]
+            if neg_returns:
+                neg_var = sum(r ** 2 for r in neg_returns) / len(neg_returns)
+                downside_std = math.sqrt(neg_var)
+                sortino = (mean_r / downside_std) * math.sqrt(252) if downside_std != 0.0 else 0.0
+    return {"max_drawdown": max_drawdown, "sharpe": sharpe, "sortino": sortino}
+
+
 def write_summary_json(target_dir: Path, summary: dict) -> Path:
     """Persist summary as summary.json under target_dir atomically."""
     target_dir = Path(target_dir)

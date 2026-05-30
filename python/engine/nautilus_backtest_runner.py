@@ -12,7 +12,9 @@ Public API:
 """
 from __future__ import annotations
 
+import json
 import logging
+import math
 from typing import Any
 
 log = logging.getLogger(__name__)
@@ -165,13 +167,39 @@ class NautilusBacktestRunner:
                 len(items),
             )
 
+            venue_obj = Venue(venue_str)
+            equity_curve: list[float] = []
+
             for item in items:
                 engine.add_data([item])
                 engine.run(streaming=True)
                 engine.clear_data()
+                # Record equity after each bar (account is updated synchronously)
+                acct = engine.kernel.cache.account_for_venue(venue_obj)
+                if acct is not None:
+                    bal = acct.balance_total(JPY)
+                    if bal is not None:
+                        equity_curve.append(bal.as_double())
 
-            log.info("[NautilusBacktestRunner] complete: bars=%d", len(items))
-            self._rust_sink.push_run_complete("", "{}")
+            # --- Compute summary statistics -----------------------------------
+            from nautilus_trader.model.enums import OrderStatus as _OrderStatus
+            from engine.strategy_runtime.summary import equity_curve_stats
+
+            fills_count = sum(
+                1 for o in engine.kernel.cache.orders_closed()
+                if o.status in (_OrderStatus.FILLED, _OrderStatus.PARTIALLY_FILLED)
+            )
+            stats = equity_curve_stats(equity_curve)
+            n = len(equity_curve)
+            summary = json.dumps({
+                "fills_count": fills_count,
+                "equity_points": n,
+                "max_drawdown": stats["max_drawdown"],
+                "sharpe": stats["sharpe"],
+                "sortino": stats["sortino"],
+            })
+            log.info("[NautilusBacktestRunner] complete: bars=%d summary=%s", len(items), summary)
+            self._rust_sink.push_run_complete("", summary)
             return {"success": True, "run_id": "", "error": ""}
 
         except Exception as exc:

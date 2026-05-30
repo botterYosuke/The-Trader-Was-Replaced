@@ -435,6 +435,9 @@ pub struct RunSummary {
     pub equity_points: i64,
     pub total_pnl: f64,
     pub status: String,
+    pub max_drawdown: f64,
+    pub sharpe: f64,
+    pub sortino: f64,
 }
 
 pub fn parse_summary_json(json: &str) -> Option<RunSummary> {
@@ -450,6 +453,9 @@ pub fn parse_summary_json(json: &str) -> Option<RunSummary> {
         equity_points: v["equity_points"].as_i64().unwrap_or(0),
         total_pnl: v["total_pnl"].as_f64().unwrap_or(0.0),
         status: v["status"].as_str().unwrap_or("unknown").to_owned(),
+        max_drawdown: v["max_drawdown"].as_f64().unwrap_or(0.0),
+        sharpe: v["sharpe"].as_f64().unwrap_or(0.0),
+        sortino: v["sortino"].as_f64().unwrap_or(0.0),
     })
 }
 

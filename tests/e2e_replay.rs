@@ -37,6 +37,8 @@ mod a15_per_instrument_ohlc_flows_into_map;
 mod a15_replay_step_from_idle;
 #[path = "e2e/flows/a16_replay_step_from_loaded.rs"]
 mod a16_replay_step_from_loaded;
+#[path = "e2e/flows/a17_no_strategy_run_blocked.rs"]
+mod a17_no_strategy_run_blocked;
 #[path = "e2e/flows/a7_replay_startup_progress.rs"]
 mod a7_replay_startup_progress;
 #[path = "e2e/flows/a8_stale_startup_id_ignored.rs"]
