@@ -177,8 +177,8 @@ impl TradingSettings {
                 Some(p.to_string_lossy().to_string())
             },
             use_inproc: std::env::var("BACKEND_TRANSPORT")
-                .map(|v| v.to_lowercase() == "inproc")
-                .unwrap_or(false),
+                .map(|v| v.to_lowercase() != "grpc")
+                .unwrap_or(true),
             python_engine_path: std::env::var("PYTHON_ENGINE_PATH")
                 .unwrap_or_else(|_| "python".to_string()),
             live_venue_id: std::env::var("LIVE_VENUE").ok().filter(|s| !s.is_empty()),

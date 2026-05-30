@@ -204,7 +204,7 @@ fn setup_backend_connection(
     );
 
     let transport: Box<dyn BackendTransport> = if settings.use_inproc {
-        info!("InProc transport selected (BACKEND_TRANSPORT=inproc).");
+        info!("InProc transport is the default (set BACKEND_TRANSPORT=grpc to opt into gRPC).");
         Box::new(InProcTransport {
             catalog_path: settings.catalog_path.clone(),
             max_history_len: settings.max_history_points,

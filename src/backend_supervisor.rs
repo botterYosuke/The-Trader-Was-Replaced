@@ -196,8 +196,8 @@ impl SupervisorConfig {
             python_bin: std::env::var("PYTHON_BIN").ok().filter(|s| !s.is_empty()),
             live_venue: std::env::var("LIVE_VENUE").ok().filter(|s| !s.is_empty()),
             inproc: std::env::var("BACKEND_TRANSPORT")
-                .map(|v| v.to_lowercase() == "inproc")
-                .unwrap_or(false),
+                .map(|v| v.to_lowercase() != "grpc")
+                .unwrap_or(true),
         }
     }
 }
