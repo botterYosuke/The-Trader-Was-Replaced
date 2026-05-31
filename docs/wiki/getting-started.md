@@ -2,7 +2,7 @@
 
 > 文中の `[G1]` などは、その挙動を保証する E2E flow の ID。一覧は [`tests/e2e/FLOWS.md`](../../tests/e2e/FLOWS.md) を参照。
 
-このページでは、前提環境の準備からバックエンドと GUI の起動、最初の Replay 実行までの最短手順を説明します。GUI 上での実行手順の一次情報は `docs/strategy-replay.md` です。
+このページでは、前提環境の準備から GUI の起動、最初の Replay 実行までの最短手順を説明します。Python エンジン（nautilus_trader）は Rust バイナリに **PyO3 で同一プロセスに埋め込まれており**（in-proc）、別プロセスのバックエンドを起動する必要はありません（旧 gRPC バックエンドは #64 / #68 で撤去済み）。GUI 上での実行手順の一次情報は `docs/strategy-replay.md` です。
 
 ## 前提
 
@@ -13,8 +13,6 @@
 | cargo | Rust GUI のビルド・起動に使用 |
 | catalog | ParquetDataCatalog。既定では `{ARTIFACTS_PATH}/jquants-catalog` を参照する |
 
-> **注意**: `.env` は GUI（`backcast.exe`）から自動ロードされません。GUI を起動する際は、環境変数（`BACKEND_ENABLED`, `BACKEND_TOKEN`, `ARTIFACTS_PATH`）を明示的に注入する必要があります。
-
 Python 依存は次のように取得します。
 
 ```bash
@@ -22,76 +20,31 @@ cd python
 uv sync
 ```
 
-## 1. バックエンド（Python gRPC）を起動
+## 1. GUI（Rust / Bevy）を起動
 
-バックエンドは GUI とは別プロセスです。`python/` ディレクトリで起動します。 [L5]
-
-```bash
-cd python && uv run python -m engine --token your-secret-token
-```
-
-主な引数は以下のとおりです。
-
-| 引数 | 既定値 | 説明 |
-|---|---|---|
-| `--token` | （必須） | 認証トークン |
-| `--port` | `19876` | gRPC ポート |
-| `--transport` | `grpc` | トランスポート |
-| `--max-history-len` | `1000` | 履歴の保持上限 |
-| `--advance-interval-sec` | `1.0` | リプレイの進行間隔（秒） |
-| `--jquants-catalog-path` | env `JQUANTS_CATALOG_PATH` / `ARTIFACTS_PATH` | catalog パス |
-| `--live-venue` | None（Replay のみ） | `TACHIBANA` / `KABU` |
-
-`Starting gRPC server on port 19876` が表示されれば起動成功です。 [L5]
-
-> `python -m engine.server_grpc` ではなく `python -m engine` を使ってください（`server_grpc` には `__main__` がないためエラーになります）。
-
-リプレイ実行時は、catalog を含む環境変数を渡して起動するのが確実です（`docs/strategy-replay.md` の手順）。
+GUI の起動はラッパースクリプト 1 本で完結します。別プロセスのバックエンドを立ち上げる手順はありません。スクリプトが `BACKEND_TRANSPORT=inproc` 等の環境変数設定・`__pycache__` 削除・`backcast.exe` 起動を一括で行います。
 
 ```powershell
-# 既存プロセスがポートを掴んでいたら停止
-$p = (Get-NetTCPConnection -LocalPort 19876 -ErrorAction SilentlyContinue).OwningProcess
-if ($p) { Stop-Process -Id $p -Force }
-
-# backend 起動（新しい cmd ウィンドウで）
-Start-Process cmd -ArgumentList "/k", "uv run python -m engine --token testtoken --jquants-catalog-path artifacts\jquants-catalog"
+.\scripts\run_inproc.ps1
+# artifacts を別ドライブに置く場合:
+.\scripts\run_inproc.ps1 -ArtifactsPath S:\artifacts
 ```
 
-## 2. GUI（Rust / Bevy）を起動
+ビルド前提（初回のみの `cargo build` / `PYO3_PYTHON` 設定）、Python DLL（`PYTHON_DLL_DIR` / `0xC0000135`）の扱い、正常起動ログの詳細は、ルートの [README.md §起動方法](../../README.md#起動方法) を一次情報として参照してください [P12]。
 
-`.env` は自動読み込みされないため、環境変数を明示注入して起動します。`docs/strategy-replay.md` の PowerShell 手順（`ProcessStartInfo.EnvironmentVariables`）が一次情報です。
+## 2. 接続を確認
 
-```powershell
-$psi = New-Object System.Diagnostics.ProcessStartInfo
-$psi.FileName = ".\target\debug\backcast.exe"
-$psi.WorkingDirectory = $PWD.Path
-$psi.UseShellExecute = $false
-$psi.EnvironmentVariables["BACKEND_ENABLED"] = "true"
-$psi.EnvironmentVariables["BACKEND_TOKEN"] = "testtoken"
-$psi.EnvironmentVariables["ARTIFACTS_PATH"] = $PWD.Path + "\artifacts"
-[System.Diagnostics.Process]::Start($psi) | Out-Null
-```
-
-> `cargo run` 単体や `Start-Process` 単体では `.env` が読まれず `grpc: DISABLED` になります。`ProcessStartInfo.EnvironmentVariables` で直接渡すのが確実です。
-> `ARTIFACTS_PATH` は catalog のベースディレクトリで、GUI が `{ARTIFACTS_PATH}/jquants-catalog` を参照します。省略するとリポジトリ直下の `artifacts/` が既定になります。
-
-> **Python DLL について**: Windows 環境では `python3.dll` が検索できないと起動時に `0xC0000135` でクラッシュします。`PYTHON_DLL_DIR` 環境変数で DLL のあるディレクトリを明示するか、Python を PATH に入れてください。詳細は [`docs/strategy-replay.md` §DLL パス設定](../strategy-replay.md#dll-パス設定) を参照 [P12]。
-
-事前に debug ビルドを作るには `cargo build`、開発時に env を注入しない簡易起動なら `cargo run` を使えますが、後者はバックエンドに接続せず `grpc: DISABLED` になります。
-
-## 3. 接続を確認
-
-GUI 画面右下のフッターに次が表示されれば接続成功です。
+GUI 画面右下のフッターに次が表示されれば、in-proc バックエンドへの接続成功です。
 
 ```
-state: IDLE  grpc: OK
+state: IDLE  backend: OK
 ```
 
-`grpc: DISABLED` が続く場合は `BACKEND_ENABLED=true` が渡っていません。
+`backend: DISABLED` が続く場合は `BACKEND_ENABLED=true` が渡っていません（`run_inproc.ps1` で起動すればスクリプトが設定します）。
 
-> backend 接続状態（`grpc: OK`）は [G1]、切断後の自己修復（再接続で復帰）は [G2]、`BACKEND_ENABLED=false` 時の `grpc: DISABLED`（と replay clock 非反映）は [G3] で保証されます。flow 一覧は [`tests/e2e/FLOWS.md`](../../tests/e2e/FLOWS.md) を参照。
+> backend 接続状態（`backend: OK`）は [G1]、切断後の自己修復（再接続で復帰）は [G2]、`BACKEND_ENABLED=false` 時の `backend: DISABLED`（と replay clock 非反映）は [G3] で保証されます。flow 一覧は [`tests/e2e/FLOWS.md`](../../tests/e2e/FLOWS.md) を参照。
 
-## 4. 最初の Replay 実行
+## 3. 最初の Replay 実行
 
 1. メニューバー左の **File(&F)** から **Open (Ctrl+O)** で戦略の **サイドカー JSON（`<strategy>.json`）** を選択する（ファイルダイアログは `.json` のみを表示する。同じ場所の `<strategy>.py` が自動で読み込まれる） [I5]/[I9]
 2. Strategy Editor ウィンドウが開く [I5]
@@ -110,7 +63,7 @@ state: IDLE  grpc: OK
 |---|---|---|
 | メニューバー | 上 | File / Edit / Venue メニュー [I1]/[I2] |
 | サイドバー | 左 | 銘柄リスト＋価格、パネルを開くボタン、Settings [J13]/[M1]/[M6] |
-| フッター | 下 | 実行モードトグル、再生コントロール、速度、Venue 状態、gRPC 状態 [I4]/[A1]/[G1] |
+| フッター | 下 | 実行モードトグル、再生コントロール、速度、Venue 状態、backend 状態 [I4]/[A1]/[G1] |
 | フローティングウィンドウ | 中央 | Strategy Editor / Chart / Buying Power / Positions / Orders / Run Result [M1]/[K1] |
 
 各エリアの詳細は [画面構成](screen-layout.md) を参照してください。

@@ -1,6 +1,8 @@
-# Python Data Engine Backend
+# Python Data Engine
 
-This is the Python backend for "The Trader Was Replaced". It provides market data via gRPC.
+"The Trader Was Replaced" の Python エンジン (nautilus_trader ベース)。
+GUI 実行時は Rust プロセスに **PyO3 で in-proc 埋め込み**される（旧来の gRPC サーバは #64 / #68 で撤去済み）。
+このディレクトリは Python 側の依存セットアップ・テスト・ヘッドレスリプレイ用。
 
 ## Requirements
 
@@ -13,18 +15,14 @@ This is the Python backend for "The Trader Was Replaced". It provides market dat
 uv sync
 ```
 
-## Running the Engine
+## GUI 起動
 
-### Static Mode (Default)
+GUI アプリ（in-proc）の起動はルート [README.md](../README.md#起動方法) を参照。
+このディレクトリから直接エンジンプロセスを起動する手順は無い（gRPC サーバ廃止のため）。
 
-```bash
-uv run python -m engine --token your-secret-token
-```
+## Strategy Replay（ヘッドレス）
 
-
-## Strategy Replay
-
-→ **[docs/strategy-replay.md](../docs/strategy-replay.md)**
+GUI を使わず戦略をリプレイする CLI。詳細は **[docs/strategy-replay.md](../docs/strategy-replay.md)**。
 
 ```powershell
 # 最速起動

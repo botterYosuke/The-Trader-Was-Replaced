@@ -20,15 +20,15 @@
 | Backend | localhost:19876 [M24] |
 | Save Layout | — [M24] |
 
-## ポートとバックエンド
+## バックエンド（in-proc）
 
-- バックエンド gRPC サーバーの既定ポートは **19876** です。 [L5]
-- バックエンドは `python -m engine` で起動します（`python -m engine.server_grpc` は `__main__` が無いため不可）。 [L5]
-- ライブ venue を使う場合は起動時に `--live-venue TACHIBANA` または `--live-venue KABU` を付けます。省略すると Replay 専用で起動します。 [L5]
+- Python エンジンは Rust バイナリに **PyO3 で同一プロセスに埋め込まれています**（in-proc）。別プロセスのバックエンドを起動する必要はありません（旧 gRPC バックエンドは #64 / #68 で撤去済み）。
+- ライブ venue は `LIVE_VENUE` 環境変数（`TACHIBANA` / `KABU`）で選択します。未設定だと Replay 専用で起動します。
+- 起動は `run_inproc.ps1` 1 本で完結します。詳細は [getting-started](getting-started.md) / ルート README.md §起動方法 を参照してください。
 
 ## 環境変数
 
-> **注意**: `.env` は Rust GUI に自動ロードされません。GUI を起動するプロセスから環境変数を明示的に注入する必要があります（`ProcessStartInfo.EnvironmentVariables` 等）。詳細は [getting-started](getting-started.md) / [troubleshooting](troubleshooting.md) を参照してください。
+> **注意**: `run_inproc.ps1` で起動すると、スクリプトが in-proc 起動に必要な環境変数（`BACKEND_TRANSPORT=inproc` / `BACKEND_ENABLED` 等）を設定します。手動起動する場合は環境変数を明示的に設定してください。詳細は [getting-started](getting-started.md) / [troubleshooting](troubleshooting.md) を参照してください。
 
 | 環境変数 | 用途 |
 |---|---|
@@ -42,7 +42,8 @@
 | `TACHIBANA_ALLOW_PROD` | `1` で立花の本番環境接続を許可（未設定だと Prod 接続を遮断） |
 | `KABU_ALLOW_PROD` | `1` で kabu の本番環境 (localhost:18080) 接続を許可 |
 | `TACHIBANA_SESSION_PATH` | 立花のセッションキャッシュ JSON のパス |
-| `BACKEND_ENABLED` | `true` で GUI がバックエンド gRPC を有効化（未設定だと `grpc: DISABLED`） |
+| `BACKEND_ENABLED` | `true` で in-proc バックエンド接続を有効化（未設定だと footer `backend: DISABLED`） |
+| `LIVE_VENUE` | ライブ venue の選択（`TACHIBANA` / `KABU`）。未設定だと Replay 専用 |
 | `BACKEND_TOKEN` | バックエンド認証トークン（例: `testtoken`） |
 | `FLOWSURFACE_ENGINE_TOKEN` | エンジン接続用トークン |
 | `STRATEGY_PARAM_*` | 戦略パラメータの上書き（例: `STRATEGY_PARAM_HOLDING_MINUTES=42` → 戦略の `holding_minutes`） |

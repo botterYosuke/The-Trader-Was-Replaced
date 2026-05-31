@@ -85,49 +85,15 @@ stdout に `run_id` / `run_dir` / `equity_points` / `fills_count` などの summ
 
 ヘッドレス CLI ではなく、Bevy アプリ（`backcast.exe`）上で戦略を Run する手順。
 
-### 前提条件
-
-| 項目 | 値 |
-|---|---|
-| backend デフォルトポート | `19876` |
-| 認証トークン | `BACKEND_TOKEN=testtoken`（`.env` 参照） |
-| catalog パス | `{ARTIFACTS_PATH}/jquants-catalog`（`ARTIFACTS_PATH` env var から自動構築、デフォルト: `{cwd}/artifacts`） |
-
-### 1. Backend 起動
+Python エンジンは Rust プロセスに **PyO3 で同一プロセスに埋め込まれている**（in-proc）ため、別プロセスのバックエンドを起動する必要はない。GUI の起動はラッパースクリプト 1 本で完結する。起動手順（`run_inproc.ps1` / ビルド前提 / 正常起動ログ）はルートの [README.md §起動方法](../README.md#起動方法) を一次情報として参照すること。
 
 ```powershell
-cd "C:\Users\sasai\Documents\The-Trader-Was-Replaced"
-# ポート競合チェック（必要なら先に kill）
-$p = (Get-NetTCPConnection -LocalPort 19876 -ErrorAction SilentlyContinue).OwningProcess
-if ($p) { Stop-Process -Id $p -Force }
-
-# backend 起動（新しい cmd ウィンドウで）
-Start-Process cmd -ArgumentList "/k", "uv run python -m engine --token testtoken --jquants-catalog-path artifacts\jquants-catalog"
+.\scripts\run_inproc.ps1
+# artifacts を別ドライブに置く場合:
+.\scripts\run_inproc.ps1 -ArtifactsPath S:\artifacts
 ```
 
-`Starting gRPC server on port 19876` が出れば OK。
-
-> **注意**: `python -m engine.server_grpc` ではなく `python -m engine` を使うこと。`server_grpc` には `__main__` がないためエラーになる。
-
-### 2. Rust アプリ起動
-
-`.env` の値は自動読み込みされない。環境変数を **明示的に渡して** 起動すること。
-
-```powershell
-cd "C:\Users\sasai\Documents\The-Trader-Was-Replaced"
-
-$psi = New-Object System.Diagnostics.ProcessStartInfo
-$psi.FileName = ".\target\debug\backcast.exe"
-$psi.WorkingDirectory = $PWD.Path
-$psi.UseShellExecute = $false
-$psi.EnvironmentVariables["BACKEND_ENABLED"] = "true"
-$psi.EnvironmentVariables["BACKEND_TOKEN"] = "testtoken"
-$psi.EnvironmentVariables["ARTIFACTS_PATH"] = $PWD.Path + "\artifacts"
-[System.Diagnostics.Process]::Start($psi) | Out-Null
-```
-
-> `cargo run` 単体や `Start-Process` 単体では `.env` が読まれず `grpc: DISABLED` になる。`ProcessStartInfo.EnvironmentVariables` で直接渡すのが確実。
-> `ARTIFACTS_PATH` は catalog のベースディレクトリ（Rust が `{ARTIFACTS_PATH}/jquants-catalog` を自動構築する）。省略するとリポジトリ直下の `artifacts/` がデフォルト。
+`run_inproc.ps1` が `BACKEND_TRANSPORT=inproc` / `BACKEND_ENABLED` 等の環境変数設定・`__pycache__` 削除・`backcast.exe` 起動を一括で行う。catalog は `{ARTIFACTS_PATH}/jquants-catalog`（`ARTIFACTS_PATH` env var から自動構築、デフォルト: `{cwd}/artifacts`）を参照する。
 
 #### DLL パス設定
 
@@ -139,12 +105,12 @@ Windows のローダーがこのディレクトリを探せないと `0xC0000135
 
 **A. `PYTHON_DLL_DIR` 環境変数で指定する（推奨）**
 
-次の行を `ProcessStartInfo.EnvironmentVariables` に追加するか、起動前に設定してください:
+次の行を `run_inproc.ps1` 起動前のシェルで設定してください:
 
 ```powershell
 # uv が管理する Python の base dir を取得する例
 $pyBase = Split-Path (uv run python -c "import sys; print(sys.executable)")
-$psi.EnvironmentVariables["PYTHON_DLL_DIR"] = $pyBase
+$env:PYTHON_DLL_DIR = $pyBase
 ```
 
 **B. PATH に追加する**
@@ -154,17 +120,17 @@ $pyBase = Split-Path (uv run python -c "import sys; print(sys.executable)")
 $env:PATH = "$pyBase;" + $env:PATH
 ```
 
-> `PYTHON_DLL_DIR` は `backcast.exe` 起動時に読み取り、DLL 検索パスに追加します。`ProcessStartInfo.EnvironmentVariables` 経由で渡しても有効です。
+> `PYTHON_DLL_DIR` は `backcast.exe` 起動時に読み取り、DLL 検索パスに追加します。
 
 ### 3. 正常起動の確認
 
-フッター（画面右下）に以下が表示されれば接続成功：
+フッター（画面右下）に以下が表示されれば in-proc バックエンドへの接続成功：
 
 ```
-state: IDLE  grpc: OK
+state: IDLE  backend: OK
 ```
 
-`grpc: DISABLED` が続く場合は `BACKEND_ENABLED=true` が渡っていない。`grpc: OK` でも `state: RUNNING` になる場合は backend の `auto_start` が `True` になっている（`python/engine/__main__.py` の `auto_start=False` を確認）。
+`backend: DISABLED` が続く場合は `BACKEND_ENABLED=true` が渡っていない（`run_inproc.ps1` で起動すればスクリプトが設定する）。
 
 ### 4. 戦略の実行
 
@@ -179,9 +145,8 @@ state: IDLE  grpc: OK
 
 | 症状 | 原因 | 対処 |
 |---|---|---|
-| `grpc: DISABLED` | `BACKEND_ENABLED` 未設定 | `ProcessStartInfo` で明示的に渡す |
-| フッターの ▶ ボタンが半透明 / 反応しない | `cache_path` 未設定、または `grpc: DISABLED` | Strategy Editor で cache を保存 → 必要なら backend 起動 → Rust アプリ再起動 |
-| 起動直後から `state: RUNNING` | `auto_start=True` になっている | `python/engine/__main__.py` を `auto_start=False` に修正 |
+| `backend: DISABLED` | `BACKEND_ENABLED` 未設定 | `run_inproc.ps1` で起動する（スクリプトが設定）。手動起動時は `BACKEND_ENABLED=true` を設定 |
+| フッターの ▶ ボタンが半透明 / 反応しない | `cache_path` 未設定、または `backend: DISABLED` | Strategy Editor で cache を保存 → `run_inproc.ps1` で再起動 |
 | candle が表示されない | `open_time_ms` が backend から届いていない | `python/engine/core.py` の `KlineUpdate` に `open_time_ms=ts_ms` があるか確認 |
 | 起動直後に `0xC0000135` でクラッシュ | `python3.dll` が見つからない | `PYTHON_DLL_DIR` 環境変数に Python base ディレクトリを設定するか、同ディレクトリを `PATH` に追加する（§ DLL パス設定 参照） |
 

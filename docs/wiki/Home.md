@@ -1,6 +1,6 @@
 # The Trader Was Replaced
 
-**The Trader Was Replaced** は、日本株を対象とした戦略リプレイ／バックテスト／ライブ閲覧のためのデスクトップアプリです。Bevy 0.15（Rust）製のフローティングウィンドウ GUI（バイナリ `backcast.exe`）と、NautilusTrader 1.226+ をベースとした Python gRPC エンジンを別プロセスで組み合わせて動作します。対応する証券会社は立花証券 e支店 と kabuステーション（三菱UFJ eスマート証券）です。
+**The Trader Was Replaced** は、日本株を対象とした戦略リプレイ／バックテスト／ライブ閲覧のためのデスクトップアプリです。Bevy 0.15（Rust）製のフローティングウィンドウ GUI（バイナリ `backcast.exe`）に、NautilusTrader 1.226+ をベースとした Python エンジンを **PyO3 で同一プロセスに埋め込んで**（in-proc）動作する単一バイナリ構成です（旧 gRPC バックエンド＝別プロセスは #64 / #68 で撤去済み）。対応する証券会社は立花証券 e支店 と kabuステーション（三菱UFJ eスマート証券）です。
 
 ![アーキテクチャ](assets/architecture.drawio.svg)
 
@@ -16,12 +16,12 @@ Manual（手動発注）・Auto（戦略自動発注）の操作は [注文](ord
 
 ## 構成
 
-本アプリは 2 つのプロセスで構成されます。
+本アプリは **単一プロセス** で構成されます。
 
 - **GUI（Rust / Bevy）**: `backcast.exe`。画面表示・操作・チャート描画を担当。
-- **バックエンド（Python / gRPC）**: NautilusTrader ベースのエンジン。既定ポート `19876`。データ供給・戦略実行を担当。
+- **エンジン（Python）**: NautilusTrader ベースのエンジン。Rust バイナリに **PyO3 で同一プロセスに埋め込まれて**（in-proc）動作し、データ供給・戦略実行を担当。旧 gRPC バックエンド（別プロセス + TCP/protobuf）は #64 / #68 で撤去済み。
 
-GUI からバックエンドへは gRPC で接続します。接続に成功するとフッター右下に `state: IDLE  grpc: OK` と表示されます。
+GUI と埋め込みエンジンは in-proc で接続します。接続に成功するとフッター右下に `state: IDLE  backend: OK` と表示されます。
 
 ## ページ一覧
 

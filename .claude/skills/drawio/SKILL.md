@@ -223,6 +223,22 @@ $svg = @"
 - または `.ps1` を **UTF-8 BOM 付き**で保存して 5.1 に UTF-8 と認識させる。
 - 生成後は必ず検証する: `content=` 属性を取り出し `[xml]$mg=$svg.svg.content` がパースでき、化け記号（`窶 竊 ﾂｱ`）が 0 件であること。
 
+**macOS / Linux では PowerShell 不要 — Write ツールで直書きが最短**: `.drawio.svg` は静的 SVG + `content=`（HTML エンコードした mxGraphModel）の単一テキストなので、上記の PowerShell スクリプトを経由せず Write ツールで丸ごと書き出すのが速い。エンコードは手書きで `&`→`&amp;` を最初に、次に `<`→`&lt;` `>`→`&gt;` `"`→`&quot;` の順で行う。既存図を描き直すときは、まず元 SVG の `width/height/viewBox` と可視テキストラベルを把握してから書く（レイアウト・配色を踏襲しやすい）。
+
+**検証はツール出力が消えても判定できる形で行う**: `grep`/`cat` の標準出力に頼った検証は、`/tmp` 満杯（ENOSPC）等でツール出力が欠落すると「空＝問題なし」と誤判定しやすい。生成後の検証は次のように **結果をファイルに書いて Read で確認**するか、合否を 1 行に凝縮する:
+```bash
+python3 - <<'PY'
+import re,html,xml.etree.ElementTree as ET
+for f in ['a.drawio.svg','b.drawio.svg']:
+    s=open(f,encoding='utf-8').read()
+    c=re.search(r'content="(.*?)"',s,re.S).group(1)
+    try: ET.fromstring(html.unescape(c)); ok='OK'
+    except Exception as e: ok='FAIL:'+str(e)[:40]
+    print(f, 'parse='+ok, 'host=%s'%('app.diagrams.net' in s))
+PY
+```
+パース成功・`host="app.diagrams.net"` 属性あり・除去すべき旧語（例 `grpc`/`19876`）が 0 件、の 3 点を確認する。
+
 ---
 
 ## ファイル命名規則

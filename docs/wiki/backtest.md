@@ -87,7 +87,7 @@ run-buffer の既定出力先は `%APPDATA%\flowsurface\run-buffer\`（`--run-bu
 
 | 項目 | CLI（本ページ） | GUI Replay |
 |---|---|---|
-| 実行形態 | ヘッドレス・スタンドアロン | backend（gRPC）経由 |
+| 実行形態 | ヘッドレス・スタンドアロン | アプリ内（in-proc）経由 |
 | 可視化 | なし（JSON 出力のみ） | チャート・パネルで可視化 |
 | 起動 | `run_replay.ps1` / `python -m engine.strategy_replay` | アプリのフッター ▶ ボタン |
 | データ | catalog または `--bars-json` | backend が catalog から供給 |

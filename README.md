@@ -2,12 +2,15 @@
 
 Nautilus Trader ベースの戦略リプレイ・評価エンジン。
 
+Bevy(Rust) フロントエンドに Python エンジン (nautilus_trader) を **PyO3 で同一プロセスに埋め込む**
+単一バイナリ構成。旧来の gRPC バックエンド（別プロセス + TCP/protobuf）は #64 / #68 で撤去済み。
+
 ## 起動方法
 
-### GUI モード（In-proc）— **推奨**
+### GUI アプリを起動（In-proc）
 
-`BACKEND_TRANSPORT=inproc` を設定すると Python エンジンを Rust プロセスに**直接埋め込み**、
-gRPC バックエンドプロセスが不要になる。コマンド 1 本で完結する。
+Python エンジンは Rust プロセスに直接埋め込まれているため、別途バックエンドを起動する必要はない。
+ラッパースクリプト 1 本で完結する。
 
 ```powershell
 .\scripts\run_inproc.ps1
@@ -15,7 +18,7 @@ gRPC バックエンドプロセスが不要になる。コマンド 1 本で完
 .\scripts\run_inproc.ps1 -ArtifactsPath S:\artifacts
 ```
 
-スクリプトは `__pycache__` 削除・環境変数設定・GUI 起動を一括実行する。
+スクリプトは `__pycache__` 削除・環境変数設定（`BACKEND_TRANSPORT=inproc` 等）・GUI 起動を一括実行する。
 
 #### ビルド前提（初回のみ）
 
@@ -25,7 +28,7 @@ $env:PYO3_PYTHON = "$PWD\.venv\Scripts\python.exe"
 cargo build
 ```
 
-> `PYO3_USE_ABI3_FORWARD_COMPATIBILITY=1` は `.cargo/config.toml` で自動設定済み。
+ビルド環境の詳細（pyo3 バージョン・対応 Python・ABI3 設定）は [In-proc ビルド詳細](#in-proc-ビルド詳細) を参照。
 
 #### 起動後のログ（正常）
 
@@ -55,51 +58,6 @@ Python のみで戦略バックテストを実行する。Bevy GUI は不要。
 
 ---
 
-### GUI モード（gRPC）— レガシー
-
-Python バックエンドを別プロセスで起動する旧来の方式。デバッグ時など backend ログを
-独立して確認したいケースに使う。通常は In-proc モードを使うこと。
-
-→ **[python/README.md](python/README.md)**
-
-#### 1. Python backend を起動
-
-```powershell
-# .env を PowerShell 環境変数にロード
-Get-Content .env | Where-Object { $_ -match '^\s*[^#=]+=.' } | ForEach-Object {
-    $k, $v = $_ -split '=', 2
-    [System.Environment]::SetEnvironmentVariable($k.Trim(), $v.Trim().Trim('"'), 'Process')
-}
-
-# backend 起動（catalog path は ARTIFACTS_PATH から自動構築）
-$env:PYTHONPATH = "$PWD\python\engine\proto"
-Start-Process -FilePath "uv" `
-  -ArgumentList "run","python","-m","engine",
-                "--token",$env:BACKEND_TOKEN,
-                "--jquants-catalog-path","$env:ARTIFACTS_PATH\jquants-catalog" `
-  -RedirectStandardOutput "$env:TEMP\backend_log.txt" `
-  -RedirectStandardError  "$env:TEMP\backend_err.txt" `
-  -WindowStyle Hidden
-```
-
-> `ARTIFACTS_PATH` が `.env` に無い場合のデフォルト: `.\artifacts`。
-> j-quants catalog のビルド方法は `scripts/build_catalog_batch.py` を参照。
-
-#### 2. Rust GUI を起動（backend 起動後）
-
-```powershell
-$env:BEVY_ASSET_ROOT = $PWD.Path
-$env:ARTIFACTS_PATH  = $env:ARTIFACTS_PATH   # .env から継承
-$env:BACKEND_ENABLED = "true"
-$env:BACKEND_TOKEN   = $env:BACKEND_TOKEN
-$env:RUST_LOG        = "info"
-Start-Process -FilePath ".\target\debug\backcast.exe" -WorkingDirectory $PWD.Path `
-  -RedirectStandardOutput "$env:TEMP\backcast_log.txt" `
-  -RedirectStandardError  "$env:TEMP\backcast_err.txt" -PassThru
-```
-
----
-
 ## In-proc ビルド詳細
 
 | 項目 | 内容 |
@@ -118,4 +76,4 @@ Start-Process -FilePath ".\target\debug\backcast.exe" -WorkingDirectory $PWD.Pat
 |---|---|
 | [docs/strategy-replay.md](docs/strategy-replay.md) | 戦略リプレイの起動手順・CLI オプション |
 | [docs/plan/Phase 6.5 - Blacksheep Strategy Runtime.md](docs/plan/Phase%206.5%20-%20Blacksheep%20Strategy%20Runtime.md) | Strategy Runtime 実装仕様 |
-| [python/README.md](python/README.md) | Python バックエンドのセットアップ・テスト |
+| [python/README.md](python/README.md) | Python エンジンのセットアップ・テスト |
